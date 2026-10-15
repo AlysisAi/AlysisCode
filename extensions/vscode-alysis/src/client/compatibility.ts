@@ -14,7 +14,7 @@ export const SUPPORTED_IDE_PROTOCOL_VERSIONS = [PROTOCOL_VERSION] as const;
  * upgrade hint, while hard feature availability is decided per method by capability negotiation.
  * Bump it together with the extension release, and keep `docs/architecture.md` in step.
  */
-export const MIN_RECOMMENDED_ALYSIS_CLI_VERSION = "0.15.0";
+export const MIN_RECOMMENDED_ALYSIS_CLI_VERSION = "0.15.1";
 export const CLI_INSTALL_COMMAND = "pipx install alysis-code";
 export const CLI_UPGRADE_COMMAND = "pipx upgrade alysis-code";
 export const SETUP_GUIDE_URL = "https://github.com/AlysisAi/AlysisCode#install";
