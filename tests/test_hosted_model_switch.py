@@ -17,6 +17,7 @@ from alysis_code.profiles import add_profile, set_active_profile
 
 @pytest.fixture(autouse=True)
 def offline_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
     for prefix in ("ALYSIS", "ALYSIS"):

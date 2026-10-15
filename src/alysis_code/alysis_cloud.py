@@ -1,7 +1,6 @@
 """Endpoints and identifiers for the hosted Alysis Code Pro service.
 
-`alysis login` runs an RFC 8628-style device flow against Supabase Edge
-Functions (`device-code` / `device-token`); the user approves the code on the
+`alysis login` runs an RFC 8628-style device flow against the configured hosted API (`device-code` / `device-token`); the user approves the code on the
 account website's /activate page. The CLI receives a gateway key (``slk_…``)
 and talks to the Alysis Code LLM gateway — an OpenAI-compatible proxy that meters
 the subscription's credits server-side. The CLI never holds upstream provider
@@ -17,9 +16,6 @@ from urllib.parse import urlsplit
 
 from .branding import env_get
 
-# Supabase project hosting the device-login edge functions.
-_DEFAULT_SUPABASE_URL = "https://vzigujbcjjmpntxhmyvr.supabase.co"
-
 # Product site: serves the /activate device-approval page and /account.
 #
 # ---------------------------------------------------------------------------
@@ -29,7 +25,7 @@ _DEFAULT_SUPABASE_URL = "https://vzigujbcjjmpntxhmyvr.supabase.co"
 # else is caught by test_rebrand_compatibility.py.
 #
 # The device-login flow depends on this host actually serving /activate against
-# the Supabase project below. The CLI sends Pro users there to approve a login
+# the configured hosted API. The CLI sends Pro users there to approve a login
 # code, so the two must move together — a client pointed at a host that does
 # not serve the page breaks sign-in with no client-side workaround.
 #
@@ -37,24 +33,8 @@ _DEFAULT_SUPABASE_URL = "https://vzigujbcjjmpntxhmyvr.supabase.co"
 PRODUCT_SITE_URL = "https://alysiscode.com"
 _DEFAULT_SITE_URL = PRODUCT_SITE_URL
 
-# Supabase "anon" key: a PUBLIC client identifier (shipped in the website's
-# browser bundle too). It grants nothing by itself — the edge functions are
-# either public-by-design (device flow) or JWT/secret-guarded server-side.
-ANON_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ6aWd1amJjamptcG50eGhteXZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5Mzc0NTIsImV4cCI6MjA5NjUxMzQ1Mn0."
-    "vLH9q-BNO8IWIZrVlvCw8pZWXdLgmKG4Tl9toTTD3pg"
-)
-
 # The profile/preset key used for the hosted Pro provider.
 PROFILE_KEY = "alysis"
-
-# LEGACY: base URL of the retired MiMo-trial proxy (an OpenRouter-forwarding
-# Supabase Edge Function). The service is gone, but URL classifiers (web
-# search / provider limits) still recognize it so configs from that era keep
-# loading with sensible behavior instead of misclassifying.
-DEFAULT_PROXY_BASE_URL = f"{_DEFAULT_SUPABASE_URL}/functions/v1/llm/v1"
-
 
 # Loopback hosts may use http:// (local stubs / tests); every other host must
 # be https so device codes and the gateway key never travel in cleartext.
@@ -92,8 +72,32 @@ def _checked(url: str) -> str:
     )
 
 
-def supabase_url() -> str:
-    return _checked(env_get("ALYSIS_SUPABASE_URL") or _DEFAULT_SUPABASE_URL)
+def cloud_api_url() -> str:
+    """Deployment API base, supplied at runtime; no project identifiers are shipped."""
+    override = env_get("ALYSIS_CLOUD_API_URL")
+    if override:
+        return _checked(override)
+    # Preserve existing explicitly configured installations without bundling a host.
+    legacy = env_get("ALYSIS_SUPABASE_URL")
+    if legacy:
+        return f"{_checked(legacy)}/functions/v1"
+    return ""
+
+
+def public_client_key() -> str:
+    """Optional public routing key; never a server/service-role credential."""
+    return (env_get("ALYSIS_CLOUD_PUBLIC_KEY") or "").strip()
+
+
+def _function_url(name: str) -> str:
+    base = cloud_api_url()
+    if not base:
+        raise AlysisCloudConfigError(
+            "Alysis hosted services are not configured in this build. "
+            "Set ALYSIS_CLOUD_API_URL to your deployment's API base URL. "
+            "Other configured providers remain available."
+        )
+    return f"{base}/{name}"
 
 
 def site_url() -> str:
@@ -118,34 +122,35 @@ def account_url() -> str:
 def gateway_base_url() -> str:
     """OpenAI-compatible base URL; the LLM client appends ``/chat/completions``.
 
-    The hosted proxy runs as the `llm` Supabase Edge Function (the same shape
-    the MiMo-trial proxy used), holding the upstream DeepSeek key server-side
-    and metering each account's allowance/credits.
+    The hosted service holds upstream provider credentials and meters account credits.
+    An unconfigured public build returns an empty value for offline status displays;
+    device login validates the API configuration before sending any requests.
     """
     override = env_get("ALYSIS_GATEWAY_URL")
     if override:
         return _checked(override)
-    return f"{supabase_url()}/functions/v1/llm/v1"
+    base = cloud_api_url()
+    return f"{base}/llm/v1" if base else ""
 
 
 def device_code_url() -> str:
     """POST here to start a device login (returns user_code + device_code)."""
-    return f"{supabase_url()}/functions/v1/device-code"
+    return _function_url("device-code")
 
 
 def device_token_url() -> str:
     """POST device_code here until the user approves (returns the slk_ key)."""
-    return f"{supabase_url()}/functions/v1/device-token"
+    return _function_url("device-token")
 
 
 def feedback_url() -> str:
     """Private feedback intake, authenticated with the saved Alysis device key."""
-    return f"{supabase_url()}/functions/v1/feedback"
+    return _function_url("feedback")
 
 
 def account_status_url() -> str:
     """Read the website billing summary with the saved Alysis device key."""
-    return f"{supabase_url()}/functions/v1/account-status"
+    return _function_url("account-status")
 
 
 def activate_url() -> str:
@@ -155,4 +160,7 @@ def activate_url() -> str:
 
 def models_url() -> str:
     """The gateway's OpenAI-shaped model listing."""
-    return f"{gateway_base_url()}/models"
+    base = gateway_base_url()
+    if not base:
+        raise AlysisCloudConfigError("Alysis hosted gateway is not configured.")
+    return f"{base}/models"

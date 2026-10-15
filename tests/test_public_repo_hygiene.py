@@ -1,3 +1,5 @@
+import base64
+import json
 import subprocess
 from pathlib import Path
 
@@ -160,3 +162,49 @@ def test_relative_links_require_exact_file_and_directory_case(tmp_path: Path) ->
 )
 def test_rejects_local_release_evidence(path: str) -> None:
     assert path_violation(path) == "local runtime or build-output directory"
+
+
+@pytest.mark.parametrize("scheme", ["https", "postgresql"])
+def test_rejects_backend_deployment_hosts_without_echoing_them(tmp_path: Path, scheme: str) -> None:
+    host = ".".join(("synthetic-project", "supabase", "co"))
+    (tmp_path / "config.py").write_text(f'ENDPOINT = "{scheme}://{host}/api"\n')
+    assert collect_violations(["config.py"], tmp_path) == [
+        "config.py:1: deployment-specific backend host"
+    ]
+
+
+@pytest.mark.parametrize("role", ["anon", "service_role"])
+def test_rejects_backend_jwt_even_when_split_into_string_literals(
+    tmp_path: Path, role: str
+) -> None:
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps({"iss": "supabase", "ref": "synthetic-project", "role": role}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    (tmp_path / "client.py").write_text(
+        f'TOKEN = (\n    "header."\n    "{payload}."\n    "signature"\n)\n'
+    )
+    assert collect_violations(["client.py"], tmp_path) == [
+        "client.py:3: deployment-specific backend JWT"
+    ]
+
+
+@pytest.mark.parametrize("kind", ["publishable", "secret"])
+def test_rejects_backend_project_keys(tmp_path: Path, kind: str) -> None:
+    key = "_".join(("sb", kind, "synthetic-test-value"))
+    (tmp_path / "client.py").write_text(f'KEY = "{key}"\n')
+    assert collect_violations(["client.py"], tmp_path) == [
+        "client.py:1: deployment-specific backend key"
+    ]
+
+
+def test_allows_generic_backend_support_and_reserved_example_urls(tmp_path: Path) -> None:
+    (tmp_path / "client.py").write_text(
+        'ENV_NAME = "ALYSIS_SUPABASE_URL"\n'
+        'BASE_URL = "https://cloud.example.invalid/api"\n'
+        'VENDOR_DOMAIN = "supabase.co"\n'
+    )
+    assert collect_violations(["client.py"], tmp_path) == []

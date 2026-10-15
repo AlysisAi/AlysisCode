@@ -1394,7 +1394,7 @@ def _execution_summary_text(state: ConfigMenuState) -> str:
 
 def _active_alysis_profile(state: ConfigMenuState) -> ProfileSpec | None:
     """Recognize hosted account access by its effective endpoint, not its model or key."""
-    from .. import alysis_cloud
+    from ..provider_url import is_alysis_gateway_url
 
     if state.execution_backend != "native" or state.active_profile not in state.profiles:
         return None
@@ -1402,13 +1402,7 @@ def _active_alysis_profile(state: ConfigMenuState) -> ProfileSpec | None:
     if profile.auth_provider or profile.protocol != OPENAI_COMPAT_PROTOCOL:
         return None
     effective_url = str(state.fields.get("base_url") or profile.base_url).strip().rstrip("/")
-    preset = next(p for p in PROFILE_PRESETS if p.key == alysis_cloud.PROFILE_KEY)
-    hosted_urls = {preset.base_url.strip().rstrip("/")}
-    try:
-        hosted_urls.add(alysis_cloud.gateway_base_url().strip().rstrip("/"))
-    except alysis_cloud.AlysisCloudConfigError:
-        pass
-    return profile if effective_url in hosted_urls else None
+    return profile if is_alysis_gateway_url(effective_url) else None
 
 
 def _inactive_native_summary(summary: str) -> str:

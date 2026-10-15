@@ -521,9 +521,7 @@ def test_load_config_keeps_explicit_custom_profile_with_preset_model(
                 "profiles": {
                     "alysis": {
                         "protocol": "openai_compat",
-                        "base_url": (
-                            "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1"
-                        ),
+                        "base_url": ("https://api.alysiscode.com/v1"),
                         "extra_headers": {},
                         "default_model": "mimo-v2.5-pro",
                         "web_search_adapter": "openrouter",

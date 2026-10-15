@@ -93,6 +93,7 @@ class _StubDeviceFlowServer:
 
 
 def _config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("ALYSIS_API_KEY", raising=False)
@@ -217,7 +218,7 @@ def test_approval_url_follows_site_override(monkeypatch) -> None:
 def test_login_full_flow_wires_gateway_key_as_bearer(tmp_path: Path, monkeypatch) -> None:
     _config_env(tmp_path, monkeypatch)
     stub = _StubDeviceFlowServer(approve_after=3)  # a couple of pending polls first
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", stub.base_url)
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub.base_url}/functions/v1")
     opened: list[str] = []
     try:
         cfg = load_config()
@@ -260,7 +261,7 @@ def test_login_full_flow_wires_gateway_key_as_bearer(tmp_path: Path, monkeypatch
 def test_login_denied_persists_nothing(tmp_path: Path, monkeypatch) -> None:
     _config_env(tmp_path, monkeypatch)
     stub = _StubDeviceFlowServer(terminal="denied")
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", stub.base_url)
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub.base_url}/functions/v1")
     try:
         with pytest.raises(account_login.AlysisLoginError, match="rejected"):
             account_login.login(load_config(), browser_opener=_noop_browser([]), timeout_s=10)
@@ -272,7 +273,7 @@ def test_login_denied_persists_nothing(tmp_path: Path, monkeypatch) -> None:
 def test_login_expired_code_raises(tmp_path: Path, monkeypatch) -> None:
     _config_env(tmp_path, monkeypatch)
     stub = _StubDeviceFlowServer(terminal="expired")
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", stub.base_url)
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub.base_url}/functions/v1")
     try:
         with pytest.raises(account_login.AlysisLoginError, match="expired"):
             account_login.login(load_config(), browser_opener=_noop_browser([]), timeout_s=10)
@@ -284,7 +285,7 @@ def test_login_expired_code_raises(tmp_path: Path, monkeypatch) -> None:
 def test_login_then_logout_clears_key(tmp_path: Path, monkeypatch) -> None:
     _config_env(tmp_path, monkeypatch)
     stub = _StubDeviceFlowServer()
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", stub.base_url)
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub.base_url}/functions/v1")
     try:
         cfg = load_config()
         account_login.login(cfg, browser_opener=_noop_browser([]), timeout_s=10)
@@ -305,7 +306,7 @@ def test_login_preserves_user_chosen_model_across_relogin(tmp_path: Path, monkey
 
     _config_env(tmp_path, monkeypatch)
     stub = _StubDeviceFlowServer()
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", stub.base_url)
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub.base_url}/functions/v1")
     try:
         # Fresh connect defaults to the Pro flagship-for-volume model.
         first = account_login.login(load_config(), browser_opener=_noop_browser([]), timeout_s=10)
@@ -335,7 +336,7 @@ def test_login_activates_native_execution_after_delegated_runtime(
 
     _config_env(tmp_path, monkeypatch)
     stub = _StubDeviceFlowServer()
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", stub.base_url)
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub.base_url}/functions/v1")
     gateway_url = f"{stub.base_url}/hosted/v1"
     monkeypatch.setenv("ALYSIS_GATEWAY_URL", gateway_url)
     try:
@@ -401,7 +402,7 @@ def test_login_does_not_redirect_old_xiaomi_campaign_model(
 
     _config_env(tmp_path, monkeypatch)
     stub = _StubDeviceFlowServer()
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", stub.base_url)
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub.base_url}/functions/v1")
     try:
         account_login.login(load_config(), browser_opener=_noop_browser([]), timeout_s=10)
         cfg = load_config()

@@ -20,6 +20,11 @@ from alysis_code.tools.registry import iter_builtin_tool_metadata
 MODEL = "claude-sonnet-5-5"
 
 
+@pytest.fixture(autouse=True)
+def configured_hosted_endpoint(monkeypatch):
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
+
+
 def hosted_config():
     profile = replace(make_profile_from_preset(get_preset("alysis")), default_model=MODEL)
     cfg = AppConfig(model=MODEL, base_url=profile.base_url)

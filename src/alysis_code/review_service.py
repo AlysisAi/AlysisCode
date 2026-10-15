@@ -178,7 +178,7 @@ class ReviewController:
         loop = asyncio.get_running_loop()
 
         def started():
-            if generation == self._generation:
+            if generation == self._generation and self.running:
                 self.status = (
                     "Reviewing selected scope: collecting changes and waiting for provider…"
                 )

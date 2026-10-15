@@ -29,6 +29,7 @@ from .llm.protocols import (
 )
 from .profiles import ProfileSpec
 from .prompt_guidance_catalog import ReviewedModel
+from .provider_url import is_alysis_gateway_url
 from .web_search_adapters import (
     ANTHROPIC_MESSAGES_ADAPTER,
     AUTO_WEB_SEARCH_ADAPTER,
@@ -1769,12 +1770,8 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         provider_key="alysis",
         label="Alysis Code",
         protocol="openai_compat",
-        # The Alysis Code hosted proxy (`llm` Supabase Edge Function). It
-        # authenticates the user's slk_ key, meters free credits /
-        # Pro credits server-side, and routes to each model's provider. The login flow
-        # overrides this from alysis_cloud at runtime (env-configurable), so
-        # this literal is just the default.
-        base_url="https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1",
+        # Device login supplies the deployment URL at runtime.
+        base_url="",
         api_key_env=None,
         # Free models are available offline; paid models require the authenticated
         # gateway catalog before the managed account picker offers them.
@@ -1923,6 +1920,8 @@ def find_preset_for_base_url(base_url: str) -> ProfilePreset | None:
     normalized = _normalized_base_url(base_url)
     if not normalized:
         return None
+    if is_alysis_gateway_url(base_url):
+        return get_preset("alysis")
     matches: list[ProfilePreset] = []
     for preset in PROFILE_PRESETS:
         if preset.key == "custom":
@@ -1941,6 +1940,8 @@ def find_preset_for_base_url(base_url: str) -> ProfilePreset | None:
 def _profile_matches_preset(profile: ProfileSpec, preset: ProfilePreset) -> bool:
     if str(profile.protocol or OPENAI_COMPAT_PROTOCOL).strip() != preset.protocol:
         return False
+    if preset.key == "alysis":
+        return is_alysis_gateway_url(profile.base_url)
     profile_url = _normalized_base_url(profile.base_url)
     preset_url = _normalized_base_url(preset.base_url)
     if not profile_url or not preset_url or profile_url != preset_url:
@@ -2149,11 +2150,14 @@ def make_profile_from_preset(
     *,
     name: str | None = None,
 ) -> ProfileSpec:
+    from . import alysis_cloud
+
     profile_name = str(name or preset.key).strip().lower()
+    base_url = alysis_cloud.gateway_base_url() if preset.key == "alysis" else preset.base_url
     return ProfileSpec(
         name=profile_name,
         protocol=preset.protocol,
-        base_url=preset.base_url,
+        base_url=base_url,
         api_key_env=preset.api_key_env,
         extra_headers=dict(preset.extra_headers),
         default_model=preset.suggested_models[0] if preset.suggested_models else "",

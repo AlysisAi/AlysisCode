@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-from alysis_code import alysis_cloud
-from alysis_code.profile_presets import PROFILE_PRESETS
 from alysis_code.provider_url import (
     ALYSIS_GATEWAY_LABEL,
     display_endpoint,
@@ -17,8 +15,6 @@ from alysis_code.provider_url import (
     is_alysis_gateway_url,
     known_provider_key_from_base_url,
 )
-
-_ALYSIS_PRESET_URL = next(p for p in PROFILE_PRESETS if p.key == "alysis").base_url
 
 
 @pytest.mark.parametrize(
@@ -58,9 +54,6 @@ def test_display_host_is_the_host_and_port_only(url: str | None, expected: str) 
 @pytest.mark.parametrize(
     "url",
     [
-        _ALYSIS_PRESET_URL,
-        alysis_cloud.DEFAULT_PROXY_BASE_URL,
-        "https://staging-ref.supabase.co/functions/v1/llm/v1",
         "https://api.alysiscode.com/v1",
         "https://api.alysiscode.com/v1",
     ],
@@ -76,7 +69,7 @@ def test_hosted_gateway_is_named_instead_of_shown_by_host(url: str) -> None:
     ("url", "expected"),
     [
         # Another Supabase function, or the llm path on another host, is not the gateway.
-        ("https://other.supabase.co/rest/v1", "other.supabase.co"),
+        ("https://other.example.invalid/rest/v1", "other.example.invalid"),
         ("https://example.com/functions/v1/llm/v1", "example.com"),
         ("https://api.z.ai/api/coding/paas/v4", "api.z.ai"),
         ("https://team:s3cret@proxy.example.com/v1", "proxy.example.com"),
@@ -85,3 +78,16 @@ def test_hosted_gateway_is_named_instead_of_shown_by_host(url: str) -> None:
 def test_other_endpoints_display_their_host(url: str, expected: str) -> None:
     assert is_alysis_gateway_url(url) is False
     assert display_endpoint(url) == expected
+
+
+def test_configured_gateway_uses_product_label(monkeypatch):
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
+    url = "https://cloud.example.invalid/api/llm/v1"
+    assert display_endpoint(url) == ALYSIS_GATEWAY_LABEL
+    assert known_provider_key_from_base_url(url) == "deepseek"
+
+
+def test_legacy_gateway_shape_still_gets_product_label():
+    # Synthetic domain parts exercise legacy classification without a deployment URL.
+    host = ".".join(("synthetic", "supabase", "co"))
+    assert display_endpoint(f"https://{host}/functions/v1/llm/v1") == ALYSIS_GATEWAY_LABEL

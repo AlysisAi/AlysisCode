@@ -36,7 +36,9 @@ def endpoint(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setenv("ALYSIS_SUPABASE_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv(
+        "ALYSIS_CLOUD_API_URL", f"http://127.0.0.1:{server.server_port}/functions/v1"
+    )
     monkeypatch.setattr(
         account_login,
         "load_persisted_profile_keys",

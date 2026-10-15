@@ -386,13 +386,12 @@ class _DeviceGrant:
 
 
 def _function_headers() -> dict[str, str]:
-    # Supabase routes function calls with the public anon key; the device
-    # endpoints themselves are public by design (verify_jwt off server-side).
-    return {
-        "Content-Type": "application/json",
-        "apikey": cloud.ANON_KEY,
-        "Authorization": f"Bearer {cloud.ANON_KEY}",
-    }
+    headers = {"Content-Type": "application/json"}
+    public_key = cloud.public_client_key()
+    if public_key:
+        headers["apikey"] = public_key
+        headers["Authorization"] = f"Bearer {public_key}"
+    return headers
 
 
 def _post_json(url: str, payload: dict) -> dict:

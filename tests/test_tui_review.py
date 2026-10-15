@@ -153,6 +153,42 @@ def test_failure_and_empty_results_are_distinct():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_delayed_started_callback_cannot_overwrite_terminal_status(monkeypatch, fails):
+    async def run():
+        pending = []
+        loop = asyncio.get_running_loop()
+        schedule = loop.call_soon_threadsafe
+
+        def delayed(callback, *args, **kwargs):
+            if getattr(callback, "__name__", "") == "started":
+                pending.append(callback)
+                return None
+            return schedule(callback, *args, **kwargs)
+
+        monkeypatch.setattr(loop, "call_soon_threadsafe", delayed)
+
+        class Engine:
+            def review(self, request, **kwargs):
+                if fails:
+                    raise RuntimeError("synthetic failure")
+                return result(findings=())
+
+        controller = ReviewController(lambda token: Engine(), on_change=lambda: None)
+        await controller.start(ReviewRequest.working_tree())
+        assert not controller.running
+        terminal_status = controller.status
+        assert (
+            "failed (RuntimeError)" in terminal_status if fails else "0 findings" in terminal_status
+        )
+        assert pending
+        for callback in pending:
+            callback()
+        assert controller.status == terminal_status
+
+    asyncio.run(run())
+
+
 def test_exact_snapshot_location_and_unavailable_ambiguous_lines():
     location = inspect_finding(result(), FINDING)
     assert location.text.splitlines()[location.row] == "+    return 2"

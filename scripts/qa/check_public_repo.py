@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import re
 import subprocess
 import sys
@@ -59,6 +61,38 @@ _PUBLIC_VERIFICATION_KEY = "extensions/vscode-alysis/resources/managed-cli-relea
 _ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 _MAX_TRACKED_FILE_BYTES = 5 * 1024 * 1024
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
+_DEPLOYMENT_HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.)+supabase\.(?:co|net|com)\b", re.IGNORECASE)
+_DEPLOYMENT_KEY_RE = re.compile(r"\bsb_(?:publishable|secret)_[A-Za-z0-9_-]{12,}\b")
+_JSON_TOKEN_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\b")
+
+
+def deployment_content_violations(path_text: str, content: bytes) -> list[str]:
+    """Reject deployment hosts and project-bound keys without printing their values.
+
+    Inspect JWT payload segments separately: Python can split a token across
+    adjacent string literals. Public anon/publishable keys are excluded too.
+    """
+    text = content.decode("utf-8", errors="replace")
+    violations: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        reasons: set[str] = set()
+        if _DEPLOYMENT_HOST_RE.search(line):
+            reasons.add("deployment-specific backend host")
+        if _DEPLOYMENT_KEY_RE.search(line):
+            reasons.add("deployment-specific backend key")
+        for match in _JSON_TOKEN_RE.finditer(line):
+            token = match.group()
+            try:
+                payload = json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(payload, dict) and (
+                payload.get("iss") == "supabase"
+                or (payload.get("ref") and payload.get("role") in ("anon", "service_role"))
+            ):
+                reasons.add("deployment-specific backend JWT")
+        violations.extend(f"{path_text}:{line_number}: {reason}" for reason in sorted(reasons))
+    return violations
 
 
 def path_violation(path_text: str) -> str | None:
@@ -113,6 +147,8 @@ def collect_violations(paths: Iterable[str], root: Path) -> list[str]:
                 violations.append(f"{path_text}: expected a public verification key")
         if local_path.is_file() and local_path.stat().st_size > _MAX_TRACKED_FILE_BYTES:
             violations.append(f"{path_text}: tracked file exceeds 5 MiB")
+        elif local_path.is_file():
+            violations.extend(deployment_content_violations(path_text, local_path.read_bytes()))
     return sorted(violations)
 
 

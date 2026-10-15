@@ -293,6 +293,7 @@ def test_classic_subscription_back_returns_to_model_access(
 def hosted_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppConfig:
     from alysis_code.alysis_cloud import gateway_base_url
 
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
     profile = ProfileSpec(name="alysis", base_url=gateway_base_url(), default_model="hosted-model")
     cfg = AppConfig()
@@ -988,6 +989,7 @@ def test_alysis_model_picker_only_offers_named_v41_flash_despite_stale_gateway(
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
 
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
     calls = []
@@ -1028,6 +1030,7 @@ def test_default_model_rows_survive_alysis_discovery_failure(
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
 
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
 

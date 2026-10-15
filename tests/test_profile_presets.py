@@ -194,7 +194,7 @@ def test_perplexity_profile_is_not_classified_as_first_party_openai() -> None:
 def test_each_non_custom_preset_has_valid_base_url_and_suggested_models() -> None:
     url_pattern = re.compile(r"^https?://[^/].*$")
     for preset in PROFILE_PRESETS:
-        if preset.key == "custom":
+        if preset.key in {"custom", "alysis"}:
             continue
         assert url_pattern.match(preset.base_url), preset.key
         assert preset.suggested_models, preset.key
@@ -278,7 +278,7 @@ def test_moonshot_presets_alias_retired_kimi_k2_to_current_model() -> None:
 def test_provider_presets_use_current_openai_compatible_base_urls() -> None:
     expected_base_urls = {
         # The Alysis Code hosted proxy (llm Edge Function, DeepSeek upstream).
-        "alysis": "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1",
+        "alysis": "",
         "openai": "https://api.openai.com/v1",
         "openai-responses": "https://api.openai.com/v1",
         "anthropic": "https://api.anthropic.com/v1",

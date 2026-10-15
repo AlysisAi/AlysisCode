@@ -5397,7 +5397,7 @@ def test_alysis_hosted_proxy_resolves_to_deepseek_provider_key() -> None:
     # now forwards to DeepSeek.
     assert _provider_key_from_base_url(_ALYSIS_TRIAL_BASE_URL) == "deepseek"
     # A plain supabase host without the LLM proxy path must NOT be captured.
-    assert _provider_key_from_base_url("https://other.supabase.co/rest/v1") != "deepseek"
+    assert _provider_key_from_base_url("https://other.example.invalid/rest/v1") != "deepseek"
 
 
 def test_nvidia_hosted_nim_endpoint_resolves_exactly() -> None:

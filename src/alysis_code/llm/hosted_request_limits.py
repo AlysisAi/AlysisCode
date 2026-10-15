@@ -1,6 +1,6 @@
 """Local preflight for the hosted Chat Completions envelope.
 
-Keep these bounds in sync with supabase/functions/llm/index.ts. They measure
+Keep these bounds in sync with the hosted API admission contract. They measure
 gateway admission pressure, not actual token usage or billable tokens.
 """
 

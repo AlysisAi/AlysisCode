@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+from . import alysis_cloud
 from .branding import PRODUCT_NAME
 
 _ALYSIS_TRIAL_PROXY_PATH = "/functions/v1/llm"
@@ -28,6 +29,16 @@ def is_alysis_gateway_url(base_url: str | None) -> bool:
     except ValueError:
         return False
     host = (parsed.hostname or "").rstrip(".").casefold()
+    try:
+        configured = alysis_cloud.gateway_base_url()
+        api_base = alysis_cloud.cloud_api_url()
+    except alysis_cloud.AlysisCloudConfigError:
+        configured = ""
+        api_base = ""
+    if configured and raw.rstrip("/") == configured.rstrip("/"):
+        return True
+    if api_base and raw.rstrip("/") == f"{api_base}/llm/v1":
+        return True
     if host in _ALYSIS_GATEWAY_HOSTS:
         return True
     path = (parsed.path or "").casefold()

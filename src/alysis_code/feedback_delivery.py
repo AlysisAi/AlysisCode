@@ -137,7 +137,11 @@ def prepare_feedback(
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(body) > MAX_REQUEST_BYTES:
         raise FeedbackReportError("Report is too large. Turn off diagnostics or save it locally.")
-    return PreparedFeedback(report_id, _checked_endpoint(alysis_cloud.feedback_url()), body)
+    try:
+        endpoint = _checked_endpoint(alysis_cloud.feedback_url())
+    except alysis_cloud.AlysisCloudConfigError as exc:
+        raise FeedbackReportError(str(exc)) from exc
+    return PreparedFeedback(report_id, endpoint, body)
 
 
 def send_feedback(prepared: PreparedFeedback) -> FeedbackReceipt:

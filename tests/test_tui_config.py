@@ -37,6 +37,7 @@ from alysis_code.provider_auth import ProviderAccountStatus, ProviderModel, Prov
 
 
 def _config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
     for var in (
@@ -1066,10 +1067,11 @@ def test_provider_switch_rows_show_model_host_and_what_needs_attention():
     assert remove_rows["qwen-intl"].description == rows["qwen-intl"].description
 
 
-def test_provider_switch_rows_hide_gateway_host_and_url_credentials():
+def test_provider_switch_rows_hide_gateway_host_and_url_credentials(monkeypatch):
     """The hosted gateway's host is a Supabase project ref, and a custom base URL
     can carry a token as userinfo; neither belongs in the picker."""
-    alysis_url = next(p for p in PROFILE_PRESETS if p.key == "alysis").base_url
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
+    alysis_url = alysis_cloud.gateway_base_url()
     cfg = AppConfig(model="deepseek-flash", base_url=alysis_url)
     cfg.extra_fields = {
         "profiles": {
