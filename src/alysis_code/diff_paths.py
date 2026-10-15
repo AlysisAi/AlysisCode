@@ -18,7 +18,7 @@ _GIT_QUOTED_DIFF_PATHS = re.compile(r'("(?:\\.|[^"\\])*")\s+("(?:\\.|[^"\\])*")'
 
 
 def _unquote_path(value: str) -> str:
-    raw = value.strip()
+    raw = value
     if len(raw) < 2 or raw[0] != '"' or raw[-1] != '"':
         return raw
 
@@ -53,16 +53,21 @@ def _unquote_path(value: str) -> str:
 
 
 def _normalize_git_path(value: str) -> str:
-    raw = _unquote_path(value.strip())
+    raw = _unquote_path(value)
     if raw.startswith("a/") or raw.startswith("b/"):
         return raw[2:]
     return raw
 
 
+def _diff_separator_positions(payload: str) -> list[int]:
+    """Possible ` b/` delimiters in an unquoted Git diff header."""
+    return [match.start() for match in re.finditer(r" b/", payload)]
+
+
 def parse_diff_git_line(line: str) -> tuple[str | None, str | None]:
     if not line.startswith("diff --git "):
         return None, None
-    payload = line[len("diff --git ") :].strip()
+    payload = line[len("diff --git ") :]
 
     if payload.startswith('"'):
         # Preserve Git's backslashes until _unquote_path decodes C-style
@@ -73,11 +78,22 @@ def parse_diff_git_line(line: str) -> tuple[str | None, str | None]:
         return _normalize_git_path(match.group(1)), _normalize_git_path(match.group(2))
 
     if payload.startswith("a/"):
-        split = payload.rsplit(" b/", 1)
-        if len(split) == 2:
-            a_raw = split[0]
-            b_raw = "b/" + split[1]
-            return _normalize_git_path(a_raw), _normalize_git_path(b_raw)
+        candidates = [
+            (_normalize_git_path(payload[:index]), _normalize_git_path(payload[index + 1 :]))
+            for index in _diff_separator_positions(payload)
+        ]
+        # Spaces are not C-quoted by Git. A filename containing a directory
+        # component named "b" therefore introduces extra possible separators.
+        # Identical old/new paths can be resolved from the line itself.
+        for old, new in candidates:
+            if old == new:
+                return old, new
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            # A rename or copy needs the adjacent rename/copy metadata or
+            # ---/+++ headers. Returning the last candidate mis-scopes paths.
+            return None, None
 
     try:
         parts = shlex.split(payload)
@@ -91,7 +107,7 @@ def parse_diff_git_line(line: str) -> tuple[str | None, str | None]:
 def _parse_patch_header_path(line: str, prefix: str) -> str | None:
     if not line.startswith(prefix):
         return None
-    raw = line[len(prefix) :].split("\t", 1)[0].strip()
+    raw = line[len(prefix) :].split("\t", 1)[0]
     if not raw:
         return None
     path = _normalize_git_path(raw)
@@ -100,15 +116,76 @@ def _parse_patch_header_path(line: str, prefix: str) -> str | None:
     return path
 
 
+def _resolved_diff_paths(
+    header: str, metadata: dict[str, str | None]
+) -> tuple[str | None, str | None]:
+    old, new = parse_diff_git_line(header)
+    payload = header[len("diff --git ") :]
+    if not (payload.startswith("a/") and len(_diff_separator_positions(payload)) > 1):
+        return old, new
+
+    candidates = {
+        (_normalize_git_path(payload[:index]), _normalize_git_path(payload[index + 1 :]))
+        for index in _diff_separator_positions(payload)
+    }
+
+    def verified(source: str, destination: str) -> tuple[str, str]:
+        if (source, destination) not in candidates:
+            raise ValueError("Git diff path metadata does not match its file header")
+        return source, destination
+
+    # Prefer explicit rename/copy metadata: an apparent same-path candidate
+    # can actually represent a rename to a pathname containing " b/".
+    for kind in ("rename", "copy"):
+        source = metadata.get(f"{kind} from")
+        destination = metadata.get(f"{kind} to")
+        if source is not None and destination is not None:
+            return verified(source, destination)
+
+    source = metadata.get("---")
+    destination = metadata.get("+++")
+    if source is not None and destination is not None:
+        return verified(source, destination)
+
+    if old is not None and new is not None and old == new:
+        return old, new
+
+    # Never report a guessed filename to scope guards. Git's header alone is
+    # ambiguous for distinct names containing ` b/`; proper patches provide
+    # rename/copy records or old/new file headers to disambiguate.
+    raise ValueError("Ambiguous unquoted Git diff paths: missing file or rename metadata")
+
+
+def _iter_diff_header_paths(patch_text: str):
+    header: str | None = None
+    metadata: dict[str, str | None] = {}
+    in_header = False
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            if header is not None:
+                yield _resolved_diff_paths(header, metadata)
+            header = line
+            metadata = {}
+            in_header = True
+        elif header is not None and in_header:
+            if line.startswith(("@@", "GIT binary patch", "Binary files ")):
+                in_header = False
+            elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+                # Preserve a literal `a/` prefix in repo-relative rename paths.
+                key = line.split(" ", 2)
+                metadata[f"{key[0]} {key[1]}"] = _unquote_path(key[2])
+            elif line.startswith(("--- ", "+++ ")):
+                metadata[line[:3]] = _parse_patch_header_path(line, line[:4])
+    if header is not None:
+        yield _resolved_diff_paths(header, metadata)
+
+
 def iter_patch_paths(patch_text: str) -> list[str]:
     paths: list[str] = []
     seen: set[str] = set()
     saw_diff_header = False
 
-    for line in patch_text.splitlines():
-        a_path, b_path = parse_diff_git_line(line)
-        if a_path is None and b_path is None:
-            continue
+    for a_path, b_path in _iter_diff_header_paths(patch_text):
         saw_diff_header = True
         for path in (a_path, b_path):
             if not path or path == "/dev/null" or path in seen:
@@ -134,10 +211,7 @@ def parse_patch_changed_files(patch_text: str) -> list[str]:
     seen: set[str] = set()
     saw_diff_header = False
 
-    for line in patch_text.splitlines():
-        a_path, b_path = parse_diff_git_line(line)
-        if a_path is None and b_path is None:
-            continue
+    for a_path, b_path in _iter_diff_header_paths(patch_text):
         saw_diff_header = True
         if b_path and b_path != "/dev/null" and b_path not in seen:
             seen.add(b_path)
