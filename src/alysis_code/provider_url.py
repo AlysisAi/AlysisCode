@@ -10,6 +10,15 @@ _ALYSIS_TRIAL_PROXY_PATH = "/functions/v1/llm"
 # against it must not start misclassifying.
 _ALYSIS_GATEWAY_HOSTS = frozenset({"api.sylliptor.alysisai.com", "api.alysiscode.com"})
 _ZAI_CODING_PLAN_PATH = "/api/coding/paas/v4"
+# DashScope has documented regional and coding-plan hosts. Match their domain
+# boundaries, not an arbitrary URL that merely contains "dashscope".
+_DASHSCOPE_BASE_HOSTS = frozenset(
+    {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+    }
+)
 
 # What the UI calls the hosted gateway in place of its host. The gateway runs as
 # a Supabase Edge Function, so its host is the Supabase project ref — an
@@ -98,7 +107,7 @@ def known_provider_key_from_base_url(base_url: str | None) -> str | None:
     # service no longer exists.)
     if is_alysis_gateway_url(raw):
         return "deepseek"
-    if "dashscope" in host:
+    if host in _DASHSCOPE_BASE_HOSTS or host.endswith(".dashscope.aliyuncs.com"):
         return "qwen"
     if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
         return "openrouter"

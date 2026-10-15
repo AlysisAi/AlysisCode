@@ -70,3 +70,24 @@ def test_hosted_gateway_is_named_instead_of_shown_by_host(url: str) -> None:
 def test_other_endpoints_display_their_host(url: str, expected: str) -> None:
     assert is_alysis_gateway_url(url) is False
     assert display_endpoint(url) == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://dashscope-us.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://coding-intl.dashscope.aliyuncs.com/v1", "qwen"),
+        ("https://DASHSCOPE.ALIYUNCS.COM./compatible-mode/v1", "qwen"),
+        ("https://notdashscope.aliyuncs.com/v1", None),
+        ("https://dashscope.aliyuncs.com.example.net/v1", None),
+        ("https://dashscope.attacker.example/v1", None),
+        ("https://example.net/dashscope/v1", None),
+    ],
+)
+def test_dashscope_provider_detection_requires_owned_host(
+    url: str, expected: str | None
+) -> None:
+    assert known_provider_key_from_base_url(url) == expected
