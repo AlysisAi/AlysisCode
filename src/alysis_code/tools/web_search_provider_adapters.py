@@ -24,6 +24,8 @@ class ProviderWebSearchError(RuntimeError):
 
 
 _MAX_SNIPPET_CHARS = 500
+_PERPLEXITY_API_HOST = "api.perplexity.ai"
+_PERPLEXITY_INTEGRATION = "alysis-code"
 
 
 def _truncate_snippet(raw_value: Any) -> str | None:
@@ -1223,14 +1225,18 @@ def perplexity_sonar_search(
         "input": query,
         "tools": [web_search_tool],
     }
+    url = _perplexity_agent_url(base_url)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "alysis-code/0.1.0",
+    }
+    if (urlsplit(url).hostname or "").rstrip(".").casefold() == _PERPLEXITY_API_HOST:
+        headers["X-Pplx-Integration"] = _PERPLEXITY_INTEGRATION
     data = _post_json(
         provider_label="Perplexity",
-        url=_perplexity_agent_url(base_url),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": "alysis-code/0.1.0",
-        },
+        url=url,
+        headers=headers,
         payload=payload,
         timeout_s=timeout_s,
         transport=transport,

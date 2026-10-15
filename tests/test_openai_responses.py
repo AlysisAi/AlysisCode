@@ -3850,6 +3850,29 @@ def test_responses_extra_headers_override_defaults_case_insensitively() -> None:
     assert len({name.casefold() for name in headers}) == len(headers)
 
 
+@pytest.mark.parametrize(
+    ("base_url", "extra_headers", "expected"),
+    [
+        ("https://api.perplexity.ai/v1", None, "alysis-code"),
+        ("https://api.perplexity.ai.example.com/v1", None, None),
+        ("https://api.perplexity.ai/v1", {"x-pplx-integration": "custom"}, "custom"),
+    ],
+)
+def test_perplexity_responses_headers_are_host_scoped_and_overridable(
+    base_url: str,
+    extra_headers: dict[str, str] | None,
+    expected: str | None,
+) -> None:
+    client = OpenAIResponsesClient(
+        base_url=base_url,
+        api_key="test-key",
+        model="perplexity/sonar",
+        extra_headers=extra_headers,
+    )
+
+    assert client._headers(f"{base_url}/responses").get("x-pplx-integration") == expected
+
+
 def test_responses_usage_keeps_cost_only_and_cache_write_only_payloads() -> None:
     from alysis_code.llm.openai_responses import _parse_usage
 
