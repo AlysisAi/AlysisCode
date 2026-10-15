@@ -606,19 +606,34 @@ def assess_expectations(
 # ---------------------------------------------------------------------------
 
 
-_UNCONFIRMED_EXPECTATIONS_MARKER_PREFIX = (
-    "\n\n---\n"
-    "⚠️ UNCONFIRMED EXPECTATIONS: {ids}. The task named these concrete "
-    "expectations, and I could neither confirm them by observed evidence nor "
-    "record why they no longer apply. This result is finalized with these "
-    "expectations UNCONFIRMED."
-)
+# The markers below are read by the person who asked, so they use the words of the request
+# and never internal labels (expectation ids, gate stages, turn intents).
 
 
-def build_unconfirmed_expectations_marker(ids: list[str] | tuple[str, ...]) -> str:
-    """Visible marker appended when a turn finalizes with unaddressed expectations."""
-    joined = ", ".join(str(item) for item in ids if str(item).strip())
-    return _UNCONFIRMED_EXPECTATIONS_MARKER_PREFIX.format(ids=joined)
+def _quoted_request_text(text: str, *, limit: int = 80) -> str:
+    clean = " ".join(str(text).split())
+    if len(clean) > limit:
+        clean = clean[: limit - 1].rstrip() + "…"
+    return f"“{clean}”"
+
+
+def build_unconfirmed_expectations_marker(texts: list[str] | tuple[str, ...]) -> str:
+    """Visible marker appended when a turn finalizes with unaddressed expectations.
+
+    ``texts`` are the expectations as the request worded them.
+    """
+    quoted = [_quoted_request_text(text) for text in texts if str(text).strip()]
+    if not quoted:
+        return (
+            "\n\n---\n⚠️ Not confirmed: some things the request named were not shown "
+            "working in this turn."
+        )
+    subject = "this" if len(quoted) == 1 else "these"
+    pronoun = "it" if len(quoted) == 1 else "them"
+    return (
+        f"\n\n---\n⚠️ Not confirmed: {'; '.join(quoted)}. The request asked for {subject}, "
+        f"and this turn did not show {pronoun} working."
+    )
 
 
 DEFAULT_ADVISORY_COMPLETION_EXPLANATION = (
@@ -645,17 +660,28 @@ def resolve_advisory_completion(
     )
 
 
-_ADVISORY_COMPLETION_SUMMARY_PREFIX = "\n\n---\nNo changes made: {reason} — {explanation}"
+_ADVISORY_REASON_TEXT = {
+    AdvisoryCompletionReason.NO_CHANGE_NEEDED.value: "no change was needed",
+    AdvisoryCompletionReason.CANNOT_REPRODUCE.value: "the problem could not be reproduced",
+    AdvisoryCompletionReason.BLOCKED_MISSING_INFORMATION.value: "more information is needed",
+    AdvisoryCompletionReason.OUT_OF_SCOPE_REQUEST.value: "the request is outside this project",
+}
 
 
 def build_advisory_completion_summary(
     reason: AdvisoryCompletionReason | str,
     explanation: str,
 ) -> str:
-    """Visible line appended when an execute turn finalizes with no material edits."""
+    """Visible line appended when an execute turn finalizes with no material edits.
+
+    The agent's own explanation is shown when it recorded one; the synthesized default
+    (no reason recorded) is not, because it describes the gate rather than the work.
+    """
     reason_value = reason.value if isinstance(reason, AdvisoryCompletionReason) else str(reason)
-    clean_explanation = str(explanation or "").strip() or "no further detail provided"
-    return _ADVISORY_COMPLETION_SUMMARY_PREFIX.format(
-        reason=reason_value,
-        explanation=clean_explanation,
-    )
+    clean_explanation = " ".join(str(explanation or "").split())
+    if clean_explanation == DEFAULT_ADVISORY_COMPLETION_EXPLANATION:
+        clean_explanation = ""
+    detail = clean_explanation or _ADVISORY_REASON_TEXT.get(reason_value, "")
+    if not detail:
+        return "\n\n---\nNo files were changed in this turn."
+    return f"\n\n---\nNo files were changed: {detail.rstrip('.')}."

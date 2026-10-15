@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from ..config import AppConfig
 from ..forge import RunPaths, now_iso
+from ..project_data import ProjectDataError, project_artifact_path
 from .models import AssetAlreadyExistsError, AssetError
 from .surface import AssetSurface
 
@@ -175,14 +176,14 @@ def _migrate_locked(
         if not stored_path:
             failed.append(("(missing stored_path)", "Legacy asset is missing stored_path"))
             continue
-        source = (run_paths.root / stored_path).resolve()
         try:
+            source = project_artifact_path(run_paths.root, stored_path).resolve()
             _ensure_under_root(run_paths.root, source)
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
         except OSError as exc:
             failed.append((stored_path, str(exc)))
             continue
-        except AssetError as exc:
+        except (AssetError, ProjectDataError) as exc:
             failed.append((stored_path, str(exc)))
             continue
 

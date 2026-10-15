@@ -1,0 +1,110 @@
+[
+  {
+    "payload": {
+      "model": "deepseek-flash",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    },
+    "bound": 4564
+  },
+  {
+    "payload": {
+      "model": "deepseek-v4-flash",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Γεια 👋 世界"
+        }
+      ],
+      "stream": true,
+      "max_tokens": 32
+    },
+    "bound": 4668
+  },
+  {
+    "payload": {
+      "model": "glm-5.3-flash",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ],
+      "stream": true,
+      "reasoning_effort": "high"
+    },
+    "bound": 4836
+  },
+  {
+    "payload": {
+      "model": "deepseek-flash",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,abc",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "text",
+              "text": "Read this"
+            }
+          ]
+        }
+      ]
+    },
+    "bound": 5968
+  },
+  {
+    "payload": {
+      "model": "deepseek-flash",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": null,
+          "reasoning_content": "Reasoning",
+          "tool_calls": [
+            {
+              "id": "a",
+              "type": "function",
+              "function": {
+                "name": "shell_run",
+                "arguments": "{\"cmd\":\"java -version\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "version",
+          "tool_call_id": "a"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "shell_run",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "cmd": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "bound": 6522
+  }
+]

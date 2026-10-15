@@ -20,7 +20,7 @@ class UntrustedWorkspaceReportError(ValueError):
 
 SCHEMA_NAME = "installed-production-vsix-untrusted-workspace"
 SCHEMA_VERSION = 2
-SOURCE_REPOSITORY = "https://github.com/AlysisAi/alysis-code"
+SOURCE_REPOSITORY = "https://github.com/AlysisAi/AlysisCode"
 APPROVED_VSCODE_VERSION = "1.90.0"
 CHECK_IDS = frozenset(
     {

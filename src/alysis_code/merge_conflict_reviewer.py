@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .command_text import command_text
 from .config import (
     AppConfig,
     ConfigError,
@@ -100,7 +101,7 @@ def _run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
         build_git_cmd(root, args),
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
     )
 
 

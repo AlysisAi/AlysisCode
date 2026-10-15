@@ -58,7 +58,7 @@ def _isolated_verification_environment(monkeypatch) -> None:
     # exercise bootstrap behavior, not Docker availability or the caller's
     # sandbox preference. The session config explicitly selects host execution.
     monkeypatch.delenv("ALYSIS_VERIFY_SANDBOX_MODE", raising=False)
-    monkeypatch.delenv("SYLLIPTOR_VERIFY_SANDBOX_MODE", raising=False)
+    monkeypatch.delenv("ALYSIS_VERIFY_SANDBOX_MODE", raising=False)
 
 
 class _ScriptedClient:

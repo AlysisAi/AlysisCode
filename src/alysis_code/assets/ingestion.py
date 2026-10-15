@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..forge import RunPaths, now_iso
+from ..project_data import project_artifact_path
 from .index import AssetIndex
 from .models import AssetAlreadyExistsError, AssetError, AssetRecord
 from .paths import asset_raw_path, asset_thumbnail_path, repo_rel
@@ -162,21 +163,21 @@ def _publish_staged_asset(
     staged_raw: Path,
     staged_thumbnail: Path | None,
 ) -> None:
-    final_raw = run_paths.root / record.stored_path
+    final_raw = project_artifact_path(run_paths.root, record.stored_path)
     final_raw.parent.mkdir(parents=True, exist_ok=True)
     os.replace(staged_raw, final_raw)
     if staged_thumbnail is not None and record.thumbnail_path is not None:
-        final_thumbnail = run_paths.root / record.thumbnail_path
+        final_thumbnail = project_artifact_path(run_paths.root, record.thumbnail_path)
         final_thumbnail.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staged_thumbnail, final_thumbnail)
 
 
 def _rollback_published_asset(run_paths: RunPaths, record: AssetRecord) -> None:
     with suppress(OSError):
-        shutil.rmtree((run_paths.root / record.stored_path).parent)
+        shutil.rmtree(project_artifact_path(run_paths.root, record.stored_path).parent)
     if record.thumbnail_path is not None:
         with suppress(FileNotFoundError):
-            (run_paths.root / record.thumbnail_path).unlink()
+            project_artifact_path(run_paths.root, record.thumbnail_path).unlink()
 
 
 def _with_text_paths(record: AssetRecord) -> AssetRecord:

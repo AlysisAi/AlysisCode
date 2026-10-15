@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from alysis_code.alysis_cloud import gateway_base_url
 from alysis_code.config import AppConfig
 from alysis_code.llm.factory import make_llm_client
 from alysis_code.llm.protocols import (
@@ -75,7 +76,9 @@ AUTHORITATIVE_RESPONSE_PRESETS = {
 
 def _client_for_preset(preset_key: str):
     preset = next(item for item in PROFILE_PRESETS if item.key == preset_key)
-    base_url = preset.base_url or "https://custom.example/v1"
+    base_url = (
+        gateway_base_url() if preset.key == "alysis" else preset.base_url
+    ) or "https://custom.example/v1"
     model = preset.validation_model or next(iter(preset.suggested_models), "local-model")
     profile = ProfileSpec(
         name=preset.key,
@@ -119,6 +122,7 @@ def test_profile_preset_preserves_legacy_positional_optional_fields() -> None:
 )
 def test_every_preset_has_an_explicit_usage_and_preflight_contract(
     preset_key: str,
+    configured_hosted_api: str,
 ) -> None:
     preset = next(item for item in PROFILE_PRESETS if item.key == preset_key)
     client = _client_for_preset(preset_key)

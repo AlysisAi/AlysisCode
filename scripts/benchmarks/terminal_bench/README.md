@@ -71,7 +71,7 @@ Use `ALYSIS_INSTALL_SPEC` to pin a release or branch, for example:
 
 ```bash
 export ALYSIS_INSTALL_SPEC="alysis-code==0.1.5"
-export ALYSIS_INSTALL_SPEC="git+https://github.com/AlysisAi/alysis-code.git@main"
+export ALYSIS_INSTALL_SPEC="git+https://github.com/AlysisAi/AlysisCode.git@main"
 ```
 
 ## Verification Authority

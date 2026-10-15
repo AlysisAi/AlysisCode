@@ -90,6 +90,20 @@ test("a managed runtime is never told to install a separate CLI", () => {
   assert.deepEqual(commands, ["alysis.showBridgeHealth", "alysis.openSetupGuide"]);
 });
 
+test("initial runtime validation stays locked but shows progress instead of a broken install", () => {
+  const readiness = buildCockpitReadiness(input({
+    cliTrusted: false,
+    runtime: runtimeSnapshot({
+      runtimeSelection: { origin: "unavailable", production: false, message: "validating", validating: true },
+      cliOrigin: { status: "blocked", message: "validating" }
+    })
+  }));
+  assert.equal(readiness.ok, false);
+  assert.equal(readiness.blockers[0].id, "runtime_validating");
+  assert.equal(readiness.blockers[0].progress, true);
+  assert.deepEqual(readiness.blockers[0].actions, []);
+});
+
 test("an unavailable managed runtime is its own root cause and offers repair, not install", () => {
   const readiness = buildCockpitReadiness(
     input({

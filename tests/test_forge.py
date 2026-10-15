@@ -38,6 +38,10 @@ from alysis_code.plan_assistant import PlannerTurnResult
 _MCP_FIXTURE_SERVER = (
     Path(__file__).resolve().parent / "fixtures" / "mcp_servers" / "minimal_stdio_server.py"
 )
+_RETIRED_LEGACY_PLANNER_REASON = (
+    "Retired legacy slash-command planner and public assistant flow; "
+    "canonical planning is covered by the Forge Host contract suites."
+)
 
 
 def test_make_run_paths_marks_greenfield_from_workspace_metadata(tmp_path: Path) -> None:
@@ -133,6 +137,7 @@ def _init_git_repo_with_commit(repo: Path) -> None:
     _git(repo, "commit", "-m", "init")
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_creates_run_and_pointer(tmp_path: Path) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"
@@ -247,6 +252,7 @@ def test_add_task_rejects_ambiguous_scope_empty_task(title: str) -> None:
     assert plan["tasks"] == []
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_manual_task_recovers_explicit_path_hint_into_estimated_files_and_write_scope(
     tmp_path: Path,
 ) -> None:
@@ -420,6 +426,7 @@ def test_render_plan_markdown_reports_superseded_work() -> None:
     assert "Status counts: superseded: 1" in rendered
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_manual_task_rejects_mutating_title_without_runnable_scope(tmp_path: Path) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"
@@ -440,6 +447,7 @@ def test_manual_task_rejects_mutating_title_without_runnable_scope(tmp_path: Pat
     assert plan["tasks"] == []
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_does_not_launch_mcp_servers_for_planner_context(tmp_path: Path) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"
@@ -567,13 +575,9 @@ def test_forge_attach_copies_and_updates_plan_json(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    plan_result = runner.invoke(
-        alysis_app,
-        ["forge", "plan", "--path", os.fspath(repo)],
-        input="/done\n",
-        env=_env(tmp_path),
-    )
-    assert plan_result.exit_code == 0
+    paths = create_plan_run(repo)
+    plan = load_plan(paths)
+    save_plan(paths, plan)
 
     source = repo / "brief.txt"
     source.write_text("This is a small text asset.\n", encoding="utf-8")
@@ -610,6 +614,7 @@ def test_forge_attach_copies_and_updates_plan_json(tmp_path: Path) -> None:
     assert (repo / assets[0]["text_copy_path"]).exists()
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_from_git_subdir_writes_workspace_root_pointer(tmp_path: Path) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"
@@ -721,6 +726,7 @@ def test_create_plan_run_rejects_guarded_workspace_without_override(
     assert pointer["binding_broad_workspace_override_used"] is True
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_cli_bootstraps_missing_directory(tmp_path: Path) -> None:
     runner = CliRunner()
     missing = tmp_path / "new" / "repo"
@@ -744,6 +750,7 @@ def test_forge_plan_cli_bootstraps_missing_directory(tmp_path: Path) -> None:
     assert pointer["workspace_created_at_startup"] is True
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_cli_guarded_workspace_requires_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -777,6 +784,7 @@ def test_forge_plan_cli_guarded_workspace_requires_override(
     assert allowed.exit_code == 0
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_cli_rejects_blocked_workspace(tmp_path: Path) -> None:
     runner = CliRunner()
 
@@ -796,13 +804,15 @@ def test_forge_show_prints_summary(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    plan_result = runner.invoke(
-        alysis_app,
-        ["forge", "plan", "--path", os.fspath(repo)],
-        input="/goal Deliver plan phase\n/task Create docs/initial.md artifact\n/done\n",
-        env=_env(tmp_path),
+    paths = create_plan_run(repo)
+    plan = load_plan(paths)
+    plan["project_goal"] = "Deliver plan phase"
+    add_task(
+        plan,
+        title="Create docs/initial.md artifact",
+        estimated_files=["docs/initial.md"],
     )
-    assert plan_result.exit_code == 0
+    save_plan(paths, plan)
 
     source = repo / "requirements.txt"
     source.write_text("Requirement A\n", encoding="utf-8")
@@ -832,13 +842,15 @@ def test_forge_show_loads_current_run_from_git_subdir(tmp_path: Path) -> None:
     subdir = repo / "pkg"
     subdir.mkdir()
 
-    plan_result = runner.invoke(
-        alysis_app,
-        ["forge", "plan", "--path", os.fspath(subdir)],
-        input="/goal Show from subdir\n/task Keep pointer canonical README.md\n/done\n",
-        env=_env(tmp_path),
+    paths = create_plan_run(subdir)
+    plan = load_plan(paths)
+    plan["project_goal"] = "Show from subdir"
+    add_task(
+        plan,
+        title="Keep pointer canonical",
+        estimated_files=["README.md"],
     )
-    assert plan_result.exit_code == 0
+    save_plan(paths, plan)
 
     show_result = runner.invoke(
         alysis_app,
@@ -850,6 +862,7 @@ def test_forge_show_loads_current_run_from_git_subdir(tmp_path: Path) -> None:
     assert "Keep pointer canonical" in show_result.output
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_updates_plan_and_notes(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"
@@ -915,6 +928,7 @@ def test_forge_plan_assistant_updates_plan_and_notes(tmp_path: Path, monkeypatch
     assert workspace_context.get("focus_relpath") == "."
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_planner_turn_policy_matches_chat_forge(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     cli_repo = tmp_path / "cli-repo"
@@ -1019,6 +1033,7 @@ def test_forge_planner_turn_policy_matches_chat_forge(tmp_path: Path, monkeypatc
     )
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_recovers_after_transient_request_retry(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1091,6 +1106,7 @@ def test_forge_plan_assistant_recovers_after_transient_request_retry(
     )
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_surfaces_planner_error_with_retry_context(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1137,6 +1153,7 @@ def test_forge_plan_assistant_surfaces_planner_error_with_retry_context(
     assert "Planner proposed no plan update." not in notes_text
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_keeps_protected_history_immutable(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1196,6 +1213,7 @@ def test_forge_plan_assistant_keeps_protected_history_immutable(
     assert updated_plan["tasks"][1]["title"] == "Add login follow-up"
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_synthesizes_follow_up_from_protected_update_only(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1265,6 +1283,7 @@ def test_forge_plan_assistant_synthesizes_follow_up_from_protected_update_only(
     assert "follow-up work as new tasks instead" in notes_text
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_synthesizes_same_file_follow_up_from_protected_update(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1329,6 +1348,7 @@ def test_forge_plan_assistant_synthesizes_same_file_follow_up_from_protected_upd
     assert "missing new runnable delta beyond protected history" not in notes_text
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_synthesizes_title_only_same_file_follow_up(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1388,6 +1408,7 @@ def test_forge_plan_assistant_synthesizes_title_only_same_file_follow_up(
     assert "missing new runnable delta beyond protected history" not in notes_text
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_synthesizes_title_only_new_path_follow_up(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1447,6 +1468,7 @@ def test_forge_plan_assistant_synthesizes_title_only_new_path_follow_up(
     assert "missing new runnable delta beyond protected history" not in notes_text
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_refuses_weak_generic_title_with_scope(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1508,6 +1530,7 @@ def test_forge_plan_assistant_refuses_weak_generic_title_with_scope(
     )
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_synthesizes_same_file_follow_up_from_description_delta(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1572,6 +1595,7 @@ def test_forge_plan_assistant_synthesizes_same_file_follow_up_from_description_d
     assert "missing new runnable delta beyond protected history" not in notes_text
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_refuses_trivial_protected_update_without_new_path_signal(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1640,6 +1664,7 @@ def test_forge_plan_assistant_refuses_trivial_protected_update_without_new_path_
     )
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_refuses_punctuation_only_same_file_delta(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1701,6 +1726,7 @@ def test_forge_plan_assistant_refuses_punctuation_only_same_file_delta(
     )
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_refuses_formatting_only_same_file_delta(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1762,6 +1788,7 @@ def test_forge_plan_assistant_refuses_formatting_only_same_file_delta(
     )
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_finalization_applies_reconciliation_additively(tmp_path: Path) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"
@@ -1789,6 +1816,7 @@ def test_forge_plan_finalization_applies_reconciliation_additively(tmp_path: Pat
     assert "missing estimated_files" not in plan_validation
 
 
+@pytest.mark.skip(reason=_RETIRED_LEGACY_PLANNER_REASON)
 def test_forge_plan_assistant_without_arg_uses_picker(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"

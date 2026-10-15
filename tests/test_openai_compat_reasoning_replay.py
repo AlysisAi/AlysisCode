@@ -18,6 +18,7 @@ from alysis_code.llm.metadata import (
     stamp_provider_metadata_for_route,
 )
 from alysis_code.llm.protocols import resolve_reasoning_trace_capability
+from alysis_code.llm.types import ReasoningOutputKind
 from alysis_code.provider_telemetry import (
     last_provider_call_summary,
     reset_provider_telemetry_for_tests,
@@ -97,14 +98,19 @@ def _client(
     )
 
 
-def _follow_up(client: compat.OpenAICompatClient, *, stream: bool = False) -> dict[str, Any]:
+def _follow_up(
+    client: compat.OpenAICompatClient, *, stream: bool = False, expected_trace: str = ""
+) -> dict[str, Any]:
     messages = [{"role": "user", "content": "Inspect the synthetic input."}]
     displayed_reasoning: list[str] = []
     response = client.chat(
         messages=messages, stream=stream, on_reasoning_delta=displayed_reasoning.append
     )
-    assert response.reasoning == ()
-    assert displayed_reasoning == []
+    assert [item.text for item in response.reasoning] == (
+        [expected_trace] if expected_trace.strip() else []
+    )
+    assert "".join(displayed_reasoning) == expected_trace
+    assert all(item.kind == ReasoningOutputKind.PROVIDER_REASONING for item in response.reasoning)
     assistant = assistant_message_from_response(response)
     # Exercise JSON persistence as well as the adapter's ordinary history input.
     assistant = json.loads(json.dumps(assistant, ensure_ascii=False))
@@ -130,7 +136,7 @@ def test_contract_replays_exact_native_reasoning_content(
 ) -> None:
     requests: list[dict[str, Any]] = []
     client = _client(requests, fields={"reasoning_content": state}, tool_call=tool_call)
-    assistant = _follow_up(client, stream=stream)
+    assistant = _follow_up(client, stream=stream, expected_trace=state)
     assert assistant[PROVIDER_METADATA_KEY][OPENAI_COMPAT_REASONING_METADATA_KEY] == {
         "reasoning_content": state
     }
@@ -171,7 +177,7 @@ def test_stream_native_fragments_do_not_concatenate_separate_reasoning_alias() -
         {"reasoning_content": "", "reasoning": "SIMULTANEOUS_ALIAS"},
         {"reasoning_content": "\n tail  "},
     ]
-    _follow_up(_client(requests, deltas=deltas), stream=True)
+    _follow_up(_client(requests, deltas=deltas), stream=True, expected_trace=" Ω\n tail  ")
     assert requests[-1]["messages"][1]["reasoning_content"] == " Ω\n tail  "
 
 
@@ -261,12 +267,14 @@ def test_documented_coding_plan_capability_does_not_enable_standard_api(model: s
     assert not reasoning_contract_for("zhipu", model).replay_reasoning_content
 
 
-def test_coding_plan_declares_private_continuation_without_public_summary() -> None:
+def test_coding_plan_declares_native_trace_and_sensitive_continuation() -> None:
     automatic = resolve_reasoning_trace_capability(
         provider_key="zai_coding_plan", protocol="openai_compat", adapter_override="auto"
     )
     assert automatic.continuation_state == "sensitive"
-    assert automatic.output_kind is None
+    assert automatic.output_kind == ReasoningOutputKind.PROVIDER_REASONING
+    assert automatic.has_visible_reasoning
+    assert not automatic.has_safe_summary
     for adapter in ("none", "openai_compat_passive"):
         explicit = resolve_reasoning_trace_capability(
             provider_key="zai_coding_plan", protocol="openai_compat", adapter_override=adapter
@@ -305,11 +313,13 @@ def test_configured_factory_route_preserves_auto_replay_and_explicit_passive(
     assert client.reasoning_trace_adapter == adapter
     assert client.route_identity.reasoning_state_adapter == adapter
     assert client.route_identity.profile_name == profile.name
-    assert client.reasoning_trace_capability.output_kind is None
+    assert client.reasoning_trace_capability.output_kind == (
+        ReasoningOutputKind.PROVIDER_REASONING if adapter == "auto" else None
+    )
     assert client.reasoning_trace_capability.continuation_state == (
         "sensitive" if adapter == "auto" else "none"
     )
-    _follow_up(client, stream=stream)
+    _follow_up(client, stream=stream, expected_trace=_STATE if adapter == "auto" else "")
     if adapter == "auto":
         assert requests[-1]["messages"][1]["reasoning_content"] == _STATE
     else:

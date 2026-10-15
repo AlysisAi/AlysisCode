@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from ..branding import with_legacy_env_aliases
+from ..command_text import command_text
 from .audit import build_hook_audit_event
 from .config import ResolvedHookConfig, ResolvedHookMatcherGroup
 from .models import (
@@ -116,13 +116,7 @@ def _build_hook_env(
         env = {
             k: v
             for k, v in base.items()
-            # The legacy prefix passes through too, so a hook that reads a
-            # SYLLIPTOR_* variable the user still sets does not silently see
-            # nothing under `explicit` passthrough.
-            if k in _SAFE_ENV_BASELINE
-            or k in allow
-            or k.startswith("ALYSIS_")
-            or k.startswith("SYLLIPTOR_")
+            if k in _SAFE_ENV_BASELINE or k in allow or k.startswith("ALYSIS_")
         }
     else:  # safe
         env = {k: v for k, v in base.items() if not _is_secret_env_key(k) or k in allow}
@@ -714,11 +708,6 @@ class HookDispatcher:
         if isinstance(tool_name, str) and tool_name.strip():
             env["ALYSIS_TOOL_NAME"] = tool_name.strip()
 
-        # Hook commands are user-authored and predate the rename: a script that
-        # reads SYLLIPTOR_TOOL_NAME must keep working, so every ALYSIS_* value is
-        # also exported under its legacy name.
-        env = with_legacy_env_aliases(env)
-
         try:
             started_at = time.monotonic()
             proc = subprocess.run(
@@ -727,7 +716,7 @@ class HookDispatcher:
                 cwd=os.fspath(self.workspace_root),
                 env=env,
                 input=payload_json,
-                text=True,
+                **command_text(),
                 capture_output=True,
                 check=False,
                 timeout=hook.timeout,

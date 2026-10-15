@@ -1152,7 +1152,7 @@ def validate_release_valid_summary(payload: dict[str, Any]) -> None:
         errors.append("extension_version must be a semantic version")
     if re.fullmatch(r"v\d+\.\d+\.\d+", str(payload.get("release_tag") or "")) is None:
         errors.append("release_tag must identify the signed managed release")
-    if payload.get("source_repository") != "https://github.com/AlysisAi/alysis-code":
+    if payload.get("source_repository") != "https://github.com/AlysisAi/AlysisCode":
         errors.append("source_repository must identify the official repository")
     if re.fullmatch(r"[0-9a-f]{40}", str(payload.get("source_sha") or "")) is None:
         errors.append("source_sha must identify the exact release commit")
@@ -1363,7 +1363,7 @@ def manual_report_template(report: dict[str, Any]) -> dict[str, Any]:
         "vsix_sha256": report.get("vsix_sha256") or "",
         "candidate_run_id": None,
         "release_tag": "",
-        "source_repository": "https://github.com/AlysisAi/alysis-code",
+        "source_repository": "https://github.com/AlysisAi/AlysisCode",
         "source_sha": "",
         "production_dogfood_sha256": "",
         "platform_target": "",

@@ -12,13 +12,14 @@ from pathlib import Path
 
 installed = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(installed))
+from alysis_code.agent.task_state import SessionTaskState  # noqa: E402
+
 import alysis_code  # noqa: E402 -- deliberately import only after choosing the wheel
 from alysis_code.agent.acceptance_contract import (  # noqa: E402
     AcceptanceCriterionKind,
     AcceptanceCriterionStatus,
     build_acceptance_contract,
 )
-from alysis_code.agent.task_state import SessionTaskState  # noqa: E402
 from alysis_code.agent.verification import TurnExecutionState, _record_tool_effect  # noqa: E402
 
 assert Path(alysis_code.__file__).resolve().is_relative_to(installed)

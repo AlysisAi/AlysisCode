@@ -265,6 +265,11 @@ def test_workspace_required_management_methods_fail_closed_before_handler_params
             raise AssertionError(f"{method} did not require explicit workspace binding")
 
 
+# Host responses match their pending request binding before checking credential fields,
+# so an unbound request is refused with a binding error instead.
+_BINDING_FIRST_RESPONSE_METHODS = frozenset({"computer.respond", "task_budget.respond"})
+
+
 def test_stdio_bridge_rejects_inline_secret_params_recursively_for_every_method() -> None:
     for method in SUPPORTED_METHODS:
         out = io.StringIO()
@@ -281,5 +286,6 @@ def test_stdio_bridge_rejects_inline_secret_params_recursively_for_every_method(
 
         payload = _json_lines(out)[0]
         assert payload["ok"] is False, method
-        assert payload["error"]["code"] == "inline_secret_rejected", method
+        if method not in _BINDING_FIRST_RESPONSE_METHODS:
+            assert payload["error"]["code"] == "inline_secret_rejected", method
         assert "must-not-leak" not in out.getvalue(), method

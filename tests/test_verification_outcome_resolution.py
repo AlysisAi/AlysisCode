@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,8 +19,13 @@ from alysis_code.sandbox_runner import DisabledShellRunner, HostShellRunner
 from alysis_code.tools.shell import shell_run
 from alysis_code.verify_gate import run_task_verification, verify_run_result_to_payload
 
-_CONTRACT = f"{shlex.quote(sys.executable)} -m unittest discover"
-_CHECK = f"{shlex.quote(sys.executable)} check_api.py"
+_PYTHON = (
+    subprocess.list2cmdline([Path(sys.executable).as_posix()])
+    if os.name == "nt"
+    else shlex.quote(sys.executable)
+)
+_CONTRACT = f"{_PYTHON} -m unittest discover"
+_CHECK = f"{_PYTHON} check_api.py"
 
 
 def _fixture(root: Path, *, correct: bool = False) -> None:
@@ -152,12 +159,13 @@ def test_resolving_one_failure_preserves_the_other_and_its_diagnostic(tmp_path, 
     ["arguments", "cwd", "cd_symlink", "environment", "unknown_failure", "unknown_pass"],
 )
 def test_passing_different_or_unknown_context_does_not_resolve_failure(
-    tmp_path, monkeypatch, tool, difference
+    tmp_path, monkeypatch, request, tool, difference
 ):
     _fixture(tmp_path)
     state = _state()
     command = _CHECK
     if difference == "cd_symlink":
+        request.getfixturevalue("require_symlinks")
         _fixture(tmp_path / "first")
         _fixture(tmp_path / "second", correct=True)
         (tmp_path / "working").symlink_to(tmp_path / "first", target_is_directory=True)
@@ -303,7 +311,7 @@ def test_attributed_test_failure_cannot_hide_an_older_unattributed_observation(
             "    def test_existing(self):\n        self.assertEqual(1 + 1, 3)\n"
         )
     state = _state()
-    prefix = f"{shlex.quote(sys.executable)} -m unittest "
+    prefix = f"{_PYTHON} -m unittest "
     if older_failure:
         _observe(tmp_path, state, "shell_run", prefix + "tests.test_existing -v")
     current = prefix + "tests.test_other -v"
@@ -353,7 +361,7 @@ def test_unknown_targeted_failure_recovers_only_after_genuine_required_execution
         HostShellRunner(), verification_config=AppConfig(model="unused")
     )
     assert unknown_scope is False
-    targeted = f"{shlex.quote(sys.executable)} -m unittest tests.test_api -v"
+    targeted = f"{_PYTHON} -m unittest tests.test_api -v"
     state = _state()
     first = _observe(tmp_path, state, "verify_run", targeted, environment_known=unknown_scope)
     assert first["verification_evidence_supplemental_only"] is True

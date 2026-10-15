@@ -41,8 +41,9 @@ Bring your own model. Review mode asks before important changes. You control com
 
 1. Install the extension, open the Alysis Code icon in the Activity Bar, and run
    **Alysis Code: Check Setup** to validate the runtime, protocol, and sandbox.
-2. Run **Alysis Code: Configure Provider** to store your API key, then describe a task in the
-   composer. **Alysis Code: Open Setup Guide** walks the same path if you prefer the walkthrough.
+2. Run **Alysis Code: Configure Provider** to choose a provider and model. Enter your API key,
+   or leave it blank for a local server that does not require authentication, then describe a task
+   in the composer. **Alysis Code: Open Setup Guide** walks the same path if you prefer the walkthrough.
 
 ![First run: choose a model provider](resources/screenshots/setup.png)
 
@@ -139,16 +140,16 @@ Stated plainly, because you will hit them.
 
 ## Links
 
-- Issues and feature requests: <https://github.com/AlysisAi/alysis-code/issues>
+- Issues and feature requests: <https://github.com/AlysisAi/AlysisCode/issues>
 - Support and troubleshooting:
-  [SUPPORT.md](https://github.com/AlysisAi/alysis-code/blob/main/extensions/vscode-alysis/SUPPORT.md)
+  [SUPPORT.md](https://github.com/AlysisAi/AlysisCode/blob/main/extensions/vscode-alysis/SUPPORT.md)
 - Security policy and vulnerability reporting:
-  [SECURITY.md](https://github.com/AlysisAi/alysis-code/blob/main/.github/SECURITY.md) — report privately,
+  [SECURITY.md](https://github.com/AlysisAi/AlysisCode/blob/main/.github/SECURITY.md) — report privately,
   never in a public issue.
-- Contributing: [CONTRIBUTING.md](https://github.com/AlysisAi/alysis-code/blob/main/.github/CONTRIBUTING.md).
+- Contributing: [CONTRIBUTING.md](https://github.com/AlysisAi/AlysisCode/blob/main/.github/CONTRIBUTING.md).
   Engineering documentation for this extension — architecture, security model, the full slash
   command reference, verification and dogfood procedures, release policy, and the detailed limits
   list — lives in
-  [`docs/`](https://github.com/AlysisAi/alysis-code/tree/main/extensions/vscode-alysis/docs).
+  [`docs/`](https://github.com/AlysisAi/AlysisCode/tree/main/extensions/vscode-alysis/docs).
 - License:
-  [Apache-2.0](https://github.com/AlysisAi/alysis-code/blob/main/extensions/vscode-alysis/LICENSE)
+  [Apache-2.0](https://github.com/AlysisAi/AlysisCode/blob/main/extensions/vscode-alysis/LICENSE)

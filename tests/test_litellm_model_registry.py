@@ -660,7 +660,7 @@ def test_explicit_endpoint_pricing_overrides_unknown_compatible_route() -> None:
             (base_url, model, 1_048_576, 393_216, "deepseek-flash", True, 0.0000003, 0.0000012)
             for base_url in (
                 "https://api.deepseek.com",
-                "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1",
+                "https://hosted.example.invalid/api/llm/v1",
             )
             for model in (
                 "deepseek-flash",
@@ -812,6 +812,7 @@ def test_official_catalog_covers_current_qwen_and_deepseek_routes(
     supports_vision: bool,
     input_cost: float,
     output_cost: float,
+    configured_hosted_api: str,
 ) -> None:
     meta = ModelRegistry(cfg=AppConfig(base_url=base_url, model=model)).get(model)
 
@@ -981,14 +982,14 @@ def test_official_anthropic_metadata_covers_opus_5_absent_from_the_snapshot() ->
     )
 
 
-def test_every_suggested_hosted_model_resolves_real_capacity() -> None:
+def test_every_suggested_hosted_model_resolves_real_capacity(configured_hosted_api: str) -> None:
     """No model a preset recommends may fall back to the unknown 128K/8K shape.
 
     A fallback here means the TUI would show the model with a shrunken context
     budget and a metadata warning on every turn (qwen3.7-plus, Cohere's
     default and OpenRouter's default all did this before 2026-09-02).
     """
-    from alysis_code.profile_presets import PROFILE_PRESETS
+    from alysis_code.profile_presets import PROFILE_PRESETS, make_profile_from_preset
 
     local_or_custom = {"ollama", "lm-studio", "vllm", "custom"}
     fallbacks: list[tuple[str, str]] = []
@@ -996,7 +997,7 @@ def test_every_suggested_hosted_model_resolves_real_capacity() -> None:
         if preset.key in local_or_custom:
             continue
         for model in preset.suggested_models:
-            cfg = AppConfig(base_url=preset.base_url, model=model)
+            cfg = AppConfig(base_url=make_profile_from_preset(preset).base_url, model=model)
             meta = ModelRegistry(cfg=cfg).get(model, include_provider_auth=False)
             if any("fallback context/max_output" in warning for warning in meta.warnings):
                 fallbacks.append((preset.key, model))

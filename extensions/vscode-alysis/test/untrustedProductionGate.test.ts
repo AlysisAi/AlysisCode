@@ -98,7 +98,7 @@ function validInput(): Parameters<typeof buildUntrustedProductionSummary>[0] {
     managed_protocol_version: "1",
     managed_cli_sha256: "b".repeat(64),
     release_tag: "v0.1.1",
-    source_repository: "https://github.com/AlysisAi/alysis-code",
+    source_repository: "https://github.com/AlysisAi/AlysisCode",
     source_sha: "a".repeat(40),
     platform_target: "linux-x64",
     cli_path_override: "",

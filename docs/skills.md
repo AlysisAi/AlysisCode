@@ -133,10 +133,11 @@ not interpreted as an invocation.
 
 ## Bundled Skill Pack
 
-Alysis Code ships eight starter skills:
+Alysis Code ships nine starter skills:
 
 | Skill | Purpose |
 | --- | --- |
+| `alysis-docs` | Consult official Alysis app and CLI documentation for product help and configuration guidance. |
 | `address-pr-comments` | Resolve existing pull-request review threads and prepare a response summary. |
 | `code-review` | Review a diff or branch and report severity-ordered findings with file and line evidence. |
 | `commit` | Create a Conventional Commit, staging a coherent set when the index is empty. |

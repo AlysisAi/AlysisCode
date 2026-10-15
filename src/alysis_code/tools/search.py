@@ -12,6 +12,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from ..command_text import command_text
+
 
 class SearchError(RuntimeError):
     pass
@@ -33,7 +35,7 @@ def _rg_available() -> bool:
             ["rg", "--version"],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=_RG_PROBE_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -50,7 +52,7 @@ def _rg_supports_no_config() -> bool:
             ["rg", "--no-config", "--version"],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=_RG_PROBE_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -387,7 +389,7 @@ def search_rg(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                **command_text(),
                 bufsize=1,
             )
         except OSError as e:

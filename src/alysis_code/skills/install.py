@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from time import strftime
 
+from ..command_text import command_text
 from .paths import global_managed_skill_root, project_managed_skill_root, skill_bundle_dir_name
 from .state import (
     ManagedSkillRecord,
@@ -243,7 +244,7 @@ def _clone_git_source(source: str, target_root: Path) -> tuple[str, Path, str | 
             ["git", "clone", "--depth", "1", source, str(target_root)],
             check=True,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except subprocess.CalledProcessError as exc:
         stderr = str(exc.stderr or "").strip()
@@ -254,7 +255,7 @@ def _clone_git_source(source: str, target_root: Path) -> tuple[str, Path, str | 
             ["git", "-C", str(target_root), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
         commit = str(completed.stdout or "").strip() or None
     except subprocess.CalledProcessError:

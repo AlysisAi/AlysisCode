@@ -64,7 +64,9 @@ def test_compute_execution_prompt_budget_matches_real_session_prefix_and_tools(
         "model_metadata_overrides": {
             "models": {
                 "budget-model": {
-                    "context_window_tokens": 12000,
+                    # Leave room for the bundled document skill and full reserves;
+                    # the floor-reclamation cases are exercised separately below.
+                    "context_window_tokens": 13000,
                     "max_output_tokens": 1500,
                     "supports_vision": False,
                 }
@@ -103,7 +105,7 @@ def test_compute_execution_prompt_budget_matches_real_session_prefix_and_tools(
     )
     try:
         assert budget.model == "budget-model"
-        assert budget.context_window_tokens == 12000
+        assert budget.context_window_tokens == 13000
         assert budget.max_output_tokens == 1500
         assert budget.safety_margin_tokens == DEFAULT_EXECUTION_SAFETY_MARGIN_TOKENS
         assert budget.trusted_system_prompt_override_applied is False
@@ -161,7 +163,9 @@ def test_compute_execution_prompt_budget_reserves_tokens_for_attached_images(
         "model_metadata_overrides": {
             "models": {
                 "budget-model": {
-                    "context_window_tokens": 12000,
+                    # Room for the real prompt prefix plus two image reserves without
+                    # hitting the allocator's floors, with some slack for prompt growth.
+                    "context_window_tokens": 12_200,
                     "max_output_tokens": 1500,
                     "supports_vision": True,
                 }

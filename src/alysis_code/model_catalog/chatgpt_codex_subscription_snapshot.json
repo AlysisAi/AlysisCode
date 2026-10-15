@@ -6,6 +6,51 @@
   "models": [
     {
       "context_window_tokens": 272000,
+      "default_reasoning_effort": "low",
+      "description": "Latest workhorse model for coding and everyday work.",
+      "id": "gpt-6.1-sol",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "label": "GPT-6.1-Sol",
+      "max_output_tokens": null,
+      "metadata_source": {
+        "fetched_at_utc": "2026-10-02T10:33:15.675301400Z",
+        "input_sha256": "7610c25d4e6fe2d4b53de8678f6130d718e9f568d5f7af9a649755365d34bec2",
+        "kind": "local_codex_models_cache",
+        "visibility": "list"
+      },
+      "priority": 1,
+      "reasoning_efforts": [
+        {
+          "description": "Fast responses with lighter reasoning",
+          "id": "low"
+        },
+        {
+          "description": "Balances speed and reasoning depth for everyday tasks",
+          "id": "medium"
+        },
+        {
+          "description": "Greater reasoning depth for complex problems",
+          "id": "high"
+        },
+        {
+          "description": "Extra high reasoning depth for complex problems",
+          "id": "xhigh"
+        },
+        {
+          "description": "Maximum reasoning depth for the hardest problems",
+          "id": "max"
+        },
+        {
+          "description": "Maximum reasoning with automatic task delegation",
+          "id": "ultra"
+        }
+      ]
+    },
+    {
+      "context_window_tokens": 272000,
       "default_reasoning_effort": "medium",
       "description": "Our most capable model for complex, demanding work.",
       "id": "gpt-6-astra",

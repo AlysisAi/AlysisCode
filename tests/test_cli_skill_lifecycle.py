@@ -236,7 +236,7 @@ def test_cli_skill_list_warns_on_invalid_project_state(tmp_path: Path) -> None:
     result = runner.invoke(cli_mod.app, ["skill", "list", "--path", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "Skills (9)" in result.output
+    assert "Skills (10)" in result.output
     assert "Lifecycle state warning:" in result.output
 
 

@@ -12,6 +12,13 @@ python -m pipx ensurepath
 pipx install alysis-code
 ```
 
+Alternatively, the installer provisions an isolated Python runtime on Linux,
+macOS, or Windows through WSL:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.sh | sh
+```
+
 If your default Python is older than 3.11, point `pipx` at a newer interpreter:
 
 ```bash

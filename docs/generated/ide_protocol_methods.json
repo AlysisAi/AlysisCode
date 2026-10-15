@@ -138,7 +138,8 @@
         "max_steps",
         "session_id",
         "workspace_trusted",
-        "host_capabilities"
+        "host_capabilities",
+        "reasoning_trace"
       ]
     },
     "chat.send": {
@@ -162,7 +163,7 @@
         "no_log",
         "yes",
         "subagents_enabled",
-        "task_relation"
+        "skill"
       ]
     },
     "chat.queue.list": {
@@ -185,6 +186,38 @@
       "required_params": [
         "session_id",
         "prompt_id"
+      ],
+      "mutates": true
+    },
+    "chat.steer": {
+      "required_params": [
+        "session_id",
+        "message"
+      ],
+      "optional_params": [
+        "instruction"
+      ]
+    },
+    "chat.steer.take": {
+      "required_params": [
+        "session_id"
+      ],
+      "mutates": true
+    },
+    "feedback.prepare": {
+      "required_params": [
+        "feedback"
+      ],
+      "optional_params": [
+        "session_id",
+        "workspace",
+        "session_dir",
+        "include_diagnostics"
+      ]
+    },
+    "feedback.send": {
+      "required_params": [
+        "report_id"
       ],
       "mutates": true
     },
@@ -405,7 +438,7 @@
         "images",
         "workspace_trusted",
         "host_capabilities",
-        "task_relation"
+        "skill"
       ]
     },
     "session.history": {
@@ -642,8 +675,14 @@
       "mutates": true
     },
     "session.setProfile": {
-      "required_params": ["session_id", "name", "workspace_trusted"],
-      "optional_params": ["model"],
+      "required_params": [
+        "session_id",
+        "name",
+        "workspace_trusted"
+      ],
+      "optional_params": [
+        "model"
+      ],
       "mutates": true
     },
     "session.setStream": {
@@ -2353,6 +2392,100 @@
         "bounded": true,
         "secret_values_included": false
       }
+    },
+    "computer.respond": {
+      "required_params": [
+        "session_id",
+        "request_id",
+        "response_nonce",
+        "operation_id",
+        "job_id",
+        "tool_call_id",
+        "tool_name",
+        "arguments_fingerprint",
+        "expires_at",
+        "ok"
+      ],
+      "optional_params": [
+        "result",
+        "error"
+      ],
+      "mutates": true
+    },
+    "task_budget.respond": {
+      "required_params": [
+        "session_id",
+        "operation_id",
+        "job_id",
+        "request_id",
+        "response_nonce",
+        "lease_id",
+        "ok"
+      ],
+      "optional_params": [
+        "code",
+        "task_budget"
+      ],
+      "mutates": true
+    },
+    "browser_start.respond": {
+      "required_params": [
+        "session_id",
+        "job_id",
+        "tool_call_id",
+        "operation_id",
+        "host_nonce",
+        "request_id",
+        "allow"
+      ],
+      "optional_params": [
+        "code"
+      ],
+      "mutates": true
+    },
+    "commands.list": {
+      "optional_params": [
+        "mode"
+      ]
+    },
+    "agents.list": {
+      "optional_params": [
+        "workspace",
+        "path"
+      ]
+    },
+    "host.action.dispatched": {
+      "required_params": [
+        "session_id",
+        "host_action_id",
+        "workspace_fence",
+        "capability_fingerprint"
+      ],
+      "mutates": true
+    },
+    "session.userQuestions.get": {
+      "required_params": [
+        "session_id",
+        "job_id"
+      ],
+      "mutates": false
+    },
+    "session.userQuestions.answer": {
+      "required_params": [
+        "session_id",
+        "job_id",
+        "request_id",
+        "answers"
+      ],
+      "mutates": true
+    },
+    "session.userQuestions.touch": {
+      "required_params": [
+        "session_id",
+        "job_id",
+        "request_id"
+      ],
+      "mutates": true
     }
   }
 }

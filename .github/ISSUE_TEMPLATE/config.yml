@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question or discussion
-    url: https://github.com/AlysisAi/alysis-code/discussions
+    url: https://github.com/AlysisAi/AlysisCode/discussions
     about: Use Discussions for questions, ideas, and general help.
   - name: Security vulnerability
-    url: https://github.com/AlysisAi/alysis-code/security/advisories/new
+    url: https://github.com/AlysisAi/AlysisCode/security/advisories/new
     about: Please report security issues privately, not as public issues.

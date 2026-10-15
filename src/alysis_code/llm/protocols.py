@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from ..config import ConfigError
@@ -59,6 +60,51 @@ class ReasoningTraceCapability:
     @property
     def has_safe_summary(self) -> bool:
         return self.output_kind == ReasoningOutputKind.SUMMARY
+
+    @property
+    def has_visible_reasoning(self) -> bool:
+        return self.output_kind in {
+            ReasoningOutputKind.SUMMARY,
+            ReasoningOutputKind.PROVIDER_REASONING,
+        }
+
+
+def reasoning_trace_callback(
+    callback: Callable[[str], None] | None,
+    *,
+    capability: ReasoningTraceCapability | None,
+    stream: bool,
+) -> Callable[[str], None] | None:
+    """Honor the resolved route's display policy at the transport boundary.
+
+    Standalone clients without factory metadata retain callback-based opt-in.
+    Configured clients must also honor adapter overrides and model capability,
+    including callers outside the main agent loop. This never changes effort
+    or provider continuation state.
+    """
+    if callback is None or capability is None:
+        return callback
+    supported = capability.supports_streaming if stream else capability.supports_buffered
+    return callback if capability.has_visible_reasoning and supported else None
+
+
+def reasoning_summary_callback(
+    callback: Callable[[str], None] | None,
+    *,
+    capability: ReasoningTraceCapability | None,
+    stream: bool,
+) -> Callable[[str], None] | None:
+    """Honor the resolved route's display policy at the transport boundary.
+
+    Standalone clients without factory metadata retain callback-based opt-in.
+    Configured clients must also honor adapter overrides and model capability,
+    including callers outside the main agent loop. This never changes effort
+    or provider continuation state.
+    """
+    if callback is None or capability is None:
+        return callback
+    supported = capability.supports_streaming if stream else capability.supports_buffered
+    return callback if capability.has_safe_summary and supported else None
 
 
 @dataclass(frozen=True)
@@ -187,6 +233,13 @@ _REASONING_TRACE_CAPABILITIES_BY_ADAPTER: dict[str, ReasoningTraceCapability] = 
         supports_buffered=True,
         continuation_state="sensitive",
     ),
+    "glm_reasoning": ReasoningTraceCapability(
+        adapter="glm_reasoning",
+        output_kind=ReasoningOutputKind.PROVIDER_REASONING,
+        supports_streaming=True,
+        supports_buffered=True,
+        continuation_state="sensitive",
+    ),
 }
 
 SUPPORTED_REASONING_TRACE_ADAPTERS: frozenset[str] = frozenset(
@@ -204,6 +257,7 @@ _REASONING_TRACE_ADAPTERS_BY_PROTOCOL: dict[str, frozenset[str]] = {
             "mistral_thinking",
             "moonshot_reasoning",
             "nvidia_reasoning",
+            "glm_reasoning",
         }
     ),
     OPENAI_RESPONSES_PROTOCOL: frozenset({"auto", "none", "openai_responses_summary"}),
@@ -221,6 +275,11 @@ _OPENAI_COMPAT_REASONING_ADAPTER_BY_PROVIDER: dict[str, str] = {
     "mistral": "mistral_thinking",
     "moonshot": "moonshot_reasoning",
     "nvidia": "nvidia_reasoning",
+    "kimi_code": "moonshot_reasoning",
+    "kimi-code": "moonshot_reasoning",
+    "zhipu": "glm_reasoning",
+    "zai": "glm_reasoning",
+    "zai_coding_plan": "glm_reasoning",
 }
 
 
@@ -361,6 +420,7 @@ PROVIDER_PROTOCOL_CAPABILITIES: tuple[ProviderProtocolCapabilities, ...] = (
         protocol=OPENAI_COMPAT_PROTOCOL,
         reasoning_trace=ReasoningTraceCapability(
             adapter="openrouter_reasoning",
+            output_kind=ReasoningOutputKind.PROVIDER_REASONING,
             supports_streaming=True,
             supports_buffered=True,
         ),
@@ -578,7 +638,8 @@ PROVIDER_PROTOCOL_CAPABILITIES: tuple[ProviderProtocolCapabilities, ...] = (
         provider_key="zai_coding_plan",
         protocol=OPENAI_COMPAT_PROTOCOL,
         reasoning_trace=ReasoningTraceCapability(
-            adapter="openai_compat_passive",
+            adapter="glm_reasoning",
+            output_kind=ReasoningOutputKind.PROVIDER_REASONING,
             supports_streaming=True,
             supports_buffered=True,
             continuation_state="sensitive",
@@ -598,7 +659,7 @@ PROVIDER_PROTOCOL_CAPABILITIES: tuple[ProviderProtocolCapabilities, ...] = (
         quirks=(
             "GLM Coding Plan uses a subscription key and a dedicated OpenAI-compatible endpoint.",
             "GLM-5.3 has a reasoning floor: low is the minimum and off is not available.",
-            "Raw reasoning_content is not exposed as a user-visible reasoning summary.",
+            "reasoning_content is displayed as provider reasoning, not a summary.",
         ),
     ),
     ProviderProtocolCapabilities(

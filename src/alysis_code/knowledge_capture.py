@@ -527,6 +527,11 @@ class RecordingSurface:
         if callable(fallback):
             fallback(message)
 
+    def emit_approval_reviewed(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        handler = getattr(self._delegate, "emit_approval_reviewed", None)
+        if callable(handler):
+            handler(*args, **kwargs)
+
     def emit_mode_changed(self, mode: str) -> None:
         handler = getattr(self._delegate, "emit_mode_changed", None)
         if callable(handler):
@@ -539,6 +544,10 @@ class RecordingSurface:
 
     def request_approval(self, request):  # type: ignore[no-untyped-def]
         return self._delegate.request_approval(request)
+
+    def standing_approval(self, request):  # type: ignore[no-untyped-def]
+        standing = getattr(self._delegate, "standing_approval", None)
+        return standing(request) if callable(standing) else None
 
 
 def render_execution_knowledge_capture_rules() -> list[str]:

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .. import __version__
+from ..agent.steering import MAX_PENDING_STEER_MESSAGES, MAX_STEER_MESSAGE_CHARS
+from ..feedback_delivery import MAX_DESCRIPTION_CHARS, MAX_REQUEST_BYTES
 from ..host_actions import (
     HOST_ACTION_MAX_ARGUMENT_BYTES,
     HOST_ACTION_MAX_RESULT_BYTES,
@@ -11,6 +13,12 @@ from ..host_actions import (
 )
 from ..surface.events import EVENT_REGISTRY
 from .activity_events import activity_capabilities
+from .approval_binding import (
+    APPROVAL_ACTION_SCHEMA,
+    APPROVAL_ACTION_SCHEMA_VERSION,
+    APPROVAL_BINDING_CONTRACT,
+    APPROVAL_BINDING_VERSION,
+)
 from .context_blocks import context_capabilities
 from .management_protocol import MANAGEMENT_FEATURES
 from .protocol import PROTOCOL_VERSION
@@ -27,6 +35,10 @@ SUPPORTED_METHODS = (
     "chat.queue.list",
     "chat.queue.get",
     "chat.queue.delete",
+    "chat.steer",
+    "chat.steer.take",
+    "feedback.prepare",
+    "feedback.send",
     "checkpoint.list",
     "checkpoint.diff",
     "checkpoint.revert",
@@ -39,6 +51,9 @@ SUPPORTED_METHODS = (
     "session.questions.list",
     "session.questions.answer",
     "session.questions.cancel",
+    "session.userQuestions.get",
+    "session.userQuestions.answer",
+    "session.userQuestions.touch",
     "run.start",
     "session.status",
     "session.usage",
@@ -74,6 +89,7 @@ SUPPORTED_METHODS = (
     "session.cancel",
     "approval.respond",
     "host.action.respond",
+    "host.action.dispatched",
     "permission.rules.list",
     "permission.rules.grant",
     "permission.rules.revoke",
@@ -82,6 +98,9 @@ SUPPORTED_METHODS = (
     "permission.session.revoke",
     "code.review.start",
     "code.review.result",
+    "browser_start.respond",
+    "computer.respond",
+    "task_budget.respond",
     "job.status",
     "session.list",
     "session.getEvents",
@@ -162,6 +181,8 @@ SUPPORTED_METHODS = (
     "tool.info",
     "tool.trust",
     "tool.untrust",
+    "commands.list",
+    "agents.list",
     "skill.list",
     "skill.info",
     "skill.init",
@@ -212,17 +233,29 @@ SUPPORTED_METHODS = (
     "ext.disable",
 )
 
-SUPPORTED_MODES = ("readonly", "review", "auto")
+# Normal desktop chat may carry the app's explicit, session-scoped Full access grant.
+# Forge execution retains its own stricter supported-mode checks in forge_protocol.py.
+SUPPORTED_MODES = ("readonly", "review", "auto", "fullaccess")
 
 
 def capabilities_payload() -> dict[str, Any]:
-    return {
+    payload = {
         "protocol_version": PROTOCOL_VERSION,
         "methods": list(SUPPORTED_METHODS),
-        "events": sorted(EVENT_REGISTRY),
+        "events": sorted(
+            {
+                *EVENT_REGISTRY,
+                "computer_use_request",
+                "task_budget_request",
+                "browser_start_request",
+                "host_action_requested",
+                "host_action_cancelled",
+            }
+        ),
         "modes": list(SUPPORTED_MODES),
         "transport": "stdio-jsonl",
         "features": {
+            "explicit_skill_invocation": {"version": 1, "field": "skill", "scope": "turn"},
             "structured_surface_events": True,
             "graceful_shutdown": {
                 "supported": True,
@@ -231,7 +264,59 @@ def capabilities_payload() -> dict[str, Any]:
                 "terminates_background_processes": True,
             },
             "semantic_activity": activity_capabilities(),
+            "reasoning_trace": {
+                "version": 1,
+                "opt_in": "session.create.reasoning_trace",
+                "events": ["reasoning_started", "reasoning_delta", "reasoning_ended"],
+                "gated_by_trace_level": True,
+                "disabled_at_trace_level": "off",
+                "sensitive_sessions": False,
+            },
             "typed_ide_context": context_capabilities(),
+            "embedded_browser": {"version": 1, "interactions_version": 1},
+            "open_panels": {"version": 1},
+            "desktop_terminal": {"version": 1, "mutation_mode": "fullaccess"},
+            "user_questions": {
+                "version": 1,
+                "opt_in": "session.create.user_questions",
+                "sensitive_sessions": False,
+            },
+            "desktop_session_controls": {
+                "version": 1,
+                "persistent_compaction": True,
+                "checkpoint_expected_head": True,
+                "full_history_resume": True,
+            },
+            "desktop_connections": {"version": 1, "read_only": True},
+            "github_host_actions": {
+                "version": 1,
+                "actions": [action for action in HOST_ACTIONS if action.startswith("github.")],
+            },
+            "google_mcp_plugins": {
+                "version": 1,
+                "host_action": "mcp.google.call",
+                "session_param": "google_mcp",
+                "credential_authority": "host",
+                "max_services": 8,
+            },
+            "github_mcp_plugin": {
+                "version": 1,
+                "protocol_versions": [1, 2],
+                "discovery": {
+                    "version": 1,
+                    "actions": ["mcp.github.discover", "mcp.github.describe"],
+                    "max_results": 20,
+                    "max_describe_tools": 4,
+                    "max_loaded_tools": 32,
+                },
+                "plugin_id": "alysis.github",
+                "server_id": "alysis.github/github",
+                "host_action": "mcp.github.call",
+                "session_param": "host_mcp",
+                "credential_authority": "host",
+                "max_tools": 32,
+                "max_catalog_bytes": 120000,
+            },
             "host_actions": {
                 "supported": True,
                 "protocol_version": HOST_ACTION_PROTOCOL_VERSION,
@@ -246,6 +331,8 @@ def capabilities_payload() -> dict[str, Any]:
                 "actions": list(HOST_ACTIONS),
                 "max_argument_bytes": HOST_ACTION_MAX_ARGUMENT_BYTES,
                 "max_result_bytes": HOST_ACTION_MAX_RESULT_BYTES,
+                "approval_protocol": 1,
+                "approval_authority": "engine",
                 "late_responses_rejected": True,
                 "duplicate_responses_rejected": True,
             },
@@ -265,6 +352,26 @@ def capabilities_payload() -> dict[str, Any]:
                     "chat.queue.get",
                     "chat.queue.delete",
                 ],
+            },
+            "steering": {
+                "supported": True,
+                "requires_running_turn": True,
+                "delivered_at_step_boundary": True,
+                "unread_held_between_turns": True,
+                "delivery_log_event": "steer_message_delivered",
+                "max_pending": MAX_PENDING_STEER_MESSAGES,
+                "max_message_chars": MAX_STEER_MESSAGE_CHARS,
+                "methods": ["chat.steer", "chat.steer.take"],
+            },
+            "feedback_delivery": {
+                "supported": True,
+                "methods": ["feedback.prepare", "feedback.send"],
+                "review_before_send": True,
+                "diagnostics_opt_in": True,
+                "anonymous_without_sign_in": True,
+                "idempotent_report_id": True,
+                "max_description_chars": MAX_DESCRIPTION_CHARS,
+                "max_request_bytes": MAX_REQUEST_BYTES,
             },
             "checkpoints": {
                 "supported": True,
@@ -422,6 +529,60 @@ def capabilities_payload() -> dict[str, Any]:
             "workspace_fail_closed": True,
             "secret_redaction": True,
             "artifacts": True,
+            "task_budget": {
+                "supported": True,
+                "protocol_version": 1,
+                "request_event": "task_budget_request",
+                "response_method": "task_budget.respond",
+                "every_provider_attempt": True,
+                "absolute_deadline": True,
+                "transient_payloads": True,
+                "autonomous_steps_unchanged": True,
+                "scope": "sensitive_computer_use_builtin_provider_clients",
+                "custom_transports": False,
+                "auth_refresh": False,
+            },
+            "computer_observation_v1": {"supported": True, "version": 1, "ephemeral_images": True},
+            "computer_discovery_v1": {"supported": True, "version": 1, "host_issued_targets": True},
+            "browser_start_v1": {
+                "supported": True,
+                "protocol_version": 1,
+                "request_event": "browser_start_request",
+                "response_method": "browser_start.respond",
+                "tool": "browser_start",
+                "transient_payloads": True,
+            },
+            "computer_use_host": {
+                "supported": True,
+                "protocol_version": 1,
+                "request_event": "computer_use_request",
+                "response_method": "computer.respond",
+                "tools": ["computer_state", "computer_action", "computer_wait"],
+                "verification_tools": ["computer_verify"],
+                "file_tools": ["computer_download", "computer_file_status"],
+                "upload_tools": ["computer_upload", "computer_upload_status"],
+                "upload_remote_evidence_version": 1,
+                "upload_objective_evidence_version": 1,
+                "generic_tools_enabled": False,
+                "transient_payloads": True,
+                "vision_required": False,
+                "initial_image_required": False,
+                "host_images_optional": True,
+                "action_approval_preflight": 1,
+                "host_image_consumption_ack": True,
+                "response_modes": ["status_only", "host_sanitized_text"],
+            },
+            "forge_host": {
+                "supported": True,
+                "authority": "canonical_cli",
+                "protocol": "alysis.forge-host",
+                "protocol_version": "2.0",
+                "transport": "separate_stdio_jsonl",
+                "cli_args": ["forge", "_host-stdio"],
+                # Editor integrations keep the bridge's forge.* methods; the desktop
+                # app uses this separate transport instead.
+                "legacy_ide_forge_methods": True,
+            },
             "run_chat_options": {
                 "temperature": True,
                 "stream": True,
@@ -948,6 +1109,23 @@ def capabilities_payload() -> dict[str, Any]:
                 ],
                 "timeout_seconds_default": DEFAULT_APPROVAL_TIMEOUT_SECONDS,
             },
+            "approval_binding": {
+                "contract": APPROVAL_BINDING_CONTRACT,
+                "version": APPROVAL_BINDING_VERSION,
+                "action_schema": APPROVAL_ACTION_SCHEMA,
+                "action_schema_version": APPROVAL_ACTION_SCHEMA_VERSION,
+                "normalized_actions": True,
+                "strict_optional_response_binding": True,
+                "job_and_tool_call_attribution": True,
+                "destructive_session_allow": False,
+            },
+            "session_persistence": {
+                "host_session_dir": True,
+                "session_create_field": "session_dir",
+                "absolute_path_required": True,
+                "trusted_root_env": "ALYSIS_IDE_SESSION_DIR_ROOT",
+                "session_id_preserved": True,
+            },
             "event_replay": {
                 "bounded": True,
                 "default_retained_events": 1000,
@@ -956,6 +1134,7 @@ def capabilities_payload() -> dict[str, Any]:
             },
         },
     }
+    return payload
 
 
 def health_payload() -> dict[str, Any]:

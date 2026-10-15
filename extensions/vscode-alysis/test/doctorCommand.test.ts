@@ -46,8 +46,34 @@ moduleLoader._load = function patchedLoad(request: string, parent: NodeModule | 
   return originalLoad.call(this, request, parent, isMain);
 };
 
-const { registerRunDoctorCommand } = require("../src/commands/runDoctor") as typeof import("../src/commands/runDoctor");
+const { registerRunDoctorCommand, registerShowBridgeHealthCommand } = require("../src/commands/runDoctor") as typeof import("../src/commands/runDoctor");
 moduleLoader._load = originalLoad;
+
+for (const command of ["alysis.runDoctor", "alysis.showBridgeHealth"]) {
+  test(`${command} waits for initial runtime validation before reading config or probing`, async () => {
+    reset();
+    let release!: () => void;
+    const ready = new Promise<void>(resolve => { release = resolve; });
+    let reads = 0;
+    let probes = 0;
+    const discovery = {
+      runDoctor: async () => { probes++; return { stdout: "ok", stderr: "", exitCode: 0 }; },
+      detect: async () => { probes++; return { ok: true, health: { protocol_version: "1", alysis_version: "test" } }; }
+    };
+    const register = command === "alysis.runDoctor" ? registerRunDoctorCommand : registerShowBridgeHealthCommand;
+    register(context(), discovery as any, () => { reads++; return config(); }, output(), statusBar(), undefined, () => ready);
+    const pending = registeredCommands.get(command)!();
+    await Promise.resolve();
+    assert.equal(reads, 0);
+    assert.equal(probes, 0);
+    assert.deepEqual(warnings, []);
+    release();
+    await pending;
+    assert.equal(reads, 1);
+    assert.equal(probes, 1);
+    assert.deepEqual(errors, []);
+  });
+}
 
 test("/doctor success appears in Timeline and Diagnostics runtime state", async () => {
   reset();

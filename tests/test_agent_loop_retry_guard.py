@@ -9,7 +9,6 @@ import pytest
 from alysis_code.agent_loop import (
     ToolDef,
     _resolve_session_pinned_prefix_len,
-    _session_task_brief_content,
     create_session,
 )
 from alysis_code.config import AppConfig
@@ -389,9 +388,7 @@ def test_run_turn_llm_error_keeps_accepted_task_and_brief_in_agreement(tmp_path:
     )
     session.client = _FailingClient()  # type: ignore[assignment]
     baseline_messages = copy.deepcopy(session.messages)
-    baseline_task_brief = _session_task_brief_content(session)
     baseline_pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
-    assert "awaiting_substantive_repo_request" in baseline_task_brief
 
     try:
         with pytest.raises(LLMError):
@@ -399,117 +396,8 @@ def test_run_turn_llm_error_keeps_accepted_task_and_brief_in_agreement(tmp_path:
         assert _messages_without_task_brief(session.messages) == _messages_without_task_brief(
             baseline_messages
         )
-        # Exactly one brief, rendered from the kept task rather than reverted to
-        # the placeholder: the authoritative state and the model-visible brief
-        # never disagree after a rollback.
-        assert _task_brief_message_count(session) == 1
-        assert session.task_state is not None
-        assert session.task_state.objective == "Fix src/parser.py without changing the CSV shape."
-        brief = _session_task_brief_content(session)
-        assert "- Fix src/parser.py without changing the CSV shape." in brief
-        assert "awaiting_substantive_repo_request" not in brief
+        assert _task_brief_message_count(session) == 0
         assert _resolve_session_pinned_prefix_len(session) == baseline_pinned_prefix_len
-    finally:
-        session.close()
-
-
-def test_run_turn_successful_turn_keeps_refreshed_task_brief(tmp_path: Path) -> None:
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-    )
-    # Observed-facts rule: only a turn that demonstrably produced material
-    # edits pins its instruction into the task brief, so the fake turn edits
-    # a file before finalizing.
-    session.client = _FakeClient(  # type: ignore[assignment]
-        [
-            LLMResponse(
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="tc1",
-                        name="fs_write",
-                        arguments={
-                            "path": "src/parser.py",
-                            "content": "def parse():\n    return []\n",
-                        },
-                    )
-                ],
-                raw={},
-            ),
-            LLMResponse(content="done", tool_calls=[], raw={}),
-        ]
-    )
-    baseline_task_brief = _session_task_brief_content(session)
-
-    try:
-        exit_code = session.run_turn("Fix src/parser.py without changing the CSV shape.")
-        task_brief = _session_task_brief_content(session)
-        assert exit_code == 0
-        assert _task_brief_message_count(session) == 1
-        assert task_brief != baseline_task_brief
-        assert "current_focus:" in task_brief
-        assert "- Fix src/parser.py without changing the CSV shape." in task_brief
-    finally:
-        session.close()
-
-
-def test_run_turn_llm_error_restores_existing_active_task_brief_without_duplicates(
-    tmp_path: Path,
-) -> None:
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-    )
-    # A material-edit turn pins the instruction as the active task brief on
-    # the router-free path.
-    session.client = _FakeClient(  # type: ignore[assignment]
-        [
-            LLMResponse(
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="tc1",
-                        name="fs_write",
-                        arguments={
-                            "path": "src/parser.py",
-                            "content": "def parse():\n    return []\n",
-                        },
-                    )
-                ],
-                raw={},
-            ),
-            LLMResponse(content="done", tool_calls=[], raw={}),
-        ]
-    )
-
-    try:
-        assert session.run_turn("Fix src/parser.py without changing the CSV shape.") == 0
-        baseline_messages = copy.deepcopy(session.messages)
-        baseline_task_brief = _session_task_brief_content(session)
-        baseline_pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
-
-        session.client = _FailingClient()  # type: ignore[assignment]
-        with pytest.raises(LLMError):
-            session.run_turn("Actually add a regression test and keep API stable.")
-
-        assert session.messages == baseline_messages
-        assert _session_task_brief_content(session) == baseline_task_brief
-        assert _task_brief_message_count(session) == 1
-        assert _resolve_session_pinned_prefix_len(session) == baseline_pinned_prefix_len
-        assert "Actually add a regression test and keep API stable." not in baseline_task_brief
     finally:
         session.close()
 

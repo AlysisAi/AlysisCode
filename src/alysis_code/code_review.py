@@ -16,6 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 from .git_safe import build_git_cmd, build_git_process_env
 from .ide.protocol import redact_secrets
 from .llm.base import ChatClient
+from .llm.http_cancellation import raise_if_cancelled
 from .llm.types import LLMError
 from .tools.fs import classify_sensitive_path
 
@@ -252,11 +253,14 @@ class ReviewerClient(Protocol):
 class ChatReviewerClient:
     """Adapter for Alysis Code's existing provider-neutral ``ChatClient``."""
 
-    def __init__(self, client: ChatClient, *, max_tokens: int = 8_000) -> None:
+    def __init__(
+        self, client: ChatClient, *, max_tokens: int = 8_000, cancellation_token: Any | None = None
+    ) -> None:
         if max_tokens < 256:
             raise ValueError("max_tokens must be at least 256")
         self._client = client
         self._max_tokens = max_tokens
+        self._cancellation_token = cancellation_token
 
     def review(
         self,
@@ -282,6 +286,7 @@ class ChatReviewerClient:
             None,
         )
         for index, response_format in enumerate(formats):
+            raise_if_cancelled(self._cancellation_token)
             try:
                 response = self._client.chat(
                     messages=messages,
@@ -289,7 +294,13 @@ class ChatReviewerClient:
                     stream=False,
                     temperature=0.0,
                     max_tokens=self._max_tokens,
+                    **(
+                        {"cancellation_token": self._cancellation_token}
+                        if self._cancellation_token is not None
+                        else {}
+                    ),
                 )
+                raise_if_cancelled(self._cancellation_token)
                 return response.content
             except LLMError as exc:
                 if index == len(formats) - 1 or not _structured_format_unsupported(exc):
@@ -350,9 +361,13 @@ class CodeReviewEngine:
         self.limits = limits or ReviewLimits()
         self._assert_repository_root()
 
-    def review(self, request: ReviewRequest) -> CodeReviewResult:
+    def review(
+        self, request: ReviewRequest, *, cancellation_token: Any | None = None
+    ) -> CodeReviewResult:
+        raise_if_cancelled(cancellation_token)
         request.validate()
         diff = self.collect_diff(request)
+        raise_if_cancelled(cancellation_token)
         if not diff.included_files:
             overview = "No reviewable changes were found."
             if diff.omitted_files:
@@ -374,6 +389,7 @@ class CodeReviewEngine:
         response: Mapping[str, Any] | str
         validation_error = ""
         for attempt in range(1, self.limits.max_response_attempts + 1):
+            raise_if_cancelled(cancellation_token)
             prompt = user_prompt
             if validation_error:
                 prompt += (
@@ -385,6 +401,7 @@ class CodeReviewEngine:
                 user_prompt=prompt,
                 response_schema=REVIEW_RESPONSE_SCHEMA,
             )
+            raise_if_cancelled(cancellation_token)
             try:
                 findings, verdict, overview = _normalize_response(response, diff=diff)
                 break
@@ -711,51 +728,7 @@ class CodeReviewEngine:
                 break
 
     def _untracked_patch(self, repo_path: str) -> tuple[str, bool, str | None]:
-        path = self.workspace / PurePosixPath(repo_path)
-        try:
-            if path.is_symlink():
-                return "", False, "symlink_not_reviewed"
-            resolved = path.resolve(strict=True)
-            resolved.relative_to(self.workspace)
-            before = path.lstat()
-            if not stat.S_ISREG(before.st_mode):
-                return "", False, "not_a_regular_file"
-            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(path, flags)
-            try:
-                opened = os.fstat(descriptor)
-                if not stat.S_ISREG(opened.st_mode) or not _same_file_identity(before, opened):
-                    return "", False, "file_changed_during_collection"
-                raw = _read_fd_bounded(descriptor, self.limits.max_file_bytes + 1)
-            finally:
-                os.close(descriptor)
-            after = path.lstat()
-            if (
-                not _same_file_identity(before, after)
-                or path.resolve(strict=True) != resolved
-                or path.is_symlink()
-            ):
-                return "", False, "file_changed_during_collection"
-        except (OSError, ValueError):
-            return "", False, "unreadable_or_outside_workspace"
-        truncated = len(raw) > self.limits.max_file_bytes
-        raw = raw[: self.limits.max_file_bytes]
-        if _looks_binary(raw):
-            return "", truncated, "binary_file"
-        content = raw.decode("utf-8", errors="replace")
-        lines = content.splitlines()
-        quoted_path = _git_patch_path(repo_path)
-        body = "\n".join(f"+{line}" for line in lines)
-        patch = (
-            f"diff --git a/{quoted_path} b/{quoted_path}\n"
-            "new file mode 100644\n"
-            "--- /dev/null\n"
-            f"+++ b/{quoted_path}\n"
-            f"@@ -0,0 +1,{len(lines)} @@\n"
-            f"{body}"
-        )
-        patch, patch_truncated = _truncate_utf8(patch, self.limits.max_file_bytes)
-        return patch, truncated or patch_truncated, None
+        return read_untracked_patch(self.workspace, repo_path, limits=self.limits)
 
     def _run_git(self, args: list[str], *, stdout_limit: int) -> _GitOutput:
         cmd = build_git_cmd(
@@ -815,6 +788,57 @@ class CodeReviewEngine:
             stdout_truncated=stdout_state[1],
             stderr_truncated=stderr_state[1],
         )
+
+
+def read_untracked_patch(
+    workspace: Path, repo_path: str, *, limits: ReviewLimits
+) -> tuple[str, bool, str | None]:
+    """Read one untracked patch with bounded bytes and file identity checks."""
+    path = workspace / PurePosixPath(repo_path)
+    try:
+        if path.is_symlink():
+            return "", False, "symlink_not_reviewed"
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(workspace)
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            return "", False, "not_a_regular_file"
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or not _same_file_identity(before, opened):
+                return "", False, "file_changed_during_collection"
+            raw = _read_fd_bounded(descriptor, limits.max_file_bytes + 1)
+        finally:
+            os.close(descriptor)
+        after = path.lstat()
+        if (
+            not _same_file_identity(before, after)
+            or path.resolve(strict=True) != resolved
+            or path.is_symlink()
+        ):
+            return "", False, "file_changed_during_collection"
+    except (OSError, ValueError):
+        return "", False, "unreadable_or_outside_workspace"
+    truncated = len(raw) > limits.max_file_bytes
+    raw = raw[: limits.max_file_bytes]
+    if _looks_binary(raw):
+        return "", truncated, "binary_file"
+    content = raw.decode("utf-8", errors="replace")
+    lines = content.splitlines()
+    quoted_path = _git_patch_path(repo_path)
+    body = "\n".join(f"+{line}" for line in lines)
+    patch = (
+        f"diff --git a/{quoted_path} b/{quoted_path}\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        f"+++ b/{quoted_path}\n"
+        f"@@ -0,0 +1,{len(lines)} @@\n"
+        f"{body}"
+    )
+    patch, patch_truncated = _truncate_utf8(patch, limits.max_file_bytes)
+    return patch, truncated or patch_truncated, None
 
 
 def _drain_bounded(

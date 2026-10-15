@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shlex
+import subprocess
 import sys
 from collections import deque
 from pathlib import Path
@@ -32,7 +34,10 @@ from alysis_code.verification_contract import (
 )
 
 _INFERRED = "python -m unittest discover"
-_SELECTED = f"{shlex.quote(sys.executable)} -m unittest discover -s tests -v"
+_SELECTED_ARGV = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
+_SELECTED = (
+    subprocess.list2cmdline(_SELECTED_ARGV) if os.name == "nt" else shlex.join(_SELECTED_ARGV)
+)
 _REQUIRED = f"{_SELECTED} -p test_logic.py"
 _FIXED = "def add(a, b):\n    return a + b\n"
 
@@ -84,7 +89,7 @@ def test_real_turn_distinguishes_recommended_and_required_commands(
     tool: str,
     one_shot: bool,
 ) -> None:
-    for prefix in ("ALYSIS", "SYLLIPTOR"):
+    for prefix in ("ALYSIS", "ALYSIS"):
         for setting in ("VERIFY_SANDBOX_MODE", "SHELL_SANDBOX_MODE"):
             monkeypatch.delenv(f"{prefix}_{setting}", raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")

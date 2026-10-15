@@ -31,7 +31,7 @@ from .failure_category import (
     is_infra_unavailable_error,
 )
 from .file_classification import SOURCE_EXTENSIONS_BY_LANGUAGE
-from .process_reaping import ProcessGroupRegistry
+from .process_reaping import CommandCancelledError, ProcessGroupRegistry, runner_takes_cancel_check
 from .repo_scan import RepoScanResult, detect_fallback_test_commands, scan_workspace
 from .sandbox_runner import (
     HostShellRunner,
@@ -2193,6 +2193,14 @@ def is_toolchain_unavailable_verification_output(output: str) -> bool:
     return _is_toolchain_unavailable_failure(output=output)
 
 
+CANCELLED_VERIFICATION_MESSAGE = "Verification stopped because the run was cancelled."
+
+
+def _raise_if_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    if cancel_check is not None and cancel_check():
+        raise VerifyError(CANCELLED_VERIFICATION_MESSAGE)
+
+
 def _run_verify_command_once(
     *,
     command: str,
@@ -2200,6 +2208,7 @@ def _run_verify_command_once(
     runner: object | None,
     runner_build_error: str | None,
     timeout_s: float,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> VerificationCommandExecution:
     if runner_build_error is not None:
         return VerificationCommandExecution(
@@ -2214,8 +2223,15 @@ def _run_verify_command_once(
             stderr="verify runner is missing; implicit host execution is disabled.",
         )
 
+    # A Stop ends a check that is still running; a stopped check is no result,
+    # so it raises instead of reporting a failure.
+    run_kwargs: dict[str, Any] = {}
+    if cancel_check is not None and runner_takes_cancel_check(runner):
+        run_kwargs["cancel_check"] = cancel_check
     try:
-        cp = runner.run(root=root, cwd=root.resolve(), cmd=command, timeout_s=timeout_s)
+        cp = runner.run(
+            root=root, cwd=root.resolve(), cmd=command, timeout_s=timeout_s, **run_kwargs
+        )
         return VerificationCommandExecution(
             exit_code=cp.returncode,
             stdout=cp.stdout or "",
@@ -2227,6 +2243,8 @@ def _run_verify_command_once(
             stdout="",
             stderr=f"Command timed out after {timeout_s:g}s",
         )
+    except CommandCancelledError as e:
+        raise VerifyError(CANCELLED_VERIFICATION_MESSAGE) from e
     except OSError as e:
         return VerificationCommandExecution(exit_code=127, stdout="", stderr=str(e))
     except Exception as e:  # noqa: BLE001
@@ -3045,6 +3063,7 @@ def run_task_verification(
     cfg: AppConfig | None = None,
     timeout_s: float = 900,
     process_group_registry: ProcessGroupRegistry | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> VerifyRunResult:
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     results: list[VerifyCommandResult] = []
@@ -3090,6 +3109,7 @@ def run_task_verification(
                 failure_category = FailureCategory.INFRA_UNAVAILABLE
 
         for idx, command in enumerate(commands, start=1):
+            _raise_if_cancelled(cancel_check)
             effective_command = _expand_verification_command_globs(command, root=root)
             initial_execution = _run_verify_command_once(
                 command=effective_command,
@@ -3097,6 +3117,7 @@ def run_task_verification(
                 runner=runner,
                 runner_build_error=runner_build_error,
                 timeout_s=timeout_s,
+                cancel_check=cancel_check,
             )
             exit_code = initial_execution.exit_code
             stdout = initial_execution.stdout
@@ -3126,6 +3147,7 @@ def run_task_verification(
                     runner=runner,
                     runner_build_error=runner_build_error,
                     timeout_s=timeout_s,
+                    cancel_check=cancel_check,
                 )
                 exit_code = fallback_execution.exit_code
                 stdout = fallback_execution.stdout

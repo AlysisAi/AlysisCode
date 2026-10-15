@@ -2,7 +2,7 @@
 
 This document covers the extension-side trust boundaries. The repository security policy and
 vulnerability reporting process live in
-[`SECURITY.md`](https://github.com/AlysisAi/alysis-code/blob/main/SECURITY.md).
+[`SECURITY.md`](https://github.com/AlysisAi/AlysisCode/blob/main/SECURITY.md).
 
 ## Workspace Trust
 

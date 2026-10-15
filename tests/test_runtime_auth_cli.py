@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+
+import pytest
 from typer.testing import CliRunner
 
 from alysis_code import cli as cli_mod
 from alysis_code.agent_runtimes.base import RuntimeAccountStatus
+from alysis_code.capabilities import build_capabilities_payload
 from alysis_code.cli import app
 from alysis_code.cli_impl.commands import auth as auth_mod
 from alysis_code.config import AppConfig
@@ -26,7 +30,7 @@ def test_unified_login_rows_offer_alysis_and_chatgpt_codex() -> None:
     assert [row[0] for row in rows] == ["alysis", "openai-codex"]
     assert [row[1] for row in rows] == [
         "Alysis Code account",
-        "ChatGPT Codex subscription",
+        "ChatGPT subscription",
     ]
 
 
@@ -48,6 +52,7 @@ class _DirectAdapter:
     protocol = "openai_responses"
     base_url = "https://chatgpt.com/backend-api/codex"
     display_name = "ChatGPT Codex subscription"
+    access_token = "subscription-token-must-not-leak"
 
     def __init__(self) -> None:
         self.login_methods: list[str] = []
@@ -80,6 +85,32 @@ class _DirectAdapter:
                 default_reasoning_effort="medium",
             ),
         )
+
+
+class _DisconnectedAdapter(_DirectAdapter):
+    def account_status(self) -> ProviderAccountStatus:
+        return ProviderAccountStatus(
+            connected=False,
+            verified=False,
+            account_label="developer@example.test",
+            detail="Not connected.",
+        )
+
+
+def _api_active_with_subscription(adapter: _DirectAdapter) -> AppConfig:
+    cfg = AppConfig()
+    auth_mod._activate_direct_provider(cfg, "openai-codex", adapter)
+    add_profile(
+        cfg,
+        ProfileSpec(
+            name="openai-api",
+            protocol="openai_responses",
+            base_url="https://api.openai.com/v1",
+            default_model="api-model",
+        ),
+    )
+    set_active_profile(cfg, "openai-api")
+    return cfg
 
 
 def test_auth_login_activates_native_subscription_profile(monkeypatch) -> None:
@@ -201,6 +232,149 @@ def test_provider_auth_login_supports_device_code(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert adapter.login_methods == ["device-code"]
+
+
+def test_auth_models_json_matches_desktop_contract_without_secret_values(monkeypatch) -> None:
+    adapter = _DirectAdapter()
+    monkeypatch.setattr(auth_mod, "create_provider_auth", lambda _provider_id: adapter)
+
+    result = CliRunner().invoke(app, ["auth", "models", "openai-codex", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert build_capabilities_payload()["features"]["auth.models-json"] is True
+    assert json.loads(result.stdout) == [
+        {
+            "id": "gpt-codex-test",
+            "label": "GPT Codex Test",
+            "description": "",
+            "is_default": True,
+            "default_reasoning_effort": "medium",
+            "reasoning_efforts": [{"id": "medium", "label": "Medium", "description": ""}],
+            "input_modalities": ["text"],
+            "context_window_tokens": None,
+            "max_output_tokens": None,
+        }
+    ]
+    assert adapter.access_token not in result.stdout
+    assert "developer@example.test" not in result.stdout
+
+
+def test_auth_select_model_atomically_switches_provider_and_model(monkeypatch) -> None:
+    adapter = _DirectAdapter()
+    cfg = _api_active_with_subscription(adapter)
+    saved: list[AppConfig] = []
+    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        cli_mod,
+        "save_config",
+        lambda value: saved.append(value.model_copy(deep=True)),
+    )
+    monkeypatch.setattr(auth_mod, "create_provider_auth", lambda _provider_id: adapter)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "auth",
+            "select-model",
+            "openai-codex",
+            "gpt-codex-test",
+            "--reasoning-effort",
+            "medium",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert build_capabilities_payload()["features"]["auth.select-model"] is True
+    assert json.loads(result.stdout) == {
+        "id": "openai-codex",
+        "profile_name": "chatgpt-codex",
+        "model": "gpt-codex-test",
+        "reasoning_effort": "medium",
+    }
+    assert len(saved) == 1
+    persisted = saved[0]
+    assert persisted.extra_fields["active_profile"] == "chatgpt-codex"
+    assert persisted.model == "gpt-codex-test"
+    assert persisted.llm_reasoning_effort == "medium"
+    assert get_active_profile(persisted).default_model == "gpt-codex-test"
+    assert get_active_profile(persisted).reasoning_effort == "medium"
+    assert persisted.extra_fields["onboarded"] is True
+    assert "subscription_model_selection_required" not in persisted.extra_fields
+    assert adapter.access_token not in result.stdout
+    assert "developer@example.test" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("adapter", "model", "effort", "expected_error"),
+    [
+        (
+            _DirectAdapter(),
+            "missing-model",
+            "auto",
+            "selected model is not available",
+        ),
+        (
+            _DirectAdapter(),
+            "gpt-codex-test",
+            "unsupported",
+            "reasoning effort is not supported",
+        ),
+        (
+            _DisconnectedAdapter(),
+            "gpt-codex-test",
+            "medium",
+            "Not connected",
+        ),
+    ],
+)
+def test_auth_select_model_rejects_invalid_inputs_without_mutation(
+    monkeypatch,
+    adapter: _DirectAdapter,
+    model: str,
+    effort: str,
+    expected_error: str,
+) -> None:
+    cfg = _api_active_with_subscription(_DirectAdapter())
+    original = cfg.model_copy(deep=True)
+    saved: list[AppConfig] = []
+    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(cli_mod, "save_config", lambda value: saved.append(value))
+    monkeypatch.setattr(auth_mod, "create_provider_auth", lambda _provider_id: adapter)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "auth",
+            "select-model",
+            "openai-codex",
+            model,
+            "--reasoning-effort",
+            effort,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert expected_error in json.loads(result.stdout)["error"]
+    assert saved == []
+    assert cfg.model_dump() == original.model_dump()
+    assert adapter.access_token not in result.stdout
+
+
+def test_auth_provider_json_commands_reject_unknown_connection() -> None:
+    runner = CliRunner()
+
+    models = runner.invoke(app, ["auth", "models", "unknown-provider", "--json"])
+    selection = runner.invoke(
+        app,
+        ["auth", "select-model", "unknown-provider", "model", "--json"],
+    )
+
+    assert models.exit_code == 2
+    assert selection.exit_code == 2
+    assert json.loads(models.stdout)["ok"] is False
+    assert json.loads(selection.stdout)["ok"] is False
 
 
 def test_top_level_connect_command_is_removed() -> None:

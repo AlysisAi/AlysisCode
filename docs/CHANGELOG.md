@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.15.0 - 2026-10-15
+
+- Expand the terminal workspace with inline diffs, file mentions, prompt history,
+  session navigation, integration inspection, planning, review, tool traces,
+  structured questions, and clearer subagent progress.
+- Add IDE command and skill discovery, explicit skill invocation, mid-turn
+  steering, and opt-in reasoning summary events.
+- Improve ChatGPT subscription registration, account selection, credential
+  refresh, saved profiles, endpoint migration, and reviewed model discovery.
+- Add GPT-6.1 Sol presets and model-specific reasoning controls. Preserve
+  reasoning choices across settings reloads and separate safe reasoning summaries
+  from final answers.
+- Recover more reliably from output limits, interrupted streams, provider retry
+  exhaustion, and cancellation. Improve caching and provider diagnostics.
+- Add approval review and safer command classification, with fixes for Windows
+  command execution, macOS image paste, sandbox fallback, and local listeners.
+- Clarify hosted-account billing and capacity errors without mislabeling them as
+  rejected API keys; direct model configuration guidance to `/config`.
+- Remove `/objective` and explicit task-relation state. State the current goal in
+  the conversation; steer an active turn when requirements change.
+- Stamp builds consistently and persist an installation identifier across client
+  sessions.
+- Add optional PDF, Word, spreadsheet, and presentation tools through the
+  `documents` extra, with path-scoped input and output acceptance checks.
+- Add host integration contracts for browser and computer actions, GitHub,
+  Google services, open panels, task budgets, and Forge verification.
+- Route `forge plan` and `forge run` through the shared host planner and approval
+  flow. Machine planning accepts an explicit goal and intent.
+- Add account usage/status, reviewed feedback delivery, corporate CA support,
+  and safer managed-session persistence on Windows.
+- Add `profile check`, subagent settings, bundled Alysis documentation guidance,
+  and persona restoration when IDE sessions start or resume.
+- Fix Windows `.git/info/exclude` line endings and VS Code provider setup,
+  startup readiness, and package inventory checks.
+- Align public links and release provenance checks with `AlysisAi/AlysisCode`.
+- Keep hosted deployment URLs and project keys out of public source and packages.
+  Hosted login, account status, and online feedback require runtime configuration
+  through `ALYSIS_CLOUD_API_URL`; see [Reference](reference.md). Other configured
+  providers remain available.
+- Preserve focused setup actions during streamed sidebar updates and avoid
+  repeatedly searching the transcript for static controls.
+- Keep background update checks bound to the data directory that scheduled them.
+- Repair sandbox dependency locks and server packaging, and update the bundled
+  Go toolchain to the 1.26.9 security patch.
+- Retire the `sylliptor` command and legacy branding aliases. Use `alysis` or
+  `alysis-code`, canonical `ALYSIS_` environment variables, `.alysis` project
+  data, and `alysis-plugin.toml` manifests. Back up and migrate legacy locations
+  explicitly before upgrading; this release does not move them automatically.
+
+
 ## 0.14.9 — Claude Haiku 5.5 on Alysis Free — 2026-10-07
 
 - Add Claude Haiku 5.5 to the Alysis Free model picker and direct Anthropic
@@ -471,25 +521,25 @@ Public launch and repository-layout refresh.
 ## Earlier releases
 
 Release notes for versions before 0.9.8 remain available in the
-[GitHub Releases archive](https://github.com/AlysisAi/alysis-code/releases).
+[GitHub Releases archive](https://github.com/AlysisAi/AlysisCode/releases).
 
-[Unreleased]: https://github.com/AlysisAi/alysis-code/compare/v0.14.1...HEAD
-[0.14.1]: https://github.com/AlysisAi/alysis-code/compare/v0.14.0...v0.14.1
-[0.14.0]: https://github.com/AlysisAi/alysis-code/compare/v0.13.8...v0.14.0
-[0.13.8]: https://github.com/AlysisAi/alysis-code/compare/v0.13.7...v0.13.8
-[0.13.7]: https://github.com/AlysisAi/alysis-code/compare/v0.13.6.2...v0.13.7
-[0.13.6.2]: https://github.com/AlysisAi/alysis-code/compare/v0.13.6.1...v0.13.6.2
-[0.13.6.1]: https://github.com/AlysisAi/alysis-code/compare/v0.13.6...v0.13.6.1
-[0.13.6]: https://github.com/AlysisAi/alysis-code/compare/v0.13.5...v0.13.6
-[0.13.5]: https://github.com/AlysisAi/alysis-code/compare/v0.13.4...v0.13.5
-[0.13.4]: https://github.com/AlysisAi/alysis-code/compare/v0.13.3...v0.13.4
-[0.13.3]: https://github.com/AlysisAi/alysis-code/compare/v0.13.2...v0.13.3
-[0.13.2]: https://github.com/AlysisAi/alysis-code/compare/v0.13.1...v0.13.2
-[0.13.1]: https://github.com/AlysisAi/alysis-code/compare/v0.13.0...v0.13.1
-[0.13.0]: https://github.com/AlysisAi/alysis-code/compare/v0.12.0...v0.13.0
-[0.12.0]: https://github.com/AlysisAi/alysis-code/compare/v0.11.2...v0.12.0
-[0.11.2]: https://github.com/AlysisAi/alysis-code/compare/v0.11.1...v0.11.2
-[0.11.1]: https://github.com/AlysisAi/alysis-code/compare/v0.11.0...v0.11.1
-[0.11.0]: https://github.com/AlysisAi/alysis-code/compare/v0.10.0...v0.11.0
-[0.10.0]: https://github.com/AlysisAi/alysis-code/compare/v0.9.8...v0.10.0
-[0.9.8]: https://github.com/AlysisAi/alysis-code/releases/tag/v0.9.8
+[Unreleased]: https://github.com/AlysisAi/AlysisCode/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.8...v0.14.0
+[0.13.8]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.7...v0.13.8
+[0.13.7]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.6.2...v0.13.7
+[0.13.6.2]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.6.1...v0.13.6.2
+[0.13.6.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.6...v0.13.6.1
+[0.13.6]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.5...v0.13.6
+[0.13.5]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.4...v0.13.5
+[0.13.4]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.3...v0.13.4
+[0.13.3]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.2...v0.13.3
+[0.13.2]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.1...v0.13.2
+[0.13.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.11.2...v0.12.0
+[0.11.2]: https://github.com/AlysisAi/AlysisCode/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.9.8...v0.10.0
+[0.9.8]: https://github.com/AlysisAi/AlysisCode/releases/tag/v0.9.8

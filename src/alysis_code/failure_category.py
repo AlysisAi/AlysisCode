@@ -88,6 +88,7 @@ _PROVIDER_UNAVAILABLE_STATUS_CODES = frozenset({408, *range(500, 600)})
 _PROVIDER_PERMANENT_4XX_STATUS_CODES = frozenset(range(400, 500)) - {408, 429}
 _CONTEXT_WINDOW_ERROR_MARKERS = (
     "context_length_exceeded",
+    "hosted_request_too_large",
     "context length exceeded",
     "maximum context length",
     "context window exceeded",

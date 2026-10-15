@@ -17,8 +17,17 @@ Both are content-based and provider-agnostic (no model-specific logic).
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from alysis_code.agent_loop import create_session
 from alysis_code.cli_impl.tui.app import _duplicate_assistant_indices
+from alysis_code.cli_impl.tui.surface import TuiSurface
 from alysis_code.cli_impl.tui.transcript import TuiTranscript
+from alysis_code.config import AppConfig
+from alysis_code.llm.openai_compat import LLMResponse
+from alysis_code.llm.types import AssistantResponsePhase, LLMError, LLMOutputLimitError
 
 
 def _assistant_texts(t: TuiTranscript) -> list[str]:
@@ -106,6 +115,96 @@ def test_finish_after_trace_does_not_duplicate_streamed_answer():
     assert _assistant_texts(t) == ["The answer is X."]  # exactly one copy
 
 
+def test_repeated_model_response_is_hidden_while_streaming_and_removed_at_end():
+    t = TuiTranscript()
+    t.append_user("Answer the question")
+    t.stream_assistant("The answer is X.")
+    t.begin_assistant_response()
+    t.stream_assistant("The answer")
+    entries, _, streaming_index = t.snapshot()
+    assert _duplicate_assistant_indices(entries, streaming_index) == {2}
+
+    t.stream_assistant(" is X.")
+    entries, _, streaming_index = t.snapshot()
+    assert _duplicate_assistant_indices(entries, streaming_index) == {2}
+    t.finish_assistant("The answer is X.")
+    assert _assistant_texts(t) == ["The answer is X."]
+
+
+def test_new_model_response_appears_when_it_diverges_from_previous_answer():
+    t = TuiTranscript()
+    t.append_user("Answer the question")
+    t.stream_assistant("The answer is X.")
+    t.begin_assistant_response()
+    t.stream_assistant("The answer is Y.")
+    entries, _, streaming_index = t.snapshot()
+    assert _duplicate_assistant_indices(entries, streaming_index) == set()
+    t.finish_assistant("The answer is Y.")
+    assert _assistant_texts(t) == ["The answer is X.", "The answer is Y."]
+
+
+def test_agent_continuation_does_not_show_repeated_reply_twice(tmp_path: Path):
+    transcript = TuiTranscript()
+    transcript.append_user("Answer the question")
+
+    class RepeatedClient:
+        model = "test-model"
+        temperature = 0.2
+
+        def __init__(self):
+            self.calls = 0
+            self.visible_duplicates = []
+
+        def chat(self, **kwargs):
+            self.calls += 1
+            assert self.calls <= 2
+            callback = kwargs.get("on_text_delta")
+            if callback is not None:
+                for chunk in ("The answer", " is X."):
+                    callback(chunk)
+                    entries, _, streaming_index = transcript.snapshot()
+                    hidden = _duplicate_assistant_indices(entries, streaming_index)
+                    visible = [
+                        text
+                        for index, (role, text) in enumerate(entries)
+                        if role == "assistant" and index not in hidden
+                    ]
+                    self.visible_duplicates.append(visible)
+            return LLMResponse(
+                content="The answer is X.",
+                tool_calls=[],
+                raw={},
+                assistant_phase=(
+                    AssistantResponsePhase.COMMENTARY
+                    if self.calls == 1
+                    else AssistantResponsePhase.FINAL_ANSWER
+                ),
+            )
+
+    client = RepeatedClient()
+    session = create_session(
+        cfg=AppConfig(model="test-model", routing_mode="code_only", stream=True),
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=4,
+        no_log=True,
+        api_key_override="override-key",
+        enable_chat_turn_step_budget=True,
+        verification_enabled=False,
+        surface=TuiSurface(transcript),
+    )
+    session.client = client  # type: ignore[assignment]
+    try:
+        assert session.run_turn("Answer the question") == 0
+    finally:
+        session.close()
+
+    assert client.calls == 2
+    assert all(visible == ["The answer is X."] for visible in client.visible_duplicates[2:])
+    assert _assistant_texts(transcript) == ["The answer is X."]
+
+
 def test_finish_ignores_incidental_whitespace_when_deduping():
     t = TuiTranscript()
     t.begin_turn()
@@ -149,13 +248,11 @@ def test_render_collapses_verbatim_repeat_within_turn():
     assert skip == {3}
 
 
-def test_render_never_collapses_the_live_streaming_block():
-    # index 3 is still streaming (== streaming_index) → always shown, even if it
-    # currently matches an earlier finished block.
+def test_render_keeps_a_distinct_live_streaming_block():
     entries = [
         ("assistant", "partial"),
         ("trace", "✓ tool"),
-        ("assistant", "partial"),
+        ("assistant", "different"),
     ]
     skip = _duplicate_assistant_indices(entries, streaming_index=2)
     assert skip == set()
@@ -188,3 +285,192 @@ def test_render_ignores_blank_assistant_entries():
     entries = [("assistant", "   "), ("assistant", "real")]
     skip = _duplicate_assistant_indices(entries, streaming_index=None)
     assert skip == set()
+
+
+def _visible_assistant_texts(t: TuiTranscript) -> list[str]:
+    entries, _, streaming_index = t.snapshot()
+    hidden = _duplicate_assistant_indices(entries, streaming_index)
+    return [
+        text
+        for index, (role, text) in enumerate(entries)
+        if role == "assistant" and text.strip() and index not in hidden
+    ]
+
+
+def _recovery_session(tmp_path: Path, transcript: TuiTranscript, client, *, stream=True):
+    session = create_session(
+        cfg=AppConfig(
+            model="test-model", routing_mode="code_only", stream=stream, skills_enabled=False
+        ),
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=5,
+        no_log=True,
+        api_key_override="test-key",
+        verification_enabled=False,
+        enable_compaction=False,
+        surface=TuiSurface(transcript),
+    )
+    session.client = client
+    return session
+
+
+@pytest.mark.parametrize("trace", [False, True])
+@pytest.mark.parametrize("empty_attempts", [1, 2, 3])
+def test_empty_aggregation_discards_all_abandoned_deltas(tmp_path, trace, empty_attempts):
+    t = TuiTranscript()
+    t.append_user("Answer the question")
+
+    class Client:
+        model = "test-model"
+        temperature = 0.2
+        calls = 0
+
+        def chat(self, **kwargs):
+            self.calls += 1
+            assert self.calls <= empty_attempts + 1
+            if self.calls <= empty_attempts:
+                kwargs["on_text_delta"]("The abandoned answer begins")
+                if trace:
+                    t.append_trace("Background progress")
+                    kwargs["on_text_delta"](" then still abandoned")
+                return LLMResponse(content="", tool_calls=[], raw={})
+            kwargs["on_text_delta"]("The answer is X.")
+            return LLMResponse(content="The answer is X.", tool_calls=[], raw={})
+
+    session = _recovery_session(tmp_path, t, Client())
+    try:
+        assert session.run_turn("Answer the question") == 0
+    finally:
+        session.close()
+    assert _visible_assistant_texts(t) == ["The answer is X."]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("restates_partial", [False, True])
+def test_token_limit_continuation_keeps_both_answer_parts(tmp_path, stream, restates_partial):
+    t = TuiTranscript()
+    t.append_user("Answer the question")
+
+    class Client:
+        model = "test-model"
+        temperature = 0.2
+        calls = 0
+
+        def chat(self, **kwargs):
+            self.calls += 1
+            assert self.calls <= 2
+            text = "The first part." if self.calls == 1 else "The second part."
+            if self.calls == 2 and restates_partial:
+                text = "The first part. The second part."
+            if kwargs.get("on_text_delta"):
+                kwargs["on_text_delta"](text)
+            response = LLMResponse(content=text, tool_calls=[], raw={})
+            if self.calls == 1:
+                raise LLMOutputLimitError(response)
+            assert any(m.get("content") == "The first part." for m in kwargs["messages"])
+            return response
+
+    session = _recovery_session(tmp_path, t, Client(), stream=stream)
+    try:
+        assert session.run_turn("Answer the question") == 0
+    finally:
+        session.close()
+    assert _visible_assistant_texts(t) == (
+        ["The first part. The second part."]
+        if restates_partial
+        else ["The first part.", "The second part."]
+    )
+
+
+def test_stream_fallback_discards_partial_before_buffered_answer(tmp_path):
+    t = TuiTranscript()
+    t.append_user("Answer the question")
+
+    class Client:
+        model = "test-model"
+        temperature = 0.2
+        calls = 0
+
+        def chat(self, **kwargs):
+            self.calls += 1
+            assert self.calls <= 2
+            if self.calls == 1:
+                kwargs["on_text_delta"]("Abandoned partial answer")
+                raise LLMError("stream is not supported")
+            assert kwargs["stream"] is False
+            return LLMResponse(content="The answer is X.", tool_calls=[], raw={})
+
+    session = _recovery_session(tmp_path, t, Client())
+    try:
+        assert session.run_turn("Answer the question") == 0
+    finally:
+        session.close()
+    assert _visible_assistant_texts(t) == ["The answer is X."]
+
+
+@pytest.mark.parametrize("trace", [False, True])
+def test_finalization_keeps_host_added_notice(trace):
+    t = TuiTranscript()
+    t.append_user("Run the tests")
+    t.stream_assistant("Tests failed.")
+    if trace:
+        t.append_trace("Background progress")
+    final = "Tests failed.\n\nVerification status: unverified."
+    t.finish_assistant(final)
+    assert _visible_assistant_texts(t) == [final]
+
+
+def test_repeated_candidates_with_final_notice_render_once_at_every_delta():
+    t = TuiTranscript()
+    t.append_user("Run the tests")
+    for _ in range(3):
+        t.begin_assistant_response()
+        for chunk in ("Tests ", "failed."):
+            t.stream_assistant(chunk)
+            assert len(_visible_assistant_texts(t)) == 1
+    final = "Tests failed.\n\nVerification status: unverified."
+    t.finish_assistant(final)
+    assert _assistant_texts(t) == [final]
+
+
+def test_duplicate_removal_preserves_later_reasoning_metadata():
+    t = TuiTranscript()
+    t.append_user("Answer")
+    t.stream_assistant("The answer is X.")
+    t.begin_assistant_response()
+    t.stream_assistant("The answer is X.")
+    t.begin_reasoning("summary-2")
+    t.stream_reasoning("Checking the answer")
+    t.end_reasoning("summary-2")
+    t.finish_assistant("The answer is X.")
+    assert t.entries[2] == ("reasoning", "Checking the answer")
+    assert t.reasoning_block_ids() == {2: "summary-2"}
+    assert set(t.reasoning_snapshot()[1]) == {2}
+
+
+def test_split_response_finalization_keeps_complete_answer_and_notice():
+    t = TuiTranscript()
+    t.append_user("Run the tests")
+    t.stream_assistant("Tests ")
+    t.append_trace("Background progress")
+    t.stream_assistant("failed.")
+    final = "Tests failed.\n\nVerification status: unverified."
+    t.finish_assistant(final)
+    assert _visible_assistant_texts(t) == [final]
+    assert ("trace", "Background progress") in t.entries
+
+
+def test_trace_split_gate_candidate_is_reconciled_before_the_next_response():
+    t = TuiTranscript()
+    t.append_user("Run the tests")
+    t.stream_assistant("Tests ")
+    t.append_trace("Background progress")
+    t.stream_assistant("failed.")
+    t.begin_assistant_response()
+    t.stream_assistant("Tests ")
+    assert _visible_assistant_texts(t) == ["Tests failed."]
+    t.stream_assistant("failed.")
+    t.finish_assistant("Tests failed.")
+    assert _assistant_texts(t) == ["Tests failed."]

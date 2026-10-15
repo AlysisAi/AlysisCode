@@ -1,0 +1,24 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.google_contacts"
+name = "Google Contacts"
+version = "1.0.0"
+description = "Google Contacts tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access."
+author = "Alysis AI (integration); Google (MCP service)"
+license = "MIT"
+homepage = "https://developers.google.com/workspace/guides/configure-mcp-servers"
+keywords = ["google", "workspace", "mcp", "contacts"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+[[components.mcp_server]]
+id = "contacts"
+transport = "http"
+url = "https://people.googleapis.com/mcp/v1"
+host_managed = true
+scopes = ["selected-google-account", "contacts"]
+
+[security]
+contact = "https://github.com/KL1ME/Alysis-Code-App/issues"

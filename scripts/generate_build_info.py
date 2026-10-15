@@ -34,27 +34,21 @@ tree is dirty or has no commit).
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import importlib
 import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_MODULE_PATH = _REPO_ROOT / "src" / "alysis_code" / "build_identity.py"
 
 
 def _load_build_identity():
-    """Load ``build_identity`` by path, without importing the package.
+    """Import the checkout's stdlib-only build modules with package-relative imports.
 
-    The package needs Python >= 3.11 and a dozen third-party dependencies; the
-    release job stamps the tree before any of that is installed.
+    ``alysis_code.__init__`` only declares the version; neither it nor the build
+    identity and command decoding modules need installed third-party packages.
     """
-    spec = importlib.util.spec_from_file_location("_alysis_build_identity", _MODULE_PATH)
-    if spec is None or spec.loader is None:  # pragma: no cover - defensive
-        raise RuntimeError(f"cannot load {_MODULE_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
+    return importlib.import_module("alysis_code.build_identity")
 
 
 def main(argv: list[str] | None = None) -> int:

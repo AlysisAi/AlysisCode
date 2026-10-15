@@ -987,6 +987,7 @@ def temporarily_clamp_client_timeout(
     original = client.timeout_s
     original_retry_deadline = getattr(client, "_provider_retry_deadline_allows", _MISSING)
     original_stream_deadline = getattr(client, "_stream_deadline_exhausted", _MISSING)
+    original_limited_timeout = getattr(client, "_run_deadline_limited_timeout_elapsed", _MISSING)
     attempt_ceiling = resolve_llm_attempt_timeout_ceiling_seconds()
     configured = float(original) if original is not None else None
     if attempt_ceiling is not None:
@@ -1070,8 +1071,30 @@ def temporarily_clamp_client_timeout(
         )
 
     client._stream_deadline_exhausted = _stream_deadline_exhausted
+
+    def _run_deadline_limited_timeout_elapsed() -> bool:
+        # The same condition the handler below uses to turn a transport
+        # timeout into DeadlineExhausted, exposed so the provider can record
+        # the attempt as a budget stop rather than a provider stall.
+        return (
+            deadline_limited_cutoff is not None
+            and float(deadline._clock()) >= deadline_limited_cutoff
+        )
+
+    client._run_deadline_limited_timeout_elapsed = _run_deadline_limited_timeout_elapsed
+
+    from .task_budget import task_budget_purpose
+
+    purpose = (
+        "compaction"
+        if "compaction" in operation
+        else "main"
+        if operation.startswith("main_llm")
+        else "auxiliary"
+    )
     try:
-        yield
+        with task_budget_purpose(purpose):
+            yield
     except Exception as exc:
         # A provider's own timeout remains a provider failure. When this host
         # narrowed the attempt and that exact allowance has elapsed, a typed
@@ -1100,6 +1123,13 @@ def temporarily_clamp_client_timeout(
                 pass
         else:
             client._stream_deadline_exhausted = original_stream_deadline
+        if original_limited_timeout is _MISSING:
+            try:
+                delattr(client, "_run_deadline_limited_timeout_elapsed")
+            except AttributeError:
+                pass
+        else:
+            client._run_deadline_limited_timeout_elapsed = original_limited_timeout
 
 
 def _has_transport_timeout_cause(error: BaseException) -> bool:

@@ -9,9 +9,14 @@ import pytest
 from alysis_code.cancellation import InteractiveCancellationToken
 from alysis_code.execution_deadline import DeadlineExhausted
 from alysis_code.llm import provider_limits as provider_limits_mod
+from alysis_code.llm.base import (
+    require_omitted_reasoning_display,
+    require_stateless_responses,
+)
 from alysis_code.llm.metadata import (
     PROVIDER_METADATA_KEY,
     attach_provider_metadata_to_assistant_message,
+    build_provider_route_identity,
     stamp_provider_metadata_for_route,
     strip_provider_metadata_from_message,
 )
@@ -25,6 +30,10 @@ from alysis_code.llm.protocols import (
 )
 from alysis_code.llm.provider_limits import ProviderRetrySettings
 from alysis_code.llm.types import LLMError, LLMStreamNoProgressError, ReasoningOutputKind
+from alysis_code.provider_auth import (
+    ProviderCredentialScopeMismatchError,
+    ProviderRequestAuthorization,
+)
 from alysis_code.provider_telemetry import (
     last_provider_call_summary,
     reset_provider_telemetry_for_tests,
@@ -61,6 +70,101 @@ def _sse_response(events: list[tuple[str, dict[str, object]]]) -> httpx.Response
         headers={"content-type": "text/event-stream"},
         content=b"".join(_sse_event(event, data) for event, data in events),
     )
+
+
+class _MismatchedScopeAuth:
+    supports_previous_response_id = False
+    supports_input_token_count = True
+
+    def __init__(self) -> None:
+        self.authorize_calls: list[tuple[str, bool, str | None]] = []
+
+    def authorize_request(
+        self,
+        url: str,
+        *,
+        force_refresh: bool = False,
+        session_id: str | None = None,
+        expected_credential_scope: str | None = None,
+    ) -> ProviderRequestAuthorization:
+        self.authorize_calls.append((url, force_refresh, expected_credential_scope))
+        return ProviderRequestAuthorization(
+            credential_scope="scope-b",
+            headers={"Authorization": "Bearer must-not-send"},
+        )
+
+    def authorization_headers(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("bound transports must use authorize_request")
+
+    def adapt_responses_payload(self, payload):  # type: ignore[no-untyped-def]
+        return dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_error"),
+    [
+        ("count", ProviderCredentialScopeMismatchError),
+        ("chat_nonstream", LLMError),
+        ("chat_stream", LLMError),
+        ("web_search", ResponsesError),
+    ],
+)
+def test_bound_subscription_scope_is_rechecked_before_every_responses_http_path(
+    operation: str,
+    expected_error: type[Exception],
+) -> None:
+    auth = _MismatchedScopeAuth()
+    http_requests: list[httpx.Request] = []
+
+    def unexpected_http(request: httpx.Request) -> httpx.Response:
+        http_requests.append(request)
+        return httpx.Response(500)
+
+    base_url = "https://subscription.example/v1"
+    route_identity = build_provider_route_identity(
+        protocol="openai_responses",
+        base_url=base_url,
+        provider_key="openai",
+        model="subscription-model",
+        profile_name="chatgpt-codex",
+        auth_provider="openai-codex",
+        credential_scope="scope-a",
+    )
+    client = OpenAIResponsesClient(
+        base_url=base_url,
+        api_key="",
+        model="subscription-model",
+        provider_auth=auth,  # type: ignore[arg-type]
+        route_identity=route_identity,
+        transport=httpx.MockTransport(unexpected_http),
+    )
+
+    with pytest.raises(expected_error, match="account changed"):
+        if operation == "count":
+            client.count_input_tokens(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "inspect"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            },
+                        ],
+                    }
+                ]
+            )
+        elif operation == "chat_nonstream":
+            client.chat(messages=[{"role": "user", "content": "inspect"}], stream=False)
+        elif operation == "chat_stream":
+            client.chat(messages=[{"role": "user", "content": "inspect"}], stream=True)
+        else:
+            client.web_search(query="inspect")
+
+    assert http_requests == []
+    assert len(auth.authorize_calls) == 1
+    assert auth.authorize_calls[0][2] == "scope-a"
 
 
 class _TruncatedResponsesSummaryStream(httpx.SyncByteStream):
@@ -944,12 +1048,59 @@ def test_chat_requests_reasoning_summary_without_overriding_explicit_effort() ->
 
     response = client.chat(
         messages=[{"role": "user", "content": "Think carefully."}],
+        on_reasoning_delta=lambda _delta: None,
     )
 
     assert response.content == "Done."
     assert captured["reasoning"] == {"effort": "high", "summary": "auto"}
     assert [item.kind for item in response.reasoning] == [ReasoningOutputKind.SUMMARY]
     assert [item.text for item in response.reasoning] == ["Checked the constraints."]
+
+
+def test_computer_use_marker_never_requests_openai_reasoning_summaries() -> None:
+    captured: dict[str, object] = {}
+    reasoning_deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_computer_use_reasoning_omitted",
+                "model": "gpt-5.5",
+                "output_text": "Done.",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg_computer_use_reasoning_omitted",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "Done."}],
+                    }
+                ],
+            },
+        )
+
+    client = _with_openai_reasoning_summary(
+        OpenAIResponsesClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning_effort="high",
+            transport=httpx.MockTransport(handler),
+        )
+    )
+    require_omitted_reasoning_display(client)
+
+    response = client.chat(
+        messages=[{"role": "user", "content": "Inspect the approved UI."}],
+        on_reasoning_delta=reasoning_deltas.append,
+    )
+
+    assert response.content == "Done."
+    assert captured["reasoning"] == {"effort": "high"}
+    assert reasoning_deltas == []
+    assert response.reasoning == ()
 
 
 def test_chat_rejected_reasoning_summary_is_scoped_to_one_model() -> None:
@@ -2623,6 +2774,259 @@ def test_chat_function_call_and_output_round_trip_uses_exact_call_id() -> None:
     ]
 
 
+def test_responses_call_id_normalization_boundaries_and_collision_resistance() -> None:
+    from alysis_code.llm.openai_responses import _responses_call_id
+
+    boundary = "a" * 64
+    too_long = "a" * 65
+    same_prefix_a = "call_" + ("x" * 61)
+    same_prefix_b = "call_" + ("x" * 60) + "y"
+
+    assert _responses_call_id(boundary, fallback="unused") == boundary
+
+    normalized = _responses_call_id(too_long, fallback="unused")
+    assert normalized == _responses_call_id(too_long, fallback="different")
+    assert len(normalized) == 64
+    assert normalized.isascii()
+    assert normalized.replace("_", "").isalnum()
+
+    unsafe = _responses_call_id(" tool/\N{SNOWMAN}\ncall ", fallback="unused")
+    assert len(unsafe) == 64
+    assert unsafe.isascii()
+    assert unsafe != normalized
+
+    # Prefix truncation would collide here; digest-based canonicalization must not.
+    assert _responses_call_id(same_prefix_a, fallback="unused") != _responses_call_id(
+        same_prefix_b,
+        fallback="unused",
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_call_ids",
+    [
+        pytest.param(["safe_call", "safe_call"], id="duplicate-safe"),
+        pytest.param(["call_" + ("z" * 61)] * 2, id="duplicate-oversized-raw"),
+        pytest.param(
+            [
+                "call_" + ("q" * 61),
+                # Replaced below with the deliberate canonical alias.
+                "canonical-alias-placeholder",
+            ],
+            id="deliberate-normalized-alias",
+        ),
+    ],
+)
+def test_fresh_response_rejects_duplicate_or_aliased_function_call_ids(
+    raw_call_ids: list[str],
+) -> None:
+    from alysis_code.llm.openai_responses import _responses_call_id
+
+    if raw_call_ids[1] == "canonical-alias-placeholder":
+        raw_call_ids = [
+            raw_call_ids[0],
+            _responses_call_id(raw_call_ids[0], fallback="unused"),
+        ]
+    response = httpx.Response(
+        200,
+        json={
+            "id": "resp_ambiguous_calls",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": f"fc_{index}",
+                    "call_id": call_id,
+                    "name": "fs_read",
+                    "arguments": '{"path":"README.md"}',
+                }
+                for index, call_id in enumerate(raw_call_ids)
+            ],
+        },
+    )
+
+    with pytest.raises(LLMError, match="duplicate or ambiguous function call IDs"):
+        OpenAIResponsesClient._parse_chat_response(response)
+
+
+@pytest.mark.parametrize(
+    "collision_case",
+    ["deliberate-alias", "duplicate-raw", "duplicate-safe"],
+)
+@pytest.mark.parametrize("metadata_replay", [False, True], ids=["plain", "metadata"])
+def test_transcript_replay_rejects_duplicate_or_aliased_call_ids(
+    metadata_replay: bool,
+    collision_case: str,
+) -> None:
+    from alysis_code.llm.openai_responses import (
+        _responses_call_id,
+        _responses_input_from_messages,
+    )
+
+    raw_call_id = "call_" + ("r" * 61)
+    if collision_case == "deliberate-alias":
+        raw_call_ids = [
+            raw_call_id,
+            _responses_call_id(raw_call_id, fallback="unused"),
+        ]
+    elif collision_case == "duplicate-raw":
+        raw_call_ids = [raw_call_id, raw_call_id]
+    else:
+        raw_call_ids = ["safe_call", "safe_call"]
+    output_items = [
+        {
+            "type": "function_call",
+            "id": "fc_long",
+            "call_id": raw_call_ids[0],
+            "name": "computer_state",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call",
+            "id": "fc_alias",
+            "call_id": raw_call_ids[1],
+            "name": "computer_state",
+            "arguments": "{}",
+        },
+    ]
+    if metadata_replay:
+        assistant = {
+            "role": "assistant",
+            "content": "",
+            PROVIDER_METADATA_KEY: {
+                "openai_responses": {"output_items": output_items},
+            },
+        }
+    else:
+        assistant = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": item["call_id"],
+                    "type": "function",
+                    "function": {
+                        "name": item["name"],
+                        "arguments": item["arguments"],
+                    },
+                }
+                for item in output_items
+            ],
+        }
+
+    with pytest.raises(LLMError, match="duplicate or ambiguous function call IDs"):
+        _responses_input_from_messages([assistant])
+
+
+def test_chat_rewrites_oversized_call_id_for_paired_full_replay_and_retry() -> None:
+    calls: list[dict[str, object]] = []
+    raw_call_id = "call_" + ("a" * 61)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        calls.append(body)
+        if len(calls) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_oversized_call",
+                    "model": "call-id-retry-model",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": "fc_oversized_call",
+                            "call_id": raw_call_id,
+                            "name": "fs_read",
+                            "arguments": '{"path":"README.md"}',
+                            "status": "completed",
+                        }
+                    ],
+                },
+            )
+        if len(calls) == 2:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "temperature is unsupported; only the default is supported"
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"id": "resp_after_oversized_call", "output_text": "Read it.", "output": []},
+        )
+
+    client = OpenAIResponsesClient(
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        model="call-id-retry-model",
+        transport=httpx.MockTransport(handler),
+    )
+    first = client.chat(
+        messages=[{"role": "user", "content": "read"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "fs_read", "parameters": {"type": "object"}},
+            }
+        ],
+    )
+    normalized_call_id = first.tool_calls[0].id
+    assert len(raw_call_id) == 66
+    assert len(normalized_call_id) == 64
+    assert normalized_call_id != raw_call_id
+
+    assistant_message = attach_provider_metadata_to_assistant_message(
+        {
+            "role": "assistant",
+            "content": first.content,
+            "tool_calls": [
+                {
+                    "id": normalized_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": first.tool_calls[0].name,
+                        "arguments": json.dumps(first.tool_calls[0].arguments),
+                    },
+                }
+            ],
+        },
+        first,
+    )
+    responses_metadata = assistant_message[PROVIDER_METADATA_KEY]["openai_responses"]
+    assert responses_metadata["call_ids_rewritten"] is True
+    assert responses_metadata["output_items"][0]["call_id"] == normalized_call_id
+
+    client.chat(
+        messages=[
+            {"role": "user", "content": "read"},
+            assistant_message,
+            {
+                "role": "tool",
+                "tool_call_id": normalized_call_id,
+                "content": "file contents",
+            },
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "fs_read", "parameters": {"type": "object"}},
+            }
+        ],
+    )
+
+    assert len(calls) == 3
+    assert "previous_response_id" not in calls[1]
+    assert calls[1]["input"] == calls[2]["input"]
+    replay_items = calls[1]["input"]
+    function_call = next(item for item in replay_items if item.get("type") == "function_call")
+    function_output = next(
+        item for item in replay_items if item.get("type") == "function_call_output"
+    )
+    assert function_call["call_id"] == normalized_call_id
+    assert function_output["call_id"] == normalized_call_id
+
+
 def test_chat_completed_empty_output_routes_to_agent_recovery() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"id": "resp_empty", "status": "completed", "output": []})
@@ -2647,10 +3051,7 @@ def test_chat_non_completed_empty_output_remains_explicit() -> None:
 
     with pytest.raises(
         LLMError,
-        match=(
-            "OpenAI Responses returned no assistant text or tool calls "
-            r"\(status=incomplete\)"
-        ),
+        match="OpenAI Responses: status=incomplete",
     ):
         _client(httpx.MockTransport(handler)).chat(
             messages=[{"role": "user", "content": "hello"}],
@@ -2979,6 +3380,125 @@ def _include_rejecting_gateway_handler(
     return handler
 
 
+def test_stateless_responses_request_encrypted_reasoning_and_disable_storage() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_stateless",
+                "model": "gpt-5.5",
+                "output_text": "Done.",
+                "output": [],
+            },
+        )
+
+    client = OpenAIResponsesClient(
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        model="gpt-5.5",
+        transport=httpx.MockTransport(handler),
+    )
+    require_stateless_responses(client)
+
+    response = client.chat(messages=[{"role": "user", "content": "Inspect the UI."}])
+
+    assert response.content == "Done."
+    assert len(requests) == 1
+    assert requests[0]["store"] is False
+    assert requests[0]["include"] == ["reasoning.encrypted_content"]
+    assert "previous_response_id" not in requests[0]
+
+
+def test_stateless_responses_merge_encrypted_reasoning_with_existing_include(
+    _include_capability_isolation: set[str],
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_stateless_search",
+                "model": "gpt-5.5",
+                "output_text": "Done.",
+                "output": [],
+            },
+        )
+
+    client = OpenAIResponsesClient(
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        model="gpt-5.5",
+        web_search_mode="native",
+        web_search_adapter="openai_responses",
+        transport=httpx.MockTransport(handler),
+    )
+    require_stateless_responses(client)
+
+    response = client.chat(
+        messages=[{"role": "user", "content": "Find the current docs."}],
+        tools=[_web_search_function_tool()],
+    )
+
+    assert response.content == "Done."
+    assert len(requests) == 1
+    assert requests[0]["store"] is False
+    assert requests[0]["include"] == [
+        "web_search_call.action.sources",
+        "reasoning.encrypted_content",
+    ]
+
+
+def test_stateless_responses_do_not_retry_without_required_include(
+    _include_capability_isolation: set[str],
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        requests.append(body)
+        if "include" in body:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": (
+                            "include value 'reasoning.encrypted_content' "
+                            "cannot be produced by this gateway"
+                        ),
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_unsafe_retry",
+                "model": "gpt-5.5",
+                "output_text": "Must not be reached.",
+                "output": [],
+            },
+        )
+
+    client = OpenAIResponsesClient(
+        base_url="https://gateway.example.com/v1",
+        api_key="test-key",
+        model="gpt-5.5",
+        transport=httpx.MockTransport(handler),
+    )
+    require_stateless_responses(client)
+
+    with pytest.raises(LLMError, match="reasoning.encrypted_content"):
+        client.chat(messages=[{"role": "user", "content": "Inspect the UI."}])
+
+    assert len(requests) == 1
+    assert requests[0]["store"] is False
+    assert requests[0]["include"] == ["reasoning.encrypted_content"]
+
+
 def test_web_search_retries_without_include_when_gateway_rejects_it(
     _include_capability_isolation: set[str],
 ) -> None:
@@ -3257,46 +3777,6 @@ def test_chat_drops_temperature_when_model_rejects_it() -> None:
     assert "temperature" not in calls[2]
 
 
-@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
-@pytest.mark.parametrize("effort", [None, "none"])
-def test_gpt6_responses_payload_respects_sampling_constraint(
-    model: str, effort: str | None
-) -> None:
-    sent: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        sent.update(json.loads(request.content.decode()))
-        return httpx.Response(
-            200,
-            json={
-                "id": "resp_ok",
-                "model": model,
-                "output": [
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "ok"}],
-                    }
-                ],
-            },
-        )
-
-    client = OpenAIResponsesClient(
-        base_url="https://api.openai.com/v1",
-        api_key="test-key",
-        model=model,
-        provider_key="openai",
-        reasoning_effort=effort,
-        temperature=0.2,
-        transport=httpx.MockTransport(handler),
-    )
-
-    assert client.chat(messages=[{"role": "user", "content": "hello"}]).content == "ok"
-    assert ("temperature" in sent) is (effort == "none")
-    if effort == "none":
-        assert sent["reasoning"] == {"effort": "none"}
-
-
 def test_responses_chat_and_count_strip_state_from_different_credential_route() -> None:
     sent: list[dict[str, object]] = []
 
@@ -3386,3 +3866,43 @@ def test_responses_usage_keeps_cost_only_and_cache_write_only_payloads() -> None
     assert cache_write_only is not None
     assert cache_write_only.cache_creation_input_tokens == 40
     assert empty is None
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize("effort", [None, "none"])
+def test_gpt6_responses_payload_respects_sampling_constraint(
+    model: str, effort: str | None
+) -> None:
+    sent: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.update(json.loads(request.content.decode()))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_ok",
+                "model": model,
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+            },
+        )
+
+    client = OpenAIResponsesClient(
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        model=model,
+        provider_key="openai",
+        reasoning_effort=effort,
+        temperature=0.2,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert client.chat(messages=[{"role": "user", "content": "hello"}]).content == "ok"
+    assert ("temperature" in sent) is (effort == "none")
+    if effort == "none":
+        assert sent["reasoning"] == {"effort": "none"}

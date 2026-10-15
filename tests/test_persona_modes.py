@@ -862,7 +862,7 @@ def test_ide_bridge_rejects_persona_names_as_modes() -> None:
     from alysis_code.ide.health import SUPPORTED_MODES, capabilities_payload
     from alysis_code.ide.stdio_bridge import ProtocolError, _mode_param
 
-    assert set(SUPPORTED_MODES) == {"readonly", "review", "auto"}
+    assert set(SUPPORTED_MODES) == {"readonly", "review", "auto", "fullaccess"}
     assert not set(PERSONA_NAMES) & set(SUPPORTED_MODES)
     assert set(capabilities_payload()["modes"]) == set(SUPPORTED_MODES)
     for persona in PERSONA_NAMES:

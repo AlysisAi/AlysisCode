@@ -1,4 +1,213 @@
 {
   "schema_version": 1,
-  "extensions": []
+  "extensions": [
+    {
+      "id": "alysis.github",
+      "name": "GitHub",
+      "description": "GitHub's official remote MCP server, using your selected desktop account.",
+      "repo": "https://github.com/github/github-mcp-server",
+      "commit": "sha256:cef5b5815ae5a1948cde37b0692841835563653829e48e9d73e5d18fe4caa76c",
+      "version": "1.0.0",
+      "tags": [
+        "github",
+        "mcp",
+        "repositories",
+        "pull-requests",
+        "issues"
+      ],
+      "permissions": [
+        "selected-repository",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "github",
+      "package_sha256": "cef5b5815ae5a1948cde37b0692841835563653829e48e9d73e5d18fe4caa76c",
+      "upstream_commit": "85598ba6e1256f7ebf4867b95d63b833c4549264"
+    },
+    {
+      "id": "alysis.google_drive",
+      "name": "Google Drive",
+      "description": "Google Drive tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:816b98638ddbb704c38cff7e72a004b3c4db654a0c6c689cbd91dc8230beaf74",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "drive"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "drive",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-drive",
+      "package_sha256": "816b98638ddbb704c38cff7e72a004b3c4db654a0c6c689cbd91dc8230beaf74"
+    },
+    {
+      "id": "alysis.google_docs",
+      "name": "Google Docs",
+      "description": "Google Docs tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:76e8a00341016e1bd201bf846d49e3946470d4241662c93e69b4b69e533410d9",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "docs"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "docs",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-docs",
+      "package_sha256": "76e8a00341016e1bd201bf846d49e3946470d4241662c93e69b4b69e533410d9"
+    },
+    {
+      "id": "alysis.google_sheets",
+      "name": "Google Sheets",
+      "description": "Google Sheets tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:fb0ea01d607d470e4b01e90ec4dc157f8053a074bbf37c68a77ce7307a259ac5",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "sheets"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "sheets",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-sheets",
+      "package_sha256": "fb0ea01d607d470e4b01e90ec4dc157f8053a074bbf37c68a77ce7307a259ac5"
+    },
+    {
+      "id": "alysis.google_slides",
+      "name": "Google Slides",
+      "description": "Google Slides tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:ad241f8f3dc9646793694ad6e5ff78960609186bfbe8d5c0b3bd0596b6618a74",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "slides"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "slides",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-slides",
+      "package_sha256": "ad241f8f3dc9646793694ad6e5ff78960609186bfbe8d5c0b3bd0596b6618a74"
+    },
+    {
+      "id": "alysis.google_calendar",
+      "name": "Google Calendar",
+      "description": "Google Calendar tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:fd0c59e51b70a6dda52bb3479491737e40fdcecc0029de7d87040aa2178aac2d",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "calendar"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "calendar",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-calendar",
+      "package_sha256": "fd0c59e51b70a6dda52bb3479491737e40fdcecc0029de7d87040aa2178aac2d"
+    },
+    {
+      "id": "alysis.google_gmail",
+      "name": "Gmail",
+      "description": "Gmail tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:60d2e202c9c0a2cc93ce43ef8285bcf5a393613d05f933211a877e5d91535c73",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "gmail"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "gmail",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-gmail",
+      "package_sha256": "60d2e202c9c0a2cc93ce43ef8285bcf5a393613d05f933211a877e5d91535c73"
+    },
+    {
+      "id": "alysis.google_chat",
+      "name": "Google Chat",
+      "description": "Google Chat tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:435297c24489556dd19bf30b557abc2931d13c3ad23e468c9320f9b7f0d3b5d6",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "chat"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "chat",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-chat",
+      "package_sha256": "435297c24489556dd19bf30b557abc2931d13c3ad23e468c9320f9b7f0d3b5d6"
+    },
+    {
+      "id": "alysis.google_contacts",
+      "name": "Google Contacts",
+      "description": "Google Contacts tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access.",
+      "repo": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "commit": "sha256:d1e8496bfc72ebd6407f49073dfb2bf4619aebeeef91c518ac4690801fdb8786",
+      "version": "1.0.0",
+      "tags": [
+        "google",
+        "workspace",
+        "mcp",
+        "contacts"
+      ],
+      "permissions": [
+        "selected-google-account",
+        "contacts",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "google-contacts",
+      "package_sha256": "d1e8496bfc72ebd6407f49073dfb2bf4619aebeeef91c518ac4690801fdb8786"
+    }
+  ]
 }

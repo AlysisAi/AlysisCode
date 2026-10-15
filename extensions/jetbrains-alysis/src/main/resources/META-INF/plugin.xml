@@ -2,7 +2,7 @@
   <id>com.alysis.code</id>
   <name>Alysis Code</name>
   <version>0.1.0-preview</version>
-  <vendor url="https://github.com/AlysisAi/alysis-code">Alysis AI</vendor>
+  <vendor url="https://github.com/AlysisAi/AlysisCode">Alysis AI</vendor>
   <description><![CDATA[Local Alysis Code chat with streamed replies, scoped approvals and cancellation.
     Development preview: requires an explicitly selected, separately configured Alysis CLI.
     Forge, managed browser and production managed-runtime installation are not included yet.]]></description>

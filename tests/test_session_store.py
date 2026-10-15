@@ -2032,3 +2032,18 @@ def test_sessions_list_cli_hides_foreign_sessions_unless_all(tmp_path: Path) -> 
     assert unscoped.exit_code == 0
     assert "sess_own" in unscoped.output
     assert "sess_foreign" in unscoped.output
+
+
+def test_private_transcript_permissions_on_create_and_legacy_append(tmp_path: Path) -> None:
+    import stat
+
+    path = tmp_path / "private.jsonl"
+    for legacy in (False, True):
+        if legacy:
+            path.chmod(0o644)
+        store = SessionStore(
+            enabled=True, sessions_dir=tmp_path, session_id="private", cwd=".", repo_root="."
+        )
+        store.append("final", {"content": "synthetic"})
+        store.close()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600

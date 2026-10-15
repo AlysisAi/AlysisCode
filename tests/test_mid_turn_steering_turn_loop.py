@@ -181,6 +181,7 @@ def test_steering_delivery_is_recorded(tmp_path: Path) -> None:
     assert payload["count"] == 1
     assert payload["step"] >= 2
     assert payload["chars"] >= len(STEER_TEXT)
+    assert payload["messages"] == [STEER_TEXT]
 
 
 def test_turn_without_steering_keeps_normal_behavior(tmp_path: Path) -> None:

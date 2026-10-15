@@ -15,7 +15,7 @@ Users should upgrade to the latest release before reporting a problem that may a
 
 Do not open a public issue for a suspected vulnerability.
 
-Use [GitHub's private vulnerability reporting](https://github.com/AlysisAi/alysis-code/security/advisories/new)
+Use [GitHub's private vulnerability reporting](https://github.com/AlysisAi/AlysisCode/security/advisories/new)
 or email [products@alysisai.com](mailto:products@alysisai.com). Include the affected version,
 reproduction steps, expected impact, and any known workarounds. Please remove API keys, access
 tokens, personal data, and unrelated logs from the report.

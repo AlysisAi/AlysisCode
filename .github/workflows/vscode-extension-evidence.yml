@@ -137,7 +137,7 @@ jobs:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           EVIDENCE_CONFIRMATION: ${{ inputs.evidence_confirmation }}
           EVIDENCE_INVENTORY_SHA256: ${{ inputs.evidence_inventory_sha256 }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           GH_TOKEN: ${{ github.token }}
           INSTALLED_LIVE_PROVIDER_RUN_ID: ${{ inputs.installed_live_provider_run_id }}
           INSTALLED_LIVE_PROVIDER_RUN_ATTEMPT: ${{ fromJSON(inputs.workflow_run_attempts).installed_live_provider }}

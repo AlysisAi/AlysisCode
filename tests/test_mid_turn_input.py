@@ -494,27 +494,30 @@ def _run_live_tui(
                 feed(pipe)
             except BaseException as exc:  # noqa: BLE001 - surface feeder failures in the test
                 feed_errors.append(exc)
-                pipe.send_text("\x03")
-                time.sleep(0.05)
-                pipe.send_text("\x03")
+                pipe.close()
 
         feeder = threading.Thread(target=run_feed, daemon=True)
         feeder.start()
-        result, transcript = run_tui(
-            TuiState(model_name="test-model", username="tester"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-            session_builder=session_builder,
-            command_runner=command_runner,
-            persona_cycle=persona_cycle,
-            persona_stage_target=persona_stage_target,
-            step_operation_resolver=step_operation_resolver,
-            step_operation_apply=step_operation_apply,
-            panel_providers=panel_providers,
-            before_turn=before_turn,
-            background_turns=True,
-        )
+        try:
+            result, transcript = run_tui(
+                TuiState(model_name="test-model", username="tester"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+                session_builder=session_builder,
+                command_runner=command_runner,
+                persona_cycle=persona_cycle,
+                persona_stage_target=persona_stage_target,
+                step_operation_resolver=step_operation_resolver,
+                step_operation_apply=step_operation_apply,
+                panel_providers=panel_providers,
+                before_turn=before_turn,
+                background_turns=True,
+            )
+        except EOFError:
+            if feed_errors:
+                raise feed_errors[0] from None
+            raise
         feeder.join(timeout=2)
 
     assert not feeder.is_alive()
@@ -603,7 +606,7 @@ def test_pending_steer_moves_from_area_to_transcript_only_when_delivered(
         pending_text = _pending_messages_area_text(captured["application"])
         assert (
             "message to be submitted after the next tool call - "
-            "esc interrupts and sends it immediately"
+            "ctrl+c interrupts and sends it immediately"
         ) in pending_text
         drain_at_boundary.set()
         assert delivered.wait(timeout=2)
@@ -651,7 +654,7 @@ def test_two_pending_steers_render_and_deliver_in_fifo_order(
         pending_text = _pending_messages_area_text(captured["application"])
         assert (
             "messages to be submitted after the next tool call - "
-            "esc interrupts and sends them immediately"
+            "ctrl+c interrupts and sends them immediately"
         ) in pending_text
         assert pending_text.index("  > first correction") < pending_text.index(
             "  > second correction"

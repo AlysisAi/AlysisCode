@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from ..atomic_io import atomic_write_json
 from ..forge import now_iso
+from ..project_data import project_artifact_path
 from .models import AssetError, AssetNotFoundError, AssetRecord, ComprehensionRecord
 from .plan_binding import task_asset_briefing_for_execution
 from .surface import AssetSurface
@@ -190,7 +191,7 @@ def _mirror_entry(
         )
     if record.deleted_at is not None:
         return _deleted_entry(record=record, rationale=rationale, expected_use=expected_use)
-    source = surface.run_paths.root / record.stored_path
+    source = project_artifact_path(surface.run_paths.root, record.stored_path)
     if not source.exists():
         if surface.cfg.assets.worker.fail_on_mirror_error:
             raise AssetError(f"Asset raw file is missing on disk: {record.id}")
@@ -249,7 +250,7 @@ def _copy_optional(
 ) -> tuple[Path | None, str | None]:
     if not source_rel:
         return None, None
-    source = surface.run_paths.root / source_rel
+    source = project_artifact_path(surface.run_paths.root, source_rel)
     if not source.exists():
         return None, None
     relative = destination_rel[len(_MIRROR_REL_ROOT) + 1 :]

@@ -49,6 +49,7 @@ from typing import Any, Protocol, TypeAlias
 from urllib.parse import urlsplit, urlunsplit
 
 from ..branding import canonical_user_data_dir, env_get
+from ..command_text import command_text
 from .browser_egress_proxy import BrowserEgressProxy
 from .protocol import redact_secrets
 
@@ -1638,7 +1639,7 @@ def _process_identity(pid: int) -> str | None:
                 stderr=subprocess.DEVNULL,
                 timeout=1.0,
                 shell=False,
-                text=True,
+                **command_text(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return None

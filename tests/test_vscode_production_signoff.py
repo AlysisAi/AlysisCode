@@ -48,7 +48,7 @@ def _report(hashes: dict[str, str]) -> dict[str, object]:
                 "marketplace_install_failure",
             ],
             "communication_action": "github_release_and_security_advisory",
-            "remediation_issue": "https://github.com/AlysisAi/alysis-code/issues/123",
+            "remediation_issue": "https://github.com/AlysisAi/AlysisCode/issues/123",
             "marketplace_action": "unpublish_affected_version",
             "managed_cli_action": "restore_last_known_good_compatible_runtime",
             "post_action_verification": [

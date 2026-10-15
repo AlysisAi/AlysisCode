@@ -475,6 +475,7 @@ def test_mcp_status_cli_reports_snapshot_and_stale_observability(tmp_path: Path)
             "manual_prompt_refresh_available": True,
             "operator_action": [],
             "prompt_error": None,
+            "startup_error": None,
         }
     ]
 
@@ -708,3 +709,58 @@ def test_mcp_prompts_list_cli_rejects_blank_server_filter_without_bootstrap(
     assert result.exit_code == 1
     assert "server_id must be a non-empty string when present." in result.output
     assert not request_log.exists()
+
+
+def test_mcp_status_cli_reports_a_failed_server_on_its_own_row(tmp_path: Path) -> None:
+    cfg_dir = tmp_path / "cfg"
+    fixture_path = tmp_path / "fixture-server.json"
+    _write_json(
+        fixture_path,
+        {"tools_pages": [[{"name": "echo", "inputSchema": {"type": "object"}}]]},
+    )
+    _write_json(
+        cfg_dir / "mcp.json",
+        {
+            "servers": {
+                "alpha": {
+                    "transport": "stdio",
+                    "command": sys.executable,
+                    "args": [os.fspath(_FIXTURE_SERVER)],
+                    "env": {"ALYSIS_TEST_MCP_CONFIG": os.fspath(fixture_path)},
+                },
+                "broken": {
+                    "transport": "stdio",
+                    "command": "alysis-test-command-that-does-not-exist",
+                },
+            }
+        },
+    )
+    env = {"ALYSIS_CONFIG_DIR": os.fspath(cfg_dir)}
+
+    result = CliRunner().invoke(
+        cli_mod.app,
+        ["mcp", "status", "--path", str(tmp_path), "--json"],
+        env=env,
+        terminal_width=200,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["bootstrap_errors"] == []
+    rows = {row["server_id"]: row for row in payload["rows"]}
+    assert rows["alpha"]["tools_snapshot_loaded"] is True
+    assert rows["alpha"]["tools_snapshot_count"] == 1
+    assert rows["alpha"]["startup_error"] is None
+    assert rows["broken"]["tools_snapshot_loaded"] is False
+    assert "failed to launch process" in rows["broken"]["startup_error"]
+    assert payload["metadata"]["failed_server_ids"] == ["broken"]
+
+    table = CliRunner().invoke(
+        cli_mod.app,
+        ["mcp", "status", "--path", str(tmp_path)],
+        env=env,
+        terminal_width=200,
+    )
+    assert table.exit_code == 0, table.output
+    assert "failed" in table.output
+    assert "MCP server broken did not start:" in table.output

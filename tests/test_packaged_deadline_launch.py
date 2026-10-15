@@ -41,6 +41,11 @@ def test_real_adapter_launch_installed_cli_stops_stalled_provider(
         ),
     )
     records: list[dict[str, Any]] = []
+    diagnostics: list[str] = []
+    # A cold installed CLI must finish importing before the stalled-provider
+    # case can exercise network cancellation. Keep startup expiry independently
+    # bounded by the inherited one-second deadline below.
+    host_budget_seconds = 15
     with _fault_server("headers") as (url, connected):
         agent = adapter.AlysisAgent(
             logs_dir=tmp_path / "logs",
@@ -51,6 +56,9 @@ def test_real_adapter_launch_installed_cli_stops_stalled_provider(
                 "ALYSIS_MAX_STEPS": "2",
                 "ALYSIS_REQUIRE_CLEAN_BUILD": "0",
                 "ALYSIS_RUN_PROFILE": "fullaccess",
+                # The launcher passes --strict-provenance, which refuses a run
+                # without an explicit thinking setting, so the test declares one.
+                "ALYSIS_LLM_ENABLE_THINKING": "false",
                 **({MANAGED_HOST_DEADLINE_UNIX_ENV: str(time.time() + 1)} if delayed_start else {}),
             },
         )
@@ -107,6 +115,7 @@ def test_real_adapter_launch_installed_cli_stops_stalled_provider(
             assert outcome_path.is_file(), stderr.decode(errors="replace")
             record = json.loads(outcome_path.read_text())
             records.append(record)
+            diagnostics.append(stderr.decode(errors="replace"))
             marker = re.search(r"ALYSIS_TASK_OUTCOME_[a-f0-9]{32}=", command)[0]
             return SimpleNamespace(
                 stdout=stdout.decode(errors="replace") + "\n" + marker + json.dumps(record)
@@ -116,7 +125,7 @@ def test_real_adapter_launch_installed_cli_stops_stalled_provider(
         context = SimpleNamespace(
             metadata={
                 "managed_host_deadline": {
-                    "remaining_seconds": 6,
+                    "remaining_seconds": host_budget_seconds,
                     "shutdown_reserve_seconds": 1,
                 }
             }
@@ -129,8 +138,12 @@ def test_real_adapter_launch_installed_cli_stops_stalled_provider(
                 "startup consumed the inherited expiry; no request may start"
             )
         else:
-            assert connected.is_set(), "the real CLI must reach the loopback provider"
-    assert elapsed < 7
+            assert connected.is_set(), (
+                "the real CLI must reach the loopback provider",
+                records,
+                diagnostics,
+            )
+    assert elapsed < (7 if delayed_start else host_budget_seconds + 1)
     assert records[-1]["terminal"] is True
     assert records[-1]["outcome"] == "deadline_exceeded"
     assert records[-1]["verified_success"] is False

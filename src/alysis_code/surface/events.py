@@ -4,6 +4,10 @@ Engine event inventory (migration targets; current call sites are intentionally 
   on_text_delta callbacks, including Forge planner streaming in cli_impl/chat.py.
 - message_end: final assistant messages from agent_loop.py and Forge planner completion
   flows in cli_impl/chat.py.
+- reasoning_started / reasoning_delta / reasoning_ended: provider reasoning display text
+  (safe summaries or provider-returned reasoning) from the agent core's reasoning sink.
+  Only the IDE bridge surface emits them, and only for sessions whose host opted in with
+  session.create `reasoning_trace` while the trace level is not `off`.
 - tool_call_started: tool lifecycle starts from agent_loop.py for built-ins, custom tools,
   non-repo tool-assisted turns, and nested subagent tool forwarding through hidden_surface.py.
 - tool_call_progress: tool output chunks/previews from agent_loop.py and summarization helpers
@@ -99,6 +103,34 @@ class MessageEnd:
     text: str = ""
     worker_id: str | None = None
     role: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _to_dict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningStarted:
+    type: ClassVar[Literal["reasoning_started"]] = "reasoning_started"
+    block_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return _to_dict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningDelta:
+    type: ClassVar[Literal["reasoning_delta"]] = "reasoning_delta"
+    block_id: str
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return _to_dict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningEnded:
+    type: ClassVar[Literal["reasoning_ended"]] = "reasoning_ended"
+    block_id: str
 
     def to_dict(self) -> dict[str, Any]:
         return _to_dict(self)
@@ -242,6 +274,27 @@ class VerifyGateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalReviewed:
+    """The approval reviewer ("Approve for me") answered an approval instead of a person.
+
+    ``outcome`` is ``allow``, ``deny`` or ``ask_person`` (it handed the approval to the
+    person, whose prompt follows as a normal ``prompt_for_input``).
+    """
+
+    type: ClassVar[Literal["approval_reviewed"]] = "approval_reviewed"
+    outcome: str
+    subject: str
+    reason: str = ""
+    risk: str = ""
+    approval_kind: str = ""
+    worker_id: str | None = None
+    role: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _to_dict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewGateDecision:
     type: ClassVar[Literal["review_gate_decision"]] = "review_gate_decision"
     decision: str
@@ -323,6 +376,9 @@ class ConfigFormRequest:
 Event: TypeAlias = (
     MessageDelta
     | MessageEnd
+    | ReasoningStarted
+    | ReasoningDelta
+    | ReasoningEnded
     | ToolCallStarted
     | ToolCallProgress
     | ToolCallCompleted
@@ -334,6 +390,7 @@ Event: TypeAlias = (
     | SubagentStateChanged
     | VerifyGateResult
     | ReviewGateDecision
+    | ApprovalReviewed
     | ErrorRaised
     | WarningEmitted
     | InfoEmitted

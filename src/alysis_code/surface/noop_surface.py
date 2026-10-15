@@ -170,6 +170,19 @@ class NoopSurface:
     ) -> None:
         _ = (command, success, summary, worker_id, role)
 
+    def emit_approval_reviewed(
+        self,
+        outcome: str,
+        subject: str,
+        reason: str = "",
+        *,
+        risk: str = "",
+        approval_kind: str = "",
+        worker_id: str | None = None,
+        role: str | None = None,
+    ) -> None:
+        _ = (outcome, subject, reason, risk, approval_kind, worker_id, role)
+
     def emit_review_gate_decision(
         self,
         decision: str,

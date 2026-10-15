@@ -38,6 +38,12 @@ from .failure_category import (
     is_provider_throttling_error,
     is_provider_unavailable_error,
 )
+from .forge_planning_profile import (
+    PlanningProfile,
+    clarification_round_limit,
+    normalize_planning_profile,
+    planning_profile_policy,
+)
 from .llm.base import ChatClient
 from .llm.factory import _resolve_base_url, make_llm_client
 from .llm.metadata import assistant_message_from_response
@@ -2210,7 +2216,9 @@ def _planner_user_prompt(
     relevant_knowledge_section: str | None = None,
     assets_context_block: str | None = None,
     questioning_mode: str = "balanced",
+    planning_profile: PlanningProfile = "deep",
 ) -> str:
+    profile_policy = planning_profile_policy(planning_profile)
     asset_briefing_schema = {
         "primary": [
             {
@@ -2355,6 +2363,7 @@ def _planner_user_prompt(
         "Return only one JSON object that matches this schema and has no extra keys:\n"
         f"{json.dumps(schema, ensure_ascii=False, sort_keys=True)}\n\n"
         "Quality bar:\n"
+        f"- {profile_policy.prompt_guidance}\n"
         "- Keep updates minimal and feasible with local repo tools only.\n"
         "- For logic/bug changes, include tests to add or update.\n"
         "- For user-facing behavior/CLI changes, include docs/help updates.\n"
@@ -3202,7 +3211,10 @@ def run_planner_turn(
     run_paths: Any | None = None,
     asset_surface: AssetSurface | None = None,
     prebuilt_assets_bundle: PlannerAssetsBundle | None = None,
+    planning_profile: PlanningProfile = "deep",
 ) -> PlannerTurnResult:
+    planning_profile = normalize_planning_profile(planning_profile, default="deep")
+    profile_policy = planning_profile_policy(planning_profile)
     try:
         planner_model = resolve_model_for_role(
             cfg=cfg,
@@ -3313,6 +3325,7 @@ def run_planner_turn(
             planner_assets_bundle.context.text_block if planner_assets_bundle is not None else None
         ),
         questioning_mode=cfg.assets.comprehension.questioning_mode,
+        planning_profile=planning_profile,
     )
     inline_image_paths = (
         planner_assets_bundle.inline_image_paths if planner_assets_bundle is not None else []
@@ -3628,7 +3641,12 @@ def run_planner_turn(
     validated_questions = [
         item for item in validated.get("questions") or [] if isinstance(item, str) and item.strip()
     ]
-    if not validated_questions and _plan_is_thin(plan) and str(user_text or "").strip():
+    if (
+        profile_policy.question_repair_enabled
+        and not validated_questions
+        and _plan_is_thin(plan)
+        and str(user_text or "").strip()
+    ):
         repair_messages = _planner_request_messages(
             user_content=_planner_question_repair_prompt(
                 plan=plan,
@@ -3677,6 +3695,11 @@ def run_planner_turn(
         user_text=user_text,
         workspace_context=workspace_context,
     )
+    profile_questions = [
+        item for item in validated.get("questions") or [] if isinstance(item, str) and item.strip()
+    ][: profile_policy.max_questions_per_turn]
+    if profile_questions != list(validated.get("questions") or []):
+        validated = {**validated, "questions": profile_questions}
 
     # A planner that keeps asking instead of drafting never reaches a terminal
     # state on its own. Past the cap, produce a concrete draft from the same
@@ -3686,7 +3709,8 @@ def run_planner_turn(
     if (
         repair_policy.enabled
         and repair_policy.max_clarification_rounds > 0
-        and prior_clarification_rounds >= repair_policy.max_clarification_rounds
+        and prior_clarification_rounds
+        >= clarification_round_limit(repair_policy.max_clarification_rounds, planning_profile)
         and payload_awaits_clarification(validated)
     ):
         forced = _force_draft_plan_fallback(

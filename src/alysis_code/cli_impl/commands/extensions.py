@@ -72,12 +72,13 @@ def _print_plugin_trust_request(console: Any, request: TrustPromptRequest) -> No
     console.print(f"Plugin: {request.plugin_name} ({request.plugin_id})")
     console.print(f"Version: {request.version}")
     console.print(f"Source: {request.source_url}")
-    console.print(f"Commit: {request.commit}")
+    pin_label = "Package content pin" if request.source_kind == "bundled" else "Commit"
+    console.print(f"{pin_label}: {request.commit}")
     console.print(f"Manifest SHA-256: {request.manifest_sha256}")
     console.print(f"Description: {request.description}")
     if request.is_reinstall_with_new_commit:
         console.print(
-            "[yellow]This reinstall uses a new commit and requires renewed trust.[/yellow]"
+            "[yellow]This reinstall uses a new package revision and requires renewed trust.[/yellow]"
         )
     console.print(
         "Components: "
@@ -338,7 +339,11 @@ def ext_info(
     )
     table.add_row("description", entry.description if entry is not None else "-")
     table.add_row("repo", entry.repo if entry is not None else "-")
-    table.add_row("commit", entry.commit if entry is not None else installed_record.commit or "-")
+    bundled = getattr(entry or installed_record, "source_kind", "git") == "bundled"
+    table.add_row(
+        "package content pin" if bundled else "commit",
+        entry.commit if entry is not None else installed_record.commit or "-",
+    )
     table.add_row(
         "version", (entry.version if entry is not None else installed_record.version) or "-"
     )
@@ -356,7 +361,10 @@ def ext_info(
     if installed_record is not None:
         table.add_row("installed trust", installed_record.trust or "-")
         table.add_row("installed source", installed_record.source or "-")
-        table.add_row("installed commit", installed_record.commit or "-")
+        table.add_row(
+            "installed package content pin" if bundled else "installed commit",
+            installed_record.commit or "-",
+        )
         table.add_row("manifest_sha256", installed_record.manifest_sha256 or "-")
         table.add_row("installed_at", installed_record.installed_at or "-")
         table.add_row("source_url", installed_record.source_url or "-")
@@ -387,7 +395,7 @@ def ext_list(
     table.add_column("enabled")
     table.add_column("version")
     table.add_column("trust")
-    table.add_column("commit")
+    table.add_column("revision")
     for ext_id in sorted(global_state.installed):
         installed = global_state.installed[ext_id]
         enabled = "yes" if normalize_extension_id(ext_id) in effective_enabled else "no"

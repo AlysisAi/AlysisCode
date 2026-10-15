@@ -2655,6 +2655,19 @@ class ConversationCompactor:
             ordered.pop()
         return ordered
 
+    def _request_capacity_ratio(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> float:
+        measure = getattr(self._main_client, "request_capacity_ratio", None)
+        if not callable(measure):
+            return 0.0
+        ratio = measure(messages=messages, tools=tools)
+        if not isinstance(ratio, (int, float)) or not math.isfinite(ratio) or ratio < 0:
+            raise ValueError("Invalid provider request capacity ratio")
+        return float(ratio)
+
     def _compact_loop(
         self,
         *,
@@ -2681,6 +2694,7 @@ class ConversationCompactor:
                 working,
                 request_messages_builder=request_messages_builder,
             )
+            capacity_ratio = self._request_capacity_ratio(provider_request_messages, tool_list)
             request_has_media = request_contains_media(provider_request_messages)
             request_breakdown = _estimate_compaction_request_breakdown(
                 messages=provider_request_messages,
@@ -2775,6 +2789,7 @@ class ConversationCompactor:
             self._store.append(
                 "compaction_check",
                 {
+                    "request_capacity_ratio": capacity_ratio,
                     "used_tokens": used_tokens,
                     "calibrated_used_tokens": calibrated_used_tokens,
                     "budget_tokens": budget,
@@ -2807,11 +2822,21 @@ class ConversationCompactor:
             )
 
             if forced_once:
-                if comparison_tokens <= target_tokens:
+                if (
+                    comparison_tokens <= target_tokens
+                    and capacity_ratio <= self._settings.target_ratio
+                ):
                     return working, changed
-            elif not force and not hard_pressure and comparison_tokens <= effective_trigger_tokens:
+            elif (
+                not force
+                and not hard_pressure
+                and comparison_tokens <= effective_trigger_tokens
+                and capacity_ratio <= adjusted_trigger_ratio
+            ):
                 return working, changed
 
+            # Envelope pressure can arrive well before the advertised token window.
+            hard_pressure = hard_pressure or capacity_ratio >= 1.0
             execution_chunk_plans: list[_ChunkPlan] | None = None
             chunk_plan: _ChunkPlan | None
             protected_prefix_len = prefix_shape.protected_prefix_message_count
@@ -3164,6 +3189,7 @@ class ConversationCompactor:
             messages,
             request_messages_builder=request_messages_builder,
         )
+        capacity_ratio = self._request_capacity_ratio(provider_messages, tool_list)
         request_has_media = request_contains_media(provider_messages)
         model_meta = self._model_registry.get(main_model)
         budget = compute_input_budget(
@@ -3221,11 +3247,12 @@ class ConversationCompactor:
                 "calibrated_used_tokens": calibrated_used_tokens,
                 "budget_tokens": budget,
                 "verification_budget_tokens": verification_budget_tokens,
-                "fits": used_tokens <= verification_budget_tokens,
+                "fits": used_tokens <= verification_budget_tokens and capacity_ratio <= 1.0,
+                "request_capacity_ratio": capacity_ratio,
                 "token_count_source": token_count_source,
                 "token_count_confidence": token_count_confidence,
                 "input_measurement_tokens": (counted.input_tokens if counted is not None else None),
                 "media_input_uncertain": media_input_uncertain,
             },
         )
-        return used_tokens <= verification_budget_tokens
+        return used_tokens <= verification_budget_tokens and capacity_ratio <= 1.0

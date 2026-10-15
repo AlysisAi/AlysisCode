@@ -7,6 +7,19 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_qualification_inventory_references_existing_test_files():
+    from scripts.qa.qualify_production_reliability import (
+        INSTALLED_TESTS,
+        RELIABILITY_TESTS,
+        SAFETY_TESTS,
+    )
+
+    for entry in (*RELIABILITY_TESTS, *SAFETY_TESTS, *INSTALLED_TESTS):
+        assert (ROOT / "tests" / entry.split("::", 1)[0]).is_file(), entry
+    assert "test_objective_removed.py" in RELIABILITY_TESTS
+    assert "test_task_evidence_lifecycle.py" in RELIABILITY_TESTS
+
+
 def test_tag_publication_requires_successful_exact_source_platform_qualification():
     """A green package smoke job in another workflow cannot authorize publication."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())

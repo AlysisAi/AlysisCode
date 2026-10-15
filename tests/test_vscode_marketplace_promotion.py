@@ -26,7 +26,7 @@ def test_marketplace_promotion_requires_exact_official_tag_and_candidate_run() -
 
     assert "workflow_dispatch:" in workflow
     assert "push:" not in workflow
-    assert "EXPECTED_REPOSITORY: AlysisAi/alysis-code" in validation
+    assert "EXPECTED_REPOSITORY: AlysisAi/AlysisCode" in validation
     assert 'test "$REPOSITORY_PRIVATE" = "false"' in validation
     assert 'test "$REPOSITORY_VISIBILITY" = "public"' in validation
     assert 'test "$PUBLISH_CONFIRMATION" = "publish-$RELEASE_CHANNEL"' in validation
