@@ -1,21 +1,55 @@
 from __future__ import annotations
 
+import re
 import shlex
+
+_GIT_C_ESCAPE_BYTES = {
+    "a": 7,
+    "b": 8,
+    "t": 9,
+    "n": 10,
+    "v": 11,
+    "f": 12,
+    "r": 13,
+    '"': 34,
+    "\\": 92,
+}
+_GIT_QUOTED_DIFF_PATHS = re.compile(r'("(?:\\.|[^"\\])*")\s+("(?:\\.|[^"\\])*")')
 
 
 def _unquote_path(value: str) -> str:
     raw = value.strip()
-    if not raw:
-        return ""
-    if raw[0] == raw[-1] == '"' and len(raw) >= 2:
-        try:
-            parsed = shlex.split(raw)
-            if parsed:
-                return parsed[0]
-        except ValueError:
-            return raw[1:-1]
-        return raw[1:-1]
-    return raw
+    if len(raw) < 2 or raw[0] != '"' or raw[-1] != '"':
+        return raw
+
+    # Git uses C-style byte escaping (not shell escaping) for paths containing
+    # control characters or non-ASCII bytes when core.quotePath is enabled.
+    # shlex drops the backslash before octal escapes, yielding a wrong filename.
+    body = raw[1:-1]
+    path_bytes = bytearray()
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\":
+            path_bytes.extend(char.encode("utf-8", "surrogateescape"))
+            index += 1
+            continue
+        if index + 1 >= len(body):
+            return raw
+        escape = body[index + 1]
+        if escape in _GIT_C_ESCAPE_BYTES:
+            path_bytes.append(_GIT_C_ESCAPE_BYTES[escape])
+            index += 2
+        elif index + 4 <= len(body) and all(
+            digit in "01234567" for digit in body[index + 1 : index + 4]
+        ):
+            path_bytes.append(int(body[index + 1 : index + 4], 8))
+            index += 4
+        else:
+            # Malformed quoting should not be silently interpreted as another
+            # path. Git itself will reject an invalid patch.
+            return raw
+    return path_bytes.decode("utf-8", "surrogateescape")
 
 
 def _normalize_git_path(value: str) -> str:
@@ -29,6 +63,14 @@ def parse_diff_git_line(line: str) -> tuple[str | None, str | None]:
     if not line.startswith("diff --git "):
         return None, None
     payload = line[len("diff --git ") :].strip()
+
+    if payload.startswith('"'):
+        # Preserve Git's backslashes until _unquote_path decodes C-style
+        # sequences. shlex.split would discard octal-escape delimiters.
+        match = _GIT_QUOTED_DIFF_PATHS.fullmatch(payload)
+        if match is None:
+            return None, None
+        return _normalize_git_path(match.group(1)), _normalize_git_path(match.group(2))
 
     if payload.startswith("a/"):
         split = payload.rsplit(" b/", 1)
