@@ -41,6 +41,9 @@
   providers remain available.
 - Preserve focused setup actions during streamed sidebar updates and avoid
   repeatedly searching the transcript for static controls.
+- Keep background update checks bound to the data directory that scheduled them.
+- Repair sandbox dependency locks and server packaging, and update the bundled
+  Go toolchain to the 1.26.9 security patch.
 - Retire the `sylliptor` command and legacy branding aliases. Use `alysis` or
   `alysis-code`, canonical `ALYSIS_` environment variables, `.alysis` project
   data, and `alysis-plugin.toml` manifests. Back up and migrate legacy locations

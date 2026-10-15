@@ -297,6 +297,7 @@ def check_for_updates(
     cache_path: Path | None = None,
 ) -> UpdateStatus:
     current_time = _utcnow() if now is None else _ensure_utc(now)
+    cache_path = cache_path or update_cache_path()
     if not force:
         cached = read_update_cache(cache_path)
         if cache_is_fresh(cached, cfg=cfg, now=current_time):
@@ -364,6 +365,9 @@ def maybe_refresh_update_cache_in_background(
     if not resolve_update_check_enabled(cfg):
         return False
     current_time = _utcnow() if now is None else _ensure_utc(now)
+    # Keep the request bound to the configuration that scheduled it, even if
+    # the process changes its data directory before the worker finishes.
+    path = path or update_cache_path()
     cached = read_update_cache(path)
     if cache_is_fresh(cached, cfg=cfg, now=current_time):
         return False

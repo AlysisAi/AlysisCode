@@ -233,6 +233,56 @@ def test_background_refresh_updates_cache_when_stale(tmp_path: Path, monkeypatch
     assert read_update_cache(cache_path).latest_version == "0.1.5"
 
 
+@pytest.mark.parametrize("fetch_fails", [False, True])
+def test_update_check_keeps_cache_destination_during_fetch(
+    tmp_path: Path, monkeypatch, fetch_fails: bool
+) -> None:
+    original = tmp_path / "original" / "update_check.json"
+    changed = tmp_path / "changed" / "update_check.json"
+    monkeypatch.setenv("ALYSIS_UPDATE_CACHE_PATH", str(original))
+
+    def fetch(**_kwargs):
+        monkeypatch.setenv("ALYSIS_UPDATE_CACHE_PATH", str(changed))
+        if fetch_fails:
+            raise updates_mod.UpdateCheckError("offline")
+        return "0.1.5", "https://pypi.org/project/alysis-code/"
+
+    monkeypatch.setattr(updates_mod, "fetch_latest_pypi_version", fetch)
+    status = check_for_updates(current_version="0.1.4", cfg=AppConfig(), force=True)
+
+    record = read_update_cache(original)
+    assert record is not None
+    assert record.error == status.error == ("offline" if fetch_fails else None)
+    assert record.latest_version == (None if fetch_fails else "0.1.5")
+    assert not changed.exists()
+
+
+def test_background_refresh_keeps_the_scheduling_data_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original = tmp_path / "original"
+    changed = tmp_path / "changed"
+    monkeypatch.delenv("ALYSIS_UPDATE_CACHE_PATH", raising=False)
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(original))
+    monkeypatch.setattr(updates_mod, "_update_refresh_started", False)
+    monkeypatch.setattr(
+        updates_mod,
+        "fetch_latest_pypi_version",
+        lambda **_kwargs: ("0.1.5", "https://pypi.org/project/alysis-code/"),
+    )
+
+    class DelayedThread(_InlineThread):
+        def start(self) -> None:
+            monkeypatch.setenv("ALYSIS_DATA_DIR", str(changed))
+            super().start()
+
+    assert updates_mod.maybe_refresh_update_cache_in_background(
+        current_version="0.1.4", cfg=AppConfig(), thread_factory=DelayedThread
+    )
+    assert read_update_cache(original / "update_check.json").latest_version == "0.1.5"
+    assert not changed.exists()
+
+
 def test_background_refresh_skips_when_disabled_or_cache_fresh(
     tmp_path: Path,
     monkeypatch,
