@@ -195,3 +195,24 @@ def test_real_git_paths_preserve_leading_and_trailing_spaces(
     ).stdout
     assert iter_patch_paths(patch) == [name]
     assert parse_patch_changed_files(patch) == [name]
+
+
+def test_real_git_copy_in_b_directory_preserves_source_and_destination(tmp_path: Path) -> None:
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True
+        ).stdout
+
+    git("init", "-q")
+    source = tmp_path / "source b/name.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("first\nsecond\nthird\n", encoding="utf-8")
+    git("add", "-A")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
+    target = tmp_path / "dest b/file.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    git("add", "-A")
+    patch = git("diff", "--cached", "-C", "--find-copies-harder")
+    assert iter_patch_paths(patch) == ["source b/name.txt", "dest b/file.txt"]
+    assert parse_patch_changed_files(patch) == ["dest b/file.txt"]
