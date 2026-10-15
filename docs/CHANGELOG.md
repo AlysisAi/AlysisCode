@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.1 - 2026-10-15
+
+- Keep the release qualification's simulated stalled provider connected until
+  the test completes. Its previous five-second disconnect could report a
+  provider failure before the managed deadline on Windows. Deadline and
+  process-cleanup assertions remain enforced.
+- Include all changes listed under 0.15.0 below. The 0.15.0 tag is preserved,
+  but its release qualification failed before package publication.
+
 ## 0.15.0 - 2026-10-15
 
 - Expand the terminal workspace with inline diffs, file mentions, prompt history,

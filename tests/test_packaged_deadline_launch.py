@@ -145,7 +145,7 @@ def test_real_adapter_launch_installed_cli_stops_stalled_provider(
             )
     assert elapsed < (7 if delayed_start else host_budget_seconds + 1)
     assert records[-1]["terminal"] is True
-    assert records[-1]["outcome"] == "deadline_exceeded"
+    assert records[-1]["outcome"] == "deadline_exceeded", (records, diagnostics)
     assert records[-1]["verified_success"] is False
     assert context.metadata["alysis_task_outcome"] == records[-1]
     session_events = [
