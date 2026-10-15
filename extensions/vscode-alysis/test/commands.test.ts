@@ -269,7 +269,7 @@ test("package.json has Marketplace-ready metadata without publication claims", (
   assert.notEqual(packageJson.version, "0.0.1");
   assert.deepEqual(packageJson.repository, {
     type: "git",
-    url: "https://github.com/AlysisAi/alysis-code.git",
+    url: "https://github.com/AlysisAi/AlysisCode.git",
     directory: "extensions/vscode-alysis"
   });
   assert.equal(packageJson.icon, "resources/icon.png");
@@ -290,7 +290,7 @@ test("package.json has Marketplace-ready metadata without publication claims", (
   // Marketplace surfaces that decide whether a developer installs at all.
   assert.equal(packageJson.pricing, "Free");
   assert.equal(packageJson.preview, false);
-  assert.equal(packageJson.bugs?.url, "https://github.com/AlysisAi/alysis-code/issues");
+  assert.equal(packageJson.bugs?.url, "https://github.com/AlysisAi/AlysisCode/issues");
   assert.ok((packageJson.categories ?? []).includes("AI"), "AI is where coding agents are browsed");
   assert.ok((packageJson.categories ?? []).includes("Chat"));
 

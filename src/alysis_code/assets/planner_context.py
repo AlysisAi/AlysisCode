@@ -8,6 +8,7 @@ from typing import Any
 
 from ..config import AppConfig
 from ..model_registry import ModelRegistry
+from ..project_data import project_artifact_path
 from .models import AssetError, AssetRecord, ComprehensionRecord
 from .plan_binding import task_asset_briefing
 from .surface import AssetSurface, SurfaceComprehensionStatus
@@ -106,7 +107,9 @@ def build_planner_assets_block(
             and status in {"ready", "minimal", "failed"}
             and record.stored_path
         ):
-            inline_image_paths.append(str((surface.run_paths.root / record.stored_path).resolve()))
+            inline_image_paths.append(
+                str(project_artifact_path(surface.run_paths.root, record.stored_path).resolve())
+            )
 
     context = PlannerAssetsContext(
         text_block="\n".join(lines).rstrip(),
@@ -463,4 +466,4 @@ def _model_supports_vision(model_registry: ModelRegistry, role_model: str) -> bo
 
 
 def absolute_asset_path(root: Path, stored_path: str) -> str:
-    return str((root / stored_path).resolve())
+    return str(project_artifact_path(root, stored_path).resolve())

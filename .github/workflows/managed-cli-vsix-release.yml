@@ -43,7 +43,7 @@ jobs:
       - name: Verify official repository, exact tag, source SHA, and version
         shell: bash
         env:
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
@@ -715,12 +715,12 @@ jobs:
             --release-tag "$RELEASE_TAG" \
             --source-commit "$GITHUB_SHA" \
             --provenance-builder-id "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/managed-cli-vsix-release.yml@refs/tags/${RELEASE_TAG}" \
-            --artifact "win32-x64=managed-cli-artifacts/alysis-win32-x64.exe=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-win32-x64.exe" \
-            --artifact "win32-arm64=managed-cli-artifacts/alysis-win32-arm64.exe=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-win32-arm64.exe" \
-            --artifact "darwin-x64=managed-cli-artifacts/alysis-darwin-x64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-darwin-x64" \
-            --artifact "darwin-arm64=managed-cli-artifacts/alysis-darwin-arm64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-darwin-arm64" \
-            --artifact "linux-x64=managed-cli-artifacts/alysis-linux-x64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-linux-x64" \
-            --artifact "linux-arm64=managed-cli-artifacts/alysis-linux-arm64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-linux-arm64" \
+            --artifact "win32-x64=managed-cli-artifacts/alysis-win32-x64.exe=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-win32-x64.exe" \
+            --artifact "win32-arm64=managed-cli-artifacts/alysis-win32-arm64.exe=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-win32-arm64.exe" \
+            --artifact "darwin-x64=managed-cli-artifacts/alysis-darwin-x64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-darwin-x64" \
+            --artifact "darwin-arm64=managed-cli-artifacts/alysis-darwin-arm64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-darwin-arm64" \
+            --artifact "linux-x64=managed-cli-artifacts/alysis-linux-x64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-linux-x64" \
+            --artifact "linux-arm64=managed-cli-artifacts/alysis-linux-arm64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-linux-arm64" \
             --sbom "win32-x64=managed-cli-artifacts/win32-x64.cdx.json" \
             --sbom "win32-arm64=managed-cli-artifacts/win32-arm64.cdx.json" \
             --sbom "darwin-x64=managed-cli-artifacts/darwin-x64.cdx.json" \

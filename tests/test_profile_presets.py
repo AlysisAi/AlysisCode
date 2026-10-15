@@ -207,6 +207,7 @@ def test_openai_preset_uses_working_chat_completion_models() -> None:
     assert preset.base_url == "https://api.openai.com/v1"
     assert preset.suggested_models == (
         "gpt-6-astra",
+        "gpt-6.1-sol",
         "gpt-6-sol",
         "gpt-6-luna",
         "gpt-5.6-terra",
@@ -227,7 +228,12 @@ def test_openai_presets_lead_with_gpt_6_astra() -> None:
         preset = get_preset(key)
 
         assert preset is not None
-        assert preset.suggested_models[:3] == ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna")
+        assert preset.suggested_models[:4] == (
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        )
         assert preset.suggested_model_descriptions["gpt-6-astra"].startswith("default")
         assert make_profile_from_preset(preset).default_model == "gpt-6-astra"
         assert canonical_model_alias_for_preset(preset, "gpt-6") == "gpt-6-astra"

@@ -101,9 +101,11 @@ ROLE_ORDER: tuple[str, ...] = (
     "compactor",
     "conflict_review",
     "conflict_resolve",
+    "approval_review",
 )
 ROLE_MODEL_ORDER: tuple[str, ...] = ROLE_ORDER
-FORGE_ROLE_ORDER: tuple[str, ...] = ROLE_MODEL_ORDER
+# Forge runs never ask for approvals, so the approval reviewer has no Forge override.
+FORGE_ROLE_ORDER: tuple[str, ...] = tuple(r for r in ROLE_MODEL_ORDER if r != "approval_review")
 SECTION_VALUES: tuple[tuple[str, str], ...] = (
     ("profile", "Provider Profile"),
     ("api_key", "API Key"),
@@ -148,6 +150,7 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
     "compactor": "summarizing long conversations",
     "conflict_review": "reviewing merge conflicts",
     "conflict_resolve": "resolving merge conflicts",
+    "approval_review": "approving actions in Approve for me (empty = the chat's model)",
 }
 _FIELD_LABELS: dict[str, str] = {
     "max_steps": "Max steps per response",
@@ -3229,7 +3232,7 @@ def _prompt_default_model(console: Console, state: ConfigMenuState) -> str:
 
 def _default_model_picker_subtitle(state: ConfigMenuState) -> str:
     if _active_subscription_profile(state) is not None:
-        return "Pick a model currently advertised for your connected subscription."
+        return "Pick a model for your connected subscription. The provider checks access when used."
     preset = _active_preset(state)
     if preset is None:
         return "Pick a provider-advertised model, or type a custom model ID."
@@ -3240,7 +3243,7 @@ def _provider_models_for_state(
     state: ConfigMenuState,
     preset: ProfilePreset | None,
 ) -> tuple[ProviderModelOption, ...]:
-    if preset is not None and preset.key not in {"nvidia", "custom"}:
+    if preset is not None and preset.key not in {"alysis", "nvidia", "custom"}:
         state._provider_model_catalog_warning = ""
         return ()
     try:
@@ -3267,6 +3270,9 @@ def _provider_models_for_state(
     )
     if state._provider_models_cache_identity == identity:
         return state._provider_models_cache
+    if not api_key and preset is not None and preset.key == "alysis":
+        state._provider_model_catalog_warning = ""
+        return ()
     if not api_key and preset is not None and preset.key == "nvidia":
         state._provider_models_cache_identity = identity
         state._provider_models_cache = ()
@@ -3285,6 +3291,10 @@ def _provider_models_for_state(
             f"{provider_label} live model catalog is unavailable; recommended and custom models "
             "remain available."
         )
+        if preset is not None and preset.key == "alysis":
+            state._provider_model_catalog_warning = (
+                "The hosted catalog is unavailable; only free models can be selected."
+            )
     else:
         state._provider_model_catalog_warning = ""
     state._provider_models_cache_identity = identity
@@ -3327,10 +3337,18 @@ def _preset_model_option_rows(
 
     NVIDIA's API catalog contains both NVIDIA and third-party models, so its live
     ``/v1/models`` inventory is merged with a small curated recommendation set.
-    Alysis uses only its curated offering, so stale gateway catalogs cannot
-    reintroduce retired or paid models. Discovery for NVIDIA is best-effort and
+    Alysis adds reviewed paid models only when its authenticated catalog permits
+    them. Discovery for NVIDIA is best-effort and
     offline-safe: on failure the static rows still render.
     """
+    if preset.key == "alysis":
+        available = (
+            {model.id for model in _provider_models_for_state(state, preset)}
+            if state is not None
+            else set()
+        )
+        return list(model_options_for_preset(preset, available_models=available))
+
     rows = list(model_options_for_preset(preset))
 
     if preset.key == "nvidia" and state is not None:
@@ -3376,8 +3394,7 @@ def _default_model_rows(state: ConfigMenuState) -> list[tuple[str, str, str]]:
     if preset is not None and preset.key not in {"nvidia", "custom"}:
         state._provider_model_catalog_warning = ""
     if preset is not None and preset.key == "alysis":
-        # This managed profile offers only V4.1 Flash. Neither a saved old model
-        # nor manual entry should add alternatives to its model picker.
+        # Saved or manually entered IDs cannot expand hosted account access.
         return _preset_model_option_rows(preset, state=state)
 
     if current_model:

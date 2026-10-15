@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 # Surrounding wrapper brackets are removed later by context-aware cleanup.
 _URL_RE = re.compile(r"https?://[^\s<>{}\"]+", re.IGNORECASE)
 _URL_CANDIDATE_STOP_CHARS = set('<>{}"')
-_STRUCTURED_URL_FORBIDDEN_CHARS = set('<>{}"')
+_STRUCTURED_URL_FORBIDDEN_CHARS = set('<>{}"\\')
 _SIMPLE_TRAILING_URL_PUNCTUATION = ".,;:?"
 _TRAILING_URL_QUOTES = '"'
 _URL_QUOTE_WRAPPERS = {"'", '"'}
@@ -37,6 +37,8 @@ _MAX_PROVENANCE_NODES = 512
 _MAX_URLS_PER_EVENT = 24
 _MAX_URL_TEXT_CHARS = 32_000
 _MAX_PROVENANCE_URL_LENGTH = 2048
+_MAX_RESULT_TEXT_NODES = 256
+_MAX_RESULT_TEXT_DEPTH = 12
 _FETCHABLE_PROVENANCE_CLASSES = {
     _USER_PROVIDED,
     _RETURNED_BY_WEB_SEARCH,
@@ -62,6 +64,71 @@ FETCHABLE_PROVENANCE_CLASSIFICATIONS: tuple[str, ...] = (
     _SAME_ORIGIN_DERIVED,
     _TRUSTED_DOMAIN_ALLOWLIST,
 )
+
+
+def iter_result_text_snippets(value: Any) -> Iterable[str]:
+    """Read bounded result data, decoding JSON rather than treating escapes as URLs.
+
+    MCP fences remain in the model-facing result. Removing the host's fence here
+    is only for extracting data references; it never promotes source instructions.
+    """
+    remaining = _MAX_RESULT_TEXT_NODES
+
+    def walk(item: Any, depth: int) -> Iterable[str]:
+        nonlocal remaining
+        if depth > _MAX_RESULT_TEXT_DEPTH or remaining <= 0:
+            return
+        remaining -= 1
+        if isinstance(item, str):
+            text = item.strip()
+            begin = "\n--- BEGIN UNTRUSTED MCP TEXT ---\n"
+            end = "\n--- END UNTRUSTED MCP TEXT ---\n[/MCP_UNTRUSTED_TEXT]"
+            if text.startswith("[MCP_UNTRUSTED_TEXT]\n") and text.endswith(end):
+                _, marker, body = text.partition(begin)
+                if marker:
+                    text = body[: -len(end)]
+            if len(text) <= _MAX_URL_TEXT_CHARS and text.startswith(("{", "[", '"')):
+                try:
+                    decoded = json.loads(text)
+                except RecursionError:
+                    return
+                except ValueError:
+                    pass
+                else:
+                    yield from walk(decoded, depth + 1)
+                    return
+            if "http://" in text.casefold() or "https://" in text.casefold():
+                yield text[:_MAX_URL_TEXT_CHARS]
+        elif isinstance(item, dict):
+            for child in item.values():
+                if remaining <= 0:
+                    break
+                yield from walk(child, depth + 1)
+        elif isinstance(item, list):
+            for child in item[:64]:
+                if remaining <= 0:
+                    break
+                yield from walk(child, depth + 1)
+
+    yield from walk(value, 0)
+
+
+def extract_result_web_urls(value: Any) -> list[dict[str, str]]:
+    """Preserve complete structured URL values, including legal trailing punctuation."""
+    found: dict[str, dict[str, str]] = {}
+    for snippet in iter_result_text_snippets(value):
+        normalized = normalize_web_url(snippet)
+        candidates = (
+            [{"url": snippet, "normalized_url": normalized, "domain": _domain_for_url(normalized)}]
+            if normalized is not None
+            else extract_public_web_urls(snippet)
+        )
+        for entry in candidates:
+            if len(entry["url"]) <= _MAX_PROVENANCE_URL_LENGTH:
+                found.setdefault(entry["normalized_url"], entry)
+            if len(found) >= _MAX_URLS_PER_EVENT:
+                return list(found.values())
+    return list(found.values())
 
 
 def _domain_for_url(url: str) -> str:
@@ -1140,13 +1207,10 @@ class SessionWebResearchTracker:
             )
         if tool_name in {"web_search", "web_fetch"}:
             return False
-        snippets = list(self._iter_result_text_snippets(result))
-        if not snippets:
-            return False
         changed = False
-        for snippet in snippets[:8]:
-            changed |= self._record_urls_from_text(
-                text=snippet,
+        for entry in extract_result_web_urls(result):
+            changed |= self._add_provenance_node(
+                raw_url=entry["url"],
                 provenance_classification=_TRUSTED_TOOL_OUTPUT,
                 source_event_id=event_id,
                 parent_url=tool_name,
@@ -1154,28 +1218,10 @@ class SessionWebResearchTracker:
                 discovery_mechanism="registered_tool_output",
                 source_type=tool_name,
                 ts=ts,
+                redirect_chain=(),
+                security_validation_status="syntax_validated_fetch_revalidates_target",
             )
         return changed
-
-    def _iter_result_text_snippets(
-        self,
-        value: Any,
-        *,
-        depth: int = 0,
-    ) -> Iterable[str]:
-        if depth > 4:
-            return
-        if isinstance(value, str):
-            if "http://" in value or "https://" in value:
-                yield value[:_MAX_URL_TEXT_CHARS]
-            return
-        if isinstance(value, dict):
-            for item in value.values():
-                yield from self._iter_result_text_snippets(item, depth=depth + 1)
-            return
-        if isinstance(value, list):
-            for item in value[:64]:
-                yield from self._iter_result_text_snippets(item, depth=depth + 1)
 
     def _record_user_message(
         self,

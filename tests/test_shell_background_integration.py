@@ -351,10 +351,10 @@ def test_shell_run_approval_kind_unchanged(
         surface=surface,
     )
     try:
-        session.tools["shell_run"].run({"cmd": "echo hi"})
+        session.tools["shell_run"].run({"cmd": "make build"})
 
         assert [request.kind for request in surface.requests] == ["shell_run"]
-        assert shell_runner.calls[0]["cmd"] == "echo hi"
+        assert shell_runner.calls[0]["cmd"] == "make build"
     finally:
         session.close()
 

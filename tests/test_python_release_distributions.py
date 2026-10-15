@@ -93,7 +93,16 @@ def test_rejects_any_other_sdist_pem(tmp_path: Path) -> None:
         validate_distributions(dist, project_file=project, smoke=False)
 
 
-@pytest.mark.parametrize("sdist_entry", ["workspace-output.txt", "docs/debug.txt", "CHANGELOG.md"])
+@pytest.mark.parametrize(
+    "sdist_entry",
+    [
+        "workspace-output.txt",
+        "docs/debug.txt",
+        "CHANGELOG.md",
+        "schemas/forge-host-v2/fixtures/debug.json",
+        "schemas/other.schema.json",
+    ],
+)
 def test_rejects_files_outside_exact_release_inventory(tmp_path: Path, sdist_entry: str) -> None:
     dist, project = _candidate(
         tmp_path / "wheel",
@@ -123,6 +132,7 @@ def test_hatch_sdist_uses_an_explicit_release_inventory() -> None:
         "/README.md",
         "/pyproject.toml",
         "/src/alysis_code",
+        "/schemas/forge-host-v2/forge-host-v2.schema.json",
     ]
 
 

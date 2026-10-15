@@ -1,0 +1,216 @@
+{
+  "canonicalVectors": "fingerprint-vectors.json",
+  "cases": [
+    {
+      "fixture": "invalid/wrong-version.json",
+      "id": "wrong-version",
+      "layer": "schema",
+      "repair": {
+        "pointer": "/protocolVersion",
+        "value": "2.0"
+      }
+    },
+    {
+      "fixture": "invalid/unknown-field.json",
+      "id": "unknown-field",
+      "layer": "schema",
+      "repair": {
+        "pointer": "/payload/unexpectedField",
+        "delete": true
+      }
+    },
+    {
+      "fixture": "invalid/path-leak.json",
+      "id": "private-path",
+      "layer": "schema",
+      "repair": {
+        "pointer": "/payload/artifacts/0/workspaceRelativePath",
+        "value": "reports/verification.json"
+      }
+    },
+    {
+      "fixture": "invalid/js-unsafe-integer.json",
+      "id": "js-unsafe-integer",
+      "layer": "schema",
+      "repair": {
+        "pointer": "/payload/artifacts/0/sizeBytes",
+        "value": 321
+      }
+    },
+    {
+      "fixture": "invalid/empty-passed-success.json",
+      "id": "empty-passed-success",
+      "layer": "schema",
+      "repair": {
+        "pointer": "/payload/result/acceptance/checks",
+        "value": [
+          {
+            "checkId": "check.acceptance.T01",
+            "taskId": "T01",
+            "requirementIds": [
+              "T01:criterion:1"
+            ],
+            "status": "passed",
+            "summary": "Acceptance passed.",
+            "evidenceRefs": [
+              "evidence_accept01"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "fixture": "invalid/secret-leak.json",
+      "id": "structured-secret",
+      "layer": "transport",
+      "repair": {
+        "pointer": "/payload/verificationContract/commands/0/originalText",
+        "value": "pytest -q"
+      }
+    },
+    {
+      "fixture": "invalid/fingerprint-mutation.json",
+      "id": "mutated-fingerprint",
+      "layer": "model",
+      "repair": {
+        "pointer": "/payload/hostPlanFingerprint",
+        "value": "b1b7341b391c8459de5041a6734e471ac2f23c511862e7d265780cdc7227eaf7"
+      }
+    },
+    {
+      "fixture": "invalid/non-nfc-path.json",
+      "id": "non-nfc-path",
+      "layer": "model",
+      "repair": {
+        "pointer": "/payload/artifacts/0/workspaceRelativePath",
+        "value": "reports/café.json"
+      }
+    },
+    {
+      "fixture": "invalid/expected-revision-mismatch.json",
+      "id": "expected-revision-mismatch",
+      "layer": "model",
+      "repair": {
+        "pointer": "/payload/expectedRevision",
+        "value": 1
+      }
+    }
+  ],
+  "description": "Language-neutral Forge Host Protocol v2 conformance routing. Schema cases run in every language; model/transport cases run at the typed boundary; ledger scenarios run against each state-machine implementation.",
+  "ledgerCases": [
+    {
+      "expectedError": "StaleIdentityError",
+      "fixture": "scenarios/stale-identity.json",
+      "id": "stale-identity"
+    },
+    {
+      "expectedError": "ApprovalStateError",
+      "fixture": "scenarios/reused-approval.json",
+      "id": "reused-approval"
+    },
+    {
+      "expectedError": "PlanStateError",
+      "fixture": "scenarios/allow-once-second-run.json",
+      "id": "allow-once-second-run"
+    },
+    {
+      "expectedError": "TerminalEventError",
+      "fixture": "scenarios/two-terminal-events.json",
+      "id": "two-terminal-events"
+    },
+    {
+      "expectedError": "ReferenceResolutionError",
+      "fixture": "scenarios/evidence-redefinition.json",
+      "id": "evidence-redefinition"
+    },
+    {
+      "expectedError": "ApprovalStateError",
+      "fixture": "scenarios/expired-approval.json",
+      "id": "expired-approval"
+    },
+    {
+      "expectedError": "PlanStateError",
+      "fixture": "scenarios/execution-admission-tamper.json",
+      "id": "execution-admission-tamper"
+    },
+    {
+      "expectedError": "ApprovalStateError",
+      "fixture": "scenarios/pending-approval-terminal.json",
+      "id": "unregistered-runtime-approval"
+    }
+  ],
+  "ledgerSuccessCases": [
+    {
+      "fixture": "scenarios/reissue-after-deny.json",
+      "id": "reissue-after-deny"
+    },
+    {
+      "fixture": "scenarios/reissue-after-expiry.json",
+      "id": "reissue-after-expiry"
+    }
+  ],
+  "ledgerOnlyInvariants": [
+    "approval_authority_and_consumption",
+    "approval_reissuance_after_deny_or_expiry",
+    "execution_admission_run_binding",
+    "authenticated_checkpoint_required_for_replay",
+    "event_sequence_and_operation_authority",
+    "identifier_immutability_across_events",
+    "ledger_ingress_isolation",
+    "no_live_pending_authority_at_terminal",
+    "terminal_reference_resolution",
+    "single_final_terminal",
+    "unregistered_runtime_approvals_rejected",
+    "planner_input_operation_correlation",
+    "run_binding_is_engine_allocated_and_one_shot",
+    "task_model_steps_are_monotonic",
+    "terminal_command_evidence_exact_coverage",
+    "state_snapshot_rejected_pending_authority_projection",
+    "planner_question_answer_lifecycle",
+    "succeeded_task_progress_is_complete"
+  ],
+  "typedSemanticInvariants": [
+    "approval_policy_and_usage_consistency",
+    "expected_revision_equality",
+    "canonical_fingerprint_recomputation",
+    "canonical_task_kind_and_structured_planning_constraints",
+    "closed_native_host_equivalence",
+    "execution_budget_timeout_and_worker_settlement",
+    "unique_identifiers_by_semantic_id",
+    "timing_order_and_worker_arithmetic",
+    "scope_containment_and_task_graph_order",
+    "verification_command_execution_evidence",
+    "nfc_normalization",
+    "phase0_repo_native_pytest_command_profile",
+    "workspace_path_comparison_policy",
+    "universal_plan_approval_and_deterministic_presentation",
+    "runtime_text_redaction_classification",
+    "usage_model_call_lower_bound",
+    "portable_git_branch_and_ref_alias_policy",
+    "same_path_scope_kind_substitution_is_rejected"
+  ],
+  "protocolVersion": "2.0",
+  "schemaVersion": 1,
+  "verificationCommandVectors": "verification-command-vectors.json",
+  "runtimeTextClassification": {
+    "plannerAuthoredExempt": [
+      "PlannerInput.input.text",
+      "PlannerQuestion.prompt",
+      "PlanDefinition authored prose",
+      "StateSnapshot.goal"
+    ],
+    "redactedRuntime": [
+      "RunCancel.message",
+      "RunProgress.summary",
+      "EvidenceRecord.summary",
+      "CheckResult.summary",
+      "TerminalReason.message",
+      "VerificationCommand.rejectionReason",
+      "VerificationCommand.capabilityReason",
+      "ApprovalRequired.summary",
+      "PlanApprovalPolicy.summary",
+      "ApprovalScope.label"
+    ]
+  },
+  "gitBranchVectors": "git-branch-vectors.json"
+}

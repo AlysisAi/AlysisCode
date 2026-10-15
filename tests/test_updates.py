@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from alysis_code import cli as cli_mod
 from alysis_code import updates as updates_mod
-from alysis_code.branding import LEGACY_PYTHON_PACKAGE_NAME, PYTHON_PACKAGE_NAME
+from alysis_code.branding import PYTHON_PACKAGE_NAME
 from alysis_code.cli import app as alysis_app
 from alysis_code.config import (
     AppConfig,
@@ -32,6 +32,8 @@ from alysis_code.updates import (
     update_cache_path,
     write_update_cache,
 )
+
+RETIRED_PACKAGE_NAME = "retired-agent"
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
@@ -507,7 +509,7 @@ def test_installer_plan_directs_pipx_users_to_reinstall_under_the_new_name(monke
     monkeypatch.setattr(
         updates_mod,
         "installed_distribution_name",
-        lambda preferred=None: LEGACY_PYTHON_PACKAGE_NAME,
+        lambda preferred=None: RETIRED_PACKAGE_NAME,
     )
     monkeypatch.setattr(updates_mod, "_editable_install_reason", lambda _package_name: None)
     monkeypatch.setattr(
@@ -515,23 +517,23 @@ def test_installer_plan_directs_pipx_users_to_reinstall_under_the_new_name(monke
     )
 
     plan = detect_installer_plan(
-        executable=f"/home/me/.local/share/pipx/venvs/{LEGACY_PYTHON_PACKAGE_NAME}/bin/python",
-        prefix=f"/home/me/.local/share/pipx/venvs/{LEGACY_PYTHON_PACKAGE_NAME}",
+        executable=f"/home/me/.local/share/pipx/venvs/{RETIRED_PACKAGE_NAME}/bin/python",
+        prefix=f"/home/me/.local/share/pipx/venvs/{RETIRED_PACKAGE_NAME}",
         base_prefix="/usr",
         env={},
     )
 
     assert plan.supported is False
-    assert LEGACY_PYTHON_PACKAGE_NAME in plan.reason
+    assert RETIRED_PACKAGE_NAME in plan.reason
     assert PYTHON_PACKAGE_NAME in plan.reason
-    assert plan.command == ("pipx", "uninstall", LEGACY_PYTHON_PACKAGE_NAME)
+    assert plan.command == ("pipx", "uninstall", RETIRED_PACKAGE_NAME)
 
 
 def test_installer_plan_upgrades_pip_users_to_the_new_package(monkeypatch) -> None:
     monkeypatch.setattr(
         updates_mod,
         "installed_distribution_name",
-        lambda preferred=None: LEGACY_PYTHON_PACKAGE_NAME,
+        lambda preferred=None: RETIRED_PACKAGE_NAME,
     )
     monkeypatch.setattr(updates_mod, "_editable_install_reason", lambda _package_name: None)
     monkeypatch.setattr(updates_mod.shutil, "which", lambda _name: None)
@@ -545,11 +547,11 @@ def test_installer_plan_upgrades_pip_users_to_the_new_package(monkeypatch) -> No
 
     # The upgrade must target the new package, never the retired one.
     assert PYTHON_PACKAGE_NAME in plan.command
-    assert LEGACY_PYTHON_PACKAGE_NAME not in plan.command
-    assert f"pip uninstall {LEGACY_PYTHON_PACKAGE_NAME}" in plan.reason
+    assert RETIRED_PACKAGE_NAME not in plan.command
+    assert f"pip uninstall {RETIRED_PACKAGE_NAME}" in plan.reason
 
 
 def test_update_check_polls_the_current_package(monkeypatch) -> None:
     """A stale endpoint would report 'up to date' forever."""
     assert updates_mod.PYPI_JSON_URL.endswith(f"/{PYTHON_PACKAGE_NAME}/json")
-    assert LEGACY_PYTHON_PACKAGE_NAME not in updates_mod.PYPI_JSON_URL
+    assert RETIRED_PACKAGE_NAME not in updates_mod.PYPI_JSON_URL

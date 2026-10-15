@@ -24,6 +24,21 @@ _ALYSIS_PRESET_URL = next(p for p in PROFILE_PRESETS if p.key == "alysis").base_
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
+        ("https://chatgpt.com/backend-api/codex", "openai"),
+        ("https://chatgpt.com/backend-api/codex/", "openai"),
+        ("https://chatgpt.com/backend-api/codex/responses", "openai"),
+        ("https://chatgpt.com/backend-api/other", None),
+        ("https://chatgpt.com/backend-api/codex-other", None),
+        ("https://chatgpt.com.example.org/backend-api/codex", None),
+    ],
+)
+def test_chatgpt_subscription_endpoint_has_openai_provider_identity(url, expected):
+    assert known_provider_key_from_base_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
         ("https://api.openai.com/v1", "api.openai.com"),
         ("http://localhost:11434/v1", "localhost:11434"),
         ("https://team:s3cret@proxy.example.com:8443/v1", "proxy.example.com:8443"),
@@ -47,7 +62,7 @@ def test_display_host_is_the_host_and_port_only(url: str | None, expected: str) 
         alysis_cloud.DEFAULT_PROXY_BASE_URL,
         "https://staging-ref.supabase.co/functions/v1/llm/v1",
         "https://api.alysiscode.com/v1",
-        "https://api.sylliptor.alysisai.com/v1",
+        "https://api.alysiscode.com/v1",
     ],
 )
 def test_hosted_gateway_is_named_instead_of_shown_by_host(url: str) -> None:

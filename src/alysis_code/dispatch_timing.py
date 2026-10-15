@@ -83,8 +83,6 @@ WAIT_OUTCOME_CANCELLED = "cancelled"
 def _env_value(name: str, environ: Mapping[str, str] | None = None) -> str | None:
     source: Mapping[str, str] = os.environ if environ is None else environ
     raw = source.get(name)
-    if raw is None and name.startswith("ALYSIS_"):
-        raw = source.get("SYLLIPTOR_" + name.removeprefix("ALYSIS_"))
     if raw is None:
         return None
     cleaned = str(raw).strip()

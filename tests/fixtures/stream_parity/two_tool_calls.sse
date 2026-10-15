@@ -1,0 +1,22 @@
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":": \"a.py\""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"path\": "}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"b.py\", "}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"max_bytes\": 10}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-parity-3","object":"chat.completion.chunk","created":1790000000,"model":"mimo-v2.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

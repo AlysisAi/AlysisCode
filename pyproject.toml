@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "alysis-code"
-version = "0.14.9"
+version = "0.15.0"
 description = "Local CLI coding agent powered by any API."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -54,15 +54,26 @@ dependencies = [
 ]
 
 [project.urls]
-Changelog = "https://github.com/AlysisAi/alysis-code/blob/main/docs/CHANGELOG.md"
-Documentation = "https://github.com/AlysisAi/alysis-code/tree/main/docs"
+Changelog = "https://github.com/AlysisAi/AlysisCode/blob/main/docs/CHANGELOG.md"
+Documentation = "https://github.com/AlysisAi/AlysisCode/tree/main/docs"
 Funding = "https://github.com/sponsors/AlysisAi"
-Issues = "https://github.com/AlysisAi/alysis-code/issues"
-Security = "https://github.com/AlysisAi/alysis-code/blob/main/.github/SECURITY.md"
-Source = "https://github.com/AlysisAi/alysis-code"
+Issues = "https://github.com/AlysisAi/AlysisCode/issues"
+Security = "https://github.com/AlysisAi/AlysisCode/blob/main/.github/SECURITY.md"
+Source = "https://github.com/AlysisAi/AlysisCode"
 
 [project.optional-dependencies]
+documents = [
+  "reportlab==4.4.9",
+  "pypdfium2==5.13.0",
+  "markdown-it-py==4.2.0",
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "XlsxWriter==3.2.9",
+  "python-pptx==1.0.2",
+  "lxml==6.1.3",
+]
 dev = [
+  "jsonschema>=4.23.0",
   "editables==0.5",
   "hatchling==1.31.0",
   "pyyaml>=6.0.0",
@@ -84,10 +95,7 @@ server = [
 alysis-code = "alysis_code.cli:app"
 # Short alias.
 alysis = "alysis_code.cli:app"
-# Deprecated alias kept so muscle memory, shell aliases, CI scripts and IDE
-# configs written against the old name keep working. Forwards silently.
-# Remove no earlier than the next major release.
-sylliptor = "alysis_code.cli:legacy_app"
+alysis-ide-bridge = "alysis_code.ide.stdio_bridge:run_stdio_bridge"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/alysis_code"]
@@ -95,6 +103,9 @@ exclude = [
   "**/__pycache__/**",
   "**/*.py[cod]",
 ]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schemas/forge-host-v2/forge-host-v2.schema.json" = "alysis_code/schemas/forge-host-v2/forge-host-v2.schema.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -105,6 +116,7 @@ include = [
   "/README.md",
   "/pyproject.toml",
   "/src/alysis_code",
+  "/schemas/forge-host-v2/forge-host-v2.schema.json",
 ]
 exclude = [
   "**/__pycache__/**",

@@ -40,6 +40,7 @@ capture guard in :mod:`alysis_code.pipeline_facts`.
 
 from __future__ import annotations
 
+import inspect
 import os
 import subprocess
 import threading
@@ -51,11 +52,19 @@ from pathlib import Path
 from typing import Any
 
 from .branding import env_get
+from .command_text import command_text
 from .runtime_kind import RuntimeKind, normalize_runtime_kind
 
 # Grace period between SIGTERM and SIGKILL for a tracked group.
 PROCESS_REAP_GRACE_SECONDS = 5.0
 _GROUP_EXIT_POLL_SECONDS = 0.02
+
+# How often a command run with a ``cancel_check`` reads it. The wait still ends
+# the moment the command exits, so this only bounds how long a cancelled command
+# keeps running; a desktop host gives a Stop 1.5 s to be confirmed.
+CANCEL_CHECK_INTERVAL_SECONDS = 0.1
+# SIGTERM grace for a cancelled command's group, within that 1.5 s.
+_CANCEL_REAP_GRACE_SECONDS = 0.5
 
 SIGNAL_NONE = "none"
 SIGNAL_TERM = "SIGTERM"
@@ -468,6 +477,92 @@ def _describe_command(args: Any) -> str:
         return str(args)
 
 
+class CommandCancelledError(subprocess.SubprocessError):
+    """A command's ``cancel_check`` fired before the command finished.
+
+    Raised like :class:`subprocess.TimeoutExpired`: the caller stops the command,
+    may set ``stdout`` and ``stderr`` to what it printed until then, and re-raises.
+    """
+
+    def __init__(self, cmd: Any, stdout: Any = None, stderr: Any = None) -> None:
+        super().__init__(cmd)
+        self.cmd = cmd
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def __str__(self) -> str:
+        return f"Command '{_describe_command(self.cmd)}' was cancelled"
+
+
+def runner_takes_cancel_check(runner: Any) -> bool:
+    """True when ``runner.run`` accepts ``cancel_check``.
+
+    Callers pass it only then, so runners written before it (test doubles among
+    them) keep working.
+    """
+    try:
+        parameters = inspect.signature(runner.run).parameters.values()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "cancel_check" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _stop_windows_process_tree(process: subprocess.Popen[Any]) -> None:  # pragma: no cover
+    """End a command and the processes it started, at once (Windows).
+
+    ``taskkill /T`` takes most of a second (about 0.8 s measured), more than half
+    of what a Stop may take. ``psutil`` finds the children in one process snapshot
+    and ends them directly. We hold the command's process handle, so its pid has
+    not been reused; ``taskkill`` stays the fallback.
+    """
+    from .terminal_manager import _kill_windows_process_tree
+
+    try:
+        import psutil
+
+        parent = psutil.Process(process.pid)
+        family = [*parent.children(recursive=True), parent]
+    except Exception:  # noqa: BLE001 - fall back to the slower, older way
+        _kill_windows_process_tree(process)
+        return
+    for member in family:
+        try:
+            member.kill()
+        except psutil.Error:
+            pass
+
+
+def communicate_until_cancelled(
+    process: subprocess.Popen[Any],
+    *,
+    timeout: float | None,
+    cancel_check: Callable[[], bool],
+) -> tuple[Any, Any]:
+    """``process.communicate(timeout=timeout)`` that reads ``cancel_check`` while it waits.
+
+    ``communicate`` can be called again after it times out without losing output,
+    so the wait is taken in slices of :data:`CANCEL_CHECK_INTERVAL_SECONDS`. Raises
+    :class:`subprocess.TimeoutExpired` when ``timeout`` runs out, as ``communicate``
+    does, and :class:`CommandCancelledError` once ``cancel_check`` returns true.
+    Neither stops the process; the caller does.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        if cancel_check():
+            raise CommandCancelledError(process.args)
+        step = CANCEL_CHECK_INTERVAL_SECONDS
+        if deadline is not None:
+            step = min(step, max(0.0, deadline - time.monotonic()))
+        try:
+            return process.communicate(timeout=step)
+        except subprocess.TimeoutExpired:
+            if timeout is not None and deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(process.args, timeout) from None
+
+
 def run_in_tracked_process_group(
     args: Any,
     *,
@@ -480,6 +575,7 @@ def run_in_tracked_process_group(
     command_label: str = "",
     stdin: Any | None = None,
     popen_factory: Callable[..., subprocess.Popen[str]] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """``subprocess.run``-equivalent that starts the command in its own group.
 
@@ -494,11 +590,16 @@ def run_in_tracked_process_group(
     handle: the call goes straight to ``subprocess.run``. That keeps every
     non-tracking caller -- and the long-standing test seam of patching
     ``subprocess.run`` -- behaving exactly as before.
+
+    With ``cancel_check`` (a Stop, or the run's budget), the wait reads it every
+    :data:`CANCEL_CHECK_INTERVAL_SECONDS`. Once it returns true, the command and
+    what it started are stopped, as an interrupt stops them, and
+    :class:`CommandCancelledError` is raised with the output read so far.
     """
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
-        "text": True,
+        **command_text(),
         **new_process_group_popen_kwargs(),
     }
     # Left unset by default so interactive shell work keeps the caller's stdin.
@@ -512,13 +613,17 @@ def run_in_tracked_process_group(
     if env is not None:
         popen_kwargs["env"] = env
     if registry is None:
-        return subprocess.run(
-            args,
-            shell=shell,
-            timeout=timeout,
-            check=False,
-            **popen_kwargs,
-        )
+        if cancel_check is None:
+            return subprocess.run(
+                args,
+                shell=shell,
+                timeout=timeout,
+                check=False,
+                **popen_kwargs,
+            )
+        # A cancelled command must not leave its children running, so its group
+        # is tracked here even when the caller keeps no registry.
+        registry = ProcessGroupRegistry()
     # Resolved at call time, not bound as a default: `subprocess.Popen` and
     # `subprocess.run` are the seams callers and tests patch, and a default
     # argument would capture the original before any patch could take effect.
@@ -534,7 +639,12 @@ def run_in_tracked_process_group(
             label = str(command_label) if command_label else _describe_command(args)
             tracked = registry.register(pgid=pgid, command=label, origin=origin)
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
+            if cancel_check is None:
+                stdout, stderr = process.communicate(timeout=timeout)
+            else:
+                stdout, stderr = communicate_until_cancelled(
+                    process, timeout=timeout, cancel_check=cancel_check
+                )
         except subprocess.TimeoutExpired as exc:
             # Killing only the leader is what orphans the children today. That is
             # left as-is on purpose: the group stays registered, and finalization
@@ -550,6 +660,20 @@ def run_in_tracked_process_group(
             else:
                 process.kill()
                 process.wait()
+            raise
+        except CommandCancelledError as exc:
+            # Stop the command and everything it started now, as an interrupt
+            # below does, then hand back what it printed so far.
+            if os.name == "nt":  # pragma: no cover - exercised on Windows
+                _stop_windows_process_tree(process)
+            else:
+                process.kill()
+                if tracked is not None:
+                    reap_process_group(tracked, grace_seconds=_CANCEL_REAP_GRACE_SECONDS)
+            try:
+                exc.stdout, exc.stderr = process.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
             raise
         except BaseException:
             # Ctrl-C lands here. Before this change the terminal's SIGINT reached

@@ -4,7 +4,7 @@
 # retained outside the runtime image, and installed without network access.
 ARG WOLFI_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:b71f01d7fbb063a921577f355a82ea665e98c96e73c89a6ea0bcb773875b129c
 ARG VARIANT=dev
-ARG SOURCE_URL=https://github.com/AlysisAi/alysis-code
+ARG SOURCE_URL=https://github.com/AlysisAi/AlysisCode
 ARG GIT_SHA=dev
 ARG VERSION=dev
 ARG SOURCE_DATE_EPOCH=0

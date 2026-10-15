@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+import alysis_code.atomic_io as atomic_io_mod
 from alysis_code.config import (
     DEFAULT_SUBAGENT_TIMEOUT_S,
     DEFAULT_VERIFY_COMMANDS,
@@ -14,6 +17,7 @@ from alysis_code.config import (
     clear_persisted_api_key,
     clone_cfg,
     config_path,
+    config_transaction,
     credentials_path,
     get_api_key,
     is_generic_configured_verify_preset,
@@ -677,6 +681,128 @@ def test_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert cfg2.assets.comprehension.questioning_mode == "assertive"
     assert cfg2.assets.comprehension.schema_version == 2
     assert config_path().name == "config.json"
+
+
+def test_save_config_replace_failure_preserves_previous_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
+    save_config(AppConfig(model="before"))
+    path = config_path()
+    previous = path.read_bytes()
+
+    def fail_replace(_source: Path, _target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(atomic_io_mod.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        save_config(AppConfig(model="after"))
+
+    assert path.read_bytes() == previous
+    assert list(tmp_path.glob(f".{path.name}.*.tmp")) == []
+
+
+def test_config_transaction_saves_once_only_after_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
+    loaded = AppConfig(model="before")
+    saved: list[AppConfig] = []
+
+    with config_transaction(
+        loader=lambda: loaded.model_copy(deep=True),
+        saver=lambda cfg: saved.append(cfg.model_copy(deep=True)),
+    ) as cfg:
+        assert saved == []
+        cfg.model = "after"
+
+    assert [cfg.model for cfg in saved] == ["after"]
+
+
+def test_nested_config_transaction_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
+    save_config(AppConfig(model="before"))
+
+    with config_transaction() as cfg:
+        cfg.extra_fields["outer_update"] = "kept"
+        with pytest.raises(ConfigError, match="Nested config transactions"):
+            with config_transaction():
+                pytest.fail("nested transaction unexpectedly entered")
+
+    assert load_config().extra_fields["outer_update"] == "kept"
+
+
+def test_config_transaction_exception_leaves_previous_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
+    save_config(AppConfig(model="before"))
+    path = config_path()
+    previous = path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="mutation failed"):
+        with config_transaction() as cfg:
+            cfg.model = "after"
+            raise RuntimeError("mutation failed")
+
+    assert path.read_bytes() == previous
+
+
+def test_config_transaction_serializes_fresh_reads_across_processes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
+    save_config(AppConfig(model="before"))
+    entered_path = tmp_path / "child-entered"
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in (os.fspath(source_root), env.get("PYTHONPATH")) if value
+    )
+    env["CONFIG_TRANSACTION_ENTERED_PATH"] = os.fspath(entered_path)
+    script = """
+import os
+from pathlib import Path
+
+from alysis_code.config import config_transaction
+
+print("ready", flush=True)
+with config_transaction() as cfg:
+    Path(os.environ["CONFIG_TRANSACTION_ENTERED_PATH"]).write_text("entered", encoding="utf-8")
+    cfg.extra_fields["child_update"] = "kept"
+print("done", flush=True)
+"""
+    process: subprocess.Popen[str] | None = None
+    try:
+        with config_transaction() as cfg:
+            cfg.extra_fields["parent_update"] = "kept"
+            process = subprocess.Popen(
+                [sys.executable, "-c", script],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert process.stdout is not None
+            assert process.stdout.readline().strip() == "ready"
+            with pytest.raises(subprocess.TimeoutExpired):
+                process.wait(timeout=0.2)
+            assert entered_path.exists() is False
+
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        assert stdout.strip() == "done"
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    persisted = load_config()
+    assert persisted.extra_fields["parent_update"] == "kept"
+    assert persisted.extra_fields["child_update"] == "kept"
 
 
 def test_app_config_uses_shared_step_budget_defaults() -> None:

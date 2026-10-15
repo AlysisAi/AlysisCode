@@ -117,6 +117,7 @@ def resolve_startup_workspace_binding(
     select_action_interactive: Callable[..., tuple[str | None, bool]] | None = None,
     select_candidate_interactive: Callable[..., tuple[Path | None, bool]] | None = None,
     prompt_text: Callable[..., str] | None = None,
+    allow_subprocess: bool = True,
 ) -> WorkspaceBinding:
     prompter = prompt_text or typer.prompt
     policy = workspace_policy(action)
@@ -125,6 +126,7 @@ def resolve_startup_workspace_binding(
         create_if_missing=create_if_missing,
         allow_broad_workspace=allow_broad_workspace,
         source=source,
+        allow_subprocess=allow_subprocess,
     )
     try:
         return ensure_workspace_policy(

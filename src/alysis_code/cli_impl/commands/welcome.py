@@ -728,10 +728,6 @@ def _chat_command_sections(*, ui_mode: str = "chat") -> list[tuple[str, list[tup
                 ("/permissions", "change execution mode"),
                 ("/persona", "switch persona (code, architect, ask, debug)"),
                 ("/ask <question>", "one read-only turn; mode restored afterwards"),
-                (
-                    "/objective [new|amend]",
-                    "show the current task; new starts another task, amend adds a constraint",
-                ),
                 ("/trace", "reasoning detail (off/compact/full)"),
             ],
         ),
@@ -808,8 +804,6 @@ def _chat_completer_commands(*, ui_mode: str = "chat") -> list[str]:
         _CHAT_GLOBAL_VISIBLE_COMMANDS
         + [
             "/forge resume",
-            "/objective new",
-            "/objective amend",
             "/usage hud",
             "/usage hud on",
             "/usage hud off",
@@ -914,6 +908,7 @@ def _session_build_tools_kwargs(*, session: Any, mode: str) -> dict[str, Any]:
         "persona_allow_write_globs": getattr(session, "persona_allow_write_globs", None),
         "non_interactive": bool(getattr(session, "non_interactive", False)),
         "shell_runner": getattr(session, "shell_runner", None),
+        "shell_environment": getattr(session, "shell_environment", None),
         "terminal_manager": getattr(session, "terminal_manager", None),
         # Carried across tool rebuilds for the same reason as the process-group
         # registry: the rewrite guard is per-run and fires once per file, so
@@ -952,6 +947,9 @@ def _session_build_tools_kwargs(*, session: Any, mode: str) -> dict[str, Any]:
         "managed_browser_service": getattr(session, "managed_browser_service", None),
         "managed_browser_owner_id": getattr(session, "managed_browser_owner_id", None),
         "managed_browser_cancel_check": getattr(session, "managed_browser_cancel_check", None),
+        # Carried across rebuilds so "Approve for me" keeps its reviewer and denial counts
+        # through mode, model and persona switches.
+        "approval_reviewer": getattr(session, "approval_reviewer", None),
         "get_active_workdir_relpath": lambda: resolve_session_active_workdir_relpath(session),
         "set_active_workdir_callback": (
             lambda raw_path, source: set_session_active_workdir(

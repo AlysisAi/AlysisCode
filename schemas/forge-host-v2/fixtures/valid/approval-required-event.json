@@ -1,0 +1,45 @@
+{
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "messageId": "msg_approvalreq1",
+  "operationId": "operation_approve01",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "kind": "event",
+  "sequence": 2,
+  "identity": {
+    "sessionId": "ses_abcdefgh",
+    "generationId": "gen_abcdefgh",
+    "runId": null,
+    "revision": 1
+  },
+  "payload": {
+    "type": "approval.required",
+    "approvalId": "approval_abcdefgh",
+    "action": {
+      "kind": "plan_execute",
+      "hostPlanFingerprint": "b1b7341b391c8459de5041a6734e471ac2f23c511862e7d265780cdc7227eaf7",
+      "nativeApprovalFingerprint": "7d86273ea1f7d27c4e509d5950dde659dca91e693103078250111fa7b0d6beda",
+      "verificationContractFingerprint": "cf1db8e3edfb032e6775897c162a6b0335da1c096775f76c92c84039e128106e",
+      "executionAdmissionFingerprint": "b9864d6e401538ba34e5fc3119da1b1442dd090109f73cfefc5e8df5a344bfe9",
+      "approvalPolicyFingerprint": "cfa110db67fd0ab1756fe9096fbc1c174d5a6870571ffd12c918e225415735e3"
+    },
+    "actionFingerprint": "b82b57a861876d1fa1a87627a4b57217af5ad1c0574a115016ae11f42a10f5d3",
+    "summary": "Run the bound Forge plan, provider, strategy, writes, and verification commands.",
+    "risk": "high",
+    "scope": {
+      "schema": "alysis.forge-host.approval-scope/v2",
+      "kind": "filesystem",
+      "label": "Forge plan execution authority",
+      "workspaceRef": "workspace_abcdefgh",
+      "resources": [
+        {
+          "access": "write",
+          "kind": "file",
+          "path": "src/café.py"
+        }
+      ],
+      "fingerprint": "0df625b8b5fff25d51b17dc90d289a50aec920ef2fecc4eeefb93b3ee17ec415"
+    },
+    "expiresAt": "2026-08-21T09:10:00Z"
+  }
+}

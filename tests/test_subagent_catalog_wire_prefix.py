@@ -192,7 +192,8 @@ def test_resume_refreshes_tool_scope_and_preserves_history_after_permission_fail
         assert "unavailable_tool" not in catalog
         tool_names = {
             tool.get("name") or tool.get("function", {}).get("name")
-            for tool in requests[-1]["tools"]
+            for entry in requests[-1]["tools"]
+            for tool in (entry["tools"] if entry.get("type") == "namespace" else [entry])
         }
         assert tool_names == {"fs_list"}
         retained = [message.get("content") for message in child.messages]

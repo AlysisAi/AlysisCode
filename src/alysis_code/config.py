@@ -6,14 +6,18 @@ import os
 import re
 import shlex
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from io import BufferedRandom
 from pathlib import Path
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from .atomic_io import atomic_write_json
 from .branding import (
     canonical_user_config_dir,
     canonical_user_data_dir,
@@ -25,6 +29,7 @@ from .llm.provider_limits import (
     DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS,
     DEFAULT_PROVIDER_RETRY_MAX_RETRIES,
 )
+from .llm.streaming import STREAM_ASSEMBLY_AUTO, STREAM_ASSEMBLY_SETTINGS
 from .prompt_guidance_catalog import (
     GUIDANCE_PROFILES,
     ParentPromptGuidanceProfile,
@@ -42,6 +47,11 @@ from .step_budget import (
 from .web_research import normalize_trusted_domain_entry
 from .web_search_adapters import normalize_web_search_adapter
 from .web_search_policy import normalize_web_search_policy
+
+if os.name == "nt":  # pragma: no cover - exercised on Windows
+    import msvcrt
+else:  # pragma: no cover - exercised on POSIX
+    import fcntl
 
 
 class ConfigError(RuntimeError):
@@ -119,33 +129,12 @@ _REASONING_EFFORTS: set[str] = {
 }
 _PROMPT_CACHE_MODES: set[str] = {"off", "manual", "auto"}
 _ANTHROPIC_PROMPT_CACHE_TTLS: set[str] = {"5m", "1h"}
-DEFAULT_FEEDBACK_GITHUB_REPO = "AlysisAi/alysis-code"
+DEFAULT_FEEDBACK_GITHUB_REPO = "AlysisAi/AlysisCode"
 _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+_CONFIG_STORE_LOCK = threading.RLock()
+_CONFIG_TRANSACTION_STATE = threading.local()
 
-# Profile name for the hosted Pro provider. Duplicated from ``alysis_cloud``
-# rather than imported, to keep config.py free of intra-package imports at
-# module scope. The legacy spelling is what pre-rebrand installs wrote into
-# config.json and credentials.json.
 CLOUD_PROFILE_KEY = "alysis"
-LEGACY_CLOUD_PROFILE_KEY = "sylliptor"
-
-# A config written before the rename pins the feedback repo to its old name.
-# GitHub redirects the rename, so feedback still lands, but the value is stale
-# and would outlive the redirect if the old name were ever reused. Anything
-# still pointing at the pre-rebrand repo is read as the current one.
-LEGACY_FEEDBACK_GITHUB_REPOS = frozenset(
-    {
-        "alysisai/sylliptor",
-        "apfivos/sylliptor",
-    }
-)
-
-
-def _redirect_legacy_feedback_repo(repo: str) -> str:
-    """Map a pre-rebrand feedback repo onto the current one."""
-    if repo.strip().lower() in LEGACY_FEEDBACK_GITHUB_REPOS:
-        return DEFAULT_FEEDBACK_GITHUB_REPO
-    return repo
 
 
 class AssetsComprehensionConfig(BaseModel):
@@ -561,6 +550,10 @@ class AppConfig(BaseModel):
     sampling_top_p: float | None = None
     sampling_seed: int | None = None
     stream: bool = True
+    # auto|concat|cumulative: how streamed chunks become content and tool-call
+    # arguments. "auto" is "concat" for every provider not known to re-send
+    # cumulative text (see llm.openai_compat.resolve_stream_assembly).
+    llm_stream_assembly: str = STREAM_ASSEMBLY_AUTO
     routing_mode: str = "auto"  # auto|code_only
     # Kill-switch for capability arbitration over router verdicts; env override
     # ALYSIS_ROUTE_ARBITRATION=off wins over the config value.
@@ -879,15 +872,26 @@ def _looks_like_env_assignment(token: str) -> bool:
     return all(ch == "_" or ch.isalnum() for ch in name)
 
 
-def _split_supported_launcher_path_command_parts(command: str) -> list[str] | None:
+def split_command_words(command: str) -> list[str] | None:
+    """The words of one command line, with backslashes kept literally.
+
+    Quotes group a word and are removed; nothing else is interpreted, so Windows paths
+    (``C:\\venv\\Scripts\\pytest.exe``) and quoted paths with spaces
+    (``"C:\\Program Files\\Python312\\python.exe"``) come out whole. ``None`` when the
+    quotes do not balance.
+    """
     try:
-        raw_parts = shlex.split(command, posix=False)
+        raw_parts = shlex.split(str(command or ""), posix=False)
     except ValueError:
         return None
-    if not raw_parts:
+    return [_strip_matching_shell_quotes(token) for token in raw_parts]
+
+
+def _split_supported_launcher_path_command_parts(command: str) -> list[str] | None:
+    parts = split_command_words(command)
+    if not parts:
         return None
 
-    parts = [_strip_matching_shell_quotes(token) for token in raw_parts]
     candidate = parts
     runner_stripped = strip_verify_runner_prefix(candidate)
     if runner_stripped is None:
@@ -931,6 +935,30 @@ def _data_dir() -> Path:
 
 def config_path() -> Path:
     return _config_dir() / "config.json"
+
+
+def _config_lock_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.lock")
+
+
+def _acquire_config_file_lock(handle: BufferedRandom) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised on Windows
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _release_config_file_lock(handle: BufferedRandom) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised on Windows
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def credentials_path() -> Path:
@@ -1049,8 +1077,8 @@ def load_config() -> AppConfig:
     # reports the repo that feedback actually goes to. Redirecting only inside
     # resolve_feedback_github_repo() left the two disagreeing in the same
     # output: the migrated profile name beside the stale repo name.
-    cfg.feedback_github_repo = _redirect_legacy_feedback_repo(
-        str(getattr(cfg, "feedback_github_repo", DEFAULT_FEEDBACK_GITHUB_REPO))
+    cfg.feedback_github_repo = str(
+        getattr(cfg, "feedback_github_repo", DEFAULT_FEEDBACK_GITHUB_REPO)
     )
     _migrate_delegated_codex_subscription(
         cfg,
@@ -1059,6 +1087,9 @@ def load_config() -> AppConfig:
             and any(str(name) != "default" for name in raw["profiles"])
         ),
     )
+    from .profiles import migrate_subscription_endpoints
+
+    migrate_subscription_endpoints(cfg)
     sync_active_profile_to_config(cfg)
     _canonicalize_active_profile_model(cfg)
     return cfg
@@ -1096,13 +1127,17 @@ def _migrate_delegated_codex_subscription(
         add_profile,
         set_active_profile,
     )
+    from .provider_auth import provider_auth_connection
 
+    connection = provider_auth_connection("openai-codex")
+    if connection is None:
+        return False
     model = str(settings.model or "").strip()
     reasoning_effort = str(settings.reasoning_effort or "").strip() or None
     profile = ProfileSpec(
         name="chatgpt-codex",
-        protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        protocol=connection.protocol,
+        base_url=connection.base_url,
         auth_provider="openai-codex",
         default_model=model,
         reasoning_effort=reasoning_effort,
@@ -1132,7 +1167,6 @@ def _migrate_delegated_codex_subscription(
 
 def save_config(cfg: AppConfig) -> None:
     path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         validated = AppConfig.model_validate(cfg.model_dump())
@@ -1145,7 +1179,53 @@ def save_config(cfg: AppConfig) -> None:
         extra_fields.pop("web_search_enabled", None)
         data.update(extra_fields)
 
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_json(path, data, ensure_ascii=True)
+
+
+@contextmanager
+def config_transaction(
+    *,
+    loader: Callable[[], AppConfig] | None = None,
+    saver: Callable[[AppConfig], None] | None = None,
+) -> Iterator[AppConfig]:
+    """Serialize a fresh config read, in-memory mutation, and one durable save.
+
+    The sidecar lock is intentionally stable instead of locking ``config.json``
+    itself: atomic publication replaces that inode. Callers may inject their
+    existing patchable loader and saver; non-canonical stores receive in-process
+    serialization only. Nesting fails fast because acquiring the same sidecar a
+    second time in one thread is not portable across supported platforms.
+    """
+
+    load = load_config if loader is None else loader
+    save = save_config if saver is None else saver
+    canonical_store = (loader is None or loader is load_config) and (
+        saver is None or saver is save_config
+    )
+    with _CONFIG_STORE_LOCK:
+        if getattr(_CONFIG_TRANSACTION_STATE, "active", False):
+            raise ConfigError("Nested config transactions are not supported.")
+        _CONFIG_TRANSACTION_STATE.active = True
+        try:
+            if not canonical_store:
+                cfg = load()
+                yield cfg
+                save(cfg)
+                return
+
+            path = config_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = _config_lock_path(path)
+            with lock_path.open("a+b") as handle:
+                _acquire_config_file_lock(handle)
+                try:
+                    cfg = load()
+                    yield cfg
+                    save(cfg)
+                finally:
+                    _release_config_file_lock(handle)
+        finally:
+            _CONFIG_TRANSACTION_STATE.active = False
 
 
 def _canonicalize_active_profile_model(cfg: AppConfig) -> None:
@@ -1446,11 +1526,6 @@ def load_persisted_profile_keys() -> dict[str, str]:
         key = str(value or "").strip()
         if profile_name and key:
             keys[profile_name] = key
-    # The hosted Pro provider's profile was named "sylliptor" before the
-    # rename. Surface the stored gateway key under the current name so an
-    # existing Pro user is not asked to log in again.
-    if LEGACY_CLOUD_PROFILE_KEY in keys and CLOUD_PROFILE_KEY not in keys:
-        keys[CLOUD_PROFILE_KEY] = keys[LEGACY_CLOUD_PROFILE_KEY]
     return keys
 
 
@@ -1748,6 +1823,7 @@ _SETTABLE_KEYS: set[str] = {
     "prompt_guidance.model_profiles",
     "llm_timeout_s",
     "llm_stream_no_progress_timeout_s",
+    "llm_stream_assembly",
     "run_deadline_seconds",
     "llm_enable_thinking",
     "llm_reasoning_effort",
@@ -1816,6 +1892,7 @@ _SETTABLE_KEYS: set[str] = {
     "cache.keepalive_idle_threshold_s",
     "read_ledger_enabled",
     "web_fetch_trusted_domains",
+    "web_tools_enabled",
     "web_search_mode",
     "web_search_policy",
     "web_search_enabled",
@@ -1887,6 +1964,7 @@ _ROLE_MODEL_NAMES: set[str] = {
     "conflict_resolve",
     "comprehension",
     "router",
+    "approval_review",
 }
 _ROLE_MODEL_CONFIG_PREFIXES: set[str] = {"role_models", "forge_role_models"}
 # Persona vocabulary for persona_models.<persona> keys and default_persona
@@ -2340,6 +2418,13 @@ def resolve_crash_diagnostic_log_path(
 
 
 def resolve_llm_enable_thinking(cfg: AppConfig | None) -> bool | None:
+    invocation = env_get("ALYSIS_RUN_REASONING_EFFORT")
+    if invocation is not None:
+        from .model_reasoning import invocation_reasoning_settings
+
+        if cfg is None:
+            raise ConfigError("Reasoning effort requires a selected provider/model.")
+        return invocation_reasoning_settings(cfg, invocation)[1]
     active_subscription, subscription_effort = _active_subscription_reasoning_effort(cfg)
     if active_subscription:
         return None if subscription_effort is None else subscription_effort != "none"
@@ -2376,6 +2461,13 @@ def _legacy_reasoning_effort_hint(cfg: AppConfig | None) -> str | None:
 
 
 def resolve_llm_reasoning_effort(cfg: AppConfig | None) -> str | None:
+    invocation = env_get("ALYSIS_RUN_REASONING_EFFORT")
+    if invocation is not None:
+        from .model_reasoning import invocation_reasoning_settings
+
+        if cfg is None:
+            raise ConfigError("Reasoning effort requires a selected provider/model.")
+        return invocation_reasoning_settings(cfg, invocation)[0]
     active_subscription, subscription_effort = _active_subscription_reasoning_effort(cfg)
     if active_subscription:
         return subscription_effort
@@ -2647,11 +2739,9 @@ def resolve_feedback_github_enabled(cfg: AppConfig | None) -> bool:
 def resolve_feedback_github_repo(cfg: AppConfig | None) -> str:
     env_value = env_get("ALYSIS_FEEDBACK_GITHUB_REPO")
     if env_value is not None:
-        return _redirect_legacy_feedback_repo(
-            _coerce_github_repo(str(env_value), key="ALYSIS_FEEDBACK_GITHUB_REPO")
-        )
+        return _coerce_github_repo(str(env_value), key="ALYSIS_FEEDBACK_GITHUB_REPO")
     raw = getattr(cfg, "feedback_github_repo", DEFAULT_FEEDBACK_GITHUB_REPO)
-    return _redirect_legacy_feedback_repo(_coerce_github_repo(str(raw), key="feedback_github_repo"))
+    return _coerce_github_repo(str(raw), key="feedback_github_repo")
 
 
 def resolve_feedback_open_browser(cfg: AppConfig | None) -> bool:
@@ -3320,6 +3410,15 @@ def set_config_value(
             return cfg
         raise ConfigError("stream must be true/false")
 
+    if key == "llm_stream_assembly":
+        normalized = value.strip().lower()
+        if normalized not in STREAM_ASSEMBLY_SETTINGS:
+            raise ConfigError(
+                "llm_stream_assembly must be one of: " + ", ".join(STREAM_ASSEMBLY_SETTINGS)
+            )
+        cfg.llm_stream_assembly = normalized
+        return cfg
+
     if key == "routing_mode":
         v = value.strip().lower()
         if v not in {"auto", "code_only"}:
@@ -3516,6 +3615,16 @@ def set_config_value(
             cfg.custom_tools_enabled = False
             return cfg
         raise ConfigError("custom_tools_enabled must be true/false")
+
+    if key == "web_tools_enabled":
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "on"}:
+            cfg.web_tools_enabled = True
+            return cfg
+        if v in {"0", "false", "no", "off"}:
+            cfg.web_tools_enabled = False
+            return cfg
+        raise ConfigError("web_tools_enabled must be true/false")
 
     if key == "web_fetch_trusted_domains":
         cfg.web_fetch_trusted_domains = _parse_trusted_domain_list(value)

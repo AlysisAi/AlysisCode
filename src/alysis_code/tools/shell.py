@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,24 @@ from ..pipeline_facts import (
     pipeline_meaningful_stage,
     split_top_level_pipeline,
 )
+from ..process_reaping import CommandCancelledError, runner_takes_cancel_check
 
 
 class ShellError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, result_payload: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        # The tool result to record instead of the bare message, when there is one.
+        self.result_payload = result_payload
+
+
+CANCELLED_COMMAND_MESSAGE = "Command stopped because the run was cancelled."
+_OUTPUT_LIMIT = 20000
+
+
+def _truncate(text: str) -> tuple[str, bool]:
+    if len(text) > _OUTPUT_LIMIT:
+        return text[:_OUTPUT_LIMIT] + "...(truncated)", True
+    return text, False
 
 
 _PYTHON_CMD_PATTERN = re.compile(r"(^|(?:&&|\|\||;)\s*)python(?=\s)")
@@ -52,6 +67,7 @@ def shell_run(
     timeout_s: float = 60,
     runner: Any | None = None,
     capture_pipeline_status: bool = False,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     base = root.resolve()
     if cwd:
@@ -76,20 +92,48 @@ def shell_run(
         and pipeline_meaningful_stage(cmd) is not None
     )
 
+    # A Stop (or the run's budget) ends a command that is still running, when
+    # the caller can see the run's cancellation and the runner can stop it.
+    run_kwargs: dict[str, Any] = {}
+    if cancel_check is not None and runner_takes_cancel_check(runner):
+        run_kwargs["cancel_check"] = cancel_check
+
     def _run(command_text: str) -> tuple[Any, list[int] | None, str]:
         run_cmd = (
             build_pipeline_status_capture_command(command_text) if wants_capture else command_text
         )
-        completed = runner.run(root=base, cwd=cwd_path, cmd=run_cmd, timeout_s=timeout_s)
+        completed = runner.run(
+            root=base, cwd=cwd_path, cmd=run_cmd, timeout_s=timeout_s, **run_kwargs
+        )
         if wants_capture:
             status, cleaned_stderr = extract_pipeline_status(completed.stderr or "")
             return completed, status, cleaned_stderr
         return completed, None, (completed.stderr or "")
 
+    def _cancelled(e: CommandCancelledError) -> ShellError:
+        # Reported with what the command printed before it was stopped, as a
+        # cancelled ``shell_wait`` reports its output; the turn then ends.
+        partial_stdout, stdout_truncated = _truncate(str(e.stdout or ""))
+        partial_stderr, stderr_truncated = _truncate(str(e.stderr or ""))
+        return ShellError(
+            CANCELLED_COMMAND_MESSAGE,
+            result_payload={
+                "error": CANCELLED_COMMAND_MESSAGE,
+                "cancelled": True,
+                "cmd": cmd,
+                "cwd": str(cwd_path),
+                "stdout": partial_stdout,
+                "stderr": partial_stderr,
+                "truncated": stdout_truncated or stderr_truncated,
+            },
+        )
+
     try:
         cp, stage_status, stderr_text = _run(cmd)
     except subprocess.TimeoutExpired as e:
         raise ShellError(f"Command timed out after {timeout_s:g}s") from e
+    except CommandCancelledError as e:
+        raise _cancelled(e) from e
     except Exception as e:  # noqa: BLE001
         raise ShellError(f"Failed to run command: {e}") from e
 
@@ -101,19 +145,14 @@ def shell_run(
             effective_cmd = fallback_cmd
         except subprocess.TimeoutExpired as e:
             raise ShellError(f"Command timed out after {timeout_s:g}s") from e
+        except CommandCancelledError as e:
+            raise _cancelled(e) from e
         except Exception as e:  # noqa: BLE001
             raise ShellError(f"Failed to run command: {e}") from e
 
-    stdout = cp.stdout or ""
-    stderr = stderr_text
-    truncated = False
-    limit = 20000
-    if len(stdout) > limit:
-        stdout = stdout[:limit] + "...(truncated)"
-        truncated = True
-    if len(stderr) > limit:
-        stderr = stderr[:limit] + "...(truncated)"
-        truncated = True
+    stdout, stdout_truncated = _truncate(cp.stdout or "")
+    stderr, stderr_truncated = _truncate(stderr_text)
+    truncated = stdout_truncated or stderr_truncated
 
     # A plain command (no top-level pipe) has a one-element status list equal to
     # its exit code. A pipeline whose per-stage status could not be observed

@@ -9,7 +9,11 @@ from .branding import default_sandbox_docker_image, env_get
 from .config import AppConfig, ConfigError
 
 _VALID_MODES = {"off", "warn", "strict"}
-_VALID_BACKENDS = {"auto", "bwrap", "docker"}
+_VALID_BACKENDS = {"auto", "bwrap", "docker", "seatbelt"}
+# What happens when the mode asks for a sandbox and no backend is usable on this machine:
+# "refuse" (no command runs), or "ask" (each command runs on the host only after the user
+# approves that exact command). A host sets "ask" only when it can show those approvals.
+_VALID_UNAVAILABLE_FALLBACKS = {"refuse", "ask"}
 _VALID_NETWORK = {"off", "on"}
 _VALID_BWRAP_PROFILES = {"compat", "hardened"}
 _VALID_PREVIEW_ACCESS = {"auto", "local", "lan"}
@@ -36,6 +40,7 @@ class ShellSandboxSettings:
     background_output_max_lines: int = 2000
     background_output_max_bytes: int = 256 * 1024
     background_kill_timeout_s: float = 10.0
+    unavailable_fallback: str = "refuse"
 
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -175,6 +180,7 @@ def resolve_shell_sandbox_settings(cfg: AppConfig) -> ShellSandboxSettings:
     background_output_max_lines = 2000
     background_output_max_bytes = 256 * 1024
     background_kill_timeout_s = 10.0
+    unavailable_fallback = "refuse"
 
     raw_cfg = cfg.extra_fields.get("shell_sandbox")
     if raw_cfg is not None and not isinstance(raw_cfg, dict):
@@ -277,6 +283,13 @@ def resolve_shell_sandbox_settings(cfg: AppConfig) -> ShellSandboxSettings:
         default=background_kill_timeout_s,
     )
 
+    unavailable_fallback = _parse_choice(
+        cfg_map.get("unavailable_fallback"),
+        field_name="shell_sandbox.unavailable_fallback",
+        allowed=_VALID_UNAVAILABLE_FALLBACKS,
+        default=unavailable_fallback,
+    )
+
     mode = _parse_choice(
         env_get("ALYSIS_SHELL_SANDBOX_MODE"),
         field_name="ALYSIS_SHELL_SANDBOX_MODE",
@@ -373,6 +386,13 @@ def resolve_shell_sandbox_settings(cfg: AppConfig) -> ShellSandboxSettings:
         default=background_kill_timeout_s,
     )
 
+    unavailable_fallback = _parse_choice(
+        env_get("ALYSIS_SHELL_SANDBOX_FALLBACK"),
+        field_name="ALYSIS_SHELL_SANDBOX_FALLBACK",
+        allowed=_VALID_UNAVAILABLE_FALLBACKS,
+        default=unavailable_fallback,
+    )
+
     return ShellSandboxSettings(
         mode=mode,
         backend=backend,
@@ -392,6 +412,7 @@ def resolve_shell_sandbox_settings(cfg: AppConfig) -> ShellSandboxSettings:
         background_output_max_lines=background_output_max_lines,
         background_output_max_bytes=background_output_max_bytes,
         background_kill_timeout_s=background_kill_timeout_s,
+        unavailable_fallback=unavailable_fallback,
     )
 
 

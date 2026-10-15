@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from typer.testing import CliRunner
 
 from alysis_code import cli as cli_mod
 from alysis_code.cli import app as alysis_app
+from alysis_code.forge import add_task, create_plan_run, load_plan, save_plan
 from alysis_code.review_gate import ReviewOutcome
 
 
@@ -18,30 +18,26 @@ def _env(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def _load_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _prepare_run_with_task(runner: CliRunner, repo: Path, tmp_path: Path) -> tuple[str, Path]:
-    result = runner.invoke(
-        alysis_app,
-        ["forge", "plan", "--path", os.fspath(repo)],
-        input="/goal Review test\n/task Implement src/feature.py\n/done\n",
-        env=_env(tmp_path),
+def _prepare_run_with_task(repo: Path) -> tuple[str, Path]:
+    paths = create_plan_run(repo)
+    plan = load_plan(paths)
+    plan["project_goal"] = "Review test"
+    plan["summary"] = "Review test"
+    task = add_task(
+        plan,
+        title="Implement feature",
+        description="Task created for review command coverage.",
+        estimated_files=["src/feature.py"],
     )
-    assert result.exit_code == 0
-    pointer = _load_json(repo / ".alysis" / "current_run.json")
-    run_dir = repo / pointer["run_path"]
-    plan_path = run_dir / "plan" / "plan.json"
-    plan = _load_json(plan_path)
-    return str(plan["tasks"][0]["id"]), run_dir
+    save_plan(paths, plan)
+    return str(task["id"]), paths.run_dir
 
 
 def test_review_command_exit_zero_when_approved(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     repo = tmp_path / "repo"
     repo.mkdir()
-    task_id, run_dir = _prepare_run_with_task(runner, repo, tmp_path)
+    task_id, run_dir = _prepare_run_with_task(repo)
 
     def fake_review_task(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         json_path = run_dir / "execution" / "reviews" / f"{task_id}.json"
@@ -85,7 +81,7 @@ def test_review_command_exit_zero_when_not_approved(tmp_path: Path, monkeypatch)
     runner = CliRunner()
     repo = tmp_path / "repo"
     repo.mkdir()
-    task_id, run_dir = _prepare_run_with_task(runner, repo, tmp_path)
+    task_id, run_dir = _prepare_run_with_task(repo)
 
     def fake_review_task(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         json_path = run_dir / "execution" / "reviews" / f"{task_id}.json"

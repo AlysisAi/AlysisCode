@@ -58,6 +58,7 @@ export type CockpitRuntimeOrigin = NonNullable<AlysisConfig["runtimeSelection"]>
 export interface CockpitRuntimeSelection {
   origin: CockpitRuntimeOrigin;
   production: boolean;
+  validating?: boolean;
   message: string | null;
 }
 
@@ -115,6 +116,7 @@ export class CockpitRuntimeState {
         ? {
             origin: selection.origin,
             production: selection.production,
+            ...(selection.validating ? { validating: true } : {}),
             message: redactForDisplay(selection.message)
           }
         : { origin: "unknown", production: false, message: null }
@@ -265,6 +267,7 @@ export class CockpitRuntimeState {
     if (
       current.origin === selection.origin &&
       current.production === selection.production &&
+      current.validating === selection.validating &&
       current.message === selection.message
     ) {
       return;

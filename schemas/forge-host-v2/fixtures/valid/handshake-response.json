@@ -1,0 +1,35 @@
+{
+  "kind": "response",
+  "messageId": "msg_handresp0001",
+  "operationId": null,
+  "payload": {
+    "capabilities": [
+      {
+        "name": "forge.plan",
+        "version": 2
+      },
+      {
+        "name": "forge.run",
+        "version": 2
+      }
+    ],
+    "identity": {
+      "generationId": "gen_abcdefgh",
+      "revision": 1,
+      "runId": null,
+      "sessionId": "ses_abcdefgh"
+    },
+    "replayWindow": null,
+    "selectedVersion": "2.0",
+    "server": {
+      "hostKind": "engine",
+      "name": "AlysisEngine",
+      "version": "2.0.0"
+    },
+    "type": "handshake.response"
+  },
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "replyTo": "req_handshake001",
+  "sentAt": "2026-08-21T09:00:00Z"
+}

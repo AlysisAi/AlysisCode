@@ -104,6 +104,8 @@ class ProfilePreset:
     # positional constructor continue to bind the sixth argument to headers.
     provider_key: str = ""
     model_choices: tuple[ReviewedModel, ...] = ()
+    # Hosted paid models need an authenticated catalog before picker display.
+    paid_models: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.model_choices:
@@ -151,6 +153,7 @@ _ANTHROPIC_CACHE_CONTROL_CAPABILITY = CacheCapabilitySpec(
     usage_schema=CACHE_USAGE_SCHEMA_ANTHROPIC,
     min_cacheable_tokens=1024,
     model_family_overrides=(
+        ("claude-haiku-5-5", _cache_minimum(512)),
         ("claude-opus-5", _cache_minimum(512)),
         ("claude-fable-5", _cache_minimum(512)),
         ("claude-mythos-5", _cache_minimum(512)),
@@ -369,6 +372,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         api_key_env="OPENAI_API_KEY",
         model_choices=(
             ReviewedModel("gpt-6-astra", "gpt-normal"),
+            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
             ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
             ReviewedModel("gpt-5.6-terra", "gpt-normal"),
@@ -385,7 +389,8 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # gpt-5.4-nano as the economy tier: same $0.20 input, cheaper
             # output, 1.05M context.
             "gpt-6-astra": "default - GPT-6 flagship, reasoning always on, 1.05M",
-            "gpt-6-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6.1-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6-sol": "coding - previous Sol, complex agentic work, 1.05M context",
             "gpt-6-luna": "fast - latest Luna, low-cost focused work, 1.05M context",
             "gpt-5.6-terra": "advanced - balanced 5.6 tier at 1/5 the price, 1.05M",
             "gpt-5.6-sol": "reasoning - top 5.6 tier, 1.05M context",
@@ -434,6 +439,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         api_key_env="OPENAI_API_KEY",
         model_choices=(
             ReviewedModel("gpt-6-astra", "gpt-normal"),
+            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
             ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
             ReviewedModel("gpt-5.6-terra", "gpt-normal"),
@@ -445,7 +451,8 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         ),
         suggested_model_descriptions={
             "gpt-6-astra": "default - GPT-6 flagship, reasoning always on, 1.05M",
-            "gpt-6-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6.1-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6-sol": "coding - previous Sol, complex agentic work, 1.05M context",
             "gpt-6-luna": "fast - latest Luna, low-cost focused work, 1.05M context",
             "gpt-5.6-terra": "advanced - balanced 5.6 tier at 1/5 the price, 1.05M",
             "gpt-5.6-sol": "reasoning - top 5.6 tier, 1.05M context",
@@ -1769,17 +1776,19 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         # this literal is just the default.
         base_url="https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1",
         api_key_env=None,
-        # The managed account picker offers the reviewed free-credit models.
-        # A stale live gateway catalog must not broaden this list.
+        # Free models are available offline; paid models require the authenticated
+        # gateway catalog before the managed account picker offers them.
         model_choices=(
             ReviewedModel("deepseek-flash", "deepseek-expanded"),
             ReviewedModel("glm-5.3-flash", "glm-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
             ReviewedModel("claude-haiku-5-5", "claude-normal"),
+            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
         ),
         suggested_model_descriptions={
             "claude-haiku-5-5": "Claude Haiku 5.5 - fast coding, 1M context, Free credits; 5x rates above 100K input",
             "gpt-6-luna": "GPT-6 Luna - efficient coding and reasoning, included with free credits",
+            "gpt-6.1-sol": "GPT-6.1 Sol - coding and reasoning, paid plans only",
             "deepseek-flash": (
                 "DeepSeek V4.1 Flash - vision and reasoning, 1M context, included with free credits"
             ),
@@ -1788,6 +1797,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ),
         },
         validation_model="deepseek-flash",
+        paid_models=("gpt-6.1-sol",),
         cache_capability=CacheCapabilitySpec(
             model_family_overrides=(("claude-haiku-5-5", _cache_minimum(512)),), source="preset"
         ),
@@ -1854,19 +1864,24 @@ def model_display_name(model: str) -> str:
         "deepseek-flash": "DeepSeek V4.1 Flash",
         "glm-5.3-flash": "GLM 5.3 Flash",
         "gpt-6-luna": "GPT-6 Luna",
+        "gpt-6.1-sol": "GPT-6.1 Sol",
         "claude-sonnet-5-5": "Claude Sonnet 5.5",
         "claude-haiku-5-5": "Claude Haiku 5.5",
         "grok-4.7": "Grok 4.7",
     }.get(model.casefold(), model)
 
 
-def model_options_for_preset(preset: ProfilePreset) -> tuple[tuple[str, str, str], ...]:
+def model_options_for_preset(
+    preset: ProfilePreset, *, available_models: set[str] | None = None
+) -> tuple[tuple[str, str, str], ...]:
     """Return picker rows for the models this preset intentionally supports."""
     rows: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for model in preset.suggested_models:
         model_id = str(model or "").strip()
         if not model_id or model_id in seen:
+            continue
+        if model_id in preset.paid_models and model_id not in (available_models or set()):
             continue
         seen.add(model_id)
         description = str(preset.suggested_model_descriptions.get(model_id) or "").strip()

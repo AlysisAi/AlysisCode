@@ -556,8 +556,8 @@ def test_build_background_shell_runner_default_strict_mode_errors_when_no_backen
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(background_runner_mod.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(background_runner_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner_mod.shutil, "which", lambda _name: None)
 
     with pytest.raises(ConfigError, match="background processes"):
         build_background_shell_runner(_plain_cfg(), tmp_path)
@@ -568,8 +568,8 @@ def test_build_background_shell_runner_warn_mode_returns_disabled_when_no_backen
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     warnings: list[str] = []
-    monkeypatch.setattr(background_runner_mod.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(background_runner_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner_mod.shutil, "which", lambda _name: None)
 
     runner = build_background_shell_runner(
         _cfg(mode="warn", backend="auto"),
@@ -586,9 +586,9 @@ def test_build_background_shell_runner_auto_prefers_bwrap_on_linux(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(background_runner_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
-        background_runner_mod.shutil,
+        sandbox_runner_mod.shutil,
         "which",
         lambda name: "/usr/bin/bwrap" if name == "bwrap" else None,
     )
@@ -602,9 +602,9 @@ def test_build_background_shell_runner_auto_uses_docker_when_bwrap_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(background_runner_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
-        background_runner_mod.shutil,
+        sandbox_runner_mod.shutil,
         "which",
         lambda name: "/usr/bin/docker" if name == "docker" else None,
     )
@@ -618,8 +618,8 @@ def test_build_background_shell_runner_explicit_bwrap_errors_when_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(background_runner_mod.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(background_runner_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner_mod.shutil, "which", lambda _name: None)
 
     with pytest.raises(ConfigError, match="bwrap backend selected"):
         build_background_shell_runner(_cfg(mode="strict", backend="bwrap"), tmp_path)
@@ -629,8 +629,8 @@ def test_build_background_shell_runner_explicit_docker_errors_when_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(background_runner_mod.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(background_runner_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner_mod.shutil, "which", lambda _name: None)
 
     with pytest.raises(ConfigError, match="docker backend selected"):
         build_background_shell_runner(_cfg(mode="strict", backend="docker"), tmp_path)
@@ -640,9 +640,9 @@ def test_build_background_shell_runner_passes_docker_hardening_settings_to_runne
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(background_runner_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
-        background_runner_mod.shutil,
+        sandbox_runner_mod.shutil,
         "which",
         lambda name: "/usr/bin/docker" if name == "docker" else None,
     )

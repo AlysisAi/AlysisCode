@@ -641,3 +641,55 @@ def test_response_bound_is_enforced_for_declared_and_chunked_bodies(
             api_key="key",
             transport=_transport(lambda _request: httpx.Response(200, stream=ChunkedBody())),
         )
+
+
+@pytest.mark.parametrize(
+    "metadata,expected",
+    [
+        (
+            {"supported_efforts": None, "mandatory": True},
+            ("minimal", "low", "medium", "high", "xhigh", "max"),
+        ),
+        ({"supported_efforts": ["none", "low", "low", "high"], "mandatory": True}, ("low", "high")),
+        ({"supported_efforts": [], "mandatory": False}, ()),
+        ({"mandatory": False}, ()),
+        ({"supported_efforts": "high", "mandatory": False}, None),
+        ({"supported_efforts": [False], "mandatory": False}, None),
+        (None, None),
+    ],
+)
+def test_openrouter_preserves_capabilities_without_inventing_efforts(metadata, expected):
+    from alysis_code.profile_presets import PRESET_BY_KEY
+
+    profile = make_profile_from_preset(PRESET_BY_KEY["openrouter"])
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json={"data": [{"id": "vendor/new-model", "reasoning": metadata}]}
+        )
+    )
+    option = discover_provider_models(profile=profile, api_key=None, transport=transport)[0]
+    if expected is None:
+        assert option.reasoning_contract is None
+    else:
+        assert option.reasoning_contract.values == expected
+
+
+def test_custom_gateway_does_not_inherit_openrouter_metadata():
+    profile = ProfileSpec(
+        name="openrouter", base_url="https://gateway.test/v1", protocol="openai_compat"
+    )
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "vendor/model",
+                        "reasoning": {"supported_efforts": ["high"], "mandatory": False},
+                    }
+                ]
+            },
+        )
+    )
+    option = discover_provider_models(profile=profile, api_key=None, transport=transport)[0]
+    assert option.reasoning_contract is None

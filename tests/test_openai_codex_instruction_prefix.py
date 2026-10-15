@@ -46,6 +46,7 @@ def test_later_host_notices_preserve_initial_instructions_and_transcript_order()
         == "Existing base\n\nSystem policy\n\nHost policy"
     )
     expected_suffix = copy.deepcopy(suffix)
+    expected_suffix[0]["namespace"] = "alysis"
     expected_suffix[2]["role"] = "developer"
     assert later["input"] == first["input"] + expected_suffix
     assert later["input"][2]["type"] == "function_call_output"
@@ -115,6 +116,18 @@ def test_non_message_items_are_not_promoted_by_a_role_like_field() -> None:
 
 
 class _OfflineSubscriptionAuth(OpenAICodexSubscriptionAuth):
+    def route_credential_scope(self) -> str:
+        return "offline-subscription-scope"
+
+    def authorize_request(self, url: str, *, expected_credential_scope: str, **kwargs: Any):
+        from alysis_code.provider_auth import ProviderRequestAuthorization
+
+        assert expected_credential_scope == self.route_credential_scope()
+        return ProviderRequestAuthorization(
+            credential_scope=expected_credential_scope,
+            headers=self.authorization_headers(url),
+        )
+
     def authorization_headers(
         self, url: str, *, force_refresh: bool = False, session_id: str | None = None
     ) -> Mapping[str, str]:
@@ -148,7 +161,7 @@ def test_subscription_client_replays_later_notice_with_stable_instructions() -> 
         )
 
     client = OpenAIResponsesClient(
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         api_key="",
         model="gpt-test",
         provider_auth=_OfflineSubscriptionAuth(),

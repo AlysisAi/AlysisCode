@@ -1,0 +1,24 @@
+{
+  "idempotencyKey": "idem_planner0001",
+  "kind": "request",
+  "messageId": "msg_planner0001",
+  "operationId": "operation_plan0001",
+  "payload": {
+    "expectedRevision": 1,
+    "identity": {
+      "generationId": "gen_abcdefgh",
+      "revision": 1,
+      "runId": null,
+      "sessionId": "ses_abcdefgh"
+    },
+    "input": {
+      "kind": "goal",
+      "text": "Implement the /api route and verify it."
+    },
+    "type": "planner.input"
+  },
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "requestId": "req_planner0001",
+  "sentAt": "2026-08-21T09:00:00Z"
+}

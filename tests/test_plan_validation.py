@@ -862,6 +862,72 @@ def test_plan_acceptance_rejects_scope_missing_explicit_path_hint() -> None:
         raise_for_execution_ready_plan(plan)
 
 
+@pytest.mark.parametrize(
+    ("forbidden_path", "mentioned_path"),
+    [
+        ("tests/hidden_acceptance.py", "tests/hidden_acceptance.py"),
+        ("tests/hidden", "tests/hidden/acceptance.py"),
+    ],
+)
+def test_plan_acceptance_does_not_require_global_forbidden_path_in_scope(
+    forbidden_path: str,
+    mentioned_path: str,
+) -> None:
+    plan = {
+        "planning_constraints": {
+            "schema_version": 1,
+            "target_roots": [],
+            "forbidden_roots": [
+                {
+                    "path": forbidden_path,
+                    "kind": "forbidden_root",
+                    "reason_code": "hidden_acceptance_surface",
+                    "evidence": f"Do not edit {forbidden_path}.",
+                }
+            ],
+            "decoy_roots": [],
+            "unrelated_roots": [],
+        },
+        "tasks": [
+            {
+                "id": "T01",
+                "title": "Implement src/service.py",
+                "description": "Update src/service.py and preserve existing behavior.",
+                "dependencies": [],
+                "acceptance_criteria": [f"{mentioned_path} passes."],
+                "estimated_files": ["src/service.py"],
+                "write_scope": ["src/service.py"],
+                "status": "planned",
+            }
+        ],
+    }
+
+    assert find_plan_acceptance_issues(plan) == []
+    raise_for_execution_ready_plan(plan)
+
+
+def test_plan_acceptance_still_ignores_task_local_forbidden_path_hint() -> None:
+    plan = {
+        "tasks": [
+            {
+                "id": "T01",
+                "title": "Implement src/service.py",
+                "description": (
+                    "Update src/service.py and do not edit tests/hidden_acceptance.py."
+                ),
+                "dependencies": [],
+                "acceptance_criteria": ["Existing behavior is preserved."],
+                "estimated_files": ["src/service.py"],
+                "write_scope": ["src/service.py"],
+                "status": "planned",
+            }
+        ]
+    }
+
+    assert find_plan_acceptance_issues(plan) == []
+    raise_for_execution_ready_plan(plan)
+
+
 def test_plan_validation_accepts_superseded_and_invalidated_task_statuses() -> None:
     plan = {
         "tasks": [

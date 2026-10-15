@@ -15,6 +15,7 @@ from alysis_code.llm.types import LLMError
 from alysis_code.model_registry import ModelRegistry
 from alysis_code.profile_presets import get_preset, make_profile_from_preset
 from alysis_code.profiles import ProfileSpec, add_profile, get_active_profile, set_active_profile
+from alysis_code.provider_auth.base import ProviderRequestAuthorization
 from alysis_code.provider_auth.openai_codex import OpenAICodexSubscriptionAuth
 
 
@@ -77,7 +78,11 @@ def test_release_models_can_be_selected_saved_and_resolved(
 
 @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
 def test_codex_new_models_use_subscription_efforts_and_capacity(monkeypatch, model):
-    monkeypatch.setattr(OpenAICodexSubscriptionAuth, "authorization_headers", lambda *a, **k: {})
+    monkeypatch.setattr(
+        OpenAICodexSubscriptionAuth,
+        "authorize_request",
+        lambda *a, **k: ProviderRequestAuthorization("fixture-scope", {}),
+    )
     adapter = OpenAICodexSubscriptionAuth(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json={"models": [{"slug": model}]})
@@ -97,9 +102,24 @@ def test_codex_new_models_use_subscription_efforts_and_capacity(monkeypatch, mod
     set_active_profile(cfg, profile.name)
     flow = ConfigFlow(cfg=cfg)
     flow.choose("default")
-    assert [row.value for row in flow.screen().rows] == [model]
+    # A Sol catalog gains the reviewed ChatGPT models; a Luna-only one is not broadened.
+    expected = (
+        [
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+        ]
+        if model == "gpt-6-sol"
+        else [model]
+    )
+    assert [row.value for row in flow.screen().rows] == expected
     flow.choose(model)
-    efforts = ["auto", "low", "medium", "high", "xhigh", "max"]
+    efforts = ["auto", "off", "low", "medium", "high", "xhigh", "max"]
     assert [row.value for row in flow.screen().rows] == efforts
     flow.choose(efforts[-1])
     assert flow.state.commit_to(cfg).saved

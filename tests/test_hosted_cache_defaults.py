@@ -21,7 +21,7 @@ MODELS = ("deepseek-flash", "glm-5.3-flash", "gpt-6-luna", "claude-sonnet-5-5")
 def isolated_config(tmp_path, monkeypatch):
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr("alysis_code.config.load_persisted_profile_keys", lambda: {})
-    for prefix in ("ALYSIS", "SYLLIPTOR"):
+    for prefix in ("ALYSIS", "ALYSIS"):
         for key in (
             "PROMPT_CACHE_MODE",
             "PROMPT_CACHE_KEY",

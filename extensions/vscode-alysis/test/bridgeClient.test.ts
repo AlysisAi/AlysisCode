@@ -2196,6 +2196,48 @@ test("AlysisBridgeClient passes SecretStorage API key through the bridge environ
   client.dispose();
 });
 
+test("custom provider keys without vendor aliases reach only their profile and refresh on replacement", async () => {
+  const captured: NodeJS.ProcessEnv[] = [];
+  const client = new AlysisBridgeClient(
+    new CliDiscovery(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+    (_command, _args, options) => {
+      captured.push(options.env);
+      return new FakeBridgeProcess();
+    }
+  );
+  try {
+    const options = { providerCredentials: [{ profile: "custom", envVar: "", value: "custom-key" }] };
+    await client.ensureStartedForProfile(config(), options, { credentialsRequired: true });
+    assert.equal(captured[0].ALYSIS_IDE_PROFILE_637573746F6D_API_KEY, "custom-key");
+    assert.equal(captured[0][""], undefined);
+    assert.equal(Object.values(captured[0]).filter(value => value === "custom-key").length, 1);
+    options.providerCredentials[0].value = "replacement-custom-key";
+    const updated = await client.ensureStartedForProfile(config(), options, { credentialsRequired: true });
+    assert.equal(updated.restarted, true);
+    assert.equal(captured[1].ALYSIS_IDE_PROFILE_637573746F6D_API_KEY, "replacement-custom-key");
+  } finally {
+    client.dispose();
+  }
+});
+
+test("custom provider keys stay out of credential-stripped probes", async () => {
+  let captured: NodeJS.ProcessEnv = {};
+  const client = new AlysisBridgeClient(
+    new CliDiscovery(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+    (_command, _args, options) => { captured = options.env; return new FakeBridgeProcess(); }
+  );
+  try {
+    await client.startStdio(config(), {
+      stripApiKey: true,
+      providerCredentials: [{ profile: "custom", envVar: "", value: "custom-key" }]
+    });
+    assert.equal(captured.ALYSIS_IDE_PROFILE_637573746F6D_API_KEY, undefined);
+    assert.equal(Object.values(captured).includes("custom-key"), false);
+  } finally {
+    client.dispose();
+  }
+});
+
 test("provider-scoped keys are exported under each profile's declared env var", async () => {
   const fake = new FakeBridgeProcess();
   let captured: NodeJS.ProcessEnv | undefined;

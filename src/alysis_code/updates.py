@@ -20,7 +20,6 @@ from packaging.version import InvalidVersion, Version
 
 from .atomic_io import atomic_write_json
 from .branding import (
-    LEGACY_PYTHON_PACKAGE_NAME,
     PYTHON_PACKAGE_NAME,
     canonical_user_data_dir,
     env_get,
@@ -597,18 +596,7 @@ def should_prompt_for_update(
 
 
 def installed_distribution_name(preferred: str = PYTHON_PACKAGE_NAME) -> str:
-    """Return whichever distribution is actually installed.
-
-    An install predating the rename is registered as ``sylliptor-agent-cli``.
-    Introspection keyed on the new name would find nothing and report the
-    package as missing.
-    """
-    for name in (preferred, LEGACY_PYTHON_PACKAGE_NAME):
-        try:
-            importlib_metadata.distribution(name)
-        except importlib_metadata.PackageNotFoundError:
-            continue
-        return name
+    """Return the canonical distribution used for update introspection."""
     return preferred
 
 
@@ -811,7 +799,7 @@ def _legacy_distribution_plan(
                 reason="This looks like a pipx install, but `pipx` is not on PATH.",
             )
         # `pipx upgrade` cannot rename an app; the old one must go first or its
-        # `sylliptor` script would shadow the new package's alias.
+        # legacy command script would shadow the new package's alias.
         return InstallerPlan(
             method="pipx",
             supported=False,

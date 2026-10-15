@@ -19,7 +19,7 @@ from alysis_code.profiles import add_profile, set_active_profile
 def offline_refresh(tmp_path, monkeypatch):
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
-    for prefix in ("ALYSIS", "SYLLIPTOR"):
+    for prefix in ("ALYSIS", "ALYSIS"):
         for field in ("MODEL_COMPACTOR", "REASONING_EFFORT", "ENABLE_THINKING"):
             monkeypatch.delenv(f"{prefix}_{field}", raising=False)
     monkeypatch.setattr(

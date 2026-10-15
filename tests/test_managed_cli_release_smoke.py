@@ -21,21 +21,21 @@ def test_frozen_smoke_arguments_reach_the_real_stdio_cli(
     """A mocked executable must not hide drift between the smoke harness and CLI."""
     import importlib
 
-    from typer.testing import CliRunner
-
-    from alysis_code.cli import app
-
     smoke_module = importlib.import_module("scripts.release.smoke_managed_cli")
     executable = tmp_path / "runtime"
     executable.write_bytes(b"cli-contract-fixture")
-    runner = CliRunner()
+    run_command = smoke_module._run
 
     def invoke_cli(
         command: list[str], *, env: dict[str, str], input_text: str | None = None
     ) -> str:
-        result = runner.invoke(app, command[1:], input=input_text, env=env)
-        assert result.exit_code == 0, result.output
-        return result.stdout
+        # The bridge claims private OS descriptors, so exercise real pipes rather
+        # than CliRunner's in-memory streams (which do not have file descriptors).
+        return run_command(
+            [sys.executable, "-m", "alysis_code", *command[1:]],
+            env=env,
+            input_text=input_text,
+        )
 
     monkeypatch.setattr(smoke_module, "_run", invoke_cli)
     smoke(executable)
@@ -104,7 +104,7 @@ def test_protected_signing_jobs_require_unprivileged_exact_source_validation() -
     ]
 
     assert "environment:" not in validation_job
-    assert "EXPECTED_REPOSITORY: AlysisAi/alysis-code" in validation_job
+    assert "EXPECTED_REPOSITORY: AlysisAi/AlysisCode" in validation_job
     assert 'test "$REPOSITORY_PRIVATE" = "false"' in validation_job
     assert 'test "$REPOSITORY_VISIBILITY" = "public"' in validation_job
     assert 'test "$GITHUB_REF" = "refs/tags/$REQUESTED_TAG"' in validation_job
@@ -411,7 +411,7 @@ def test_only_validated_release_workflow_can_publish_python_distribution() -> No
 
     assert 'tags:\n      - "v*"' in release
     assert "Validate tag matches package version" in release
-    assert "EXPECTED_REPOSITORY: AlysisAi/alysis-code" in release
+    assert "EXPECTED_REPOSITORY: AlysisAi/AlysisCode" in release
     assert 'test "$REPOSITORY_PRIVATE" = "false"' in release
     assert 'test "$REPOSITORY_VISIBILITY" = "public"' in release
     assert 'test "$source_commit" = "$GITHUB_SHA"' in release

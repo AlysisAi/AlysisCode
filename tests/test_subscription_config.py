@@ -68,7 +68,7 @@ def _subscription_cfg() -> AppConfig:
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="gpt-codex-a",
     )
@@ -292,7 +292,7 @@ def test_pending_confirmation_survives_profile_switch_and_subscription_reselecti
     adapter = _CatalogAdapter()
     adapter.profile_name = "chatgpt-codex"  # type: ignore[attr-defined]
     adapter.protocol = "openai_responses"  # type: ignore[attr-defined]
-    adapter.base_url = "https://chatgpt.com/backend-api/codex"  # type: ignore[attr-defined]
+    adapter.base_url = "https://api.openai.com/v1"  # type: ignore[attr-defined]
     adapter.display_name = "ChatGPT Codex subscription"  # type: ignore[attr-defined]
     monkeypatch.setattr(
         "alysis_code.provider_auth.create_provider_auth",

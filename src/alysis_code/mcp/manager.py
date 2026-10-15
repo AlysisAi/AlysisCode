@@ -9,7 +9,7 @@ import threading
 import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..runtime_kind import RuntimeKind, normalize_runtime_kind
 from ..tools.registry import iter_builtin_tool_metadata
@@ -25,6 +25,7 @@ from .forge_scope import ForgeTaskMcpScope
 from .models import ResolvedMcpConfig, ResolvedMcpServer
 from .prompts import McpListedPrompt, prompts_mode_enabled
 from .resources import resources_mode_enabled
+from .retention import ephemeral_tool_io, requested_result_summary
 from .untrusted_content import (
     MCP_UNTRUSTED_TEXT_CHAR_LIMIT,
     _looks_like_binary_blob,
@@ -32,6 +33,9 @@ from .untrusted_content import (
     build_untrusted_mcp_text_block,
     reduce_model_facing_tool_schema,
 )
+
+if TYPE_CHECKING:
+    from .visual_delivery import McpVisualDelivery
 
 _LIVE_TOOL_RUNTIMES = frozenset(
     {
@@ -398,6 +402,21 @@ def _wrap_tool_result_text(
     )
 
 
+def mcp_tool_approval_hints(raw_tool: Any) -> tuple[bool, bool]:
+    """(read_only, destructive) from a listed tool's MCP annotations.
+
+    Only an explicit ``readOnlyHint: true`` counts as read-only, and only an explicit
+    ``destructiveHint: true`` counts as destructive; destructive wins when a server sets
+    both. A tool without annotations is neither, so it is treated as a write.
+    """
+    annotations = raw_tool.get("annotations") if isinstance(raw_tool, dict) else None
+    if not isinstance(annotations, dict):
+        return False, False
+    destructive = annotations.get("destructiveHint") is True
+    read_only = annotations.get("readOnlyHint") is True and not destructive
+    return read_only, destructive
+
+
 @dataclass(frozen=True)
 class McpToolBinding:
     server_id: str
@@ -407,6 +426,12 @@ class McpToolBinding:
     parameters: dict[str, Any]
     client: _McpSessionClient = field(repr=False)
     session_mode: str | None = None
+    ephemeral_io: bool = False
+    requested_result_summary: bool = False
+    visual_delivery: McpVisualDelivery | None = field(default=None, repr=False, compare=False)
+    # From the server's tool annotations; they decide whether a call asks for approval.
+    read_only_hint: bool = False
+    destructive_hint: bool = False
 
     def bind_session_mode(self, session_mode: str | None) -> McpToolBinding:
         normalized = str(session_mode or "").strip().lower() or None
@@ -422,7 +447,14 @@ class McpToolBinding:
             arguments=arguments,
         )
         content_items: list[dict[str, Any]] = []
+        images: list[dict[str, Any]] = []
         for item in result.content:
+            if item.get("type") == "image":
+                # Preserve the existence of rejected/oversized images so the model
+                # receives a failed visual receipt rather than silent omission.
+                images.append(item)
+                content_items.append({"type": "image", "summary": "image omitted"})
+                continue
             payload_item = copy.deepcopy(item)
             item_text = payload_item.get("text")
             mime_type = payload_item.get("mime_type")
@@ -446,12 +478,23 @@ class McpToolBinding:
             payload["structured_content"] = _normalize_prompt_structured_content(
                 result.structured_content
             )
-        if result.extracted_text:
+        if result.extracted_text and not self.ephemeral_io:
             payload["text"] = _wrap_tool_result_text(
                 server_id=self.server_id,
                 tool_name=self.tool_name,
                 text=result.extracted_text,
             )
+        if images:
+            receipt = (
+                self.visual_delivery.stage(images, source=self.tool_alias)
+                if self.visual_delivery
+                else {"visual_delivered": False, "visual_error": "visual_delivery_unavailable"}
+            )
+            payload.update(receipt)
+            if receipt.get("visual_delivered"):
+                for item in content_items:
+                    if item.get("type") == "image":
+                        item["summary"] = "image delivered separately"
         return payload
 
 
@@ -490,6 +533,9 @@ class _CollectedServerCatalog:
     roots_capability_enabled: bool
     resources_capability_advertised: bool
     session_negotiated: bool
+
+
+_AdmittedCatalog = tuple[_CollectedServerCatalog, list[tuple[McpListedTool, dict[str, Any]]]]
 
 
 @dataclass(frozen=True)
@@ -557,6 +603,8 @@ class McpManager:
         self._client_leases_by_server_id: dict[str, list[_McpClientLease]] = {}
         self._snapshot_loaded = False
         self._snapshot_error: BaseException | None = None
+        # Servers left out of the frozen catalog because they failed while it was built.
+        self._server_startup_errors: dict[str, BaseException] = {}
         self._tool_bindings: tuple[_McpManagerToolBinding, ...] = ()
         self._resource_records: tuple[_SnapshottedResourceRecord, ...] = ()
         self._resource_lookup: dict[tuple[str, str], _SnapshottedResourceRecord] = {}
@@ -608,6 +656,7 @@ class McpManager:
             "prompt_server_catalogs": [],
             "snapshotted_prompt_count": 0,
             "manual_prompt_surface_enabled": False,
+            "failed_server_ids": [],
         }
         self._sync_prompt_catalog_snapshot_metadata()
 
@@ -627,6 +676,13 @@ class McpManager:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    def server_startup_errors(self) -> dict[str, str]:
+        """Servers that failed while the catalog was built, with the reason.
+
+        Their tools are not in this session; the other servers' tools are.
+        """
+        return {server_id: str(exc) for server_id, exc in self._server_startup_errors.items()}
 
     def startup_metadata(self) -> dict[str, Any]:
         return {
@@ -684,10 +740,13 @@ class McpManager:
             leases = tuple(self._client_leases_by_server_id.get(server.id, ()))
             enabled = server.id not in self._disabled_server_ids
             connected = bool(enabled and any(lease.connected for lease in leases))
+            startup_failed = server.id in self._server_startup_errors
             if not enabled:
                 connection_state = "disabled"
             elif connected:
                 connection_state = "connected"
+            elif startup_failed:
+                connection_state = "failed"
             elif leases:
                 connection_state = "disconnected"
             else:
@@ -708,6 +767,7 @@ class McpManager:
                 "enabled": enabled,
                 "connection_state": connection_state,
                 "connected": connected,
+                "startup_failed": startup_failed,
                 "generation": max((lease.generation for lease in leases), default=0),
                 "catalog_initialized": self._snapshot_loaded,
                 "exposed_tool_count": len(server_bindings),
@@ -830,6 +890,12 @@ class McpManager:
     def _connect_server(self, *, server_id: str, action: str) -> dict[str, Any]:
         with self._lifecycle_lock:
             server = self._server_lifecycle_target(server_id)
+            if server.id in self._server_startup_errors:
+                # The session's tool list was fixed without this server's tools.
+                raise RuntimeError(
+                    f"MCP server '{server.id}' did not start when this session began. "
+                    "Start a new session to load its tools."
+                )
             if action == "enable" and server.id not in self._disabled_server_ids:
                 status = self.server_lifecycle_status(server_id=server.id)
                 if status["connected"]:
@@ -1540,7 +1606,9 @@ class McpManager:
             return
         collected_catalogs: tuple[_CollectedServerCatalog, ...] = ()
         try:
-            collected_catalogs = self._collect_server_catalogs()
+            admitted = self._admit_server_catalogs(self._collect_server_catalogs())
+            collected_catalogs = tuple(catalog for catalog, _tools in admitted)
+            admitted_tools = {catalog.server.id: tools for catalog, tools in admitted}
             leased_catalogs: list[_CollectedServerCatalog] = []
             for catalog in collected_catalogs:
                 if isinstance(catalog.client, _McpClientLease):
@@ -1558,12 +1626,8 @@ class McpManager:
             collected_catalogs = tuple(leased_catalogs)
             flat_records: list[_FlatToolRecord] = []
             resource_records: list[_SnapshottedResourceRecord] = []
-            total_schema_bytes = 0
-            total_resources = 0
             for catalog in collected_catalogs:
-                for tool in catalog.filtered_tools:
-                    parameters = _validate_function_tool_schema(server=catalog.server, tool=tool)
-                    total_schema_bytes += _stable_json_size(parameters)
+                for tool, parameters in admitted_tools[catalog.server.id]:
                     flat_records.append(
                         _FlatToolRecord(
                             server=catalog.server,
@@ -1572,14 +1636,6 @@ class McpManager:
                             parameters=parameters,
                         )
                     )
-                resource_count = len(catalog.listed_resources)
-                if resource_count > _MAX_LISTED_MCP_RESOURCES_PER_SERVER:
-                    raise ConfigError(
-                        "MCP resource exposure is too large for server "
-                        f"'{catalog.server.id}' ({resource_count} resources). Narrow server-side "
-                        "resource exposure or disable resources_mode."
-                    )
-                total_resources += resource_count
                 for resource in catalog.listed_resources:
                     resource_records.append(
                         _SnapshottedResourceRecord(
@@ -1588,22 +1644,6 @@ class McpManager:
                             resource=resource,
                         )
                     )
-            if len(flat_records) > _MAX_EXPOSED_MCP_TOOLS:
-                raise ConfigError(
-                    "MCP tool exposure is too large for one session "
-                    f"({len(flat_records)} tools). Narrow exposure with allowed_tools."
-                )
-            if total_schema_bytes > _MAX_TOTAL_SCHEMA_BYTES:
-                raise ConfigError(
-                    "MCP tool exposure schema footprint is too large for one session "
-                    f"({total_schema_bytes} bytes). Narrow exposure with allowed_tools."
-                )
-            if total_resources > _MAX_LISTED_MCP_RESOURCES_TOTAL:
-                raise ConfigError(
-                    "MCP resource exposure is too large for one session "
-                    f"({total_resources} resources). Narrow server-side resource exposure or "
-                    "disable resources_mode."
-                )
             alias_map = self._assign_aliases(flat_records)
             bindings: list[_McpManagerToolBinding] = []
             server_catalogs: list[dict[str, Any]] = []
@@ -1618,6 +1658,9 @@ class McpManager:
                     exposed_aliases.append(tool_alias)
                     exposed_tool_names.append(record.tool.name)
                     clients_with_bindings[catalog.server.id] = catalog.client
+                    read_only_hint, destructive_hint = mcp_tool_approval_hints(
+                        record.tool.raw_payload
+                    )
                     bindings.append(
                         McpToolBinding(
                             server_id=catalog.server.id,
@@ -1630,6 +1673,12 @@ class McpManager:
                             ),
                             parameters=copy.deepcopy(record.parameters),
                             client=catalog.client,
+                            ephemeral_io=ephemeral_tool_io(record.tool.raw_payload),
+                            requested_result_summary=requested_result_summary(
+                                record.tool.raw_payload
+                            ),
+                            read_only_hint=read_only_hint,
+                            destructive_hint=destructive_hint,
                         )
                     )
                 server_catalogs.append(
@@ -1716,6 +1765,7 @@ class McpManager:
                 "prompt_server_catalogs": prompt_server_catalogs,
                 "snapshotted_prompt_count": snapshotted_prompt_count,
                 "manual_prompt_surface_enabled": manual_prompt_surface_enabled,
+                "failed_server_ids": sorted(self._server_startup_errors),
             }
             for catalog in collected_catalogs:
                 if catalog.tools_list_changed:
@@ -1730,90 +1780,158 @@ class McpManager:
             self.close()
             raise
 
+    def _admit_server_catalogs(
+        self,
+        catalogs: tuple[_CollectedServerCatalog, ...],
+    ) -> list[_AdmittedCatalog]:
+        """Check each server's catalog on its own and keep the session inside its limits.
+
+        A server whose tools or resources cannot be exposed, or that would take the session
+        past a limit, is left out with its error recorded. Servers before it keep theirs.
+        """
+        admitted: list[_AdmittedCatalog] = []
+        tool_count = 0
+        schema_bytes = 0
+        resource_count = 0
+        for catalog in catalogs:
+            server = catalog.server
+            try:
+                tools = [
+                    (tool, _validate_function_tool_schema(server=server, tool=tool))
+                    for tool in catalog.filtered_tools
+                ]
+                server_schema_bytes = sum(_stable_json_size(schema) for _tool, schema in tools)
+                server_resources = len(catalog.listed_resources)
+                if server_resources > _MAX_LISTED_MCP_RESOURCES_PER_SERVER:
+                    raise ConfigError(
+                        "MCP resource exposure is too large for server "
+                        f"'{server.id}' ({server_resources} resources). Narrow server-side "
+                        "resource exposure or disable resources_mode."
+                    )
+                if tool_count + len(tools) > _MAX_EXPOSED_MCP_TOOLS:
+                    raise ConfigError(
+                        f"MCP server '{server.id}' was not loaded: MCP tool exposure is too large "
+                        f"for one session ({tool_count + len(tools)} tools). Narrow exposure with "
+                        "allowed_tools."
+                    )
+                if schema_bytes + server_schema_bytes > _MAX_TOTAL_SCHEMA_BYTES:
+                    raise ConfigError(
+                        f"MCP server '{server.id}' was not loaded: MCP tool exposure schema "
+                        "footprint is too large for one session "
+                        f"({schema_bytes + server_schema_bytes} bytes). Narrow exposure with "
+                        "allowed_tools."
+                    )
+                if resource_count + server_resources > _MAX_LISTED_MCP_RESOURCES_TOTAL:
+                    raise ConfigError(
+                        f"MCP server '{server.id}' was not loaded: MCP resource exposure is too "
+                        f"large for one session ({resource_count + server_resources} resources). "
+                        "Narrow server-side resource exposure or disable resources_mode."
+                    )
+            except Exception as exc:  # noqa: BLE001 - one server must not take down the others
+                self._server_startup_errors[server.id] = exc
+                self._discard_failed_server(server.id, catalog.client)
+                continue
+            tool_count += len(tools)
+            schema_bytes += server_schema_bytes
+            resource_count += server_resources
+            admitted.append((catalog, tools))
+        return admitted
+
+    def _discard_failed_server(
+        self, server_id: str, client: _McpSessionClient | None = None
+    ) -> None:
+        """Close a failed server's connection, including a lease made before the catalog."""
+        if client is not None:
+            client.close()
+        for lease in self._client_leases_by_server_id.pop(server_id, ()):
+            lease.close()
+
     def _collect_server_catalogs(self) -> tuple[_CollectedServerCatalog, ...]:
+        """Connect to every active server. A server that fails is recorded and skipped."""
         catalogs: list[_CollectedServerCatalog] = []
         try:
             for server in self._active_servers:
-                if server.trust != "explicit":
-                    raise ConfigError(
-                        f"MCP server '{server.id}' uses unsupported trust mode '{server.trust}'. "
-                        "Live MCP tool exposure currently requires trust='explicit'."
-                    )
-                leases = self._client_leases_by_server_id.get(server.id, [])
-                existing_lease = leases[0] if leases else None
-                raw_client: _McpLiveClient | None = None
-                if (
-                    existing_lease is not None
-                    and existing_lease.enabled
-                    and not existing_lease.closed
-                ):
-                    client: _McpSessionClient = existing_lease
-                else:
-                    raw_client = self._build_live_client(server)
-                    client = raw_client
                 try:
-                    client.ensure_initialized()
-                    raw_tools: tuple[McpListedTool, ...] = ()
-                    filtered_tools: tuple[McpListedTool, ...] = ()
-                    raw_tool_names: tuple[str, ...] = ()
-                    if client.supports_tools:
-                        raw_tools = client.list_tools()
-                        filtered_tools, raw_tool_names = self._filter_server_tools(
-                            server=server,
-                            raw_tools=raw_tools,
-                        )
-                    elif server.allowed_tools or server.denied_tools:
-                        raise ConfigError(
-                            f"MCP server '{server.id}' does not advertise tools capability, but "
-                            "tool allow/deny policy is configured."
-                        )
-                    listed_resources: tuple[McpListedResource, ...] = ()
-                    resources_snapshot_loaded = resources_mode_enabled(
-                        resources_mode=server.resources_mode,
-                        runtime_kind=self.runtime_kind,
-                    )
-                    if resources_snapshot_loaded:
-                        listed_resources = client.list_resources()
-                    catalog_client = client
-                    if raw_client is not None and existing_lease is not None:
-                        if existing_lease.enabled:
-                            # Recover an enabled-but-disconnected lease without
-                            # invalidating objects that already reference it.
-                            existing_lease.replace_client(raw_client)
-                        else:
-                            # A pre-snapshot disable remains disabled. The
-                            # temporary connection existed only to freeze the
-                            # catalog and must not become reachable afterward.
-                            raw_client.close()
-                        raw_client = None
-                        catalog_client = existing_lease
-                    catalogs.append(
-                        _CollectedServerCatalog(
-                            server=server,
-                            client=catalog_client,
-                            raw_tools=raw_tools,
-                            filtered_tools=filtered_tools,
-                            raw_tool_names=raw_tool_names,
-                            listed_resources=listed_resources,
-                            resources_snapshot_loaded=resources_snapshot_loaded,
-                            tools_list_changed=client.tools_list_changed,
-                            resources_list_changed=client.resources_list_changed,
-                            roots_capability_enabled=client.roots_capability_enabled,
-                            resources_capability_advertised=client.supports_resources,
-                            session_negotiated=client.session_negotiated,
-                        )
-                    )
-                except Exception:
-                    if raw_client is not None:
-                        raw_client.close()
-                    elif existing_lease is None:
-                        client.close()
-                    raise
-        except Exception:
+                    catalogs.append(self._collect_server_catalog(server))
+                except Exception as exc:  # noqa: BLE001 - one server must not take down the others
+                    self._server_startup_errors[server.id] = exc
+                    self._discard_failed_server(server.id)
+        except BaseException:
             for catalog in catalogs:
                 catalog.client.close()
             raise
         return tuple(catalogs)
+
+    def _collect_server_catalog(self, server: ResolvedMcpServer) -> _CollectedServerCatalog:
+        if server.trust != "explicit":
+            raise ConfigError(
+                f"MCP server '{server.id}' uses unsupported trust mode '{server.trust}'. "
+                "Live MCP tool exposure currently requires trust='explicit'."
+            )
+        leases = self._client_leases_by_server_id.get(server.id, [])
+        existing_lease = leases[0] if leases else None
+        raw_client: _McpLiveClient | None = None
+        if existing_lease is not None and existing_lease.enabled and not existing_lease.closed:
+            client: _McpSessionClient = existing_lease
+        else:
+            raw_client = self._build_live_client(server)
+            client = raw_client
+        try:
+            client.ensure_initialized()
+            raw_tools: tuple[McpListedTool, ...] = ()
+            filtered_tools: tuple[McpListedTool, ...] = ()
+            raw_tool_names: tuple[str, ...] = ()
+            if client.supports_tools:
+                raw_tools = client.list_tools()
+                filtered_tools, raw_tool_names = self._filter_server_tools(
+                    server=server,
+                    raw_tools=raw_tools,
+                )
+            elif server.allowed_tools or server.denied_tools:
+                raise ConfigError(
+                    f"MCP server '{server.id}' does not advertise tools capability, but "
+                    "tool allow/deny policy is configured."
+                )
+            listed_resources: tuple[McpListedResource, ...] = ()
+            resources_snapshot_loaded = resources_mode_enabled(
+                resources_mode=server.resources_mode,
+                runtime_kind=self.runtime_kind,
+            )
+            if resources_snapshot_loaded:
+                listed_resources = client.list_resources()
+            catalog_client = client
+            if raw_client is not None and existing_lease is not None:
+                if existing_lease.enabled:
+                    # Recover an enabled-but-disconnected lease without
+                    # invalidating objects that already reference it.
+                    existing_lease.replace_client(raw_client)
+                else:
+                    # A pre-snapshot disable remains disabled. The
+                    # temporary connection existed only to freeze the
+                    # catalog and must not become reachable afterward.
+                    raw_client.close()
+                raw_client = None
+                catalog_client = existing_lease
+            return _CollectedServerCatalog(
+                server=server,
+                client=catalog_client,
+                raw_tools=raw_tools,
+                filtered_tools=filtered_tools,
+                raw_tool_names=raw_tool_names,
+                listed_resources=listed_resources,
+                resources_snapshot_loaded=resources_snapshot_loaded,
+                tools_list_changed=client.tools_list_changed,
+                resources_list_changed=client.resources_list_changed,
+                roots_capability_enabled=client.roots_capability_enabled,
+                resources_capability_advertised=client.supports_resources,
+                session_negotiated=client.session_negotiated,
+            )
+        except Exception:
+            if raw_client is not None:
+                raw_client.close()
+            elif existing_lease is None:
+                client.close()
+            raise
 
     def _build_live_client(self, server: ResolvedMcpServer) -> _McpLiveClient:
         if server.transport == "stdio":
@@ -2027,6 +2145,11 @@ class ForgeTaskScopedMcpManager:
         self._ensure_filtered_bindings()
         assert self._filtered_bindings is not None
         return self._filtered_bindings
+
+    def server_startup_errors(self) -> dict[str, str]:
+        if self._base_manager is None:
+            return {}
+        return self._base_manager.server_startup_errors()
 
     def startup_metadata(self) -> dict[str, Any]:
         if self._base_manager is not None:

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 
+from ...agent.steering import build_steer_messages
 from ...internal_artifacts import mark_message_internal
 from ...safety.subagent_report import sanitize_subagent_report
 from ...llm.metadata import RESUME_CONTEXT_MESSAGE_KEY
@@ -134,9 +136,27 @@ def _write_session_metadata(path: Path, metadata: dict[str, Any]) -> None:
     metadata_path = _session_metadata_path(path)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(metadata, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-    temp_path = metadata_path.with_suffix(metadata_path.suffix + ".tmp")
-    temp_path.write_text(payload, encoding="utf-8")
-    temp_path.replace(metadata_path)
+    # A unique sibling avoids clobbering another writer or following a stale
+    # predictable .tmp symlink while preserving atomic replacement.
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=metadata_path.parent,
+        prefix=metadata_path.name + ".",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        try:
+            handle.write(payload)
+        except BaseException:
+            handle.close()
+            temp_path.unlink(missing_ok=True)
+            raise
+    try:
+        temp_path.replace(metadata_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _normalize_session_title(
@@ -832,9 +852,10 @@ def _resolve_chat_resume_direct_session_id(*, raw_value: str, sessions_dir: Path
 
 
 def _load_chat_resume_messages(
-    path: Path,
+    path: Path | None,
     *,
     synthesized_tool_results: list[str] | None = None,
+    event_records: Any = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     pending_tool_calls: list[dict[str, Any]] = []
@@ -915,7 +936,10 @@ def _load_chat_resume_messages(
         )
         pending_tool_index += 1
 
-    for event in read_session_events(path):
+    if (path is None) == (event_records is None):
+        raise ValueError("Provide exactly one session path or admitted event snapshot")
+    events = event_records if event_records is not None else read_session_events(path)
+    for event in events:
         if not isinstance(event, dict):
             continue
         event_type = str(event.get("type") or "")
@@ -959,6 +983,14 @@ def _load_chat_resume_messages(
                     ) = _restored_snapshot_pending_tool_state(restored)
         elif event_type == "user_message":
             _append_message("user", _user_message_display_content(payload))
+        elif event_type == "steer_message_delivered":
+            # Messages the user sent during a turn joined history at a step
+            # boundary; replay them where they were delivered.
+            raw_messages = payload.get("messages")
+            if isinstance(raw_messages, list):
+                texts = [text for text in raw_messages if isinstance(text, str)]
+                for message in build_steer_messages(texts):
+                    _append_message("user", message["content"])
         elif event_type == "background_child_completion_delivery":
             # The old coordinator is not rehydrated. Preserve its delivered
             # evidence as assistant history without stale callable locators or
@@ -1516,13 +1548,15 @@ def _build_chat_resume_context_message(path: Path) -> str | None:
 def _is_chat_resume_context_message(message: dict[str, Any]) -> bool:
     if message.get(RESUME_CONTEXT_MESSAGE_KEY) is True:
         return True
-    # Snapshots written before the structural marker used this full host header.
+    # Compatibility for existing snapshots written before the structural marker. Match the
+    # full host-authored header, not a mention of the tag in ordinary conversation text.
     if message.get("role") != "user":
         return False
     content = message.get("content")
     if not isinstance(content, str):
         return False
-    lines = content.strip().splitlines()
+    text = content.strip()
+    lines = text.splitlines()
     return (
         len(lines) >= 4
         and lines[0] == "<resume_context>"
@@ -1571,50 +1605,12 @@ def _load_chat_resume_session_start(path: Path) -> dict[str, Any]:
     return latest_payload
 
 
-def _load_chat_resume_task_state(path: Path, *, session_id: str | None = None) -> Any:
-    """Recover the host-owned task identity of a persisted session log.
+def _restore_chat_resume_evidence(session: Any, *, path: Path, source_session_id: str) -> None:
+    from ...agent.task_evidence import restore_conversation_evidence
 
-    Deterministic replay (see ``agent.task_state.recover_task_state_from_events``):
-    the latest ``session_task_state`` event wins; logs written before task state
-    existed fall back to the first task-candidate ``user_message``; an unreadable
-    task-state event is reported as unrecoverable instead of guessed.
-    """
-
-    from ...agent.task_state import recover_task_state_from_events
-
-    return recover_task_state_from_events(read_session_events(path), session_id=session_id)
-
-
-def _restore_chat_resume_task_state(
-    session: Any,
-    *,
-    path: Path,
-    source_session_id: str,
-) -> dict[str, Any]:
-    """Install the recovered task identity into a (re)created session.
-
-    Returns a small telemetry payload for the ``chat_resume`` note.
-    """
-
-    from ...agent.task_state import restore_session_task_state
-
-    recovered = _load_chat_resume_task_state(path, session_id=source_session_id)
-    # The log must have been written by the session being resumed; saved
-    # state stamped by another writer is refused rather than adopted.
-    state = restore_session_task_state(
-        session,
-        recovered,
-        source_session_id=source_session_id,
-        expected_session_id=source_session_id,
+    restore_conversation_evidence(
+        session, read_session_events(path), source_session_id=source_session_id
     )
-    refused = state is None and recovered.state is not None
-    return {
-        "task_state_recovery": "refused" if refused else recovered.recovery,
-        "task_state_recovery_reason": (
-            "saved_task_state_owner_mismatch" if refused else recovered.reason
-        ),
-        "task_id": state.task_id if state is not None else None,
-    }
 
 
 def _load_chat_resume_runtime_settings(path: Path) -> dict[str, Any]:

@@ -22,6 +22,7 @@ from ..config import (
 from ..llm.factory import make_llm_client
 from ..model_registry import ModelRegistry
 from ..model_router import ROLE_COMPREHENSION, resolve_model_for_role
+from ..project_data import ProjectDataError, project_artifact_path
 from .models import AssetError, AssetRecord, ComprehensionRecord
 from .surface import AssetSurface
 from .untrusted_content import build_untrusted_asset_text_block
@@ -264,8 +265,10 @@ def _focus_cache_path(
 
 def _read_asset_text(root: Path, repo_relative_path: str) -> str:
     try:
-        return (root / repo_relative_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        return project_artifact_path(root, repo_relative_path).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except (OSError, ProjectDataError):
         return ""
 
 

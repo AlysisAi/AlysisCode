@@ -20,6 +20,7 @@ from alysis_code.llm.metadata import (
     gate_messages_for_provider_route,
 )
 from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
+from alysis_code.provider_auth import ProviderRequestAuthorization
 from alysis_code.runtime_kind import RuntimeKind
 from alysis_code.surface.noop_surface import NoopSurface
 
@@ -76,12 +77,20 @@ def test_new_logs_replay_only_the_same_logical_provider_conversation(
     header_sessions: list[str] = []
     # Model a stateless auth adapter while using the real client serializer,
     # exact route gate and HTTP header construction through MockTransport.
+    scope = credential_scope_fingerprint("fixture-key")
+
+    def authorize(_url, *, session_id, expected_credential_scope, **_kwargs):
+        assert expected_credential_scope == scope
+        return ProviderRequestAuthorization(
+            credential_scope=scope, headers={"session-id": session_id}
+        )
+
     auth = SimpleNamespace(
         supports_previous_response_id=False,
         requires_streaming=False,
         supports_temperature=False,
         adapt_responses_payload=dict,
-        authorization_headers=lambda _url, *, session_id, **_kwargs: {"session-id": session_id},
+        authorize_request=authorize,
     )
 
     def handler(request: httpx.Request) -> httpx.Response:

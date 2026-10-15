@@ -59,6 +59,8 @@ def _make_bridge(
     action: str = "tasks.list",
     arguments: dict[str, Any] | None = None,
     timeout: float = 1.0,
+    approval_protocol: int = 0,
+    mode: str = "auto",
 ) -> tuple[io.StringIO, StdioBridge, str, dict[str, Any], list[Any], list[HostActionError]]:
     out = io.StringIO()
     artifact_root = tmp_path / "session-artifacts"
@@ -102,11 +104,12 @@ def _make_bridge(
             "session.create",
             {
                 "workspace": os.fspath(tmp_path),
-                "mode": "auto",
+                "mode": mode,
                 "model": "test-model",
                 "workspace_trusted": workspace_trusted,
                 "host_capabilities": {
                     "protocol_version": "1",
+                    "approval_protocol": approval_protocol,
                     "actions": list(actions),
                 },
             },
@@ -513,6 +516,28 @@ def test_host_action_timeout_emits_cancellation_and_rejects_late_response(
     bridge.close()
 
 
+def test_legacy_mutation_timeout_is_unknown_and_never_retryable(tmp_path, monkeypatch):
+    out, bridge, sid, _captured, results, errors = _make_bridge(
+        tmp_path,
+        monkeypatch,
+        actions=("browser.close",),
+        action="browser.close",
+        arguments={"tab_id": "fixture-tab"},
+        timeout=0.08,
+        approval_protocol=0,
+    )
+    try:
+        _start_host_action(out, bridge, sid)
+        _wait_for(out, lambda line: line.get("type") == "message_end")
+        assert not results and len(errors) == 1
+        assert errors[0].code == "host_action_timeout"
+        assert errors[0].dispatch_state == "unknown"
+        assert errors[0].retryable is False
+        assert "may have completed" in str(errors[0])
+    finally:
+        bridge.close()
+
+
 def test_session_cancellation_deterministically_cancels_host_action(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -547,3 +572,66 @@ def test_session_cancellation_deterministically_cancels_host_action(
     assert late["ok"] is False
     assert late["error"]["code"] == "stale_host_action_response"
     bridge.close()
+
+
+@pytest.mark.parametrize("dispatched", [False, True])
+def test_unified_write_timeout_requires_actual_dispatch_evidence(tmp_path, monkeypatch, dispatched):
+    out, bridge, sid, _captured, results, errors = _make_bridge(
+        tmp_path,
+        monkeypatch,
+        actions=("browser.close",),
+        action="browser.close",
+        arguments={"tab_id": "fixture-tab"},
+        timeout=0.15,
+        approval_protocol=1,
+        mode="fullaccess",
+    )
+    try:
+        prepared = _start_host_action(out, bridge, sid)
+        assert prepared["payload"]["phase"] == "prepare"
+        _respond(
+            bridge,
+            prepared,
+            request_id="prepared",
+            result={
+                "preparation_id": "pa_" + "a" * 32,
+                "required": True,
+                "write_effect": True,
+                "kind": "application-control",
+                "reason": "Fixture",
+                "preview": "Close fixture tab",
+                "target": "fixture-tab",
+            },
+        )
+        execute = _wait_for(
+            out,
+            lambda line: (
+                line.get("type") == "host_action_requested"
+                and line["payload"].get("phase") == "execute"
+            ),
+        )
+        payload = execute["payload"]
+        marker = {
+            "session_id": sid,
+            "host_action_id": payload["host_action_id"],
+            "workspace_fence": payload["workspace_fence"],
+            "capability_fingerprint": payload["capability_fingerprint"],
+        }
+        if dispatched:
+            bridge.process_line(_request("host.action.dispatched", marker, "marker"))
+            assert _response_for(out, "marker")["ok"]
+            bridge.process_line(_request("host.action.dispatched", marker, "duplicate-marker"))
+            assert (
+                _response_for(out, "duplicate-marker")["error"]["code"] == "duplicate_host_dispatch"
+            )
+        _wait_for(out, lambda line: line.get("type") == "host_action_cancelled")
+        _wait_for(out, lambda line: line.get("type") == "message_end")
+        assert not results and len(errors) == 1
+        assert errors[0].code == "host_action_timeout"
+        assert errors[0].dispatch_state == ("dispatched" if dispatched else "not_dispatched")
+        assert errors[0].retryable is (not dispatched)
+        assert ("may have completed" in str(errors[0])) is dispatched
+        bridge.process_line(_request("host.action.dispatched", marker, "late-marker"))
+        assert _response_for(out, "late-marker")["error"]["code"] == "stale_host_action"
+    finally:
+        bridge.close()

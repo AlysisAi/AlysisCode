@@ -98,7 +98,7 @@ def test_timed_out_checkpoint_setup_is_adopted_only_by_next_request(
     assert session.checkpoint_setup is None
 
 
-def test_tool_checkpoint_guard_serializes_setup_and_retries_on_next_job(
+def test_tool_checkpoint_guard_serializes_setup_and_checks_again_until_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from concurrent.futures import ThreadPoolExecutor
@@ -132,14 +132,16 @@ def test_tool_checkpoint_guard_serializes_setup_and_retries_on_next_job(
         for result in (first, second):
             with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
                 result.result(timeout=5)
-    assert calls == ["job-1"]
+    # One at a time, never in parallel; the second call checks again after the first.
+    assert calls == ["job-1", "job-1"]
     with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
         guard.check_tool_call("file_edit", {})
-    assert calls == ["job-1"]
+    # Not ready is not cached: the worker keeps running and may have finished since.
+    assert calls == ["job-1", "job-1", "job-1"]
     session.active_job = stdio_bridge.BridgeJob("job-2", session.session_id, "now")
     with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
         guard.check_tool_call("file_edit", {})
-    assert calls == ["job-1", "job-2"]
+    assert calls == ["job-1", "job-1", "job-1", "job-2"]
 
 
 def test_tool_checkpoint_guard_honors_cancellation_before_tool_execution(
@@ -223,3 +225,127 @@ def test_file_review_skips_snapshots_but_first_possible_edit_waits(
     session.active_job.cancellation_event.set()
     with pytest.raises(stdio_bridge.BridgeCancellationError):
         guard.check_tool_call("fs_read", {})
+
+
+def _guarded_session(tmp_path: Path) -> SimpleNamespace:
+    session = _session(tmp_path)
+    session.agent_session = SimpleNamespace(
+        store=SimpleNamespace(events_snapshot=lambda: [], append=lambda *args: None)
+    )
+    session.active_job = stdio_bridge.BridgeJob("job-1", session.session_id, "now")
+    return session
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["search_rg", "symbol_search", "repo_map", "git_history", "history_search", "fs_read"],
+)
+def test_read_only_tools_never_wait_for_restore_points(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str
+) -> None:
+    session = _guarded_session(tmp_path)
+    guard = stdio_bridge._CheckpointToolDispatchGuard({"session": session})
+
+    def prepare(owner: object) -> bool:
+        raise AssertionError(f"{tool_name} waited for restore points")
+
+    monkeypatch.setattr(stdio_bridge, "_prepare_change_ledger_with_deadline", prepare)
+    guard.check_tool_call(tool_name, {})
+
+
+def test_tools_that_can_change_files_are_never_exempt() -> None:
+    from alysis_code.tools.registry import get_builtin_tool_metadata
+
+    for name in stdio_bridge._CHECKPOINT_FREE_READ_TOOLS:
+        spec = get_builtin_tool_metadata(name)
+        if spec is None:
+            continue
+        assert not {"write", "shell", "subagent", "verify"} & set(spec.categories), name
+
+
+def test_a_change_after_the_baseline_finishes_proceeds_in_the_same_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _guarded_session(tmp_path)
+    guard = stdio_bridge._CheckpointToolDispatchGuard({"session": session})
+    release = threading.Event()
+
+    class Ledger:
+        def ensure_baseline(self, session_id: str) -> None:
+            assert release.wait(timeout=5)
+
+    ledger = Ledger()
+    monkeypatch.setattr(stdio_bridge, "ChangeLedger", lambda root: ledger)
+    prepare = stdio_bridge._prepare_change_ledger_with_deadline
+    monkeypatch.setattr(
+        stdio_bridge,
+        "_prepare_change_ledger_with_deadline",
+        lambda owner: prepare(owner, deadline_seconds=0.05),
+    )
+    with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
+        guard.check_tool_call("fs_write", {})
+    worker_done = session.checkpoint_setup[0]
+    release.set()
+    assert worker_done.wait(timeout=5)
+    guard.check_tool_call("fs_write", {})
+    assert session.change_ledger is ledger
+
+
+def test_setup_runs_one_background_worker_that_a_later_wait_adopts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _session(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    ledgers: list[object] = []
+
+    class Ledger:
+        def __init__(self, root: Path) -> None:
+            ledgers.append(self)
+
+        def ensure_baseline(self, session_id: str) -> None:
+            started.set()
+            assert release.wait(timeout=5)
+
+    monkeypatch.setattr(stdio_bridge, "ChangeLedger", Ledger)
+    done, _ = stdio_bridge._start_change_ledger_setup(session)
+    assert started.wait(timeout=2)
+    assert not done.is_set()
+    assert stdio_bridge._start_change_ledger_setup(session)[0] is done  # one worker only
+    release.set()
+    assert stdio_bridge._prepare_change_ledger_with_deadline(session) is True
+    assert session.change_ledger is ledgers[0]
+    assert len(ledgers) == 1
+
+
+def test_a_slow_baseline_is_shown_as_an_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    activities: list[tuple[str, str]] = []
+    session = _session(tmp_path)
+    session.surface.emit_activity = lambda event: activities.append((event.operation, event.status))
+
+    class Ledger:
+        def ensure_baseline(self, session_id: str) -> None:
+            threading.Event().wait(0.3)
+
+    monkeypatch.setattr(stdio_bridge, "ChangeLedger", lambda root: Ledger())
+    monkeypatch.setattr(stdio_bridge, "_CHANGE_LEDGER_SETUP_NOTICE_SECONDS", 0.05)
+    assert stdio_bridge._prepare_change_ledger_with_deadline(session) is True
+    assert activities == [
+        ("prepare_restore_points", "running"),
+        ("prepare_restore_points", "succeeded"),
+    ]
+
+
+def test_a_quick_baseline_shows_no_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    activities: list[object] = []
+    session = _session(tmp_path)
+    session.surface.emit_activity = activities.append
+    monkeypatch.setattr(
+        stdio_bridge, "ChangeLedger", lambda root: SimpleNamespace(ensure_baseline=lambda s: None)
+    )
+    assert stdio_bridge._prepare_change_ledger_with_deadline(session) is True
+    assert activities == []

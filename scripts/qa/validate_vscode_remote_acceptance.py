@@ -430,7 +430,7 @@ def validate_evidence(
         or runtime.get("artifact_version") != binding["managed_artifact_version"]
         or runtime.get("sha256") != binding["managed_cli_sha256"]
         or runtime.get("release_tag") != expected_release_tag
-        or runtime.get("source_repository") != "https://github.com/AlysisAi/alysis-code"
+        or runtime.get("source_repository") != "https://github.com/AlysisAi/AlysisCode"
         or runtime.get("source_sha") != expected_source_sha
         or runtime.get("signature_verified") is not True
     ):

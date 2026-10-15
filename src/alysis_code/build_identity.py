@@ -34,9 +34,9 @@ rather than an import error.
 harnesses set it so a campaign cannot start against a build whose provenance
 is unknown -- the precise mistake that cost the earlier campaign its meaning.
 
-Stdlib only, no package imports: the generator script runs this in a bare
-interpreter before the package is installable, and the tests load it straight
-from this file path.
+Stdlib only, including the shared command decoder: the generator script runs
+this in a bare interpreter before dependencies are installed. The standalone
+tests exercise the same package imports.
 """
 
 from __future__ import annotations
@@ -51,6 +51,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .command_text import command_text
 
 BUILD_INFO_FILENAME = "_build_info.py"
 #: Bumped to 2 when the commit subject and the resolved ``origin/main`` joined
@@ -315,7 +317,7 @@ def _run_git(args: Sequence[str], *, cwd: Path) -> tuple[int, str]:
             ["git", *args],
             cwd=str(cwd),
             capture_output=True,
-            text=True,
+            **command_text(),
             check=False,
             timeout=30,
         )

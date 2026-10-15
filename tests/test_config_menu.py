@@ -100,7 +100,7 @@ def test_subscription_execution_uses_native_profile_and_preserves_api_profile(
     assert target.execution.backend == "native"
     assert target.execution.runtime is None
     assert target.model == ""
-    assert target.base_url == "https://chatgpt.com/backend-api/codex"
+    assert target.base_url == "https://api.openai.com/v1"
     assert target.extra_fields["active_profile"] == "chatgpt-codex"
     assert target.extra_fields["subscription_model_selection_required"] == "openai-codex"
 
@@ -116,7 +116,7 @@ def test_reselecting_subscription_preserves_config_selected_model_and_effort() -
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="kept-model",
         reasoning_effort="high",
@@ -142,7 +142,7 @@ def test_subscription_profile_edit_rejects_provider_managed_model_and_endpoint()
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="kept-model",
         reasoning_effort="high",
@@ -185,7 +185,7 @@ def test_subscription_profile_cannot_be_replaced_by_generic_config_add() -> None
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="kept-model",
         reasoning_effort="high",
@@ -263,7 +263,7 @@ def test_classic_execution_section_uses_registry_runtime(
     runtime_rows = picker_calls[1]["rows"]
     assert isinstance(runtime_rows, list)
     assert "openai-codex" in [row[0] for row in runtime_rows]
-    assert "AI subscription via ChatGPT Codex subscription" in output[-1]
+    assert "AI subscription via ChatGPT subscription" in output[-1]
     assert managed_accounts == ["openai-codex"]
 
 
@@ -556,7 +556,7 @@ def test_commit_does_not_rewrite_unchanged_subscription_model() -> None:
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="gpt-5.6-luna",
         reasoning_effort="high",

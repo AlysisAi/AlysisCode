@@ -26,6 +26,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import alysis_cloud as cloud
@@ -36,6 +37,7 @@ from .config import (
     save_config,
     save_persisted_profile_key,
 )
+from .device_identity import get_installation_id
 from .host_browser import open_url
 from .profile_presets import canonical_model_alias_for_preset, get_preset, make_profile_from_preset
 from .profiles import ProfileSpec, add_profile, get_profile, set_active_profile
@@ -83,6 +85,9 @@ class TrialStatus:
     tokens_total: int | None
     tokens_used: int | None
     tokens_remaining: int | None
+    display_name: str | None = None
+    # Credits are monetary ledger units, not model tokens. Preserve the website contract.
+    billing: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -177,15 +182,132 @@ def login_status(cfg: AppConfig) -> LoginStatus:
     )
 
 
-def fetch_trial_status(cfg: AppConfig) -> TrialStatus | None:
-    """Fetch live account status. Currently returns None (no status endpoint).
+class _AccountNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        # Never forward the saved device credential to a redirect target.
+        return None
 
-    Plan status, credit balance, and usage live on the product site's /account
-    page (see ``alysis_cloud.account_url``). A CLI-visible status endpoint is planned;
-    until then this stays best-effort-None so callers degrade exactly like the
-    old offline path — `whoami` still shows local connection state.
+
+def _account_text(value: object) -> str | None:
+    return value.strip()[:200] if isinstance(value, str) and value.strip() else None
+
+
+def _account_billing(value: object) -> dict[str, Any] | None:
+    """Validate the website's numerical contract without inventing missing balances."""
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    for field in ("status", "tier"):
+        result[field] = _account_text(value.get(field))
+        if result[field] is None:
+            return None
+    for field in (
+        "balance_microusd",
+        "month_burn_microusd",
+        "cycle_burn_microusd",
+        "burn_5h_microusd",
+        "burn_7d_microusd",
+    ):
+        number = value.get(field)
+        if type(number) not in (int, float) or not math.isfinite(number):
+            return None
+        if number != int(number) or abs(number) > 2**53 - 1:
+            return None
+        if field != "balance_microusd" and number < 0:
+            return None
+        result[field] = int(number)
+    for field in ("cap_5h_microusd", "cap_7d_microusd", "free_allowance_microusd"):
+        if field not in value:
+            return None
+        number = value.get(field)
+        if number is not None and (
+            type(number) not in (int, float)
+            or not math.isfinite(number)
+            or number < 0
+            or number > 2**53 - 1
+            or number != int(number)
+        ):
+            return None
+        result[field] = number
+    for field in ("unlimited_credits", "free_granted_period", "cancel_at_period_end"):
+        if not isinstance(value.get(field), bool):
+            return None
+        result[field] = value[field]
+    if result["free_allowance_microusd"] is None and not result["unlimited_credits"]:
+        return None
+    for field in ("free_next_refill_at", "current_period_end"):
+        result[field] = _account_text(value.get(field))
+    promotions = value.get("model_promotions")
+    if not isinstance(promotions, list) or len(promotions) > 100:
+        return None
+    result["model_promotions"] = []
+    for row in promotions:
+        if not isinstance(row, dict):
+            return None
+        multiplier = row.get("multiplier")
+        if (
+            not _account_text(row.get("model"))
+            or not _account_text(row.get("label"))
+            or type(multiplier) not in (int, float)
+            or not math.isfinite(multiplier)
+            or multiplier < 1
+            or multiplier > 2**53 - 1
+        ):
+            return None
+        result["model_promotions"].append(
+            {
+                "model": _account_text(row["model"]),
+                "label": _account_text(row["label"]),
+                "multiplier": multiplier,
+            }
+        )
+    return result
+
+
+def fetch_trial_status(cfg: AppConfig) -> TrialStatus | None:
+    """Read live billing for the saved Alysis account, regardless of active provider.
+
+    The historical name remains for CLI callers. Offline, revoked, undeployed and
+    malformed responses return None; the stored sign-in itself is left untouched.
     """
-    return None
+    key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+    if not key:
+        return None
+    try:
+        request = urllib.request.Request(
+            cloud.account_status_url(),
+            method="GET",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+        )
+        with urllib.request.build_opener(_AccountNoRedirect()).open(request, timeout=8) as response:
+            raw = response.read(65_537)
+        if len(raw) > 65_536:
+            return None
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            return None
+        billing = _account_billing(payload.get("billing"))
+        if billing is None:
+            return None
+        return TrialStatus(
+            plan=billing["tier"],
+            email=_account_text(payload.get("email")),
+            trial_ends_at=None,
+            tokens_total=None,
+            tokens_used=None,
+            tokens_remaining=None,
+            display_name=_account_text(payload.get("display_name")),
+            billing=billing,
+        )
+    except (
+        cloud.AlysisCloudConfigError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        UnicodeDecodeError,
+    ):
+        return None
 
 
 def list_trial_models(cfg: AppConfig) -> list[str]:
@@ -227,6 +349,14 @@ def list_trial_models(cfg: AppConfig) -> list[str]:
 
 def format_trial_status_line(status: TrialStatus) -> str | None:
     """A one-line account summary for `whoami`, or None if there's nothing to show."""
+    if status.billing is not None:
+        billing = status.billing
+        if billing["unlimited_credits"]:
+            return f"{status.plan or 'Account'}: unlimited credits"
+        balance = billing["balance_microusd"]
+        if billing["tier"] == "free" and not billing["free_granted_period"]:
+            balance = billing["free_allowance_microusd"]
+        return f"{status.plan or 'Account'}: {max(0, balance) / 10_000:,.1f} credits left"
     parts: list[str] = []
     days = _days_left(status.trial_ends_at)
     if days is not None:
@@ -309,7 +439,7 @@ def _approval_url(server_url: str, *, user_code: str) -> str:
     The device endpoint returns its own ``verification_url`` /
     ``verification_url_complete``. Opening that verbatim lets the *server*
     decide which website the CLI sends the user to — which is how a deployment
-    still carrying the pre-rebrand host (``sylliptor.alysisai.com``) kept
+    still carrying the retired product host kept
     launching the retired site long after the client had been rebranded, and
     which would equally let a compromised or misconfigured backend point
     sign-in anywhere. Only the path and query are taken from the response; the
@@ -337,7 +467,16 @@ def _approval_url(server_url: str, *, user_code: str) -> str:
 
 def _request_device_code() -> _DeviceGrant:
     client_name = f"alysis-cli @ {platform.node() or 'unknown-host'}"[:80]
-    body = _post_json(cloud.device_code_url(), {"client_name": client_name})
+    try:
+        installation_id = get_installation_id()
+    except (OSError, ValueError) as exc:
+        raise AlysisLoginError(
+            "Could not read or save the CLI installation identity. Check your Alysis data directory."
+        ) from exc
+    body = _post_json(
+        cloud.device_code_url(),
+        {"client_name": client_name, "installation_id": installation_id},
+    )
 
     device_code = str(body.get("device_code") or "").strip()
     user_code = str(body.get("user_code") or "").strip()

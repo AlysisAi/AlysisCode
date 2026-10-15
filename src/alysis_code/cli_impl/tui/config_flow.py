@@ -505,6 +505,7 @@ class ConfigFlow:
         self._subscription_provider_id = ""
         self._subscription_account_status: ProviderAccountStatus | None = None
         self._subscription_switch_account = False
+        self._subscription_save_pending = False
         self._subscription_action_outcome: tuple[str, ProviderAccountStatus | None, str] | None = (
             None
         )
@@ -867,6 +868,14 @@ class ConfigFlow:
                     label="Done — start chatting",
                     description="Close configuration and return to chat.",
                     value="chat",
+                )
+            )
+        elif status.connected:
+            rows.append(
+                Row(
+                    label="Save & start chatting",
+                    description="Choose a model if needed, save changes, and return to chat.",
+                    value=_SAVE,
                 )
             )
         rows.append(Row(label="Back", description="Return to configuration.", value="back"))
@@ -1847,6 +1856,10 @@ class ConfigFlow:
         if self.stage == "menu":
             self.request_cancel()
             return
+        if self.stage == "model" and self._subscription_save_pending:
+            self._subscription_save_pending = False
+            self._goto("subscription_account")
+            return
         if self.stage == "subagent_field":
             self.state.role_models = dict(self._sub_model_snapshot)
             self.state.role_temperatures = dict(self._sub_temp_snapshot)
@@ -1976,6 +1989,22 @@ class ConfigFlow:
         self._goto("subscription_account")
 
     def _choose_subscription_account(self, value: str) -> None:
+        if value == _SAVE:
+            status = (
+                self._subscription_account_status or self._refresh_subscription_account_status()
+            )
+            if not status.connected:
+                return
+            if self.state.subscription_selection_required and (
+                not self.state.fields.get("model", "").strip()
+                or not self.state.thinking_label_explicitly_set
+            ):
+                self._subscription_save_pending = True
+                self.open_default_model()
+                self._set_status("Choose a model and reasoning effort to save and start chatting.")
+            else:
+                self._goto("saving")
+            return
         if value == "chat":
             # Alysis Code connect already persisted everything (self.saved is
             # set), so finishing here closes the overlay, reloads the live
@@ -2167,6 +2196,10 @@ class ConfigFlow:
 
     def _choose_thinking(self, value: str) -> None:
         self.state.set_thinking_label(value)
+        if self._subscription_save_pending:
+            self._subscription_save_pending = False
+            self._goto("saving")
+            return
         if self._preset_setup_chain:
             self._complete_preset_setup_chain(
                 model=str(self.state.fields.get("model", "") or "").strip()
@@ -2746,7 +2779,7 @@ class ConfigFlow:
         self._goto("subscription_account")
         if kind == "connected":
             self._set_status(
-                "Subscription connected. Save model access, then review Default Model.",
+                "Subscription connected. Press s or choose Save & start chatting.",
                 "ok",
             )
         else:

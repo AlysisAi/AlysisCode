@@ -217,9 +217,13 @@ def _looks_like_auth_error(lowered: str) -> bool:
     return any(
         token in lowered
         for token in (
-            "api key",
+            "invalid api key",
             "invalid_api_key",
             "incorrect api key",
+            "missing api key",
+            "api key is invalid",
+            "api key is missing",
+            "api key was rejected",
             "unauthorized",
             "authentication",
             "forbidden",

@@ -19,12 +19,15 @@ when idle). Without a ``session_builder`` the shell keeps the Phase 1 stub reply
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import textwrap
 import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -44,10 +47,12 @@ from prompt_toolkit.formatted_text import (
 )
 from prompt_toolkit.input import create_input
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout, WindowAlign
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
+    DynamicContainer,
     Float,
     FloatContainer,
     HSplit,
@@ -79,6 +84,7 @@ from ...clipboard import ClipboardError, copy_text_to_clipboard, paste_clipboard
 from ...host_browser import open_url
 from ...llm.types import LLMError
 from ...llm_error_display import friendly_llm_error_message, is_network_or_model_error
+from ...review_service import ReviewController
 from ...subagent_labels import subagent_identity
 from ...surface.styles import TerminalTheme
 from ...surface.theme import detect_terminal_theme
@@ -95,6 +101,7 @@ from ..chat.mid_turn_policy import (
     is_command,
 )
 from . import content as _content
+from .actions import MODEL_DESCRIPTION
 from .attachments import (
     ATTACHMENT_TOKEN_RE,
     Attachment,
@@ -107,12 +114,14 @@ from .attachments import token_after as _attachment_token_after
 from .attachments import token_at as _attachment_token_at
 from .attachments import token_before as _attachment_token_before
 from .composer import COMPOSER_PROMPT, ComposerWrapProcessor, vertical_move
+from .diff_view import DiffViewer
 from .footer import footer_fragments
 from .forge_status import (
     forge_status_bucket,
     forge_status_counts,
     forge_status_glyph,
 )
+from .integration_modal import IntegrationModal
 from .links import (
     browser_url,
     link_at,
@@ -120,7 +129,10 @@ from .links import (
     link_segments,
     pad_after_trailing_link,
 )
+from .local_action_lifecycle import TuiLocalActionLifecycle, TurnOutcome
+from .local_mode_host import ReservedIntegrationDispatcher, integration_controller
 from .markdown import render_markdown_rows
+from .navigation_ui import SessionSearchModal, TranscriptSearchModal
 from .owl import load_owl_animation
 from .plan_meta import (
     PLAN_META_ROW_ROLES,
@@ -128,6 +140,10 @@ from .plan_meta import (
     strip_plan_meta_copy_chrome,
 )
 from .plan_meta import plan_meta_rows as render_plan_meta_rows
+from .planning_chooser import PlanningController
+from .prompt_history import PromptEntry, PromptHistory
+from .review import ReviewModal
+from .review_client import dispose_review_engine
 from .selection_bindings import selection_editing_bindings
 from .state import TuiState
 from .subagent_panel import (
@@ -146,11 +162,9 @@ _INLINE_PASTE_MAX_LINES = 8
 _INLINE_PASTE_MAX_CHARS = 800
 _PASTE_TOKEN_RE = re.compile(r"\[pasted #(?P<id>[1-9]\d*) \+(?P<lines>\d+) lines\]")
 _PENDING_STEER_HEADER = (
-    "message to be submitted after the next tool call - esc interrupts and sends it immediately"
+    "message to be submitted after the next tool call - ctrl+c interrupts and sends it immediately"
 )
-_PENDING_STEERS_HEADER = (
-    "messages to be submitted after the next tool call - esc interrupts and sends them immediately"
-)
+_PENDING_STEERS_HEADER = "messages to be submitted after the next tool call - ctrl+c interrupts and sends them immediately"
 _PENDING_QUEUED_HEADER = "queued follow-up inputs"
 _PENDING_EDIT_HINT = "shift + ← edit last queued message"
 
@@ -220,6 +234,10 @@ class _PasteRegistry:
     def snapshot(self) -> dict[int, str]:
         return dict(self._payloads)
 
+    def restore(self, payloads: dict[int, str]) -> None:
+        self._payloads.update(payloads)
+        self._next_id = max(self._next_id, max(payloads, default=0) + 1)
+
     def live_matches(self, text: str) -> list[re.Match[str]]:
         return [
             match
@@ -273,6 +291,7 @@ class _PendingMessage:
     # with it when it is drained into its own turn, and are re-adopted by the
     # registry when the message is recalled back into the input box.
     attachments: tuple[Attachment, ...] = ()
+    pastes: tuple[tuple[int, str], ...] = ()
 
 
 class _DispatchOutcome(Enum):
@@ -408,16 +427,38 @@ _STYLE = Style.from_dict(
         "tui.transcript.error": "#e06c75",
         "tui.transcript.warn": "#d19a66",
         "tui.transcript.selection": "reverse",
+        "tui.transcript.link": "underline #58a6ff",
         # Subagent identity line ("↪ <name> · <mode>") — the shared subagent
         # blue (per-agent accents live in the footer badge).
         "tui.transcript.subagent": "bold #58a6ff",
         "tui.status": "#8a8a8a",
+        "tui.diff.muted": "#8a8a8a",
+        "tui.diff.add": "#3fb950",
+        "tui.diff.remove": "#e06c75",
+        # Trace colors describe outcomes, with text/glyphs retained in monochrome.
+        "tui.trace.active": "bold #58a6ff",
+        "tui.trace.success": "bold #3fb950",
+        "tui.trace.warning": "bold #d19a66",
+        "tui.trace.command": "#56b6c2",
+        "tui.trace.agent": "#bc8cff",
+        "tui.trace.detail": "#c9d1d9",
         "tui.tip.link": f"underline {_ACCENT}",
         # Working line turns amber once a turn has run long (>=30s).
         "tui.status.warn": "#d29922",
         # Full-screen /config surface. Keep this semantic so terminal-theme
         # translation can pair its background with the matching foregrounds.
         "tui.config": "bg:#0d1117",
+        # Question cards: a quiet border, distinct heading, and one focused row.
+        "tui.question": "#c9d1d9 bg:#0d1117",
+        "tui.question frame.border": "#30363d bg:#0d1117",
+        "tui.question.meta": f"bold {_ACCENT} bg:#0d1117",
+        "tui.question.heading": "bold #e6edf3 bg:#0d1117",
+        "tui.question.muted": "#8b949e bg:#0d1117",
+        "tui.question.option": "#c9d1d9 bg:#0d1117",
+        "tui.question.active": f"bold {_ACCENT} bg:{_BAND_BG}",
+        "tui.question.input": "#e6edf3 bg:#161b22",
+        "tui.question.field frame.border": "#30363d bg:#0d1117",
+        "tui.question.error": "#d19a66 bg:#0d1117",
         # Right-hand scrollbar. The margin paints spaces, so the colour must be a
         # BACKGROUND (a foreground does nothing on a blank cell, leaving the ugly
         # default light-grey bar). Faint near-black track + accent-green thumb.
@@ -641,6 +682,7 @@ def _build_tui_style(theme: TerminalTheme) -> Style:
     if theme == "light":
         rules["tui.input"] = "#1f2328"
         rules["tui.transcript.userband"] = "bold #24292f bg:#eef3ee"
+        rules["tui.trace.command"] = "#0b7285"
     elif theme == "dark":
         rules["tui.input"] = "#e6edf3"
     return Style.from_dict(rules)
@@ -1124,26 +1166,26 @@ def _reasoning_rows(
     spinner: str = "",
     elapsed: int = 0,
 ) -> list[list[tuple[str, str]]]:
-    """Render a provider-generated reasoning summary as a dim aside.
+    """Render provider-returned reasoning text or a summary as a dim aside.
 
     A header sits flush left, directly beneath the user's message: while ``live``
     it animates as ``⠋ thinking… Ns`` (the ``spinner`` char + ``elapsed`` seconds);
     once closed it collapses to a short header (expanded automatically for
-    ``/trace full``). Provider adapters never route raw or encrypted reasoning
-    through this renderer.
+    ``/trace full``). Provider adapters keep encrypted state and signatures
+    separate from the text passed to this renderer.
     """
     rail = "class:tui.transcript.reasoningmark"
     body = "class:tui.transcript.reasoning"
     show_body = live or expanded
     if live:
         lead = spinner or _THINK_OPEN
-        header = f"reasoning summary… {elapsed}s" if elapsed else "reasoning summary…"
+        header = f"thinking… {elapsed}s" if elapsed else "thinking…"
     elif expanded:
         lead = _THINK_OPEN
-        header = "reasoning summary"
+        header = "thinking"
     else:
         lead = _THINK_CLOSED
-        preview = " ".join(str(text or "").split()) or "reasoning summary"
+        preview = " ".join(str(text or "").split()) or "thinking"
         preview_limit = max(12, int(width) - 2)
         header = (
             preview
@@ -1171,8 +1213,8 @@ def _activity_rows(
     """The single live activity line shown under the content while a turn runs —
     ``⠋ thinking… Ns`` or ``⠋ Search Web… Ns``. Matches the live reasoning header
     so the indicator and a streaming thought flow into each other seamlessly."""
-    rail = "class:tui.transcript.reasoningmark"
-    body = "class:tui.transcript.reasoning"
+    rail = "class:tui.trace.active"
+    body = "class:tui.trace.detail"
     clock = (
         f" \u00b7 run time {elapsed}s"
         if elapsed and elapsed_is_run_time
@@ -1180,7 +1222,7 @@ def _activity_rows(
         if elapsed
         else ""
     )
-    return [[(rail, f"{spinner} "), (body, f"{label}{clock}")]]
+    return [[(rail, f"{spinner} "), (body, label), ("class:tui.diff.muted", clock)]]
 
 
 def _sync_subagent_started_at(
@@ -1228,7 +1270,9 @@ def _plan_meta_rows(text: str, width: int, *, expanded: bool) -> list[list[tuple
     return render_plan_meta_rows(text, width, expanded=expanded)
 
 
-def _subagent_panel_container(panel_state: dict[str, Any]) -> ConditionalContainer:
+def _subagent_panel_container(
+    panel_state: dict[str, Any], *, hint_provider: Callable[[], str] | None = None
+) -> ConditionalContainer:
     """Build the in-flow live-child pane around mutable ``panel_state``."""
 
     def _fragments() -> FormattedText:
@@ -1252,6 +1296,7 @@ def _subagent_panel_container(panel_state: dict[str, Any]) -> ConditionalContain
             height=_SUBAGENT_PANEL_CONTENT_HEIGHT,
             position=position,
             total=total,
+            key_hint=hint_provider() if hint_provider is not None else None,
         )
         fragments: list[tuple[str, str]] = []
         for index, row in enumerate(rows):
@@ -2345,28 +2390,35 @@ def _has_conversation(entries: list[tuple[str, str]]) -> bool:
 def _duplicate_assistant_indices(
     entries: list[tuple[str, str]], streaming_index: int | None
 ) -> set[int]:
-    """Indices of completed assistant entries that verbatim-repeat the previous
-    assistant block within the same turn (the tracker resets at each ``user``
-    entry). A multi-step agent turn can re-stream the same answer across
-    continuation/tool steps; the transcript keeps each streamed block, so without
-    this the identical reply renders 2-3 times. The live (still-streaming) block
-    is never collapsed, and the comparison is whitespace-insensitive and purely
-    content-based — no model/provider-specific logic."""
+    """Redundant assistant blocks within a user turn. Hide a live block while
+    it repeats the previous answer's prefix; if it diverges, show it in full.
+    When the new answer includes all of the previous text, show the fuller
+    answer once. Comparisons collapse whitespace and never cross user turns.
+    """
     skip: set[int] = set()
     previous: str | None = None
+    previous_index: int | None = None
     for index, (role, text) in enumerate(entries):
         if role == "user":
             previous = None
+            previous_index = None
             continue
         if role != "assistant":
             continue
         normalized = " ".join(str(text or "").split())
         if not normalized:
             continue
-        if streaming_index != index and previous == normalized:
+        if previous == normalized or (
+            streaming_index == index and previous is not None and previous.startswith(normalized)
+        ):
             skip.add(index)
             continue
+        if previous is not None and previous_index is not None and normalized.startswith(previous):
+            # A fuller answer includes the previous candidate/partial answer.
+            # Keep the complete text once, including any host-added notices.
+            skip.add(previous_index)
         previous = normalized
+        previous_index = index
     return skip
 
 
@@ -2381,6 +2433,7 @@ def _status_line_fragments(
     queued_count: int = 0,
     step_staged_count: int = 0,
     turn_end_staged_count: int = 0,
+    vim: bool = False,
 ) -> FormattedText:
     composer_hints = [hint.strip() for hint in (attachment_hint, paste_hint) if hint.strip()]
     if composer_hints:
@@ -2392,7 +2445,14 @@ def _status_line_fragments(
     if running:
         if input_pending:
             return FormattedText(
-                [("class:tui.status", "  Enter to steer - Ctrl+Q to queue - Esc to interrupt")]
+                [
+                    (
+                        "class:tui.status",
+                        "  Enter to steer - Ctrl+Q to queue - "
+                        + ("Ctrl+C" if vim else "Esc")
+                        + " to interrupt",
+                    )
+                ]
             )
         if queued_count > 0 or step_staged_count > 0 or turn_end_staged_count > 0:
             label = "message" if queued_count == 1 else "messages"
@@ -2407,11 +2467,15 @@ def _status_line_fragments(
                 [
                     (
                         "class:tui.status",
-                        f"  {' - '.join(parts)} - Esc or Ctrl+C to interrupt",
+                        f"  {' - '.join(parts)} - "
+                        + ("Ctrl+C" if vim else "Esc or Ctrl+C")
+                        + " to interrupt",
                     )
                 ]
             )
-        return FormattedText([("class:tui.status", "  Esc or Ctrl+C to interrupt")])
+        return FormattedText(
+            [("class:tui.status", "  " + ("Ctrl+C" if vim else "Esc or Ctrl+C") + " to interrupt")]
+        )
     if selection_available:
         return FormattedText([("class:tui.status", "  ctrl+c to copy")])
     return FormattedText([])
@@ -2485,6 +2549,7 @@ def run_tui(
     step_operation_apply: Callable[[Any, ResolvedOperation], None] | None = None,
     completer: Any | None = None,
     config_flow_factory: Callable[[], Any] | None = None,
+    report_flow_factory: Callable[[Any, str], Any] | None = None,
     on_config_saved: Callable[[], ConfigReloadOutcome | bool | None] | None = None,
     unavailable_message: str | None = None,
     subscription_provider_id: str | None = None,
@@ -2492,6 +2557,14 @@ def run_tui(
     theme: TerminalTheme | None = None,
     initial_input_text: str = "",
     workspace_root: Path | None = None,
+    workdir_provider: Callable[[], Path] | None = None,
+    diff_viewer_factory: Callable[..., DiffViewer] | None = DiffViewer,
+    review_engine_factory: Callable[[Path], Callable[..., Any]] | None = None,
+    session_search_provider: Callable[[], Any] | None = None,
+    resume_session: Callable[[str], bool] | None = None,
+    local_lifecycle: TuiLocalActionLifecycle | None = None,
+    history_persistence: bool = True,
+    planning_backend: Any | None = None,
 ) -> tuple[Any, list[tuple[str, str]]]:
     """Run the full-screen TUI shell, optionally hosting a real agent session.
 
@@ -2502,6 +2575,13 @@ def run_tui(
     ``workspace_root`` is the session's active workdir. It anchors composer
     attachments: a relative path given to ``/image`` resolves against it, and a
     clipboard image is written beneath it. It defaults to the process CWD.
+    ``workdir_provider`` resolves the current directory for text-only @ references;
+    the chat loop supplies the live session directory, including navigation changes.
+
+    ``review_engine_factory(workspace)`` snapshots review configuration and returns
+    a callable accepting a cancellation token. Only explicit Start invokes that
+    callable, in a serialized worker; its dedicated engine is disposed after the
+    provider call ends. Omit it to keep review unavailable on this surface.
 
     Returns ``(result, transcript)`` where ``result`` is the value passed to
     ``app.exit`` (an exit word, or ``None`` for Ctrl-C/Ctrl-D) and ``transcript``
@@ -2560,6 +2640,8 @@ def run_tui(
     paste_registry = _PasteRegistry()
     attachment_registry = AttachmentRegistry()
     attachment_root = Path(workspace_root) if workspace_root is not None else Path.cwd()
+    prompt_history = PromptHistory(attachment_root, persistence=history_persistence)
+    history_warning = {"shown": False}
     wheel_step_rows = _resolve_wheel_step_rows()
 
     # ---- turn/run state (mutated across the UI and one worker thread) ----
@@ -2589,7 +2671,7 @@ def run_tui(
     # (or send a message).
     scroll: dict[str, Any] = {"follow": True, "offset": 0}
     # ``started`` stamps the running turn so the status line can show elapsed
-    # time; ``reasoning_expanded`` is a local expansion override (Ctrl+R).
+    # time; ``reasoning_expanded`` is a local expansion override (Alt+R).
     run_box: dict[str, float] = {"started": 0.0, "cancellation_started": 0.0}
     subagent_started_at: dict[str, float] = {}
     view: dict[str, bool] = {"reasoning_expanded": False, "planmeta_expanded": False}
@@ -2830,6 +2912,7 @@ def run_tui(
                         text=message.text,
                         display_text=message.display_text,
                         echoed=True,
+                        pastes=message.pastes,
                     )
                 )
             # SteerInbox.restore_front() places rolled-back messages ahead of
@@ -2879,6 +2962,18 @@ def run_tui(
         state.active_subagent = state.active_subagents[-1] if state.active_subagents else ""
         _safe_invalidate()
 
+    def _action_key_hint(action_id: str, *, paste: bool = False) -> str:
+        return {
+            "history": "ctrl+r",
+            "reasoning": "alt+r",
+            "diff": "ctrl+p",
+            "paste.edit": "alt+p",
+            "subagent.previous": "alt+left",
+            "subagent.next": "alt+right",
+            "subagent.close": "esc",
+            "planmeta.toggle": "ctrl+o",
+        }.get(action_id, "")
+
     def _register_subagent_run(event: SubagentStartEvent) -> None:
         run_id = str(event.subagent_run_id or "").strip()
         if not run_id:
@@ -2905,7 +3000,9 @@ def run_tui(
             "workspace_view": str(event.workspace_view or "shared"),
         }
         if not subagent_panel["tip_shown"] and not subagent_panel["selected_run_id"]:
-            transcript.append("info", "tip: ctrl+n to follow subagent work")
+            transcript.append(
+                "info", f"tip: {_action_key_hint('subagent.next')} to follow subagent work"
+            )
             subagent_panel["tip_shown"] = True
         _safe_invalidate()
 
@@ -3114,6 +3211,22 @@ def run_tui(
                 # streaming block plain so a half-open code fence never flickers.
                 done = streaming_index != index
                 block = _assistant_rows(text, width, markdown=done, theme=terminal_theme)
+            elif role == "patch":
+                from .tool_trace import patch_rows
+
+                if transcript.trace_level == "off":
+                    continue
+                block = patch_rows(text, width, expanded=transcript.trace_level == "full")
+            elif role == "tool_output":
+                from .tool_trace import output_rows
+
+                if transcript.trace_level != "full":
+                    continue
+                block = output_rows(text, width)
+            elif role == "trace":
+                from .tool_trace import trace_rows
+
+                block = trace_rows(text, width)
             elif role == "planmeta":
                 # Collapsible Forge planner meta / plan-reconciliation notes.
                 # Rows carry per-row kinds: lead rows ("planmeta") own a
@@ -3447,11 +3560,12 @@ def run_tui(
 
     def _paste_hint_text() -> str:
         matches = _live_paste_matches()
+        shortcut = _action_key_hint("paste.edit", paste=True) if matches else ""
         if len(matches) == 1:
             match = matches[0]
-            return f"pasted #{match.group('id')} +{match.group('lines')} lines - ctrl+p to view"
+            return f"pasted #{match.group('id')} +{match.group('lines')} lines - {shortcut} to view"
         if len(matches) > 1:
-            return f"{len(matches)} pasted blocks - cursor on one, ctrl+p to view"
+            return f"{len(matches)} pasted blocks - cursor on one, {shortcut} to view"
         return ""
 
     has_live_paste_tokens = Condition(lambda: bool(_live_paste_matches()))
@@ -3491,7 +3605,10 @@ def run_tui(
         attached = 0
         for candidate in paths:
             try:
-                attachment = attachment_registry.add_path(candidate, root=attachment_root)
+                attachment = attachment_registry.add_path(
+                    candidate,
+                    root=Path(workdir_provider()) if workdir_provider else attachment_root,
+                )
             except AttachmentError as exc:
                 if announce_errors:
                     transcript.append("warn", f"Could not attach: {exc}")
@@ -3546,7 +3663,10 @@ def run_tui(
         """Ctrl+V / bare ``/image``: save the clipboard picture and chip it."""
 
         try:
-            saved = paste_clipboard_image(root=attachment_root, output_path=None)
+            saved = paste_clipboard_image(
+                root=Path(workdir_provider()) if workdir_provider else attachment_root,
+                output_path=None,
+            )
         except ClipboardError as exc:
             transcript.append("warn", f"Clipboard: {exc}")
             _safe_invalidate()
@@ -3564,7 +3684,7 @@ def run_tui(
         # activity indicator. This line only carries the interrupt reminder while
         # busy, so there is never a second timer here.
         operation_inbox = ops_inbox_for(session) if session is not None else None
-        return _status_line_fragments(
+        fragments = _status_line_fragments(
             running=bool(running["on"] and not retiring["on"]),
             notice=str(selection_notice["text"] or ""),
             paste_hint=_paste_hint_text(),
@@ -3577,6 +3697,7 @@ def run_tui(
             ),
             turn_end_staged_count=_pending_command_count(pending_operations),
         )
+        return fragments
 
     status_window = Window(FormattedTextControl(_status_text, focusable=False), height=1)
 
@@ -3691,12 +3812,20 @@ def run_tui(
         # command, so the slash dropdown stays shut.
         return _attachment_token_at(buffer.text, buffer.cursor_position) is None
 
+    from prompt_toolkit.completion import DummyCompleter
+
+    from ..file_mention_completer import ChatComposerCompleter, mention_at_cursor
+
+    composer_completer = ChatComposerCompleter(
+        completer if completer is not None else DummyCompleter(),
+        workdir_provider=workdir_provider or (lambda: attachment_root),
+    )
     input_area = TextArea(
         height=D(min=1, max=8),
         multiline=True,
         wrap_lines=True,
         style="class:tui.input",
-        completer=completer,
+        completer=composer_completer,
         complete_while_typing=Condition(_complete_while_typing),
         input_processors=[
             _PlaceholderProcessor(_placeholder_text),
@@ -3706,7 +3835,85 @@ def run_tui(
         ],
     )
 
+    # PTK drops concurrent async-completer calls. Track the actual jobs so an
+    # explicit Tab can retire an obsolete cursor request before starting anew.
+    completion_jobs: set[asyncio.Task] = set()
+    completion_request = {"generation": 0, "pending": False, "task": None}
+    original_async_completer = input_area.buffer._async_completer
+
+    async def tracked_async_completer(*args: Any, **kwargs: Any) -> None:
+        task = asyncio.current_task()
+        completion_jobs.add(task)
+        try:
+            await original_async_completer(*args, **kwargs)
+        finally:
+            completion_jobs.discard(task)
+
+    input_area.buffer._async_completer = tracked_async_completer
+
+    def invalidate_completion_request(_buffer: Any = None) -> None:
+        completion_request["generation"] += 1
+        completion_request["pending"] = False
+        task = completion_request["task"]
+        if task is not None and not task.done():
+            task.cancel()
+        completion_request["task"] = None
+
+    input_area.buffer.on_text_changed += invalidate_completion_request
+    input_area.buffer.on_cursor_position_changed += invalidate_completion_request
+    original_cancel_completion = input_area.buffer.cancel_completion
+
+    def cancel_composer_completion() -> None:
+        invalidate_completion_request()
+        original_cancel_completion()
+
+    input_area.buffer.cancel_completion = cancel_composer_completion
+
+    def request_explicit_completion() -> None:
+        buff = input_area.buffer
+        invalidate_completion_request()
+        generation = completion_request["generation"]
+        document = buff.document
+        completion_request["pending"] = True
+        owner = get_app()
+
+        async def restart() -> None:
+            try:
+                # Let already-scheduled automatic jobs register before taking
+                # ownership. Document/cursor events invalidate this waiter.
+                await asyncio.sleep(0)
+                jobs = tuple(completion_jobs)
+                for job in jobs:
+                    if not job.cancelling():
+                        job.cancel()
+                if jobs:
+                    # One pending request waits asynchronously for real unwind;
+                    # cancellation of this waiter must not interrupt old cleanup.
+                    await asyncio.wait(jobs)
+                if (
+                    generation != completion_request["generation"]
+                    or buff.document != document
+                    or owner.is_done
+                    or owner.current_buffer is not buff
+                    or _small_modal_open()
+                    or _config_open()
+                    or retiring["on"]
+                    or not _complete_while_typing()
+                ):
+                    return
+                buff.complete_state = None
+                buff.start_completion(select_first=True)
+            finally:
+                if generation == completion_request["generation"]:
+                    completion_request["pending"] = False
+
+        completion_request["task"] = owner.create_background_task(restart())
+
+    action_dispatching = {"on": False}
+
     def _drop_orphaned_paste_entries(_buffer: Any) -> None:
+        if action_dispatching["on"]:
+            return
         # Tokens are deliberately plain text. If an internal edit mangles their
         # syntax, the token stops matching, its payload is dropped, and the
         # remaining text is submitted literally instead of being guessed back.
@@ -3717,6 +3924,7 @@ def run_tui(
         _chip_typed_drop()
 
     input_area.buffer.on_text_changed += _drop_orphaned_paste_entries
+
     if initial_input_text:
         # Startup-picker stash: text the user typed before the
         # workspace-guard steps painted arrives here, so their words start the
@@ -3746,19 +3954,41 @@ def run_tui(
         except Exception:
             return 24
 
-    def _schedule_on_ui_thread(callback: Callable[[], None]) -> None:
-        """Schedule a continuation on the prompt_toolkit event loop."""
-        try:
-            get_app().loop.call_soon_threadsafe(callback)
-        except Exception:  # noqa: BLE001 - inline tests have no live app loop
-            callback()
+    def _capture_ui_dispatch() -> Callable[[Callable[[], None]], None]:
+        """Capture the owner before starting a bare background thread."""
+        owner = get_app()
+        loop = getattr(owner, "loop", None)
+        owner_context = copy_context()
 
-    def _run_turn_blocking(instruction: str, run_kwargs: dict[str, Any]) -> None:
+        def dispatch(callback: Callable[[], None]) -> None:
+            def publish() -> None:
+                if owner.is_running and not owner.is_done and not loop.is_closed():
+                    callback()
+
+            if loop is None or loop.is_closed() or not owner.is_running or owner.is_done:
+                return
+            try:
+                loop.call_soon_threadsafe(lambda: owner_context.run(publish))
+            except RuntimeError:
+                # Teardown can close the loop after the checks above. Never
+                # drain the UI-owned queue inline on a background worker.
+                return
+
+        return dispatch
+
+    def _run_turn_blocking(
+        instruction: str,
+        run_kwargs: dict[str, Any],
+        ui_dispatch: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
         my_token = cancel_box["token"]
         turn_cleanup = run_kwargs.pop("_alysis_turn_cleanup", None)
         # Tag this worker thread so the surface can drop its output if it gets
         # soft-interrupted (and keeps blocking on a slow model in the background).
         set_active_cancellation(my_token)
+        failed = False
+        worker_result = None
+        worker_exception = None
         cancelled = my_token is not None and getattr(my_token, "is_cancelled", False)
         # Commands that perform blocking work can provide a deferred callable.
         # Pop it so private TUI orchestration never leaks into
@@ -3767,7 +3997,7 @@ def run_tui(
         deferred_execute = run_kwargs.pop("_deferred_execute", None) if run_kwargs else None
         try:
             if callable(deferred_execute):
-                deferred_execute(my_token)
+                worker_result = deferred_execute(my_token)
             else:
                 from ...personas import (
                     persona_overlay_messages,
@@ -3794,13 +4024,22 @@ def run_tui(
                     effective_kwargs["ephemeral_user_messages"] = persona_user_overlays + list(
                         effective_kwargs.get("ephemeral_user_messages") or []
                     )
-                session.run_turn(instruction, cancellation_token=my_token, **effective_kwargs)
-        except KeyboardInterrupt:
+                worker_result = session.run_turn(
+                    instruction, cancellation_token=my_token, **effective_kwargs
+                )
+            if type(worker_result) is int:
+                failed = worker_result != 0
+                cancelled = cancelled or worker_result in {130, 143}
+        except KeyboardInterrupt as exc:
+            worker_exception = exc
+            failed = True
             cancelled = True
             # A soft-interrupt already printed "Interrupted." from the key handler.
             if not (my_token is not None and my_token.is_cancelled):
                 transcript.append("warn", "Interrupted.")
         except BaseException as exc:  # noqa: BLE001 - surface any failure inline
+            worker_exception = exc
+            failed = True
             cancelled = my_token is not None and my_token.is_cancelled
             if not cancelled:
                 if isinstance(exc, LLMError) or is_network_or_model_error(str(exc)):
@@ -3808,6 +4047,21 @@ def run_tui(
                 else:
                     transcript.append("error", f"{type(exc).__name__}: {exc}")
         finally:
+            # Tool execution has actually returned. Permission cleanup can also
+            # run on interrupt, so it is deliberately not our capture boundary.
+            if local_lifecycle is not None:
+                try:
+                    local_lifecycle.finish_turn(
+                        failed=failed or cancelled or bool(my_token and my_token.is_cancelled),
+                        outcome=TurnOutcome(
+                            worker_result,
+                            worker_exception,
+                            cancelled or bool(my_token and my_token.is_cancelled),
+                        ),
+                    )
+                except Exception as exc:
+                    transcript.append("error", f"Local action cleanup failed: {exc}")
+                    worker_exception = worker_exception or exc
             if callable(turn_cleanup):
                 turn_cleanup()
                 if turn_cleanup_box.get("callback") is turn_cleanup:
@@ -3818,6 +4072,8 @@ def run_tui(
             with turn_state_lock:
                 owns_active_turn = cancel_box.get("token") is my_token
             if owns_active_turn:
+                if surface is not None:
+                    surface.user_questions.reset()
                 # Settle any final drain before discarding the per-turn display
                 # metadata.  A rollback callback has already moved restored
                 # messages back to ``pending_steers`` at this point.
@@ -3834,22 +4090,25 @@ def run_tui(
                         on_turn_complete()
                     except Exception:
                         pass
-                # Flip run state OFF only AFTER the post-turn HUD refresh: while
-                # running["on"] is True _submit blocks session-replacing commands,
-                # so a UI-thread /resume (which swaps session.__dict__ in place)
-                # cannot race this refresh's reads of the same session object.
-                with turn_state_lock:
-                    # Re-check ownership after callbacks: a cancellation may
-                    # have marked this worker as retiring while it finalized.
-                    if cancel_box.get("token") is my_token:
+
+                def finish_on_ui() -> None:
+                    # Keep the turn busy until its ordered operations can drain
+                    # in this same UI callback. Otherwise input can overtake a
+                    # saved-config reload between worker exit and publication.
+                    with turn_state_lock:
+                        if cancel_box.get("token") is not my_token:
+                            return
                         retiring["on"] = False
                         running["on"] = False
                         cancel_box["token"] = None
+                    if background_turns:
+                        _start_next_pending_turn()
+
                 if background_turns:
-                    # Starting here would run on the worker thread and race an
-                    # interrupt that just cleared these flags. Marshal chaining
-                    # back to the UI loop, which owns pending_turns.
-                    _schedule_on_ui_thread(_start_next_pending_turn)
+                    if ui_dispatch is not None:
+                        ui_dispatch(finish_on_ui)
+                else:
+                    finish_on_ui()
             _safe_invalidate()
 
     def _apply_idle_step_operations() -> int:
@@ -3919,6 +4178,8 @@ def run_tui(
         """Apply ordered deferred operations, rescue steering, then start a turn."""
         if running["on"]:
             return False
+        if local_lifecycle is not None and local_lifecycle.mutating:
+            return False
         _sync_delivered_steers()
         _apply_idle_step_operations()
         while pending_operations and not running["on"]:
@@ -3979,6 +4240,16 @@ def run_tui(
         user_display_text: str | None = None,
         image_paths: Sequence[str] = (),
     ) -> bool:
+        if local_lifecycle is not None and local_lifecycle.mutating:
+            transcript.append(
+                "system", "Local action is still finishing. The turn was not started."
+            )
+            return False
+        if review_box["controller"] is not None and review_box["controller"].running:
+            transcript.append(
+                "system", "Close or cancel review before starting a conversation turn."
+            )
+            return False
         with turn_state_lock:
             turn_retiring = retiring["on"]
             turn_busy = running["on"] or turn_retiring
@@ -4023,6 +4294,14 @@ def run_tui(
                 )
                 _safe_invalidate()
                 return False
+        if local_lifecycle is not None:
+            try:
+                local_lifecycle.begin_turn(session, check_gate=False)
+            except Exception as exc:
+                if turn_cleanup is not None:
+                    turn_cleanup()
+                transcript.append("error", f"Could not reserve conversation turn: {exc}")
+                return False
         turn_cleanup_box["callback"] = turn_cleanup
         if turn_cleanup is not None:
             run_kwargs["_alysis_turn_cleanup"] = turn_cleanup
@@ -4050,13 +4329,17 @@ def run_tui(
         try:
             if background_turns:
                 worker = threading.Thread(
-                    target=_run_turn_blocking, args=(instruction, run_kwargs), daemon=True
+                    target=_run_turn_blocking,
+                    args=(instruction, run_kwargs, _capture_ui_dispatch()),
+                    daemon=True,
                 )
                 worker_box["thread"] = worker
                 worker.start()
             else:
                 _run_turn_blocking(instruction, run_kwargs)
         except BaseException:
+            if local_lifecycle is not None:
+                local_lifecycle.finish_turn(failed=True)
             if turn_cleanup is not None:
                 turn_cleanup()
             turn_cleanup_box["callback"] = None
@@ -4093,6 +4376,10 @@ def run_tui(
         transcript.set_status("Cancelling current turn…")
         if token is not None:
             token.cancel_nonblocking()
+        surface = getattr(session, "surface", None)
+        questions = getattr(surface, "user_questions", None)
+        if questions is not None:
+            questions.reset()
         pending = approval_box.get("event")
         if pending is not None:
             approval_box["decision"] = ApprovalDecision(allow=False)
@@ -4138,8 +4425,10 @@ def run_tui(
         echo: bool = True,
         allow_run: bool = True,
         deferred: bool = False,
+        reserved: bool = False,
         clear_transcript_before_output: bool = False,
         image_paths: Sequence[str] = (),
+        on_accepted: Callable[[], None] | None = None,
     ) -> _DispatchOutcome:
         """Route ``text`` straight through the chat command runner.
 
@@ -4150,6 +4439,11 @@ def run_tui(
         whose Enter enters the Forge session. No-ops without a session + runner.
         """
         if session is None or command_runner is None:
+            return _DispatchOutcome.CONTINUE
+        if local_lifecycle is not None and local_lifecycle.mutating and not reserved:
+            transcript.append(
+                "system", "Local action is still finishing. The command was not applied."
+            )
             return _DispatchOutcome.CONTINUE
         scroll["follow"] = True
         if echo:
@@ -4192,11 +4486,13 @@ def run_tui(
                 )
                 _safe_invalidate()
                 return _DispatchOutcome.CONTINUE
-            _begin_run(
+            accepted = _begin_run(
                 instruction if instruction is not None else text,
                 run_kwargs or {},
                 image_paths=image_paths,
             )
+            if accepted and on_accepted is not None:
+                on_accepted()
             return _DispatchOutcome.CONTINUE
         _safe_invalidate()  # "handled" — output already shown
         return _DispatchOutcome.CONTINUE
@@ -4382,6 +4678,7 @@ def run_tui(
                         text=stripped,
                         display_text=display_stripped,
                         attachments=tuple(attachments),
+                        pastes=tuple(paste_registry.snapshot().items()),
                     )
                 )
             buff.reset()
@@ -4391,7 +4688,13 @@ def run_tui(
         with pending_messages_lock:
             _sync_delivered_steers()
             display_value = display_stripped if display_text is not None else stripped
-            pending_steers.append(_PendingMessage(text=stripped, display_text=display_value))
+            pending_steers.append(
+                _PendingMessage(
+                    text=stripped,
+                    display_text=display_value,
+                    pastes=tuple(paste_registry.snapshot().items()),
+                )
+            )
             dropped_before = inbox.dropped_count()
             delivered = inbox.send(stripped)
             newly_dropped = inbox.dropped_count() - dropped_before
@@ -4401,6 +4704,7 @@ def run_tui(
                 pending_steers[-1] = _PendingMessage(
                     text=delivered,
                     display_text=display_stripped if display_text is not None else delivered,
+                    pastes=tuple(paste_registry.snapshot().items()),
                 )
         buff.reset()
         if newly_dropped > 0:
@@ -4425,14 +4729,23 @@ def run_tui(
             message = pending_turns.pop()
 
         recalled_pending["queue"] = True
+        prompt_history.index, prompt_history.draft = None, None
         buff.reset()
         # Re-adopt before the text lands: on_text_changed sweeps chips that the
         # registry does not know, which would silently detach them.
         attachment_registry.restore(message.attachments)
+        paste_registry.restore(dict(message.pastes))
         buff.insert_text(message.display_text)
         buff.cancel_completion()
         _safe_invalidate()
         return True
+
+    def _composer_snapshot():
+        return (
+            input_area.buffer.document,
+            attachment_registry.snapshot(),
+            paste_registry.snapshot(),
+        )
 
     def _submit(*, queue_instead: bool | None = None) -> None:
         buff = input_area.buffer
@@ -4446,6 +4759,27 @@ def run_tui(
         # the user sees, while an expanded paste payload is opaque content that
         # must never be re-scanned for tokens.
         submitted_attachments = tuple(attachment_registry.attachments_in(display_text))
+        if any(not a.path.exists() for a in submitted_attachments):
+            transcript.append(
+                "error",
+                "History attachment unavailable. Reattach it or remove its chip before sending.",
+            )
+            _safe_invalidate()
+            return
+        history_entry = PromptEntry(
+            display_text, submitted_attachments, tuple(paste_registry.snapshot().items())
+        )
+
+        def _accept_prompt() -> None:
+            if not is_command(history_entry.text.strip()):
+                prompt_history.accept(history_entry)
+                if prompt_history.persistence_error and not history_warning["shown"]:
+                    history_warning["shown"] = True
+                    transcript.append(
+                        "warn",
+                        "Prompt history could not be saved; recall is available only until exit.",
+                    )
+
         submitted_images = [
             os.fspath(attachment.path)
             for attachment in submitted_attachments
@@ -4456,6 +4790,68 @@ def run_tui(
         if approval_box.get("event") is not None:
             return
         command_parts = stripped.split(maxsplit=1)
+        local_name = command_parts[0].lower()
+        if local_name in {"/mcp", "/extensions"}:
+            if len(command_parts) > 1:
+                transcript.append(
+                    "system",
+                    f"Use {local_name} without arguments to inspect integrations. Configuration and authentication instructions are shown there.",
+                )
+            else:
+                _open_integrations(local_name[1:])
+            return
+        if local_name == "/planning" or (local_name == "/plan" and not state.forge_mode):
+            if len(command_parts) > 1:
+                transcript.append(
+                    "system", "Use /plan without arguments to choose a planning workflow."
+                )
+            else:
+                _open_planning()
+            return
+        if local_name == "/recover":
+            transcript.append("system", "Unknown command: /recover. Try /help.")
+            return
+        if local_lifecycle is not None and local_lifecycle.mutating:
+            transcript.append("system", "Local action is still finishing. Your draft is retained.")
+            return
+        if local_name == "/resume" and session_search_provider is not None:
+            if not _idle_for_navigation():
+                transcript.append(
+                    "system", "Wait for active and queued work to finish before resuming."
+                )
+            elif len(command_parts) == 1:
+                _open_sessions()
+            elif resume_session is not None and session_search_provider() is not None:
+                _resume_reserved(command_parts[1].strip(), command_text=text)
+            else:
+                _dispatch_command(text, echo=False, allow_run=False)
+            return
+        if local_name in {"/find", "/copy-last"}:
+            if local_name == "/find":
+                _open_transcript_search(command_parts[1] if len(command_parts) > 1 else "")
+            elif len(command_parts) > 1:
+                transcript.append("system", "Use /copy-last without arguments.")
+            else:
+                _copy_last_response()
+            return
+        if command_parts[0].lower() == "/review":
+            if len(command_parts) > 1:
+                transcript.append(
+                    "system", "Use /review without arguments, then choose a scope and Start."
+                )
+            else:
+                _open_review()
+            return
+        # Inspection is local and read-only even during an active/retiring turn.
+        # Never hand this token (including unsupported arguments) to a model.
+        if command_parts[0].lower() == "/diff":
+            if len(command_parts) > 1:
+                transcript.append(
+                    "system", "Use /diff without arguments to browse working-tree changes."
+                )
+            else:
+                _open_diff()
+            return
         _record_chat_local_command(
             session=session,
             command_token=command_parts[0],
@@ -4472,9 +4868,35 @@ def run_tui(
             else:
                 _attach_clipboard_image()
             return
+        if (
+            stripped.lower() == "/model"
+            and config_overlay is not None
+            and config_flow_factory is not None
+            and not retiring["on"]
+        ):
+
+            def model_flow() -> Any:
+                flow = config_flow_factory()
+                flow.open_default_model()
+                return flow
+
+            buff.reset()
+            config_overlay.open(flow_factory=model_flow)
+            return
+        if review_box["controller"] is not None and review_box["controller"].running:
+            transcript.append(
+                "system", "Close or cancel review before starting a conversation turn."
+            )
+            return False
         with turn_state_lock:
             turn_retiring = retiring["on"]
         if turn_retiring:
+            if command_parts[0].lower() in {"/report", "/feedback"}:
+                transcript.append(
+                    "warn", "Report is available once the interrupted turn has finished stopping."
+                )
+                _safe_invalidate()
+                return
             # The cancelled worker still owns the AgentSession until its finally
             # path returns. Accept user input now, but preserve it strictly as
             # next-turn work so it cannot steer or reconfigure that old worker.
@@ -4487,6 +4909,7 @@ def run_tui(
                     queue=True,
                     attachments=submitted_attachments,
                 ):
+                    _accept_prompt()
                     recalled_pending["queue"] = None
             return
         if running["on"]:
@@ -4547,11 +4970,18 @@ def run_tui(
                     queue=effective_queue,
                     attachments=submitted_attachments,
                 ):
+                    _accept_prompt()
                     recalled_pending["queue"] = None
                 return
         recalled_pending["queue"] = None
         # Returning to the live tail whenever the user sends something.
         scroll["follow"] = True
+
+        if report_overlay is not None and command_parts[0].lower() in {"/report", "/feedback"}:
+            feedback = command_parts[1] if len(command_parts) > 1 else ""
+            buff.reset()
+            report_overlay.open(flow_factory=lambda: report_flow_factory(session, feedback))
+            return
 
         # /help is TUI-native: open the centered command popup instead of routing
         # it anywhere (works with or without a session).
@@ -4714,7 +5144,12 @@ def run_tui(
         # Real path with slash-command support: route every submission through
         # the chat command handler (it returns "run" for plain messages).
         if session is not None and command_runner is not None:
-            _dispatch_command(text, display_text=display_text, image_paths=submitted_images)
+            _dispatch_command(
+                text,
+                display_text=display_text,
+                image_paths=submitted_images,
+                on_accepted=_accept_prompt,
+            )
             return
 
         # No command runner (Phase 2 fake session / tests): exit words + run.
@@ -4724,7 +5159,8 @@ def run_tui(
         if session is not None:
             buff.reset()
             transcript.append_user(display_text)
-            _begin_run(text, {}, image_paths=submitted_images)
+            if _begin_run(text, {}, image_paths=submitted_images):
+                _accept_prompt()
             return
 
         # Shell-only path: keep configuration/help available while model calls are
@@ -4756,7 +5192,10 @@ def run_tui(
         ]
     )
 
-    input_frame = Frame(input_area)
+    input_frame = Frame(
+        input_area,
+        title="",
+    )
 
     def _side_width() -> Any:
         return D.exact(0)
@@ -4771,7 +5210,9 @@ def run_tui(
             Window(width=_side_width, height=_box_height),
         ]
     )
-    subagent_panel_container = _subagent_panel_container(subagent_panel)
+    subagent_panel_container = _subagent_panel_container(
+        subagent_panel, hint_provider=lambda: _subagent_key_hint()
+    )
 
     def _pending_messages_text() -> FormattedText:
         _sync_delivered_steers()
@@ -4824,6 +5265,26 @@ def run_tui(
             subagent_panel_container,
             pending_messages_container,
             ConditionalContainer(
+                Window(
+                    FormattedTextControl(
+                        lambda: (
+                            f"  Question · {surface.user_questions.remaining_seconds}s · Ctrl+G answer"
+                            if surface is not None
+                            else ""
+                        )
+                    ),
+                    height=1,
+                    style="class:tui.status",
+                ),
+                filter=Condition(
+                    lambda: (
+                        surface is not None
+                        and surface.user_questions.active is not None
+                        and not (question_panel is not None and question_panel.open_condition())
+                    )
+                ),
+            ),
+            ConditionalContainer(
                 working_tip_window,
                 filter=Condition(_working_tip_visible),
             ),
@@ -4849,7 +5310,35 @@ def run_tui(
                 sections = []
             if not sections:
                 sections = _fallback_help_sections()
-        return sections
+        discovery = [("Ctrl+R", "Search prompt history"), ("Alt+R", "Expand reasoning")]
+        discovery.extend(
+            [
+                ("/find", "Find transcript text; Enter/F3 next, Ctrl+P previous"),
+                ("/copy-last", "Copy the last assistant response as Markdown"),
+            ]
+        )
+        if session_search_provider is not None and resume_session is not None:
+            discovery.append(("/resume", "Search saved conversations; F2 renames the selection"))
+        if diff_viewer_factory is not None:
+            discovery.append(("/diff", "Browse staged, unstaged and untracked changes locally"))
+        discovery.extend(
+            (
+                ("/mcp", "Inspect MCP runtime state, tools and connection controls"),
+                ("/extensions", "Inspect installed extensions and restart-required configuration"),
+            )
+        )
+        if planning_controller is not None:
+            discovery.append(
+                (
+                    "/plan · /planning",
+                    "Choose Architect or Forge; /planning also returns to the prior mode",
+                )
+            )
+        if review_engine_factory is not None:
+            discovery.append(("/review", "Choose scope and Start a structured review while idle"))
+        if config_overlay is not None:
+            discovery.append(("/model", MODEL_DESCRIPTION))
+        return [("Action discovery", discovery), *sections]
 
     def _help_fragments() -> FormattedText:
         # Derived from the help float's own width, less its frame AND its
@@ -5026,6 +5515,426 @@ def run_tui(
         help_box["offset"] = new_offset
         _safe_invalidate()
 
+    diff_box: dict[str, DiffViewer | None] = {"viewer": None}
+    _diff_open = Condition(lambda: diff_box["viewer"] is not None and diff_box["viewer"].is_open)
+
+    def _close_diff() -> None:
+        # The composer and its registries were never reset or rewritten.
+        if app.is_running:
+            app.layout.focus(input_area)
+        _safe_invalidate()
+
+    def _open_diff() -> None:
+        if diff_viewer_factory is None:
+            transcript.append("system", "The diff viewer is unavailable in this surface.")
+            return
+        input_area.buffer.cancel_completion()
+        try:
+            workspace = Path(workdir_provider()) if workdir_provider else attachment_root
+            viewer = diff_viewer_factory(
+                workspace, on_close=_close_diff, invalidate=_safe_invalidate
+            )
+            diff_box["viewer"] = viewer
+            get_app().layout.focus(viewer.focus_target)
+            get_app().layout.update_parents_relations()
+            viewer.start_refresh()
+        except Exception as exc:
+            if diff_box["viewer"] is not None:
+                diff_box["viewer"].close()
+            transcript.append("error", f"Diff viewer unavailable: {exc}")
+        _safe_invalidate()
+
+    diff_float = Float(
+        content=ConditionalContainer(
+            Frame(
+                DynamicContainer(
+                    lambda: diff_box["viewer"].container if diff_box["viewer"] else Window()
+                ),
+                title="Changes",
+            ),
+            filter=_diff_open,
+        ),
+        left=1,
+        right=1,
+        top=1,
+        bottom=1,
+    )
+
+    review_box: dict[str, Any] = {"modal": None, "controller": None, "workspace": None}
+    _review_open = Condition(
+        lambda: review_box["modal"] is not None and review_box["modal"].is_open
+    )
+
+    def _idle_for_navigation() -> bool:
+        # The worker can be idle briefly before its scheduled queue drain runs.
+        # Pending work is part of eligibility, not merely running/retiring flags.
+        with turn_state_lock:
+            busy = running["on"] or retiring["on"]
+        with pending_messages_lock:
+            steers = bool(pending_steers or delivered_steers)
+        return not (
+            busy
+            or pending_turns
+            or pending_operations
+            or steers
+            or (local_lifecycle is not None and local_lifecycle.mutating)
+        )
+
+    def _open_review() -> None:
+        if not _idle_for_navigation():
+            transcript.append("system", "Review is available once the active turn has finished.")
+            return
+        if review_engine_factory is None:
+            transcript.append(
+                "system",
+                "Structured review is unavailable. Configure a provider with /config or /login.",
+            )
+            return
+        input_area.buffer.cancel_completion()
+        try:
+            workspace = Path(workdir_provider()) if workdir_provider else attachment_root
+            # Bind workspace/config now; opening creates no provider client.
+            factory = review_engine_factory(workspace)
+            controller = review_box["controller"]
+            if controller is None:
+                controller = ReviewController(
+                    factory, on_change=lambda: None, dispose_engine=dispose_review_engine
+                )
+                review_box["controller"] = controller
+            else:
+                controller.engine_factory = factory
+                if review_box["workspace"] != workspace:
+                    controller.result = None
+                    controller.status = "Choose a scope, then start review."
+            review_box["workspace"] = workspace
+            modal = ReviewModal(
+                workspace,
+                engine_factory=factory,
+                controller=controller,
+                on_close=_close_diff,
+                invalidate=_safe_invalidate,
+                eligible=_idle_for_navigation,
+            )
+            review_box["modal"] = modal
+            get_app().layout.focus(modal.focus_target)
+            get_app().layout.update_parents_relations()
+        except Exception:
+            transcript.append(
+                "error",
+                "Review setup unavailable. Check provider configuration with /config or /login.",
+            )
+        _safe_invalidate()
+
+    review_float = Float(
+        content=ConditionalContainer(
+            Frame(
+                DynamicContainer(
+                    lambda: review_box["modal"].container if review_box["modal"] else Window()
+                ),
+                title="Structured review",
+            ),
+            filter=_review_open,
+        ),
+        left=1,
+        right=1,
+        top=0,
+        bottom=0,
+    )
+
+    navigation_box: dict[str, Any] = {"modal": None}
+    navigation_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-search")
+    _navigation_open = Condition(
+        lambda: navigation_box["modal"] is not None and navigation_box["modal"].is_open
+    )
+
+    def _show_navigation(modal: Any) -> None:
+        input_area.buffer.cancel_completion()
+        navigation_box["modal"] = modal
+        get_app().layout.focus(modal.focus_target)
+        get_app().layout.update_parents_relations()
+        _safe_invalidate()
+
+    def _local_ui_scheduler():
+        loop = get_app().loop
+
+        def post(callback):
+            if loop is not None and loop.is_running() and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(callback)
+                except RuntimeError:
+                    pass
+
+        return post
+
+    def _open_integrations(kind):
+        owner = session
+        workspace = Path(getattr(owner, "root", None) or attachment_root).resolve()
+        controller = integration_controller(lambda: session, workspace)
+        post = _local_ui_scheduler()
+        modal = IntegrationModal(
+            kind=kind,
+            controller=controller,
+            dispatcher=ReservedIntegrationDispatcher(local_lifecycle, lambda: session, owner),
+            executor=navigation_executor,
+            schedule_ui=post,
+            context_identity=lambda: (
+                id(session),
+                str(getattr(getattr(session, "store", None), "session_id", "")),
+                str(getattr(session, "root", workspace)),
+            ),
+            on_close=_close_diff,
+            invalidate=_safe_invalidate,
+            on_outcome=lambda outcome: transcript.append("system", outcome.message),
+        )
+        _show_navigation(modal)
+
+    def _dispatch_planning(work):
+        if local_lifecycle is None:
+            raise RuntimeError("Live session reservation unavailable")
+        owner = session
+        identity = local_lifecycle.identity_for(owner)
+
+        def reserved():
+            if session is not owner:
+                raise RuntimeError("Session changed")
+            return work()
+
+        owner_context = copy_context()
+        future = local_lifecycle.submit_local(identity, lambda: owner_context.run(reserved))
+
+        def finished(done):
+            try:
+                outcome = done.result()
+            except Exception:
+                transcript.append(
+                    "system",
+                    "Planning change refused; wait for active/queued work and wait for local actions.",
+                )
+            else:
+                transcript.append("system", outcome.message)
+            _safe_invalidate()
+
+        future.add_done_callback(finished)
+
+    planning_controller = (
+        PlanningController(
+            read_state=planning_backend.state,
+            dispatch=_dispatch_planning,
+            apply_persona=planning_backend.apply_persona,
+            enter_forge=planning_backend.enter_forge,
+            leave_forge=planning_backend.leave_forge,
+            forge_allowed=planning_backend.forge_allowed,
+        )
+        if planning_backend is not None
+        else None
+    )
+
+    def _open_planning():
+        if planning_controller is None or session is None or local_lifecycle is None:
+            transcript.append("system", "Planning choices are unavailable in this surface.")
+        elif not _idle_for_navigation():
+            transcript.append(
+                "system",
+                "Wait for active, retiring and queued work; wait for local actions before planning.",
+            )
+        else:
+            _open_picker(planning_controller.picker_spec())
+
+    def _open_sessions() -> None:
+        if not _idle_for_navigation():
+            transcript.append(
+                "system", "Wait for active and queued work to finish before resuming."
+            )
+            return
+        if session_search_provider is None or resume_session is None:
+            transcript.append("system", "Session search is unavailable in this surface.")
+            return
+        try:
+            provider = session_search_provider()
+            if provider is None:
+                raise ValueError("No session storage")
+            modal = SessionSearchModal(
+                provider,
+                executor=navigation_executor,
+                on_select=_resume_reserved,
+                on_close=_close_diff,
+                invalidate=_safe_invalidate,
+                eligible=_idle_for_navigation,
+            )
+            _show_navigation(modal)
+            modal.search()
+        except Exception:
+            transcript.append("error", "Session search unavailable. Current conversation retained.")
+
+    def _open_transcript_search(query: str = "") -> None:
+        entries, _, _ = transcript.snapshot()
+        _show_navigation(
+            TranscriptSearchModal(
+                entries, on_close=_close_diff, invalidate=_safe_invalidate, query=query
+            )
+        )
+
+    def _copy_last_response() -> None:
+        text = transcript.last_response_text()
+        if not text:
+            transcript.append("system", "No assistant response to copy.")
+            return
+        try:
+            copy_text_to_clipboard(text)
+        except (ClipboardError, OSError):
+            transcript.append("system", "Clipboard unavailable; response was not copied.")
+        else:
+            transcript.append("system", "Last assistant response copied.")
+
+    navigation_float = Float(
+        content=ConditionalContainer(
+            Frame(
+                DynamicContainer(
+                    lambda: (
+                        navigation_box["modal"].container if navigation_box["modal"] else Window()
+                    )
+                ),
+                title="Conversation navigation",
+            ),
+            filter=_navigation_open,
+        ),
+        left=1,
+        right=1,
+        top=1,
+        bottom=1,
+    )
+
+    def _resume_reserved(target, *, command_text=None):
+        if resume_session is None:
+            return False
+
+        def activate():
+            provider = session_search_provider() if session_search_provider is not None else None
+            if provider is not None:
+                provider.resolve(target)
+            return bool(resume_session(target))
+
+        if local_lifecycle is None:
+            try:
+                return activate()
+            except Exception:
+                transcript.append("error", "Resume failed; the current conversation was retained.")
+                return False
+        future = local_lifecycle.submit_local(local_lifecycle.identity_for(session), activate)
+
+        def finished(done):
+            try:
+                done.result()
+            except Exception:
+                _post_local_ui(
+                    lambda: transcript.append(
+                        "error", "Resume failed; the current conversation was retained."
+                    )
+                )
+            _safe_invalidate()
+
+        future.add_done_callback(finished)
+        return future
+
+    def _post_local_ui(callback):
+        # Teardown waits for the reservation after the event loop has stopped.
+        # Outcome publication must not wait for that stopped UI thread.
+        loop = app.loop
+        if app.is_done or loop is None or loop.is_closed():
+            callback()
+        else:
+            try:
+                loop.call_soon_threadsafe(callback)
+            except RuntimeError:
+                callback()
+
+    if local_lifecycle is not None:
+        local_lifecycle.session_provider = lambda: session
+        local_lifecycle.idle = _idle_for_navigation
+    _file_mutation_active = Condition(
+        lambda: local_lifecycle is not None and local_lifecycle.mutating
+    )
+
+    def _subagent_key_hint() -> str:
+        return "alt+left / alt+right to switch · esc to close"
+
+    history_search = {"on": False, "query": ""}
+
+    def _recall_history(index: int) -> None:
+        if prompt_history.index is None:
+            prompt_history.draft = (
+                input_area.buffer.document,
+                tuple(attachment_registry.attachments_in(input_area.text)),
+                paste_registry.snapshot(),
+            )
+        entry = prompt_history.entries[index]
+        prompt_history.index = index
+        action_dispatching["on"] = True
+        try:
+            attachment_registry.retain_tokens("")
+            paste_registry.retain_tokens("")
+            paste_registry.restore(dict(entry.pastes))
+            attachment_registry.restore(entry.attachments)
+            input_area.text = entry.text
+            input_area.buffer.cursor_position = len(entry.text)
+            input_area.buffer.cancel_completion()
+        finally:
+            action_dispatching["on"] = False
+        if any(not a.path.exists() for a in entry.attachments):
+            transcript.append(
+                "warn",
+                "History attachment unavailable. Reattach it or remove its chip before sending.",
+            )
+        recalled_pending["queue"] = None
+        _safe_invalidate()
+
+    def _history_move(delta: int) -> None:
+        index = prompt_history.index
+        if delta < 0 and prompt_history.entries:
+            _recall_history(max(0, (len(prompt_history.entries) if index is None else index) - 1))
+        elif delta > 0 and index is not None:
+            if index + 1 < len(prompt_history.entries):
+                _recall_history(index + 1)
+            else:
+                document, attachments, payloads = prompt_history.draft
+                action_dispatching["on"] = True
+                try:
+                    attachment_registry.retain_tokens("")
+                    attachment_registry.restore(attachments)
+                    paste_registry.restore(payloads)
+                    input_area.buffer.document = document
+                finally:
+                    action_dispatching["on"] = False
+                prompt_history.index, prompt_history.draft = None, None
+
+    def _open_history_search() -> None:
+        history_search.update(on=True, query="")
+        input_area.buffer.cancel_completion()
+        _open_picker(
+            {
+                "title": "Prompt history",
+                "on_select": lambda value: _recall_history(int(value)),
+            }
+        )
+        _refresh_history_search()
+
+    def _refresh_history_search() -> None:
+        picker_box["rows"] = [
+            {
+                "value": str(index),
+                "label": entry.searchable_text[:240].replace("\n", " ↵ "),
+                "description": "Attachment unavailable"
+                if any(not a.path.exists() for a in entry.attachments)
+                else "Enter recalls into composer",
+            }
+            for index, entry in prompt_history.search(history_search["query"])
+        ]
+        picker_box["index"] = 0
+        picker_box["hint"] = (
+            f"Search: {history_search['query']} · ↑↓ select · Enter recall · Esc keep draft"
+        )
+        _safe_invalidate()
+
     # ---- picker popup (centered Float; selectable option list, e.g. /permissions) ----
     _picker_open = Condition(lambda: picker_box["on"])
 
@@ -5108,6 +6017,7 @@ def run_tui(
         if not picker_box["on"]:
             return
         picker_box["on"] = False
+        history_search["on"] = False
         try:
             get_app().layout.focus(input_area)
         except Exception:
@@ -5435,7 +6345,7 @@ def run_tui(
         from .config_overlay import ConfigOverlay
 
         def _on_config_overlay_saved(count: int) -> None:
-            if running["on"]:
+            if running["on"] or retiring["on"] or False:
                 _stage_pending_config_reload(pending_operations)
                 if count > 0:
                     word = "change" if count == 1 else "changes"
@@ -5484,7 +6394,56 @@ def run_tui(
         config_overlay.open_condition if config_overlay is not None else Condition(lambda: False)
     )
     _config_floats = [config_overlay.float] if config_overlay is not None else []
-    _small_modal_open = _help_open | _picker_open | _editor_open | _approval_pending
+    report_overlay = None
+    if report_flow_factory is not None:
+        from .report_overlay import ReportOverlay
+
+        def _on_report_closed(flow: Any) -> None:
+            if flow.receipt is not None:
+                transcript.append(
+                    "system",
+                    f"Feedback sent privately to Alysis. Report ID: {flow.receipt.report_id}",
+                )
+            if flow.result is not None:
+                transcript.append(
+                    "system",
+                    f"Feedback bundle archive: {flow.result.zip_path}\nThe archive was not uploaded.",
+                )
+            _safe_invalidate()
+
+        report_overlay = ReportOverlay(
+            flow_factory=lambda: report_flow_factory(session, ""),
+            on_closed=_on_report_closed,
+            on_error=lambda msg: (transcript.append("error", msg), _safe_invalidate()),
+            focus_chat=lambda: get_app().layout.focus(input_area),
+        )
+        _config_open = _config_open | report_overlay.open_condition
+        _config_floats.append(report_overlay.float)
+    _other_modal_open = (
+        _help_open
+        | _picker_open
+        | _editor_open
+        | _approval_pending
+        | _diff_open
+        | _review_open
+        | _navigation_open
+    )
+    from .question_panel import QuestionPanel
+
+    question_panel = (
+        QuestionPanel(
+            broker=surface.user_questions,
+            restore_focus=lambda: get_app().layout.focus(input_area),
+            blocked=lambda: bool(_other_modal_open() or _config_open()),
+            on_answer=lambda text: transcript.append_user(text),
+        )
+        if surface is not None
+        else None
+    )
+    _question_open = (
+        question_panel.open_condition if question_panel is not None else Condition(lambda: False)
+    )
+    _small_modal_open = _other_modal_open | _question_open
     _completion_allowed = ~_small_modal_open & ~_config_open
 
     def _completion_float_width() -> int:
@@ -5613,6 +6572,10 @@ def run_tui(
             help_float,
             picker_float,
             editor_float,
+            diff_float,
+            review_float,
+            navigation_float,
+            *([question_panel.float] if question_panel is not None else []),
             # The /config overlay covers the whole screen while open.
             *_config_floats,
             # Approval modal sits on top — it interrupts a running turn for a y/a/n.
@@ -5681,7 +6644,9 @@ def run_tui(
         lambda: _registered_paste_match_after_cursor() is not None
     )
     # True while the slash-command dropdown is showing for the input buffer.
-    _completing = Condition(lambda: input_area.buffer.complete_state is not None)
+    _completing = Condition(
+        lambda: input_area.buffer.complete_state is not None or completion_request["pending"]
+    )
     _has_children = Condition(lambda: bool(subagent_panel["run_order"]))
     _subagent_panel_open = Condition(lambda: bool(subagent_panel["selected_run_id"]))
     # A turn (or its pending approval) is in flight — Esc / Ctrl+C interrupt it.
@@ -5707,6 +6672,21 @@ def run_tui(
         )
 
     def _interrupt_or_exit(event: Any, *, copy_selection: bool) -> None:
+        if _file_mutation_active():
+            transcript.append("system", "Local action is still finishing; waiting for its result.")
+            return
+        if _navigation_open():
+            navigation_box["modal"].close()
+            return
+        if _review_open():
+            review_box["modal"].close()
+            return
+        if _diff_open():
+            diff_box["viewer"].close()
+            return
+        if report_overlay is not None and report_overlay.is_open():
+            report_overlay.request_cancel()
+            return
         if config_overlay is not None and config_overlay.is_open():
             config_overlay.request_cancel()
             return
@@ -5743,20 +6723,10 @@ def run_tui(
     def _eof_or_exit(event: Any) -> None:
         _interrupt_or_exit(event, copy_selection=False)
 
-    @kb.add(
-        "c-b",
-        filter=_input_focused & _has_children & ~_completing,
-        eager=True,
-    )
     def _previous_subagent(event: Any) -> None:
         _navigate_subagent(-1)
         event.app.invalidate()
 
-    @kb.add(
-        "c-n",
-        filter=_input_focused & _has_children & ~_completing,
-        eager=True,
-    )
     def _next_subagent(event: Any) -> None:
         _navigate_subagent(1)
         event.app.invalidate()
@@ -5768,7 +6738,7 @@ def run_tui(
         & ~_small_modal_open
         & ~_completing
         & ~_config_open,
-        eager=True,
+        eager=False,
     )
     def _close_subagent_panel(event: Any) -> None:
         _close_selected_subagent()
@@ -5786,16 +6756,16 @@ def run_tui(
     @kb.add(
         "escape",
         filter=_turn_active
-        & ~_help_open
-        & ~_picker_open
-        & ~_editor_open
+        & ~_small_modal_open
         & ~_completing
         & ~_config_open
+        & ~_file_mutation_active
         & ~_subagent_panel_open,
-        eager=True,
+        eager=False,
     )
     def _escape_interrupt(event: Any) -> None:
-        # Esc interrupts a running turn immediately (never exits the app). Gated to a
+        # Esc interrupts after prefix resolution, allowing Alt+r to work. Ctrl+C
+        # is immediate; Vim owns Esc for its editing mode. Gated to a
         # live turn so it doesn't shadow Esc's other roles (cancel completion, close
         # help/picker).
         _soft_interrupt()
@@ -5910,7 +6880,7 @@ def run_tui(
 
     @kb.add(
         "c-q",
-        filter=_input_focused & ~_small_modal_open & ~_config_open,
+        filter=_input_focused & ~_small_modal_open & ~_config_open & ~_file_mutation_active,
         eager=True,
     )
     def _queue_key(event: Any) -> None:
@@ -5919,23 +6889,31 @@ def run_tui(
         # prompt_toolkit raw mode disables IXON so it is not swallowed as XOFF.
         _submit(queue_instead=True)
 
-    # ---- slash-command dropdown (only while the input is focused) ----
+    # ---- command and workspace-reference dropdown ----
     @kb.add(
         "tab",
         filter=_input_focused & ~_help_open & ~_approval_pending & ~_config_open,
         eager=True,
     )
     def _complete_tab(event: Any) -> None:
-        # Tab opens the dropdown for a "/…" line (selecting the first row) and
-        # cycles through it on repeats. On an EMPTY input it instead cycles the
-        # persona (Kilo/OpenCode-style); non-empty non-slash text swallows Tab
-        # so a stray press mid-sentence never switches anything.
         buff = input_area.buffer
+        if not _complete_while_typing():
+            return
+        is_mention = mention_at_cursor(buff.text, buff.cursor_position) is not None
         if buff.complete_state is not None:
-            buff.complete_next()
-        elif buff.document.text_before_cursor.lstrip().startswith("/"):
-            buff.start_completion(select_first=True)
-        elif persona_cycle is not None and not buff.document.text.strip():
+            if is_mention:
+                state = buff.complete_state
+                if not state.completions:
+                    request_explicit_completion()
+                    return
+                selected = state.current_completion or state.completions[0]
+                buff.apply_completion(selected)
+            else:
+                # Preserve slash/skill cycling; references accept the selected row.
+                buff.complete_next()
+        elif is_mention or buff.document.text_before_cursor.lstrip().startswith(("/", "$")):
+            request_explicit_completion()
+        elif persona_cycle is not None and not buff.document.text.strip() and not False:
             if running["on"]:
                 _stage_tab_persona()
                 return
@@ -5963,7 +6941,7 @@ def run_tui(
 
     # Up/Down step through the composer's visual rows, so a long wrapped line is
     # walked like the editor it looks like. From the first/last row they fall
-    # through to prompt_toolkit's default (previous/next line, then history).
+    # through to accepted-prompt history, preserving the unsent draft.
     composer_goal: dict[str, Any] = {"column": None, "cursor": None, "text": None}
 
     def _composer_vertical(event: Any, delta: int) -> None:
@@ -5984,21 +6962,27 @@ def run_tui(
             )
             if moved is None:
                 remaining = max(1, event.arg) - step
-                if delta < 0:
-                    buff.auto_up(count=remaining)
-                else:
-                    buff.auto_down(count=remaining)
+                for _ in range(remaining):
+                    _history_move(delta)
                 return
             buff.cursor_position, composer_goal["column"] = moved
             composer_goal["cursor"], composer_goal["text"] = buff.cursor_position, buff.text
 
     _composer_keys = _input_focused & ~_completing & ~_small_modal_open & ~_config_open
 
-    @kb.add("up", filter=_composer_keys)
+    @kb.add(
+        "up",
+        filter=_composer_keys
+        & Condition(lambda: not False or app.vi_state.input_mode == InputMode.INSERT),
+    )
     def _composer_up(event: Any) -> None:
         _composer_vertical(event, -1)
 
-    @kb.add("down", filter=_composer_keys)
+    @kb.add(
+        "down",
+        filter=_composer_keys
+        & Condition(lambda: not False or app.vi_state.input_mode == InputMode.INSERT),
+    )
     def _composer_down(event: Any) -> None:
         _composer_vertical(event, 1)
 
@@ -6064,19 +7048,30 @@ def run_tui(
         help_box["offset"] = _help_follow_top()
         _safe_invalidate()
 
+    @kb.add("<any>", filter=Condition(lambda: history_search["on"]), eager=True)
+    def _history_search_type(event: Any) -> None:
+        if event.data and event.data.isprintable():
+            history_search["query"] += event.data
+            _refresh_history_search()
+
+    @kb.add("backspace", filter=Condition(lambda: history_search["on"]), eager=True)
+    def _history_search_backspace(event: Any) -> None:
+        history_search["query"] = history_search["query"][:-1]
+        _refresh_history_search()
+
     # ---- picker popup keys (only while a picker is open) ----
     @kb.add("escape", filter=_picker_open, eager=True)
-    @kb.add("q", filter=_picker_open, eager=True)
+    @kb.add("q", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
     def _picker_cancel(event: Any) -> None:
         _close_picker()
 
     @kb.add("up", filter=_picker_open, eager=True)
-    @kb.add("k", filter=_picker_open, eager=True)
+    @kb.add("k", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
     def _picker_up(event: Any) -> None:
         _picker_move(-1)
 
     @kb.add("down", filter=_picker_open, eager=True)
-    @kb.add("j", filter=_picker_open, eager=True)
+    @kb.add("j", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
     def _picker_down(event: Any) -> None:
         _picker_move(1)
 
@@ -6085,22 +7080,26 @@ def run_tui(
         _picker_choose(int(picker_box["index"]))
 
     # Number keys pick (and apply) the matching option directly.
-    @kb.add("1", filter=_picker_open, eager=True)
-    @kb.add("2", filter=_picker_open, eager=True)
-    @kb.add("3", filter=_picker_open, eager=True)
-    @kb.add("4", filter=_picker_open, eager=True)
-    @kb.add("5", filter=_picker_open, eager=True)
-    @kb.add("6", filter=_picker_open, eager=True)
-    @kb.add("7", filter=_picker_open, eager=True)
-    @kb.add("8", filter=_picker_open, eager=True)
-    @kb.add("9", filter=_picker_open, eager=True)
+    @kb.add("1", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("2", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("3", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("4", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("5", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("6", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("7", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("8", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
+    @kb.add("9", filter=_picker_open & ~Condition(lambda: history_search["on"]), eager=True)
     def _picker_digit(event: Any) -> None:
         try:
             _picker_choose(int(event.data) - 1)
         except (TypeError, ValueError):
             pass
 
-    @kb.add("s-tab", filter=~_config_open, eager=True)
+    @kb.add(
+        "s-tab",
+        filter=~_config_open & ~_small_modal_open & ~_file_mutation_active,
+        eager=True,
+    )
     def _cycle_exec_mode(event: Any) -> None:
         # Shift+Tab advances the next-message selection (read → safe → fast →
         # full → read), the same primitive as the /permissions picker. The
@@ -6108,7 +7107,7 @@ def run_tui(
         # fullaccess warning, so selecting the unguarded mode is never silent.
         # Without a callback (Phase 1 shell, tests) the key is inert rather than
         # flipping a footer field the runtime would not honour.
-        if mode_cycle is None:
+        if mode_cycle is None or False:
             return
         try:
             messages = mode_cycle()
@@ -6144,22 +7143,11 @@ def run_tui(
     def _approve_no(event: Any) -> None:
         _resolve_approval(allow=False)
 
-    @kb.add("c-p", filter=_input_paste_editor_available & ~_config_open, eager=True)
-    def _edit_paste_token(event: Any) -> None:
-        _open_paste_editor()
-
-    @kb.add("c-p", filter=~_config_open & ~_input_paste_editor_available, eager=True)
-    def _command_menu(event: Any) -> None:
-        # Command menu placeholder (Phase 3).
-        event.app.invalidate()
-
-    @kb.add("c-r", filter=~_config_open, eager=True)
     def _toggle_reasoning(event: Any) -> None:
         # Expand/collapse provider-generated reasoning-summary blocks.
         view["reasoning_expanded"] = not view["reasoning_expanded"]
         event.app.invalidate()
 
-    @kb.add("c-o", filter=~_config_open, eager=True)
     def _toggle_plan_meta(event: Any) -> None:
         # Expand/collapse Forge planner meta / plan-reconciliation note blocks.
         view["planmeta_expanded"] = not view["planmeta_expanded"]
@@ -6174,29 +7162,23 @@ def run_tui(
     def _help_pagedown(event: Any) -> None:
         _help_scroll(_help_page_rows())
 
-    @kb.add(
-        "pageup", filter=~_help_open & ~_picker_open & ~_editor_open & ~_config_open, eager=True
-    )
+    @kb.add("pageup", filter=~_small_modal_open & ~_config_open, eager=True)
     def _scroll_up(event: Any) -> None:
         _scroll_move(-_scroll_page_rows())
         event.app.invalidate()
 
-    @kb.add(
-        "pagedown", filter=~_help_open & ~_picker_open & ~_editor_open & ~_config_open, eager=True
-    )
+    @kb.add("pagedown", filter=~_small_modal_open & ~_config_open, eager=True)
     def _scroll_down(event: Any) -> None:
         _scroll_move(_scroll_page_rows())
         event.app.invalidate()
 
-    @kb.add(
-        "c-home", filter=~_help_open & ~_picker_open & ~_editor_open & ~_config_open, eager=True
-    )
+    @kb.add("c-home", filter=~_small_modal_open & ~_config_open, eager=True)
     def _scroll_top(event: Any) -> None:
         scroll["follow"] = False
         scroll["offset"] = 0
         event.app.invalidate()
 
-    @kb.add("c-end", filter=~_help_open & ~_picker_open & ~_editor_open & ~_config_open, eager=True)
+    @kb.add("c-end", filter=~_small_modal_open & ~_config_open, eager=True)
     def _scroll_bottom(event: Any) -> None:
         scroll["follow"] = True
         event.app.invalidate()
@@ -6206,19 +7188,41 @@ def run_tui(
     _app_style = _build_tui_style(terminal_theme)
     if config_overlay is not None:
         config_overlay.register(kb)
+    if report_overlay is not None:
+        report_overlay.register(kb)
+    question_bindings = KeyBindings()
+    if question_panel is not None:
+        question_panel.register(question_bindings)
+    if config_overlay is not None or report_overlay is not None:
         from .setup_app import _build_setup_style
 
         _app_style = merge_styles([_app_style, _build_setup_style(terminal_theme)])
 
+    for keys, handler in [
+        ("c-p", lambda event: _open_diff()),
+        ("c-r", lambda event: _open_history_search()),
+        ("escape r", _toggle_reasoning),
+        ("escape p", lambda event: _open_paste_editor()),
+        ("escape left", _previous_subagent),
+        ("escape right", _next_subagent),
+        ("c-o", _toggle_plan_meta),
+    ]:
+        kb.add(*keys.split(), filter=_input_focused & ~_small_modal_open & ~_config_open)(handler)
     tui_input, owned_tui_input = _resolve_tui_input(input)
     app: Application = Application(
         layout=Layout(root_container, focused_element=input_area),
-        key_bindings=merge_key_bindings([selection_editing_bindings(), kb]),
+        key_bindings=merge_key_bindings(
+            [
+                selection_editing_bindings(),
+                kb,
+                # Pending-question controls own their documented keys while available.
+                question_bindings,
+            ]
+        ),
         style=_app_style,
         full_screen=True,
-        # Keep mouse reporting enabled so wheel events and drag selection are both
-        # handled by the virtualized transcript. Completed selections are copied
-        # automatically; Alysis Code does not claim a copy key binding.
+        # Mouse reporting supports transcript wheel/drag selection and can be
+        # disabled live. Completed selections are copied automatically.
         mouse_support=True,
         cursor=CursorShape.BEAM,
         input=tui_input,
@@ -6233,6 +7237,8 @@ def run_tui(
         # the cap to actually bite (a redraw slower than the interval defeats it).
         min_redraw_interval=0.033,
     )
+    # Before each key (not only repaint), keep non-composer editors/navigation
+    # in their fixed Emacs mode, including keys sent before a modal's first frame.
 
     # ---- animation driver: owl while idle, spinner while a turn runs ----
     def _pre_run() -> None:
@@ -6242,11 +7248,14 @@ def run_tui(
         def _spin() -> None:
             while getattr(app, "is_running", False):
                 time.sleep(0.1)
+                if question_panel is not None and app.loop is not None and not app.loop.is_closed():
+                    app.loop.call_soon_threadsafe(question_panel.sync)
                 animated = False
-                if owl.available and not _conversation_started():
+                reduced_animation = False
+                if not reduced_animation and owl.available and not _conversation_started():
                     owl.advance()
                     animated = True
-                if running["on"] or transcript.status:
+                if not reduced_animation and (running["on"] or transcript.status):
                     spinner["i"] = (spinner["i"] + 1) % len(_SPINNER_FRAMES)
                     animated = True
                 scheduler = getattr(session, "child_scheduler", None)
@@ -6256,8 +7265,19 @@ def run_tui(
                     on_failure=_report_subagent_poll_failure,
                 ):
                     animated = True
-                if config_overlay is not None and config_overlay.is_busy():
+                if (
+                    not reduced_animation
+                    and config_overlay is not None
+                    and config_overlay.is_busy()
+                ):
                     config_overlay.tick_spinner()
+                    animated = True
+                if (
+                    not reduced_animation
+                    and report_overlay is not None
+                    and report_overlay.is_busy()
+                ):
+                    report_overlay.tick_spinner()
                     animated = True
                 if animated:
                     try:
@@ -6270,6 +7290,32 @@ def run_tui(
     try:
         result = app.run(pre_run=_pre_run)
     finally:
+        if surface is not None:
+            surface.user_questions.reset()
+        # Even a failed app run must unwind the actual worker before its caller
+        # closes the session. Soft cancellation alone is not a capture boundary.
+        token = cancel_box.get("token")
+        if token is not None:
+            token.cancel_nonblocking()
+        pending = approval_box.get("event")
+        if pending is not None:
+            approval_box["decision"] = ApprovalDecision(allow=False)
+            pending.set()
+        worker = worker_box.get("thread")
+        if worker is not None and worker.is_alive():
+            worker.join()
+        if _navigation_open():
+            navigation_box["modal"].close()
+        navigation_executor.shutdown(wait=False, cancel_futures=True)
+        if local_lifecycle is not None:
+            local_lifecycle.shutdown()
+        if _review_open():
+            review_box["modal"].close()
+        if _diff_open():
+            diff_box["viewer"].close()
+        composer_completer.close()
+        if report_overlay is not None:
+            report_overlay.shutdown()
         _stop_drag_capture()
         if owned_tui_input is not None:
             owned_tui_input.close()

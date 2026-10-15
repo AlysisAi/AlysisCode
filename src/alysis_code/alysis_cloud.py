@@ -33,12 +33,8 @@ _DEFAULT_SUPABASE_URL = "https://vzigujbcjjmpntxhmyvr.supabase.co"
 # code, so the two must move together — a client pointed at a host that does
 # not serve the page breaks sign-in with no client-side workaround.
 #
-# _LEGACY_SITE_URL is the pre-rebrand host. It is kept only so a 301 from it
-# can be verified and so configs that still name it are recognisable; nothing
-# reads it at runtime.
 # ---------------------------------------------------------------------------
 PRODUCT_SITE_URL = "https://alysiscode.com"
-_LEGACY_SITE_URL = "https://sylliptor.alysisai.com"
 _DEFAULT_SITE_URL = PRODUCT_SITE_URL
 
 # Supabase "anon" key: a PUBLIC client identifier (shipped in the website's
@@ -140,6 +136,16 @@ def device_code_url() -> str:
 def device_token_url() -> str:
     """POST device_code here until the user approves (returns the slk_ key)."""
     return f"{supabase_url()}/functions/v1/device-token"
+
+
+def feedback_url() -> str:
+    """Private feedback intake, authenticated with the saved Alysis device key."""
+    return f"{supabase_url()}/functions/v1/feedback"
+
+
+def account_status_url() -> str:
+    """Read the website billing summary with the saved Alysis device key."""
+    return f"{supabase_url()}/functions/v1/account-status"
 
 
 def activate_url() -> str:

@@ -8,7 +8,6 @@ from alysis_code.agent.acceptance_contract import (
     invalidate_acceptance_evidence,
     record_acceptance_tool_effect,
 )
-from alysis_code.agent.task_state import SessionTaskState
 
 
 def _commands(contract):
@@ -82,31 +81,18 @@ def test_explicit_checks_support_prefix_and_postfix_requirements(tmp_path, instr
     assert _commands(contract)[0].required_for_finalization
 
 
-def test_host_task_is_acceptance_authority_and_brief_is_not(tmp_path):
-    task = SessionTaskState(
-        session_id="owner",
-        sequence=1,
-        task_id="task-one",
-        objective="Run `pytest -q`.",
-        amendments=("Create result.txt.",),
-    )
+def test_current_instruction_is_acceptance_authority(tmp_path):
     contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction="Run `make unrelated`.",
-        task_brief="Create invented.json and run `cargo test`.",
-        task_state=task,
+        root=tmp_path, instruction="Run `pytest -q`. Create result.txt."
     )
-    assert contract.task_id == "task-one"
     assert [item.commands for item in _commands(contract)] == [("pytest -q",)]
     assert contract.allowed_output_paths == {"result.txt"}
-    assert "invented" not in str(contract.as_payload())
 
 
 def test_inferred_command_suggestion_is_not_a_required_command(tmp_path):
     contract = build_acceptance_contract(
         root=tmp_path,
         instruction="Consider running `python -m pytest -q` if useful.",
-        task_brief="Run `make test`.",
     )
     assert not _commands(contract)
     assert not contract.expectations
@@ -135,14 +121,8 @@ def test_explicit_command_respects_rejected_evidence(tmp_path):
 
 
 def test_evidence_records_host_identity_and_observed_metadata(tmp_path):
-    task = SessionTaskState(
-        session_id="owner",
-        sequence=1,
-        task_id="task-one",
-        objective="Run `pytest -q`.",
-        amendments=(),
-    )
-    contract = build_acceptance_contract(root=tmp_path, instruction="", task_state=task)
+    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract.task_id = "task-one"
     _record(
         contract,
         tmp_path,
@@ -174,14 +154,8 @@ def test_relevant_edit_expires_pass_and_requires_current_evidence(tmp_path):
 
 
 def test_foreign_task_cannot_advance_generation_or_satisfy_requirement(tmp_path):
-    task = SessionTaskState(
-        session_id="owner",
-        sequence=1,
-        task_id="task-one",
-        objective="Run `pytest -q`.",
-        amendments=(),
-    )
-    contract = build_acceptance_contract(root=tmp_path, instruction="", task_state=task)
+    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract.task_id = "task-one"
     _record(contract, tmp_path)
     _record(contract, tmp_path, task_id="task-two", generation=8)
     assert contract.generation == 0
@@ -269,21 +243,15 @@ def test_inferred_artifact_and_threshold_remain_nonblocking(tmp_path):
 
 
 def test_delegated_requirements_keep_their_source(tmp_path):
-    task = SessionTaskState(
-        session_id="child",
-        sequence=1,
-        task_id="task-child",
-        origin="delegated",
-        parent_session_id="parent",
-        objective="Run `pytest -q`.",
+    contract = build_acceptance_contract(
+        root=tmp_path, instruction="Run `pytest -q`.", delegated=True
     )
-    contract = build_acceptance_contract(root=tmp_path, instruction="", task_state=task)
     assert _commands(contract)[0].source.value == "delegated_task"
     assert _commands(contract)[0].required_for_finalization
 
 
 def test_unknown_task_state_cannot_be_promoted_into_authority(tmp_path):
-    with pytest.raises(TypeError, match="host-owned"):
+    with pytest.raises(TypeError, match="task_state"):
         build_acceptance_contract(root=tmp_path, instruction="", task_state={"objective": "run"})
 
 

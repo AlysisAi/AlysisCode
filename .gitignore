@@ -35,6 +35,8 @@ alysis-feedback/
 reports/
 qa_reports/
 .qa-results/
+/outputs/
+/private-attestation/
 .workflow-release-dist/
 benchmark_results/
 benchmarks/terminal_bench/artifacts/
@@ -57,6 +59,7 @@ sylliptor_ecs.tar.gz
 
 # Claude Code local config
 .claude/
+.codex/
 
 # OS / IDE
 .DS_Store

@@ -1,0 +1,93 @@
+{
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "messageId": "msg_terminalcost0",
+  "operationId": "operation_run00001",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "kind": "event",
+  "sequence": 5,
+  "identity": {
+    "sessionId": "ses_abcdefgh",
+    "generationId": "gen_abcdefgh",
+    "runId": "run_abcdefgh",
+    "revision": 3
+  },
+  "payload": {
+    "type": "run.terminal",
+    "result": {
+      "hostPlanFingerprint": "b1b7341b391c8459de5041a6734e471ac2f23c511862e7d265780cdc7227eaf7",
+      "nativeApprovalFingerprint": "7d86273ea1f7d27c4e509d5950dde659dca91e693103078250111fa7b0d6beda",
+      "verificationContractFingerprint": "cf1db8e3edfb032e6775897c162a6b0335da1c096775f76c92c84039e128106e",
+      "executionAdmissionFingerprint": "b9864d6e401538ba34e5fc3119da1b1442dd090109f73cfefc5e8df5a344bfe9",
+      "status": "succeeded",
+      "reason": {
+        "code": "completed",
+        "message": "All approved checks passed.",
+        "retryable": false
+      },
+      "exitCode": 0,
+      "acceptance": {
+        "status": "passed",
+        "checks": [
+          {
+            "checkId": "check.acceptance.T01",
+            "taskId": "T01",
+            "requirementIds": [
+              "T01:criterion:1"
+            ],
+            "status": "passed",
+            "summary": "Acceptance passed.",
+            "evidenceRefs": [
+              "evidence_accept01"
+            ]
+          }
+        ]
+      },
+      "verification": {
+        "status": "passed",
+        "checks": [
+          {
+            "checkId": "check.verification.T01",
+            "taskId": "T01",
+            "requirementIds": [
+              "T01:criterion:1"
+            ],
+            "status": "passed",
+            "summary": "Verification passed.",
+            "evidenceRefs": [
+              "evidence_verify01"
+            ]
+          }
+        ]
+      },
+      "usage": {
+        "modelCalls": 3,
+        "inputTokens": 1200,
+        "outputTokens": 400,
+        "costKnown": false,
+        "totalCostMicros": null
+      },
+      "timing": {
+        "startedAt": "2026-08-21T09:01:00Z",
+        "finishedAt": "2026-08-21T09:02:00Z",
+        "elapsedMs": 60000,
+        "timedOut": false
+      },
+      "workers": {
+        "requested": 1,
+        "started": 1,
+        "succeeded": 1,
+        "failed": 0
+      },
+      "taskUsage": [
+        {
+          "taskId": "T01",
+          "modelSteps": 3
+        }
+      ],
+      "artifactRefs": [
+        "artifact_report001"
+      ]
+    }
+  }
+}

@@ -18,6 +18,7 @@ from alysis_code.model_registry import (
     OFFICIAL_PROVIDER_MODEL_CATALOG_SOURCE,
     ModelRegistry,
 )
+from alysis_code.profile_presets import get_preset
 from alysis_code.token_budget import compute_input_budget
 from alysis_code.usage_tracker import compute_context_left
 
@@ -660,7 +661,7 @@ def test_explicit_endpoint_pricing_overrides_unknown_compatible_route() -> None:
             (base_url, model, 1_048_576, 393_216, "deepseek-flash", True, 0.0000003, 0.0000012)
             for base_url in (
                 "https://api.deepseek.com",
-                "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1",
+                get_preset("alysis").base_url,
             )
             for model in (
                 "deepseek-flash",

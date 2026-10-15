@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from ..command_text import command_text
 from ..diff_paths import iter_patch_paths
 from .fs import (
     FilePrecondition,
@@ -55,9 +56,7 @@ def _run_git(
             input=input_s,
             check=False,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            **command_text(),
             env=env,
         )
     except OSError as e:

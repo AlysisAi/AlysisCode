@@ -26,7 +26,7 @@ def _row_text(row: list[tuple[str, str]]) -> str:
 # ----------------------------- LLM stream layer -----------------------------
 
 
-def test_openai_compat_does_not_stream_raw_reasoning_to_callback():
+def test_openai_compat_streams_native_reasoning_to_callback():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -54,13 +54,14 @@ def test_openai_compat_does_not_stream_raw_reasoning_to_callback():
         on_reasoning_delta=reasoning.append,
         on_text_delta=content.append,
     )
-    assert reasoning == []
+    assert reasoning == ["Let me ", "think."]
     assert "".join(content) == "Answer"
     assert resp.content == "Answer"
-    assert resp.reasoning == ()
+    assert [item.text for item in resp.reasoning] == ["Let me think."]
+    assert resp.reasoning[0].kind == ReasoningOutputKind.PROVIDER_REASONING
 
 
-def test_openai_compat_streams_structured_summary_but_not_raw_reasoning():
+def test_openai_compat_prefers_structured_summary_over_duplicate_field():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -420,7 +421,7 @@ def test_reasoning_rows_live_header_animates_with_spinner_and_elapsed():
     )
     header = _row_text(rows[0])
     assert header.startswith("⠋ ")  # the spinner leads the live header
-    assert "reasoning summary… 3s" in header
+    assert "thinking… 3s" in header
 
 
 def test_activity_indicator_under_question():

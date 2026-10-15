@@ -952,3 +952,117 @@ def test_new_bridge_observes_live_old_session_lease_before_draining_follow_up(
     ]
     old_bridge.close()
     new_bridge.close()
+
+
+def test_explicit_skill_is_per_turn_and_part_of_queue_identity(configured_workspace, tmp_path):
+    from alysis_code.skills import discover_skills
+
+    bundle = configured_workspace / ".alysis_skills" / "review"
+    bundle.mkdir(parents=True)
+    (bundle / "SKILL.md").write_text(
+        "---\nname: review\ndescription: Review source changes\n---\nReview $ARGUMENTS and report findings.\n",
+        encoding="utf-8",
+    )
+    registry = discover_skills(
+        focus_path=configured_workspace, workspace_root=configured_workspace, cfg=AppConfig()
+    ).skills
+    output = io.StringIO()
+    captured = []
+
+    class FakeSession:
+        skills_enabled = True
+        skill_registry = registry
+
+        def run_turn(self, message, *, ephemeral_user_messages=None):
+            captured.append((message, list(ephemeral_user_messages or [])))
+            return 0
+
+        def close(self):
+            pass
+
+    bridge = StdioBridge(
+        stdout=output,
+        create_session_fn=lambda **kw: FakeSession(),
+        prompt_queue=DurablePromptQueue(tmp_path / "skills.sqlite3"),
+    )
+    bridge.process_line(
+        _request(
+            "session.create", {"workspace": str(configured_workspace), "mode": "readonly"}, "create"
+        )
+    )
+    session_id = _response(output, "create")["result"]["session_id"]
+    selection = {"name": "review", "arguments": "these changes"}
+    params = {
+        "session_id": session_id,
+        "message": "history plus user task",
+        "skill": selection,
+        "idempotency_key": "first",
+    }
+    bridge.process_line(_request("chat.send", params, "first"))
+    job_id = _response(output, "first")["result"]["job_id"]
+    _wait(
+        output,
+        lambda event: f"job_completed {job_id}" in str(event.get("payload", {}).get("message")),
+    )
+    activity = _wait(
+        output, lambda event: event.get("payload", {}).get("operation") == "skill_invoke"
+    )
+    assert activity["payload"]["kind"] == "read"
+    assert activity["payload"]["display_title"] == "Using review"
+    assert captured[0][0] == "history plus user task"
+    assert len(captured[0][1]) == 1
+    assert "Review these changes and report findings." in captured[0][1][0]
+    assert "history plus user task" not in captured[0][1][0]
+    bridge.process_line(_request("chat.send", params, "retry"))
+    assert _response(output, "retry")["result"]["created"] is False
+    bridge.process_line(
+        _request(
+            "chat.send",
+            {**params, "skill": {**selection, "arguments": "different task"}},
+            "conflict",
+        )
+    )
+    assert _response(output, "conflict")["ok"] is False
+    bridge.process_line(
+        _request("chat.send", {"session_id": session_id, "message": "ordinary follow-up"}, "second")
+    )
+    job_id = _response(output, "second")["result"]["job_id"]
+    _wait(
+        output,
+        lambda event: f"job_completed {job_id}" in str(event.get("payload", {}).get("message")),
+    )
+    assert captured == [("history plus user task", captured[0][1]), ("ordinary follow-up", [])]
+    bridge.close()
+
+
+@pytest.mark.parametrize(
+    "value,enabled,sensitive,code",
+    [
+        ({"name": "missing", "arguments": "task"}, True, False, "skill_not_found"),
+        ({"name": "review", "arguments": "task"}, False, False, "skills_unavailable"),
+        ({"name": "review", "arguments": "task"}, True, True, "skills_unavailable"),
+        ({"name": "review", "instructions": "injected"}, True, False, "invalid_skill"),
+        ("review", True, False, "invalid_skill"),
+    ],
+)
+def test_explicit_skill_validation_fails_closed(value, enabled, sensitive, code):
+    from alysis_code.ide.protocol import ProtocolError
+    from alysis_code.ide.skill_invocation import validate_skill_invocation
+
+    session = SimpleNamespace(skills_enabled=enabled, skill_registry={})
+    with pytest.raises(ProtocolError) as error:
+        validate_skill_invocation(session, value, sensitive_media=sensitive)
+    assert error.value.code == code
+
+
+def test_commands_catalog_matches_cli_and_advertises_skills():
+    from alysis_code.cli_impl.chat_slash_completer import get_chat_specs
+    from alysis_code.ide.health import capabilities_payload
+    from alysis_code.ide.management_protocol import _commands_list
+
+    assert _commands_list({}, None)["commands"] == [
+        {"name": spec.name, "usage": spec.usage, "description": spec.description}
+        for spec in get_chat_specs()
+    ]
+    assert "commands.list" in capabilities_payload()["methods"]
+    assert capabilities_payload()["features"]["explicit_skill_invocation"]["scope"] == "turn"

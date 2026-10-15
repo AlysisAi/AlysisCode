@@ -501,8 +501,7 @@ def test_finalization_does_not_hide_failed_or_ambiguous_execution(
     reported_content = finals[0].split("\n\n---", 1)[0]
     if one_shot:
         expected_report = (
-            report
-            + "\n\nVerification status: unverified. Required checks remain failed or unconfirmed."
+            report + "\n\nNot verified: required checks failed or could not be confirmed."
         )
         if separate_calls:
             assert reported_content.startswith(

@@ -4,6 +4,9 @@ import re
 import shlex
 from dataclasses import dataclass
 
+from .command_review_rules import review_reasons
+from .windows_command_policy import most_severe_windows_finding
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -88,8 +91,23 @@ def evaluate_shell_command(cmd: str) -> PolicyDecision:
         if pat.search(lowered):
             return PolicyDecision(allowed=False, needs_confirm=False, reason=reason)
 
+    # cmd.exe and PowerShell spell the same intents differently (rd /s /q, Remove-Item
+    # -Recurse -Force, Format-Volume …); see windows_command_policy.
+    windows_finding = most_severe_windows_finding(c)
+    if windows_finding is not None and windows_finding.severity != "confirm":
+        return PolicyDecision(allowed=False, needs_confirm=False, reason=windows_finding.reason)
+
     for pat, reason in _CONFIRM_PATTERNS:
         if pat.search(lowered):
             return PolicyDecision(allowed=True, needs_confirm=True, reason=reason)
+
+    if windows_finding is not None:
+        return PolicyDecision(allowed=True, needs_confirm=True, reason=windows_finding.reason)
+
+    # Harm a workspace sandbox does not contain: lost work, rewritten history, publishing,
+    # shared systems, credentials. See command_review_rules.
+    reasons = review_reasons(c)
+    if reasons:
+        return PolicyDecision(allowed=True, needs_confirm=True, reason="; ".join(reasons))
 
     return PolicyDecision(allowed=True, needs_confirm=False, reason="OK")

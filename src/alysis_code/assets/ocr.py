@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from ..command_text import command_text
 from .models import OcrError
 
 LOGGER = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ class TesseractOcrProvider:
             proc = subprocess.run(
                 args,
                 capture_output=True,
-                text=True,
+                **command_text(),
                 timeout=self.timeout_seconds,
                 check=False,
             )

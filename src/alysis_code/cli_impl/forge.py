@@ -2,13 +2,29 @@
 # Dependencies are injected at runtime from alysis_code.cli to preserve monkeypatch surfaces.
 from __future__ import annotations
 
+import builtins
+import copy
+import dis
+import hashlib
+import hmac
 import inspect
 import json
 import os
+import shlex
 import socket
-from dataclasses import dataclass, field
+import stat
+import subprocess
+import sys
+import threading
+import time
+import types
+import uuid
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import typer
 from click import get_current_context
@@ -25,9 +41,14 @@ from ..assets.usage_logger import AssetUsageLogger
 from ..assets.worker_mirror import TaskAssetMirror, mirror_task_assets
 from ..assets.worker_section import render_relevant_assets_section
 from ..assets.worker_tools import build_worker_asset_mcp_manager, compose_worker_asset_mcp_manager
+from ..atomic_io import atomic_write_text
 from ..branding import env_get
+from ..command_text import command_text
+from ..config import resolve_api_key as _host_resolve_api_key
 from ..error_text import sanitize_error_summary, sanitize_optional_error_summary
+from ..execution_deadline import ExecutionDeadline
 from ..execution_shared import build_task_acceptance_instruction
+from ..execution_shared import safe_task_file_component as _host_safe_task_file_component
 from ..failure_category import FailureCategory
 from ..forge_events import (
     EVENT_PLAN_INVALID,
@@ -44,7 +65,42 @@ from ..forge_events import (
     EXIT_OK,
     ForgeEventEmitter,
 )
+from ..forge_host_verification import (
+    HostVerificationBinding,
+    HostVerificationResult,
+    retained_artifact_matches,
+    run_host_verification,
+)
+from ..forge_sequential_engine import (
+    BranchFacts,
+    ExecutionTiming,
+    IntegrationCommitProof,
+    NativeRunStatePreimage,
+    PreparedIntegration,
+    PreparedIntegrationFacts,
+    PreparedIntegrationRollbackError,
+    SequentialRunDependencies,
+    SequentialRunProgress,
+    SequentialRunRequest,
+    SequentialTaskExecutionError,
+    SequentialTaskRequest,
+    TaskExecutionOutcome,
+    bind_retained_artifact,
+    restore_native_run_state_payload,
+    run_sequential_forge,
+    usage_from_session_logs,
+    validate_native_run_state_matches_payload,
+    validate_native_run_state_payload,
+)
+from ..git_ops import (
+    DEFAULT_COMMIT_AUTHOR_EMAIL,
+    DEFAULT_COMMIT_AUTHOR_NAME,
+    GitOpsError,
+    generate_task_branch_name,
+)
+from ..git_safe import build_git_cmd, build_git_process_env, resolve_disabled_hooks_dir
 from ..model_registry import ModelRegistry
+from ..model_registry import resolve_model_provider_key as _host_resolve_model_provider_key
 from ..plan_repair import (
     PLAN_STATUS_DRAFT,
     apply_plan_status,
@@ -52,8 +108,17 @@ from ..plan_repair import (
 )
 from ..plan_validation import PlannerFailedError, raise_for_execution_ready_plan
 from ..profiles import apply_runtime_base_url_override
+from ..profiles import (
+    connection_fingerprint as _host_connection_fingerprint,
+)
+from ..profiles import (
+    get_active_profile as _host_get_active_profile,
+)
+from ..profiles import (
+    resolve_effective_base_url as _host_resolve_effective_base_url,
+)
 from ..replanning import resolve_replanning_mode
-from ..run_state import RUN_STATUS_FAILED, RUN_STATUS_RUNNING
+from ..run_state import RUN_STATUS_COMPLETED, RUN_STATUS_FAILED, RUN_STATUS_RUNNING
 from ..runtime_kind import RuntimeKind
 from ..swarm_orchestrator import acquire_swarm_mutation_guard
 from ..swarm_scheduler import (
@@ -70,6 +135,7 @@ from ..task_scope import (
     is_non_material_untracked_path,
     normalize_scope_patterns,
     relocate_known_scratch_artifacts,
+    scope_path_matches_pattern,
 )
 from ..verification_repair import (
     TASK_STATUS_COMPLETED_UNVERIFIED,
@@ -82,6 +148,8 @@ from ..verification_repair import (
 from ..verify_gate import verify_run_status
 
 _PROTECTED_GLOBAL_NAMES: set[str] = set()
+_HOST_TASK_EXECUTOR_BOOTSTRAP_LOCK = threading.Lock()
+_HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE: Any | None = None
 
 
 def _events_or_null(events: Any) -> ForgeEventEmitter:
@@ -91,28 +159,7 @@ def _events_or_null(events: Any) -> ForgeEventEmitter:
     return ForgeEventEmitter(command="forge", enabled=False)
 
 
-@dataclass
-class TaskExecutionOutcome:
-    """What one run of :func:`execute_forge_task` produced.
-
-    ``forge exec`` turns a single outcome into its exit code and terminal event;
-    ``forge run`` collects one per task and decides whether the run continues.
-    """
-
-    task_id: str
-    title: str
-    status: str
-    success: bool
-    exit_code: int
-    summary: str
-    report_path: Path
-    patch_path: Path
-    merge_conflict: bool
-    conflict_review_path: Path | None
-    payload: dict[str, Any] = field(default_factory=dict)
-
-
-class ForgeTaskExecutionError(Exception):
+class ForgeTaskExecutionError(SequentialTaskExecutionError):
     """The task could not be executed at all -- a command error, not a failed task.
 
     A task that ran and was rejected comes back as an outcome with
@@ -121,16 +168,1752 @@ class ForgeTaskExecutionError(Exception):
     a sequential run stops rather than moving to the next task.
     """
 
-    def __init__(
-        self,
-        message: str,
+
+def _run_host_git_checked(
+    root: Path,
+    args: list[str],
+    *,
+    execution_deadline: ExecutionDeadline | None,
+    error_message: str,
+    extra_config: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    timeout: float | None = None
+    if execution_deadline is not None:
+        timeout = execution_deadline.remaining_seconds()
+        if timeout is not None and timeout <= 0:
+            raise GitOpsError(f"{error_message}: run deadline exhausted")
+    try:
+        forced_config = dict(extra_config or {})
+        # Host Phase 0 never delegates authority to repository hooks, even when
+        # the legacy opt-in environment variable is present in the parent.
+        forced_config["core.hooksPath"] = os.fspath(resolve_disabled_hooks_dir(root, {}))
+        completed = subprocess.run(
+            build_git_cmd(root, args, extra_config=forced_config, env={}),
+            check=False,
+            capture_output=True,
+            **command_text(),
+            env=build_git_process_env(),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitOpsError(f"{error_message}: run deadline exhausted") from exc
+    except OSError as exc:
+        raise GitOpsError(error_message) from exc
+    if completed.returncode != 0:
+        detail = sanitize_error_summary(
+            (completed.stderr or completed.stdout or "Git rejected the operation").strip()
+        )
+        raise GitOpsError(f"{error_message}: {detail}")
+    return completed
+
+
+def _resolve_host_git_commit(
+    root: Path,
+    revision: str,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+) -> str:
+    completed = _run_host_git_checked(
+        root,
+        ["rev-parse", "--verify", f"{revision}^{{commit}}"],
+        execution_deadline=execution_deadline,
+        error_message="failed to resolve pinned Git identity",
+    )
+    return completed.stdout.strip()
+
+
+def _checkout_new_host_task_branch(
+    root: Path,
+    *,
+    branch: str,
+    base_branch: str,
+    base_head: str,
+    execution_deadline: ExecutionDeadline | None,
+) -> None:
+    """Atomically require creation of a fresh Phase-0 task ref.
+
+    Legacy ``checkout_branch`` intentionally reuses an existing branch.  That
+    behavior is useful interactively but would let a ref created after Host
+    approval silently replace the approved branch materialization.  ``git
+    checkout -b`` performs the existence check and ref creation in one Git
+    operation and fails if the ref already exists.
+    """
+
+    observed_base = _resolve_host_git_commit(
+        root,
+        f"refs/heads/{base_branch}",
+        execution_deadline=execution_deadline,
+    )
+    if observed_base != base_head:
+        raise GitOpsError("approved base branch changed before task branch creation")
+    _run_host_git_checked(
+        root,
+        ["checkout", "-b", branch, base_head],
+        execution_deadline=execution_deadline,
+        error_message=f"failed to create new Host task branch {branch}",
+    )
+    if (
+        _resolve_host_git_commit(
+            root,
+            "HEAD",
+            execution_deadline=execution_deadline,
+        )
+        != base_head
+    ):
+        raise GitOpsError("new Host task branch did not start at the approved base HEAD")
+
+
+def _host_git_metadata_snapshot(
+    root: Path,
+    *,
+    task_branch: str,
+    base_branch: str,
+    execution_deadline: ExecutionDeadline | None,
+    expected_metadata_digest: str | None = None,
+) -> tuple[str, str, str, str, str, str]:
+    metadata_digest = _host_git_metadata_digest(
+        root,
+        execution_deadline=execution_deadline,
+    )
+    if expected_metadata_digest is not None and metadata_digest != expected_metadata_digest:
+        raise GitOpsError("exact Host verification changed local Git metadata")
+    symbolic_head = _run_host_git_checked(
+        root,
+        ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        execution_deadline=execution_deadline,
+        error_message="failed to inspect Host verification branch",
+    ).stdout.strip()
+    head = _resolve_host_git_commit(root, "HEAD", execution_deadline=execution_deadline)
+    task_head = _resolve_host_git_commit(
+        root,
+        f"refs/heads/{task_branch}",
+        execution_deadline=execution_deadline,
+    )
+    base_head = _resolve_host_git_commit(
+        root,
+        f"refs/heads/{base_branch}",
+        execution_deadline=execution_deadline,
+    )
+    status = _run_host_git_checked(
+        root,
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        execution_deadline=execution_deadline,
+        error_message="failed to inspect Host verification Git status",
+    ).stdout
+    metadata_digest_after_inspection = _host_git_metadata_digest(
+        root,
+        execution_deadline=execution_deadline,
+    )
+    if metadata_digest_after_inspection != metadata_digest:
+        raise GitOpsError("Host Git inspection changed local repository metadata")
+    return (
+        symbolic_head,
+        head,
+        task_head,
+        base_head,
+        status,
+        metadata_digest_after_inspection,
+    )
+
+
+def _check_host_snapshot_deadline(
+    execution_deadline: ExecutionDeadline | None,
+) -> None:
+    if execution_deadline is not None and execution_deadline.is_exhausted():
+        raise GitOpsError("run deadline exhausted while snapshotting repository state")
+
+
+def _host_hash_regular_file(
+    path: Path,
+    *,
+    before: os.stat_result,
+    execution_deadline: ExecutionDeadline | None,
+) -> str:
+    hasher = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                _check_host_snapshot_deadline(execution_deadline)
+                hasher.update(chunk)
+        after = path.lstat()
+    except OSError as exc:
+        raise GitOpsError("repository file changed during snapshot") from exc
+    stable_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    stable_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if stable_before != stable_after:
+        raise GitOpsError("repository file changed during snapshot")
+    return hasher.hexdigest()
+
+
+def _host_path_record(
+    path: Path,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+) -> tuple[str, int, int, str]:
+    _check_host_snapshot_deadline(execution_deadline)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return ("missing", 0, 0, "")
+    except OSError as exc:
+        raise GitOpsError("repository state changed during snapshot") from exc
+    mode = stat.S_IMODE(before.st_mode)
+    if stat.S_ISLNK(before.st_mode):
+        try:
+            target = os.readlink(path)
+        except OSError as exc:
+            raise GitOpsError("repository symlink changed during snapshot") from exc
+        return (
+            "symlink",
+            mode,
+            int(before.st_size),
+            hashlib.sha256(os.fsencode(target)).hexdigest(),
+        )
+    if stat.S_ISDIR(before.st_mode):
+        return ("directory", mode, 0, "")
+    if stat.S_ISREG(before.st_mode):
+        return (
+            "file",
+            mode,
+            int(before.st_size),
+            _host_hash_regular_file(
+                path,
+                before=before,
+                execution_deadline=execution_deadline,
+            ),
+        )
+    return ("special", mode, int(before.st_size), "")
+
+
+def _host_bounded_control_tree(
+    root: Path,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+    max_entries: int = 10_000,
+    max_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, tuple[str, int, int, str]]:
+    snapshot_root = root.resolve(strict=True)
+    records: dict[str, tuple[str, int, int, str]] = {}
+    total_bytes = 0
+
+    def visit(directory: Path) -> None:
+        nonlocal total_bytes
+        _check_host_snapshot_deadline(execution_deadline)
+        try:
+            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError as exc:
+            raise GitOpsError("failed to enumerate Git control metadata") from exc
+        for entry in entries:
+            if len(records) >= max_entries:
+                raise GitOpsError("Git control metadata exceeds the Host snapshot entry limit")
+            path = Path(entry.path)
+            relative = path.relative_to(snapshot_root).as_posix()
+            record = _host_path_record(
+                path,
+                execution_deadline=execution_deadline,
+            )
+            total_bytes += record[2] if record[0] == "file" else 0
+            if total_bytes > max_bytes:
+                raise GitOpsError("Git control metadata exceeds the Host snapshot byte limit")
+            records[relative] = record
+            if record[0] == "directory":
+                visit(path)
+
+    visit(snapshot_root)
+    return records
+
+
+def _bounded_host_git_output(
+    root: Path,
+    args: list[str],
+    *,
+    execution_deadline: ExecutionDeadline | None,
+    error_message: str,
+    max_bytes: int = 32 * 1024 * 1024,
+    max_records: int = 100_000,
+) -> str:
+    output = _run_host_git_checked(
+        root,
+        args,
+        execution_deadline=execution_deadline,
+        error_message=error_message,
+    ).stdout
+    if len(output.encode("utf-8", errors="surrogatepass")) > max_bytes:
+        raise GitOpsError(f"{error_message}: output exceeds the Host byte limit")
+    if output.count("\0") > max_records:
+        raise GitOpsError(f"{error_message}: output exceeds the Host entry limit")
+    return output
+
+
+def _host_git_metadata_digest(
+    root: Path,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+) -> str:
+    git_dir = Path(
+        _run_host_git_checked(
+            root,
+            ["rev-parse", "--absolute-git-dir"],
+            execution_deadline=execution_deadline,
+            error_message="failed to locate local Git metadata",
+        ).stdout.strip()
+    ).resolve(strict=True)
+    records: dict[str, tuple[str, int, int, str]] = {}
+    try:
+        top_level_entries = sorted(os.scandir(git_dir), key=lambda item: item.name)
+    except OSError as exc:
+        raise GitOpsError("failed to enumerate local Git metadata") from exc
+    for entry in top_level_entries:
+        if entry.name == "objects" or entry.name.endswith(".lock"):
+            continue
+        path = Path(entry.path)
+        record = _host_path_record(path, execution_deadline=execution_deadline)
+        records[entry.name] = record
+        if entry.name in {"hooks", "info", "logs"} and record[0] == "directory":
+            for relative, nested_record in _host_bounded_control_tree(
+                path,
+                execution_deadline=execution_deadline,
+            ).items():
+                records[f"{entry.name}/{relative}"] = nested_record
+    refs = _bounded_host_git_output(
+        root,
+        ["for-each-ref", "--sort=refname", "--format=%(refname)%00%(objectname)%00"],
+        execution_deadline=execution_deadline,
+        error_message="failed to inventory local Git refs",
+    )
+    records["@semantic-refs"] = (
+        "projection",
+        0,
+        len(refs.encode("utf-8", errors="surrogatepass")),
+        hashlib.sha256(refs.encode("utf-8", errors="surrogatepass")).hexdigest(),
+    )
+    encoded = json.dumps(
+        sorted(records.items()),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _host_ref_snapshot(
+    root: Path,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+) -> dict[str, str]:
+    """Return the complete bounded local ref namespace as exact OIDs."""
+
+    output = _bounded_host_git_output(
+        root,
+        ["for-each-ref", "--sort=refname", "--format=%(refname)%00%(objectname)%00"],
+        execution_deadline=execution_deadline,
+        error_message="failed to inventory Host transaction refs",
+    )
+    records: dict[str, str] = {}
+    for raw in output.splitlines():
+        fields = raw.split("\0")
+        if len(fields) != 3 or fields[-1] or not fields[0] or not fields[1]:
+            raise GitOpsError("Host transaction ref inventory is malformed")
+        ref_name, object_name = fields[:2]
+        if ref_name in records:
+            raise GitOpsError("Host transaction ref inventory contains duplicates")
+        records[ref_name] = object_name
+    return records
+
+
+def _host_stable_git_control_digest(
+    root: Path,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+) -> str:
+    """Hash bounded Git controls that the transaction never legitimately changes."""
+
+    git_dir = Path(
+        _run_host_git_checked(
+            root,
+            ["rev-parse", "--absolute-git-dir"],
+            execution_deadline=execution_deadline,
+            error_message="failed to locate Host transaction Git metadata",
+        ).stdout.strip()
+    ).resolve(strict=True)
+    mutable_names = frozenset({"HEAD", "index", "logs", "objects", "refs"})
+    records: dict[str, tuple[str, int, int, str]] = {}
+    total_entries = 0
+    total_bytes = 0
+    try:
+        entries = sorted(os.scandir(git_dir), key=lambda item: item.name)
+    except OSError as exc:
+        raise GitOpsError("failed to enumerate Host transaction Git controls") from exc
+    for entry in entries:
+        if entry.name in mutable_names or entry.name.endswith(".lock"):
+            continue
+        path = Path(entry.path)
+        record = _host_path_record(path, execution_deadline=execution_deadline)
+        records[entry.name] = record
+        total_entries += 1
+        total_bytes += record[2] if record[0] == "file" else 0
+        if record[0] == "directory":
+            nested = _host_bounded_control_tree(
+                path,
+                execution_deadline=execution_deadline,
+                max_entries=max(1, 10_000 - total_entries),
+                max_bytes=max(1, 64 * 1024 * 1024 - total_bytes),
+            )
+            for relative, nested_record in nested.items():
+                records[f"{entry.name}/{relative}"] = nested_record
+                total_entries += 1
+                total_bytes += nested_record[2] if nested_record[0] == "file" else 0
+        if total_entries > 10_000 or total_bytes > 64 * 1024 * 1024:
+            raise GitOpsError("Host transaction Git controls exceed snapshot limits")
+    encoded = json.dumps(
+        sorted(records.items()),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _host_workspace_snapshot(
+    root: Path,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+    allowed_artifact_paths: tuple[Path, ...],
+) -> dict[str, tuple[str, int, int, str]]:
+    snapshot_root = root.resolve(strict=True)
+    inventory_commands = (
+        ["ls-files", "-z"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+    )
+    inventory: set[str] = set()
+    inventory_bytes = 0
+    for command in inventory_commands:
+        output = _bounded_host_git_output(
+            snapshot_root,
+            command,
+            execution_deadline=execution_deadline,
+            error_message="failed to inventory Host workspace paths",
+        )
+        inventory_bytes += len(output.encode("utf-8", errors="surrogatepass"))
+        if inventory_bytes > 32 * 1024 * 1024:
+            raise GitOpsError("Host workspace inventory exceeds the byte limit")
+        inventory.update(item for item in output.split("\0") if item)
+        if len(inventory) > 100_000:
+            raise GitOpsError("Host workspace inventory exceeds the entry limit")
+
+    allowed = frozenset(path.resolve(strict=False) for path in allowed_artifact_paths)
+    records: dict[str, tuple[str, int, int, str]] = {}
+    total_bytes = 0
+    for relative in sorted(inventory):
+        candidate = snapshot_root / relative
+        try:
+            candidate.relative_to(snapshot_root)
+        except ValueError as exc:
+            raise GitOpsError("Host workspace inventory escaped the repository root") from exc
+        if candidate.resolve(strict=False) in allowed:
+            continue
+        record = _host_path_record(
+            candidate,
+            execution_deadline=execution_deadline,
+        )
+        if record[0] == "directory":
+            raise GitOpsError("Host workspace inventory contains an unsupported directory entry")
+        total_bytes += record[2] if record[0] == "file" else 0
+        if total_bytes > 512 * 1024 * 1024:
+            raise GitOpsError("Host workspace snapshot exceeds the content byte limit")
+        records[relative] = record
+    return records
+
+
+def _host_nonruntime_ignored_paths(
+    root: Path,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+) -> tuple[str, ...]:
+    """Inventory ignored material that Phase 0 cannot attribute to Git diffs."""
+
+    output = _bounded_host_git_output(
+        root,
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+        execution_deadline=execution_deadline,
+        error_message="failed to inventory ignored Host workspace paths",
+    )
+    ignored = {
+        item
+        for item in output.split("\0")
+        if item and item not in {".alysis"} and not item.startswith((".alysis/", ".alysis/"))
+    }
+    return tuple(sorted(ignored))
+
+
+def _host_snapshot_changed_paths(
+    before: dict[str, tuple[str, int, int, str]],
+    after: dict[str, tuple[str, int, int, str]],
+) -> list[str]:
+    return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+
+
+def _try_resolve_host_git_commit(
+    root: Path,
+    revision: str,
+    *,
+    execution_deadline: ExecutionDeadline | None,
+) -> str | None:
+    try:
+        return _resolve_host_git_commit(
+            root,
+            revision,
+            execution_deadline=execution_deadline,
+        )
+    except GitOpsError:
+        return None
+
+
+def _prepare_new_host_task_integration(
+    root: Path,
+    *,
+    native_run_id: str,
+    task_id: str,
+    journal_dir: Path,
+    base_branch: str,
+    base_head: str,
+    task_branch: str,
+    task_commit: str,
+    message: str,
+    execution_deadline: ExecutionDeadline,
+    mutable_runtime_paths: tuple[Path, ...],
+) -> PreparedIntegration:
+    """Prepare a merge commit and private ref without changing the approved base."""
+
+    observed_base = _resolve_host_git_commit(
+        root,
+        f"refs/heads/{base_branch}",
+        execution_deadline=execution_deadline,
+    )
+    if observed_base != base_head:
+        raise GitOpsError("approved base branch changed before merge")
+    observed_task = _resolve_host_git_commit(
+        root,
+        f"refs/heads/{task_branch}",
+        execution_deadline=execution_deadline,
+    )
+    if observed_task != task_commit:
+        raise GitOpsError("task branch changed after exact Host verification")
+    transaction_id = "integration_" + uuid.uuid4().hex[:24]
+    prepared_ref = f"refs/alysis/forge-host-v2/{transaction_id}"
+    zero_oid = "0" * len(base_head)
+    merge_commit: str | None = None
+    bound_workspace_snapshot: dict[str, tuple[str, int, int, str]] | None = None
+    bound_refs: dict[str, str] | None = None
+    bound_stable_control_digest: str | None = None
+
+    try:
+        merge_tree = _run_host_git_checked(
+            root,
+            ["merge-tree", "--write-tree", "--no-messages", base_head, task_commit],
+            execution_deadline=execution_deadline,
+            error_message="failed to prepare the Host merge tree",
+        ).stdout.strip()
+        if not merge_tree:
+            raise GitOpsError("prepared Host merge tree is empty")
+        merge_commit = _run_host_git_checked(
+            root,
+            [
+                "commit-tree",
+                merge_tree,
+                "-p",
+                base_head,
+                "-p",
+                task_commit,
+                "-m",
+                message,
+            ],
+            execution_deadline=execution_deadline,
+            error_message="failed to create the prepared Host merge commit",
+            extra_config={
+                "user.name": DEFAULT_COMMIT_AUTHOR_NAME,
+                "user.email": DEFAULT_COMMIT_AUTHOR_EMAIL,
+            },
+        ).stdout.strip()
+        first_parent = _resolve_host_git_commit(
+            root,
+            f"{merge_commit}^1",
+            execution_deadline=execution_deadline,
+        )
+        second_parent = _resolve_host_git_commit(
+            root,
+            f"{merge_commit}^2",
+            execution_deadline=execution_deadline,
+        )
+        if first_parent != base_head or second_parent != task_commit:
+            raise GitOpsError("Host merge parents did not match the approved commits")
+        _run_host_git_checked(
+            root,
+            ["update-ref", prepared_ref, merge_commit, zero_oid],
+            execution_deadline=execution_deadline,
+            error_message="failed to retain the prepared Host merge",
+        )
+        if (
+            _resolve_host_git_commit(
+                root,
+                f"refs/heads/{base_branch}",
+                execution_deadline=execution_deadline,
+            )
+            != base_head
+        ):
+            raise GitOpsError("approved base branch changed during merge preparation")
+        symbolic_head = _run_host_git_checked(
+            root,
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            execution_deadline=execution_deadline,
+            error_message="failed to verify the prepared Host task checkout",
+        ).stdout.strip()
+        current_head = _resolve_host_git_commit(
+            root,
+            "HEAD",
+            execution_deadline=execution_deadline,
+        )
+        worktree_status = _run_host_git_checked(
+            root,
+            ["status", "--porcelain=v1", "--untracked-files=all"],
+            execution_deadline=execution_deadline,
+            error_message="failed to verify the prepared Host workspace",
+        ).stdout
+        if symbolic_head != task_branch or current_head != task_commit or worktree_status:
+            raise GitOpsError("merge preparation changed the Host task checkout or index")
+        prepared_elapsed_ms = max(0, round(execution_deadline.elapsed_seconds() * 1000))
+    except Exception:
+        cleanup_deadline = ExecutionDeadline.from_duration(10.0)
+        if merge_commit is not None:
+            current_prepared = _try_resolve_host_git_commit(
+                root,
+                prepared_ref,
+                execution_deadline=cleanup_deadline,
+            )
+            if current_prepared == merge_commit:
+                try:
+                    _run_host_git_checked(
+                        root,
+                        ["update-ref", "-d", prepared_ref, merge_commit],
+                        execution_deadline=cleanup_deadline,
+                        error_message="failed to delete an incomplete prepared Host ref",
+                    )
+                except GitOpsError:
+                    pass
+        raise
+
+    assert merge_commit is not None
+    facts = PreparedIntegrationFacts(
+        transaction_id=transaction_id,
+        native_run_id=native_run_id,
+        task_id=task_id,
+        base_branch=base_branch,
+        approved_base_head=base_head,
+        task_branch=task_branch,
+        task_commit=task_commit,
+        prepared_merge_commit=merge_commit,
+        prepared_ref=prepared_ref,
+        prepared_elapsed_ms=prepared_elapsed_ms,
+        journal_path=journal_dir / f"{transaction_id}.json",
+    )
+
+    allowed_transaction_paths = (*mutable_runtime_paths, facts.journal_path)
+
+    def _assert_clean_task_checkout(
         *,
-        kind: str = "forge_error",
-        task_id: str | None = None,
+        deadline: ExecutionDeadline,
+        expected_base: str,
+        phase: str,
     ) -> None:
-        super().__init__(message)
-        self.kind = str(kind)
-        self.task_id = task_id
+        symbolic_head = _run_host_git_checked(
+            root,
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            execution_deadline=deadline,
+            error_message=f"failed to inspect the Host task checkout during {phase}",
+        ).stdout.strip()
+        current_head = _resolve_host_git_commit(
+            root,
+            "HEAD",
+            execution_deadline=deadline,
+        )
+        observed_base = _resolve_host_git_commit(
+            root,
+            f"refs/heads/{base_branch}",
+            execution_deadline=deadline,
+        )
+        observed_task = _resolve_host_git_commit(
+            root,
+            f"refs/heads/{task_branch}",
+            execution_deadline=deadline,
+        )
+        observed_prepared = _resolve_host_git_commit(
+            root,
+            prepared_ref,
+            execution_deadline=deadline,
+        )
+        worktree_status = _run_host_git_checked(
+            root,
+            ["status", "--porcelain=v1", "--untracked-files=all"],
+            execution_deadline=deadline,
+            error_message=f"failed to inspect the Host workspace during {phase}",
+        ).stdout
+        if (
+            symbolic_head != task_branch
+            or current_head != task_commit
+            or observed_base != expected_base
+            or observed_task != task_commit
+            or observed_prepared != merge_commit
+            or worktree_status
+        ):
+            raise GitOpsError(f"Host Git authority changed during {phase}")
+
+    def bind_guarded_state() -> None:
+        nonlocal bound_refs, bound_stable_control_digest, bound_workspace_snapshot
+        _assert_clean_task_checkout(
+            deadline=execution_deadline,
+            expected_base=base_head,
+            phase="transaction adoption",
+        )
+        bound_workspace_snapshot = _host_workspace_snapshot(
+            root,
+            execution_deadline=execution_deadline,
+            allowed_artifact_paths=allowed_transaction_paths,
+        )
+        bound_refs = _host_ref_snapshot(
+            root,
+            execution_deadline=execution_deadline,
+        )
+        bound_stable_control_digest = _host_stable_git_control_digest(
+            root,
+            execution_deadline=execution_deadline,
+        )
+        if (
+            bound_refs.get(f"refs/heads/{base_branch}") != base_head
+            or bound_refs.get(f"refs/heads/{task_branch}") != task_commit
+            or bound_refs.get(prepared_ref) != merge_commit
+        ):
+            raise GitOpsError("Host transaction ref authority changed during adoption")
+
+    def rollback_git(_proof: IntegrationCommitProof | None) -> None:
+        rollback_deadline = ExecutionDeadline.from_duration(10.0)
+        if (
+            bound_workspace_snapshot is not None
+            and bound_refs is not None
+            and bound_stable_control_digest is not None
+        ):
+            current_refs = _host_ref_snapshot(
+                root,
+                execution_deadline=rollback_deadline,
+            )
+            allowed_refs = dict(bound_refs)
+            current_base_for_projection = current_refs.get(f"refs/heads/{base_branch}")
+            current_prepared_for_projection = current_refs.get(prepared_ref)
+            if current_base_for_projection == merge_commit:
+                allowed_refs[f"refs/heads/{base_branch}"] = merge_commit
+            if current_prepared_for_projection is None:
+                allowed_refs.pop(prepared_ref, None)
+            if current_refs != allowed_refs:
+                raise GitOpsError("Host ref namespace changed before transaction rollback")
+            if (
+                _host_stable_git_control_digest(
+                    root,
+                    execution_deadline=rollback_deadline,
+                )
+                != bound_stable_control_digest
+            ):
+                raise GitOpsError("Host Git controls changed before transaction rollback")
+            if (
+                _host_workspace_snapshot(
+                    root,
+                    execution_deadline=rollback_deadline,
+                    allowed_artifact_paths=allowed_transaction_paths,
+                )
+                != bound_workspace_snapshot
+            ):
+                raise GitOpsError("Host workspace changed before transaction rollback")
+        current_base = _resolve_host_git_commit(
+            root,
+            f"refs/heads/{base_branch}",
+            execution_deadline=rollback_deadline,
+        )
+        if current_base == merge_commit:
+            _run_host_git_checked(
+                root,
+                ["update-ref", f"refs/heads/{base_branch}", base_head, merge_commit],
+                execution_deadline=rollback_deadline,
+                error_message="failed to roll back the reversible Host base ref",
+            )
+        elif current_base != base_head:
+            raise GitOpsError("Host base ref cannot be rolled back from an unknown identity")
+        current_task = _resolve_host_git_commit(
+            root,
+            f"refs/heads/{task_branch}",
+            execution_deadline=rollback_deadline,
+        )
+        if current_task != task_commit:
+            raise GitOpsError("Host task ref changed before transaction rollback")
+        symbolic_head = _run_host_git_checked(
+            root,
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            execution_deadline=rollback_deadline,
+            error_message="failed to inspect the Host checkout during rollback",
+        ).stdout.strip()
+        if symbolic_head == base_branch:
+            _run_host_git_checked(
+                root,
+                ["checkout", task_branch],
+                execution_deadline=rollback_deadline,
+                error_message="failed to restore the Host task branch during rollback",
+            )
+        elif symbolic_head != task_branch:
+            raise GitOpsError("Host checkout changed before transaction rollback")
+        if (
+            _resolve_host_git_commit(
+                root,
+                "HEAD",
+                execution_deadline=rollback_deadline,
+            )
+            != task_commit
+        ):
+            raise GitOpsError("Host task checkout could not be restored during rollback")
+        current_prepared = _try_resolve_host_git_commit(
+            root,
+            prepared_ref,
+            execution_deadline=rollback_deadline,
+        )
+        if current_prepared == merge_commit:
+            _run_host_git_checked(
+                root,
+                ["update-ref", "-d", prepared_ref, merge_commit],
+                execution_deadline=rollback_deadline,
+                error_message="failed to delete the prepared Host integration ref",
+            )
+        elif current_prepared is not None:
+            raise GitOpsError("prepared Host ref changed before transaction rollback")
+
+    def commit_git() -> IntegrationCommitProof:
+        if bound_workspace_snapshot is None:
+            raise GitOpsError("Host transaction was not bound under the mutation guard")
+        _check_host_snapshot_deadline(execution_deadline)
+        _assert_clean_task_checkout(
+            deadline=execution_deadline,
+            expected_base=base_head,
+            phase="reversible commit",
+        )
+        if (
+            _host_workspace_snapshot(
+                root,
+                execution_deadline=execution_deadline,
+                allowed_artifact_paths=allowed_transaction_paths,
+            )
+            != bound_workspace_snapshot
+        ):
+            raise GitOpsError("Host workspace changed before reversible commit")
+        _run_host_git_checked(
+            root,
+            ["update-ref", f"refs/heads/{base_branch}", merge_commit, base_head],
+            execution_deadline=execution_deadline,
+            error_message="approved base branch changed during reversible commit",
+        )
+        committed_elapsed_seconds = execution_deadline.elapsed_seconds()
+        deadline_span = (
+            execution_deadline.deadline_monotonic - execution_deadline.started_at_monotonic
+            if execution_deadline.deadline_monotonic is not None
+            else None
+        )
+        if deadline_span is not None and committed_elapsed_seconds >= deadline_span:
+            raise GitOpsError("run deadline exhausted at the Host integration commit point")
+        if (
+            _resolve_host_git_commit(
+                root,
+                f"refs/heads/{base_branch}",
+                execution_deadline=ExecutionDeadline.from_duration(10.0),
+            )
+            != merge_commit
+        ):
+            raise GitOpsError("reversible Host integration identity changed after CAS")
+        return IntegrationCommitProof(
+            base_branch=base_branch,
+            approved_base_head=base_head,
+            task_commit=task_commit,
+            merge_commit=merge_commit,
+            integration_committed_elapsed_ms=max(
+                0,
+                round(committed_elapsed_seconds * 1000),
+            ),
+        )
+
+    def cleanup_prepared_git() -> None:
+        if bound_workspace_snapshot is None:
+            raise GitOpsError("Host transaction was not bound under the mutation guard")
+        cleanup_deadline = ExecutionDeadline.from_duration(10.0)
+        _assert_clean_task_checkout(
+            deadline=cleanup_deadline,
+            expected_base=merge_commit,
+            phase="transaction seal",
+        )
+        if (
+            _host_workspace_snapshot(
+                root,
+                execution_deadline=cleanup_deadline,
+                allowed_artifact_paths=allowed_transaction_paths,
+            )
+            != bound_workspace_snapshot
+        ):
+            raise GitOpsError("Host workspace changed before transaction seal")
+        _run_host_git_checked(
+            root,
+            ["checkout", base_branch],
+            execution_deadline=cleanup_deadline,
+            error_message="failed to publish the sealed Host base checkout",
+        )
+        if (
+            _resolve_host_git_commit(root, "HEAD", execution_deadline=cleanup_deadline)
+            != merge_commit
+            or _run_host_git_checked(
+                root,
+                ["status", "--porcelain=v1", "--untracked-files=all"],
+                execution_deadline=cleanup_deadline,
+                error_message="failed to verify the sealed Host checkout",
+            ).stdout
+        ):
+            raise GitOpsError("sealed Host checkout did not match the prepared merge")
+        _run_host_git_checked(
+            root,
+            ["update-ref", "-d", prepared_ref, merge_commit],
+            execution_deadline=cleanup_deadline,
+            error_message="failed to delete the sealed Host integration ref",
+        )
+
+    def validate_final_authority() -> None:
+        if (
+            bound_workspace_snapshot is None
+            or bound_refs is None
+            or bound_stable_control_digest is None
+        ):
+            raise GitOpsError("Host transaction was not bound under the mutation guard")
+        _check_host_snapshot_deadline(execution_deadline)
+        symbolic_head = _run_host_git_checked(
+            root,
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            execution_deadline=execution_deadline,
+            error_message="failed to inspect final Host checkout authority",
+        ).stdout.strip()
+        if (
+            symbolic_head != base_branch
+            or _resolve_host_git_commit(
+                root,
+                "HEAD",
+                execution_deadline=execution_deadline,
+            )
+            != merge_commit
+            or _resolve_host_git_commit(
+                root,
+                f"{merge_commit}^1",
+                execution_deadline=execution_deadline,
+            )
+            != base_head
+            or _resolve_host_git_commit(
+                root,
+                f"{merge_commit}^2",
+                execution_deadline=execution_deadline,
+            )
+            != task_commit
+        ):
+            raise GitOpsError("final Host merge authority changed before publication")
+        expected_refs = dict(bound_refs)
+        expected_refs[f"refs/heads/{base_branch}"] = merge_commit
+        expected_refs.pop(prepared_ref, None)
+        if (
+            _host_ref_snapshot(
+                root,
+                execution_deadline=execution_deadline,
+            )
+            != expected_refs
+        ):
+            raise GitOpsError("final Host ref namespace changed before publication")
+        if (
+            _host_stable_git_control_digest(
+                root,
+                execution_deadline=execution_deadline,
+            )
+            != bound_stable_control_digest
+        ):
+            raise GitOpsError("final Host Git controls changed before publication")
+        _run_host_git_checked(
+            root,
+            ["diff", "--quiet", merge_commit, "--"],
+            execution_deadline=execution_deadline,
+            error_message="final Host tracked workspace changed before publication",
+        )
+        _run_host_git_checked(
+            root,
+            ["diff", "--cached", "--quiet", merge_commit, "--"],
+            execution_deadline=execution_deadline,
+            error_message="final Host index changed before publication",
+        )
+        if (
+            _host_workspace_snapshot(
+                root,
+                execution_deadline=execution_deadline,
+                allowed_artifact_paths=allowed_transaction_paths,
+            )
+            != bound_workspace_snapshot
+        ):
+            raise GitOpsError("final Host workspace changed before publication")
+
+    return PreparedIntegration(
+        facts=facts,
+        execution_deadline=execution_deadline,
+        bind_guarded_state=bind_guarded_state,
+        commit_git=commit_git,
+        rollback_git=rollback_git,
+        cleanup_prepared_git=cleanup_prepared_git,
+        validate_final_authority=validate_final_authority,
+    )
+
+
+_HOST_TRANSACTION_SCHEMA = "alysis.forge-host.integration-transaction/v1"
+_HOST_TRANSACTION_STATES = frozenset(
+    {
+        "PREPARED",
+        "COMMITTED_REVERSIBLE",
+        "PUBLISH_READY",
+        "SEALED",
+        "ROLLED_BACK",
+        "ROLLBACK_FAILED",
+    }
+)
+_HOST_TRANSACTION_MAX_JOURNALS = 128
+_HOST_TRANSACTION_MAX_JOURNAL_BYTES = 4 * 1024 * 1024
+
+
+def _secure_host_transaction_journal_dir(paths: Any) -> Path | None:
+    root = paths.root.resolve(strict=True)
+    candidate = paths.execution_integration_dir / "transactions"
+    try:
+        relative = candidate.resolve(strict=False).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise GitOpsError("Host transaction journal directory escaped the workspace") from exc
+    current = root
+    for part in relative.parts:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise GitOpsError("Host transaction journal directory is unavailable") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise GitOpsError("Host transaction journal directory changed type")
+    if current != candidate:
+        raise GitOpsError("Host transaction journal directory is not canonical")
+    return current
+
+
+def _load_host_transaction_journal(
+    path: Path,
+    *,
+    paths: Any,
+) -> dict[str, Any]:
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise GitOpsError("Host transaction journal is unavailable") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise GitOpsError("Host transaction journal changed type")
+    if before.st_size > _HOST_TRANSACTION_MAX_JOURNAL_BYTES:
+        raise GitOpsError("Host transaction journal exceeds the recovery byte limit")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        after = path.lstat()
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise GitOpsError("Host transaction journal could not be decoded") from exc
+    if (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise GitOpsError("Host transaction journal changed while being read")
+    if not isinstance(payload, dict):
+        raise GitOpsError("Host transaction journal payload is invalid")
+    transaction_id = payload.get("transactionId")
+    suffix = transaction_id.removeprefix("integration_") if isinstance(transaction_id, str) else ""
+    state = payload.get("state")
+    prepared_ref = payload.get("preparedRef")
+    journal_path = payload.get("journalPath")
+    native_run_id = payload.get("nativeRunId")
+    if (
+        payload.get("schema") != _HOST_TRANSACTION_SCHEMA
+        or state not in _HOST_TRANSACTION_STATES
+        or len(suffix) != 24
+        or any(character not in "0123456789abcdef" for character in suffix)
+        or path.name != f"{transaction_id}.json"
+        or prepared_ref != f"refs/alysis/forge-host-v2/{transaction_id}"
+        or journal_path != os.fspath(path)
+        or native_run_id != paths.run_id
+    ):
+        raise GitOpsError("Host transaction journal authority is invalid")
+    preimage = payload.get("nativePreimage")
+    if not isinstance(preimage, Mapping):
+        raise GitOpsError("Host transaction journal lacks a native preimage")
+    resolved_root = paths.root.resolve(strict=True)
+    root_stat = resolved_root.stat()
+    try:
+        parsed_preimage = NativeRunStatePreimage.from_payload(preimage)
+    except PreparedIntegrationRollbackError as exc:
+        raise GitOpsError("Host transaction journal native preimage is invalid") from exc
+    if (
+        parsed_preimage.workspace_root != resolved_root
+        or parsed_preimage.workspace_device != root_stat.st_dev
+        or parsed_preimage.workspace_inode != root_stat.st_ino
+    ):
+        raise GitOpsError("Host transaction journal workspace identity changed")
+    lexical_root = Path(os.path.abspath(paths.root))
+    try:
+        expected_native_paths = {
+            Path(os.path.abspath(candidate)).relative_to(lexical_root).as_posix()
+            for candidate in (
+                paths.plan_json_path,
+                paths.plan_md_path,
+                paths.runtime_dir / "current_run.json",
+                paths.execution_dir / "sequential_summary.json",
+                paths.execution_dir / "sequential_run.jsonl",
+            )
+        }
+    except ValueError as exc:
+        raise GitOpsError("canonical Host native state paths escaped the workspace") from exc
+    if {item.relative_path for item in parsed_preimage.files} != expected_native_paths:
+        raise GitOpsError("Host transaction journal native preimage paths are not canonical")
+    if state in {"PREPARED", "COMMITTED_REVERSIBLE", "PUBLISH_READY"}:
+        try:
+            validate_native_run_state_payload(preimage)
+        except PreparedIntegrationRollbackError as exc:
+            raise GitOpsError("Host transaction native recovery targets changed") from exc
+    postimage = payload.get("nativePostimage")
+    if state in {"PUBLISH_READY", "SEALED"} and not isinstance(postimage, Mapping):
+        raise GitOpsError("Host transaction journal lacks its native postimage")
+    if state in {"PREPARED", "COMMITTED_REVERSIBLE"} and postimage is not None:
+        raise GitOpsError("unfinished Host transaction carries a native postimage")
+    if isinstance(postimage, Mapping):
+        try:
+            parsed_postimage = NativeRunStatePreimage.from_payload(postimage)
+        except PreparedIntegrationRollbackError as exc:
+            raise GitOpsError("Host transaction journal native postimage is invalid") from exc
+        if (
+            parsed_postimage.workspace_root != parsed_preimage.workspace_root
+            or parsed_postimage.workspace_device != parsed_preimage.workspace_device
+            or parsed_postimage.workspace_inode != parsed_preimage.workspace_inode
+            or parsed_postimage.ancestors != parsed_preimage.ancestors
+            or {item.relative_path for item in parsed_postimage.files} != expected_native_paths
+        ):
+            raise GitOpsError("Host transaction journal native postimage is not canonical")
+        if state == "PUBLISH_READY":
+            try:
+                validate_native_run_state_matches_payload(postimage)
+            except PreparedIntegrationRollbackError as exc:
+                raise GitOpsError("Host transaction native postimage changed") from exc
+    task_id = payload.get("taskId")
+    prepared_elapsed_ms = payload.get("preparedElapsedMs")
+    if (
+        not isinstance(task_id, str)
+        or not task_id.strip()
+        or task_id != task_id.strip()
+        or isinstance(prepared_elapsed_ms, bool)
+        or not isinstance(prepared_elapsed_ms, int)
+        or prepared_elapsed_ms < 0
+    ):
+        raise GitOpsError("Host transaction journal task authority is invalid")
+    plan_relative = Path(os.path.abspath(paths.plan_json_path)).relative_to(lexical_root).as_posix()
+    plan_preimages = [item for item in parsed_preimage.files if item.relative_path == plan_relative]
+    if len(plan_preimages) != 1 or not plan_preimages[0].existed:
+        raise GitOpsError("Host transaction journal lacks the approved plan preimage")
+    try:
+        approved_plan = json.loads(plan_preimages[0].text)
+    except json.JSONDecodeError as exc:
+        raise GitOpsError("Host transaction approved plan preimage is invalid") from exc
+    if not isinstance(approved_plan, dict):
+        raise GitOpsError("Host transaction approved plan preimage is invalid")
+    approved_tasks = [
+        item
+        for item in approved_plan.get("tasks", [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip() == task_id
+    ]
+    if len(approved_tasks) != 1:
+        raise GitOpsError("Host transaction task is not bound to the approved plan")
+    for key in (
+        "baseBranch",
+        "approvedBaseHead",
+        "taskBranch",
+        "taskCommit",
+        "preparedMergeCommit",
+    ):
+        if not isinstance(payload.get(key), str) or not str(payload[key]).strip():
+            raise GitOpsError("Host transaction journal Git authority is invalid")
+    for key in ("approvedBaseHead", "taskCommit", "preparedMergeCommit"):
+        commit_id = str(payload[key])
+        if (
+            len(commit_id) not in {40, 64}
+            or commit_id != commit_id.lower()
+            or any(character not in "0123456789abcdef" for character in commit_id)
+        ):
+            raise GitOpsError("Host transaction journal commit identity is invalid")
+    base_branch = str(payload["baseBranch"])
+    task_branch = str(payload["taskBranch"])
+    if base_branch == task_branch:
+        raise GitOpsError("Host transaction journal branch authority is invalid")
+    for branch in (base_branch, task_branch):
+        checked = _run_host_git_checked(
+            paths.root,
+            ["check-ref-format", "--branch", branch],
+            execution_deadline=ExecutionDeadline.from_duration(10.0),
+            error_message="Host transaction journal branch authority is invalid",
+        ).stdout.strip()
+        if checked != branch:
+            raise GitOpsError("Host transaction journal branch authority is invalid")
+    approved_task = approved_tasks[0]
+    approved_branch = str(approved_task.get("branch") or "").strip()
+    if not approved_branch:
+        approved_branch = generate_task_branch_name(
+            task_id,
+            str(approved_task.get("title") or ""),
+        )
+    if task_branch != approved_branch:
+        raise GitOpsError("Host transaction task branch is not bound to the approved plan")
+
+    proof = payload.get("integrationProof")
+    finalize = payload.get("finalizeProof")
+    publication = payload.get("authoritativePublication")
+    requires_proof = state in {"COMMITTED_REVERSIBLE", "PUBLISH_READY", "SEALED"}
+    requires_finalize = state in {"PUBLISH_READY", "SEALED"}
+    if requires_proof and not isinstance(proof, Mapping):
+        raise GitOpsError("Host transaction journal lacks its integration proof")
+    if requires_finalize and not isinstance(finalize, Mapping):
+        raise GitOpsError("Host transaction journal lacks its finalization proof")
+    if isinstance(proof, Mapping):
+        committed_elapsed = proof.get("integrationCommittedElapsedMs")
+        if (
+            proof.get("baseBranch") != base_branch
+            or proof.get("approvedBaseHead") != payload["approvedBaseHead"]
+            or proof.get("taskCommit") != payload["taskCommit"]
+            or proof.get("mergeCommit") != payload["preparedMergeCommit"]
+            or isinstance(committed_elapsed, bool)
+            or not isinstance(committed_elapsed, int)
+            or committed_elapsed < prepared_elapsed_ms
+        ):
+            raise GitOpsError("Host transaction journal integration proof is invalid")
+    if isinstance(finalize, Mapping):
+        final_elapsed = finalize.get("finalElapsedMs")
+        committed_elapsed = (
+            proof.get("integrationCommittedElapsedMs") if isinstance(proof, Mapping) else None
+        )
+        if (
+            isinstance(final_elapsed, bool)
+            or not isinstance(final_elapsed, int)
+            or not isinstance(committed_elapsed, int)
+            or final_elapsed < committed_elapsed
+        ):
+            raise GitOpsError("Host transaction journal finalization proof is invalid")
+    if state == "SEALED":
+        if not isinstance(publication, Mapping):
+            raise GitOpsError("sealed Host transaction lacks publication authority")
+        digest = publication.get("eventBytesDigest")
+        event_bytes = publication.get("eventBytes")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or digest != digest.lower()
+            or any(character not in "0123456789abcdef" for character in digest)
+            or isinstance(event_bytes, bool)
+            or not isinstance(event_bytes, int)
+            or event_bytes < 1
+        ):
+            raise GitOpsError("sealed Host transaction publication authority is invalid")
+    elif publication is not None:
+        raise GitOpsError("unsealed Host transaction carries publication authority")
+    return payload
+
+
+def _write_host_recovery_journal(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    state: str,
+    reason: str,
+    rollback_error: str | None = None,
+) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise GitOpsError("Host transaction recovery journal changed type")
+    updated = dict(payload)
+    updated["state"] = state
+    updated["manualAttention"] = state == "ROLLBACK_FAILED"
+    updated["reason"] = sanitize_error_summary(reason, max_chars=320)
+    if rollback_error:
+        updated["rollbackError"] = sanitize_error_summary(
+            rollback_error,
+            max_chars=320,
+        )
+    else:
+        updated.pop("rollbackError", None)
+    atomic_write_text(path, json.dumps(updated, indent=2, sort_keys=True) + "\n")
+
+
+def _validate_host_recovery_git_authority(
+    *,
+    paths: Any,
+    payload: Mapping[str, Any],
+    live_refs: Mapping[str, str],
+    execution_deadline: ExecutionDeadline,
+) -> None:
+    """Fail closed before recovery can restore a file or move a ref."""
+
+    state = str(payload["state"])
+    base_branch = str(payload["baseBranch"])
+    base_head = str(payload["approvedBaseHead"])
+    task_branch = str(payload["taskBranch"])
+    task_commit = str(payload["taskCommit"])
+    merge_commit = str(payload["preparedMergeCommit"])
+    prepared_ref = str(payload["preparedRef"])
+    for commit in (base_head, task_commit, merge_commit):
+        if (
+            _resolve_host_git_commit(
+                paths.root,
+                commit,
+                execution_deadline=execution_deadline,
+            )
+            != commit
+        ):
+            raise GitOpsError("Host transaction recovery commit authority changed")
+    parent_line = (
+        _run_host_git_checked(
+            paths.root,
+            ["rev-list", "--parents", "-n", "1", merge_commit],
+            execution_deadline=execution_deadline,
+            error_message="failed to inspect Host transaction merge parents",
+        )
+        .stdout.strip()
+        .split()
+    )
+    if parent_line != [merge_commit, base_head, task_commit]:
+        raise GitOpsError("Host transaction recovery merge parents are invalid")
+    merge_tree = _run_host_git_checked(
+        paths.root,
+        ["show", "-s", "--format=%T", merge_commit],
+        execution_deadline=execution_deadline,
+        error_message="failed to inspect Host transaction merge tree",
+    ).stdout.strip()
+    task_tree = _run_host_git_checked(
+        paths.root,
+        ["show", "-s", "--format=%T", task_commit],
+        execution_deadline=execution_deadline,
+        error_message="failed to inspect Host transaction task tree",
+    ).stdout.strip()
+    if merge_tree != task_tree:
+        raise GitOpsError("Host transaction recovery merge tree is invalid")
+    _run_host_git_checked(
+        paths.root,
+        ["merge-base", "--is-ancestor", base_head, task_commit],
+        execution_deadline=execution_deadline,
+        error_message="Host transaction task is not based on the approved commit",
+    )
+    current_base = _resolve_host_git_commit(
+        paths.root,
+        f"refs/heads/{base_branch}",
+        execution_deadline=execution_deadline,
+    )
+    current_task = _resolve_host_git_commit(
+        paths.root,
+        f"refs/heads/{task_branch}",
+        execution_deadline=execution_deadline,
+    )
+    current_prepared = live_refs.get(prepared_ref)
+    if (
+        current_base not in {base_head, merge_commit}
+        or current_task != task_commit
+        or current_prepared not in {None, merge_commit}
+    ):
+        raise GitOpsError("Host transaction recovery ref authority changed")
+    if state == "SEALED" and (current_base != merge_commit or current_prepared is not None):
+        raise GitOpsError("sealed Host transaction Git authority is inconsistent")
+    if state == "ROLLED_BACK" and (current_base != base_head or current_prepared is not None):
+        raise GitOpsError("rolled-back Host transaction Git authority is inconsistent")
+    symbolic_head = _run_host_git_checked(
+        paths.root,
+        ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        execution_deadline=execution_deadline,
+        error_message="failed to inspect Host transaction recovery checkout",
+    ).stdout.strip()
+    if symbolic_head not in {base_branch, task_branch}:
+        raise GitOpsError("Host transaction recovery checkout authority changed")
+    expected_head = current_base if symbolic_head == base_branch else task_commit
+    if (
+        _resolve_host_git_commit(
+            paths.root,
+            "HEAD",
+            execution_deadline=execution_deadline,
+        )
+        != expected_head
+    ):
+        raise GitOpsError("Host transaction recovery HEAD authority changed")
+    status = _run_host_git_checked(
+        paths.root,
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        execution_deadline=execution_deadline,
+        error_message="failed to inspect Host transaction recovery workspace",
+    ).stdout
+    if status or _host_nonruntime_ignored_paths(
+        paths.root,
+        execution_deadline=execution_deadline,
+    ):
+        raise GitOpsError("Host transaction recovery workspace is not clean")
+
+
+def recover_host_integration_transactions(paths: Any) -> None:
+    """Roll back every unsealed run-local Host integration under the caller's guard."""
+
+    journal_dir = _secure_host_transaction_journal_dir(paths)
+    cleanup_deadline = ExecutionDeadline.from_duration(30.0)
+    journals: dict[str, tuple[Path, dict[str, Any]]] = {}
+    if journal_dir is not None:
+        try:
+            entries = sorted(os.scandir(journal_dir), key=lambda item: item.name)
+        except OSError as exc:
+            raise GitOpsError("failed to enumerate Host transaction journals") from exc
+        if len(entries) > _HOST_TRANSACTION_MAX_JOURNALS:
+            raise GitOpsError("Host transaction journal count exceeds the recovery limit")
+        for entry in entries:
+            if not entry.name.endswith(".json"):
+                raise GitOpsError("Host transaction journal directory contains an unknown entry")
+            path = Path(entry.path)
+            payload = _load_host_transaction_journal(path, paths=paths)
+            transaction_id = str(payload["transactionId"])
+            if transaction_id in journals:
+                raise GitOpsError("Host transaction journal identity is duplicated")
+            journals[transaction_id] = (path, payload)
+
+    live_refs_output = _bounded_host_git_output(
+        paths.root,
+        [
+            "for-each-ref",
+            "--sort=refname",
+            "--format=%(refname)%00%(objectname)",
+            "refs/alysis/forge-host-v2/",
+        ],
+        execution_deadline=cleanup_deadline,
+        error_message="failed to inventory prepared Host integration refs",
+        max_records=_HOST_TRANSACTION_MAX_JOURNALS * 2,
+    )
+    live_refs: dict[str, str] = {}
+    for record in live_refs_output.splitlines():
+        parts = record.split("\0")
+        if len(parts) != 2 or not all(parts) or parts[0] in live_refs:
+            raise GitOpsError("prepared Host integration ref inventory is malformed")
+        live_refs[parts[0]] = parts[1]
+
+    for _transaction_id, (journal_path, payload) in journals.items():
+        if payload["state"] in {"SEALED", "ROLLED_BACK"}:
+            if str(payload["preparedRef"]) in live_refs:
+                raise GitOpsError("terminal Host transaction retained an impossible private ref")
+            continue
+        if payload["state"] == "ROLLBACK_FAILED":
+            raise GitOpsError("Host transaction recovery requires manual attention")
+        _validate_host_recovery_git_authority(
+            paths=paths,
+            payload=payload,
+            live_refs=live_refs,
+            execution_deadline=cleanup_deadline,
+        )
+        base_branch = str(payload["baseBranch"])
+        base_head = str(payload["approvedBaseHead"])
+        task_branch = str(payload["taskBranch"])
+        task_commit = str(payload["taskCommit"])
+        merge_commit = str(payload["preparedMergeCommit"])
+        prepared_ref = str(payload["preparedRef"])
+        try:
+            current_base = _resolve_host_git_commit(
+                paths.root,
+                f"refs/heads/{base_branch}",
+                execution_deadline=cleanup_deadline,
+            )
+            if current_base == merge_commit:
+                _run_host_git_checked(
+                    paths.root,
+                    ["update-ref", f"refs/heads/{base_branch}", base_head, merge_commit],
+                    execution_deadline=cleanup_deadline,
+                    error_message="failed to recover the approved Host base ref",
+                )
+            elif current_base != base_head:
+                raise GitOpsError("Host base ref has an unknown recovery identity")
+            if (
+                _resolve_host_git_commit(
+                    paths.root,
+                    f"refs/heads/{task_branch}",
+                    execution_deadline=cleanup_deadline,
+                )
+                != task_commit
+            ):
+                raise GitOpsError("Host task ref changed before crash recovery")
+            symbolic_head = _run_host_git_checked(
+                paths.root,
+                ["symbolic-ref", "--quiet", "--short", "HEAD"],
+                execution_deadline=cleanup_deadline,
+                error_message="failed to inspect the Host crash-recovery checkout",
+            ).stdout.strip()
+            if symbolic_head == base_branch:
+                _run_host_git_checked(
+                    paths.root,
+                    ["checkout", task_branch],
+                    execution_deadline=cleanup_deadline,
+                    error_message="failed to restore the Host task checkout after a crash",
+                )
+            elif symbolic_head != task_branch:
+                raise GitOpsError("Host checkout changed before crash recovery")
+            if (
+                _resolve_host_git_commit(
+                    paths.root,
+                    "HEAD",
+                    execution_deadline=cleanup_deadline,
+                )
+                != task_commit
+            ):
+                raise GitOpsError("Host task checkout was not restored after a crash")
+            current_prepared = live_refs.get(prepared_ref)
+            if current_prepared == merge_commit:
+                _run_host_git_checked(
+                    paths.root,
+                    ["update-ref", "-d", prepared_ref, merge_commit],
+                    execution_deadline=cleanup_deadline,
+                    error_message="failed to remove the recovered Host prepared ref",
+                )
+                live_refs.pop(prepared_ref, None)
+            elif current_prepared is not None:
+                raise GitOpsError("prepared Host ref changed before crash recovery")
+            preimage = payload["nativePreimage"]
+            assert isinstance(preimage, Mapping)
+            restore_native_run_state_payload(preimage)
+            _write_host_recovery_journal(
+                journal_path,
+                payload,
+                state="ROLLED_BACK",
+                reason="unsealed Host integration rolled back during guarded startup recovery",
+            )
+        except Exception as exc:
+            error = sanitize_error_summary(str(exc) or exc.__class__.__name__)
+            try:
+                _write_host_recovery_journal(
+                    journal_path,
+                    payload,
+                    state="ROLLBACK_FAILED",
+                    reason="guarded startup recovery failed",
+                    rollback_error=error,
+                )
+            except Exception:
+                pass
+            raise GitOpsError(
+                "Host transaction recovery failed; manual attention is required"
+            ) from exc
+
+    # A crash can happen after the private ref is created but before the first
+    # journal is durably adopted.  The namespace is exclusively Host-owned, so
+    # any ref with no journal is an orphan and is safely deleted by exact OID.
+    journal_refs = {str(payload["preparedRef"]) for _path, payload in journals.values()}
+    for ref_name, ref_oid in sorted(live_refs.items()):
+        if ref_name in journal_refs:
+            continue
+        _run_host_git_checked(
+            paths.root,
+            ["update-ref", "-d", ref_name, ref_oid],
+            execution_deadline=cleanup_deadline,
+            error_message="failed to remove an orphaned Host prepared ref",
+        )
+
+
+def finalize_host_prepared_success(
+    paths: Any,
+    task_id: str,
+    proof: IntegrationCommitProof,
+) -> None:
+    """Strictly persist native success only inside ``PreparedIntegration.seal``."""
+
+    from .. import forge as native_forge
+
+    cleanup_deadline = ExecutionDeadline.from_duration(10.0)
+    if (
+        _resolve_host_git_commit(
+            paths.root,
+            f"refs/heads/{proof.base_branch}",
+            execution_deadline=cleanup_deadline,
+        )
+        != proof.merge_commit
+        or _resolve_host_git_commit(
+            paths.root,
+            "HEAD",
+            execution_deadline=cleanup_deadline,
+        )
+        != proof.merge_commit
+    ):
+        raise GitOpsError("sealed Host integration Git identity is not publishable")
+
+    plan = native_forge.load_plan(paths)
+    matching_tasks = [
+        item for item in _plan_task_dicts(plan) if str(item.get("id") or "").strip() == task_id
+    ]
+    if len(matching_tasks) != 1 or str(matching_tasks[0].get("status") or "") != "prepared":
+        raise GitOpsError("prepared native task status changed before Host seal")
+    native_forge.set_task_status(plan, task_id, "done")
+    native_forge.save_plan(paths, plan)
+    persisted = native_forge.load_plan(paths)
+    persisted_tasks = [
+        item for item in _plan_task_dicts(persisted) if str(item.get("id") or "").strip() == task_id
+    ]
+    if (
+        len(persisted_tasks) != 1
+        or canonical_task_status(str(persisted_tasks[0].get("status") or ""))
+        not in SUCCESSFUL_TERMINAL_STATUSES
+    ):
+        raise GitOpsError("native task success did not persist at Host seal")
+    native_forge.set_current_run_status(
+        paths,
+        RUN_STATUS_COMPLETED,
+        reason="authoritative Forge Host integration sealed",
+        plan=persisted,
+    )
+    if native_forge.current_run_status(paths.root) != RUN_STATUS_COMPLETED:
+        raise GitOpsError("native run success did not persist at Host seal")
+
+    summary_path = paths.execution_dir / "sequential_summary.json"
+    run_log_path = paths.execution_dir / "sequential_run.jsonl"
+    for native_path, label in (
+        (summary_path, "sequential summary"),
+        (run_log_path, "sequential run log"),
+    ):
+        try:
+            metadata = native_path.lstat()
+        except OSError as exc:
+            raise GitOpsError(f"prepared native {label} is unavailable at Host seal") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise GitOpsError(f"prepared native {label} changed type at Host seal")
+        if metadata.st_size > 64 * 1024 * 1024:
+            raise GitOpsError(f"prepared native {label} exceeds the Host byte limit")
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise GitOpsError("prepared native sequential summary is invalid") from exc
+    executed = summary.get("executed") if isinstance(summary, dict) else None
+    if (
+        not isinstance(summary, dict)
+        or summary.get("run_id") != paths.run_id
+        or summary.get("status") != RUN_STATUS_RUNNING
+        or summary.get("stopped_reason") != "prepared_for_commit"
+        or summary.get("completion_ready") is not True
+        or not isinstance(executed, list)
+        or len(executed) != 1
+        or not isinstance(executed[0], dict)
+        or executed[0].get("task_id") != task_id
+    ):
+        raise GitOpsError("prepared native sequential summary authority changed at Host seal")
+    sealed_at = datetime.now(timezone.utc).isoformat()
+    sealed_task = dict(executed[0])
+    sealed_task.update(
+        {
+            "status": "done",
+            "success": True,
+            "merge_result": "merged",
+            "completion_consistent": True,
+        }
+    )
+    summary.update(
+        {
+            "finished_at": sealed_at,
+            "stopped_reason": "completed",
+            "status": RUN_STATUS_COMPLETED,
+            "success": True,
+            "exit_code": 0,
+            "timed_out": False,
+            "executed": [sealed_task],
+            "counts": {"executed": 1, "succeeded": 1, "failed": 0},
+            "remaining": [],
+            "completion_ready": False,
+            "completion_consistent": True,
+            "integration_commit_proof": {
+                "base_branch": proof.base_branch,
+                "approved_base_head": proof.approved_base_head,
+                "task_commit": proof.task_commit,
+                "merge_commit": proof.merge_commit,
+                "integration_committed_elapsed_ms": (proof.integration_committed_elapsed_ms),
+            },
+        }
+    )
+    summary.pop("error", None)
+    atomic_write_text(
+        summary_path,
+        json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n",
+    )
+    try:
+        persisted_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise GitOpsError("sealed native sequential summary could not be read back") from exc
+    if persisted_summary != summary:
+        raise GitOpsError("sealed native sequential summary did not persist exactly")
+
+    try:
+        existing_log = run_log_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise GitOpsError("prepared native sequential run log could not be read") from exc
+    sealed_record = {
+        "ts": sealed_at,
+        "event": "host_sealed",
+        "run_id": paths.run_id,
+        "task_id": task_id,
+        "status": RUN_STATUS_COMPLETED,
+        "base_branch": proof.base_branch,
+        "approved_base_head": proof.approved_base_head,
+        "task_commit": proof.task_commit,
+        "merge_commit": proof.merge_commit,
+        "integration_committed_elapsed_ms": proof.integration_committed_elapsed_ms,
+    }
+    sealed_line = json.dumps(sealed_record, ensure_ascii=True, sort_keys=True) + "\n"
+    atomic_write_text(run_log_path, existing_log + sealed_line)
+    try:
+        if not run_log_path.read_text(encoding="utf-8").endswith(sealed_line):
+            raise GitOpsError("sealed native sequential run log did not persist exactly")
+    except (OSError, UnicodeError) as exc:
+        raise GitOpsError("sealed native sequential run log could not be read back") from exc
+
+
+def _host_scope_violations(
+    paths: list[str],
+    *,
+    allowed_scope: list[str],
+    root: Path,
+) -> list[str]:
+    """Return changed paths not matched by the immutable Host approval scope."""
+
+    return [
+        path
+        for path in paths
+        if not any(
+            scope_path_matches_pattern(path, pattern, root=root) for pattern in allowed_scope
+        )
+    ]
 
 
 def _sequential_conflict_report_lines(
@@ -639,6 +2422,476 @@ def _sync_cli_globals(cli_mod: Any) -> None:
         if name.startswith("__") or name in _PROTECTED_GLOBAL_NAMES:
             continue
         module_globals[name] = value
+
+
+def _host_executor_loaded_global_names(code: types.CodeType) -> set[str]:
+    names = {
+        str(instruction.argval)
+        for instruction in dis.get_instructions(code)
+        if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"}
+    }
+    for constant in code.co_consts:
+        if isinstance(constant, types.CodeType):
+            names.update(_host_executor_loaded_global_names(constant))
+    return names
+
+
+def _missing_host_executor_globals() -> tuple[str, ...]:
+    module_globals = globals()
+    return tuple(
+        sorted(
+            name
+            for name in _host_executor_loaded_global_names(execute_forge_task.__code__)
+            if name not in module_globals and not hasattr(builtins, name)
+        )
+    )
+
+
+def build_host_task_executor(cli_mod: Any) -> Callable[..., TaskExecutionOutcome]:
+    """Bootstrap and return only the native result-returning task executor.
+
+    The legacy implementation module still receives its execution primitives
+    from the composed CLI surface.  Host code calls this narrow factory once;
+    it never invokes a Typer command.  Reusing the same module object is
+    idempotent, while attempting to rebind a live process to another module
+    object fails closed.
+    """
+
+    global _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE
+    with _HOST_TASK_EXECUTOR_BOOTSTRAP_LOCK:
+        if (
+            _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is not None
+            and _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is not cli_mod
+        ):
+            raise RuntimeError(
+                "Host task executor is already bound to a different CLI module object"
+            )
+        expected_module_name = "alysis_code.cli"
+        if (
+            getattr(cli_mod, "__name__", None) != expected_module_name
+            or sys.modules.get(expected_module_name) is not cli_mod
+        ):
+            raise RuntimeError("Host task executor requires the canonical CLI module object")
+        if _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is None:
+            _sync_cli_globals(cli_mod)
+            missing = _missing_host_executor_globals()
+            if missing:
+                raise RuntimeError(
+                    "Host task executor bootstrap left unresolved dependencies: "
+                    + ", ".join(missing)
+                )
+            _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE = cli_mod
+        else:
+            missing = _missing_host_executor_globals()
+            if missing:
+                raise RuntimeError(
+                    "Host task executor dependencies changed after bootstrap: " + ", ".join(missing)
+                )
+    return execute_forge_task
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class HostProviderRuntimeIdentity:
+    """Secret-free provider route and credential authority for one Host run."""
+
+    provider: str
+    model: str
+    profile_name: str
+    protocol: str
+    normalized_base_url: str
+    auth_provider: str | None
+    profile_api_key_env: str | None
+    execution_backend: str
+    execution_runtime: str | None
+    connection_fingerprint: tuple[str, ...]
+    extra_headers_digest: str
+    credential_source: str
+    credential_fingerprint: str | None
+    account_fingerprint: str | None
+
+    def __repr__(self) -> str:
+        return "HostProviderRuntimeIdentity(<opaque>)"
+
+
+def _host_credential_fingerprint(secret: str | None) -> str | None:
+    if secret is None:
+        return None
+    return hashlib.sha256(
+        b"alysis.forge-host-v2.credential\x00" + secret.encode("utf-8")
+    ).hexdigest()
+
+
+def derive_host_provider_runtime_identity(
+    effective_config: Any,
+    *,
+    account_fingerprint: str | None,
+    credential_value: str | None = None,
+    credential_source: str | None = None,
+) -> HostProviderRuntimeIdentity:
+    """Derive the concrete, secret-free route identity used by execution.
+
+    Root captures this value when it creates the opaque provider binding and
+    passes that exact object back at execution.  The factory derives it again
+    from a private config copy, so matching provider/model labels cannot hide a
+    changed profile, endpoint, runtime, header set, credential source, or key.
+    """
+
+    if account_fingerprint is not None and (
+        not isinstance(account_fingerprint, str)
+        or not account_fingerprint
+        or account_fingerprint != account_fingerprint.strip()
+    ):
+        raise RuntimeError("Host provider account fingerprint is invalid")
+    try:
+        cfg = copy.deepcopy(effective_config)
+        profile = _host_get_active_profile(cfg)
+        model = str(getattr(cfg, "model", "") or "").strip()
+        profile_name = str(profile.name or "").strip()
+        protocol = str(profile.protocol or "").strip()
+        normalized_base_url = _host_resolve_effective_base_url(
+            cfg=cfg,
+            profile=profile,
+        ).rstrip("/")
+        parsed_base_url = urlsplit(normalized_base_url)
+        if parsed_base_url.username is not None or parsed_base_url.password is not None:
+            raise RuntimeError("Host provider route cannot contain URL user information")
+        auth_provider = str(profile.auth_provider or "").strip() or None
+        profile_api_key_env = str(profile.api_key_env or "").strip() or None
+        provider = (
+            str(
+                _host_resolve_model_provider_key(
+                    cfg=cfg,
+                    model_name=model,
+                    base_url=normalized_base_url,
+                    profile_name=profile_name,
+                )
+                or ""
+            )
+            .strip()
+            .casefold()
+        )
+        connection = tuple(str(item) for item in _host_connection_fingerprint(cfg))
+        execution = getattr(cfg, "execution", None)
+        execution_backend = str(getattr(execution, "backend", "native") or "native").strip()
+        execution_runtime = str(getattr(execution, "runtime", None) or "").strip() or None
+        extra_headers = dict(getattr(profile, "extra_headers", {}) or {})
+        encoded_headers = json.dumps(
+            dict(sorted(extra_headers.items())),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        extra_headers_digest = hashlib.sha256(encoded_headers).hexdigest()
+        if auth_provider is not None:
+            if credential_value is not None or credential_source is not None:
+                raise RuntimeError(
+                    "subscription Host provider identity cannot use an API-key override"
+                )
+            credential_source = "subscription:" + auth_provider
+            credential_fingerprint = None
+        else:
+            if (credential_value is None) != (credential_source is None):
+                raise RuntimeError(
+                    "Host provider credential value and source must be supplied together"
+                )
+            if credential_value is None:
+                credential = _host_resolve_api_key(cfg, profile_name=profile_name)
+                resolved_credential = credential.key
+                resolved_source = str(credential.source or "").strip()
+            else:
+                if not credential_value or not credential_source:
+                    raise RuntimeError("Host provider explicit credential is invalid")
+                resolved_credential = credential_value
+                resolved_source = credential_source.strip()
+                if resolved_source != credential_source:
+                    raise RuntimeError("Host provider credential source is invalid")
+            credential_source = resolved_source
+            credential_fingerprint = _host_credential_fingerprint(resolved_credential)
+    except Exception as exc:
+        raise RuntimeError("Host provider runtime identity could not be resolved") from exc
+    if not all((provider, model, profile_name, protocol, normalized_base_url, credential_source)):
+        raise RuntimeError("Host provider runtime identity is incomplete")
+    return HostProviderRuntimeIdentity(
+        provider=provider,
+        model=model,
+        profile_name=profile_name,
+        protocol=protocol,
+        normalized_base_url=normalized_base_url,
+        auth_provider=auth_provider,
+        profile_api_key_env=profile_api_key_env,
+        execution_backend=execution_backend,
+        execution_runtime=execution_runtime,
+        connection_fingerprint=connection,
+        extra_headers_digest=extra_headers_digest,
+        credential_source=credential_source,
+        credential_fingerprint=credential_fingerprint,
+        account_fingerprint=account_fingerprint,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class HostExecutionRuntimeBinding:
+    """Concrete provider/config inputs bound to one Host execution request."""
+
+    effective_config: Any = field(repr=False)
+    console: Any
+    provider_binding_ref: str
+    provider: str
+    model: str
+    account_fingerprint: str | None
+    admitted_identity: HostProviderRuntimeIdentity = field(repr=False)
+    api_key_override: str | None = field(default=None, repr=False)
+    base_environment: Mapping[str, str] | None = field(default=None, repr=False)
+
+
+def build_forge_host_dependency_factory(
+    cli_mod: Any,
+    *,
+    runtime_binding_for: Callable[[Any], HostExecutionRuntimeBinding],
+) -> Callable[
+    [Any, tuple[HostVerificationBinding, ...]],
+    SequentialRunDependencies,
+]:
+    """Build the production Phase-0 dependencies without invoking Typer.
+
+    The returned callable is import-neutral with respect to the Host service:
+    it consumes the request structurally, pins the admitted provider/config,
+    executes only the exact Host verifier under the shared deadline, and fixes
+    every deferred Phase-0 capability off.
+    """
+
+    task_executor = build_host_task_executor(cli_mod)
+
+    def dependency_factory(
+        request: Any,
+        bindings: tuple[HostVerificationBinding, ...],
+    ) -> SequentialRunDependencies:
+        runtime = runtime_binding_for(request)
+        if not isinstance(runtime, HostExecutionRuntimeBinding):
+            raise RuntimeError("Host execution runtime binding is invalid")
+        if not callable(getattr(runtime.console, "print", None)):
+            raise RuntimeError("Host execution console binding is invalid")
+        # Take one private config snapshot up front.  Provider authority and the
+        # later executor config must be derived from the same object, even if a
+        # caller still holds a mutable AppConfig reference.
+        runtime_config_snapshot = copy.deepcopy(runtime.effective_config)
+        native_admission = request.native_admission
+        provider_binding = native_admission.provider_binding
+        admitted_provider = str(provider_binding.provider or "").strip().casefold()
+        runtime_provider = str(runtime.provider or "").strip().casefold()
+        if (
+            runtime.provider_binding_ref != provider_binding.provider_binding_ref
+            or runtime_provider != admitted_provider
+            or runtime.model != provider_binding.model
+            or runtime.account_fingerprint != provider_binding.account_fingerprint
+            or not runtime.provider_binding_ref.strip()
+            or not runtime_provider
+            or not runtime.model.strip()
+        ):
+            raise RuntimeError("Host execution provider binding changed after admission")
+        admitted_identity = runtime.admitted_identity
+        if (
+            not isinstance(admitted_identity, HostProviderRuntimeIdentity)
+            or admitted_identity.provider != admitted_provider
+            or admitted_identity.model != provider_binding.model
+            or admitted_identity.account_fingerprint != provider_binding.account_fingerprint
+        ):
+            raise RuntimeError("Host execution provider identity contradicts admission")
+        try:
+            runtime_profile = _host_get_active_profile(runtime_config_snapshot)
+        except Exception as exc:
+            raise RuntimeError("Host execution provider profile is invalid") from exc
+        if str(runtime_profile.auth_provider or "").strip():
+            # Phase 0 has no immutable, generation-bound subscription session
+            # handle yet.  A label/account fingerprint alone cannot prevent an
+            # account swap between admission and client creation.
+            raise RuntimeError("Host Phase 0 subscription provider execution is unavailable")
+        if runtime.api_key_override is None:
+            try:
+                pinned_credential = _host_resolve_api_key(
+                    runtime_config_snapshot,
+                    profile_name=str(runtime_profile.name or "").strip(),
+                )
+                pinned_api_key = str(pinned_credential.key or "")
+                credential_source = str(pinned_credential.source or "").strip()
+            except Exception as exc:
+                raise RuntimeError("Host execution credential could not be pinned") from exc
+        else:
+            pinned_api_key = runtime.api_key_override
+            credential_source = admitted_identity.credential_source
+        if not pinned_api_key or not credential_source:
+            raise RuntimeError("Host execution credential could not be pinned")
+        actual_identity = derive_host_provider_runtime_identity(
+            runtime_config_snapshot,
+            account_fingerprint=runtime.account_fingerprint,
+            credential_value=pinned_api_key,
+            credential_source=credential_source,
+        )
+        expected_credential = admitted_identity.credential_fingerprint
+        actual_credential = actual_identity.credential_fingerprint
+        credentials_match = expected_credential is None and actual_credential is None
+        if expected_credential is not None and actual_credential is not None:
+            credentials_match = hmac.compare_digest(expected_credential, actual_credential)
+        actual_nonsecret_identity = replace(
+            actual_identity,
+            credential_fingerprint=None,
+        )
+        admitted_nonsecret_identity = replace(
+            admitted_identity,
+            credential_fingerprint=None,
+        )
+        if actual_nonsecret_identity != admitted_nonsecret_identity or not credentials_match:
+            raise RuntimeError("Host execution provider route or account changed after admission")
+        if request.native_paths != native_admission.paths:
+            raise RuntimeError("Host execution paths changed after admission")
+        if request.execution_deadline is None or not request.execution_deadline.enabled:
+            raise RuntimeError("Host execution requires the shared bounded deadline")
+        if not bindings or len({item.command_id for item in bindings}) != len(bindings):
+            raise RuntimeError("Host execution verification bindings are invalid")
+
+        admitted_commands = {
+            command.command_id: command
+            for command in request.plan_ready.verification_contract.commands
+        }
+        specs = {spec.command_id: spec for spec in native_admission.verification_specs}
+        if len(admitted_commands) != len(request.plan_ready.verification_contract.commands) or len(
+            specs
+        ) != len(native_admission.verification_specs):
+            raise RuntimeError("Host execution verification authority is duplicated")
+        for binding in bindings:
+            command = admitted_commands.get(binding.command_id)
+            spec = specs.get(binding.command_id)
+            if (
+                command is None
+                or spec is None
+                or tuple(command.argv) != binding.argv
+                or tuple(spec.argv) != binding.argv
+                or str(spec.working_directory) != "."
+                or binding.argv not in {("pytest",), ("pytest", "-q")}
+            ):
+                raise RuntimeError("Host execution verification authority drifted")
+
+        artifact_paths = tuple(
+            request.native_paths.execution_verify_dir
+            / (
+                "forge_host_v2_"
+                + f"{position:02d}_"
+                + _host_safe_task_file_component(binding.command_id)
+                + ".json"
+            )
+            for position, binding in enumerate(bindings, start=1)
+        )
+        if len(set(artifact_paths)) != len(artifact_paths):
+            raise RuntimeError("Host execution verification artifact paths collided")
+        controlled_environment = (
+            dict(runtime.base_environment) if runtime.base_environment is not None else None
+        )
+
+        def exact_verifier() -> tuple[HostVerificationResult, ...]:
+            results: list[HostVerificationResult] = []
+            for binding, artifact_path in zip(bindings, artifact_paths, strict=True):
+                results.append(
+                    run_host_verification(
+                        binding.command_id,
+                        admitted_command=admitted_commands[binding.command_id],
+                        workspace_root=request.native_paths.root,
+                        pinned_cwd=request.native_paths.root,
+                        artifact_path=artifact_path,
+                        execution_deadline=request.execution_deadline,
+                        pytest_executable=request.pytest_executable,
+                        base_environment=controlled_environment,
+                    )
+                )
+            return tuple(results)
+
+        effective = copy.deepcopy(runtime_config_snapshot)
+        effective.model = runtime.model
+        effective.assets.enabled = False
+        max_steps = request.plan_ready.execution_admission.per_managed_task_max_steps
+        events = ForgeEventEmitter(command="forge-host-v2", enabled=False)
+
+        def execute_task(task_request: SequentialTaskRequest) -> TaskExecutionOutcome:
+            if (
+                task_request.native_run_id != request.native_run_id
+                or task_request.native_paths != request.native_paths
+                or task_request.execution_deadline is not request.execution_deadline
+                or task_request.base_branch != request.base_branch
+                or task_request.base_head != request.base_head
+                or not task_request.phase0
+                or not task_request.phase0_controls.is_phase0_safe()
+            ):
+                raise ForgeTaskExecutionError(
+                    "Phase 0 task request contradicted Host execution authority",
+                    kind="phase0_policy",
+                    task_id=task_request.task_id,
+                )
+            run_cfg = copy.deepcopy(effective)
+            run_cfg.model = runtime.model
+            run_cfg.max_steps = max_steps
+            run_cfg.assets.enabled = False
+            return task_executor(
+                console=runtime.console,
+                events=events,
+                paths=task_request.native_paths,
+                plan=task_request.plan,
+                task=task_request.task,
+                task_id=task_request.task_id,
+                effective=effective,
+                run_cfg=run_cfg,
+                effective_mode="auto",
+                scope_mode="strict",
+                verify_mode="strict",
+                verify_commands=[shlex.join(item.argv) for item in bindings],
+                verify_command_source="forge_host_v2_admitted",
+                verify_repair_budget=0,
+                # Always pass the credential pinned by this dependency-factory
+                # invocation.  The agent/client must never resolve ambient or
+                # stored credentials a second time after Host admission.
+                api_key_override=pinned_api_key,
+                yes=True,
+                no_log=False,
+                max_steps_provided=True,
+                pr=True,
+                review=False,
+                base_branch=request.base_branch,
+                keep_branch=True,
+                auto_resolve_conflicts=False,
+                execution_deadline=request.execution_deadline,
+                strict_verification_executor=exact_verifier,
+                strict_verification_bindings=bindings,
+                strict_verification_artifact_paths=artifact_paths,
+                strict_base_head=request.base_head,
+                strict_per_task_max_steps=max_steps,
+                strict_disable_remotes=True,
+            )
+
+        return SequentialRunDependencies(
+            load_plan=lambda paths: load_plan(paths),
+            save_plan=lambda paths, plan: save_plan(paths, plan),
+            ensure_execution_dirs=lambda paths: ensure_execution_dirs(paths),
+            acquire_mutation_guard=lambda paths: acquire_swarm_mutation_guard(
+                paths,
+                mode="forge_host_v2",
+            ),
+            # ForgeHostEngineRunner replaces this with its one-shot guarded
+            # admission reload before the engine can execute a task.
+            reconcile_and_validate=lambda _paths, plan: plan,
+            execute_task=execute_task,
+            mark_run_status=lambda paths, status, reason, plan: _mark_run_status(
+                paths,
+                status,
+                reason=reason,
+                plan=plan,
+                mode="forge_host_v2" if status == RUN_STATUS_RUNNING else None,
+            ),
+            mark_interrupted_if_running=lambda paths, reason: (
+                _mark_run_interrupted_if_still_running(paths, reason=reason)
+            ),
+            now_iso=lambda: datetime.now(timezone.utc).isoformat(),
+            recover_unsealed_integrations=recover_host_integration_transactions,
+            finalize_prepared_success=finalize_host_prepared_success,
+        )
+
+    return dependency_factory
 
 
 def _path_binding_source(ctx: Any = None, path: Path | None = None) -> str:
@@ -1811,6 +4064,13 @@ def execute_forge_task(
     base_branch: str | None,
     keep_branch: bool,
     auto_resolve_conflicts: bool = False,
+    execution_deadline: ExecutionDeadline | None = None,
+    strict_verification_executor: (Callable[[], tuple[HostVerificationResult, ...]] | None) = None,
+    strict_verification_bindings: tuple[HostVerificationBinding, ...] = (),
+    strict_verification_artifact_paths: tuple[Path, ...] = (),
+    strict_base_head: str | None = None,
+    strict_per_task_max_steps: int | None = None,
+    strict_disable_remotes: bool = False,
 ) -> TaskExecutionOutcome:
     """Execute exactly one plan task in the main checkout, with no worktrees.
 
@@ -1825,10 +4085,18 @@ def execute_forge_task(
     executed at all (a command error); returning an outcome with
     ``success=False`` means it ran and was not accepted.
     """
+    task_monotonic_started = (
+        execution_deadline.elapsed_seconds() if execution_deadline is not None else time.monotonic()
+    )
     pr_base_branch: str | None = None
     pr_task_branch: str | None = None
     commit_hash: str | None = None
     merge_commit_hash: str | None = None
+    merge_first_parent: str | None = None
+    merge_second_parent: str | None = None
+    base_ref_after_merge: str | None = None
+    integration_commit_proof: IntegrationCommitProof | None = None
+    prepared_integration: PreparedIntegration | None = None
     merge_result: str | None = None
     allowed_scope = normalize_scope_patterns(task, root=paths.root) if scope_mode != "off" else []
     scope_warnings: list[str] = []
@@ -1840,12 +4108,164 @@ def execute_forge_task(
     verification_repair_payload: dict[str, Any] | None = None
     verify_summary: str | None = None
     verify_payload: dict[str, Any] | None = None
+    verify_result: Any | None = None
+    structured_verification: tuple[HostVerificationResult, ...] = ()
     merge_conflict_detected = False
     conflict_review_path: Path | None = None
     verify_path = paths.execution_verify_dir / f"{_safe_task_file_component(task_id)}.txt"
-    remote_settings = load_remote_settings_from_env()
+    remote_settings = load_remote_settings_from_env({} if strict_disable_remotes else None)
     remote_record: dict[str, Any] | None = None
     conflict_auto_settings = load_conflict_auto_resolve_settings(cfg=effective)
+    strict_expected_artifact_paths: tuple[Path, ...] = ()
+    strict_ignored_workspace_paths: tuple[str, ...] = ()
+
+    if strict_verification_executor is None and (
+        strict_verification_bindings or strict_verification_artifact_paths
+    ):
+        raise ForgeTaskExecutionError(
+            "exact verification authority requires the strict verification executor",
+            kind="phase0_policy",
+            task_id=task_id,
+        )
+    if strict_verification_executor is not None:
+        phase0_policy_violations: list[str] = []
+        if not strict_verification_bindings:
+            phase0_policy_violations.append("exact verification bindings are required")
+        elif len({item.command_id for item in strict_verification_bindings}) != len(
+            strict_verification_bindings
+        ):
+            phase0_policy_violations.append("exact verification bindings must be unique")
+        elif any(
+            not item.command_id.strip() or item.argv not in {("pytest",), ("pytest", "-q")}
+            for item in strict_verification_bindings
+        ):
+            phase0_policy_violations.append("exact verification bindings are not admitted")
+        verification_root = paths.execution_verify_dir.resolve(strict=False)
+        canonical_artifact_paths: list[Path] = []
+        if len(strict_verification_artifact_paths) != len(strict_verification_bindings):
+            phase0_policy_violations.append(
+                "one predeclared retained artifact path is required per verification command"
+            )
+        else:
+            for raw_artifact_path in strict_verification_artifact_paths:
+                candidate = Path(raw_artifact_path)
+                canonical = candidate.resolve(strict=False)
+                if (
+                    not candidate.is_absolute()
+                    or canonical.parent != verification_root
+                    or candidate.is_symlink()
+                    or (candidate.exists() and not candidate.is_file())
+                ):
+                    phase0_policy_violations.append(
+                        "exact verification artifact paths must be direct regular files "
+                        "under the execution verification directory"
+                    )
+                    break
+                canonical_artifact_paths.append(canonical)
+            if len(set(canonical_artifact_paths)) != len(canonical_artifact_paths):
+                phase0_policy_violations.append("exact verification artifact paths must be unique")
+        strict_expected_artifact_paths = tuple(canonical_artifact_paths)
+        expected_verify_commands = [shlex.join(item.argv) for item in strict_verification_bindings]
+        if verify_commands != expected_verify_commands:
+            phase0_policy_violations.append(
+                "prompt verification commands must match exact bindings"
+            )
+        if verify_command_source != "forge_host_v2_admitted":
+            phase0_policy_violations.append("verification command source is not Host admission")
+        if execution_deadline is None or not execution_deadline.enabled:
+            phase0_policy_violations.append("a bounded execution deadline is required")
+        if (
+            strict_base_head is None
+            or len(strict_base_head) not in {40, 64}
+            or strict_base_head != strict_base_head.lower()
+            or any(character not in "0123456789abcdef" for character in strict_base_head)
+        ):
+            phase0_policy_violations.append("a pinned base HEAD is required")
+        if (
+            not isinstance(strict_per_task_max_steps, int)
+            or isinstance(strict_per_task_max_steps, bool)
+            or strict_per_task_max_steps < 1
+        ):
+            phase0_policy_violations.append("an admitted per-task max_steps is required")
+        if not max_steps_provided:
+            phase0_policy_violations.append("max_steps must be explicitly provided")
+        if no_log:
+            phase0_policy_violations.append("session logging must remain enabled")
+        if not pr:
+            phase0_policy_violations.append("git flow must be enabled")
+        if verify_mode != "strict":
+            phase0_policy_violations.append("verification must be strict")
+        if verify_repair_budget != 0:
+            phase0_policy_violations.append("verification repair must be disabled")
+        if review:
+            phase0_policy_violations.append("review must be disabled")
+        if auto_resolve_conflicts:
+            phase0_policy_violations.append("conflict auto-resolution must be disabled")
+        if not strict_disable_remotes:
+            phase0_policy_violations.append("remote operations must be fixed off")
+        if remote_settings.enabled:
+            phase0_policy_violations.append("remote operations must be disabled")
+        if bool(getattr(getattr(effective, "assets", None), "enabled", False)) or bool(
+            getattr(getattr(run_cfg, "assets", None), "enabled", False)
+        ):
+            phase0_policy_violations.append("assets must be disabled")
+        raw_mcp_scope = task.get("mcp_scope")
+        if isinstance(raw_mcp_scope, (list, tuple, dict, set)) and raw_mcp_scope:
+            phase0_policy_violations.append("task MCP scope must be empty")
+        elif isinstance(raw_mcp_scope, str) and raw_mcp_scope.strip():
+            phase0_policy_violations.append("task MCP scope must be empty")
+        if phase0_policy_violations:
+            raise ForgeTaskExecutionError(
+                "Phase 0 execution policy rejected: " + "; ".join(phase0_policy_violations),
+                kind="phase0_policy",
+                task_id=task_id,
+            )
+
+        try:
+            preexisting_ignored = _host_nonruntime_ignored_paths(
+                paths.root,
+                execution_deadline=execution_deadline,
+            )
+        except GitOpsError as exc:
+            raise ForgeTaskExecutionError(
+                "Phase 0 ignored-workspace preflight failed",
+                kind="phase0_policy",
+                task_id=task_id,
+            ) from exc
+        if preexisting_ignored:
+            preview = ", ".join(preexisting_ignored[:20])
+            if len(preexisting_ignored) > 20:
+                preview += ", ..."
+            raise ForgeTaskExecutionError(
+                "Phase 0 rejects preexisting ignored workspace material: " + preview,
+                kind="phase0_policy",
+                task_id=task_id,
+            )
+
+        task_attempts_raw = task.get("attempts")
+        try:
+            strict_attempt_count = (
+                max(0, int(task_attempts_raw if task_attempts_raw is not None else 0)) + 1
+            )
+        except (TypeError, ValueError):
+            strict_attempt_count = 1
+        strict_preflight_step_budget = _resolve_managed_task_step_budget(
+            cfg=run_cfg,
+            plan=plan,
+            task=task,
+            kind="managed_task",
+            mode=effective_mode,
+            verification_enabled=True,
+            max_steps_override=strict_per_task_max_steps,
+            attempt_count=strict_attempt_count,
+            image_count=0,
+        )
+        if strict_preflight_step_budget.resolved_max_steps != strict_per_task_max_steps:
+            raise ForgeTaskExecutionError(
+                "Phase 0 execution policy rejected: resolved max_steps does not match admission",
+                kind="phase0_policy",
+                task_id=task_id,
+            )
 
     if pr:
         try:
@@ -1863,7 +4283,17 @@ def execute_forge_task(
                 )
                 task["branch"] = pr_task_branch
                 save_plan(paths, plan)
-            checkout_branch(paths.root, pr_task_branch, base_branch=pr_base_branch)
+            if strict_verification_executor is not None:
+                assert strict_base_head is not None
+                _checkout_new_host_task_branch(
+                    paths.root,
+                    branch=pr_task_branch,
+                    base_branch=pr_base_branch,
+                    base_head=strict_base_head,
+                    execution_deadline=execution_deadline,
+                )
+            else:
+                checkout_branch(paths.root, pr_task_branch, base_branch=pr_base_branch)
             merge_result = "not merged"
         except GitOpsError as e:
             raise ForgeTaskExecutionError(
@@ -1889,7 +4319,14 @@ def execute_forge_task(
 
     started_at = now_iso()
     run_non_interactive = _is_non_interactive_terminal()
-    prompt_verification_enabled = verify_mode != "off" and bool(verify_commands)
+    # Host v2 runs the admitted argv once at the exact post-commit/pre-merge
+    # gate.  Exposing the legacy in-agent ``verify_run`` path would duplicate
+    # execution under a different sandbox/profile and can manufacture a false
+    # repair loop when that optional sandbox is unavailable.  The outer exact
+    # verifier remains strict and is the sole Phase-0 verification authority.
+    prompt_verification_enabled = (
+        strict_verification_executor is None and verify_mode != "off" and bool(verify_commands)
+    )
     prepared_knowledge = _prepare_task_execution_knowledge(
         run_paths=paths,
         task=task,
@@ -1925,7 +4362,11 @@ def execute_forge_task(
         kind="managed_task",
         mode=effective_mode,
         verification_enabled=verify_mode != "off",
-        max_steps_override=(effective.max_steps if max_steps_provided else None),
+        max_steps_override=(
+            strict_per_task_max_steps
+            if strict_verification_executor is not None
+            else (effective.max_steps if max_steps_provided else None)
+        ),
         attempt_count=task_attempt_count,
         image_count=0,
     )
@@ -1984,15 +4425,18 @@ def execute_forge_task(
     task_mcp_manager: Any | None = None
     asset_allocation: TaskAssetAllocation | None = None
     try:
-        task_mcp_manager = _build_forge_task_scoped_mcp_manager(
-            workspace_root=paths.root,
-            session_id=runtime_session_id,
-            task_scope=task_mcp_scope,
-        )
-        mcp_context_section = _build_forge_mcp_execution_context_section(
-            task_scope=task_mcp_scope,
-            mcp_manager=task_mcp_manager,
-        )
+        if strict_verification_executor is None:
+            task_mcp_manager = _build_forge_task_scoped_mcp_manager(
+                workspace_root=paths.root,
+                session_id=runtime_session_id,
+                task_scope=task_mcp_scope,
+            )
+            mcp_context_section = _build_forge_mcp_execution_context_section(
+                task_scope=task_mcp_scope,
+                mcp_manager=task_mcp_manager,
+            )
+        else:
+            mcp_context_section = ""
         instruction_bundle = _build_forge_exec_instruction_bundle(
             plan=plan,
             task=task,
@@ -2097,10 +4541,23 @@ def execute_forge_task(
             kind="managed_task",
             mode=effective_mode,
             verification_enabled=verify_mode != "off",
-            max_steps_override=(effective.max_steps if max_steps_provided else None),
+            max_steps_override=(
+                strict_per_task_max_steps
+                if strict_verification_executor is not None
+                else (effective.max_steps if max_steps_provided else None)
+            ),
             attempt_count=task_attempt_count,
             image_count=len(task_image_paths or []),
         )
+        if (
+            strict_verification_executor is not None
+            and task_step_budget.resolved_max_steps != strict_per_task_max_steps
+        ):
+            raise ForgeTaskExecutionError(
+                "Phase 0 execution policy rejected: runtime max_steps drifted from admission",
+                kind="phase0_policy",
+                task_id=task_id,
+            )
         budget_artifact_payload = instruction_bundle.to_budget_artifact_payload()
         budget_artifact_payload["step_budget"] = task_step_budget.to_payload()
         budget_artifact_path = _write_execution_budget_artifact(
@@ -2126,10 +4583,20 @@ def execute_forge_task(
                         api_key=api_key_override,
                     ),
                 )
+            agent_instruction = instruction
+            agent_ephemeral_user_messages: list[str] | None = None
+            if strict_verification_executor is not None:
+                # Keep runner-generated metadata in the user role while
+                # preventing it from becoming semantic acceptance input.  The
+                # turn machinery inserts ephemeral user context immediately
+                # before the persistent instruction, so the model sees the
+                # complete pack first and the admitted task prose last.
+                agent_instruction = _host_authored_task_instruction(task)
+                agent_ephemeral_user_messages = [instruction]
             run_code = run_agent(
                 cfg=run_cfg,
                 root=paths.root,
-                instruction=instruction,
+                instruction=agent_instruction,
                 acceptance_instruction=build_task_acceptance_instruction(task),
                 mode=effective_mode,
                 runtime_kind=RuntimeKind.FORGE_EXEC,
@@ -2150,6 +4617,7 @@ def execute_forge_task(
                 enable_tool_output_offload=True,
                 enable_conversation_summarization=True,
                 compaction_profile="execution",
+                ephemeral_user_messages=agent_ephemeral_user_messages,
                 enable_chat_turn_step_budget=False,
                 one_shot_execution=True,
                 verification_enabled=prompt_verification_enabled,
@@ -2159,6 +4627,7 @@ def execute_forge_task(
                 subagents_enabled=False,
                 enforce_explicit_subagent_requests=False,
                 mcp_manager=task_mcp_manager,
+                execution_deadline=execution_deadline,
                 session_source_metadata={
                     "surface": "forge_exec",
                     "run_id": paths.run_id,
@@ -2236,12 +4705,40 @@ def execute_forge_task(
         )
     finally:
         _cleanup_execution_private_sessions_dir(runtime_sessions_dir)
+    execution_retained_log_paths = (
+        (exec_artifacts.log_copy_path,)
+        if exec_artifacts.log_retained and exec_artifacts.log_copy_path.is_file()
+        else ()
+    )
+    execution_usage = usage_from_session_logs(execution_retained_log_paths)
+    strict_log_binding = (
+        bind_retained_artifact(exec_artifacts.log_copy_path)
+        if strict_verification_executor is not None and execution_retained_log_paths
+        else None
+    )
 
     safe_task_component = _safe_task_file_component(task_id)
     patch_path = paths.execution_patches_dir / f"{safe_task_component}.diff"
     scratch_artifact_dir = paths.execution_dir / "scratch" / safe_task_component
     scratch_artifact_dir.mkdir(parents=True, exist_ok=True)
     success = run_code == 0 and not runtime_artifacts_changed
+    if strict_verification_executor is not None:
+        try:
+            strict_ignored_workspace_paths = _host_nonruntime_ignored_paths(
+                paths.root,
+                execution_deadline=execution_deadline,
+            )
+        except GitOpsError as exc:
+            success = False
+            run_err = (run_err + "; " if run_err else "") + sanitize_error_summary(str(exc))
+        if strict_ignored_workspace_paths:
+            success = False
+            preview = ", ".join(strict_ignored_workspace_paths[:20])
+            if len(strict_ignored_workspace_paths) > 20:
+                preview += ", ..."
+            run_err = (run_err + "; " if run_err else "") + (
+                "ignored workspace mutation is forbidden in Phase 0: " + preview
+            )
     pr_report_state_upgraded = False
     head_after_run = head_commit(paths.root) if paths.has_head_commit else None
     # Captured before cleanup so scope triage can tell a file the task created from an
@@ -2313,6 +4810,13 @@ def execute_forge_task(
     result_kind: str | None = None
     noop_reason: str | None = None
     analysis_only_noop_accepted = False
+    if strict_ignored_workspace_paths:
+        strict_scope_blocked = True
+        scope_violation_files = list(strict_ignored_workspace_paths)
+        scope_changed_files = _merge_changed_files(
+            list(scope_changed_files),
+            list(strict_ignored_workspace_paths),
+        )
     if scope_mode in {"warn", "strict"}:
         if scope_inspection_error:
             if scope_mode == "strict":
@@ -2330,7 +4834,7 @@ def execute_forge_task(
             task=task,
             root=paths.root,
             extra_diagnostics=scratch_scope_diagnostics,
-            amend_adjacent=scope_mode == "strict",
+            amend_adjacent=(scope_mode == "strict" and strict_verification_executor is None),
             new_paths=[
                 path
                 for path in scope_changed_files
@@ -2349,7 +4853,7 @@ def execute_forge_task(
                 )
                 if warning not in scope_warnings:
                     scope_warnings.append(warning)
-        if scope_assessment.amendments:
+        if scope_assessment.amendments and strict_verification_executor is None:
             scope_amendment_payloads = [item.to_payload() for item in scope_assessment.amendments]
             scope_amended_patterns = apply_scope_amendments(
                 task,
@@ -2377,8 +4881,34 @@ def execute_forge_task(
                     "adjacent_only": bool(adjacent_only_changes),
                 },
             )
-        if not scope_assessment.ok:
-            violations = scope_assessment.blocking_paths
+        elif scope_assessment.amendments:
+            # Defensive fail-closed branch: the Host path asks the assessor not
+            # to produce amendments, but an implementation drift in that helper
+            # must still never widen the frozen approval.
+            strict_scope_blocked = True
+            success = False
+            amendment_paths = [item.path for item in scope_assessment.amendments]
+            scope_violation_files = _merge_changed_files(
+                scope_violation_files,
+                amendment_paths,
+            )
+            run_err = (run_err + "; " if run_err else "") + (
+                "Host approval scope is immutable; scope amendments were rejected"
+            )
+        host_scope_violations = (
+            _host_scope_violations(
+                list(scope_assessment.effective_changed_files),
+                allowed_scope=allowed_scope,
+                root=paths.root,
+            )
+            if strict_verification_executor is not None
+            else []
+        )
+        if not scope_assessment.ok or host_scope_violations:
+            violations = _merge_changed_files(
+                list(scope_assessment.blocking_paths),
+                host_scope_violations,
+            )
             scope_violation_files = list(violations)
             preview = ", ".join(violations[:20])
             if len(violations) > 20:
@@ -2507,6 +5037,7 @@ def execute_forge_task(
     pr_nonzero_salvage_allowed = (
         pr
         and nonzero_agent_exit
+        and strict_verification_executor is None
         and verify_mode == "strict"
         and bool(verify_commands)
         and not runtime_artifacts_changed
@@ -2526,12 +5057,28 @@ def execute_forge_task(
             f"agent exited non-zero ({run_code}); refusing to accept partial task result"
         )
 
+    strict_execution_evidence_complete = strict_verification_executor is None or (
+        execution_usage.model_calls >= 1 and execution_usage.usage_complete
+    )
+    if not strict_execution_evidence_complete:
+        success = False
+        usage_reason = (
+            "no model call was retained"
+            if execution_usage.model_calls < 1
+            else "model-call usage classification is incomplete"
+        )
+        run_err = (run_err + "; " if run_err else "") + (
+            "Phase 0 execution evidence is incomplete: " + usage_reason
+        )
+        merge_result = "not merged: incomplete model-call evidence"
+
     can_attempt_pr_flow = (
         pr
         and not runtime_artifacts_changed
         and material_changes_detected
         and not strict_scope_blocked
         and (run_code == 0 or pr_nonzero_salvage_allowed)
+        and strict_execution_evidence_complete
     )
 
     if can_attempt_pr_flow:
@@ -2571,15 +5118,40 @@ def execute_forge_task(
                     paths.root,
                     message=f"{task_id}: {commit_title}",
                 )
-                patch_text = format_patch_stdout(paths.root, base_branch=pr_base_branch)
+                report_base_revision = (
+                    strict_base_head if strict_verification_executor is not None else pr_base_branch
+                )
+                assert report_base_revision is not None
+                patch_text = format_patch_stdout(
+                    paths.root,
+                    base_branch=report_base_revision,
+                )
                 patch_path.write_text(
                     patch_text if patch_text else "(empty format-patch output)\n",
                     encoding="utf-8",
                 )
                 changed_files = changed_files_between(
                     paths.root,
-                    revspec=f"{pr_base_branch}..HEAD",
+                    revspec=f"{report_base_revision}..HEAD",
                 )
+                if strict_verification_executor is not None:
+                    committed_scope_violations = _host_scope_violations(
+                        changed_files,
+                        allowed_scope=allowed_scope,
+                        root=paths.root,
+                    )
+                    if committed_scope_violations:
+                        strict_scope_blocked = True
+                        success = False
+                        scope_violation_files = _merge_changed_files(
+                            scope_violation_files,
+                            committed_scope_violations,
+                        )
+                        run_err = (run_err + "; " if run_err else "") + (
+                            "committed changes exceeded immutable Host approval scope: "
+                            + ", ".join(committed_scope_violations[:20])
+                        )
+                        merge_result = "not merged: immutable Host scope was exceeded"
                 pr_report_state_upgraded = True
             except GitOpsError as e:
                 success = False
@@ -2744,6 +5316,7 @@ def execute_forge_task(
                         subagents_enabled=False,
                         enforce_explicit_subagent_requests=False,
                         mcp_manager=repair_mcp_manager,
+                        execution_deadline=execution_deadline,
                         session_source_metadata={
                             "surface": "forge_exec",
                             "run_id": paths.run_id,
@@ -2756,7 +5329,225 @@ def execute_forge_task(
                         repair_mcp_manager.close()
                     _cleanup_execution_private_sessions_dir(repair_sessions_dir)
 
-            if success and verify_mode != "off" and verify_commands:
+            if success and strict_verification_executor is not None:
+                # Host Phase 0 executes its immutable admitted argv here, after
+                # the task commit exists but before review/merge.  This branch
+                # has no legacy verifier or repair fallback: exact evidence is
+                # the only fact that may keep ``success`` true.
+                before_verify_snapshot = _snapshot_workspace_tree(paths.root)
+                before_host_workspace: dict[str, tuple[str, int, int, str]] | None = None
+                after_host_workspace: dict[str, tuple[str, int, int, str]] | None = None
+                before_verify_git: tuple[str, str, str, str, str, str] | None = None
+                after_verify_git: tuple[str, str, str, str, str, str] | None = None
+                expected_verify_git: tuple[str, str, str, str, str, str] | None = None
+                exact_error: str | None = None
+                try:
+                    if not pr_task_branch or not commit_hash or not strict_base_head:
+                        raise GitOpsError("exact Host verification lacks pinned Git identities")
+                    before_host_workspace = _host_workspace_snapshot(
+                        paths.root,
+                        execution_deadline=execution_deadline,
+                        allowed_artifact_paths=strict_expected_artifact_paths,
+                    )
+                    before_verify_git = _host_git_metadata_snapshot(
+                        paths.root,
+                        task_branch=pr_task_branch,
+                        base_branch=pr_base_branch,
+                        execution_deadline=execution_deadline,
+                    )
+                    expected_verify_git = (
+                        pr_task_branch,
+                        commit_hash,
+                        commit_hash,
+                        strict_base_head,
+                        "",
+                        before_verify_git[-1],
+                    )
+                    if before_verify_git != expected_verify_git:
+                        raise GitOpsError(
+                            "repository identity changed before exact Host verification"
+                        )
+                    structured_verification = tuple(strict_verification_executor())
+                except Exception as exc:  # noqa: BLE001 - retain a rejected task outcome
+                    exact_error = sanitize_error_summary(str(exc) or exc.__class__.__name__)
+                if before_verify_git is not None and pr_task_branch and strict_base_head:
+                    try:
+                        after_verify_git = _host_git_metadata_snapshot(
+                            paths.root,
+                            task_branch=pr_task_branch,
+                            base_branch=pr_base_branch,
+                            execution_deadline=execution_deadline,
+                            expected_metadata_digest=before_verify_git[-1],
+                        )
+                    except Exception as exc:  # noqa: BLE001 - fail closed on Git mutation
+                        exact_error = exact_error or sanitize_error_summary(
+                            str(exc) or exc.__class__.__name__
+                        )
+                if before_host_workspace is not None:
+                    try:
+                        after_host_workspace = _host_workspace_snapshot(
+                            paths.root,
+                            execution_deadline=execution_deadline,
+                            allowed_artifact_paths=strict_expected_artifact_paths,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - fail closed on snapshot races
+                        exact_error = exact_error or sanitize_error_summary(
+                            str(exc) or exc.__class__.__name__
+                        )
+                after_verify_snapshot = _snapshot_workspace_tree(paths.root)
+                exact_verify_diff = _build_workspace_snapshot_reporting_diff(
+                    paths.root,
+                    before_snapshot=before_verify_snapshot,
+                    after_snapshot=after_verify_snapshot,
+                )
+                exact_passed = bool(structured_verification) and all(
+                    result.passed for result in structured_verification
+                )
+                expected_bindings = tuple(
+                    (item.command_id, item.argv) for item in strict_verification_bindings
+                )
+                actual_bindings = tuple(
+                    (item.command_id, item.argv) for item in structured_verification
+                )
+                exact_binding_match = actual_bindings == expected_bindings
+                actual_artifact_paths = tuple(
+                    result.artifact.path.resolve(strict=False) for result in structured_verification
+                )
+                exact_artifact_path_match = actual_artifact_paths == strict_expected_artifact_paths
+                exact_artifacts_match = bool(structured_verification) and all(
+                    retained_artifact_matches(
+                        result.artifact,
+                        containment_root=paths.execution_verify_dir,
+                    )
+                    for result in structured_verification
+                )
+                exact_git_unchanged = (
+                    expected_verify_git is not None
+                    and before_verify_git == expected_verify_git
+                    and after_verify_git == expected_verify_git
+                )
+                exact_workspace_unchanged = (
+                    before_host_workspace is not None
+                    and before_host_workspace == after_host_workspace
+                )
+                exact_workspace_changes = _host_snapshot_changed_paths(
+                    before_host_workspace or {},
+                    after_host_workspace or {},
+                )
+                exact_log_current = strict_log_binding is not None and retained_artifact_matches(
+                    strict_log_binding,
+                    containment_root=paths.execution_logs_dir,
+                )
+                exact_passed = (
+                    exact_passed
+                    and exact_binding_match
+                    and exact_artifact_path_match
+                    and exact_artifacts_match
+                    and exact_git_unchanged
+                    and exact_workspace_unchanged
+                    and exact_log_current
+                )
+                if exact_error is not None:
+                    verify_summary = f"exact Host verification failed internally: {exact_error}"
+                elif not exact_git_unchanged:
+                    verify_summary = "exact Host verification changed repository identity"
+                elif not exact_workspace_unchanged:
+                    verify_summary = "exact Host verification changed workspace state"
+                elif not exact_log_current:
+                    verify_summary = "exact Host verification changed retained execution evidence"
+                elif structured_verification and not exact_binding_match:
+                    verify_summary = "exact Host verification evidence did not match approval"
+                elif structured_verification and not exact_artifact_path_match:
+                    verify_summary = "exact Host verification artifact path did not match approval"
+                elif structured_verification and not exact_artifacts_match:
+                    verify_summary = "exact Host verification artifact binding is unavailable"
+                elif structured_verification:
+                    passed_count = sum(result.passed for result in structured_verification)
+                    verify_summary = (
+                        f"exact Host verification passed ({passed_count}/"
+                        f"{len(structured_verification)})"
+                        if exact_passed
+                        else (
+                            f"exact Host verification failed ({passed_count}/"
+                            f"{len(structured_verification)} passed)"
+                        )
+                    )
+                else:
+                    verify_summary = "exact Host verification returned no command evidence"
+                verify_payload = {
+                    "kind": "forge_host_v2_exact",
+                    "all_passed": exact_passed,
+                    "artifacts_current": exact_artifacts_match,
+                    "artifact_paths_current": exact_artifact_path_match,
+                    "git_identity_current": exact_git_unchanged,
+                    "workspace_state_current": exact_workspace_unchanged,
+                    "execution_log_current": exact_log_current,
+                    "command_results": [
+                        {
+                            "command_id": result.command_id,
+                            "argv": list(result.argv),
+                            "status": result.status,
+                            "real_execution": result.real_execution,
+                            "exit_code": result.exit_code,
+                            "timed_out": result.timed_out,
+                            "artifact": os.fspath(result.artifact.path),
+                            "artifact_digest": result.artifact.digest,
+                            "artifact_size_bytes": result.artifact.size_bytes,
+                        }
+                        for result in structured_verification
+                    ],
+                }
+                events.emit(
+                    EVENT_VERIFICATION_RESULT,
+                    {
+                        "scope": "task",
+                        "task_id": task_id,
+                        "passed": exact_passed,
+                        "policy": "strict",
+                        "pass": "host_v2_exact",
+                        "summary": verify_summary,
+                        "commands": [shlex.join(result.argv) for result in structured_verification],
+                        "command_source": "forge_host_v2_admitted",
+                        "result": verify_payload,
+                    },
+                )
+                if not exact_git_unchanged:
+                    success = False
+                    verify_blocked = True
+                    merge_result = "not merged: exact verification changed Git identity"
+                    run_err = (run_err + "; " if run_err else "") + (
+                        "exact Host verification changed repository identity"
+                    )
+                elif not exact_workspace_unchanged:
+                    success = False
+                    verify_blocked = True
+                    merge_result = "not merged: exact verification changed workspace state"
+                    changed_preview = ", ".join(exact_workspace_changes[:20])
+                    run_err = (run_err + "; " if run_err else "") + (
+                        "exact Host verification modified workspace state: " + changed_preview
+                    )
+                    changed_files = _merge_changed_files(
+                        changed_files,
+                        exact_workspace_changes,
+                    )
+                    _append_patch_debug_section(
+                        patch_path,
+                        title="Post-verification workspace diff",
+                        patch_text=exact_verify_diff.patch_text,
+                    )
+                elif not exact_log_current:
+                    success = False
+                    verify_blocked = True
+                    merge_result = "not merged: exact verification changed execution evidence"
+                    run_err = (run_err + "; " if run_err else "") + (
+                        "exact Host verification changed retained execution evidence"
+                    )
+                elif not exact_passed:
+                    success = False
+                    verify_blocked = True
+                    merge_result = "not merged: exact Host verification failed"
+                    run_err = (run_err + "; " if run_err else "") + verify_summary
+            elif success and verify_mode != "off" and verify_commands:
                 verify_mutation_paths: list[str] = []
                 verify_mutation_patch_sections: list[str] = []
 
@@ -3102,13 +5893,46 @@ def execute_forge_task(
                     merge_message = (
                         f"Merge {task_id}: {merge_title}" if merge_title else f"Merge {task_id}"
                     )
-                    merge_commit_hash = merge_no_ff(
-                        paths.root,
-                        base_branch=pr_base_branch,
-                        task_branch=pr_task_branch,
-                        message=merge_message,
-                    )
-                    if keep_branch:
+                    if strict_verification_executor is not None:
+                        if not strict_base_head or not commit_hash or execution_deadline is None:
+                            raise GitOpsError("Host merge lacks pinned Git identities")
+                        prepared_integration = _prepare_new_host_task_integration(
+                            paths.root,
+                            native_run_id=paths.run_id,
+                            task_id=task_id,
+                            journal_dir=paths.execution_integration_dir / "transactions",
+                            base_branch=pr_base_branch,
+                            base_head=strict_base_head,
+                            task_branch=pr_task_branch,
+                            task_commit=commit_hash,
+                            message=merge_message,
+                            execution_deadline=execution_deadline,
+                            mutable_runtime_paths=(
+                                paths.plan_json_path,
+                                paths.plan_md_path,
+                                paths.runtime_dir / "current_run.json",
+                                paths.execution_dir / "sequential_summary.json",
+                                paths.execution_dir / "sequential_run.jsonl",
+                            ),
+                        )
+                        merge_commit_hash = prepared_integration.facts.prepared_merge_commit
+                        merge_first_parent = strict_base_head
+                        merge_second_parent = commit_hash
+                        base_ref_after_merge = strict_base_head
+                        merge_result = (
+                            f"prepared for atomic integration into {pr_base_branch} "
+                            "(base ref unchanged)"
+                        )
+                    else:
+                        merge_commit_hash = merge_no_ff(
+                            paths.root,
+                            base_branch=pr_base_branch,
+                            task_branch=pr_task_branch,
+                            message=merge_message,
+                        )
+                    if strict_verification_executor is not None:
+                        pass
+                    elif keep_branch:
                         merge_result = f"merged into {pr_base_branch} (branch kept)"
                     else:
                         try:
@@ -3135,13 +5959,17 @@ def execute_forge_task(
                             task_branch=pr_task_branch,
                             merge_error=str(e),
                         )
-                        review_outcome = review_merge_conflict(
-                            paths=paths,
-                            task=task,
-                            cfg=effective,
-                            api_key_override=api_key_override,
-                            context=context,
-                            plan=plan,
+                        review_outcome = (
+                            None
+                            if strict_verification_executor is not None
+                            else review_merge_conflict(
+                                paths=paths,
+                                task=task,
+                                cfg=effective,
+                                api_key_override=api_key_override,
+                                context=context,
+                                plan=plan,
+                            )
                         )
                         cleanup_ok, cleanup_log = try_abort_merge(
                             paths.root,
@@ -3151,8 +5979,12 @@ def execute_forge_task(
                             paths=paths,
                             task_id=task_id,
                             context=context,
-                            review_json=review_outcome.review_json,
-                            review_md=review_outcome.review_markdown,
+                            review_json=(review_outcome.review_json if review_outcome else None),
+                            review_md=(
+                                review_outcome.review_markdown
+                                if review_outcome
+                                else "Host Phase 0 disabled model-based conflict review."
+                            ),
                             cleanup_log=cleanup_log,
                         )
                         conflict_review_path = conflict_artifacts.review_md_path
@@ -3160,7 +5992,7 @@ def execute_forge_task(
                             f"not merged: conflict while merging {pr_task_branch} into "
                             f"{pr_base_branch}"
                         )
-                        if review_outcome.skipped_reason:
+                        if review_outcome is not None and review_outcome.skipped_reason:
                             scope_warnings.append(
                                 f"Conflict review note: {review_outcome.skipped_reason}"
                             )
@@ -3247,14 +6079,21 @@ def execute_forge_task(
         recovered_pr_report_state = False
         if commit_hash is not None and pr_base_branch:
             try:
-                patch_text = format_patch_stdout(paths.root, base_branch=pr_base_branch)
+                report_base_revision = (
+                    strict_base_head if strict_verification_executor is not None else pr_base_branch
+                )
+                assert report_base_revision is not None
+                patch_text = format_patch_stdout(
+                    paths.root,
+                    base_branch=report_base_revision,
+                )
                 patch_path.write_text(
                     patch_text if patch_text else "(empty format-patch output)\n",
                     encoding="utf-8",
                 )
                 changed_files = changed_files_between(
                     paths.root,
-                    revspec=f"{pr_base_branch}..HEAD",
+                    revspec=f"{report_base_revision}..HEAD",
                 )
                 recovered_pr_report_state = True
             except GitOpsError:
@@ -3284,6 +6123,8 @@ def execute_forge_task(
             f"command exists for this workspace. The work is committed on "
             f"{pr_task_branch or 'the task branch'} and was deliberately not merged."
         )
+    elif success and prepared_integration is not None:
+        summary = "Task execution is verified and prepared for atomic Host integration."
     elif run_code == 0 and success:
         summary = "Task execution completed successfully."
     elif pr and can_attempt_pr_flow and run_code == 0:
@@ -3302,7 +6143,11 @@ def execute_forge_task(
     report_path = write_task_report(
         paths=paths,
         task=task,
-        result="success" if success else "failure",
+        result=(
+            "prepared"
+            if success and prepared_integration is not None
+            else ("success" if success else "failure")
+        ),
         result_kind=result_kind,
         summary=summary,
         started_at=started_at,
@@ -3349,6 +6194,11 @@ def execute_forge_task(
             artifact_dir=persisted_capture.artifact_dir,
             reason="task completed without any authoritative verification",
         )
+    elif success and prepared_integration is not None:
+        mark_knowledge_capture_promotion_skipped(
+            artifact_dir=persisted_capture.artifact_dir,
+            reason="task is awaiting authoritative Host integration seal",
+        )
     elif success:
         promote_validated_knowledge_capture(
             paths=paths,
@@ -3365,7 +6215,11 @@ def execute_forge_task(
         paths=paths,
         task=task,
         source="forge_exec",
-        result="success" if success else "failure",
+        result=(
+            "prepared"
+            if success and prepared_integration is not None
+            else ("success" if success else "failure")
+        ),
         summary=summary,
         changed_files=changed_files,
         verify_summary=verify_summary,
@@ -3374,7 +6228,11 @@ def execute_forge_task(
         verify_artifact_path=verify_path if verify_path.exists() else None,
         budget_artifact_path=budget_artifact_path,
         session_artifact_dir=exec_artifacts.session_artifact_dir,
-        acceptance_state="accepted" if success else "rejected",
+        acceptance_state=(
+            "prepared"
+            if success and prepared_integration is not None
+            else ("accepted" if success else "rejected")
+        ),
         extra_tags=[
             "execution",
             "sequential",
@@ -3462,7 +6320,9 @@ def execute_forge_task(
         )
     rebuild_knowledge_index(paths)
 
-    if success and verification_unavailable_completion:
+    if success and prepared_integration is not None:
+        status = "prepared"
+    elif success and verification_unavailable_completion:
         status = TASK_STATUS_COMPLETED_UNVERIFIED
     elif success:
         status = "done"
@@ -3478,7 +6338,9 @@ def execute_forge_task(
     save_plan(paths, plan)
 
     console.print(f"Task: {task_id} ({task.get('title', '')})")
-    if success and verification_unavailable_completion:
+    if success and prepared_integration is not None:
+        console.print("Result: prepared (awaiting authoritative Host integration seal)")
+    elif success and verification_unavailable_completion:
         console.print("Result: completed_unverified (kept, but nothing verified it)")
     else:
         console.print(f"Result: {'success' if success else 'failure'}")
@@ -3497,7 +6359,8 @@ def execute_forge_task(
         "title": str(task.get("title", "")),
         "status": status,
         "source": "exec",
-        "success": bool(success),
+        "success": bool(success and prepared_integration is None),
+        "completion_ready": bool(success and prepared_integration is not None),
         "report": os.fspath(report_path),
         "patch": os.fspath(patch_path),
         "verify_summary": verify_summary,
@@ -3511,17 +6374,165 @@ def execute_forge_task(
         "merge_result": merge_result,
         "branch": pr_task_branch,
         "base_branch": pr_base_branch,
+        "base_head": strict_base_head if strict_verification_executor is not None else None,
         "commit": commit_hash,
         "merge_commit": merge_commit_hash,
+        "merge_first_parent": merge_first_parent,
+        "merge_second_parent": merge_second_parent,
+        "base_ref_after_merge": base_ref_after_merge,
         "scope_warnings": list(scope_warnings),
         "scope_amendments": list(scope_amendment_payloads),
         "scope_amended_patterns": list(scope_amended_patterns),
     }
     if conflict_review_path is not None:
         task_payload["conflict_review"] = os.fspath(conflict_review_path)
-    events.emit(
-        EVENT_TASK_COMPLETED if success else EVENT_TASK_FAILED,
-        task_payload,
+    if prepared_integration is None:
+        events.emit(
+            EVENT_TASK_COMPLETED if success else EVENT_TASK_FAILED,
+            task_payload,
+        )
+    retained_log_paths = execution_retained_log_paths
+    retained_artifacts = []
+    artifact_binding_failures: list[str] = []
+    for artifact_path in (
+        report_path,
+        patch_path,
+        verify_path if verify_path.exists() else None,
+        *retained_log_paths,
+    ):
+        if artifact_path is None:
+            continue
+        try:
+            retained_artifacts.append(bind_retained_artifact(artifact_path))
+        except OSError:
+            artifact_binding_failures.append(artifact_path.name)
+    for verification_result in structured_verification:
+        if verification_result.artifact not in retained_artifacts:
+            retained_artifacts.append(verification_result.artifact)
+
+    if prepared_integration is not None and success:
+        task_elapsed_seconds = prepared_integration.facts.prepared_elapsed_ms / 1000.0
+        task_timed_out = False
+    elif integration_commit_proof is not None and success:
+        task_elapsed_seconds = integration_commit_proof.integration_committed_elapsed_ms / 1000.0
+        task_timed_out = False
+    elif execution_deadline is not None:
+        task_elapsed_seconds = max(
+            0.0,
+            execution_deadline.elapsed_seconds() - task_monotonic_started,
+        )
+        task_timed_out = execution_deadline.is_exhausted()
+    else:
+        task_elapsed_seconds = max(0.0, time.monotonic() - task_monotonic_started)
+        task_timed_out = False
+
+    completion_issues: list[str] = []
+    completion_candidate = bool(success and prepared_integration is not None)
+    outcome_success = bool(success and prepared_integration is None)
+    canonical_status = canonical_task_status(status)
+    if outcome_success != (canonical_status in SUCCESSFUL_TERMINAL_STATUSES):
+        completion_issues.append("task success does not match terminal status")
+    if (outcome_success or completion_candidate) and merge_conflict_detected:
+        completion_issues.append("successful task reports a merge conflict")
+    if (
+        (outcome_success or completion_candidate)
+        and verify_mode == "strict"
+        and (verify_commands or strict_verification_executor is not None)
+    ):
+        if strict_verification_executor is not None:
+            if not structured_verification or not all(
+                result.passed for result in structured_verification
+            ):
+                completion_issues.append("successful task lacks passing exact verification")
+            if merge_first_parent != strict_base_head:
+                completion_issues.append(
+                    "successful Host task merge first parent differs from approved base HEAD"
+                )
+            if merge_second_parent != commit_hash:
+                completion_issues.append(
+                    "successful Host task merge second parent differs from task commit"
+                )
+            if completion_candidate:
+                if prepared_integration is None:
+                    completion_issues.append(
+                        "completion-ready Host task lacks a prepared integration"
+                    )
+                else:
+                    prepared = prepared_integration.facts
+                    if (
+                        prepared.native_run_id != paths.run_id
+                        or prepared.task_id != task_id
+                        or prepared.base_branch != pr_base_branch
+                        or prepared.approved_base_head != strict_base_head
+                        or prepared.task_branch != pr_task_branch
+                        or prepared.task_commit != commit_hash
+                        or prepared.prepared_merge_commit != merge_commit_hash
+                        or prepared.prepared_elapsed_ms < 0
+                    ):
+                        completion_issues.append(
+                            "completion-ready Host integration facts contradict execution"
+                        )
+                    if base_ref_after_merge != strict_base_head:
+                        completion_issues.append(
+                            "completion-ready Host base ref changed before commit"
+                        )
+                    if prepared_integration.state != "PREPARED":
+                        completion_issues.append(
+                            "completion-ready Host integration is not prepared"
+                        )
+                if integration_commit_proof is not None:
+                    completion_issues.append(
+                        "completion-ready Host task already has an integration proof"
+                    )
+            else:
+                if base_ref_after_merge != merge_commit_hash:
+                    completion_issues.append(
+                        "successful Host task base ref differs from merge commit"
+                    )
+                if integration_commit_proof is None:
+                    completion_issues.append(
+                        "successful Host task lacks an integration commit proof"
+                    )
+                elif integration_commit_proof.base_branch != pr_base_branch:
+                    completion_issues.append(
+                        "successful Host task proof base branch differs from outcome"
+                    )
+                elif integration_commit_proof.approved_base_head != strict_base_head:
+                    completion_issues.append(
+                        "successful Host task proof base HEAD differs from approval"
+                    )
+                elif integration_commit_proof.task_commit != commit_hash:
+                    completion_issues.append(
+                        "successful Host task proof task commit differs from outcome"
+                    )
+                elif integration_commit_proof.merge_commit != merge_commit_hash:
+                    completion_issues.append(
+                        "successful Host task proof merge commit differs from outcome"
+                    )
+                elif integration_commit_proof.integration_committed_elapsed_ms < 0:
+                    completion_issues.append("successful Host task proof timing is invalid")
+        elif verify_result is None:
+            completion_issues.append("strict verification result is missing")
+        elif not bool(getattr(verify_result, "all_passed", False)):
+            completion_issues.append("successful task has failing strict verification")
+    if artifact_binding_failures:
+        completion_issues.append(
+            "retained artifacts could not be bound: " + ", ".join(artifact_binding_failures)
+        )
+    if task_timed_out and (outcome_success or completion_candidate):
+        completion_issues.append("timed-out task reports success")
+
+    completion_ready = completion_candidate and not completion_issues
+    merged = bool(outcome_success and merge_commit_hash is not None)
+    outcome_finished_at = now_iso()
+    branch_retained = bool(
+        pr_task_branch
+        and (
+            not merged
+            or keep_branch
+            or (merge_result is not None and "branch kept" in merge_result)
+            or (merge_result is not None and "delete warning" in merge_result)
+        )
     )
     # A task that ran and was not accepted is a genuine execution failure, so exit 1
     # stays. Exit 2 is reserved for the command itself failing, which leaves this
@@ -3530,14 +6541,42 @@ def execute_forge_task(
         task_id=task_id,
         title=str(task.get("title", "")),
         status=status,
-        success=bool(success),
-        exit_code=EXIT_OK if success else EXIT_NOT_ACCEPTED,
+        success=outcome_success,
+        exit_code=EXIT_OK if outcome_success else EXIT_NOT_ACCEPTED,
         summary=summary,
         report_path=report_path,
         patch_path=patch_path,
         merge_conflict=bool(merge_conflict_detected),
         conflict_review_path=conflict_review_path,
         payload=task_payload,
+        verification=structured_verification,
+        artifacts=tuple(retained_artifacts),
+        retained_log_paths=retained_log_paths,
+        usage=execution_usage,
+        timing=ExecutionTiming(
+            started_at=started_at,
+            finished_at=outcome_finished_at,
+            elapsed_ms=max(0, round(task_elapsed_seconds * 1000)),
+            timed_out=task_timed_out,
+        ),
+        branch_facts=BranchFacts(
+            task_branch=pr_task_branch,
+            base_branch=pr_base_branch,
+            base_head=(strict_base_head if strict_verification_executor is not None else None),
+            commit=commit_hash,
+            merge_commit=merge_commit_hash,
+            merge_first_parent=merge_first_parent,
+            merge_second_parent=merge_second_parent,
+            base_ref_after_merge=base_ref_after_merge,
+            merge_result=merge_result,
+            merged=merged,
+            branch_retained=branch_retained,
+        ),
+        integration_commit_proof=(integration_commit_proof if success else None),
+        completion_ready=completion_ready,
+        prepared_integration=prepared_integration,
+        completion_consistent=not completion_issues,
+        completion_issues=tuple(completion_issues),
     )
 
 
@@ -4117,9 +7156,8 @@ def forge_run(
     )
 
     started_at = now_iso()
-    outcomes: list[TaskExecutionOutcome] = []
-    run_log = _SequentialRunLog()
     paths: Any = None
+    sequential_result: Any = None
 
     try:
         scope_mode = _normalize_scope_mode(scope)
@@ -4149,7 +7187,6 @@ def forge_run(
                 raise _missing_swarm_run_error(binding=binding) from e
             raise
         events.set_run_id(paths.run_id)
-        run_log.bind(paths)
         plan = load_plan(paths)
 
         # PR flow is the default because it is what makes per-task verification and a
@@ -4204,33 +7241,32 @@ def forge_run(
                     "could not determine the base branch for git flow; pass --base-branch."
                 )
 
-        run_mutation_guard = acquire_swarm_mutation_guard(
-            paths,
-            mode="forge_run:cli",
-            on_wait=lambda info: _print_forge_lock_wait_notice(console, info),
-        )
-        try:
-            if bool(getattr(run_mutation_guard, "acquired_after_wait", False)):
-                plan = load_plan(paths)
+        validated_plan: dict[str, Any] = plan
+
+        def _reconcile_and_validate_sequential_plan(
+            run_paths: Any,
+            candidate_plan: dict[str, Any],
+        ) -> dict[str, Any]:
+            nonlocal validated_plan
             reconciliation_result, _ = _reconcile_plan_for_paths(
-                paths=paths,
-                plan=plan,
+                paths=run_paths,
+                plan=candidate_plan,
                 refresh_if_stale=True,
             )
             if reconciliation_result.changed:
-                save_plan(paths, plan)
+                save_plan(run_paths, candidate_plan)
             if reconciliation_result.warnings:
                 console.print("[yellow]Plan reconciliation warnings:[/yellow]")
                 for warning in reconciliation_result.warnings:
                     console.print(f"- {warning}")
-            validation_warnings = _validate_forge_plan_for_paths(paths, plan)
+            validation_warnings = _validate_forge_plan_for_paths(run_paths, candidate_plan)
             _write_plan_validation_artifact(
-                paths=paths,
+                paths=run_paths,
                 reconciliation_result=reconciliation_result,
                 validation_warnings=validation_warnings,
             )
-            repair_payload = plan_repair_event_payload(plan)
-            readiness_message = _forge_no_execution_ready_tasks_message(plan)
+            repair_payload = plan_repair_event_payload(candidate_plan)
+            readiness_message = _forge_no_execution_ready_tasks_message(candidate_plan)
             if readiness_message is not None:
                 events.emit(
                     EVENT_PLAN_INVALID,
@@ -4244,7 +7280,7 @@ def forge_run(
                 raise ForgeError(readiness_message)
             try:
                 raise_for_execution_ready_plan(
-                    plan,
+                    candidate_plan,
                     retry_failed=retry_failed_requested,
                     retry_changes_requested=retry_changes_requested_requested,
                     retry_merge_conflicts=False,
@@ -4263,198 +7299,150 @@ def forge_run(
                 err = ForgeError(str(e))
                 err.failure_category = e.failure_category  # type: ignore[attr-defined]
                 raise err from e
+            validated_plan = candidate_plan
+            return candidate_plan
 
-            projected = _projected_sequential_order(
-                plan,
+        def _execute_sequential_task(request: SequentialTaskRequest) -> TaskExecutionOutcome:
+            task_plan = request.plan
+            task = request.task
+            task_id = request.task_id
+            run_cfg = clone_cfg(effective)
+            run_cfg.model = resolve_model_for_role(
+                cfg=effective,
+                role=ROLE_CODING,
+                plan=task_plan,
+                prefer_context="forge",
+            )
+            task_verify_commands: list[str] = []
+            task_verify_command_source: str | None = None
+            if verify_mode != "off":
+                selection = resolve_authoritative_task_verify_command_selection(
+                    cfg=effective,
+                    verify_cmd=verify_cmd,
+                    task=task,
+                    root=request.native_paths.root,
+                    plan_requirements=[
+                        str(item).strip()
+                        for item in (task_plan.get("requirements") or [])
+                        if str(item).strip()
+                    ],
+                )
+                task_verify_commands = list(selection.commands)
+                task_verify_command_source = selection.source
+                run_cfg.verify_commands = list(task_verify_commands)
+            return execute_forge_task(
+                console=console,
+                events=events,
+                paths=request.native_paths,
+                plan=task_plan,
+                task=task,
+                task_id=task_id,
+                effective=effective,
+                run_cfg=run_cfg,
+                effective_mode=effective_mode,
+                scope_mode=scope_mode,
+                verify_mode=verify_mode,
+                verify_commands=task_verify_commands,
+                verify_command_source=task_verify_command_source,
+                verify_repair_budget=verify_repair_budget,
+                api_key_override=api_key_override,
+                yes=yes is True,
+                no_log=no_log is True,
+                max_steps_provided=max_steps_provided,
+                pr=pr_requested,
+                review=review_requested,
+                base_branch=resolved_base_branch,
+                keep_branch=keep_branch_requested,
+                auto_resolve_conflicts=auto_resolve_requested,
+                execution_deadline=request.execution_deadline,
+            )
+
+        projected_order: tuple[str, ...] = ()
+
+        def _observe_sequential(progress: SequentialRunProgress) -> None:
+            nonlocal projected_order
+            if progress.kind == "run_started":
+                projected_order = progress.projected_order
+                console.rule("[bold]forge run[/bold]")
+                console.print(f"Run ID: {paths.run_id}")
+                console.print(f"Workspace: {os.fspath(paths.root)}")
+                console.print(
+                    f"Mode: sequential, in-checkout (no worktrees) | "
+                    f"git flow: {'on' if pr_requested else 'off'} | verify: {verify_mode} | "
+                    f"scope: {scope_mode}"
+                )
+                if pr_requested and resolved_base_branch:
+                    console.print(f"Base branch: {resolved_base_branch}")
+                _print_sequential_order(console, validated_plan, list(projected_order))
+            elif progress.kind == "task_started" and progress.task_id is not None:
+                title = next(
+                    (
+                        str(item.get("title") or "").strip()
+                        for item in _plan_task_dicts(validated_plan)
+                        if str(item.get("id") or "").strip() == progress.task_id
+                    ),
+                    "",
+                )
+                console.rule(f"[bold]{progress.position}. {progress.task_id}[/bold] {title}")
+
+        sequential_result = run_sequential_forge(
+            SequentialRunRequest(
+                native_run_id=paths.run_id,
+                native_paths=paths,
                 retry_failed=retry_failed_requested,
                 retry_changes_requested=retry_changes_requested_requested,
                 max_attempts=attempt_limit,
-                only_ids=only_ids,
+                only_ids=frozenset(only_ids) if only_ids is not None else None,
                 max_tasks=task_limit,
-            )
-            # A run boundary in the append-only log, so a second `forge run` against the
-            # same plan reads as a second run rather than as more of the first.
-            run_log.append(
-                "run_started",
-                run_id=paths.run_id,
-                order=list(projected),
+                keep_going=keep_going_requested,
                 git_flow=pr_requested,
-                verify=verify_mode,
-                scope=scope_mode,
+                verify_mode=verify_mode,
+                scope_mode=scope_mode,
+                started_at=started_at,
                 dry_run=dry_run_requested,
+            ),
+            dependencies=SequentialRunDependencies(
+                load_plan=lambda run_paths: load_plan(run_paths),
+                save_plan=lambda run_paths, value: save_plan(run_paths, value),
+                ensure_execution_dirs=lambda run_paths: ensure_execution_dirs(run_paths),
+                acquire_mutation_guard=lambda run_paths: acquire_swarm_mutation_guard(
+                    run_paths,
+                    mode="forge_run:cli",
+                    on_wait=lambda info: _print_forge_lock_wait_notice(console, info),
+                ),
+                reconcile_and_validate=_reconcile_and_validate_sequential_plan,
+                execute_task=_execute_sequential_task,
+                mark_run_status=lambda run_paths, status, reason, value: _mark_run_status(
+                    run_paths,
+                    status,
+                    reason=reason,
+                    plan=value,
+                    mode="forge_run:cli" if status == RUN_STATUS_RUNNING else None,
+                ),
+                mark_interrupted_if_running=lambda run_paths, reason: (
+                    _mark_run_interrupted_if_still_running(run_paths, reason=reason)
+                ),
+                now_iso=now_iso,
+            ),
+            observer=_observe_sequential,
+        )
+        if sequential_result.stopped_reason == "dry_run":
+            data = {
+                "dry_run": True,
+                "order": list(projected_order),
+                "task_count": len(projected_order),
+            }
+            events.run_completed(ok=True, exit_code=EXIT_OK, data=data)
+            raise typer.Exit(code=EXIT_OK)
+        if sequential_result.exit_code == EXIT_ERROR:
+            message = sequential_result.error_message or "sequential execution failed"
+            console.print(f"[red]Forge error:[/red] {message}")
+            events.error(
+                message=message,
+                kind=sequential_result.error_kind or "forge_error",
+                exit_code=EXIT_ERROR,
             )
-            console.rule("[bold]forge run[/bold]")
-            console.print(f"Run ID: {paths.run_id}")
-            console.print(f"Workspace: {os.fspath(paths.root)}")
-            console.print(
-                f"Mode: sequential, in-checkout (no worktrees) | "
-                f"git flow: {'on' if pr_requested else 'off'} | verify: {verify_mode} | "
-                f"scope: {scope_mode}"
-            )
-            if pr_requested and resolved_base_branch:
-                console.print(f"Base branch: {resolved_base_branch}")
-            _print_sequential_order(console, plan, projected)
-
-            if dry_run_requested:
-                data = {
-                    "dry_run": True,
-                    "order": list(projected),
-                    "task_count": len(projected),
-                }
-                events.run_completed(ok=True, exit_code=EXIT_OK, data=data)
-                raise typer.Exit(code=EXIT_OK)
-
-            # From here on the workspace has an owner on record. Anything that stops
-            # this process without reaching the terminal transition below leaves the
-            # pointer saying `running` with a dead owner, which the next command
-            # reconciles to `interrupted`.
-            _mark_run_status(
-                paths,
-                RUN_STATUS_RUNNING,
-                reason=f"forge run started ({len(projected)} task(s) projected)",
-                plan=plan,
-                mode="forge_run:cli",
-            )
-
-            stopped_reason = "completed"
-            attempted: set[str] = set()
-            while True:
-                if task_limit is not None and len(outcomes) >= task_limit:
-                    stopped_reason = "max_tasks"
-                    break
-                candidate = _next_sequential_task(
-                    plan,
-                    retry_failed=retry_failed_requested,
-                    retry_changes_requested=retry_changes_requested_requested,
-                    max_attempts=attempt_limit,
-                    only_ids=only_ids,
-                    exclude_ids=attempted,
-                )
-                if candidate is None:
-                    break
-                task = candidate.task
-                task_id = candidate.task_id
-                attempted.add(task_id)
-
-                run_cfg = clone_cfg(effective)
-                run_cfg.model = resolve_model_for_role(
-                    cfg=effective,
-                    role=ROLE_CODING,
-                    plan=plan,
-                    prefer_context="forge",
-                )
-                verify_commands: list[str] = []
-                verify_command_source: str | None = None
-                if verify_mode != "off":
-                    selection = resolve_authoritative_task_verify_command_selection(
-                        cfg=effective,
-                        verify_cmd=verify_cmd,
-                        task=task,
-                        root=paths.root,
-                        plan_requirements=[
-                            str(item).strip()
-                            for item in (plan.get("requirements") or [])
-                            if str(item).strip()
-                        ],
-                    )
-                    verify_commands = list(selection.commands)
-                    verify_command_source = selection.source
-                    run_cfg.verify_commands = list(verify_commands)
-
-                position = len(outcomes) + 1
-                console.rule(
-                    f"[bold]{position}. {task_id}[/bold] {str(task.get('title') or '').strip()}"
-                )
-                run_log.append(
-                    "task_started",
-                    task_id=task_id,
-                    title=str(task.get("title") or ""),
-                    position=position,
-                )
-                try:
-                    outcome = execute_forge_task(
-                        console=console,
-                        events=events,
-                        paths=paths,
-                        plan=plan,
-                        task=task,
-                        task_id=task_id,
-                        effective=effective,
-                        run_cfg=run_cfg,
-                        effective_mode=effective_mode,
-                        scope_mode=scope_mode,
-                        verify_mode=verify_mode,
-                        verify_commands=verify_commands,
-                        verify_command_source=verify_command_source,
-                        verify_repair_budget=verify_repair_budget,
-                        api_key_override=api_key_override,
-                        yes=yes is True,
-                        no_log=no_log is True,
-                        max_steps_provided=max_steps_provided,
-                        pr=pr_requested,
-                        review=review_requested,
-                        base_branch=resolved_base_branch,
-                        keep_branch=keep_branch_requested,
-                        auto_resolve_conflicts=auto_resolve_requested,
-                    )
-                except ForgeTaskExecutionError as e:
-                    # The task could not be executed at all. That is a command error,
-                    # and continuing would run later tasks on top of an unknown repo
-                    # state, so the run ends here.
-                    run_log.append(
-                        "task_error",
-                        task_id=task_id,
-                        error=str(e),
-                        kind=e.kind,
-                    )
-                    _write_sequential_summary(
-                        paths=paths,
-                        run_id=paths.run_id,
-                        started_at=started_at,
-                        outcomes=outcomes,
-                        stopped_reason="task_error",
-                        exit_code=EXIT_ERROR,
-                        pr=pr_requested,
-                        verify_mode=verify_mode,
-                        scope_mode=scope_mode,
-                        error=str(e),
-                    )
-                    err = ForgeError(str(e))
-                    err.failure_category = e.kind  # type: ignore[attr-defined]
-                    raise err from e
-
-                outcomes.append(outcome)
-                # Recorded after the fact, not before: `execute_forge_task` derives the
-                # task's step budget from the count of *previous* attempts, so bumping
-                # first would make every first attempt look like a retry -- and the whole
-                # point of sharing the core is that `forge run` and `forge exec` give a
-                # task the same budget.
-                attempts = _bump_task_attempt(paths, plan, task)
-                run_log.append(
-                    "task_finished",
-                    task_id=task_id,
-                    status=outcome.status,
-                    success=outcome.success,
-                    summary=outcome.summary,
-                    report=os.fspath(outcome.report_path),
-                    attempts=attempts,
-                )
-                if not outcome.success and not keep_going_requested:
-                    stopped_reason = "task_failed"
-                    break
-
-            remaining = _unfinished_task_ids(plan)
-            terminal_status, terminal_reason = _terminal_run_status_for(
-                plan=plan,
-                any_failure=any(not item.success for item in outcomes),
-            )
-            _mark_run_status(paths, terminal_status, reason=terminal_reason)
-        finally:
-            _mark_run_interrupted_if_still_running(
-                paths,
-                reason="forge run exited without recording an outcome",
-            )
-            run_mutation_guard.release()
+            raise typer.Exit(code=EXIT_ERROR)
     except (ConfigError, ForgeError, GitOpsError, WorkspaceBindingError) as e:
         console.print(f"[red]Forge error:[/red] {e}")
         events.error(
@@ -4477,24 +7465,11 @@ def forge_run(
         )
         raise typer.Exit(code=EXIT_ERROR) from e
 
-    # Exit 1 means "ran to completion, work not accepted". Tasks left unexecuted
-    # because of --only or --max-tasks are a scope the caller chose, not rejected
-    # work, so only an actual task failure moves the exit code.
-    failed = [item for item in outcomes if not item.success]
-    exit_code = EXIT_NOT_ACCEPTED if failed else EXIT_OK
-
-    summary_payload = _write_sequential_summary(
-        paths=paths,
-        run_id=paths.run_id,
-        started_at=started_at,
-        outcomes=outcomes,
-        stopped_reason=stopped_reason,
-        exit_code=exit_code,
-        pr=pr_requested,
-        verify_mode=verify_mode,
-        scope_mode=scope_mode,
-        remaining=remaining,
-    )
+    # Engine ``success`` means the whole plan reached accepted completion; CLI
+    # exit 0 deliberately remains valid for scoped partial runs such as --only
+    # and --max-tasks, so terminal CLI behavior follows the returned exit code.
+    exit_code = int(sequential_result.exit_code)
+    summary_payload = dict(sequential_result.summary_payload)
     _print_sequential_summary(console, summary_payload)
     _print_usage_summary_from_logs(
         console=console,
@@ -4525,3 +7500,35 @@ def forge_exec_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
 def forge_run_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
     _sync_cli_globals(cli_mod)
     return forge_run(*args, **kwargs)
+
+
+def _host_authored_task_instruction(task: dict[str, Any]) -> str:
+    """Render only admitted task prose for the agent's semantic user turn.
+
+    The full execution Context Pack contains trusted runner metadata (including
+    backtick-delimited budgets) that must remain visible to the model, but that
+    metadata is not authored task intent and therefore must not feed the turn's
+    acceptance/expectation extractor.  Host Phase 0 supplies the full pack as a
+    separate user-role context message and uses this narrow text as the actual
+    turn instruction.
+    """
+
+    title = str(task.get("title") or "").strip()
+    description = str(task.get("description") or "").strip()
+    raw_acceptance = task.get("acceptance_criteria")
+    acceptance = (
+        [str(item or "").strip() for item in raw_acceptance]
+        if isinstance(raw_acceptance, list)
+        else []
+    )
+    acceptance = [item for item in acceptance if item]
+
+    lines = ["Implement the admitted Forge task described below."]
+    if title:
+        lines.extend(["", "Title:", title])
+    if description:
+        lines.extend(["", "Description:", description])
+    if acceptance:
+        lines.extend(["", "Acceptance criteria:"])
+        lines.extend(f"- {item}" for item in acceptance)
+    return "\n".join(lines).strip()

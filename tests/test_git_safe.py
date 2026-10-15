@@ -24,14 +24,14 @@ def test_git_hooks_enabled_truthy_values() -> None:
     assert git_hooks_enabled({}) is False
 
 
-def test_git_settings_honor_legacy_environment_names(tmp_path: Path) -> None:
-    legacy_env = {
-        "SYLLIPTOR_GIT_HOOKS": "enabled",
-        "SYLLIPTOR_GIT_HOOKS_PATH": str(tmp_path / "legacy-hooks"),
+def test_git_settings_honor_canonical_environment_names(tmp_path: Path) -> None:
+    source_env = {
+        "ALYSIS_GIT_HOOKS": "enabled",
+        "ALYSIS_GIT_HOOKS_PATH": str(tmp_path / "custom-hooks"),
     }
 
-    assert git_hooks_enabled(legacy_env) is True
-    assert resolve_disabled_hooks_dir(tmp_path, legacy_env) == tmp_path / "legacy-hooks"
+    assert git_hooks_enabled(source_env) is True
+    assert resolve_disabled_hooks_dir(tmp_path, source_env) == tmp_path / "custom-hooks"
 
 
 def test_resolve_disabled_hooks_dir_honors_override(tmp_path: Path) -> None:

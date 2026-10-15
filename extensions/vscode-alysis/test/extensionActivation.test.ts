@@ -152,6 +152,7 @@ test("config stays fail-closed with a validating reason until the runtime pointe
   assert.equal(validating.security?.cliPath.executionAllowed, false, "execution must stay blocked while validating");
   assert.equal(validating.security?.cliPath.reason, RUNTIME_VALIDATION_PENDING_MESSAGE);
   assert.equal(validating.runtimeSelection?.message, RUNTIME_VALIDATION_PENDING_MESSAGE);
+  assert.equal(validating.runtimeSelection?.validating, true);
 
   const managed = {
     runtimeSelection: { origin: "managed", production: true, message: "Verified managed CLI." }

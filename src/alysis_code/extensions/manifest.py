@@ -9,7 +9,6 @@ from typing import Annotated, Any, Literal
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -21,9 +20,6 @@ from pydantic import (
 )
 
 MANIFEST_FILENAME = "alysis-plugin.toml"
-# Third-party plugins published before the rename ship this filename; they are
-# out of our control, so both spellings stay loadable.
-LEGACY_MANIFEST_FILENAME = "sylliptor-plugin.toml"
 MAX_MANIFEST_BYTES = 64 * 1024
 
 _PLUGIN_ID_PATTERN = r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_-]*$"
@@ -105,11 +101,11 @@ class PluginMeta(BaseModel):
 class Compatibility(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    # Manifests written before the rename declare this key as ``sylliptor``.
+    # Manifests written before the rename declare this key as ``alysis``.
     # With extra="forbid" they would fail validation outright, so the old
     # spelling stays accepted as an alias.
     alysis: NonEmptyString = Field(
-        validation_alias=AliasChoices("alysis", "sylliptor"),
+        validation_alias="alysis",
         serialization_alias="alysis",
     )
     platforms: list[Literal["linux", "darwin", "windows"]] = Field(
@@ -152,6 +148,7 @@ class McpServerComponent(BaseModel):
 
     id: Annotated[str, Field(min_length=1)]
     enabled: bool = True
+    host_managed: bool = False
     transport: Literal["stdio", "http"]
     command: list[CommandArg] | None = Field(default=None, min_length=1)
     url: HttpUrl | None = None
@@ -161,6 +158,10 @@ class McpServerComponent(BaseModel):
 
     @model_validator(mode="after")
     def _validate_transport(self) -> McpServerComponent:
+        if self.host_managed and (self.transport != "http" or self.env or self.oauth is not None):
+            raise ValueError(
+                "host_managed MCP requires HTTP without environment or OAuth credentials"
+            )
         if self.transport == "stdio":
             if self.command is None:
                 raise ValueError("command is required when transport is 'stdio'")
@@ -230,19 +231,8 @@ class PluginManifest(BaseModel):
 
 
 def resolve_manifest_path(plugin_root: Path) -> Path:
-    """Locate a plugin manifest, preferring the current filename.
-
-    Falls back to the pre-rebrand name so an already-published plugin keeps
-    installing. The current name is returned when neither exists, so the
-    "missing manifest" error names the file authors should be writing.
-    """
-    current = plugin_root / MANIFEST_FILENAME
-    if current.is_file():
-        return current
-    legacy = plugin_root / LEGACY_MANIFEST_FILENAME
-    if legacy.is_file():
-        return legacy
-    return current
+    """Return the canonical plugin manifest location."""
+    return plugin_root / MANIFEST_FILENAME
 
 
 def load_manifest(plugin_root: Path) -> PluginManifest:
@@ -471,7 +461,6 @@ __all__ = [
     "Compatibility",
     "Components",
     "HookComponent",
-    "LEGACY_MANIFEST_FILENAME",
     "MANIFEST_FILENAME",
     "resolve_manifest_path",
     "MAX_MANIFEST_BYTES",

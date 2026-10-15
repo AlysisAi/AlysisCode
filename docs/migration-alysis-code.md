@@ -16,7 +16,7 @@ Nothing here is urgent. Every old name still works for now.
 | Env prefix | `SYLLIPTOR_*` | `ALYSIS_*` |
 | Per-repo directory | `.sylliptor/` | `.alysis/` |
 | Plugin manifest | `sylliptor-plugin.toml` | `alysis-plugin.toml` |
-| Repository | `AlysisAi/Sylliptor` | `AlysisAi/alysis-code` |
+| Repository | `AlysisAi/Sylliptor` | `AlysisAi/AlysisCode` |
 | Sandbox image | `ghcr.io/alysisai/sylliptor-sandbox` | `ghcr.io/alysisai/alysis-sandbox` |
 
 ## Upgrading

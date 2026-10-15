@@ -266,16 +266,21 @@ def test_readonly_mode_exposes_only_observational_browser_tools(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("mode", ["auto", "review", "fullaccess"])
-def test_browser_mutations_always_require_host_approval(tmp_path: Path, mode: str) -> None:
+def test_browser_mutations_use_the_effective_engine_mode(tmp_path: Path, mode: str) -> None:
     service = _FakeManagedBrowserService()
     surface = _HostApprovalSurface(allow=False)
     tools = _build_tools(tmp_path, service=service, surface=surface, mode=mode)
 
-    with pytest.raises(ApprovalDeclinedError):
+    if mode == "fullaccess":
         tools["browser_start"].run({})
-
-    assert [request.kind for request in surface.requests] == ["browser_start"]
-    assert service.calls == []
+        assert surface.requests == []
+        assert len(service.calls) == 1
+        assert service.calls[0][0] == "start"
+    else:
+        with pytest.raises(ApprovalDeclinedError):
+            tools["browser_start"].run({})
+        assert [request.kind for request in surface.requests] == ["browser_start"]
+        assert service.calls == []
 
 
 def test_browser_mutations_fail_closed_without_host_managed_approvals(tmp_path: Path) -> None:

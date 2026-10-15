@@ -18,7 +18,7 @@ from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
 def _offline_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
-    for prefix in ("ALYSIS", "SYLLIPTOR"):
+    for prefix in ("ALYSIS", "ALYSIS"):
         for field in ("MAX_OUTPUT_TOKENS", "CONTEXT_WINDOW", "MODEL_COMPACTOR"):
             monkeypatch.delenv(f"{prefix}_{field}", raising=False)
     monkeypatch.setattr(

@@ -93,6 +93,7 @@ export interface AlysisConfig {
 export interface AlysisRuntimeSelection {
   origin: "managed" | "development-override" | "development-path" | "unavailable";
   production: boolean;
+  validating?: boolean;
   executablePath?: string;
   artifactVersion?: string;
   cliVersion?: string;

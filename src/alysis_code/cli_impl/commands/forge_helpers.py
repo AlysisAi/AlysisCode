@@ -2,6 +2,13 @@
 # Legacy split module: dependencies are synced by cli_surface.py.
 from __future__ import annotations
 
+from ...forge_planner_engine import (
+    ForgePlannerDependencies,
+    ForgePlannerFinalizeRequest,
+    ForgePlannerTurnRequest,
+    finalize_forge_planner_plan,
+    run_forge_planner_turn,
+)
 from .cli_common import *
 from .forge_asset_view import forge_asset_view_count
 
@@ -603,238 +610,69 @@ def _run_forge_planner_turn_controller(
     on_usage_events: Callable[[list[dict[str, Any]]], None] | None = None,
     error_fallback: Callable[[], None] | None = None,
 ) -> _ForgePlannerTurnControllerResult:
-    planner_state.transcript.append({"role": "user", "content": user_text})
-    append_planner_chat(paths, role="user", message=user_text)
-
-    if planner_state.cfg is None:
-        try:
-            planner_state.cfg = cfg_loader()
-        except Exception as e:  # noqa: BLE001
-            assistant_message = unavailable_message_builder(e)
-            emit_meta(assistant_message)
-            append_transcript_note(paths, role="assistant", message=assistant_message)
-            append_planner_chat(paths, role="assistant", message=assistant_message)
-            planner_state.transcript.append({"role": "assistant", "content": assistant_message})
-            append_planner_summary(paths, "no plan_update proposed")
-            append_transcript_note(
-                paths,
-                role="system",
-                message="Planner proposed no plan update.",
-            )
-            _set_forge_planner_follow_up_state(
-                planner_state=planner_state,
-                questions=[],
-                awaiting_clarification=False,
-            )
-            return _ForgePlannerTurnControllerResult(status="unavailable")
-
-    if refresh_workspace_context or planner_state.workspace_context is None:
-        planner_state.workspace_context = _workspace_context_payload_for_paths(
-            paths=paths,
-            refresh_if_stale=refresh_workspace_context,
-        )
-
-    planner_knowledge = _patchable("prepare_planner_knowledge", prepare_planner_knowledge)(
-        paths=paths,
-        plan=plan,
-        user_text=user_text,
-        selection_label=selection_label,
-    )
-    planner_workspace_root = resolve_knowledge_workspace_root(paths)
-    clarification_tracker = getattr(planner_state, "clarification_loop", None)
-    goal_key = clarification_goal_key(plan=plan, user_text=user_text)
-    if clarification_tracker is not None:
-        clarification_tracker.max_rounds = resolve_plan_repair_policy(
-            planner_state.cfg
-        ).max_clarification_rounds
-        clarification_rounds = clarification_tracker.rounds_for(goal_key)
-    else:
-        clarification_rounds = 0
-    planner_result = _patchable("run_planner_turn", run_planner_turn)(
-        cfg=planner_state.cfg,
-        api_key_override=api_key_override,
-        plan=plan,
-        transcript_tail=planner_state.transcript,
-        workspace_context=planner_state.workspace_context,
-        user_text=user_text,
-        stream=stream,
-        on_text_delta=on_text_delta if stream else None,
-        relevant_knowledge_section=planner_knowledge.render_prompt_section(
-            workspace_root=planner_workspace_root
+    dependencies = ForgePlannerDependencies(
+        turn_runner=_patchable("run_planner_turn", run_planner_turn),
+        knowledge_preparer=_patchable(
+            "prepare_planner_knowledge",
+            prepare_planner_knowledge,
         ),
-        prefer_context="forge",
-        awaiting_clarification=planner_state.awaiting_clarification,
-        pending_questions=planner_state.pending_questions,
-        clarification_rounds=clarification_rounds,
-        run_paths=paths,
+        knowledge_root_resolver=resolve_knowledge_workspace_root,
+        workspace_context_loader=_workspace_context_payload_for_paths,
+        plan_reconciler=lambda **kwargs: _patchable(
+            "_reconcile_plan_for_paths",
+            _reconcile_plan_for_paths,
+        )(**kwargs),
+        guarded_apply=apply_guarded_planner_plan_update,
+        update_summarizer=summarize_plan_update,
+        validator=_patchable("validate_plan", validate_plan),
+        plan_saver=save_plan,
+        plan_finalizer=finalize_plan,
+        transcript_appender=append_transcript_note,
+        planner_chat_appender=append_planner_chat,
+        planner_summary_appender=append_planner_summary,
+        repair_recorder=record_plan_repair,
+        status_applier=apply_plan_status,
     )
-    usage_events = list(getattr(planner_result, "usage_events", []) or [])
+    outcome = run_forge_planner_turn(
+        ForgePlannerTurnRequest(
+            paths=paths,
+            plan=plan,
+            state=planner_state,
+            user_text=user_text,
+            cfg_loader=cfg_loader,
+            unavailable_message_builder=unavailable_message_builder,
+            api_key_override=api_key_override,
+            selection_label=selection_label,
+            planning_relevant=planning_relevant,
+            refresh_workspace_context=refresh_workspace_context,
+            stream=stream,
+            on_text_delta=on_text_delta,
+        ),
+        dependencies=dependencies,
+    )
+
+    usage_events = list(outcome.usage_events)
     if usage_events and on_usage_events is not None:
         try:
             on_usage_events(usage_events)
         except Exception:
             pass
-    render_reply(
-        str(getattr(planner_result, "assistant_message", "") or ""),
-        list(getattr(planner_result, "questions", []) or []),
+    if outcome.planner_result is not None:
+        render_reply(outcome.assistant_message, list(outcome.questions))
+    for message in outcome.meta_messages:
+        emit_meta(message)
+    for warning_group in outcome.warnings:
+        emit_warning_group(warning_group.label, list(warning_group.messages))
+    if trace_callback is not None:
+        for trace in outcome.traces:
+            trace_callback(trace.message, trace.warning)
+    if outcome.fallback_recommended and error_fallback is not None:
+        error_fallback()
+    return _ForgePlannerTurnControllerResult(
+        status=outcome.status,
+        planner_result=outcome.planner_result,
+        summary_line=outcome.summary_line,
     )
-    assistant_message = str(getattr(planner_result, "assistant_message", "") or "")
-    append_transcript_note(paths, role="assistant", message=assistant_message)
-    append_planner_chat(paths, role="assistant", message=assistant_message)
-    planner_state.transcript.append({"role": "assistant", "content": assistant_message})
-
-    request_retry_count = int(getattr(planner_result, "request_retry_count", 0) or 0)
-    planner_error = str(getattr(planner_result, "error", "") or "").strip()
-    _sync_forge_planner_follow_up_state_from_result(
-        planner_state=planner_state,
-        planner_result=planner_result,
-        goal_key=goal_key,
-    )
-
-    if planner_error:
-        if trace_callback is not None:
-            retry_word = "retry" if request_retry_count == 1 else "retries"
-            error_trace_message = (
-                "Planner returned an error after "
-                f"{request_retry_count} transient {retry_word}; using fallback handling."
-                if request_retry_count > 0
-                else "Planner returned an error; using fallback handling."
-            )
-            trace_callback(error_trace_message, False)
-    elif trace_callback is not None:
-        trace_callback("Planner response ready.", False)
-
-    if request_retry_count > 0 and not planner_error:
-        retry_word = "retry" if request_retry_count == 1 else "retries"
-        retry_notice = (
-            f"Planner request recovered after {request_retry_count} transient {retry_word}."
-        )
-        emit_warning_group("Planner", [retry_notice])
-        append_transcript_note(paths, role="system", message=f"Planner warning: {retry_notice}")
-        if trace_callback is not None:
-            trace_callback(retry_notice, True)
-
-    questions = [
-        str(question).strip() for question in getattr(planner_result, "questions", []) or []
-    ]
-    if questions:
-        append_transcript_note(
-            paths,
-            role="system",
-            message=f"Planner questions: {'; '.join(questions)}",
-        )
-
-    if planner_error:
-        retry_word = "retry" if request_retry_count == 1 else "retries"
-        planner_error_summary = (
-            f"planner error after {request_retry_count} transient {retry_word}: {planner_error}"
-            if request_retry_count > 0
-            else f"planner error: {planner_error}"
-        )
-        planner_error_note = (
-            f"Planner error after {request_retry_count} transient {retry_word}: {planner_error}"
-            if request_retry_count > 0
-            else f"Planner error: {planner_error}"
-        )
-        planner_error_warnings = (
-            [f"Planner request failed after {request_retry_count} transient {retry_word}."]
-            if request_retry_count > 0
-            else []
-        )
-        planner_error_warnings.append(f"Final planner error: {planner_error}")
-        emit_warning_group("Planner", planner_error_warnings)
-        append_planner_summary(paths, planner_error_summary)
-        append_transcript_note(paths, role="system", message=planner_error_note)
-        if error_fallback is not None:
-            error_fallback()
-        return _ForgePlannerTurnControllerResult(
-            status="error",
-            planner_result=planner_result,
-            summary_line=planner_error_summary,
-        )
-
-    raw_plan_update = getattr(planner_result, "plan_update", None)
-    if raw_plan_update:
-        if not planning_relevant:
-            append_planner_summary(paths, "plan_update ignored: message not planning-relevant")
-            append_transcript_note(
-                paths,
-                role="system",
-                message="Planner update ignored because the user message was not planning-relevant.",
-            )
-            emit_meta(
-                "Planner update ignored because this message did not look "
-                "planning-related; plan unchanged."
-            )
-            return _ForgePlannerTurnControllerResult(
-                status="ignored",
-                planner_result=planner_result,
-            )
-
-        apply_result = apply_guarded_planner_plan_update(
-            plan,
-            raw_plan_update,
-            latest_user_text=user_text,
-            workspace_context=planner_state.workspace_context,
-        )
-        summary_line = summarize_plan_update(apply_result)
-        reconciliation_result = None
-        if apply_result.changed:
-            reconciliation_target_ids = list(
-                dict.fromkeys([*apply_result.added_task_ids, *apply_result.updated_task_ids])
-            )
-            reconciliation_kwargs: dict[str, Any] = {
-                "paths": paths,
-                "plan": plan,
-                "refresh_if_stale": False,
-                "user_text": user_text,
-                "transcript_tail": planner_state.transcript,
-            }
-            if reconciliation_target_ids:
-                reconciliation_kwargs["target_task_ids"] = reconciliation_target_ids
-            reconciliation_result, planner_state.workspace_context = _reconcile_plan_for_paths(
-                **reconciliation_kwargs
-            )
-        # Record what the repair loop had to salvage, and stamp the plan with an
-        # explicit draft/execution_ready status, before it is written. Downstream
-        # surfaces read the status instead of rediscovering it at exec time.
-        record_plan_repair(plan, getattr(planner_result, "repair", None) or PlannerRepairReport())
-        apply_plan_status(plan, validation_warnings=validate_plan(plan))
-        save_plan(paths, plan)
-        if apply_result.changed:
-            if trace_callback is not None:
-                trace_callback("Applied planner update to the Forge plan.", False)
-            emit_meta("Applied planner update to plan.")
-            if apply_result.warnings:
-                emit_warning_group("Planner", list(apply_result.warnings))
-            if reconciliation_result is not None and reconciliation_result.warnings:
-                emit_warning_group("Plan reconciliation", list(reconciliation_result.warnings))
-        else:
-            if trace_callback is not None:
-                trace_callback("Planner update was a no-op.", True)
-            emit_meta("Planner update contained no applicable changes.")
-            if apply_result.warnings:
-                emit_warning_group("Planner", list(apply_result.warnings))
-        append_planner_summary(paths, summary_line)
-        append_transcript_note(paths, role="system", message=f"Planner update: {summary_line}")
-        for warning in apply_result.warnings:
-            append_transcript_note(paths, role="system", message=f"Planner warning: {warning}")
-        if reconciliation_result is not None:
-            for warning in reconciliation_result.warnings:
-                append_transcript_note(
-                    paths,
-                    role="system",
-                    message=f"Plan reconciliation warning: {warning}",
-                )
-        return _ForgePlannerTurnControllerResult(
-            status="applied" if apply_result.changed else "noop",
-            planner_result=planner_result,
-            summary_line=summary_line,
-        )
-
-    append_planner_summary(paths, "no plan_update proposed")
-    append_transcript_note(paths, role="system", message="Planner proposed no plan update.")
-    return _ForgePlannerTurnControllerResult(status="no_update", planner_result=planner_result)
 
 
 def _write_plan_validation_artifact(
@@ -953,47 +791,47 @@ def _finalize_forge_plan(
     plan: dict[str, Any],
     transcript_tail: list[dict[str, Any]] | None = None,
 ) -> None:
-    finalize_plan(plan)
-    reconciliation_result, _ = _patchable(
-        "_reconcile_plan_for_paths",
-        _reconcile_plan_for_paths,
-    )(
-        paths=paths,
-        plan=plan,
-        refresh_if_stale=True,
-        transcript_tail=transcript_tail,
+    dependencies = ForgePlannerDependencies(
+        plan_reconciler=lambda **kwargs: _patchable(
+            "_reconcile_plan_for_paths",
+            _reconcile_plan_for_paths,
+        )(**kwargs),
+        validator=_patchable("validate_plan", validate_plan),
+        plan_saver=save_plan,
+        plan_finalizer=finalize_plan,
+        transcript_appender=append_transcript_note,
     )
-    save_plan(paths, plan)
-    validation_warnings = _validate_forge_plan_for_paths(paths, plan)
-    if reconciliation_result.warnings:
+
+    def _legacy_artifact_writer(**kwargs: Any) -> Path:
+        _patchable(
+            "_write_plan_validation_artifact",
+            _write_plan_validation_artifact,
+        )(**kwargs)
+        return paths.notes_dir / "plan_validation.md"
+
+    outcome = finalize_forge_planner_plan(
+        ForgePlannerFinalizeRequest(
+            paths=paths,
+            plan=plan,
+            transcript_tail=transcript_tail,
+        ),
+        dependencies=dependencies,
+        path_validator=_validate_forge_plan_for_paths,
+        artifact_writer=_legacy_artifact_writer,
+    )
+    reconciliation_warnings = list(getattr(outcome.reconciliation_result, "warnings", ()) or ())
+    if reconciliation_warnings:
         _print_forge_warning_messages(
             console=console,
             label="Plan reconciliation",
-            warnings=list(reconciliation_result.warnings),
+            warnings=reconciliation_warnings,
         )
-        for warning in reconciliation_result.warnings:
-            append_transcript_note(
-                paths,
-                role="system",
-                message=f"Plan reconciliation warning: {warning}",
-            )
-    _write_plan_validation_artifact(
-        paths=paths,
-        reconciliation_result=reconciliation_result,
-        validation_warnings=validation_warnings,
-    )
-    if validation_warnings:
+    if outcome.validation_warnings:
         _print_forge_warning_messages(
             console=console,
             label="Plan validation",
-            warnings=validation_warnings,
+            warnings=list(outcome.validation_warnings),
         )
-        for warning in validation_warnings:
-            append_transcript_note(
-                paths,
-                role="system",
-                message=f"Plan validation warning: {warning}",
-            )
     _print_forge_meta(console=console, message=f"Plan saved · {paths.plan_md_path}")
     _print_forge_meta(console=console, message=f"Structured plan · {paths.plan_json_path}")
 

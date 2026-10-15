@@ -20,6 +20,7 @@ def benchmark_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "scripts/build_benchmark_wheel.sh",
         "scripts/generate_build_info.py",
         "src/alysis_code/build_identity.py",
+        "src/alysis_code/command_text.py",
         "src/alysis_code/_build_info.py",
     ):
         target = repo / name

@@ -17,7 +17,7 @@ _GEMINI_3_RE = re.compile(r"(?:^|[/.:_-])gemini[-_.]?3(?:[-_.]|$)")
 _DEEPSEEK_V4_RE = re.compile(r"(?:^|[/.:_-])deepseek[-_.]v?4(?:[-_.]|$)")
 _QWEN_QVQ_RE = re.compile(r"(?:^|[/.:_-])qvq(?:[-_.]|$)")
 _CURRENT_KIMI_RE = re.compile(r"(?:^|[/.:_-])kimi[-_.]?k(?:3|2[-_.]?(?:6|7))(?:[-_.]|$)")
-_GPT6_RE = re.compile(r"(?:^|/)gpt-6-(?:astra|sol|luna)(?:$|-)")
+_GPT6_RE = re.compile(r"(?:^|/)gpt-6(?:\.1)?-(?:astra|sol|luna)(?:$|-)")
 
 
 def documented_temperature_omit_reason(

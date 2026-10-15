@@ -1,0 +1,25 @@
+{
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "messageId": "msg_progress0001",
+  "operationId": "operation_run00001",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "kind": "event",
+  "sequence": 3,
+  "identity": {
+    "sessionId": "ses_abcdefgh",
+    "generationId": "gen_abcdefgh",
+    "runId": "run_abcdefgh",
+    "revision": 2
+  },
+  "payload": {
+    "type": "run.progress",
+    "phase": "executing",
+    "taskId": "T01",
+    "step": 1,
+    "totalSteps": 2,
+    "taskModelSteps": 3,
+    "summary": "Executing the admitted task.",
+    "workerId": "worker_abcdefgh"
+  }
+}

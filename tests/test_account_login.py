@@ -112,13 +112,22 @@ def test_alysis_preset_offers_flash_and_luna_models_for_free_credits() -> None:
     assert preset is not None
     assert preset.api_key_env is None
     assert preset.suggested_models[0] == "deepseek-flash"
-    # Offline fallback matches the free-credit offering; paid models are discovered.
+    # Catalog includes paid Sol, but offline picker rows remain the Free offering.
     assert preset.suggested_models == (
         "deepseek-flash",
         "glm-5.3-flash",
         "gpt-6-luna",
         "claude-haiku-5-5",
+        "gpt-6.1-sol",
     )
+    from alysis_code.profile_presets import model_options_for_preset
+
+    assert [row[0] for row in model_options_for_preset(preset)] == [
+        "deepseek-flash",
+        "glm-5.3-flash",
+        "gpt-6-luna",
+        "claude-haiku-5-5",
+    ]
     assert set(preset.suggested_model_descriptions) == set(preset.suggested_models)
     profile = make_profile_from_preset(preset, name="alysis")
     assert profile.default_model == "deepseek-flash"
@@ -170,17 +179,15 @@ def test_logout_when_not_logged_in_returns_false(tmp_path: Path, monkeypatch) ->
 def test_approval_url_pins_host_to_configured_site(monkeypatch) -> None:
     """The server never gets to choose which website login opens.
 
-    Regression: the deployed device-code function still returned the
-    pre-rebrand host in ``verification_url_complete``, so `alysis login`
-    launched the retired Sylliptor site even though the client was rebranded.
+    A remote response with a different origin cannot redirect sign-in away
+    from the configured product site.
     """
     monkeypatch.delenv("ALYSIS_SITE_URL", raising=False)
-    monkeypatch.delenv("SYLLIPTOR_SITE_URL", raising=False)
     site = alysis_cloud.site_url()
 
-    legacy = f"https://sylliptor.alysisai.com/activate?code={_USER_CODE}"
+    supplied = f"https://example.com/activate?code={_USER_CODE}"
     assert (
-        account_login._approval_url(legacy, user_code=_USER_CODE)
+        account_login._approval_url(supplied, user_code=_USER_CODE)
         == f"{site}/activate?code={_USER_CODE}"
     )
 
@@ -201,7 +208,7 @@ def test_approval_url_follows_site_override(monkeypatch) -> None:
     monkeypatch.setenv("ALYSIS_SITE_URL", "https://staging.example.test")
     assert (
         account_login._approval_url(
-            f"https://sylliptor.alysisai.com/activate?code={_USER_CODE}", user_code=_USER_CODE
+            f"https://alysiscode.com/activate?code={_USER_CODE}", user_code=_USER_CODE
         )
         == f"https://staging.example.test/activate?code={_USER_CODE}"
     )

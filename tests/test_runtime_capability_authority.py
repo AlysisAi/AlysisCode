@@ -84,6 +84,23 @@ def test_launch_endpoint_override_reaches_transient_profile_without_mutating_sav
     assert get_active_profile(effective).protocol == "openai_compat"
 
 
+def test_document_runtime_is_discoverable_without_authorizing_shell_execution(tmp_path):
+    tools, store = _tools(tmp_path, _visual_cfg(), mode="readonly", depth=1)
+    try:
+        status = tools["capability_status"].run({})["pdf"]
+        assert status["state"] in {"ready", "unavailable"}
+        if status["state"] == "ready":
+            assert "alysis_code.documents" in status["command"]
+            assert "permissions" in status["guidance"]
+        office = tools["capability_status"].run({})["office"]
+        assert "alysis_code.office" in office["command"]
+        assert set(office["formats"]) == {"docx", "xlsx", "pptx"}
+        assert "permissions" in office["guidance"]
+        assert "shell_run" not in tools
+    finally:
+        store.close()
+
+
 def test_launch_override_cannot_redirect_adapter_owned_subscription_endpoint():
     cfg = AppConfig(model="subscription-model")
     add_profile(

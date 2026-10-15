@@ -60,11 +60,38 @@ def test_rejects_local_assistant_working_files(path: str) -> None:
     assert path_violation(path) == "local assistant working files"
 
 
-@pytest.mark.parametrize(
-    "path", ["extensions/vscode-alysis/package.json", "supabase/migrations/setup.sql"]
-)
-def test_rejects_unreleased_packages(path: str) -> None:
-    assert path_violation(path) == "unreleased editor or hosted-service package"
+def test_only_reviewed_editor_packages_are_public() -> None:
+    assert path_violation("extensions/vscode-alysis/package.json") is None
+    assert path_violation("extensions/jetbrains-alysis/README.md") is None
+    assert path_violation("extensions/shared-ui/README.md") is None
+    assert path_violation("extensions/unreleased/package.json") == "unreleased editor package"
+    assert path_violation("supabase/migrations/setup.sql") == "hosted-service implementation"
+
+
+def test_pinned_verification_key_must_be_public(tmp_path: Path) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    key_path = check_public_repo._PUBLIC_VERIFICATION_KEY
+    target = tmp_path / key_path
+    target.parent.mkdir(parents=True)
+    key = ed25519.Ed25519PrivateKey.generate()
+    target.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    assert collect_violations([key_path], tmp_path) == []
+    target.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    assert collect_violations([key_path], tmp_path) == [
+        f"{key_path}: expected a public verification key"
+    ]
 
 
 def test_rejects_power_mode_package() -> None:
@@ -126,3 +153,10 @@ def test_relative_links_require_exact_file_and_directory_case(tmp_path: Path) ->
         "README.md:5: broken relative link: Docs/",
         "README.md:8: broken relative link: docs/ΟΔΗΓΌΣ.md",
     ]
+
+
+@pytest.mark.parametrize(
+    "path", ["outputs/release-notes.md", ".qa-results/scan.json", "private-attestation/signoff.md"]
+)
+def test_rejects_local_release_evidence(path: str) -> None:
+    assert path_violation(path) == "local runtime or build-output directory"

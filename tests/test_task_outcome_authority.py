@@ -60,6 +60,21 @@ def test_a_sufficient_certificate_cannot_override_current_unresolved_evidence(co
     assert result["problems"]
 
 
+def test_prior_edit_generation_does_not_prove_the_current_request_was_implemented():
+    result = task_outcome_record(
+        exit_code=0,
+        reason="completed",
+        state={
+            "completion_certificate": {"status": "SUFFICIENT"},
+            "accepted_verification_evidence": [{"evidence_category": "AUTHORITATIVE"}],
+            "verification_relevant_edit_generation": 7,
+            "material_edit_count": 0,
+        },
+    )
+    assert not result["verified_success"]
+    assert "no_material_edits" in result["problems"]
+
+
 def test_inferred_concern_does_not_veto_supported_hard_coverage():
     state = {
         "completion_certificate": {"status": "SUFFICIENT"},
@@ -141,13 +156,13 @@ def test_real_no_edit_check_sets_task_outcome_and_exact_host_artifact(
         )
         assert outcome["generation"] == 0
         assert outcome["material_paths"] == []
-        assert outcome["task_id"] == session.task_state.task_id
+        assert outcome["task_id"] == session._task_evidence_state.task_id
         assert json.loads(host_output.read_text(encoding="utf-8")) == outcome
         assert json.loads(session.store.path.with_suffix(".outcome.json").read_text()) == outcome
         finals = [e["payload"] for e in session.store.events_snapshot() if e["type"] == "final"]
         assert finals[-1]["task_outcome"] == outcome
         if not check_passes:
-            assert "Verification status: unverified" in finals[-1]["content"]
+            assert "Not verified:" in finals[-1]["content"]
         # An inherited host path can never be overwritten by a child outcome.
         session.subagent_depth = 1
         session._record_task_outcome(exit_code=1, reason="blocked")
@@ -243,6 +258,7 @@ def test_server_cancellation_and_failed_worker_override_success_without_losing_i
             "completion_certificate": {"status": "SUFFICIENT"},
             "accepted_verification_evidence": [{}],
             "verification_relevant_edit_generation": 3,
+            "material_edit_count": 1,
         },
     )
     event = {"event": "run_completed", "data": {"ok": True, "task_outcome": record}}

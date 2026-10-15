@@ -16,7 +16,15 @@ from .llm.protocols import (
     GEMINI_INTERACTIONS_PROTOCOL,
     OPENAI_COMPAT_PROTOCOL,
 )
-from .profiles import ProfileSpec
+from .profiles import _REASONING_EFFORT_RE, ProfileSpec
+from .reasoning_contracts import (
+    ALWAYS_ON,
+    OFF_EXPLICIT,
+    OFF_IMPOSSIBLE,
+    OPTIONAL,
+    WIRE_REASONING_OBJECT,
+    ReasoningContract,
+)
 
 ProviderModelCatalogStrategy = Literal["gemini", "anthropic", "openai"]
 ModelChatCompatibility = Literal["chat", "unknown"]
@@ -76,6 +84,40 @@ class ProviderModelOption:
     label: str
     description: str = ""
     chat_compatibility: ModelChatCompatibility = "unknown"
+    reasoning_contract: ReasoningContract | None = None
+
+
+def _openrouter_reasoning_contract(raw: Any) -> ReasoningContract | None:
+    """Decode the gateway's documented per-model reasoning metadata.
+
+    https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+    Missing, null and empty supported_efforts have different meanings.
+    """
+    if not isinstance(raw, dict):
+        return None
+    values = raw.get("supported_efforts", [])
+    if values is None:
+        values = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) or _REASONING_EFFORT_RE.fullmatch(value) is None
+        for value in values
+    ):
+        return None
+    mandatory = raw.get("mandatory")
+    if not isinstance(mandatory, bool):
+        # Unknown off semantics must not introduce a disable choice.
+        mandatory = True
+    efforts = tuple(dict.fromkeys(value for value in values if value != "none" or not mandatory))
+    default = raw.get("default_effort")
+    if default not in efforts:
+        default = ""
+    return ReasoningContract(
+        mode=ALWAYS_ON if mandatory else OPTIONAL,
+        wire=WIRE_REASONING_OBJECT,
+        values=efforts,
+        default=default,
+        off=OFF_IMPOSSIBLE if mandatory else OFF_EXPLICIT,
+    )
 
 
 class ProviderModelCatalogError(RuntimeError):
@@ -351,6 +393,10 @@ def _discover_openai_models(
             "Provider model catalog returned an invalid OpenAI-style response."
         )
 
+    from .profile_presets import find_preset_for_profile
+
+    preset = find_preset_for_profile(profile)
+    is_openrouter = preset is not None and preset.provider_key == "openrouter"
     options: list[ProviderModelOption] = []
     seen_ids: set[str] = set()
     for raw in raw_models:
@@ -377,6 +423,9 @@ def _discover_openai_models(
                 label=_clean_text(raw.get("display_name") or raw.get("displayName")) or model_id,
                 description=_clean_text(raw.get("description")),
                 chat_compatibility=("chat" if _has_explicit_chat_capability(raw) else "unknown"),
+                reasoning_contract=(
+                    _openrouter_reasoning_contract(raw.get("reasoning")) if is_openrouter else None
+                ),
             ),
         )
         _enforce_model_bound(options)

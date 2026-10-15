@@ -538,6 +538,11 @@ class AlysisAgent(BaseInstalledAgent):
         llm_timeout = self._get_env("ALYSIS_LLM_TIMEOUT_S")
         if llm_timeout:
             env["ALYSIS_LLM_TIMEOUT_S"] = llm_timeout
+        # --strict-provenance refuses a run whose thinking setting is not
+        # explicit; the host's setting is forwarded unchanged.
+        thinking = self._get_env("ALYSIS_LLM_ENABLE_THINKING")
+        if thinking:
+            env["ALYSIS_LLM_ENABLE_THINKING"] = thinking
         # The process-level web kill switch. The config docstring names this
         # env var as the way to guarantee no web tool is registered; without it
         # on the allowlist a host that set it got the config default instead,
@@ -669,6 +674,13 @@ class AlysisAgent(BaseInstalledAgent):
             ".",
             "--allow-broad-workspace",
             "--yes",
+            # Streaming chosen on the command line, which --strict-provenance
+            # requires. Without a flag `alysis run` already streams (it never
+            # reads the `stream false` that setup.sh writes); the flag makes
+            # that a recorded choice. The token-plan endpoint closes a
+            # non-streaming request at 900 s.
+            "--stream",
+            "--strict-provenance",
             "--model",
             shlex.quote(model),
             "--base-url",
@@ -690,6 +702,9 @@ class AlysisAgent(BaseInstalledAgent):
             reserved = {"--deadline-seconds", "--no-deadline", "--require-deadline", "--"}
             if any(part.split("=", 1)[0] in reserved for part in extra_parts):
                 raise ValueError("ALYSIS_EXTRA_ARGS cannot override the managed-host deadline")
+            provenance_flags = {"--stream", "--no-stream", "--strict-provenance"}
+            if any(part.split("=", 1)[0] in provenance_flags for part in extra_parts):
+                raise ValueError("ALYSIS_EXTRA_ARGS cannot override streaming or provenance")
             parts.extend(shlex.quote(part) for part in extra_parts)
         parts += ["--deadline-seconds", format(deadline_seconds, ".6f"), "--require-deadline"]
         parts += ["--", shlex.quote(instruction)]

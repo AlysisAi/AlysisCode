@@ -34,6 +34,7 @@ from ..llm.types import LLMError, LLMResponse
 from ..model_registry import ModelRegistry
 from ..model_router import ROLE_COMPREHENSION, resolve_model_for_role
 from ..profiles import ProfileSpec, get_profile
+from ..project_data import project_artifact_path
 from .index import AssetIndex
 from .models import (
     AssetError,
@@ -515,7 +516,9 @@ class AssetComprehender:
         ):
             return None
         try:
-            return self.ocr_provider.extract_text(self.run_paths.root / asset.stored_path)
+            return self.ocr_provider.extract_text(
+                project_artifact_path(self.run_paths.root, asset.stored_path)
+            )
         except Exception as exc:
             if self.cfg.assets.comprehension.ocr_enabled == "always":
                 raise
@@ -527,14 +530,14 @@ class AssetComprehender:
 
     def _load_extracted_text(self, asset: AssetRecord) -> str:
         path = asset.extracted_text_path or asset.stored_path
-        return (self.run_paths.root / path).read_text(encoding="utf-8")
+        return project_artifact_path(self.run_paths.root, path).read_text(encoding="utf-8")
 
     def _normalized_preview(self, asset: AssetRecord) -> Path:
         try:
             from PIL import Image
         except ModuleNotFoundError as e:
             raise AssetError("Pillow is required for image comprehension.") from e
-        source = self.run_paths.root / asset.stored_path
+        source = project_artifact_path(self.run_paths.root, asset.stored_path)
         destination = asset_preview_path(self.run_paths, asset.id)
         max_edge = int(self.cfg.assets.comprehension.image_max_edge_pixels)
         with Image.open(source) as image:

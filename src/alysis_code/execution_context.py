@@ -12,6 +12,7 @@ from typing import Any
 from .config import AppConfig
 from .knowledge_capture import render_execution_knowledge_capture_rules
 from .model_registry import ModelRegistry
+from .project_data import ProjectDataError, project_artifact_path
 from .token_budget import compute_input_budget, estimate_tokens
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
@@ -239,10 +240,10 @@ def select_relevant_image_paths(
         stored_path = str(asset.get("stored_path") or "").strip()
         if not stored_path:
             continue
-        candidate = (root / stored_path).resolve()
         try:
+            candidate = project_artifact_path(root, stored_path).resolve()
             candidate.relative_to(root_resolved)
-        except ValueError:
+        except (ValueError, ProjectDataError):
             continue
         if not candidate.exists() or not candidate.is_file():
             continue

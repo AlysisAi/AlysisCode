@@ -93,5 +93,5 @@ test("CLI setup guide falls back to the docs URL when the walkthrough is unavail
 
   await registeredCommands.get("alysis.openSetupGuide")?.();
 
-  assert.equal(openedUrls[0], "https://github.com/AlysisAi/alysis-code#install");
+  assert.equal(openedUrls[0], "https://github.com/AlysisAi/AlysisCode#install");
 });

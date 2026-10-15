@@ -21,7 +21,6 @@ from alysis_code.agent.acceptance_contract import (
     build_acceptance_contract,
     finalize_acceptance_contract,
 )
-from alysis_code.agent.task_state import SessionTaskState
 from alysis_code.agent.verification import TurnExecutionState, _record_tool_effect
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
@@ -53,23 +52,18 @@ def python_repo(tmp_path: Path) -> Path:
 def _state(root: Path, commands: list[str], *, objective: str | None = None) -> TurnExecutionState:
     if objective is None:
         objective = "Update the implementation. " + " ".join(f"Run `{cmd}`." for cmd in commands)
-    task = SessionTaskState(
-        task_id="acceptance-integration:1",
-        objective=objective,
-        session_id="acceptance-integration",
-        sequence=1,
-    )
-    return TurnExecutionState(
+    state = TurnExecutionState(
         execution_requested=True,
         expected_verification_commands=set(commands),
         acceptance_contract=build_acceptance_contract(
             root=root,
             instruction=objective,
-            task_state=task,
             authoritative_verification_commands=commands,
             effective_verification_commands=commands,
         ),
     )
+    state.acceptance_contract.task_id = "acceptance-integration:1"
+    return state
 
 
 def _command_criterion(state: TurnExecutionState, command: str) -> Any:
@@ -326,16 +320,12 @@ def test_explicit_artifact_checker_is_independent_of_unrun_repo_checks(
     )
     command, repo_command = "python check.py", "pytest -q"
     objective = "Create actual.txt. Run `python check.py`."
-    task = SessionTaskState(
-        task_id="artifact-check:1", objective=objective, session_id="artifact-check", sequence=1
-    )
     state = TurnExecutionState(
         execution_requested=True,
         expected_verification_commands={repo_command},
         acceptance_contract=build_acceptance_contract(
             root=python_repo,
             instruction=objective,
-            task_state=task,
             effective_verification_commands=[repo_command],
         ),
     )
@@ -479,6 +469,77 @@ def test_same_command_in_different_directory_does_not_cover_required_check(
     assert _command_criterion(state, command).status == AcceptanceCriterionStatus.PASSED
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python --version",  # non-assertive: it reports, it cannot check anything
+        "python -c \"print('hello')\"",  # unknown capability: prints, asserts nothing
+    ],
+)
+def test_requested_informational_command_satisfies_its_own_criterion(
+    tmp_path: Path, command: str
+) -> None:
+    objective = f"Run `{command}` and tell me exactly what it prints."
+    state = TurnExecutionState(
+        execution_requested=True,
+        expected_verification_commands={command},
+        acceptance_contract=build_acceptance_contract(
+            root=tmp_path,
+            instruction=objective,
+            effective_verification_commands=[command],
+        ),
+    )
+    result = shell_run(root=tmp_path, cmd=command, runner=HostShellRunner())
+    assert result["exit_code"] == 0
+
+    _record_tool_effect(
+        root=tmp_path,
+        state=state,
+        tool_name="shell_run",
+        arguments={"cmd": command},
+        status="ok",
+        result=result,
+        known_verification_commands=[command],
+        verification_authoritative=False,
+    )
+
+    assert result["verification_evidence_allowed"] is False
+    assert _command_criterion(state, command).status == AcceptanceCriterionStatus.PASSED
+    assert state.acceptance_contract is not None
+    assert state.acceptance_contract.problem_names() == []
+    evidence = next(item for item in state.acceptance_contract.evidence if item.command == command)
+    assert evidence.evidence_allowed is False
+
+
+def test_requested_informational_command_elsewhere_does_not_satisfy_it(tmp_path: Path) -> None:
+    (tmp_path / "other").mkdir()
+    command = "python --version"
+    objective = f"Run `{command}` and tell me exactly what it prints."
+    state = TurnExecutionState(
+        execution_requested=True,
+        expected_verification_commands={command},
+        acceptance_contract=build_acceptance_contract(
+            root=tmp_path, instruction=objective, effective_verification_commands=[command]
+        ),
+    )
+    arguments = {"cmd": command, "cwd": "other"}
+    result = shell_run(root=tmp_path, runner=HostShellRunner(), **arguments)
+    assert result["exit_code"] == 0
+
+    _record_tool_effect(
+        root=tmp_path,
+        state=state,
+        tool_name="shell_run",
+        arguments=arguments,
+        status="ok",
+        result=result,
+        known_verification_commands=[command],
+        verification_authoritative=False,
+    )
+
+    assert _command_criterion(state, command).status != AcceptanceCriterionStatus.PASSED
+
+
 class _RecordingClient:
     model = "test-model"
     temperature = 0.2
@@ -511,48 +572,29 @@ def _required_outputs(payload: dict[str, Any]) -> set[str]:
     }
 
 
-def test_real_turn_contracts_follow_host_objective_amendments_and_task_replacement(
-    tmp_path: Path,
-) -> None:
-    for name in ("alpha.txt", "amendment.txt", "beta.txt"):
-        (tmp_path / name).write_text("present\n", encoding="utf-8")
+def test_current_request_replaces_previous_turn_acceptance(tmp_path):
     session = create_session(
         cfg=AppConfig(model="test-model", routing_mode="code_only", skills_enabled=False),
         root=tmp_path,
         mode="auto",
         yes=True,
         max_steps=4,
-        no_log=False,
-        api_key_override="override-key",
+        no_log=True,
+        api_key_override="test-key",
         one_shot_execution=True,
-        session_log_dir_override=tmp_path / ".sessions",
-        verification_enabled=False,
     )
     session.client = _RecordingClient()
     try:
-        assert session.run_turn("Create alpha.txt.", task_relation="new_task") == 0
-        first_state = session.task_state
-        assert first_state is not None
-        first = _latest_contract(session)
-
-        assert session.run_turn("Also create amendment.txt.", task_relation="amendment") == 0
-        amended = _latest_contract(session)
-        assert session.run_turn("continue", task_relation="continuation") == 0
-        continued = _latest_contract(session)
-
-        assert session.run_turn("Create beta.txt.", task_relation="new_task") == 0
-        replacement_state = session.task_state
-        assert replacement_state is not None
-        replacement = _latest_contract(session)
+        for instruction, paths in (
+            ("Create alpha.txt.", {"alpha.txt"}),
+            ("Also create amendment.txt.", {"amendment.txt"}),
+            ("Create beta.txt.", {"beta.txt"}),
+        ):
+            assert session.run_turn(instruction) == 0
+            contract = _latest_contract(session)
+            assert set(contract["allowed_output_paths"]) == paths
     finally:
         session.close()
-
-    assert first["task_id"] == amended["task_id"] == continued["task_id"] == first_state.task_id
-    assert replacement["task_id"] == replacement_state.task_id != first_state.task_id
-    assert _required_outputs(first) == {"alpha.txt"}
-    assert _required_outputs(amended) == {"alpha.txt", "amendment.txt"}
-    assert _required_outputs(continued) == {"alpha.txt", "amendment.txt"}
-    assert _required_outputs(replacement) == {"beta.txt"}
 
 
 def test_new_task_selects_its_explicit_check_instead_of_previous_task_check(tmp_path: Path) -> None:
@@ -571,52 +613,17 @@ def test_new_task_selects_its_explicit_check_instead_of_previous_task_check(tmp_
     )
     session.client = _RecordingClient()
     try:
-        assert session.run_turn("Run `python one.py`.", task_relation="new_task") == 0
+        assert session.run_turn("Run `python one.py`.") == 0
         assert session.effective_verification_commands == ["python one.py"]
-        original_task_id = session.task_state.task_id
 
-        assert session.run_turn("Run `python two.py`.", task_relation="new_task") == 0
+        assert session.run_turn("Run `python two.py`.") == 0
 
-        assert session.task_state.task_id != original_task_id
         assert session.effective_verification_commands == ["python two.py"]
         contract = _latest_contract(session)
         assert {command for item in contract["criteria"] for command in item["commands"]} == {
             "python two.py"
         }
-        assert session.run_turn("continue", task_relation="continuation") == 0
-        assert session.effective_verification_commands == ["python two.py"]
+        assert session.run_turn("continue") == 0
+        assert session.effective_verification_commands == []
     finally:
         session.close()
-
-
-@pytest.mark.parametrize("with_host_state", [False, True])
-def test_rendered_task_brief_cannot_add_hard_obligations(
-    tmp_path: Path, with_host_state: bool
-) -> None:
-    objective = "Create result.txt."
-    state = (
-        SessionTaskState(
-            task_id="authority:1",
-            objective=objective,
-            session_id="authority",
-            sequence=1,
-            amendments=("Keep README.md unchanged.",),
-        )
-        if with_host_state
-        else None
-    )
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction="continue" if with_host_state else objective,
-        task_state=state,
-        task_brief=(
-            "<task_brief>\nCreate unrequested.txt. Run `python stolen_check.py`.\n"
-            "Keep secrets.txt unchanged.\n</task_brief>"
-        ),
-    )
-
-    hard = [item for item in contract.criteria if item.required_for_finalization]
-    assert {path for item in hard for path in item.paths} == (
-        {"result.txt", "README.md"} if with_host_state else {"result.txt"}
-    )
-    assert not [command for item in hard for command in item.commands]

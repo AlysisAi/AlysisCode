@@ -6,7 +6,7 @@ They do not establish that the rebuilt images pass their security gates.
 
 ## Baseline evidence
 
-The existing [sandbox scan run 36262283540](https://github.com/AlysisAi/alysis-code/actions/runs/36262283540),
+The existing [sandbox scan run 36262283540](https://github.com/AlysisAi/AlysisCode/actions/runs/36262283540),
 attempt 1, used source `2c2002231a533fa7c9265d33274f018410c714c1`. Its retained
 `trivy-pr-dev-amd64-sarif` artifact has 536 findings: 522 HIGH, 14 CRITICAL,
 337 distinct CVE IDs, and 169 package findings without a fixed version in that report.
@@ -35,7 +35,7 @@ packages with no recorded fix as automatically exempt.
 
 ## Public candidate scan
 
-[Public candidate run 36561233104](https://github.com/AlysisAi/alysis-code/actions/runs/36561233104)
+[Public candidate run 36561233104](https://github.com/AlysisAi/AlysisCode/actions/runs/36561233104)
 built the amd64 dev image from candidate commit
 `3d99fd430ce95f1b9fb6c338ae437754719570de`. Its retained
 `trivy-pr-dev-amd64-sarif` artifact reports 168 HIGH findings, no CRITICAL findings,
@@ -47,7 +47,7 @@ The follow-up removes the redundant Debian `python3`/`python3-venv` installation
 The official Python base already provides the interpreter, pip, and venv; a new
 build-time check creates a virtual environment and verifies its pip. This avoids
 shipping an unused second interpreter and bundled setuptools wheel. Its impact
-was checked in [follow-up run 36562492600](https://github.com/AlysisAi/alysis-code/actions/runs/36562492600)
+was checked in [follow-up run 36562492600](https://github.com/AlysisAi/AlysisCode/actions/runs/36562492600)
 on source `1dec6c2dd8e8e8478ff6ac5178a888d9cc4cba74`. The dev amd64 image built,
 but its scan reported 151 HIGH and 1 CRITICAL package findings, covering 105
 distinct CVEs. The scan recorded no fixed versions, and runtime smoke was skipped

@@ -260,6 +260,7 @@ def tool_activity(
 def patch_activity(event: PatchEvent, *, activity_id: str | None = None) -> ActivityEvent:
     full_safe_patch = str(redact_secrets(event.diff))
     safe_patch, truncated = _bounded_patch(full_safe_patch)
+    truncated = truncated or event.diff_truncated
     stable_activity_id = activity_id or (
         "patch-" + hashlib.sha256(full_safe_patch.encode("utf-8")).hexdigest()[:16]
     )
@@ -269,8 +270,10 @@ def patch_activity(event: PatchEvent, *, activity_id: str | None = None) -> Acti
     return ActivityEvent(
         activity_id=stable_activity_id,
         kind="edit",
-        operation="prepare_workspace_patch",
-        display_title="Prepared workspace changes",
+        operation="apply_workspace_patch" if event.applied else "prepare_workspace_patch",
+        display_title="Applied workspace changes"
+        if event.applied
+        else "Prepared workspace changes",
         status="succeeded",
         target=_files_target(safe_files),
         summary=summary,

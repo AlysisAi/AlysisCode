@@ -487,8 +487,7 @@ def test_streaming_turn_emits_live_deltas_and_bracketed_reasoning(tmp_path: Path
     assert _event_payloads(log_path, "route_decision") == []
 
 
-# Salvages: test_raw_only_provider_capability_never_receives_display_callback
-def test_raw_only_provider_capability_never_receives_display_callback(tmp_path: Path) -> None:
+def test_native_reasoning_capability_receives_display_callback(tmp_path: Path) -> None:
     from alysis_code.cli_impl.tui.surface import TuiSurface
     from alysis_code.cli_impl.tui.transcript import TuiTranscript
 
@@ -519,11 +518,8 @@ def test_raw_only_provider_capability_never_receives_display_callback(tmp_path: 
     finally:
         session.close()
 
-    # A raw-chain-of-thought capability has no safe summary: even at /trace
-    # full the runtime must not hand the provider a display callback, and no
-    # reasoning text may reach the transcript.
-    assert client.summary_callback_supplied is False
-    assert not any(role == "reasoning" for role, _text in transcript.entries)
+    assert client.summary_callback_supplied is True
+    assert ("reasoning", "private chain of thought") in transcript.entries
 
 
 # Salvages: test_trace_level_does_not_change_normal_agent_requests_or_usage

@@ -19,7 +19,7 @@ from alysis_code.llm.factory import make_llm_client
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
 from alysis_code.llm.types import BillingMode, UsageConfidence, UsageContract
 from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
-from alysis_code.provider_auth import openai_codex
+from alysis_code.provider_auth import ProviderRequestAuthorization, openai_codex
 from alysis_code.provider_telemetry import (
     provider_call_history_snapshot,
     reset_provider_telemetry_for_tests,
@@ -63,7 +63,11 @@ def test_real_subscription_adapter_skips_counting_before_auth_or_http(
     monkeypatch: pytest.MonkeyPatch, contract: UsageContract | None
 ) -> None:
     adapter = openai_codex.OpenAICodexSubscriptionAuth()
+    # Construction binds a route once; unsupported preflight must do no further
+    # credential lookup or request authorization.
+    monkeypatch.setattr(adapter, "route_credential_scope", lambda: "offline-account-scope")
     monkeypatch.setattr(adapter, "authorization_headers", _denied)
+    monkeypatch.setattr(adapter, "authorize_request", _denied)
     original = contract or OpenAIResponsesClient.usage_contract
     cache_metadata = {"enabled": True, "strategy": "implicit", "mode": "automatic"}
     client = OpenAIResponsesClient(
@@ -137,11 +141,17 @@ def test_unavailable_preflight_does_not_change_subscription_response_usage(
     requests: list[httpx.Request] = []
     adapter = openai_codex.OpenAICodexSubscriptionAuth()
 
-    def headers(url: str, **_kwargs: Any) -> dict[str, str]:
-        assert url == f"{adapter.base_url}/responses"
-        return {"Authorization": "Bearer offline-placeholder"}
+    scope = "offline-account-scope"
+    monkeypatch.setattr(adapter, "route_credential_scope", lambda: scope)
 
-    monkeypatch.setattr(adapter, "authorization_headers", headers)
+    def authorize(url: str, *, expected_credential_scope: str, **_kwargs: Any):
+        assert url == f"{adapter.base_url}/responses"
+        assert expected_credential_scope == scope
+        return ProviderRequestAuthorization(
+            credential_scope=scope, headers={"Authorization": "Bearer offline-placeholder"}
+        )
+
+    monkeypatch.setattr(adapter, "authorize_request", authorize)
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -242,6 +252,7 @@ def test_factory_subscription_contract_keeps_billing_and_response_confidence(
     adapter = openai_codex.OpenAICodexSubscriptionAuth()
     monkeypatch.setattr(adapter, "route_credential_scope", lambda: "offline-account-scope")
     monkeypatch.setattr(adapter, "authorization_headers", _denied)
+    monkeypatch.setattr(adapter, "authorize_request", _denied)
     monkeypatch.setattr(
         "alysis_code.llm.factory.create_provider_auth", lambda *_args, **_kwargs: adapter
     )
@@ -258,7 +269,7 @@ def test_factory_subscription_contract_keeps_billing_and_response_confidence(
         default_model="test-model",
         reasoning_effort="high",
     )
-    cfg = AppConfig(model="test-model")
+    cfg = AppConfig(model="test-model", prompt_cache_mode="auto")
     cfg.extra_fields = {"profiles": {}, "active_profile": ""}
     add_profile(cfg, profile)
     set_active_profile(cfg, profile.name)

@@ -189,6 +189,80 @@ function config(): any {
   return { defaultModel: "claude-sonnet-5", provider: "", baseUrl: "" };
 }
 
+test("a local provider connects without inventing an API key", async () => {
+  const { bridge, calls } = fakeBridge();
+  const secrets = new AlysisSecretStore(new MemorySecretStorage());
+  const activated: unknown[] = [];
+  const promptStart = prompts.length;
+  inputBoxAnswer = "";
+  try {
+    const catalog = new ProviderCatalogController(bridge, secrets, config, () => undefined, () => true,
+      undefined, async (profile, model) => { activated.push({ profile, model }); });
+    await catalog.refresh();
+    await catalog.connect({ presetKey: "ollama", model: "local-model" });
+    assert.deepEqual(activated, [{ profile: "ollama", model: "local-model" }]);
+    assert.deepEqual(calls.map(call => call.method), ["profile.preset"]);
+    assert.deepEqual(await secrets.listProviderCredentials(), []);
+    assert.equal((prompts[promptStart].validateInput as (value: string) => unknown)(""), undefined);
+  } finally {
+    inputBoxAnswer = "typed-key";
+  }
+});
+
+for (const host of ["localhost:11434", "127.0.0.1:11434", "::1", "[::1]:11434"]) {
+  test(`switching to a configured local provider at ${host} does not require a key`, async () => {
+    const { bridge } = fakeBridge({ profileList: async () => ({
+      active_profile: "anthropic",
+      profiles: [{ name: "local", base_url_host: host, protocol: "openai_compat",
+        default_model: "local-model", api_key: { present: false } }]
+    }) });
+    const activated: string[] = [];
+    const promptStart = prompts.length;
+    const catalog = new ProviderCatalogController(bridge, new AlysisSecretStore(new MemorySecretStorage()),
+      config, () => undefined, () => true, undefined, async profile => { activated.push(profile); });
+    await catalog.refresh();
+    await catalog.useConnection("local");
+    assert.deepEqual(activated, ["local"]);
+    assert.equal(prompts.length, promptStart);
+  });
+}
+
+test("cancelling local setup leaves the previous provider untouched", async () => {
+  const { bridge, calls } = fakeBridge();
+  const secrets = new AlysisSecretStore(new MemorySecretStorage());
+  inputBoxAnswer = undefined;
+  try {
+    const catalog = new ProviderCatalogController(bridge, secrets, config, () => undefined, () => true);
+    await catalog.refresh();
+    await catalog.connect({ presetKey: "ollama", model: "local-model" });
+    assert.deepEqual(calls, []);
+    assert.equal(catalog.snapshot().activeProfile, "anthropic");
+  } finally {
+    inputBoxAnswer = "typed-key";
+  }
+});
+
+test("authenticated custom endpoints retain a forwardable profile key", async () => {
+  const { bridge } = fakeBridge();
+  const secrets = new AlysisSecretStore(new MemorySecretStorage());
+  inputBoxAnswer = "custom-endpoint-key";
+  const promptStart = prompts.length;
+  try {
+    const catalog = new ProviderCatalogController(bridge, secrets, config, () => undefined, () => true,
+      undefined, async () => {
+        assert.deepEqual(await secrets.listProviderCredentials(), [
+          { profile: "custom", envVar: "", value: "custom-endpoint-key" }
+        ]);
+      });
+    await catalog.refresh();
+    await catalog.connect({ presetKey: "custom", model: "custom-model", baseUrl: "https://models.example.com/v1" });
+    assert.equal(catalog.snapshot().error, "");
+    assert.equal((prompts[promptStart].validateInput as (value: string) => unknown)(""), "API key is required.");
+  } finally {
+    inputBoxAnswer = "typed-key";
+  }
+});
+
 test("forgetting a provider key refreshes live credentials after removing it from storage", async () => {
   const { bridge } = fakeBridge({ isRunning: () => true });
   const secrets = new AlysisSecretStore(new MemorySecretStorage());
