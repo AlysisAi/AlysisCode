@@ -9,7 +9,9 @@ from alysis_code import account_login, device_identity
 from alysis_code.config import load_config
 
 
-def test_identity_survives_repeated_login_logout_and_hostname_change(tmp_path, monkeypatch):
+def test_identity_survives_repeated_login_logout_and_hostname_change(
+    tmp_path, monkeypatch, configured_hosted_api
+):
     monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
     requests = []

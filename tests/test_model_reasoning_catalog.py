@@ -342,7 +342,7 @@ def test_other_profile_does_not_inherit_chat_effort(monkeypatch, same_name, pres
 
 
 @pytest.mark.parametrize("preset", ["anthropic", "alysis"])
-def test_sonnet_55_catalog_names_its_actual_lowest_mode(preset):
+def test_sonnet_55_catalog_names_its_actual_lowest_mode(preset, configured_hosted_api):
     caps = model_reasoning_capabilities(config(preset, "claude-sonnet-5-5"))
     choices = {item["id"]: item for item in caps["reasoning_efforts"]}
     assert "none" not in choices

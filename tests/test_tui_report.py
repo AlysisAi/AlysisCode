@@ -438,7 +438,7 @@ def test_keyboard_export_and_clipboard_errors_can_retry(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("columns,rows", [(40, 16), (80, 24), (120, 30)])
 def test_result_options_visible_on_first_frame_and_after_scrolled_draft(
-    tmp_path, monkeypatch, columns, rows
+    tmp_path, monkeypatch, columns, rows, configured_hosted_api
 ):
     from alysis_code.feedback_delivery import FeedbackReceipt
 

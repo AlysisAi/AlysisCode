@@ -35,6 +35,12 @@
 - Fix Windows `.git/info/exclude` line endings and VS Code provider setup,
   startup readiness, and package inventory checks.
 - Align public links and release provenance checks with `AlysisAi/AlysisCode`.
+- Keep hosted deployment URLs and project keys out of public source and packages.
+  Hosted login, account status, and online feedback require runtime configuration
+  through `ALYSIS_CLOUD_API_URL`; see [Reference](reference.md). Other configured
+  providers remain available.
+- Preserve focused setup actions during streamed sidebar updates and avoid
+  repeatedly searching the transcript for static controls.
 - Retire the `sylliptor` command and legacy branding aliases. Use `alysis` or
   `alysis-code`, canonical `ALYSIS_` environment variables, `.alysis` project
   data, and `alysis-plugin.toml` manifests. Back up and migrate legacy locations

@@ -74,7 +74,9 @@ def test_api_picker_saves_sol_with_correct_prices_and_efforts(preset):
 
 
 @pytest.mark.parametrize("catalog", ["paid", "free", "offline"])
-def test_hosted_picker_checks_account_catalog_and_never_broadens_free_access(monkeypatch, catalog):
+def test_hosted_picker_checks_account_catalog_and_never_broadens_free_access(
+    monkeypatch, catalog, configured_hosted_api
+):
     cfg = config("alysis")
     monkeypatch.setattr(
         config_menu, "resolve_api_key", lambda cfg: SimpleNamespace(key="slk_test", source="test")
@@ -106,7 +108,7 @@ def test_hosted_picker_checks_account_catalog_and_never_broadens_free_access(mon
         flow.choose("high")
         assert flow.state.commit_to(cfg).saved
         assert cfg.model == MODEL
-        assert cfg.base_url == get_preset("alysis").base_url
+        assert cfg.base_url == f"{configured_hosted_api}/llm/v1"
 
 
 @pytest.mark.parametrize("preset", ["alysis", "openai", "openai-responses"])

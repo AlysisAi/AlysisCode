@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "aarch64",
   "repository": "https://apk.cgr.dev/chainguard",
-  "inventory_sha256": "ec7eda366d4f5a5c977fcb3fc0919f03d526226cda4322c5610a9d9767353171",
+  "inventory_sha256": "596b4d192fda6d3a11d72b44f618445540862950aff4c1323d586fe8e14e7f56",
   "packages": [
     {
       "name": "apk-tools",
@@ -485,14 +485,14 @@
       "sha256": "80bdf2704debb8235fb0fcac616a6673a0db0477c2ed496a31327a4b3437d33a"
     },
     {
-      "name": "libldap",
-      "version": "2.6.10-r5",
+      "name": "libldap-2.6",
+      "version": "2.6.14-r0",
       "architecture": "aarch64",
-      "installed_checksum": "Q140OwOFcYvCxenYeed5V4xfo07v8=",
-      "filename": "libldap-2.6.10-r5.apk",
-      "url": "https://apk.cgr.dev/chainguard/aarch64/libldap-2.6.10-r5.apk",
-      "size": 240816,
-      "sha256": "5916db227982d391b10532cc1497edd4f049e08faa77db5e65ed47520cf03ba0"
+      "installed_checksum": "Q1jglcaD1Nh5VxKYXmLpFlmsO+Ffs=",
+      "filename": "libldap-2.6-2.6.14-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libldap-2.6-2.6.14-r0.apk",
+      "size": 245768,
+      "sha256": "3cafd792198fb80bdf34a78c818e9f5b04f447847611a32394d1c898f8c601f8"
     },
     {
       "name": "libmd",
