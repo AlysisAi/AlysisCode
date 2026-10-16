@@ -1941,9 +1941,7 @@ def run_task_worker(
         agent_exception_error = f"agent raised: {agent_exception_summary}"
         run_err = f"{agent_exception_error}; {run_err}" if run_err else agent_exception_error
     if not success and failure_category is None:
-        # TODO(failure-category-audit): default=implementation_failed,
-        # site=swarm_worker generic failure result, see failure_category.py
-        failure_category = FailureCategory.IMPLEMENTATION_FAILED
+        failure_category = classify_failure_category(agent_exception_summary)
 
     if interrupted:
         summary = (

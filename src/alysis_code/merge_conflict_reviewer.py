@@ -20,6 +20,7 @@ from .config import (
     resolve_role_temperature,
 )
 from .execution_shared import safe_task_file_component
+from .failure_category import classify_failure_category
 from .forge import RunPaths, ensure_execution_dirs, now_iso
 from .git_safe import build_git_cmd
 from .llm.base import ChatClient
@@ -85,6 +86,7 @@ class ConflictReviewOutcome:
     skipped_reason: str | None
     request_retry_count: int = 0
     request_retry_state: str = _REQUEST_RETRY_STATE_NONE
+    failure_category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -286,8 +288,6 @@ def _request_conflict_review_response(
         except LLMError as e:
             retryable = _is_retryable_conflict_review_request_error(e)
             if not retryable or attempt >= _CONFLICT_REVIEW_TRANSIENT_REQUEST_MAX_ATTEMPTS:
-                # TODO(failure-category-audit): default=implementation_failed,
-                # site=merge conflict reviewer retry exhaustion outside Forge result trend, see failure_category.py
                 raise _attach_conflict_review_retry_details(
                     e,
                     retry_count=retry_count,
@@ -663,6 +663,7 @@ def review_merge_conflict(
             skipped_reason=reason,
             request_retry_count=request_retry_count,
             request_retry_state=retry_state,
+            failure_category=classify_failure_category(e).value,
         )
     except (ValueError, json.JSONDecodeError) as e:
         reason = f"review failed: {e}"

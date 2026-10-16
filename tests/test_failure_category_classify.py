@@ -83,6 +83,14 @@ def test_classify_failure_category(error: Exception, expected: FailureCategory) 
     assert classify_failure_category(error) is expected
 
 
+def test_classify_missing_or_blank_signal_defaults_to_implementation_failed() -> None:
+    # The swarm worker resolves its generic failure default through this
+    # classifier; absent or content-free signals must stay implementation-side.
+    assert classify_failure_category(None) is FailureCategory.IMPLEMENTATION_FAILED
+    assert classify_failure_category("") is FailureCategory.IMPLEMENTATION_FAILED
+    assert classify_failure_category("   ") is FailureCategory.IMPLEMENTATION_FAILED
+
+
 def test_classify_never_returns_legacy_literal() -> None:
     # The old hardcoded "llm_error" string is not a real category and must never appear.
     category = classify_failure_category(Exception("LLM error 400: bad request"))
