@@ -14,7 +14,9 @@ _GIT_C_ESCAPE_BYTES = {
     '"': 34,
     "\\": 92,
 }
-_GIT_QUOTED_DIFF_PATHS = re.compile(r'("(?:\\.|[^"\\])*")\s+("(?:\\.|[^"\\])*")')
+_GIT_C_QUOTED_PATH = r'"(?:\\.|[^"\\])*"'
+_GIT_LEFT_QUOTED_DIFF_PATHS = re.compile(rf"({_GIT_C_QUOTED_PATH}) (b/.*|{_GIT_C_QUOTED_PATH})")
+_GIT_RIGHT_QUOTED_DIFF_PATHS = re.compile(rf"(a/.*) ({_GIT_C_QUOTED_PATH})")
 
 
 def _unquote_path(value: str) -> str:
@@ -70,14 +72,19 @@ def parse_diff_git_line(line: str) -> tuple[str | None, str | None]:
     payload = line[len("diff --git ") :]
 
     if payload.startswith('"'):
-        # Preserve Git's backslashes until _unquote_path decodes C-style
-        # sequences. shlex.split would discard octal-escape delimiters.
-        match = _GIT_QUOTED_DIFF_PATHS.fullmatch(payload)
+        match = _GIT_LEFT_QUOTED_DIFF_PATHS.fullmatch(payload)
         if match is None:
             return None, None
         return _normalize_git_path(match.group(1)), _normalize_git_path(match.group(2))
 
     if payload.startswith("a/"):
+        # A rename can quote the destination without quoting the source.
+        if ' "b/' in payload:
+            match = _GIT_RIGHT_QUOTED_DIFF_PATHS.fullmatch(payload)
+            if match is None:
+                return None, None
+            return _normalize_git_path(match.group(1)), _normalize_git_path(match.group(2))
+
         candidates = [
             (_normalize_git_path(payload[:index]), _normalize_git_path(payload[index + 1 :]))
             for index in _diff_separator_positions(payload)
@@ -121,6 +128,12 @@ def _resolved_diff_paths(
 ) -> tuple[str | None, str | None]:
     old, new = parse_diff_git_line(header)
     payload = header[len("diff --git ") :]
+    if payload.startswith('"') or ' "b/' in payload:
+        if not old or not new:
+            raise ValueError("Malformed quoted Git diff header")
+        return old, new
+    if not old or not new:
+        raise ValueError("Malformed Git diff header")
     if not (payload.startswith("a/") and len(_diff_separator_positions(payload)) > 1):
         return old, new
 

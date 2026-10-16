@@ -217,3 +217,49 @@ def test_real_git_copy_in_b_directory_preserves_source_and_destination(tmp_path:
     patch = git("diff", "--cached", "-C", "--find-copies-harder")
     assert iter_patch_paths(patch) == ["source b/name.txt", "dest b/file.txt"]
     assert parse_patch_changed_files(patch) == ["dest b/file.txt"]
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("café.txt", "plain.txt"),
+        ("plain.txt", "café.txt"),
+        ("🐈.txt", "plain.txt"),
+        ("plain.txt", "🐈.txt"),
+        ("café b/name.txt", "dest b/new.txt"),
+        ("src b/name.txt", "café.txt"),
+    ],
+)
+def test_real_git_mixed_quoted_rename_paths(tmp_path: Path, old: str, new: str) -> None:
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True
+        ).stdout
+
+    git("init", "-q")
+    source = tmp_path / old
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("first\nsecond\nthird\n", encoding="utf-8")
+    git("add", "-A")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
+    target = tmp_path / new
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
+    git("add", "-A")
+    patch = git("-c", "core.quotePath=true", "diff", "--cached", "-M")
+    assert parse_diff_git_line(patch.splitlines()[0]) == (old, new)
+    assert iter_patch_paths(patch) == [old, new]
+    assert parse_patch_changed_files(patch) == [new]
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        'diff --git "a/caf\\303\\251.txt" b/',
+        'diff --git a/plain.txt "b/caf\\303\\251.txt',
+        'diff --git "a/caf\\303\\251.txt" "b/plain.txt',
+    ],
+)
+def test_invalid_quoted_diff_headers_are_not_silently_ignored(header: str) -> None:
+    with pytest.raises(ValueError, match="Malformed"):
+        iter_patch_paths(header + "\n")
