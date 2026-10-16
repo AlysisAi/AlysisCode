@@ -363,7 +363,7 @@ def _validate_managed_runtime_release(
     release = manifest.get("release")
     if not isinstance(release, dict) or release != {
         "sourceCommit": source_sha,
-        "sourceRepository": "https://github.com/AlysisAi/alysis-code",
+        "sourceRepository": "https://github.com/AlysisAi/AlysisCode",
         "tag": release_tag,
     }:
         raise PromotionBundleValidationError(
@@ -401,7 +401,7 @@ def _validate_managed_runtime_release(
         executable_bytes = executable_path.read_bytes()
         dependency_sbom_path = managed_runtime_dir / f"{target}.cdx.json"
         expected_url = (
-            f"https://github.com/AlysisAi/alysis-code/releases/download/"
+            f"https://github.com/AlysisAi/AlysisCode/releases/download/"
             f"{release_tag}/{executable_name}"
         )
         if (

@@ -10,19 +10,19 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 | --- | ---: |
 | `blocked_until_security_model` | 14 |
 | `experimental_with_gate` | 1 |
-| `implemented_in_bridge_only` | 20 |
+| `implemented_in_bridge_only` | 32 |
 | `implemented_in_extension` | 411 |
-| `intentionally_cli_only` | 14 |
-| `not_applicable_to_ide` | 29 |
+| `intentionally_cli_only` | 25 |
+| `not_applicable_to_ide` | 30 |
 | `planned_for_protocol` | 0 |
 
 ## Source Inventory
 
 - Backend action metadata entries: 122
 - CLI Forge chat commands: 10
-- CLI chat slash commands: 37
-- CLI commands and groups: 117
-- IDE bridge methods: 192
+- CLI chat slash commands: 36
+- CLI commands and groups: 130
+- IDE bridge methods: 205
 - VS Code package/chat commands: 54
 - VS Code slash commands and aliases: 68
 
@@ -83,13 +83,6 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 
 ## implemented_in_bridge_only
 
-### cli.chat_slash.objective_bridge_only
-
-- Surface: `cli_chat_slash_command`
-- Features: `/objective`
-- Rationale: Host-owned task identity is a session-runtime concept. The IDE reaches the same transition through the typed chat.send task_relation field (new_task / amendment / continuation) instead of forwarding slash text; the current objective is reported by session.resume task_id and the session log.
-- Bridge-only rationale: chat.send accepts task_relation today, so the extension can start a new task or amend the current one without a slash command; a native 'new task' affordance and an objective status readout are planned extension follow-ups once the task-brief lifecycle has been exercised in IDE sessions.
-
 ### ide.methods.forge_plan_regenerate_async
 
 - Surface: `ide_bridge_method`
@@ -132,6 +125,13 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Rationale: Durable session-scoped tasks use revision CAS and one active-task enforcement; structured questions use idempotency, expiry, crash recovery, fenced one-shot resolution, and bounded redacted payloads.
 - Bridge-only rationale: The backend and typed client are complete; native task progress and question controls belong to the subsequent frontend wave.
 
+### ide.methods.mid_turn_steering
+
+- Surface: `ide_bridge_method`
+- Features: `chat.steer`, `chat.steer.take`
+- Rationale: Hosts add a user message to the running turn through the same steering inbox the TUI uses; the turn reads it at its next step and logs steer_message_delivered with the text. chat.steer.take returns messages a finished turn did not read so the host can send them next. Refused without a running turn.
+- Bridge-only rationale: The backend and typed client are complete; the Alysis Code desktop app is the first host to use them. A VS Code steering control belongs to a later frontend wave.
+
 ### ide.feature.session_limited_methods
 
 - Surface: `ide_capability`
@@ -145,6 +145,41 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Features: `stdio-jsonl`
 - Rationale: IDE Protocol v1 transport is newline-delimited JSON over stdio; the extension consumes this protocol and must not scrape terminal output.
 - Bridge-only rationale: Transport selection is an internal extension/backend contract and is not exposed as a VS Code command, slash route, tree route, or Cockpit action.
+
+### ide.methods.composer_catalog
+
+- Surface: `ide_bridge_method`
+- Features: `commands.list`
+- Rationale: Read-only CLI slash command metadata for host-native composer menus.
+- Bridge-only rationale: Consumed by the desktop composer. The VS Code typed client supports this query but its command menu has not adopted the shared catalog.
+
+### ide.methods.feedback_delivery
+
+- Surface: `ide_bridge_method`
+- Features: `feedback.prepare`, `feedback.send`
+- Rationale: Hosts build the same private report as the TUI's /report "Send to Alysis" (feedback_delivery): redacted description, engine version and, only when asked, OS, Python version and the last session messages. feedback.send sends exactly the reviewed bytes, tied to the Alysis account when signed in and anonymous otherwise; the report_id makes retries safe.
+- Bridge-only rationale: The backend and typed client are complete; the Alysis Code desktop app is the first host to use them. A VS Code report control belongs to a later frontend wave.
+
+### ide.methods.desktop_host_responses
+
+- Surface: `ide_bridge_method`
+- Features: `browser_start.respond`, `computer.respond`, `task_budget.respond`
+- Rationale: Capability-negotiated responses from the trusted Alysis Code desktop host for browser start, Computer Use and per-turn task budgets.
+- Bridge-only rationale: The desktop owns these private media, approval and budget boundaries. VS Code does not negotiate or implement the desktop host capability; these methods are intentionally excluded from its typed client coverage, while bridge dispatch and protocol documentation remain required.
+
+### ide.methods.subagent_models
+
+- Surface: `ide_bridge_method`
+- Features: `agents.list`
+- Rationale: Read-only subagent and role model metadata for host settings pages: each subagent's model and provider as a run would resolve them, and why one is unavailable.
+- Bridge-only rationale: Consumed by the desktop Settings. The VS Code typed client supports this query but has no subagent settings page.
+
+### ide.methods.host_question_dispatch
+
+- Surface: `ide_bridge_method`
+- Features: `host.action.dispatched`, `session.userQuestions.get`, `session.userQuestions.answer`, `session.userQuestions.touch`
+- Rationale: Host dispatch receipts and structured user questions are scoped to the active session and job.
+- Bridge-only rationale: These negotiated host interfaces are available to desktop clients. The VS Code frontend does not yet implement the question or dispatch UI.
 
 
 ## implemented_in_extension
@@ -321,13 +356,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 
 - Surface: `cli_command`
 - Features: `auth list`, `auth status`, `config clear-api-key`, `config menu`, `config set-api-key`, `profile clear-key`, `profile set-key`, `power gate`, `server start`, `setup`, `whoami`
-- Rationale: These commands are terminal setup/maintenance, provider-account inspection, Power Mode gate diagnostics, legacy asset migration, local sandbox image management, server startup, or secret mutation flows; they must not be terminal-scraped or accept unsafe inline secrets through IDE protocol params.
-
-### cli.chat_slash.power_cli_only
-
-- Surface: `cli_chat_slash_command`
-- Features: `/power`
-- Rationale: Power Mode configuration and diagnostics are currently terminal-owned. The IDE bridge does not advertise a typed Power Mode lifecycle, so the extension must not forward /power text to the model or infer state from terminal output.
+- Rationale: These commands are terminal setup/maintenance, provider-account inspection, legacy asset migration, local sandbox image management, server startup, or secret mutation flows; they must not be terminal-scraped or accept unsafe inline secrets through IDE protocol params.
 
 ### cli.chat_slash.ask_once
 
@@ -335,13 +364,37 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Features: `/ask`
 - Rationale: The CLI runs one read-only turn and restores prior permissions. The IDE protocol has no per-turn permission override or restore handshake. The extension explains this limitation and offers the persistent Ask persona without pretending it is a one-turn equivalent.
 
+### cli.commands.provider_model_selection
+
+- Surface: `cli_command`
+- Features: `auth models`, `auth select-model`, `profile select-model`, `auth reasoning`
+- Rationale: CLI provider model inventory and selection helpers. VS Code retains its existing typed provider/configuration controls rather than invoking these terminal commands.
+
+### cli.commands.desktop_engine_contract
+
+- Surface: `cli_command`
+- Features: `capabilities`, `forge _host-stdio`, `forge preflight`, `forge verification-check`, `forge workspace-check`
+- Rationale: Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle.
+
+### cli.commands.subagent_models
+
+- Surface: `cli_command`
+- Features: `agents list`, `agents set`
+- Rationale: Subagent model settings. Hosts read them with the agents.list bridge method; the desktop host saves with `agents set`, as it saves other settings with `config set`. VS Code has no subagent settings page yet.
+
+### cli.commands.profile_check
+
+- Surface: `cli_command`
+- Features: `profile check`
+- Rationale: Validate a saved profile or a key read from stdin without changing stored credentials.
+
 
 ## not_applicable_to_ide
 
 ### cli.groups.namespaces
 
 - Surface: `cli_command_group`
-- Features: `auth`, `config`, `conventions`, `ext`, `forge`, `forge assets`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `profile`, `power`, `report`, `sandbox`, `sessions`, `skill`, `tool`, `update`
+- Features: `auth`, `config`, `conventions`, `ext`, `forge`, `forge assets`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `profile`, `power`, `report`, `sandbox`, `sessions`, `skill`, `tool`, `update`, `agents`
 - Rationale: Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision.
 
 ### cli.chat_slash.not_applicable

@@ -17,6 +17,7 @@ from ...config import (
     AppConfig,
     ConfigError,
     config_path,
+    default_sessions_dir,
     load_config,
     resolve_model_access_api_key,
     resolve_web_search_policy,
@@ -45,6 +46,7 @@ from ._shared import (
     _console,
     _Table,
 )
+from .agents import agents_app
 from .auth import JSON_OPTION_HELP as _JSON_OPTION_HELP
 from .auth import _status_payload as _auth_status_payload
 from .auth import auth_app
@@ -96,6 +98,7 @@ app.add_typer(ext_app, name="ext")
 app.add_typer(report_app, name="report")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(skill_app, name="skill")
+app.add_typer(agents_app, name="agents")
 app.add_typer(conventions_app, name="conventions")
 app.add_typer(tool_app, name="tool")
 app.add_typer(hooks_app, name="hooks")
@@ -108,6 +111,15 @@ mcp_app.add_typer(mcp_auth_app, name="auth")
 #: A build that cannot identify itself is a configuration problem, not a task
 #: failure, so it gets its own code rather than the generic 1.
 UNIDENTIFIABLE_BUILD_EXIT_CODE = 2
+
+
+@app.command()
+def capabilities() -> None:
+    """Emit the credential-free local surface capability contract."""
+
+    from ...capabilities import build_capabilities_payload
+
+    typer.echo(json.dumps(build_capabilities_payload(), sort_keys=True))
 
 
 def _show_version(value: bool) -> None:
@@ -236,7 +248,12 @@ def _require_active_subscription_ready(
 @app.command()
 def run(
     ctx: typer.Context = None,
-    instruction: str = typer.Argument(..., help="What you want the agent to do."),
+    instruction: str | None = typer.Argument(None, help="What you want the agent to do."),
+    instruction_stdin: bool = typer.Option(
+        False,
+        "--instruction-stdin",
+        help="Read the instruction from stdin. Intended for trusted desktop/managed hosts.",
+    ),
     path: Path = typer.Option(Path("."), "--path", help="Working directory/root."),
     create_path: bool = typer.Option(
         False,
@@ -342,42 +359,110 @@ def run(
         "--diagnostic-log",
         help="Append minimal crash-safe diagnostic events to this JSONL path.",
     ),
+    strict_provenance: bool = typer.Option(
+        False,
+        "--strict-provenance",
+        help=(
+            "Refuse to start unless streaming (--stream/--no-stream) and thinking "
+            "(ALYSIS_LLM_ENABLE_THINKING or llm_enable_thinking) are set explicitly. "
+            "Benchmark adapters pass this for scored runs."
+        ),
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session",
+        help=(
+            "Resume (or start) a named session id so the run continues that conversation. "
+            "Used by the desktop chat for persistent multi-turn sessions."
+        ),
+    ),
+    session_dir: Path | None = typer.Option(
+        None,
+        "--session-dir",
+        help="Directory holding session JSONL logs (defaults to the standard sessions dir).",
+    ),
 ) -> None:
+    if instruction_stdin and api_key_stdin:
+        typer.echo("Do not combine --instruction-stdin with --api-key-stdin.", err=True)
+        raise typer.Exit(2)
+    if instruction_stdin:
+        if instruction is not None:
+            typer.echo("Do not combine INSTRUCTION with --instruction-stdin.", err=True)
+            raise typer.Exit(2)
+        instruction = sys.stdin.read()
+    instruction = str(instruction or "")
     if not instruction.strip():
         typer.echo("Missing argument 'INSTRUCTION': instruction is empty.", err=True)
         raise typer.Exit(1)
-    _require_active_subscription_ready(model=model, base_url=base_url)
+    if session_dir is not None and session_id is None:
+        typer.echo("Config error: --session-dir requires --session.", err=True)
+        raise typer.Exit(2)
 
-    from ..chat import run_impl
+    managed_session_persistence = None
+    if session_id is not None:
+        from ...managed_session import prepare_managed_session_persistence
 
-    return run_impl(
-        _cli_module(),
-        instruction,
-        path,
-        create_path,
-        allow_broad_workspace,
-        image,
-        mode,
-        persona,
-        model,
-        base_url,
-        temperature,
-        stream,
-        max_steps,
-        subagents,
-        no_log,
-        verify_cmd,
-        api_key_env,
-        api_key_stdin,
-        api_key,
-        yes,
-        benchmark,
-        deadline_seconds,
-        no_deadline,
-        require_deadline,
-        diagnostic_log,
-        cli_ctx=ctx,
-    )
+        try:
+            managed_session_persistence = prepare_managed_session_persistence(
+                sessions_dir=session_dir if session_dir is not None else default_sessions_dir(),
+                session_id=session_id,
+                append=not no_log,
+            )
+            # Finalize the exact retained writer (or read-only capability) now.
+            # No later path lookup or fdopen failure may occur after provider
+            # readiness begins.
+            managed_session_persistence.seal()
+        except ConfigError as exc:
+            if managed_session_persistence is not None:
+                managed_session_persistence.close()
+            typer.echo(f"Config error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        session_id = managed_session_persistence.session_id
+        session_dir = managed_session_persistence.sessions_dir
+
+    try:
+        # The managed session filesystem boundary above must be admitted before
+        # subscription/provider setup so an invalid App destination cannot
+        # begin a model-backed run.
+        _require_active_subscription_ready(model=model, base_url=base_url)
+
+        from ..chat import run_impl
+
+        return run_impl(
+            _cli_module(),
+            instruction,
+            path,
+            create_path,
+            allow_broad_workspace,
+            image,
+            mode,
+            persona,
+            model,
+            base_url,
+            temperature,
+            stream,
+            max_steps,
+            subagents,
+            no_log,
+            verify_cmd,
+            api_key_env,
+            api_key_stdin,
+            api_key,
+            yes,
+            benchmark,
+            deadline_seconds,
+            no_deadline,
+            require_deadline,
+            diagnostic_log,
+            session_id,
+            session_dir,
+            cli_ctx=ctx,
+            strict_provenance=strict_provenance,
+            managed_session_persistence=managed_session_persistence,
+        )
+    finally:
+        if managed_session_persistence is not None:
+            managed_session_persistence.close()
 
 
 @app.command()
@@ -1080,6 +1165,16 @@ def _whoami_payload(cfg: AppConfig) -> dict[str, Any]:
         profile_name=status.profile_name,
         profile_active=bool(status.active),
         plan=(trial.plan if trial is not None else None),
+        display_name=(trial.display_name if trial is not None else None),
+        billing=(trial.billing if trial is not None else None),
+        billing_status=(
+            "available"
+            if trial is not None and trial.billing is not None
+            else "unavailable"
+            if status.logged_in
+            else "signed_out"
+        ),
+        account_url=account_login.cloud.account_url(),
     )
 
 
@@ -1100,7 +1195,7 @@ def whoami(
         console.print("Not logged in. Run `alysis login` to connect your Alysis Code account.")
         return
     active = "active" if status.active else "not active"
-    console.print("[green]Logged in[/green] to the Alysis Code MiMo trial.")
+    console.print("[green]Logged in[/green] to your Alysis Code account.")
     console.print(
         f"Profile: [bold]{status.profile_name}[/bold] ({active}) · key {status.key_preview}"
     )
@@ -1111,4 +1206,4 @@ def whoami(
         if line:
             console.print(line)
     else:
-        console.print("[dim](Could not reach the trial service for live status.)[/dim]")
+        console.print("[dim](Live account usage is unavailable. Check your account website.)[/dim]")

@@ -102,6 +102,10 @@
   let forgeRunning = false;
   let modeControlSignature = "";
   let settingsFilterSignature = "";
+  let readyGateSignature = "";
+  // These capability controls belong to the static sidebar shell. Querying the
+  // entire growing transcript for them on every token wastes rendering time.
+  const forgeControls = document.querySelectorAll('[data-surface="forge"], [data-forge-starter], [data-forge-draft]');
   let currentState = null;
   /** @type {Map<string, { signature: string, node: HTMLElement }>} */
   const renderedItems = new Map();
@@ -769,7 +773,7 @@
     }
     currentState = state;
     renderWorkspaceBar(state.gitWorkspace);
-    for (const control of document.querySelectorAll('[data-surface="forge"], [data-forge-starter], [data-forge-draft]')) {
+    for (const control of forgeControls) {
       if (control instanceof HTMLElement) control.hidden = state.forgeEnabled === false;
     }
     if (state.forgeEnabled === false && surface === "forge") showSurface("task");
@@ -4668,10 +4672,17 @@
    */
   function renderReadyGate(state) {
     composerReady = state.ready === true;
+    const blocker = Array.isArray(state.readiness?.blockers) ? state.readiness.blockers[0] : null;
+    const signature = JSON.stringify([composerReady, blocker, state.readyReason]);
+    if (signature === readyGateSignature) {
+      syncWorkflowContext();
+      updateSubmitState();
+      return;
+    }
+    readyGateSignature = signature;
     if (connectFirst) {
       connectFirst.hidden = composerReady;
     }
-    const blocker = Array.isArray(state.readiness?.blockers) ? state.readiness.blockers[0] : null;
     const progress = blocker?.progress === true;
     readyGateProgress = progress;
     connectFirst?.classList.toggle("progress", progress);

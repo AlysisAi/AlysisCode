@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -27,6 +28,7 @@ import psutil
 
 from .background_runner import _apply_env_overrides
 from .branding import default_sandbox_docker_image
+from .command_text import command_text
 from .error_text import sanitize_optional_error_summary
 from .execution_deadline import (
     MINIMUM_TOOL_START_SECONDS,
@@ -716,42 +718,20 @@ class DurableServiceManager:
             elif readiness_type == "unix_socket":
                 path = Path(str(readiness.get("path") or ""))
                 try:
-                    # Prove ownership before connecting. A pending Unix socket
-                    # connection can appear in psutil's global list with no PID,
-                    # making the listener look ambiguously owned.
-                    ownership = _endpoint_ownership(metadata, unix_path=path)
-                    if not ownership["endpoint_owned"]:
-                        raise OSError(ownership["detail"])
-                    path_identity = path.stat()
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
                         conn.settimeout(min(interval_s, 0.5))
                         conn.connect(os.fspath(path))
-                        connected_path_identity = path.stat()
-                        if (
-                            path_identity.st_dev,
-                            path_identity.st_ino,
-                        ) != (
-                            connected_path_identity.st_dev,
-                            connected_path_identity.st_ino,
+                        ownership = _endpoint_ownership(metadata, unix_path=path, connection=conn)
+                        if ownership["endpoint_owned"] and all(
+                            self._metadata_process_alive(metadata)
                         ):
-                            raise OSError("Unix socket path changed during readiness probe")
-                        if hasattr(socket, "SO_PEERCRED"):
-                            peer_credentials = conn.getsockopt(
-                                socket.SOL_SOCKET,
-                                socket.SO_PEERCRED,
-                                struct.calcsize("3i"),
-                            )
-                            peer_pid = struct.unpack("3i", peer_credentials)[0]
-                            if peer_pid not in ownership["listener_pids"]:
-                                raise OSError("Unix socket peer is not the owned listener")
-                        if all(self._metadata_process_alive(metadata)):
                             return {
                                 "type": readiness_type,
                                 "status": ReadinessStatus.READY.value,
                                 "path": os.fspath(path),
                                 **ownership,
                             }
-                        last_detail = "service process exited during readiness probe"
+                        last_detail = ownership["detail"]
                 except (OSError, AttributeError) as exc:
                     last_detail = str(exc)
             elif readiness_type == "command":
@@ -769,7 +749,7 @@ class DurableServiceManager:
                         cwd=str(metadata.get("cwd") or self.root),
                         env=_safe_parent_env(),
                         capture_output=True,
-                        text=True,
+                        **command_text(),
                         timeout=min(max(0.01, deadline - time.monotonic()), 5.0),
                         check=False,
                     )
@@ -1293,12 +1273,13 @@ def _endpoint_ownership(
     *,
     peer: tuple[Any, ...] | None = None,
     unix_path: Path | None = None,
+    connection: socket.socket | None = None,
     timeout_s: float = 2.0,
 ) -> dict[str, Any]:
     """Associate a reachable endpoint with this launch, never just a live PID.
 
-    Missing OS visibility is not proof. Global listeners are checked where the
-    OS permits it. macOS requires per-process inspection for non-root callers.
+    Missing OS visibility is not proof. Global listeners are checked as well as
+    descendants, so a shared/reused port with an unrelated owner is ambiguous.
     """
     rejected = {"endpoint_owned": False, "strength": "unverified"}
     if metadata.get("backend") == "docker":
@@ -1310,22 +1291,24 @@ def _endpoint_ownership(
     try:
         process = psutil.Process(pid)
         owned = {item.pid: item for item in [process, *process.children(recursive=True)]}
-        kind = "unix" if unix_path is not None else "tcp"
-        if platform.system().lower() == "darwin":
-            # psutil.net_connections() always raises AccessDenied for non-root
-            # macOS users. Inspect every member of this verified process tree;
-            # any denied member makes endpoint ownership unprovable.
+        if unix_path is not None and connection is not None and sys.platform in {"darwin", "linux"}:
+            # Ask the kernel for this connected peer, avoiding a separate path
+            # lookup racing socket replacement or confusing accepted sockets.
+            if sys.platform == "darwin":
+                peer_pid = connection.getsockopt(0, 0x002)  # LOCAL_PEERPID, sys/un.h
+            else:
+                peer_pid = struct.unpack(
+                    "3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+                )[0]
             connections = [
-                (owner.pid, connection)
-                for owner in owned.values()
-                for connection in owner.net_connections(kind=kind)
+                SimpleNamespace(type=socket.SOCK_STREAM, laddr=str(unix_path), pid=peer_pid)
             ]
+        elif sys.platform == "darwin" and unix_path is None:
+            connections = _macos_tcp_listeners(timeout_s)
         else:
-            connections = [
-                (connection.pid, connection) for connection in psutil.net_connections(kind=kind)
-            ]
+            connections = psutil.net_connections(kind="unix" if unix_path is not None else "tcp")
         matches = []
-        for owner_pid, connection in connections:
+        for connection in connections:
             if connection.type != socket.SOCK_STREAM:
                 continue
             if unix_path is not None:
@@ -1345,15 +1328,10 @@ def _endpoint_ownership(
                     continue
                 if address.version != target.version:
                     continue
-            matches.append((owner_pid, connection))
+            matches.append(connection)
         if not matches:
-            detail = (
-                "endpoint is occupied by an unrelated or unidentifiable listener"
-                if peer is not None and platform.system().lower() == "darwin"
-                else "no owned listener was visible for the endpoint"
-            )
-            return {**rejected, "detail": detail}
-        if any(owner_pid not in owned for owner_pid, _ in matches):
+            return {**rejected, "detail": "no owned listener was visible for the endpoint"}
+        if any(item.pid not in owned for item in matches):
             return {
                 **rejected,
                 "detail": "endpoint is occupied by an unrelated or unidentifiable listener",
@@ -1362,18 +1340,98 @@ def _endpoint_ownership(
         # or a launcher exiting during the observation.
         if not process.is_running() or _pid_start_token(pid) != token:
             return {**rejected, "detail": "service identity changed during readiness probe"}
-        for owner_pid, _ in matches:
-            owner = owned[owner_pid]
+        for connection in matches:
+            owner = owned[connection.pid]
             if not owner.is_running():
                 return {**rejected, "detail": "listener exited during readiness probe"}
         return {
             "endpoint_owned": True,
             "strength": "owned_endpoint",
-            "listener_pids": sorted({owner_pid for owner_pid, _ in matches}),
+            "listener_pids": sorted({item.pid for item in matches}),
             "detail": "endpoint listener belongs to the launched service",
         }
-    except (psutil.Error, OSError, ValueError, NotImplementedError) as exc:
+    except (
+        psutil.Error,
+        OSError,
+        ValueError,
+        NotImplementedError,
+        subprocess.SubprocessError,
+    ) as exc:
         return {**rejected, "detail": f"endpoint ownership unavailable: {type(exc).__name__}"}
+
+
+def _macos_tcp_listeners(timeout_s: float) -> list[Any]:
+    """Read Darwin's system-wide PCB table without privileged process inspection.
+
+    psutil's global scan requires root on macOS. The system netstat reads the
+    kernel table, including unrelated listeners and their owning PIDs. Unknown
+    output is an error, never an empty or partially trusted ownership result.
+    """
+    result = subprocess.run(
+        ["/usr/sbin/netstat", "-anv", "-p", "tcp"],
+        capture_output=True,
+        **command_text(),
+        check=True,
+        timeout=max(0.01, timeout_s),
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return _parse_macos_tcp_listeners(result.stdout)
+
+
+def _parse_macos_tcp_listeners(output: str) -> list[Any]:
+    columns: list[str] | None = None
+    listeners: list[Any] = []
+    for line in output.splitlines():
+        if line.startswith("Proto "):
+            columns = (
+                line.replace("Local Address", "local").replace("Foreign Address", "foreign").split()
+            )
+            if not {"local", "(state)"} <= set(columns) or not (
+                {"pid", "process:pid"} & set(columns)
+            ):
+                raise ValueError("Unknown macOS listener table header")
+            continue
+        if not line.startswith(("tcp4 ", "tcp6 ", "tcp46 ")):
+            continue
+        if columns is None:
+            raise ValueError("Missing macOS listener table header")
+        fields = line.split()
+        pid_column = "process:pid" if "process:pid" in columns else "pid"
+        pid_index = columns.index(pid_column)
+        # The process name may itself contain spaces; all surrounding fields
+        # are scalar. Fold only that column before indexing by the header.
+        if pid_column == "process:pid":
+            tail = len(columns) - pid_index - 1
+            end = len(fields) - tail if tail else len(fields)
+            fields[pid_index:end] = [" ".join(fields[pid_index:end])]
+        if len(fields) != len(columns):
+            raise ValueError("Malformed macOS listener table row")
+        if fields[columns.index("(state)")] != "LISTEN":
+            continue
+        address, port = fields[columns.index("local")].rsplit(".", 1)
+        addresses = [address]
+        if address == "*":
+            # Darwin labels dual-stack listeners tcp46 and prints one IPv4
+            # wildcard row. It can accept both families and must participate in
+            # either ownership check, including unrelated-owner rejection.
+            addresses = {
+                "tcp4": ["0.0.0.0"],
+                "tcp6": ["::"],
+                "tcp46": ["0.0.0.0", "::"],
+            }[fields[0]]
+        owner_pid = int(fields[pid_index].rsplit(":", 1)[-1])
+        listeners.extend(
+            SimpleNamespace(
+                type=socket.SOCK_STREAM,
+                status=psutil.CONN_LISTEN,
+                laddr=SimpleNamespace(ip=address, port=int(port)),
+                pid=owner_pid if owner_pid > 0 else None,
+            )
+            for address in addresses
+        )
+    if columns is None:
+        raise ValueError("Missing macOS listener table")
+    return listeners
 
 
 def _docker_endpoint_ownership(
@@ -1408,7 +1466,7 @@ def _docker_endpoint_ownership(
         sockets = subprocess.run(
             [docker, "exec", container_id, "cat", "/proc/net/tcp", "/proc/net/tcp6"],
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=max(0.01, min(2.0, deadline - time.monotonic())),
             check=False,
         )
@@ -1453,7 +1511,7 @@ def _owned_container_snapshot(
         inspected = subprocess.run(
             [docker, "inspect", "--format", template, container_name],
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=max(0.01, timeout_s),
             check=False,
         )
@@ -1755,7 +1813,7 @@ def _pid_is_zombie(pid: int) -> bool:
             [ps, "-o", "stat=", "-p", str(pid)],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=1.0,
         )
     except (OSError, subprocess.SubprocessError):

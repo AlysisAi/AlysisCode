@@ -1,0 +1,32 @@
+{
+  "idempotencyKey": "idem_handshake001",
+  "kind": "request",
+  "messageId": "msg_handshake001",
+  "operationId": null,
+  "payload": {
+    "capabilities": [
+      {
+        "name": "forge.plan",
+        "version": 2
+      },
+      {
+        "name": "forge.run",
+        "version": 2
+      }
+    ],
+    "client": {
+      "hostKind": "desktop",
+      "name": "AlysisDesktop",
+      "version": "1.2.3"
+    },
+    "replayCursor": null,
+    "supportedVersions": [
+      "2.0"
+    ],
+    "type": "handshake.request"
+  },
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "requestId": "req_handshake001",
+  "sentAt": "2026-08-21T09:00:00Z"
+}

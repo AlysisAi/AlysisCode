@@ -11,8 +11,8 @@ imports from the rest of the package. Two reasons:
   directly by path.
 
 Environment lookups stay local rather than importing ``branding`` for the same
-reason. The prefix-derived ``SYLLIPTOR_*`` fallback is repeated in the small
-lookup helper so standalone and package execution keep the same behavior.
+reason. The local helper reads canonical ALYSIS_* settings so standalone and
+package execution keep the same behavior.
 
 Why a watchdog exists at all
 ----------------------------
@@ -63,6 +63,10 @@ STOP_REASON_RUN_BUDGET_EXHAUSTED = "run_budget_exhausted"
 # outcome as a budget stop: chosen by the run, not a crash.
 STOP_REASON_EMPTY_RESPONSE_ANOMALY_RETRY_EXHAUSTED = "empty_response_anomaly_retry_exhausted"
 
+# The provider returned a token-limited response and bounded continuation was
+# exhausted. This is a deliberate incomplete stop, not a runtime crash.
+STOP_REASON_OUTPUT_TOKEN_LIMIT = "output_token_limit"
+
 PROGRESS_CHECKPOINT_FAILED_EVENT = "progress_checkpoint_failed"
 
 # A budget stop is a normal outcome, not a failure: the agent did what it could
@@ -95,6 +99,7 @@ CLEAN_STOP_REASONS = frozenset(
     {
         STOP_REASON_RUN_BUDGET_EXHAUSTED,
         STOP_REASON_EMPTY_RESPONSE_ANOMALY_RETRY_EXHAUSTED,
+        STOP_REASON_OUTPUT_TOKEN_LIMIT,
     }
 )
 
@@ -130,8 +135,6 @@ class RunBudgetCancelled(Exception):
 def _env_value(name: str, environ: Mapping[str, str] | None = None) -> str | None:
     source: Mapping[str, str] = os.environ if environ is None else environ
     raw = source.get(name)
-    if raw is None and name.startswith("ALYSIS_"):
-        raw = source.get("SYLLIPTOR_" + name.removeprefix("ALYSIS_"))
     if raw is None:
         return None
     cleaned = str(raw).strip()

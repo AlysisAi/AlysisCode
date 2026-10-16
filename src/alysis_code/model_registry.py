@@ -260,6 +260,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
             "https://developers.openai.com/api/docs/pricing",
         )
         for model in (
+            "gpt-6.1-sol",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -500,6 +501,19 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
 }
 _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
     "openai": {
+        # GPT-6.1 Sol: Standard rates at <=272K input. Longer prompts cost
+        # 2x input/cache and 1.5x output; this flat schema records base rates.
+        "gpt-6.1-sol": {
+            "context_window_tokens": 1_050_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.000002,
+            "output_cost_per_token": 0.00001,
+            "cache_read_input_cost_per_token": 0.0000001,
+            "cache_creation_input_cost_per_token": 0.0000025,
+            "reasoning_output_cost_per_token": 0.00001,
+        },
         # The provenance-pinned LiteLLM snapshot (2026-07-11) predates OpenAI's
         # 5.6 price cuts (Luna/Terra 2026-07-30, Sol 2026-08-21, promo through
         # at least 2026-11-21) and its cache-write charge (1.25x input on the
@@ -1593,6 +1607,17 @@ _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6-luna"] = {
     "output_cost_per_token": 0.0000005,
 }
 
+# Paid hosted Sol shares API pricing, with the hosted modality restriction.
+_PROVIDER_CANONICAL_MODEL_IDS["alysis"]["gpt-6.1-sol"] = "gpt-6.1-sol"
+_OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6.1-sol"] = _OFFICIAL_PROVIDER_MODEL_SOURCES[
+    "openai"
+]["gpt-6.1-sol"]
+_OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6.1-sol"] = {
+    **_OFFICIAL_PROVIDER_MODEL_METADATA["openai"]["gpt-6.1-sol"],
+    # Hosted Responses meters text and function tools, like the Luna route.
+    "supports_vision": False,
+}
+
 # Anthropic's launch specifications and standard five-minute cache pricing.
 _PROVIDER_CANONICAL_MODEL_IDS["alysis"]["claude-sonnet-5-5"] = "claude-sonnet-5-5"
 _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["claude-sonnet-5-5"] = (
@@ -1907,6 +1932,9 @@ class ModelRegistry:
     def __init__(self, *, cfg: AppConfig, api_key: str | None = None) -> None:
         _ = api_key
         self._cfg = cfg
+        from .task_budget import provider_auth_network_allowed
+
+        self._provider_auth_metadata_allowed = provider_auth_network_allowed()
         self.last_error: str | None = None
         self.last_warnings: list[str] = []
         self.last_source: str | None = None
@@ -2331,6 +2359,13 @@ class ModelRegistry:
         return _FALLBACKS[field_name], "fallback"
 
     def get(self, model_name: str, *, include_provider_auth: bool = True) -> ModelMeta:
+        from .task_budget import provider_auth_network_allowed
+
+        include_provider_auth = (
+            include_provider_auth
+            and self._provider_auth_metadata_allowed
+            and provider_auth_network_allowed()
+        )
         requested = model_name.strip() or self._cfg.model.strip() or "unknown-model"
         warnings: list[str] = []
         if "model_capabilities" in self._cfg.extra_fields:

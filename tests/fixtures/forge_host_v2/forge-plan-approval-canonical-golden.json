@@ -1,0 +1,41 @@
+{
+  "plan": {
+    "schema_version": 2,
+    "project_goal": "Χτι\u0301σε την εφαρμογη\u0301",
+    "summary": "Ελεγχος κανονικοποι\u0301ησης",
+    "requirements": ["Ι\u0301δια bytes", null, true, 7],
+    "metadata": {
+      "ε\u0301ργο": "τιμη\u0301",
+      "": "private-use",
+      "😀": "emoji",
+      "enabled": true,
+      "optional": null,
+      "retries": 3
+    },
+    "tasks": [
+      {
+        "id": "T01",
+        "title": "Δοκιμη\u0301 Unicode",
+        "description": "Επαλη\u0301θευση κλειδιω\u0301ν και τιμω\u0301ν",
+        "branch": "\u0085feat/δοκιμη\u0301\u0085",
+        "dependencies": [],
+        "estimated_files": ["src/δοκιμη\u0301.py"],
+        "write_scope": ["src/δοκιμη\u0301.py"],
+        "acceptance_criteria": ["Ο\u0301λα περνου\u0301ν"],
+        "status": "planned",
+        "attempts": 3,
+        "last_execution": {
+          "status": "failed",
+          "exit_code": 1
+        },
+        "verification_retry": {
+          "attempt": 2,
+          "summary": "runtime-only evidence"
+        },
+        "approval_reconciliation": {}
+      }
+    ]
+  },
+  "canonical": "{\"metadata\":{\"enabled\":true,\"optional\":null,\"retries\":3,\"έργο\":\"τιμή\",\"\":\"private-use\",\"😀\":\"emoji\"},\"project_goal\":\"Χτίσε την εφαρμογή\",\"requirements\":[\"Ίδια bytes\",null,true,7],\"schema_version\":2,\"summary\":\"Ελεγχος κανονικοποίησης\",\"tasks\":[{\"acceptance_criteria\":[\"Όλα περνούν\"],\"branch\":\"feat/δοκιμή\",\"dependencies\":[],\"description\":\"Επαλήθευση κλειδιών και τιμών\",\"estimated_files\":[\"src/δοκιμή.py\"],\"id\":\"T01\",\"title\":\"Δοκιμή Unicode\",\"write_scope\":[\"src/δοκιμή.py\"]}]}",
+  "fingerprint": "43a4b37e2f843cc27e83c61bb108c1a8f81690f5d58eac912c8bf7dbc21b55f4"
+}

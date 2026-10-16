@@ -1,0 +1,3 @@
+job: focused-slug-check
+command: python ci_check.py
+failure: AssertionError: expected hello-world, received hello_world

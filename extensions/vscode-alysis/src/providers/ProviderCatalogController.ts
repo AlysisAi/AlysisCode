@@ -110,6 +110,7 @@ type CatalogBridge = Pick<
 type KeyPromptOutcome =
   | { kind: "entered"; value: string }
   | { kind: "keep_existing" }
+  | { kind: "not_required" }
   | { kind: "cancelled" };
 
 /** Outcome of the optional live key check after a connect or key change. */
@@ -256,7 +257,8 @@ export class ProviderCatalogController {
     }
     this.setBusy(entry.key, "waiting_for_key");
     try {
-      const key = await this.promptForKey(entry.profileName, entry.keyEnvVar, entry.label);
+      const local = entry.local || isLoopbackHost(hostOf(baseUrl));
+      const key = await this.promptForKey(entry.profileName, entry.keyEnvVar, entry.label, local);
       if (key.kind === "cancelled") {
         this.setBusy("");
         void vscode.window.showInformationMessage(
@@ -307,9 +309,9 @@ export class ProviderCatalogController {
     const target = this.state.connections.find((entry) => entry.profile === profile);
     let enteredKey: string | undefined;
     try {
-      // A keyless target is asked for its key BEFORE the switch. Cancelling keeps the current
-      // working connection instead of stranding the user on a provider that cannot run.
-      if (target && !target.hasKey) {
+      // Hosted targets need a key before switching. Local profiles may intentionally have none;
+      // their optional credentials can still be added through Update Key.
+      if (target && !target.hasKey && !isLoopbackHost(target.host)) {
         this.setBusy(profile, "waiting_for_key");
         const key = await this.promptForKey(profile, target.keyEnvVar, profile);
         if (key.kind === "cancelled") {
@@ -526,23 +528,29 @@ export class ProviderCatalogController {
   private async promptForKey(
     profile: string,
     keyEnvVar: string,
-    label: string
+    label: string,
+    optional = false
   ): Promise<KeyPromptOutcome> {
     const existing = await this.secrets.getProfileApiKey(profile);
     const apiKey = await vscode.window.showInputBox({
       title: `API key for ${label}`,
       prompt: existing
         ? "Enter a new key to replace the saved one, or press Escape to keep it."
-        : keyEnvVar
+        : optional
+          ? "This local connection can work without a key. Leave blank to continue, or enter a key if your server requires one. Escape cancels."
+          : keyEnvVar
           ? `VS Code stores this securely and passes it to Alysis Code as ${keyEnvVar}. Press Escape to cancel.`
           : "VS Code stores this securely. It is never written to your project settings. Press Escape to cancel.",
-      placeHolder: existing ? "New API key (Escape keeps the saved one)" : "Paste your API key",
+      placeHolder: existing ? "New API key (Escape keeps the saved one)" : optional ? "Optional API key" : "Paste your API key",
       password: true,
       ignoreFocusOut: true,
-      validateInput: (value) => (value.trim().length === 0 ? "API key is required." : undefined)
+      validateInput: (value) => (!optional && value.trim().length === 0 ? "API key is required." : undefined)
     });
     if (apiKey === undefined) {
       return existing ? { kind: "keep_existing" } : { kind: "cancelled" };
+    }
+    if (optional && apiKey.trim().length === 0) {
+      return existing ? { kind: "keep_existing" } : { kind: "not_required" };
     }
     return { kind: "entered", value: apiKey };
   }
@@ -987,8 +995,10 @@ function protocolLabel(protocolKind: string): string {
 }
 
 function isLoopbackHost(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/:\d+$/, "");
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+  const normalized = host.trim().toLowerCase()
+    .replace(/^\[([^\]]+)\](?::\d+)?$/, "$1")
+    .replace(/^([^:]+):\d+$/, "$1");
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function hostOf(baseUrl: string): string {

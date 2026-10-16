@@ -12,13 +12,9 @@ managed execution flows.
 - [turn_path.py](turn_path.py) defines execution posture and reply-language directives.
 - [prompt_context.py](prompt_context.py) prepares workspace, convention, skill, plugin, and
   verification context.
-- [task_state.py](task_state.py) holds the host-owned task identity (`SessionTaskState`):
-  the accepted objective, its originating user event, and its transitions.
-  The pinned `<task_brief>` is a bounded rendering of it, installed before the
-  first model request of a turn; it is never inferred from edits, tool output,
-  or model text, and it grants no permission.
-- [verification.py](verification.py) and [verification_commands.py](verification_commands.py)
-  support verification flows.
+- `task_evidence.py` retains workspace verification baselines across turns and resumes.
+  It does not store or pin a conversation objective.
+- `verification.py` and `verification_commands.py` support verification flows.
 
 ## Scope
 

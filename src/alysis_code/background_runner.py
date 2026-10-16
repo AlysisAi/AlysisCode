@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import platform
-import shutil
 import subprocess
 import threading
 import uuid
@@ -20,6 +18,8 @@ from .sandbox_runner import (
     _docker_cleanup_container,
     _emit_warning,
     _supports_bwrap_unshare_cgroup,
+    seatbelt_command,
+    select_shell_sandbox_backend,
 )
 from .sandbox_settings import ShellSandboxSettings, resolve_shell_sandbox_settings
 from .service_persistence import apply_non_interactive_defaults
@@ -105,6 +105,35 @@ class HostBackgroundRunner:
             cleanup=_noop_cleanup,
             started_argv=(cmd,),
         )
+
+
+@dataclass(frozen=True)
+class SeatbeltBackgroundRunner:
+    """Background processes in the same macOS Seatbelt profile as SeatbeltShellRunner."""
+
+    network: str = "off"
+    protect_repo_meta: bool = True
+    safe_git_writes: bool = True
+
+    def start(
+        self,
+        *,
+        root: Path,
+        cwd: Path,
+        cmd: str,
+        env_overrides: dict[str, str] | None = None,
+    ) -> BackgroundProcessSpawn:
+        wrapped = seatbelt_command(
+            cmd,
+            root=root,
+            network=self.network,
+            protect_repo_meta=self.protect_repo_meta,
+            safe_git_writes=self.safe_git_writes,
+        )
+        spawn = HostBackgroundRunner().start(
+            root=root, cwd=cwd, cmd=wrapped, env_overrides=env_overrides
+        )
+        return BackgroundProcessSpawn(popen=spawn.popen, cleanup=spawn.cleanup, started_argv=(cmd,))
 
 
 @dataclass(frozen=True)
@@ -280,58 +309,40 @@ def build_background_shell_runner_from_settings(
 ) -> BackgroundShellRunner:
     _ = root.resolve()
 
-    if settings.mode == "off":
+    choice = select_shell_sandbox_backend(settings)
+    if choice.backend == "host":
+        # With requires_command_approval the shell guards ask before each start.
         return HostBackgroundRunner()
-
-    is_linux = platform.system().lower() == "linux"
-    has_bwrap = is_linux and shutil.which("bwrap") is not None
-    has_docker = shutil.which("docker") is not None
-
-    def fallback_or_error(*, reason: str) -> BackgroundShellRunner:
-        if settings.mode == "warn":
-            disabled_reason = (
-                f"Background shell sandbox unavailable ({reason}); host fallback is disabled."
-            )
-            _emit_warning(disabled_reason, warning_callback=warning_callback)
-            return DisabledBackgroundRunner(reason=disabled_reason)
-        raise ConfigError(
-            "Shell sandbox strict mode is enabled, but no usable backend is available "
-            f"for background processes: {reason}. Install bubblewrap (Linux) or Docker, "
-            "or set ALYSIS_SHELL_SANDBOX_MODE=off for explicit unsafe host execution."
+    if choice.backend == "bwrap":
+        return BwrapBackgroundRunner(
+            network=settings.network,
+            clear_env=settings.clear_env,
+            profile=settings.bwrap_profile,
         )
-
-    if settings.backend == "auto":
-        if has_bwrap:
-            return BwrapBackgroundRunner(
-                network=settings.network,
-                clear_env=settings.clear_env,
-                profile=settings.bwrap_profile,
-            )
-        if has_docker:
-            return _docker_background_runner_from_settings(
-                settings,
-                warning_callback=warning_callback,
-            )
-        return fallback_or_error(reason="auto backend could not find bwrap or docker")
-
-    if settings.backend == "bwrap":
-        if has_bwrap:
-            return BwrapBackgroundRunner(
-                network=settings.network,
-                clear_env=settings.clear_env,
-                profile=settings.bwrap_profile,
-            )
-        return fallback_or_error(reason="bwrap backend selected, but bubblewrap is not available")
-
-    if settings.backend == "docker":
-        if has_docker:
-            return _docker_background_runner_from_settings(
-                settings,
-                warning_callback=warning_callback,
-            )
-        return fallback_or_error(reason="docker backend selected, but docker is not available")
-
-    raise ConfigError(f"Unhandled shell sandbox backend: {settings.backend}")
+    if choice.backend == "docker":
+        return _docker_background_runner_from_settings(
+            settings,
+            warning_callback=warning_callback,
+        )
+    if choice.backend == "seatbelt":
+        return SeatbeltBackgroundRunner(
+            network=settings.network,
+            protect_repo_meta=settings.protect_repo_meta,
+            safe_git_writes=settings.safe_git_writes,
+        )
+    if settings.mode == "warn":
+        disabled_reason = (
+            "Background shell sandbox unavailable "
+            f"({choice.unavailable_reason}); host fallback is disabled."
+        )
+        _emit_warning(disabled_reason, warning_callback=warning_callback)
+        return DisabledBackgroundRunner(reason=disabled_reason)
+    raise ConfigError(
+        "Shell sandbox strict mode is enabled, but no usable backend is available "
+        f"for background processes: {choice.unavailable_reason}. Install bubblewrap (Linux) "
+        "or Docker, or set ALYSIS_SHELL_SANDBOX_MODE=off for explicit unsafe host execution, "
+        "or ALYSIS_SHELL_SANDBOX_FALLBACK=ask to approve each command."
+    )
 
 
 def _docker_background_runner_from_settings(

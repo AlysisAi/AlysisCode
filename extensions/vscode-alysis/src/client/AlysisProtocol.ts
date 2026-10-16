@@ -28,6 +28,8 @@ export const MANAGEMENT_BRIDGE_METHODS = [
   "tool.info",
   "tool.trust",
   "tool.untrust",
+  "commands.list",
+  "agents.list",
   "skill.list",
   "skill.info",
   "skill.init",
@@ -81,6 +83,10 @@ export const OPTIONAL_BRIDGE_METHODS = [
   "chat.queue.list",
   "chat.queue.get",
   "chat.queue.delete",
+  "chat.steer",
+  "chat.steer.take",
+  "feedback.prepare",
+  "feedback.send",
   "checkpoint.list",
   "checkpoint.diff",
   "checkpoint.revert",
@@ -374,6 +380,7 @@ export interface SessionCreateResult {
 }
 
 export interface ChatSendParams {
+  skill?: { name: string; arguments: string };
   session_id: string;
   message?: string;
   instruction?: string;
@@ -401,6 +408,41 @@ export interface PromptQueueListResult {
   session_id: string;
   items: PromptQueueItem[];
   next_sequence: number;
+}
+
+/** chat.steer: a message added to the running turn, read at its next step. */
+export interface ChatSteerResult {
+  session_id: string;
+  job_id: string;
+  accepted: boolean;
+  pending: number;
+  /** Older waiting messages this call pushed out. */
+  dropped: number;
+  /** The engine shortened the message (over 4000 characters). */
+  truncated: boolean;
+}
+
+/** chat.steer.take: messages finished turns did not read, oldest first. */
+export interface ChatSteerTakeResult {
+  session_id: string;
+  messages: string[];
+}
+
+/** feedback.prepare: a private report to review; nothing has been sent. */
+export interface FeedbackPrepareResult {
+  report_id: string;
+  /** The payload feedback.send will deliver, for the user to review. */
+  report: Record<string, unknown>;
+  include_diagnostics: boolean;
+  /** True when the report goes out tied to the user's Alysis account. */
+  signed_in: boolean;
+}
+
+/** feedback.send: the receipt for a delivered report. */
+export interface FeedbackSendResult {
+  report_id: string;
+  created_at: string;
+  anonymous: boolean;
 }
 
 export interface CheckpointChange {
@@ -811,6 +853,7 @@ export interface ToolTrustResult extends ManagementResult {
 }
 
 export interface SkillListResult extends ManagementResult {
+  skills_enabled?: boolean;
   workspace_root: string;
   skills: Array<Record<string, unknown>>;
   issues: Record<string, unknown>;

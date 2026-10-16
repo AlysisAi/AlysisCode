@@ -67,7 +67,7 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           REPOSITORY: ${{ github.repository }}

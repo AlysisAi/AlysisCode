@@ -322,6 +322,164 @@ def test_input_paths_are_advisory_references_not_required_outputs(tmp_path: Path
     assert [criterion.paths for criterion in required] == [("result.txt",)]
 
 
+@pytest.mark.parametrize(
+    ("instruction", "inputs", "outputs"),
+    [
+        (
+            "Create a report using inputs/sales.csv, inputs/operations.pdf, "
+            "inputs/feedback.pdf and inputs/report-template.docx. "
+            "Save a real editable Word document as outputs/september-report.docx. "
+            "Keep the source files unchanged.",
+            {
+                "inputs/sales.csv",
+                "inputs/operations.pdf",
+                "inputs/feedback.pdf",
+                "inputs/report-template.docx",
+            },
+            {"outputs/september-report.docx"},
+        ),
+        ("Create out/report.md using inputs/data.csv.", {"inputs/data.csv"}, {"out/report.md"}),
+        ("Using inputs/data.csv create out/report.md.", {"inputs/data.csv"}, {"out/report.md"}),
+        ("Write out/report.md from inputs/data.csv.", {"inputs/data.csv"}, {"out/report.md"}),
+        ("Create source code at src/main.py.", set(), {"src/main.py"}),
+        ("Create input fixtures at inputs/data.csv.", set(), {"inputs/data.csv"}),
+        (
+            "Create output/write.txt using source/create.csv.",
+            {"source/create.csv"},
+            {"output/write.txt"},
+        ),
+        (
+            "Read from input/write.csv, input/create.csv and input/export.csv.",
+            {"input/write.csv", "input/create.csv", "input/export.csv"},
+            set(),
+        ),
+    ],
+)
+def test_document_inputs_and_outputs_have_path_local_roles(
+    tmp_path: Path, instruction: str, inputs: set[str], outputs: set[str]
+) -> None:
+    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    assert {
+        ref.display_path
+        for ref in contract.path_refs
+        if ref.role == AcceptancePathRole.EXISTING_INPUT
+    } == inputs
+    assert {
+        ref.display_path
+        for ref in contract.path_refs
+        if ref.role == AcceptancePathRole.REQUIRED_OUTPUT
+    } == outputs
+    assert contract.allowed_output_paths == outputs
+    assert {
+        path
+        for criterion in contract.criteria
+        if criterion.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
+        for path in criterion.paths
+    } == outputs
+    assert all(
+        criterion.enforcement == AcceptanceCriterionEnforcement.ADVISORY
+        for criterion in contract.criteria
+        if set(criterion.paths) & inputs
+    )
+
+
+def test_later_preservation_does_not_capture_an_earlier_output(tmp_path: Path) -> None:
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction="Create out/report.md using inputs/data.csv without modifying inputs/template.docx.",
+    )
+    assert {ref.display_path: ref.role for ref in contract.path_refs} == {
+        "out/report.md": AcceptancePathRole.REQUIRED_OUTPUT,
+        "inputs/data.csv": AcceptancePathRole.EXISTING_INPUT,
+        "inputs/template.docx": AcceptancePathRole.PRESERVATION_TARGET,
+    }
+
+
+def test_pasting_command_output_does_not_require_creating_its_input_path(tmp_path: Path) -> None:
+    contract = build_acceptance_contract(
+        root=tmp_path, instruction="just run ls -la /home/nowhere and paste the output"
+    )
+    assert not contract.allowed_output_paths
+    assert not any(
+        criterion.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
+        for criterion in contract.criteria
+    )
+
+
+def test_document_completion_still_requires_output_and_preserves_named_sources(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "data.csv").write_text("sales\n31200\n", encoding="utf-8")
+    instruction = "Create report.md using data.csv. Do not modify data.csv."
+    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=set())
+    required = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
+    assert required.paths == ("report.md",)
+    assert required.status == AcceptanceCriterionStatus.UNVERIFIED
+    assert "missing" in required.failure_summary
+    (tmp_path / "report.md").write_text("Sales: 31,200", encoding="utf-8")
+    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    finalize_acceptance_contract(
+        contract=contract, root=tmp_path, touched_paths={"report.md", "data.csv"}
+    )
+    preserve = _first_criterion(contract, AcceptanceCriterionKind.PRESERVATION_UNCHANGED_PATH)
+    assert preserve.paths == ("data.csv",)
+    assert preserve.status == AcceptanceCriterionStatus.FAILED
+
+
+@pytest.mark.parametrize("quote", ['"', "'", "`"])
+def test_quoted_work_revision_paths_keep_the_whole_folder_name(tmp_path: Path, quote: str) -> None:
+    original = "Revision 0123/original.docx"
+    revised = "Revision 0123/revised.docx"
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction=(
+            f"Revise the report using the saved copy at {quote}{original}{quote}. "
+            f"Keep {quote}{original}{quote} unchanged. "
+            f"Save the new version as {quote}{revised}{quote}."
+        ),
+    )
+    assert contract.allowed_output_paths == {revised}
+    assert {(ref.display_path, ref.role) for ref in contract.path_refs} == {
+        (original, AcceptancePathRole.EXISTING_INPUT),
+        (original, AcceptancePathRole.PRESERVATION_TARGET),
+        (revised, AcceptancePathRole.REQUIRED_OUTPUT),
+    }
+
+
+def test_document_paths_without_folder_prefix_are_recognized(tmp_path: Path) -> None:
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction='Create "Report.docx" using "Template.docx", sales.xlsx and Notes.PDF.',
+    )
+    assert contract.allowed_output_paths == {"Report.docx"}
+    assert {
+        ref.display_path
+        for ref in contract.path_refs
+        if ref.role == AcceptancePathRole.EXISTING_INPUT
+    } == {
+        "Template.docx",
+        "sales.xlsx",
+        "Notes.PDF",
+    }
+
+
+def test_quoted_windows_document_path_is_resolved_cross_platform() -> None:
+    contract = build_acceptance_contract(
+        root=Path("C:/My Reports"),
+        instruction='Save "C:\\My Reports\\September Report.docx".',
+    )
+    required = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
+    assert required.paths == ("September Report.docx",)
+    assert required.path_refs[0].path_kind == AcceptancePathKind.ABSOLUTE_WITHIN_WORKSPACE
+
+
+@pytest.mark.parametrize("name", ["September  Report.docx", "Bob's Report.docx", "Έκθεση.docx"])
+def test_quoted_document_filename_keeps_significant_characters(tmp_path: Path, name: str) -> None:
+    contract = build_acceptance_contract(root=tmp_path, instruction=f'Create "{name}".')
+    assert contract.allowed_output_paths == {name}
+
+
 def test_explicit_output_format_is_path_scoped_and_hard(tmp_path: Path) -> None:
     contract = build_acceptance_contract(
         root=tmp_path,
@@ -390,6 +548,81 @@ def test_exact_user_black_box_command_satisfies_its_criterion(tmp_path: Path) ->
     criterion = _first_criterion(contract, AcceptanceCriterionKind.EXPLICIT_COMMAND_IO)
     assert criterion.status == AcceptanceCriterionStatus.PASSED
     assert contract.evidence[-1].origin == EvidenceOrigin.USER_EXPLICIT
+
+
+@pytest.mark.parametrize(
+    ("command", "refusal_reason", "expected"),
+    [
+        # Refused only because a version probe cannot assert anything else.
+        ("git --version", "non_assertive_verification_mode", AcceptanceCriterionStatus.PASSED),
+        # Refused because of what the run did or where it ran: still blocked.
+        ("git --version", "mutated_material_paths", AcceptanceCriterionStatus.BLOCKED),
+        ("git --version", "pipeline_stage_status_unavailable", AcceptanceCriterionStatus.BLOCKED),
+        ("git --version", "does_not_match_effective_contract", AcceptanceCriterionStatus.BLOCKED),
+        # An assertive command was not refused for capability, so the refusal stands.
+        ("pytest -q", "unknown_verification_capability", AcceptanceCriterionStatus.BLOCKED),
+    ],
+)
+def test_explicit_command_is_blocked_only_by_how_it_ran(
+    tmp_path: Path,
+    command: str,
+    refusal_reason: str,
+    expected: AcceptanceCriterionStatus,
+) -> None:
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction=f"Run `{command}` and tell me what it prints.",
+    )
+
+    record_acceptance_tool_effect(
+        contract=contract,
+        root=tmp_path,
+        tool_name="shell_run",
+        arguments={"cmd": command},
+        status="ok",
+        result={
+            "effective_cmd": command,
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+            "verification_evidence_reason": refusal_reason,
+        },
+        touched_paths=set(),
+        evidence_allowed=False,
+    )
+
+    criterion = _first_criterion(contract, AcceptanceCriterionKind.EXPLICIT_COMMAND_IO)
+    assert criterion.status == expected
+    # Satisfying the user's own command never upgrades the run into
+    # verification evidence for other criteria.
+    assert contract.evidence[-1].evidence_allowed is False
+
+
+def test_explicit_command_side_effects_still_block_its_criterion(tmp_path: Path) -> None:
+    command = "git --version"
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction=f"Run `{command}` and tell me what it prints.",
+    )
+
+    record_acceptance_tool_effect(
+        contract=contract,
+        root=tmp_path,
+        tool_name="shell_run",
+        arguments={"cmd": command},
+        status="ok",
+        result={
+            "effective_cmd": command,
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "verification_evidence_reason": "non_assertive_verification_mode",
+        },
+        touched_paths={"notes.txt"},
+        evidence_allowed=False,
+    )
+
+    criterion = _first_criterion(contract, AcceptanceCriterionKind.EXPLICIT_COMMAND_IO)
+    assert criterion.status == AcceptanceCriterionStatus.BLOCKED
 
 
 def test_inline_python_acceptance_snippet_becomes_python_command(tmp_path: Path) -> None:

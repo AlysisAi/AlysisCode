@@ -10,7 +10,7 @@ This Forge-specific report is generated from `docs/generated/ide_cli_parity_matr
 | --- | ---: |
 | `implemented_in_extension` | 101 |
 | `implemented_in_bridge_only` | 5 |
-| `intentionally_cli_only` | 5 |
+| `intentionally_cli_only` | 9 |
 | `blocked_until_security_model` | 4 |
 | `experimental_with_gate` | 1 |
 
@@ -136,6 +136,10 @@ This Forge-specific report is generated from `docs/generated/ide_cli_parity_matr
 | `implemented_in_extension` | `ide_bridge_method` | `forge.swarm.start` | The cockpit Run Swarm console (renderSwarmConsole + alysis.runSwarm) routes these typed bridge methods: forge.swarm.start creates an idempotent durable job and runs the swarm engine behind Workspace Trust with cooperative cancellation; the task grid renders swarm_worker_state_changed progress by glyph/weight; non-modal task-attributed approvals replace --yes (workers stay paused, never auto-denied); forge.swarm.review lists per-task diffs (with the untracked-files-not-applied list surfaced) which the user keeps via forge.swarm.apply (working tree only, never commits) or drops via forge.swarm.discard; failed/interrupted tasks offer an editable regenerate-subtree recovery. |
 | `implemented_in_extension` | `ide_bridge_method` | `forge.swarm.status` | The cockpit Run Swarm console (renderSwarmConsole + alysis.runSwarm) routes these typed bridge methods: forge.swarm.start creates an idempotent durable job and runs the swarm engine behind Workspace Trust with cooperative cancellation; the task grid renders swarm_worker_state_changed progress by glyph/weight; non-modal task-attributed approvals replace --yes (workers stay paused, never auto-denied); forge.swarm.review lists per-task diffs (with the untracked-files-not-applied list surfaced) which the user keeps via forge.swarm.apply (working tree only, never commits) or drops via forge.swarm.discard; failed/interrupted tasks offer an editable regenerate-subtree recovery. |
 | `intentionally_cli_only` | `cli_chat_slash_command` | `/forge` | These terminal navigation, quick-panel, active-child picker, and toolbar affordances use native IDE surfaces. The IDE /subagents status|on|off route exposes typed delegation configuration; the CLI active-child monitor remains a terminal surface. |
+| `intentionally_cli_only` | `cli_command` | `forge _host-stdio` | Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle. |
+| `intentionally_cli_only` | `cli_command` | `forge preflight` | Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle. |
+| `intentionally_cli_only` | `cli_command` | `forge verification-check` | Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle. |
+| `intentionally_cli_only` | `cli_command` | `forge workspace-check` | Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle. |
 | `intentionally_cli_only` | `cli_command_group` | `forge` | Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision. |
 | `intentionally_cli_only` | `cli_command_group` | `forge assets` | Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision. |
 | `intentionally_cli_only` | `cli_forge_chat_command` | `/back` | These are terminal Forge mode navigation/finalization commands; the IDE uses persistent typed plan state and native view lifecycle. |

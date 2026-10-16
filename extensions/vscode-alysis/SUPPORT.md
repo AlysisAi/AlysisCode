@@ -2,11 +2,11 @@
 
 ## Where to file a bug
 
-Open an issue at <https://github.com/AlysisAi/alysis-code/issues>.
+Open an issue at <https://github.com/AlysisAi/AlysisCode/issues>.
 
 Do not report security vulnerabilities in a public issue. Email
 [products@alysisai.com](mailto:products@alysisai.com) instead, as described in
-[SECURITY.md](https://github.com/AlysisAi/alysis-code/blob/main/.github/SECURITY.md).
+[SECURITY.md](https://github.com/AlysisAi/AlysisCode/blob/main/.github/SECURITY.md).
 
 ## What to include
 
@@ -27,7 +27,7 @@ there.
 
 **Alysis Code: Open Setup Guide** opens the *Get started with Alysis Code* walkthrough: validate the
 runtime, trust the workspace, configure a provider, and open Alysis Code. The
-[README](https://github.com/AlysisAi/alysis-code/blob/main/extensions/vscode-alysis/README.md)
+[README](https://github.com/AlysisAi/AlysisCode/blob/main/extensions/vscode-alysis/README.md)
 covers requirements and install.
 
 ## Common problems
@@ -89,5 +89,5 @@ cancelled until the backend reports a terminal state. Idle sessions close immedi
 ## More
 
 Known limitations, architecture notes, and the full slash command reference are in
-[`docs/`](https://github.com/AlysisAi/alysis-code/tree/main/extensions/vscode-alysis/docs) (not
+[`docs/`](https://github.com/AlysisAi/AlysisCode/tree/main/extensions/vscode-alysis/docs) (not
 shipped inside the VSIX).

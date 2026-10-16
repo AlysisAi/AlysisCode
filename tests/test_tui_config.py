@@ -31,12 +31,13 @@ from alysis_code.config import (
 )
 from alysis_code.profile_presets import PROFILE_PRESETS, make_profile_from_preset
 from alysis_code.profiles import ProfileSpec
-from alysis_code.provider_auth import ProviderAccountStatus
+from alysis_code.provider_auth import ProviderAccountStatus, ProviderModel, ProviderReasoningEffort
 
 # --------------------------------------------------------------------------- helpers
 
 
 def _config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
     for var in (
@@ -75,12 +76,12 @@ def _cfg_with_subscription_profile() -> AppConfig:
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="gpt-5.4",
         reasoning_effort="high",
     )
-    cfg = AppConfig(model=profile.default_model)
+    cfg = AppConfig(model=profile.default_model, base_url=profile.base_url)
     cfg.extra_fields = {
         "profiles": {profile.name: profile.to_dict()},
         "active_profile": profile.name,
@@ -101,6 +102,43 @@ def _cfg_with_alysis_profile() -> AppConfig:
         "active_profile": profile.name,
     }
     return cfg
+
+
+@pytest.fixture
+def subscription_auth(monkeypatch):
+    class FakeSubscriptionAuth:
+        profile_name = "chatgpt-codex"
+        protocol = "openai_responses"
+        base_url = "https://api.openai.com/v1"
+        display_name = "ChatGPT subscription"
+        connected = False
+
+        def account_status(self):
+            return ProviderAccountStatus(connected=self.connected)
+
+        def login(self, *, method, output_write):
+            assert method == "browser"
+            self.connected = True
+            return self.account_status()
+
+        def list_models(self, *, refresh=False):
+            return (
+                ProviderModel(
+                    id="gpt-5.4",
+                    label="GPT-5.4",
+                    reasoning_efforts=(
+                        ProviderReasoningEffort("low", "Low"),
+                        ProviderReasoningEffort("high", "High"),
+                    ),
+                ),
+            )
+
+    adapter = FakeSubscriptionAuth()
+    monkeypatch.setattr(flow_mod, "create_provider_auth", lambda _provider_id: adapter)
+    monkeypatch.setattr(
+        "alysis_code.provider_auth.create_provider_auth", lambda _provider_id: adapter
+    )
+    return adapter
 
 
 # --------------------------------------------------------------------------- menu
@@ -172,7 +210,7 @@ def test_execution_backend_flow_creates_native_subscription_profile():
     assert rows["execution"].label == "Model Access"
     # Grouped menu shows the one key fact; the "AI subscription ·" prefix moved
     # into the Model Access section screen.
-    assert rows["execution"].description == "ChatGPT Codex subscription"
+    assert rows["execution"].description == "ChatGPT subscription"
 
 
 def test_execution_backend_flow_saves_native_subscription_profile(
@@ -198,7 +236,7 @@ def test_execution_backend_flow_saves_native_subscription_profile(
     assert saved.extra_fields["active_profile"] == "chatgpt-codex"
     assert saved.extra_fields["profiles"]["chatgpt-codex"]["auth_provider"] == "openai-codex"
     assert saved.model == ""
-    assert saved.base_url == "https://chatgpt.com/backend-api/codex"
+    assert saved.base_url == "https://api.openai.com/v1"
     assert saved.extra_fields["subscription_model_selection_required"] == "openai-codex"
 
 
@@ -242,7 +280,13 @@ def test_model_access_manages_subscription_account(monkeypatch: pytest.MonkeyPat
     flow.run_busy()
     assert flow.stage == "subscription_account"
     assert adapter.login_calls == 1
-    assert [row.value for row in flow.screen().rows] == ["connect", "disconnect", "back"]
+    assert [row.value for row in flow.screen().rows] == [
+        "connect",
+        "disconnect",
+        "__save__",
+        "back",
+    ]
+    assert "Press s" in flow.status
 
     flow.choose("disconnect")
     assert flow.stage == "subscription_disconnect_confirm"
@@ -252,6 +296,123 @@ def test_model_access_manages_subscription_account(monkeypatch: pytest.MonkeyPat
     assert flow.stage == "subscription_account"
     assert adapter.logout_calls == 1
     assert [row.value for row in flow.screen().rows] == ["connect", "back"]
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("already_connected", [False, True])
+def test_subscription_account_save_returns_to_chat(
+    tmp_path, monkeypatch, subscription_auth, configured, already_connected
+):
+    _config_env(tmp_path, monkeypatch)
+    subscription_auth.connected = already_connected
+    flow = ConfigFlow(cfg=_cfg_with_subscription_profile() if configured else _cfg_with_profiles())
+    flow.choose("execution")
+    flow.choose("delegated")
+    flow.choose("openai-codex")
+    if not already_connected:
+        flow.choose("connect")
+        flow.run_busy()
+
+    assert flow.stage == "subscription_account"
+    assert "__save__" in [row.value for row in flow.screen().rows]
+    flow.choose("__save__")
+    if not configured:
+        assert flow.stage == "model"
+        flow.choose("gpt-5.4")
+        assert flow.stage == "model_thinking"
+        flow.choose("high")
+    assert flow.stage == "saving"
+    flow.run_busy()
+
+    assert flow.stage == "done" and flow.saved and flow.success
+    saved = load_config()
+    assert saved.execution.backend == "native"
+    assert saved.extra_fields["active_profile"] == "chatgpt-codex"
+    profile = saved.extra_fields["profiles"]["chatgpt-codex"]
+    assert profile["auth_provider"] == "openai-codex"
+    assert profile["default_model"] == saved.model == "gpt-5.4"
+    assert profile["reasoning_effort"] == "high"
+    assert "subscription_model_selection_required" not in saved.extra_fields
+    if not configured:
+        assert "openai" in saved.extra_fields["profiles"]
+
+
+def test_subscription_save_model_back_cancels_continuation(
+    tmp_path, monkeypatch, subscription_auth
+):
+    _config_env(tmp_path, monkeypatch)
+    subscription_auth.connected = True
+    flow = ConfigFlow(cfg=_cfg())
+    flow.choose("execution")
+    flow.choose("delegated")
+    flow.choose("openai-codex")
+    flow.choose("__save__")
+    flow.choose("gpt-5.4")
+    flow.back()
+    assert flow.stage == "model"
+    flow.back()
+    assert flow.stage == "subscription_account" and not flow.saved
+
+    flow.choose("back")
+    flow.choose("default")
+    flow.choose("gpt-5.4")
+    flow.choose("high")
+    assert flow.stage == "menu" and not flow.saved
+
+
+def test_subscription_account_save_failure_keeps_changes_for_retry(
+    tmp_path, monkeypatch, subscription_auth
+):
+    _config_env(tmp_path, monkeypatch)
+    subscription_auth.connected = True
+    flow = ConfigFlow(cfg=_cfg_with_subscription_profile())
+    flow.choose("execution")
+    flow.choose("delegated")
+    flow.choose("openai-codex")
+    flow.choose("__save__")
+
+    def fail_save(_cfg):
+        raise PermissionError("read-only config")
+
+    monkeypatch.setattr(flow_mod, "save_config", fail_save)
+    flow.run_busy()
+    assert flow.stage == "menu" and not flow.saved
+    assert "read-only config" in flow.status
+    assert flow.state.active_profile == "chatgpt-codex"
+
+
+def test_subscription_save_shortcut_matches_visible_action(
+    tmp_path, monkeypatch, subscription_auth
+):
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+    from prompt_toolkit.key_binding import KeyBindings
+
+    from alysis_code.cli_impl.tui.config_overlay import ConfigOverlay
+
+    _config_env(tmp_path, monkeypatch)
+    flow = ConfigFlow(cfg=_cfg_with_subscription_profile())
+    flow.choose("execution")
+    flow.choose("delegated")
+    flow.choose("openai-codex")
+    overlay = ConfigOverlay(flow_factory=lambda: flow)
+    overlay.open()
+    kb = KeyBindings()
+    overlay.register(kb)
+    save_binding = kb.get_bindings_for_keys(("s",))[0]
+
+    assert not save_binding.filter()
+    assert "s save" not in fragment_list_to_text(overlay._footer_fragments())
+    subscription_auth.connected = True
+    flow._refresh_subscription_account_status()
+    assert save_binding.filter()
+    assert "s save" in fragment_list_to_text(overlay._footer_fragments())
+    for stage in ("api_key", "subscription_disconnect_confirm", "subscription_connecting"):
+        flow._goto(stage)
+        assert not save_binding.filter()
+    flow._goto("menu")
+    assert save_binding.filter()
+    overlay._open["on"] = False
+    assert not save_binding.filter()
 
 
 @pytest.mark.parametrize("connected", [False, True])
@@ -906,10 +1067,11 @@ def test_provider_switch_rows_show_model_host_and_what_needs_attention():
     assert remove_rows["qwen-intl"].description == rows["qwen-intl"].description
 
 
-def test_provider_switch_rows_hide_gateway_host_and_url_credentials():
+def test_provider_switch_rows_hide_gateway_host_and_url_credentials(monkeypatch):
     """The hosted gateway's host is a Supabase project ref, and a custom base URL
     can carry a token as userinfo; neither belongs in the picker."""
-    alysis_url = next(p for p in PROFILE_PRESETS if p.key == "alysis").base_url
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
+    alysis_url = alysis_cloud.gateway_base_url()
     cfg = AppConfig(model="deepseek-flash", base_url=alysis_url)
     cfg.extra_fields = {
         "profiles": {
@@ -1118,7 +1280,7 @@ def test_provider_add_custom_cannot_overwrite_subscription_profile():
         flow.state.profiles["chatgpt-codex"],
     )
     assert preserved.auth_provider == "openai-codex"
-    assert preserved.base_url == "https://chatgpt.com/backend-api/codex"
+    assert preserved.base_url == "https://api.openai.com/v1"
 
 
 def test_provider_add_custom_rejects_empty_url():
@@ -1517,6 +1679,71 @@ def test_headless_config_can_open_on_start():
     assert opened["n"] == 1
     assert result == "/exit"
     assert transcript == []
+
+
+@pytest.mark.parametrize("save_keys", ["s", "S", "3", "\x1b[B\x1b[B\r"])
+@pytest.mark.parametrize("configured", [False, True])
+def test_headless_connected_subscription_saves_and_reloads_before_chat(
+    tmp_path, monkeypatch, subscription_auth, save_keys, configured
+):
+    _config_env(tmp_path, monkeypatch)
+    subscription_auth.connected = True
+    opened = threading.Event()
+    reloaded = threading.Event()
+    worked = threading.Event()
+    flows = []
+
+    def factory():
+        flow = ConfigFlow(cfg=_cfg_with_subscription_profile() if configured else _cfg())
+        flow.choose("execution")
+        flow.choose("delegated")
+        flow.choose("openai-codex")
+        flows.append(flow)
+        opened.set()
+        return flow
+
+    def on_saved():
+        saved = load_config()
+        assert saved.extra_fields["active_profile"] == "chatgpt-codex"
+        assert saved.model == "gpt-5.4"
+        assert "subscription_model_selection_required" not in saved.extra_fields
+        reloaded.set()
+        return ConfigReloadOutcome.APPLIED
+
+    class Session(_FakeSession):
+        def run_turn(self, text, *, cancellation_token=None):
+            assert reloaded.is_set()
+            assert text == "hello"
+            worked.set()
+            return 0
+
+    def runner(_session, text, _width):
+        if text == "/exit":
+            return "exit", "", None, None
+        return "run", "", text, {}
+
+    def feed(pipe):
+        assert opened.wait(timeout=5)
+        pipe.send_text(save_keys)
+        if not configured:
+            # Pick the subscription model, then its high reasoning effort.
+            pipe.send_text("13")
+        assert reloaded.wait(timeout=5)
+        pipe.send_text("hello\r")
+        assert worked.wait(timeout=5)
+        pipe.send_text("/exit\r")
+
+    result, _transcript = _run_live_headless(
+        feed,
+        config_flow_factory=factory,
+        open_config_on_start=True,
+        on_config_saved=on_saved,
+        session_builder=Session,
+        command_runner=runner,
+        background_turns=False,
+    )
+    assert result == "/exit"
+    assert flows[0].stage == "done" and flows[0].saved
 
 
 def test_config_input_plain_selection_backspace_cuts_and_enter_accepts(monkeypatch):

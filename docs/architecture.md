@@ -69,7 +69,7 @@ The session runtime owns:
 - session logging and local artifacts
 
 `alysis chat` is interactive and supports commands such as `/status`,
-`/permissions`, `/persona`, `/objective`, `/pwd`, `/subagents`, and `/forge`.
+`/permissions`, `/persona`, `/pwd`, `/subagents`, and `/forge`.
 
 `alysis run` is the one-shot entrypoint. It is best for focused tasks that
 can be completed from a single instruction. For exploratory or highly iterative

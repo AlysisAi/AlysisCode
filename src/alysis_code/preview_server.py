@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .command_text import command_text
+
 PREVIEW_ACCESS_SCOPES = frozenset({"local", "lan"})
 _TOKEN_QUERY_PARAMETER = "alysis_token"
 
@@ -360,7 +362,7 @@ def _run_discovery_command(argv: list[str]) -> str:
             argv,
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=0.75,
         )
     except (OSError, subprocess.SubprocessError):

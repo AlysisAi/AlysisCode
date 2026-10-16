@@ -181,7 +181,11 @@ def _validate_sdist(
 
 
 def _is_allowed_sdist_member(relative_name: str) -> bool:
-    return relative_name in _SDIST_FILES or relative_name.startswith("src/alysis_code/")
+    return (
+        relative_name in _SDIST_FILES
+        or relative_name.startswith("src/alysis_code/")
+        or relative_name == "schemas/forge-host-v2/forge-host-v2.schema.json"
+    )
 
 
 def _validate_member_names(

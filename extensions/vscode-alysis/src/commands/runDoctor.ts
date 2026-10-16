@@ -21,10 +21,12 @@ export function registerRunDoctorCommand(
   getConfig: () => AlysisConfig,
   output: vscode.OutputChannel,
   statusBar: AlysisStatusBar,
-  runtime?: CockpitRuntimeState
+  runtime?: CockpitRuntimeState,
+  ensureRuntimeReady?: () => Promise<void>
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("alysis.runDoctor", async () => {
+      await ensureRuntimeReady?.();
       const config = getConfig();
       runtime?.applyConfig(config);
       const guard = evaluateProcessExecutionCommand(config, "runDoctor");
@@ -148,10 +150,12 @@ export function registerShowBridgeHealthCommand(
   getConfig: () => AlysisConfig,
   output: vscode.OutputChannel,
   statusBar: AlysisStatusBar,
-  runtime?: CockpitRuntimeState
+  runtime?: CockpitRuntimeState,
+  ensureRuntimeReady?: () => Promise<void>
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("alysis.showBridgeHealth", async () => {
+      await ensureRuntimeReady?.();
       const config = getConfig();
       runtime?.applyConfig(config);
       const guard = evaluateProcessExecutionCommand(config, "showBridgeHealth");

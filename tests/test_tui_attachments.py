@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
+import subprocess
+from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
+from PIL import Image, ImageGrab
 
 from alysis_code.cli_impl.tui import attachments as attach
 from alysis_code.cli_impl.tui.state import TuiState
@@ -394,6 +398,54 @@ def test_slash_image_reports_a_path_it_cannot_attach(monkeypatch, tmp_path):
 
     assert delivered == []
     assert any(role == "warn" and "Could not attach" in text for role, text in transcript)
+
+
+@pytest.mark.parametrize("trigger", ["\x16", "/image\r", "/paste-image\r"])
+def test_macos_clipboard_image_reaches_the_turn(trigger, monkeypatch, tmp_path):
+    """Exercise OS output -> Pillow -> disk -> TUI chip -> submitted image path."""
+    monkeypatch.setattr("alysis_code.clipboard.sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(ImageGrab, "sys", SimpleNamespace(platform="darwin"))
+    with Image.new("RGBA", (3, 2), (12, 34, 56, 78)) as source, BytesIO() as buffer:
+        source.save(buffer, format="PNG")
+        payload = buffer.getvalue()
+
+    def fake_run(args, **kwargs):
+        assert args[0] == "osascript"
+        output = f"\u00abdata PNGf{payload.hex().upper()}\u00bb\n".encode()
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr=b"")
+
+    monkeypatch.setattr(ImageGrab, "subprocess", SimpleNamespace(run=fake_run))
+
+    delivered, user_echoes, transcript = _run_headless_attachment_submission(
+        monkeypatch,
+        trigger + "describe it\rnext turn\r/exit\r",
+        workspace_root=tmp_path,
+    )
+
+    assert user_echoes == ["[Image #1] describe it", "next turn"]
+    assert len(delivered[0][1]) == 1
+    assert delivered[1] == ("next turn", [])
+    assert not any(role in {"warn", "error"} for role, _text in transcript)
+    saved_paths = list((tmp_path / ".alysis_images").glob("*.png"))
+    assert delivered[0][1] == [os.fspath(saved_paths[0].resolve())]
+    with Image.open(saved_paths[0]) as saved:
+        assert saved.size == (3, 2)
+        assert saved.getpixel((0, 0)) == (12, 34, 56, 78)
+
+
+def test_macos_empty_clipboard_leaves_composer_usable(monkeypatch, tmp_path):
+    monkeypatch.setattr("alysis_code.clipboard.sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: None)
+
+    delivered, _user_echoes, transcript = _run_headless_attachment_submission(
+        monkeypatch,
+        "\x16still usable\r/exit\r",
+        workspace_root=tmp_path,
+    )
+
+    assert delivered == [("still usable", [])]
+    assert any(role == "warn" and "macOS clipboard" in text for role, text in transcript)
+    assert not (tmp_path / ".alysis_images").exists()
 
 
 def test_a_drop_typed_as_plain_keys_still_chips(monkeypatch, tmp_path):

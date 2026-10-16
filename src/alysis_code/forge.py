@@ -16,6 +16,7 @@ from .atomic_io import atomic_write_json, atomic_write_text
 from .branding import PROJECT_DIR_NAME, resolve_project_dir
 from .error_text import sanitize_optional_error_summary
 from .mcp.forge_scope import describe_task_mcp_scope, normalize_task_mcp_scope
+from .project_data import ProjectDataError, project_artifact_path
 from .repo_scan import (
     REPO_SCAN_SCHEMA_VERSION,
     RepoScanResult,
@@ -318,10 +319,7 @@ def _ensure_under_root(root: Path, path: Path) -> None:
 
 def _runtime_dir(root: Path, *, runtime_dir_name: str = PROJECT_DIR_NAME) -> Path:
     if runtime_dir_name == PROJECT_DIR_NAME:
-        # A repo carried over from before the rename has a committed
-        # ``.sylliptor/`` and no ``.alysis/``. Keep using it in place rather
-        # than starting an empty one beside it — renaming a tracked directory
-        # would show up as an unexplained diff in the user's working tree.
+        # Canonical project storage is resolved without modifying the repository.
         return resolve_project_dir(root)
     return root / runtime_dir_name
 
@@ -790,7 +788,11 @@ def _load_current_run_pointer(
     if run_path.is_absolute():
         raise ForgeError("current run pointer must use workspace-relative run_path")
 
-    run_dir = (pointer_root / run_path).resolve()
+    # Resolve the stored locator read-only, enforcing canonical project containment.
+    try:
+        run_dir = project_artifact_path(pointer_root, run_path).resolve()
+    except ProjectDataError as e:
+        raise ForgeError(f"Invalid current run pointer: {e}") from e
     _ensure_under_root(pointer_root, run_dir)
     runtime_dir_name = pointer_path.parent.name
     expected_run_dir = (
@@ -1586,7 +1588,10 @@ def reconcile_current_run_status(root: Path) -> str | None:
     run_path_raw = str(pointer.get("run_path") or "").strip()
     run_lock_dirs = [workspace_lock_dir]
     if run_path_raw and not Path(run_path_raw).is_absolute():
-        run_lock_dirs.append(root / run_path_raw)
+        try:
+            run_lock_dirs.append(project_artifact_path(root, run_path_raw))
+        except ProjectDataError:
+            run_lock_dirs.append(root / run_path_raw)
     if any(lock_is_live(candidate) for candidate in run_lock_dirs):
         return None
     updated = reconcile_status_after_crash(pointer, lock_is_live=False)

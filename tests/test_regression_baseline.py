@@ -243,6 +243,16 @@ def test_command_is_test_runner_strips_env_prefix_and_handles_paths() -> None:
     assert command_is_test_runner("FOO=bar echo hi") is False
 
 
+def test_command_is_test_runner_reads_quoted_paths_with_spaces() -> None:
+    # Install folders often contain spaces ("Program Files", "Alysis Code", user names).
+    assert command_is_test_runner(r'"C:\Program Files\Python312\python.exe" -m pytest -q') is True
+    assert command_is_test_runner(r'"C:\Users\Jo Smith\venv\Scripts\pytest.exe" tests') is True
+    assert command_is_test_runner(r'PYTHONPATH=. "C:\a b\python.exe" -m unittest discover') is True
+    assert command_is_test_runner("'/opt/my tools/bin/pytest' -q") is True
+    assert command_is_test_runner(r'"C:\Program Files\Git\bin\git.exe" status') is False
+    assert command_is_test_runner('pytest "unbalanced') is False
+
+
 # ---------------------------------------------------------------------------
 # Test 3: diff classification (pre_existing / regression / unattributed /
 # agent_authored, plus the mixed case and the sympy-12489 shape)

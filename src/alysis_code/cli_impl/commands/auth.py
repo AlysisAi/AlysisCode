@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, NoReturn
 
 import typer
 from rich.table import Table
@@ -14,7 +14,7 @@ from ...agent_runtimes.service import (
     runtime_connection_snapshot,
 )
 from ...auth_diagnostics import credential_backend_fields
-from ...config import AppConfig, ConfigError, load_config, save_config
+from ...config import AppConfig, ConfigError, config_transaction, load_config, save_config
 from ...profiles import (
     SUBSCRIPTION_SELECTION_REQUIRED_KEY,
     ProfileSpec,
@@ -23,6 +23,7 @@ from ...profiles import (
     get_profile,
     set_active_profile,
     subscription_selection_supported,
+    update_active_profile_defaults,
 )
 from ...provider_auth import (
     ProviderAuthError,
@@ -40,7 +41,7 @@ auth_app = typer.Typer(
 ALYSIS_LOGIN_CONNECTION_ID = "alysis"
 
 JSON_OPTION_HELP = (
-    "Emit one machine-readable JSON object on stdout and nothing else. "
+    "Emit one machine-readable JSON value on stdout and nothing else. "
     "Exit code 0 means the command ran; the payload carries the auth state."
 )
 
@@ -50,6 +51,7 @@ def _status_payload(
     connection: str,
     authenticated: bool,
     account_label: str | None = None,
+    credential_scope: str | None = None,
     method: str | None = None,
     detail: str | None = None,
     transport: str | None = None,
@@ -68,6 +70,7 @@ def _status_payload(
         "connection": connection,
         "authenticated": bool(authenticated),
         "account_label": account_label,
+        "credential_scope": credential_scope,
         "method": method,
         "detail": detail,
         "transport": transport,
@@ -78,10 +81,35 @@ def _status_payload(
     return payload
 
 
-def _emit_json(payload: dict[str, Any]) -> None:
-    """Write exactly one JSON object to stdout."""
+def _connected_credential_scope(status: Any) -> str | None:
+    """Return scope from the same validated snapshot as the account status."""
+
+    if not bool(status.connected) or not bool(status.verified):
+        return None
+    scope = str(getattr(status, "credential_scope", None) or "").strip()
+    return scope or None
+
+
+def _emit_json(payload: Any) -> None:
+    """Write exactly one JSON value to stdout."""
 
     typer.echo(json.dumps(payload, sort_keys=True))
+
+
+def _auth_command_error(
+    message: str,
+    *,
+    json_output: bool,
+    code: int,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    if json_output:
+        _emit_json({"ok": False, "error": message})
+    else:
+        _console().print(f"[red]Authentication error:[/red] {message}")
+    if cause is None:
+        raise typer.Exit(code=code)
+    raise typer.Exit(code=code) from cause
 
 
 def _print_credential_backend_note(console: Any) -> None:
@@ -235,6 +263,7 @@ def _auth_list_payload(cfg: AppConfig) -> dict[str, Any]:
                     connection=option.id,
                     authenticated=status.connected,
                     account_label=status.account_label,
+                    credential_scope=_connected_credential_scope(status),
                     detail=status.detail,
                     transport=f"native Alysis Code client ({adapter.protocol})",
                     display_name=option.label,
@@ -319,6 +348,7 @@ def auth_status(
                     connection=resolved,
                     authenticated=status.connected,
                     account_label=status.account_label,
+                    credential_scope=_connected_credential_scope(status),
                     detail=status.detail,
                     transport=f"native Alysis Code client ({adapter.protocol})",
                     display_name=adapter.display_name,
@@ -388,6 +418,167 @@ def auth_status(
         raise typer.Exit(code=1)
 
 
+@auth_app.command("models")
+def auth_models(
+    runtime_id: str = typer.Argument(..., help="Native subscription connection id."),
+    json_output: bool = typer.Option(False, "--json", help=JSON_OPTION_HELP),
+) -> None:
+    """List the live model catalog for a connected native subscription."""
+
+    resolved = str(runtime_id or "").strip()
+    if not _is_direct_provider(resolved):
+        _auth_command_error(
+            "Unknown native subscription connection.",
+            json_output=json_output,
+            code=2,
+        )
+    try:
+        adapter = create_provider_auth(resolved)
+        status = adapter.account_status()
+        if not status.connected or not status.verified:
+            raise ProviderAuthError(status.detail or "The subscription account is not connected.")
+        models = tuple(adapter.list_models(refresh=True))
+    except ProviderAuthError as exc:
+        _auth_command_error(str(exc), json_output=json_output, code=1, cause=exc)
+
+    payload = [
+        {
+            "id": model.id,
+            "label": model.label,
+            "description": model.description,
+            "is_default": model.is_default,
+            "default_reasoning_effort": model.default_reasoning_effort,
+            "reasoning_efforts": [
+                {
+                    "id": effort.id,
+                    "label": effort.label,
+                    "description": effort.description,
+                }
+                for effort in model.reasoning_efforts
+            ],
+            "input_modalities": list(model.input_modalities),
+            "context_window_tokens": model.context_window_tokens,
+            "max_output_tokens": model.max_output_tokens,
+        }
+        for model in models
+    ]
+    if json_output:
+        _emit_json(payload)
+        return
+
+    table = Table(title=f"{adapter.display_name} models")
+    table.add_column("model")
+    table.add_column("default")
+    table.add_column("reasoning")
+    table.add_column("description")
+    for model in models:
+        table.add_row(
+            model.id,
+            "yes" if model.is_default else "",
+            ", ".join(effort.id for effort in model.reasoning_efforts),
+            model.description,
+        )
+    _console().print(table)
+
+
+@auth_app.command("select-model")
+def auth_select_model(
+    runtime_id: str = typer.Argument(..., help="Native subscription connection id."),
+    model: str = typer.Argument(..., help="Provider model id."),
+    reasoning_effort: str = typer.Option(
+        "auto",
+        "--reasoning-effort",
+        help="Provider-supported reasoning effort, or auto.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help=JSON_OPTION_HELP),
+) -> None:
+    """Atomically activate and configure a native subscription model route."""
+
+    resolved = str(runtime_id or "").strip()
+    selected_model = str(model or "").strip()
+    selected_effort = str(reasoning_effort or "auto").strip().lower() or "auto"
+    if not _is_direct_provider(resolved):
+        _auth_command_error(
+            "Unknown native subscription connection.",
+            json_output=json_output,
+            code=2,
+        )
+    if not selected_model:
+        _auth_command_error(
+            "A subscription model is required.",
+            json_output=json_output,
+            code=2,
+        )
+
+    try:
+        adapter = create_provider_auth(resolved)
+        status = adapter.account_status()
+        if not status.connected or not status.verified:
+            raise ProviderAuthError(status.detail or "The subscription account is not connected.")
+        models = tuple(adapter.list_models(refresh=True))
+        chosen = next((candidate for candidate in models if candidate.id == selected_model), None)
+        if chosen is None:
+            raise ProviderAuthError("The selected model is not available to this account.")
+        supported_efforts = {effort.id for effort in chosen.reasoning_efforts}
+        if selected_effort != "auto" and selected_effort not in supported_efforts:
+            raise ProviderAuthError("The selected reasoning effort is not supported by this model.")
+
+        # Provider I/O above stays outside the lock. Only the fresh config read,
+        # route mutation, and one durable write form the serialized transaction.
+        with config_transaction(
+            loader=_patchable("load_config", load_config),
+            saver=_patchable("save_config", save_config),
+        ) as cfg:
+            subscription_profile = get_profile(cfg, str(adapter.profile_name))
+            if subscription_profile is None or subscription_profile.auth_provider != resolved:
+                raise ProviderAuthError("Connect this subscription before choosing its model.")
+
+            set_active_profile(cfg, subscription_profile.name)
+            update_active_profile_defaults(
+                cfg,
+                default_model=selected_model,
+                reasoning_effort=selected_effort,
+                allow_subscription_selection=True,
+            )
+            cfg.execution.backend = "native"
+            cfg.execution.runtime = None
+            cfg.extra_fields.pop(SUBSCRIPTION_SELECTION_REQUIRED_KEY, None)
+            cfg.extra_fields.pop("subscription_reconnect_required", None)
+            cfg.extra_fields["onboarded"] = True
+            active = get_active_profile(cfg)
+    except (ConfigError, ProviderAuthError) as exc:
+        _auth_command_error(str(exc), json_output=json_output, code=1, cause=exc)
+
+    payload = {
+        "id": resolved,
+        "profile_name": active.name,
+        "model": selected_model,
+        "reasoning_effort": selected_effort,
+    }
+    if json_output:
+        _emit_json(payload)
+        return
+    _console().print(f"[green]Selected:[/green] {selected_model} · reasoning {selected_effort}")
+
+
+@auth_app.command("reasoning")
+def auth_reasoning(
+    model: str = typer.Argument(..., help="Exact model ID."),
+    profile_name: str = typer.Option(..., "--profile", help="Selected provider profile."),
+) -> None:
+    """Read effort capabilities without mutating the saved provider selection."""
+    from ...config import clone_cfg
+    from ...model_reasoning import model_reasoning_capabilities
+
+    try:
+        cfg = clone_cfg(_patchable("load_config", load_config)())
+        set_active_profile(cfg, profile_name)
+        cfg.model = model
+        _emit_json([model_reasoning_capabilities(cfg)])
+    except (ConfigError, ProviderAuthError) as exc:
+        _auth_command_error(str(exc), json_output=True, code=1, cause=exc)
+
+
 @auth_app.command("login")
 def auth_login(
     runtime_id: str | None = typer.Argument(
@@ -402,7 +593,7 @@ def auth_login(
     switch_account: bool = typer.Option(
         False,
         "--switch-account",
-        help="Sign out from the provider before starting login.",
+        help="Connect a different account without disconnecting the current account first.",
     ),
 ) -> None:
     """Connect a provider subscription and activate it in Alysis Code."""
@@ -413,10 +604,14 @@ def auth_login(
     if _use_direct_provider(cfg, resolved, requested=runtime_id):
         try:
             adapter = create_provider_auth(resolved)
-            if switch_account:
-                adapter.logout()
+            # A replacement account becomes active only after validation. Cancellation
+            # must preserve the existing subscription and its registration.
             status = adapter.login(
-                method="device-code" if device_code else "browser",
+                method="device-code"
+                if device_code
+                else "browser-new-account"
+                if switch_account
+                else "browser",
                 output_write=lambda message: console.print(message, highlight=False),
             )
             if not status.connected:
@@ -616,6 +811,8 @@ __all__ = [
     "auth_list",
     "auth_login",
     "auth_logout",
+    "auth_models",
+    "auth_select_model",
     "auth_status",
     "login_connection_interactively",
     "login_connection_rows",

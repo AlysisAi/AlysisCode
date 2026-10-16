@@ -16,7 +16,7 @@ Alysis Code requires Python 3.11 or newer and uses [uv](https://docs.astral.sh/u
 development environment.
 
 ```bash
-git clone https://github.com/AlysisAi/alysis-code.git
+git clone https://github.com/AlysisAi/AlysisCode.git
 cd alysis-code
 uv sync --extra dev
 ```

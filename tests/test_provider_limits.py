@@ -231,7 +231,7 @@ def test_qwen_aliases_fold_to_single_canonical_key() -> None:
         ("https://api.kimi.com/coding/v1", "k3", "kimi-code"),
         # The Alysis Code hosted proxy (llm Edge Function) forwards to DeepSeek.
         (
-            "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1",
+            "https://api.alysiscode.com/v1",
             "deepseek-v4-flash",
             "deepseek",
         ),
@@ -565,12 +565,28 @@ def test_provider_unavailable_retry_wall_clock_cap_blocks_backoff() -> None:
     assert sleeps == []
 
 
-def test_responses_sized_no_progress_timeout_cannot_start_a_retry_past_cap() -> None:
+def test_responses_sized_no_progress_timeout_gets_one_retry_then_the_cap_blocks() -> None:
+    """A stalled route gets one more attempt; a second stall is not retried.
+
+    What the previous version of this test protected: the 60 s cap was
+    measured from the start of the call, so once a 240 s no-progress watchdog
+    had fired no retry could start. That stopped a stalled route from costing
+    a second watchdog window. It is also exactly why a request dropped at
+    900 s never got its retry, which is the defect this change fixes.
+
+    What covers it now: the window opens at the first failure. The stalled
+    call gets one retry, which starts inside the window; when that retry
+    stalls as well, the window (60 s from the first failure) has closed and
+    no third attempt starts (asserted below). The run deadline still bounds
+    the extra attempt: ``retry_deadline_allows`` vetoes any retry the run
+    cannot afford (test_deadline_callback_prevents_unsafe_provider_retry in
+    this module).
+    """
     attempts = 0
     sleeps: list[float] = []
     # OpenAI Responses uses a 240s no-progress watchdog and a 60s retry wall
-    # clock cap. Once the first watchdog fires, another attempt must not start.
-    clock_values = iter((0.0, 240.0))
+    # clock cap. Clock reads: call start, first stall, second stall.
+    clock_values = iter((0.0, 240.0, 481.0))
 
     def call() -> str:
         nonlocal attempts
@@ -594,8 +610,8 @@ def test_responses_sized_no_progress_timeout_cannot_start_a_retry_past_cap() -> 
             clock_fn=lambda: next(clock_values),
         )
 
-    assert attempts == 1
-    assert sleeps == []
+    assert attempts == 2
+    assert sleeps == [1.0]
 
 
 def test_marked_non_retryable_error_is_not_retried_despite_retryable_message() -> None:

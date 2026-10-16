@@ -35,7 +35,7 @@ from scripts.release.build_vscode_vsix_sbom import (  # noqa: E402
 URL_USERINFO_PATTERN = re.compile(r"(?i)https?://[^\s/@:]+:[^\s/@]+@")
 PASSWORD_PATTERN = re.compile(r"(?i)(password|passwd|secret)(\s*[:=]\s*)([^\s,;]+)")
 SECRET_VALUE_PATTERNS = (*SECRET_PATTERNS, URL_USERINFO_PATTERN, PASSWORD_PATTERN)
-OFFICIAL_SOURCE_REPOSITORY = "https://github.com/AlysisAi/alysis-code"
+OFFICIAL_SOURCE_REPOSITORY = "https://github.com/AlysisAi/AlysisCode"
 RFC3339_UTC_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z")
 SEMVER_RE = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?")
 GITHUB_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")

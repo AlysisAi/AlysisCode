@@ -1,0 +1,28 @@
+{
+  "id": "chatcmpl-parity-5",
+  "object": "chat.completion",
+  "created": 1790000000,
+  "model": "mimo-v2.5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Done with usage.",
+        "reasoning_content": "Counting tokens."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1234,
+    "completion_tokens": 56,
+    "total_tokens": 1290,
+    "prompt_tokens_details": {
+      "cached_tokens": 1024
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 40
+    }
+  }
+}

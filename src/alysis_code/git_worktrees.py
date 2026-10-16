@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .command_text import command_text
 from .git_ops import (
     GitOpsError,
     branch_exists,
@@ -36,7 +37,7 @@ def _run_git_checked(
             build_git_cmd(root, args),
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except OSError as e:
         raise GitOpsError("failed to run git") from e
@@ -56,7 +57,7 @@ def _is_valid_existing_worktree(
             build_git_cmd(worktree_repo_path, ["rev-parse", "--is-inside-work-tree"]),
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except OSError as e:
         raise GitOpsError("failed to run git") from e
@@ -68,7 +69,7 @@ def _is_valid_existing_worktree(
             build_git_cmd(worktree_repo_path, ["rev-parse", "--abbrev-ref", "HEAD"]),
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except OSError as e:
         raise GitOpsError("failed to run git") from e
@@ -95,7 +96,7 @@ def _cleanup_existing_worktree_path(*, root: Path, worktree_repo_path: Path) -> 
         build_git_cmd(root, ["worktree", "remove", str(worktree_repo_path), "--force"]),
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
     )
     # Best-effort cleanup via git first; path cleanup below handles leftovers.
     _ = remove_cp

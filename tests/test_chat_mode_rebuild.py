@@ -649,7 +649,7 @@ def test_runtime_tui_preserves_panel_when_tools_are_rebuilt(
         def _send_keys() -> None:
             pipe.send_text("go\r")
             assert child_started[0].wait(timeout=2.0)
-            pipe.send_text("\x0e")
+            pipe.send_text("\x1b[1;3C")
             time.sleep(0.05)
             panel = runtime["app"].layout.container.content.children[2]
             runtime["selected_before"] = panel.filter()
@@ -658,7 +658,7 @@ def test_runtime_tui_preserves_panel_when_tools_are_rebuilt(
             runtime["selected_after"] = panel.filter()
             release_child[0].set()
             assert child_started[1].wait(timeout=2.0)
-            pipe.send_text("\x0e")
+            pipe.send_text("\x1b[1;3C")
             time.sleep(0.05)
             runtime["selected_new"] = panel.filter()
             release_child[1].set()

@@ -5,6 +5,11 @@ import re
 from collections.abc import Callable, Collection
 from typing import Any, TypeAlias
 
+from .desktop_connections import CONNECTION_TOOLS, connection_arguments, connection_result
+from .desktop_terminal import TERMINAL_TOOLS, terminal_arguments, terminal_result
+from .embedded_browser import BROWSER_TOOLS, browser_arguments, browser_result
+from .open_panels import PANEL_TOOLS, panel_arguments, panel_result
+
 HOST_ACTION_PROTOCOL_VERSION = "1"
 HOST_ACTIONS: tuple[str, ...] = (
     "tasks.list",
@@ -15,6 +20,19 @@ HOST_ACTIONS: tuple[str, ...] = (
     "debug.start",
     "debug.stop",
     "debug.status",
+    "github.repo.read",
+    "github.pr.list",
+    "github.pr.create",
+    "github.git.fetch",
+    "github.git.pull",
+    "github.git.push",
+    "mcp.github.call",
+    "mcp.github.discover",
+    "mcp.github.describe",
+    "mcp.google.call",
+)
+HOST_ACTIONS += tuple(
+    spec[0] for spec in TERMINAL_TOOLS + BROWSER_TOOLS + CONNECTION_TOOLS + PANEL_TOOLS
 )
 HOST_ACTION_SET = frozenset(HOST_ACTIONS)
 HOST_ACTION_TOOL_NAMES: dict[str, str] = {
@@ -26,7 +44,24 @@ HOST_ACTION_TOOL_NAMES: dict[str, str] = {
     "debug.start": "ide_debug_start",
     "debug.stop": "ide_debug_stop",
     "debug.status": "ide_debug_status",
+    "github.repo.read": "github_repo_read",
+    "github.pr.list": "github_pr_list",
+    "github.pr.create": "github_pr_create",
+    "github.git.fetch": "github_git_fetch",
+    "github.git.pull": "github_git_pull",
+    "github.git.push": "github_git_push",
 }
+HOST_ACTION_TOOL_NAMES.update(
+    {spec[0]: spec[1] for spec in TERMINAL_TOOLS + BROWSER_TOOLS + CONNECTION_TOOLS + PANEL_TOOLS}
+)
+GITHUB_WRITE_ACTIONS = frozenset(
+    {
+        "github.pr.create",
+        "github.git.fetch",
+        "github.git.pull",
+        "github.git.push",
+    }
+)
 HOST_ACTION_MAX_ARGUMENT_BYTES = 8 * 1024
 HOST_ACTION_MAX_RESULT_BYTES = 64 * 1024
 HOST_ACTION_MAX_LIST_ITEMS = 100
@@ -44,9 +79,11 @@ class HostActionError(RuntimeError):
         *,
         retryable: bool = False,
         host_error_code: str | None = None,
+        dispatch_state: str | None = None,
     ) -> None:
         self.code = str(code or "host_action_failed")
         self.message = str(message or "The IDE host action failed.")
+        self.dispatch_state = dispatch_state
         self.retryable = bool(retryable)
         self.host_error_code = str(host_error_code or "") or None
         super().__init__(self.message)
@@ -57,6 +94,8 @@ class HostActionError(RuntimeError):
             "error_code": self.code,
             "retryable": self.retryable,
         }
+        if self.dispatch_state:
+            payload["dispatch_state"] = self.dispatch_state
         if self.host_error_code:
             payload["host_error_code"] = self.host_error_code
         return payload
@@ -88,7 +127,41 @@ def normalize_host_action_arguments(action: str, arguments: dict[str, Any]) -> d
             "IDE host action arguments must be an object.",
         )
 
-    if normalized_action == "tasks.list":
+    if normalized_action.startswith("panels."):
+        try:
+            normalized = panel_arguments(normalized_action, arguments)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_arguments", str(exc)) from exc
+    elif normalized_action.startswith("connectors."):
+        try:
+            normalized = connection_arguments(normalized_action, arguments)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_arguments", str(exc)) from exc
+    elif normalized_action.startswith("browser."):
+        try:
+            normalized = browser_arguments(normalized_action, arguments)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_arguments", str(exc)) from exc
+    elif normalized_action.startswith("terminal."):
+        try:
+            normalized = terminal_arguments(normalized_action, arguments)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_arguments", str(exc)) from exc
+    elif normalized_action == "mcp.google.call":
+        from .mcp.google_host import normalize_google_arguments
+
+        normalized = normalize_google_arguments(arguments)
+    elif normalized_action in {"mcp.github.discover", "mcp.github.describe"}:
+        from .mcp.github_discovery import discovery_arguments
+
+        normalized = discovery_arguments(normalized_action, arguments)
+    elif normalized_action == "mcp.github.call":
+        from .mcp.github_host import normalize_mcp_call_arguments
+
+        normalized = normalize_mcp_call_arguments(arguments)
+    elif normalized_action.startswith("github."):
+        normalized = _normalize_github_arguments(normalized_action, arguments)
+    elif normalized_action == "tasks.list":
         _reject_extra_keys(arguments, {"task_type"})
         task_type = _optional_identifier(arguments.get("task_type"), "task_type")
         normalized = {"task_type": task_type} if task_type else {}
@@ -154,7 +227,37 @@ def normalize_host_action_result(action: str, result: dict[str, Any]) -> dict[st
             "IDE host action result exceeds the allowed size.",
         )
 
-    if normalized_action == "tasks.list":
+    if normalized_action.startswith("panels."):
+        try:
+            normalized = panel_result(normalized_action, result)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_result", str(exc)) from exc
+    elif normalized_action.startswith("connectors."):
+        try:
+            normalized = connection_result(normalized_action, result)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_result", str(exc)) from exc
+    elif normalized_action.startswith("browser."):
+        try:
+            normalized = browser_result(normalized_action, result)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_result", str(exc)) from exc
+    elif normalized_action.startswith("terminal."):
+        try:
+            normalized = terminal_result(normalized_action, result)
+        except ValueError as exc:
+            raise HostActionError("invalid_host_action_result", str(exc)) from exc
+    elif normalized_action in {"mcp.github.discover", "mcp.github.describe"}:
+        from .mcp.github_discovery import discovery_result
+
+        normalized = discovery_result(normalized_action, result)
+    elif normalized_action in {"mcp.github.call", "mcp.google.call"}:
+        from .mcp.github_host import normalize_mcp_call_result
+
+        normalized = normalize_mcp_call_result(result)
+    elif normalized_action.startswith("github."):
+        normalized = _normalize_github_result(normalized_action, result)
+    elif normalized_action == "tasks.list":
         normalized = _normalize_task_list_result(result)
     elif normalized_action == "tasks.run":
         _reject_extra_keys(
@@ -541,3 +644,126 @@ def _nonnegative_int(value: Any, field: str) -> int:
     if normalized < 0:
         raise HostActionError("invalid_host_action_payload", f"{field} must be non-negative.")
     return normalized
+
+
+def _github_text(value: Any, field: str, limit: int, *, empty: bool = False) -> str:
+    if (
+        not isinstance(value, str)
+        or (not empty and not value.strip())
+        or len(value) > limit
+        or _has_disallowed_text_control(value)
+    ):
+        raise HostActionError("invalid_host_action_payload", f"{field} must be bounded text.")
+    return value
+
+
+def _github_branch(value: Any, field: str) -> str:
+    branch = _github_text(value, field, 256)
+    if (
+        branch == "@"
+        or branch.startswith(("-", "+", "/"))
+        or branch.endswith(("/", "."))
+        or any(part.startswith(".") or part.endswith(".lock") for part in branch.split("/"))
+        or any(part in branch for part in ("..", "@{", "//"))
+        or any(ord(char) <= 32 or char in "~^:?*[\\" for char in branch)
+    ):
+        raise HostActionError("invalid_host_action_payload", f"{field} must be a branch name.")
+    return branch
+
+
+def _normalize_github_arguments(action: str, args: dict[str, Any]) -> dict[str, Any]:
+    if action in {"github.repo.read", "github.git.fetch"}:
+        _reject_extra_keys(args, set())
+        return {}
+    if action in {"github.git.pull", "github.git.push"}:
+        _reject_extra_keys(args, {"branch"})
+        return {"branch": _github_branch(args.get("branch"), "branch")}
+    if action == "github.pr.list":
+        _reject_extra_keys(args, {"base", "head"})
+        return {key: _github_branch(args[key], key) for key in ("base", "head") if key in args}
+    _reject_extra_keys(args, {"base", "head", "title", "body", "draft"})
+    return {
+        "base": _github_branch(args.get("base"), "base"),
+        "head": _github_branch(args.get("head"), "head"),
+        "title": _github_text(args.get("title"), "title", 256),
+        "body": _github_text(args.get("body"), "body", 4096, empty=True),
+        "draft": _required_bool(args.get("draft", True), "draft"),
+    }
+
+
+def _github_number(value: Any) -> int:
+    number = _nonnegative_int(value, "number")
+    if number == 0:
+        raise HostActionError("invalid_host_action_payload", "number must be positive.")
+    return number
+
+
+def _github_url(value: Any, repository: str, *, number: int | None = None) -> str:
+    url = _github_text(value, "url", 1024)
+    expected = f"https://github.com/{repository}"
+    if number is not None:
+        expected += f"/pull/{number}"
+    if url.lower() != expected.lower():
+        raise HostActionError(
+            "invalid_host_action_payload", "url must match the selected repository."
+        )
+    return url
+
+
+def _normalize_github_result(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    repository = _github_text(result.get("repository"), "repository", 256)
+    login = _github_text(result.get("account_login"), "account_login", 39)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}", repository):
+        raise HostActionError("invalid_host_action_payload", "repository must be owner/name.")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", login):
+        raise HostActionError(
+            "invalid_host_action_payload", "account_login must be a GitHub login."
+        )
+    common = {"repository": repository, "account_login": login}
+    common_keys = set(common)
+    if action == "github.repo.read":
+        _reject_extra_keys(result, common_keys | {"url", "private", "default_branch"})
+        return {
+            **common,
+            "url": _github_url(result.get("url"), repository),
+            "private": _required_bool(result.get("private"), "private"),
+            "default_branch": _github_branch(result.get("default_branch"), "default_branch"),
+        }
+    if action.startswith("github.git."):
+        _reject_extra_keys(result, common_keys | {"output"})
+        return {**common, "output": _github_text(result.get("output"), "output", 16384, empty=True)}
+    if action == "github.pr.create":
+        _reject_extra_keys(result, common_keys | {"number", "url"})
+        number = _github_number(result.get("number"))
+        return {
+            **common,
+            "number": number,
+            "url": _github_url(result.get("url"), repository, number=number),
+        }
+    _reject_extra_keys(result, common_keys | {"pull_requests", "truncated"})
+    items = result.get("pull_requests")
+    if not isinstance(items, list) or len(items) > 30:
+        raise HostActionError(
+            "invalid_host_action_payload", "pull_requests must contain at most 30 items."
+        )
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise HostActionError("invalid_host_action_payload", "pull request must be an object.")
+        _reject_extra_keys(item, {"number", "url", "title", "base", "head", "draft"})
+        number = _github_number(item.get("number"))
+        normalized.append(
+            {
+                "number": number,
+                "url": _github_url(item.get("url"), repository, number=number),
+                "title": _github_text(item.get("title"), "title", 256),
+                "base": _github_branch(item.get("base"), "base"),
+                "head": _github_branch(item.get("head"), "head"),
+                "draft": _required_bool(item.get("draft"), "draft"),
+            }
+        )
+    return {
+        **common,
+        "pull_requests": normalized,
+        "truncated": _required_bool(result.get("truncated"), "truncated"),
+    }

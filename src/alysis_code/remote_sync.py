@@ -12,6 +12,7 @@ from typing import Any
 
 from .atomic_io import atomic_write_json
 from .branding import env_get_from
+from .command_text import command_text
 from .git_safe import build_git_cmd
 
 
@@ -81,7 +82,7 @@ def _run(
             cmd,
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             cwd=os.fspath(cwd) if cwd is not None else None,
         )
     except OSError as e:
@@ -145,11 +146,27 @@ def resolve_provider(*, settings_provider: str, remote_url: str) -> str:
     return detect_provider_from_remote_url(remote_url)
 
 
+def _desktop_remote_refusal() -> str | None:
+    # Desktop credentials belong to Electron main. This standalone/Forge helper has no
+    # negotiated host-action channel and must never fall back to gh or Git credentials.
+    if "ALYSIS_DESKTOP_GITHUB_POLICY" in os.environ:
+        return (
+            "Desktop remote sync requires the selected-account GitHub host broker. "
+            "Use the negotiated github_* chat tools; standalone remote sync is unavailable "
+            "in this desktop session."
+        )
+    return None
+
+
 def push_branch(root: Path, *, remote: str, branch: str) -> tuple[bool, str]:
+    if refusal := _desktop_remote_refusal():
+        return False, refusal
     return _run(build_git_cmd(root, ["push", remote, branch]))
 
 
 def push_base(root: Path, *, remote: str, base_branch: str) -> tuple[bool, str]:
+    if refusal := _desktop_remote_refusal():
+        return False, refusal
     return _run(build_git_cmd(root, ["push", remote, base_branch]))
 
 
@@ -186,6 +203,8 @@ def find_existing_pr_or_mr(
     base_branch: str,
     head_branch: str,
 ) -> tuple[bool, str | None, str | None, str]:
+    if refusal := _desktop_remote_refusal():
+        return False, None, None, refusal
     if provider == "github":
         if shutil.which("gh") is None:
             return False, None, None, "gh CLI not available"
@@ -260,6 +279,8 @@ def create_pr_or_mr(
     title: str,
     body: str,
 ) -> tuple[bool, str | None, str]:
+    if refusal := _desktop_remote_refusal():
+        return False, None, refusal
     if provider == "github":
         if shutil.which("gh") is None:
             return False, None, "gh CLI not available"

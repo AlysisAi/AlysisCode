@@ -32,7 +32,7 @@ NATIVE_EVIDENCE_SCHEMA_VERSION = 2
 # RELEASE_ATTESTATION_DOMAIN in
 # extensions/vscode-alysis/src/runtime/ManagedCliReleaseSecurity.ts.
 DOMAIN = "sylliptor-managed-cli-release-v3"
-DEFAULT_SOURCE_REPOSITORY = "https://github.com/AlysisAi/alysis-code"
+DEFAULT_SOURCE_REPOSITORY = "https://github.com/AlysisAi/AlysisCode"
 DEFAULT_PROVENANCE_ISSUER = "https://token.actions.githubusercontent.com"
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -69,7 +69,7 @@ def _artifact(value: str) -> ArtifactInput:
         raise argparse.ArgumentTypeError(f"artifact is not a file: {path}")
     if not url.startswith(f"{DEFAULT_SOURCE_REPOSITORY}/releases/download/"):
         raise argparse.ArgumentTypeError(
-            "artifact URL must use the pinned AlysisAi/alysis-code GitHub release path"
+            "artifact URL must use the pinned AlysisAi/AlysisCode GitHub release path"
         )
     return ArtifactInput(target=target, path=path, url=url)
 

@@ -67,9 +67,9 @@ def test_declared_verification_finishes_without_redundant_runs_and_narrower_does
 ) -> None:
     for name in (
         "ALYSIS_VERIFY_SANDBOX_MODE",
-        "SYLLIPTOR_VERIFY_SANDBOX_MODE",
+        "ALYSIS_VERIFY_SANDBOX_MODE",
         "ALYSIS_SHELL_SANDBOX_MODE",
-        "SYLLIPTOR_SHELL_SANDBOX_MODE",
+        "ALYSIS_SHELL_SANDBOX_MODE",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
@@ -242,9 +242,9 @@ def test_unittest_discovery_hook_failure_is_not_erased_by_narrower_pass(
 ) -> None:
     for name in (
         "ALYSIS_VERIFY_SANDBOX_MODE",
-        "SYLLIPTOR_VERIFY_SANDBOX_MODE",
+        "ALYSIS_VERIFY_SANDBOX_MODE",
         "ALYSIS_SHELL_SANDBOX_MODE",
-        "SYLLIPTOR_SHELL_SANDBOX_MODE",
+        "ALYSIS_SHELL_SANDBOX_MODE",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")

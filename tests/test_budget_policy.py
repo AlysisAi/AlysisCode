@@ -118,6 +118,7 @@ class TestCleanStopRegistry(unittest.TestCase):
                 {
                     "run_budget_exhausted",
                     "empty_response_anomaly_retry_exhausted",
+                    "output_token_limit",
                 }
             ),
         )
@@ -365,9 +366,9 @@ class TestRunBudgetParsing(unittest.TestCase):
             900.5,
         )
 
-    def test_legacy_env_override_is_used(self) -> None:
+    def test_canonical_env_override_is_used(self) -> None:
         self.assertEqual(
-            bp.resolve_run_budget_seconds({"SYLLIPTOR_RUN_BUDGET_SECONDS": "10800"}),
+            bp.resolve_run_budget_seconds({"ALYSIS_RUN_BUDGET_SECONDS": "10800"}),
             10800.0,
         )
 

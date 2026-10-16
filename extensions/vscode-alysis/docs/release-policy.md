@@ -76,7 +76,7 @@ enabled, maintainers need:
 `.github/workflows/vscode-extension-promote.yml` are dispatch-only. First run the reviewer-gated
 evidence workflow from the exact `vX.Y.Z` source tag with the successful candidate, six-target
 installed-provider, actual untrusted-workspace, and real WSL/Remote-SSH run IDs, literal
-confirmation `attest-release-evidence`, and the reviewed seven-file manual inventory digest from
+confirmation `attest-release-evidence`, and the reviewed nine-file manual inventory digest from
 `scripts/qa/hash_vscode_release_evidence.py`. It validates six schema-v5 provider reports plus the
 schema-v3 environment matrix, six redacted installed-provider reports, one actual-untrusted report,
 and two real-remote reports against the exact packages, production summaries, runtimes, and SBOMs.

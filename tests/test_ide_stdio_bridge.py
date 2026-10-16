@@ -682,8 +682,11 @@ def test_run_stdio_bridge_keeps_incidental_prints_off_protocol_stdout(
     protocol_out = io.StringIO()
     diagnostics = io.StringIO()
 
+    protocol_in = io.StringIO()
+
     class FakeBridge:
-        def __init__(self, *, stdout: Any) -> None:
+        def __init__(self, *, stdin: Any, stdout: Any) -> None:
+            assert stdin is protocol_in
             assert stdout is protocol_out
 
         def run(self) -> int:
@@ -692,6 +695,9 @@ def test_run_stdio_bridge_keeps_incidental_prints_off_protocol_stdout(
             return 0
 
     monkeypatch.setattr(stdio_bridge, "StdioBridge", FakeBridge)
+    # The real claim moves descriptors 0 and 1 to the null device; it has its own
+    # subprocess test in test_ide_protocol_stream_isolation.py.
+    monkeypatch.setattr(stdio_bridge, "claim_protocol_streams", lambda: (protocol_in, protocol_out))
     monkeypatch.setattr(sys, "stdout", protocol_out)
     monkeypatch.setattr(sys, "stderr", diagnostics)
 
@@ -1413,7 +1419,9 @@ def test_stdio_bridge_conventions_and_extension_package_methods(
         management_protocol, "load_project_overrides", lambda _root: project_overrides
     )
     monkeypatch.setattr(
-        management_protocol, "compute_effective_enabled", lambda *_args: {"demo.ext"}
+        management_protocol,
+        "resolve_active_plugins",
+        lambda **_kwargs: SimpleNamespace(enabled_plugin_ids=frozenset({"demo.ext"})),
     )
     monkeypatch.setattr(
         management_protocol, "uninstall_plugin", lambda **_kwargs: {"id": "demo.ext"}
@@ -4453,6 +4461,115 @@ def test_stdio_bridge_approval_allow_for_session_exact_shell_scope_auto_allows(
         for line in lines
     )
     assert decisions == [(True, True), (True, True)]
+
+
+def _mcp_tool_approval_request(text: str, *, destructive: bool = False) -> ApprovalRequest:
+    return ApprovalRequest(
+        kind="mcp_tool_run:alpha/echo",
+        reason="review mode requires confirmation for MCP tools",
+        preview=f'Run MCP tool\nserver: alpha\ntool: echo\nargs:\n{{"text": "{text}"}}',
+        command="mcp__alpha__echo",
+        metadata={
+            "mcp_server_id": "alpha",
+            "mcp_tool_id": "echo",
+            **({"destructive": True} if destructive else {}),
+        },
+    )
+
+
+def test_stdio_bridge_mcp_tool_allow_for_session_covers_the_tool_for_any_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decisions: list[tuple[bool, bool]] = []
+
+    def run_turn(surface: Any, message: str) -> int:
+        _ = message
+        for text in ("one", "two"):
+            decision = surface.request_approval(_mcp_tool_approval_request(text))
+            decisions.append((decision.allow, decision.allow_for_session))
+        surface.emit_message_end("done")
+        return 0
+
+    out, bridge, session_id = _create_review_session(tmp_path, monkeypatch, run_turn)
+    bridge.process_line(
+        _request("chat.send", {"session_id": session_id, "message": "approve"}, request_id="chat")
+        + "\n"
+    )
+    approval = _wait_for_line(
+        out,
+        lambda line: (
+            line.get("type") == "prompt_for_input"
+            and line.get("payload", {}).get("kind") == "approval"
+        ),
+    )
+    payload = approval["payload"]
+    assert payload["approval_kind"] == "mcp_tool_run:alpha/echo"
+    assert payload["allow_for_session_supported"] is True
+    assert payload["action"]["tool_identity"] == {"mcp_server_id": "alpha", "mcp_tool_id": "echo"}
+    assert payload["action"]["access"] == "execute"
+
+    bridge.process_line(
+        _request(
+            "approval.respond",
+            {
+                "session_id": session_id,
+                "approval_id": payload["approval_id"],
+                "allow": True,
+                "allow_for_session": True,
+            },
+            request_id="approve",
+        )
+        + "\n"
+    )
+
+    _wait_for_line(out, lambda line: line.get("type") == "message_end")
+    approval_events = [
+        line
+        for line in _json_lines(out)
+        if line.get("type") == "prompt_for_input"
+        and line.get("payload", {}).get("kind") == "approval"
+    ]
+    assert len(approval_events) == 1
+    assert decisions == [(True, True), (True, True)]
+
+
+def test_stdio_bridge_destructive_mcp_tool_never_offers_allow_for_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run_turn(surface: Any, message: str) -> int:
+        _ = message
+        surface.request_approval(_mcp_tool_approval_request("one", destructive=True))
+        surface.emit_message_end("done")
+        return 0
+
+    out, bridge, session_id = _create_review_session(tmp_path, monkeypatch, run_turn)
+    bridge.process_line(
+        _request("chat.send", {"session_id": session_id, "message": "approve"}, request_id="chat")
+        + "\n"
+    )
+    approval = _wait_for_line(
+        out,
+        lambda line: (
+            line.get("type") == "prompt_for_input"
+            and line.get("payload", {}).get("kind") == "approval"
+        ),
+    )
+    assert approval["payload"]["allow_for_session_supported"] is False
+    assert approval["payload"]["action"]["destructive"] is True
+    bridge.process_line(
+        _request(
+            "approval.respond",
+            {
+                "session_id": session_id,
+                "approval_id": approval["payload"]["approval_id"],
+                "allow": False,
+                "allow_for_session": False,
+            },
+            request_id="deny",
+        )
+        + "\n"
+    )
+    _wait_for_line(out, lambda line: line.get("type") == "message_end")
 
 
 def test_stdio_bridge_approval_allow_for_session_unsafe_scope_is_downgraded(
@@ -11341,8 +11458,8 @@ def test_stdio_bridge_swarm_pre_granted_scope_never_prompts(
             ApprovalRequest(
                 kind="shell_run",
                 reason="sensitive command",
-                preview="rm -rf build",
-                command="rm -rf build",
+                preview="make build",
+                command="make build",
             )
         )
         decisions.append(decision.allow)
@@ -11353,7 +11470,9 @@ def test_stdio_bridge_swarm_pre_granted_scope_never_prompts(
 
     monkeypatch.setattr("alysis_code.swarm_worker.run_agent", fake_run_agent)
 
-    grant_scope = exact_command_scope("rm -rf build", kind="shell_run")
+    # Destructive commands never reuse a scope (they always need a fresh decision),
+    # so the pre-grant is exercised with an ordinary build command.
+    grant_scope = exact_command_scope("make build", kind="shell_run")
     bridge.process_line(
         _request(
             "forge.swarm.start",

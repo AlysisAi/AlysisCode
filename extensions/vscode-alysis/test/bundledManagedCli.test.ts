@@ -84,7 +84,7 @@ function releaseManifest(
     schemaVersion: 3,
     release: {
       tag: "v1.0.0",
-      sourceRepository: "https://github.com/AlysisAi/alysis-code",
+      sourceRepository: "https://github.com/AlysisAi/AlysisCode",
       sourceCommit: "a".repeat(40)
     },
     artifactVersion: "runtime-1.0.0",
@@ -97,11 +97,11 @@ function releaseManifest(
     signingKeyId: "test-release-key",
     provenance: {
       issuer: "https://token.actions.githubusercontent.com",
-      builderId: "https://github.com/AlysisAi/alysis-code/.github/workflows/managed-cli-vsix-release.yml@refs/tags/v1.0.0"
+      builderId: "https://github.com/AlysisAi/AlysisCode/.github/workflows/managed-cli-vsix-release.yml@refs/tags/v1.0.0"
     },
     artifacts: [{
       target,
-      url: `https://${host}/AlysisAi/alysis-code/releases/download/v1.0.0/${target}`,
+      url: `https://${host}/AlysisAi/AlysisCode/releases/download/v1.0.0/${target}`,
       sha256: createHash("sha256").update(content).digest("hex"),
       size: content.length,
       executable,

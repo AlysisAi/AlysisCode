@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+from . import alysis_cloud
 from .branding import PRODUCT_NAME
 
 _ALYSIS_TRIAL_PROXY_PATH = "/functions/v1/llm"
-# Reserved hostnames for a future dedicated gateway box. Both spellings stay
-# recognised: the pre-rebrand host may still be served, and a config written
-# against it must not start misclassifying.
-_ALYSIS_GATEWAY_HOSTS = frozenset({"api.sylliptor.alysisai.com", "api.alysiscode.com"})
+# Dedicated gateway hostname.
+_ALYSIS_GATEWAY_HOSTS = frozenset({"api.alysiscode.com"})
 _ZAI_CODING_PLAN_PATH = "/api/coding/paas/v4"
-# DashScope has documented regional and coding-plan hosts. Match their domain
-# boundaries, not an arbitrary URL that merely contains "dashscope".
+_CHATGPT_CODEX_PATH = "/backend-api/codex"
+
+# Identify only Alibaba-owned Model Studio domains; substring checks can
+# misclassify unrelated custom proxies containing the word "dashscope".
 _DASHSCOPE_BASE_HOSTS = frozenset(
     {
         "dashscope.aliyuncs.com",
@@ -19,6 +20,7 @@ _DASHSCOPE_BASE_HOSTS = frozenset(
         "dashscope-us.aliyuncs.com",
     }
 )
+_ALIBABA_MODEL_STUDIO_SUFFIXES = (".dashscope.aliyuncs.com", ".maas.aliyuncs.com")
 
 # What the UI calls the hosted gateway in place of its host. The gateway runs as
 # a Supabase Edge Function, so its host is the Supabase project ref — an
@@ -38,6 +40,16 @@ def is_alysis_gateway_url(base_url: str | None) -> bool:
     except ValueError:
         return False
     host = (parsed.hostname or "").rstrip(".").casefold()
+    try:
+        configured = alysis_cloud.gateway_base_url()
+        api_base = alysis_cloud.cloud_api_url()
+    except alysis_cloud.AlysisCloudConfigError:
+        configured = ""
+        api_base = ""
+    if configured and raw.rstrip("/") == configured.rstrip("/"):
+        return True
+    if api_base and raw.rstrip("/") == f"{api_base}/llm/v1":
+        return True
     if host in _ALYSIS_GATEWAY_HOSTS:
         return True
     path = (parsed.path or "").casefold()
@@ -107,11 +119,18 @@ def known_provider_key_from_base_url(base_url: str | None) -> str | None:
     # service no longer exists.)
     if is_alysis_gateway_url(raw):
         return "deepseek"
-    if host in _DASHSCOPE_BASE_HOSTS or host.endswith(".dashscope.aliyuncs.com"):
+    if host in _DASHSCOPE_BASE_HOSTS or host.endswith(_ALIBABA_MODEL_STUDIO_SUFFIXES):
         return "qwen"
     if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
         return "openrouter"
     if host == "api.openai.com":
+        return "openai"
+    # ChatGPT subscriptions use OpenAI Responses capabilities even though their
+    # authentication and endpoint differ from the public API. Treating this as
+    # an unknown "chatgpt" provider silently disables reasoning summaries.
+    if host == "chatgpt.com" and (
+        path == _CHATGPT_CODEX_PATH or path.startswith(f"{_CHATGPT_CODEX_PATH}/")
+    ):
         return "openai"
     if (
         host.endswith(".openai.azure.com")

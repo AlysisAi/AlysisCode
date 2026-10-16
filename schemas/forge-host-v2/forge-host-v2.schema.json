@@ -1,0 +1,5433 @@
+{
+  "$defs": {
+    "AcceptanceCriterion": {
+      "additionalProperties": false,
+      "properties": {
+        "criterionId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Criterionid",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "criterionId",
+        "description"
+      ],
+      "title": "AcceptanceCriterion",
+      "type": "object"
+    },
+    "ApprovalDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "expectedRevision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Expectedrevision",
+          "type": "integer"
+        },
+        "type": {
+          "const": "approval.decision",
+          "title": "Type",
+          "type": "string"
+        },
+        "approvalOperationId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Approvaloperationid",
+          "type": "string"
+        },
+        "approvalId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Approvalid",
+          "type": "string"
+        },
+        "actionFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Actionfingerprint",
+          "type": "string"
+        },
+        "scopeFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Scopefingerprint",
+          "type": "string"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "title": "Expiresat",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "allow_once",
+            "deny"
+          ],
+          "title": "Decision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "expectedRevision",
+        "type",
+        "approvalOperationId",
+        "approvalId",
+        "actionFingerprint",
+        "scopeFingerprint",
+        "expiresAt",
+        "decision"
+      ],
+      "title": "ApprovalDecision",
+      "type": "object"
+    },
+    "ApprovalRequired": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "approval.required",
+          "title": "Type",
+          "type": "string"
+        },
+        "approvalId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Approvalid",
+          "type": "string"
+        },
+        "action": {
+          "discriminator": {
+            "mapping": {
+              "computer_control": "#/$defs/SubjectAction",
+              "network_access": "#/$defs/SubjectAction",
+              "plan_execute": "#/$defs/PlanExecuteAction",
+              "process_execute": "#/$defs/SubjectAction",
+              "provider_use": "#/$defs/SubjectAction",
+              "workspace_write": "#/$defs/SubjectAction"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PlanExecuteAction"
+            },
+            {
+              "$ref": "#/$defs/SubjectAction"
+            }
+          ],
+          "title": "Action"
+        },
+        "actionFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Actionfingerprint",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "risk": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "title": "Risk",
+          "type": "string"
+        },
+        "scope": {
+          "discriminator": {
+            "mapping": {
+              "computer_use": "#/$defs/ComputerUseApprovalScope",
+              "filesystem": "#/$defs/FilesystemApprovalScope",
+              "network": "#/$defs/NetworkApprovalScope",
+              "process": "#/$defs/ProcessApprovalScope",
+              "provider": "#/$defs/ProviderApprovalScope"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/FilesystemApprovalScope"
+            },
+            {
+              "$ref": "#/$defs/ProcessApprovalScope"
+            },
+            {
+              "$ref": "#/$defs/NetworkApprovalScope"
+            },
+            {
+              "$ref": "#/$defs/ComputerUseApprovalScope"
+            },
+            {
+              "$ref": "#/$defs/ProviderApprovalScope"
+            }
+          ],
+          "title": "Scope"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "title": "Expiresat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "approvalId",
+        "action",
+        "actionFingerprint",
+        "summary",
+        "risk",
+        "scope",
+        "expiresAt"
+      ],
+      "title": "ApprovalRequired",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "properties": {
+                  "kind": {
+                    "const": "plan_execute"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "properties": {
+                  "kind": {
+                    "const": "filesystem"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "properties": {
+                  "kind": {
+                    "const": "workspace_write"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "properties": {
+                  "kind": {
+                    "const": "filesystem"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "properties": {
+                  "kind": {
+                    "const": "process_execute"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "properties": {
+                  "kind": {
+                    "const": "process"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "properties": {
+                  "kind": {
+                    "const": "network_access"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "properties": {
+                  "kind": {
+                    "const": "network"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "properties": {
+                  "kind": {
+                    "const": "computer_control"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "properties": {
+                  "kind": {
+                    "const": "computer_use"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "properties": {
+                  "kind": {
+                    "const": "provider_use"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "properties": {
+                  "kind": {
+                    "const": "provider"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ArtifactRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "evidence",
+            "preview",
+            "log",
+            "report"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory",
+            "image",
+            "video",
+            "audio",
+            "archive",
+            "report",
+            "log",
+            "diff"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "updated",
+            "unchanged",
+            "missing",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workspaceRelativePath": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Workspacerelativepath",
+          "type": "string",
+          "pattern": "^(?![~/\\\\])(?!.*//)(?!(?:.*\\/)?\\.\\.?$)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))(?!.*[\\x00-\\x1f\\x7f:*?\\[\\]\\\\])[^/]+(?:\\/[^/]+)*$"
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Digest"
+        },
+        "sizeBytes": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sizebytes"
+        }
+      },
+      "required": [
+        "artifactId",
+        "role",
+        "kind",
+        "status",
+        "workspaceRelativePath",
+        "digest",
+        "sizeBytes"
+      ],
+      "title": "ArtifactRecord",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "digest": {
+                "type": "null"
+              },
+              "sizeBytes": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "created",
+                  "updated",
+                  "unchanged"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "sizeBytes": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Capability": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_-]*)+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "Capability",
+      "type": "object"
+    },
+    "CheckResult": {
+      "additionalProperties": false,
+      "properties": {
+        "checkId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Checkid",
+          "type": "string"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskid"
+        },
+        "requirementIds": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Requirementids",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "not_run"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "evidenceRefs": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Evidencerefs",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "checkId",
+        "taskId",
+        "requirementIds",
+        "status",
+        "summary",
+        "evidenceRefs"
+      ],
+      "title": "CheckResult",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidenceRefs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CommandAccepted": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "command.accepted",
+          "title": "Type",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "duplicate": {
+          "title": "Duplicate",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "identity",
+        "duplicate"
+      ],
+      "title": "CommandAccepted",
+      "type": "object"
+    },
+    "ComputerUseApprovalScope": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-host.approval-scope/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "kind": {
+          "const": "computer_use",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "capabilities": {
+          "items": {
+            "enum": [
+              "screen_view",
+              "app_inspection",
+              "keyboard",
+              "pointer"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Capabilities",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "label",
+        "capabilities",
+        "fingerprint"
+      ],
+      "title": "ComputerUseApprovalScope",
+      "type": "object"
+    },
+    "EventEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "alysis.forge-host",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "const": "2.0",
+          "title": "Protocolversion",
+          "type": "string"
+        },
+        "messageId": {
+          "pattern": "^msg_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Messageid",
+          "type": "string"
+        },
+        "operationId": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Operationid"
+        },
+        "sentAt": {
+          "format": "date-time",
+          "title": "Sentat",
+          "type": "string"
+        },
+        "kind": {
+          "const": "event",
+          "title": "Kind",
+          "type": "string"
+        },
+        "sequence": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "approval.required": "#/$defs/ApprovalRequired",
+              "evidence.ready": "#/$defs/EvidenceReady",
+              "plan.ready": "#/$defs/PlanReady",
+              "planner.question": "#/$defs/PlannerQuestion",
+              "run.progress": "#/$defs/RunProgress",
+              "run.terminal": "#/$defs/RunTerminal",
+              "state.snapshot": "#/$defs/StateSnapshot"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/StateSnapshot"
+            },
+            {
+              "$ref": "#/$defs/PlannerQuestion"
+            },
+            {
+              "$ref": "#/$defs/PlanReady"
+            },
+            {
+              "$ref": "#/$defs/ApprovalRequired"
+            },
+            {
+              "$ref": "#/$defs/RunProgress"
+            },
+            {
+              "$ref": "#/$defs/EvidenceReady"
+            },
+            {
+              "$ref": "#/$defs/RunTerminal"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "messageId",
+        "operationId",
+        "sentAt",
+        "kind",
+        "sequence",
+        "identity",
+        "payload"
+      ],
+      "title": "EventEnvelope",
+      "type": "object",
+      "allOf": [
+        {
+          "properties": {
+            "operationId": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "planner.question"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "plan.ready"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "run.progress"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "evidence.ready"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "run.terminal"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "action": {
+                    "properties": {
+                      "kind": {
+                        "const": "plan_execute"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  },
+                  "type": {
+                    "const": "approval.required"
+                  }
+                },
+                "required": [
+                  "type",
+                  "action"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "phase": {
+                    "const": "planning"
+                  },
+                  "type": {
+                    "const": "state.snapshot"
+                  }
+                },
+                "required": [
+                  "type",
+                  "phase"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "phase": {
+                    "const": "awaiting_approval"
+                  },
+                  "type": {
+                    "const": "state.snapshot"
+                  }
+                },
+                "required": [
+                  "type",
+                  "phase"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "phase": {
+                    "const": "ready"
+                  },
+                  "type": {
+                    "const": "state.snapshot"
+                  }
+                },
+                "required": [
+                  "type",
+                  "phase"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "phase": {
+                    "const": "running"
+                  },
+                  "type": {
+                    "const": "state.snapshot"
+                  }
+                },
+                "required": [
+                  "type",
+                  "phase"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "phase": {
+                    "const": "cancelling"
+                  },
+                  "type": {
+                    "const": "state.snapshot"
+                  }
+                },
+                "required": [
+                  "type",
+                  "phase"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "phase": {
+                    "const": "terminal"
+                  },
+                  "type": {
+                    "const": "state.snapshot"
+                  }
+                },
+                "required": [
+                  "type",
+                  "phase"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "EvidenceReady": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "evidence.ready",
+          "title": "Type",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRecord"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRecord"
+          },
+          "maxItems": 256,
+          "title": "Artifacts",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "type",
+        "evidence",
+        "artifacts"
+      ],
+      "title": "EvidenceReady",
+      "type": "object"
+    },
+    "EvidenceRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "evidenceId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Evidenceid",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "acceptance",
+            "verification",
+            "execution",
+            "review",
+            "provider"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "test",
+            "lint",
+            "build",
+            "screenshot",
+            "log",
+            "diff",
+            "review",
+            "recovery"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "warning",
+            "informational",
+            "not_run"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "checkId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Checkid"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskid"
+        },
+        "requirementIds": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Requirementids",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "commandIds": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 1,
+          "title": "Commandids",
+          "type": "array"
+        },
+        "realExecution": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Realexecution"
+        },
+        "exitCode": {
+          "anyOf": [
+            {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exitcode"
+        },
+        "timedOut": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timedout"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "artifactRefs": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Artifactrefs",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "evidenceId",
+        "role",
+        "kind",
+        "status",
+        "checkId",
+        "taskId",
+        "requirementIds",
+        "commandIds",
+        "realExecution",
+        "exitCode",
+        "timedOut",
+        "summary",
+        "artifactRefs"
+      ],
+      "title": "EvidenceRecord",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "commandIds": {
+                "maxItems": 0
+              },
+              "exitCode": {
+                "type": "null"
+              },
+              "realExecution": {
+                "type": "null"
+              },
+              "timedOut": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "role": {
+                "const": "verification"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "commandIds": {
+                "minItems": 1
+              },
+              "realExecution": {
+                "type": "boolean"
+              },
+              "timedOut": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "artifactRefs": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "verification"
+              },
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "role",
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exitCode": {
+                "const": 0
+              },
+              "realExecution": {
+                "const": true
+              },
+              "timedOut": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ExecutionAdmission": {
+      "additionalProperties": false,
+      "description": "Immutable engine-owned authority for one admitted Forge execution.",
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-host.execution-admission/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "workspaceRef": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Workspaceref",
+          "type": "string"
+        },
+        "providerBindingRef": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Providerbindingref",
+          "type": "string"
+        },
+        "workspacePathPolicy": {
+          "$ref": "#/$defs/WorkspacePathPolicy"
+        },
+        "executionStrategy": {
+          "discriminator": {
+            "mapping": {
+              "parallel": "#/$defs/ParallelExecutionStrategy",
+              "sequential": "#/$defs/SequentialExecutionStrategy"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SequentialExecutionStrategy"
+            },
+            {
+              "$ref": "#/$defs/ParallelExecutionStrategy"
+            }
+          ],
+          "title": "Executionstrategy"
+        },
+        "perManagedTaskMaxSteps": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Permanagedtaskmaxsteps",
+          "type": "integer"
+        },
+        "runTimeoutMs": {
+          "maximum": 86400000,
+          "minimum": 1000,
+          "title": "Runtimeoutms",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "workspaceRef",
+        "providerBindingRef",
+        "workspacePathPolicy",
+        "executionStrategy",
+        "perManagedTaskMaxSteps",
+        "runTimeoutMs",
+        "fingerprint"
+      ],
+      "title": "ExecutionAdmission",
+      "type": "object"
+    },
+    "FilesystemApprovalResource": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "enum": [
+            "read",
+            "write"
+          ],
+          "title": "Access",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "pattern": "^(?![~/\\\\])(?!.*//)(?!(?:.*\\/)?\\.\\.?$)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))(?!.*[\\x00-\\x1f\\x7f:?\\[\\]\\\\])[^*]+(?:\\/\\*\\*)?$"
+        }
+      },
+      "required": [
+        "access",
+        "kind",
+        "path"
+      ],
+      "title": "FilesystemApprovalResource",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "path": {
+                "pattern": "/\\*\\*$"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "directory"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "FilesystemApprovalScope": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-host.approval-scope/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "kind": {
+          "const": "filesystem",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "workspaceRef": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Workspaceref",
+          "type": "string"
+        },
+        "resources": {
+          "items": {
+            "$ref": "#/$defs/FilesystemApprovalResource"
+          },
+          "maxItems": 256,
+          "title": "Resources",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "label",
+        "workspaceRef",
+        "resources",
+        "fingerprint"
+      ],
+      "title": "FilesystemApprovalScope",
+      "type": "object"
+    },
+    "HandshakeRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "handshake.request",
+          "title": "Type",
+          "type": "string"
+        },
+        "client": {
+          "$ref": "#/$defs/Peer"
+        },
+        "supportedVersions": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Supportedversions",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "maxItems": 256,
+          "title": "Capabilities",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "replayCursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplayCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "client",
+        "supportedVersions",
+        "capabilities",
+        "replayCursor"
+      ],
+      "title": "HandshakeRequest",
+      "type": "object"
+    },
+    "HandshakeResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "handshake.response",
+          "title": "Type",
+          "type": "string"
+        },
+        "server": {
+          "$ref": "#/$defs/Peer"
+        },
+        "selectedVersion": {
+          "const": "2.0",
+          "title": "Selectedversion",
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "maxItems": 256,
+          "title": "Capabilities",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "replayWindow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplayWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "server",
+        "selectedVersion",
+        "capabilities",
+        "identity",
+        "replayWindow"
+      ],
+      "title": "HandshakeResponse",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "replayWindow": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "replayWindow"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "properties": {
+                  "runId": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "pattern": "^ses_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Sessionid",
+          "type": "string"
+        },
+        "generationId": {
+          "pattern": "^gen_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Generationid",
+          "type": "string"
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "pattern": "^run_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Runid"
+        },
+        "revision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sessionId",
+        "generationId",
+        "runId",
+        "revision"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "NativeApprovalDefinition": {
+      "additionalProperties": false,
+      "description": "Closed, lossless native approval projection accepted by Host Protocol v2.\n\nThis is a new migration profile, not a permissive serialization of legacy\nplans.  Unknown or runtime-only fields are rejected rather than silently\nomitted from approval authority.",
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-native-approval/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "project_goal": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Project Goal",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "requirements": {
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Requirements",
+          "type": "array"
+        },
+        "planning_constraints": {
+          "$ref": "#/$defs/NativePlanningConstraints"
+        },
+        "assets": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Assets",
+          "type": "array"
+        },
+        "intent_record": {
+          "$ref": "#/$defs/NativeIntentRecord"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/NativePlanTask"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Tasks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema",
+        "project_goal",
+        "summary",
+        "requirements",
+        "planning_constraints",
+        "assets",
+        "intent_record",
+        "tasks"
+      ],
+      "title": "NativeApprovalDefinition",
+      "type": "object"
+    },
+    "NativeIntentRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "build",
+            "fix",
+            "refactor",
+            "audit",
+            "test",
+            "document"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "affected_scopes": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceScope"
+          },
+          "maxItems": 256,
+          "title": "Affected Scopes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "summary",
+        "affected_scopes"
+      ],
+      "title": "NativeIntentRecord",
+      "type": "object"
+    },
+    "NativePlanTask": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "task_kind": {
+          "enum": [
+            "analysis_only",
+            "implementation",
+            "test_only",
+            "verification_only",
+            "documentation_only",
+            "unknown"
+          ],
+          "title": "Task Kind",
+          "type": "string"
+        },
+        "branch": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Branch",
+          "type": "string",
+          "pattern": "^(?!-)(?!/)(?!@$)(?!HEAD$)(?!\\.)(?!.*\\/\\.)(?!.*(?:^|\\/)[^\\/]*\\.[lL][oO][cC][kK](?:\\/|$))(?!.*\\.\\.)(?!.*@\\{)(?!.*\\/\\/)(?!.*[\\/.]$)(?!.*[ \\x00-\\x1f\\x7f~^:?*\\[\\\\]).+$"
+        },
+        "dependencies": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Acceptance Criteria",
+          "type": "array"
+        },
+        "estimated_files": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceScope"
+          },
+          "maxItems": 64,
+          "title": "Estimated Files",
+          "type": "array"
+        },
+        "write_scope": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceScope"
+          },
+          "maxItems": 64,
+          "title": "Write Scope",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "task_kind",
+        "branch",
+        "dependencies",
+        "title",
+        "description",
+        "acceptance_criteria",
+        "estimated_files",
+        "write_scope"
+      ],
+      "title": "NativePlanTask",
+      "type": "object"
+    },
+    "NativePlanningConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_roots": {
+          "items": {
+            "$ref": "#/$defs/NativePlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Target Roots",
+          "type": "array"
+        },
+        "forbidden_roots": {
+          "items": {
+            "$ref": "#/$defs/NativePlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Forbidden Roots",
+          "type": "array"
+        },
+        "decoy_roots": {
+          "items": {
+            "$ref": "#/$defs/NativePlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Decoy Roots",
+          "type": "array"
+        },
+        "unrelated_roots": {
+          "items": {
+            "$ref": "#/$defs/NativePlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Unrelated Roots",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "target_roots",
+        "forbidden_roots",
+        "decoy_roots",
+        "unrelated_roots"
+      ],
+      "title": "NativePlanningConstraints",
+      "type": "object"
+    },
+    "NativePlanningPathConstraint": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "target_root",
+            "forbidden_root",
+            "decoy_root",
+            "unrelated_root"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason_code": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,127}$",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "evidence": {
+          "maxLength": 2000,
+          "title": "Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "reason_code",
+        "evidence"
+      ],
+      "title": "NativePlanningPathConstraint",
+      "type": "object"
+    },
+    "NetworkApprovalScope": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-host.approval-scope/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "kind": {
+          "const": "network",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "origins": {
+          "items": {
+            "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Origins",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "label",
+        "origins",
+        "fingerprint"
+      ],
+      "title": "NetworkApprovalScope",
+      "type": "object"
+    },
+    "ParallelExecutionStrategy": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "parallel",
+          "title": "Mode",
+          "type": "string"
+        },
+        "maxParallelWorkers": {
+          "maximum": 16,
+          "minimum": 2,
+          "title": "Maxparallelworkers",
+          "type": "integer"
+        },
+        "integrationPolicy": {
+          "enum": [
+            "fail_fast",
+            "collect_then_integrate"
+          ],
+          "title": "Integrationpolicy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "maxParallelWorkers",
+        "integrationPolicy"
+      ],
+      "title": "ParallelExecutionStrategy",
+      "type": "object"
+    },
+    "Peer": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._-]{1,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        },
+        "hostKind": {
+          "enum": [
+            "engine",
+            "desktop",
+            "cli",
+            "vscode",
+            "test"
+          ],
+          "title": "Hostkind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "hostKind"
+      ],
+      "title": "Peer",
+      "type": "object"
+    },
+    "PlanApprovalPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilesystemApprovalScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "risk": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Risk"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string",
+              "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Summary"
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "required",
+        "scope",
+        "risk",
+        "summary",
+        "fingerprint"
+      ],
+      "title": "PlanApprovalPolicy",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "risk": {
+                "type": "null"
+              },
+              "scope": {
+                "type": "null"
+              },
+              "summary": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            },
+            "required": [
+              "required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "risk": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "scope": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "summary": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "required": {
+              "const": true
+            },
+            "scope": {
+              "not": {
+                "type": "null"
+              }
+            },
+            "risk": {
+              "not": {
+                "type": "null"
+              }
+            },
+            "summary": {
+              "const": "Run the bound Forge plan, provider, strategy, writes, and verification commands."
+            }
+          }
+        }
+      ]
+    },
+    "PlanDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-host.plan/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "projectGoal": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Projectgoal",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "requirements": {
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Requirements",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "planningConstraints": {
+          "$ref": "#/$defs/PlanningConstraints"
+        },
+        "assetRefs": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Assetrefs",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "intent": {
+          "$ref": "#/$defs/PlanIntent"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/PlanTask"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Tasks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema",
+        "projectGoal",
+        "summary",
+        "requirements",
+        "planningConstraints",
+        "assetRefs",
+        "intent",
+        "tasks"
+      ],
+      "title": "PlanDefinition",
+      "type": "object"
+    },
+    "PlanExecuteAction": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "plan_execute",
+          "title": "Kind",
+          "type": "string"
+        },
+        "hostPlanFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Hostplanfingerprint",
+          "type": "string"
+        },
+        "nativeApprovalFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Nativeapprovalfingerprint",
+          "type": "string"
+        },
+        "verificationContractFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Verificationcontractfingerprint",
+          "type": "string"
+        },
+        "executionAdmissionFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Executionadmissionfingerprint",
+          "type": "string"
+        },
+        "approvalPolicyFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Approvalpolicyfingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "hostPlanFingerprint",
+        "nativeApprovalFingerprint",
+        "verificationContractFingerprint",
+        "executionAdmissionFingerprint",
+        "approvalPolicyFingerprint"
+      ],
+      "title": "PlanExecuteAction",
+      "type": "object"
+    },
+    "PlanIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "build",
+            "fix",
+            "refactor",
+            "audit",
+            "test",
+            "document"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "affectedScopes": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceScope"
+          },
+          "maxItems": 256,
+          "title": "Affectedscopes",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "summary",
+        "affectedScopes"
+      ],
+      "title": "PlanIntent",
+      "type": "object"
+    },
+    "PlanReady": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "plan.ready",
+          "title": "Type",
+          "type": "string"
+        },
+        "planDefinition": {
+          "$ref": "#/$defs/PlanDefinition"
+        },
+        "hostPlanFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Hostplanfingerprint",
+          "type": "string"
+        },
+        "nativeApprovalDefinition": {
+          "$ref": "#/$defs/NativeApprovalDefinition"
+        },
+        "nativeApprovalFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Nativeapprovalfingerprint",
+          "type": "string"
+        },
+        "verificationContract": {
+          "$ref": "#/$defs/VerificationContract"
+        },
+        "executionAdmission": {
+          "$ref": "#/$defs/ExecutionAdmission"
+        },
+        "approvalPolicy": {
+          "$ref": "#/$defs/PlanApprovalPolicy"
+        }
+      },
+      "required": [
+        "type",
+        "planDefinition",
+        "hostPlanFingerprint",
+        "nativeApprovalDefinition",
+        "nativeApprovalFingerprint",
+        "verificationContract",
+        "executionAdmission",
+        "approvalPolicy"
+      ],
+      "title": "PlanReady",
+      "type": "object"
+    },
+    "PlanTask": {
+      "additionalProperties": false,
+      "properties": {
+        "taskId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "order": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Order",
+          "type": "integer"
+        },
+        "taskKind": {
+          "enum": [
+            "analysis_only",
+            "implementation",
+            "test_only",
+            "verification_only",
+            "documentation_only",
+            "unknown"
+          ],
+          "title": "Taskkind",
+          "type": "string"
+        },
+        "branch": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Branch",
+          "type": "string",
+          "pattern": "^(?!-)(?!/)(?!@$)(?!HEAD$)(?!\\.)(?!.*\\/\\.)(?!.*(?:^|\\/)[^\\/]*\\.[lL][oO][cC][kK](?:\\/|$))(?!.*\\.\\.)(?!.*@\\{)(?!.*\\/\\/)(?!.*[\\/.]$)(?!.*[ \\x00-\\x1f\\x7f~^:?*\\[\\\\]).+$"
+        },
+        "dependencies": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Dependencies",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "acceptance": {
+          "items": {
+            "$ref": "#/$defs/AcceptanceCriterion"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Acceptance",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "estimatedScopes": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceScope"
+          },
+          "maxItems": 64,
+          "title": "Estimatedscopes",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "writeScopes": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceScope"
+          },
+          "maxItems": 64,
+          "title": "Writescopes",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "taskId",
+        "order",
+        "taskKind",
+        "branch",
+        "dependencies",
+        "title",
+        "description",
+        "acceptance",
+        "estimatedScopes",
+        "writeScopes"
+      ],
+      "title": "PlanTask",
+      "type": "object"
+    },
+    "PlannerAnswer": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "answer",
+          "title": "Kind",
+          "type": "string"
+        },
+        "questionId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Questionid",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "questionId",
+        "text"
+      ],
+      "title": "PlannerAnswer",
+      "type": "object"
+    },
+    "PlannerGoal": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "goal",
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "title": "PlannerGoal",
+      "type": "object"
+    },
+    "PlannerInput": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "expectedRevision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Expectedrevision",
+          "type": "integer"
+        },
+        "type": {
+          "const": "planner.input",
+          "title": "Type",
+          "type": "string"
+        },
+        "input": {
+          "discriminator": {
+            "mapping": {
+              "answer": "#/$defs/PlannerAnswer",
+              "goal": "#/$defs/PlannerGoal",
+              "revision": "#/$defs/PlannerRevision"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PlannerGoal"
+            },
+            {
+              "$ref": "#/$defs/PlannerAnswer"
+            },
+            {
+              "$ref": "#/$defs/PlannerRevision"
+            }
+          ],
+          "title": "Input"
+        }
+      },
+      "required": [
+        "identity",
+        "expectedRevision",
+        "type",
+        "input"
+      ],
+      "title": "PlannerInput",
+      "type": "object",
+      "allOf": [
+        {
+          "properties": {
+            "identity": {
+              "properties": {
+                "runId": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "runId"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "PlannerQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "planner.question",
+          "title": "Type",
+          "type": "string"
+        },
+        "questionId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Questionid",
+          "type": "string"
+        },
+        "prompt": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "questionId",
+        "prompt",
+        "required"
+      ],
+      "title": "PlannerQuestion",
+      "type": "object"
+    },
+    "PlannerRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "revision",
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "title": "PlannerRevision",
+      "type": "object"
+    },
+    "PlanningConstraints": {
+      "additionalProperties": false,
+      "description": "Lossless public projection of the CLI's canonical planning constraints.",
+      "properties": {
+        "schemaVersion": {
+          "const": 1,
+          "title": "Schemaversion",
+          "type": "integer"
+        },
+        "targetRoots": {
+          "items": {
+            "$ref": "#/$defs/PlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Targetroots",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "forbiddenRoots": {
+          "items": {
+            "$ref": "#/$defs/PlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Forbiddenroots",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "decoyRoots": {
+          "items": {
+            "$ref": "#/$defs/PlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Decoyroots",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "unrelatedRoots": {
+          "items": {
+            "$ref": "#/$defs/PlanningPathConstraint"
+          },
+          "maxItems": 256,
+          "title": "Unrelatedroots",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "targetRoots",
+        "forbiddenRoots",
+        "decoyRoots",
+        "unrelatedRoots"
+      ],
+      "title": "PlanningConstraints",
+      "type": "object",
+      "allOf": [
+        {
+          "properties": {
+            "targetRoots": {
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/PlanningPathConstraint"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "target_root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "forbiddenRoots": {
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/PlanningPathConstraint"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "forbidden_root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "decoyRoots": {
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/PlanningPathConstraint"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "decoy_root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "unrelatedRoots": {
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/PlanningPathConstraint"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "unrelated_root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "PlanningPathConstraint": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "pattern": "^(?![~/\\\\])(?!.*//)(?!(?:.*\\/)?\\.\\.?$)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))(?!.*[\\x00-\\x1f\\x7f:?\\[\\]\\\\])[^*]+(?:\\/\\*\\*)?$"
+        },
+        "kind": {
+          "enum": [
+            "target_root",
+            "forbidden_root",
+            "decoy_root",
+            "unrelated_root"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reasonCode": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,127}$",
+          "title": "Reasoncode",
+          "type": "string"
+        },
+        "evidence": {
+          "maxLength": 2000,
+          "title": "Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "reasonCode",
+        "evidence"
+      ],
+      "title": "PlanningPathConstraint",
+      "type": "object"
+    },
+    "ProcessApprovalScope": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-host.approval-scope/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "kind": {
+          "const": "process",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "workspaceRef": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Workspaceref",
+          "type": "string"
+        },
+        "cwd": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Cwd",
+          "type": "string",
+          "pattern": "^(?:\\.|(?![~/\\\\])(?!.*//)(?!(?:.*\\/)?\\.\\.?$)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))(?!.*[\\x00-\\x1f\\x7f:*?\\[\\]\\\\])[^/]+(?:\\/[^/]+)*)$"
+        },
+        "argv": {
+          "items": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Argv",
+          "type": "array"
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "label",
+        "workspaceRef",
+        "cwd",
+        "argv",
+        "fingerprint"
+      ],
+      "title": "ProcessApprovalScope",
+      "type": "object"
+    },
+    "ProtocolError": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "protocol.error",
+          "title": "Type",
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "invalid_message",
+            "unsupported_version",
+            "capability_unavailable",
+            "stale_identity",
+            "stale_revision",
+            "idempotency_conflict",
+            "invalid_transition",
+            "internal_error"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "currentIdentity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Identity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "type",
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "ProtocolError",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "invalid_message"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The message is invalid."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "unsupported_version"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The protocol version is unsupported."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "capability_unavailable"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The requested capability is unavailable."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "stale_identity"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The message identity is stale."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "stale_revision"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The message revision is stale."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "idempotency_conflict"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The idempotency authority conflicts."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "invalid_transition"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The protocol transition is invalid."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "internal_error"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message": {
+                "const": "The protocol operation failed."
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ProviderApprovalScope": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alysis.forge-host.approval-scope/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "kind": {
+          "const": "provider",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "providerBindingRef": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Providerbindingref",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "plan",
+            "generate",
+            "review",
+            "verify",
+            "recover"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "label",
+        "providerBindingRef",
+        "operation",
+        "fingerprint"
+      ],
+      "title": "ProviderApprovalScope",
+      "type": "object"
+    },
+    "ReplayCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Operationid",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "afterSequence": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Aftersequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operationId",
+        "identity",
+        "afterSequence"
+      ],
+      "title": "ReplayCursor",
+      "type": "object"
+    },
+    "ReplayWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Operationid",
+          "type": "string"
+        },
+        "afterSequence": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Aftersequence",
+          "type": "integer"
+        },
+        "throughSequence": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Throughsequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operationId",
+        "afterSequence",
+        "throughSequence"
+      ],
+      "title": "ReplayWindow",
+      "type": "object"
+    },
+    "RequestEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "alysis.forge-host",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "const": "2.0",
+          "title": "Protocolversion",
+          "type": "string"
+        },
+        "messageId": {
+          "pattern": "^msg_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Messageid",
+          "type": "string"
+        },
+        "operationId": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Operationid"
+        },
+        "sentAt": {
+          "format": "date-time",
+          "title": "Sentat",
+          "type": "string"
+        },
+        "kind": {
+          "const": "request",
+          "title": "Kind",
+          "type": "string"
+        },
+        "requestId": {
+          "pattern": "^req_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Requestid",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "pattern": "^idem_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Idempotencykey",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "approval.decision": "#/$defs/ApprovalDecision",
+              "handshake.request": "#/$defs/HandshakeRequest",
+              "planner.input": "#/$defs/PlannerInput",
+              "run.cancel": "#/$defs/RunCancel",
+              "run.start": "#/$defs/RunStart"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/HandshakeRequest"
+            },
+            {
+              "$ref": "#/$defs/PlannerInput"
+            },
+            {
+              "$ref": "#/$defs/ApprovalDecision"
+            },
+            {
+              "$ref": "#/$defs/RunStart"
+            },
+            {
+              "$ref": "#/$defs/RunCancel"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "messageId",
+        "operationId",
+        "sentAt",
+        "kind",
+        "requestId",
+        "idempotencyKey",
+        "payload"
+      ],
+      "title": "RequestEnvelope",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "operationId": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "handshake.request"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "operationId": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ResponseEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "alysis.forge-host",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "const": "2.0",
+          "title": "Protocolversion",
+          "type": "string"
+        },
+        "messageId": {
+          "pattern": "^msg_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Messageid",
+          "type": "string"
+        },
+        "operationId": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Operationid"
+        },
+        "sentAt": {
+          "format": "date-time",
+          "title": "Sentat",
+          "type": "string"
+        },
+        "kind": {
+          "const": "response",
+          "title": "Kind",
+          "type": "string"
+        },
+        "replyTo": {
+          "pattern": "^req_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Replyto",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "command.accepted": "#/$defs/CommandAccepted",
+              "handshake.response": "#/$defs/HandshakeResponse",
+              "protocol.error": "#/$defs/ProtocolError"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/HandshakeResponse"
+            },
+            {
+              "$ref": "#/$defs/CommandAccepted"
+            },
+            {
+              "$ref": "#/$defs/ProtocolError"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "messageId",
+        "operationId",
+        "sentAt",
+        "kind",
+        "replyTo",
+        "payload"
+      ],
+      "title": "ResponseEnvelope",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "operationId": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "handshake.response"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "then": {
+            "properties": {
+              "operationId": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "RunCancel": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "expectedRevision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Expectedrevision",
+          "type": "integer"
+        },
+        "type": {
+          "const": "run.cancel",
+          "title": "Type",
+          "type": "string"
+        },
+        "reasonCode": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+          "title": "Reasoncode",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string",
+              "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        }
+      },
+      "required": [
+        "identity",
+        "expectedRevision",
+        "type",
+        "reasonCode"
+      ],
+      "title": "RunCancel",
+      "type": "object",
+      "allOf": [
+        {
+          "properties": {
+            "identity": {
+              "properties": {
+                "runId": {
+                  "not": {
+                    "type": "null"
+                  }
+                }
+              },
+              "required": [
+                "runId"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "RunProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "run.progress",
+          "title": "Type",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "preflight",
+            "executing",
+            "verifying",
+            "reviewing",
+            "finalizing"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskid"
+        },
+        "step": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Step",
+          "type": "integer"
+        },
+        "totalSteps": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Totalsteps",
+          "type": "integer"
+        },
+        "taskModelSteps": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskmodelsteps"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "workerId": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Workerid"
+        }
+      },
+      "required": [
+        "type",
+        "phase",
+        "taskId",
+        "step",
+        "totalSteps",
+        "taskModelSteps",
+        "summary",
+        "workerId"
+      ],
+      "title": "RunProgress",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "taskModelSteps": {
+                "type": "integer"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "taskId": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "taskId"
+            ]
+          },
+          "then": {
+            "properties": {
+              "taskModelSteps": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "enum": [
+                  "executing",
+                  "verifying"
+                ]
+              }
+            },
+            "required": [
+              "phase"
+            ]
+          },
+          "then": {
+            "properties": {
+              "taskId": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "RunStart": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "expectedRevision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Expectedrevision",
+          "type": "integer"
+        },
+        "type": {
+          "const": "run.start",
+          "title": "Type",
+          "type": "string"
+        },
+        "hostPlanFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Hostplanfingerprint",
+          "type": "string"
+        },
+        "nativeApprovalFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Nativeapprovalfingerprint",
+          "type": "string"
+        },
+        "verificationContractFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Verificationcontractfingerprint",
+          "type": "string"
+        },
+        "executionAdmission": {
+          "$ref": "#/$defs/ExecutionAdmission"
+        }
+      },
+      "required": [
+        "identity",
+        "expectedRevision",
+        "type",
+        "hostPlanFingerprint",
+        "nativeApprovalFingerprint",
+        "verificationContractFingerprint",
+        "executionAdmission"
+      ],
+      "title": "RunStart",
+      "type": "object",
+      "allOf": [
+        {
+          "properties": {
+            "identity": {
+              "properties": {
+                "runId": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "runId"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "RunTerminal": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "run.terminal",
+          "title": "Type",
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/TerminalResult"
+        }
+      },
+      "required": [
+        "type",
+        "result"
+      ],
+      "title": "RunTerminal",
+      "type": "object"
+    },
+    "SequentialExecutionStrategy": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "sequential",
+          "title": "Mode",
+          "type": "string"
+        },
+        "maxParallelWorkers": {
+          "const": 1,
+          "title": "Maxparallelworkers",
+          "type": "integer"
+        },
+        "integrationPolicy": {
+          "const": "fail_fast",
+          "title": "Integrationpolicy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "maxParallelWorkers",
+        "integrationPolicy"
+      ],
+      "title": "SequentialExecutionStrategy",
+      "type": "object"
+    },
+    "StateSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "state.snapshot",
+          "title": "Type",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "planning",
+            "awaiting_approval",
+            "ready",
+            "running",
+            "cancelling",
+            "terminal"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Goal"
+        },
+        "pendingApprovalId": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pendingapprovalid"
+        },
+        "terminal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TerminalResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "phase",
+        "goal",
+        "pendingApprovalId",
+        "terminal"
+      ],
+      "title": "StateSnapshot",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "terminal": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "terminal"
+              }
+            },
+            "required": [
+              "phase"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "else": {
+            "properties": {
+              "pendingApprovalId": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "awaiting_approval"
+              }
+            },
+            "required": [
+              "phase"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pendingApprovalId": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "SubjectAction": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "workspace_write",
+            "process_execute",
+            "network_access",
+            "computer_control",
+            "provider_use"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "subjectFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Subjectfingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subjectFingerprint"
+      ],
+      "title": "SubjectAction",
+      "type": "object"
+    },
+    "TaskExecutionUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "taskId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "modelSteps": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Modelsteps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "taskId",
+        "modelSteps"
+      ],
+      "title": "TaskExecutionUsage",
+      "type": "object"
+    },
+    "TerminalReason": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,127}$",
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "TerminalReason",
+      "type": "object"
+    },
+    "TerminalResult": {
+      "additionalProperties": false,
+      "properties": {
+        "hostPlanFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Hostplanfingerprint",
+          "type": "string"
+        },
+        "nativeApprovalFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Nativeapprovalfingerprint",
+          "type": "string"
+        },
+        "verificationContractFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Verificationcontractfingerprint",
+          "type": "string"
+        },
+        "executionAdmissionFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Executionadmissionfingerprint",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/TerminalReason"
+        },
+        "exitCode": {
+          "anyOf": [
+            {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exitcode"
+        },
+        "acceptance": {
+          "$ref": "#/$defs/VerificationResult"
+        },
+        "verification": {
+          "$ref": "#/$defs/VerificationResult"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "timing": {
+          "$ref": "#/$defs/Timing"
+        },
+        "workers": {
+          "$ref": "#/$defs/Workers"
+        },
+        "taskUsage": {
+          "items": {
+            "$ref": "#/$defs/TaskExecutionUsage"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Taskusage",
+          "type": "array"
+        },
+        "artifactRefs": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Artifactrefs",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "hostPlanFingerprint",
+        "nativeApprovalFingerprint",
+        "verificationContractFingerprint",
+        "executionAdmissionFingerprint",
+        "status",
+        "reason",
+        "exitCode",
+        "acceptance",
+        "verification",
+        "usage",
+        "timing",
+        "workers",
+        "taskUsage",
+        "artifactRefs"
+      ],
+      "title": "TerminalResult",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "acceptance": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/VerificationResult"
+                  },
+                  {
+                    "properties": {
+                      "status": {
+                        "const": "passed"
+                      }
+                    }
+                  }
+                ]
+              },
+              "exitCode": {
+                "const": 0
+              },
+              "timing": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/Timing"
+                  },
+                  {
+                    "properties": {
+                      "timedOut": {
+                        "const": false
+                      }
+                    }
+                  }
+                ]
+              },
+              "verification": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/VerificationResult"
+                  },
+                  {
+                    "properties": {
+                      "status": {
+                        "const": "passed"
+                      }
+                    }
+                  }
+                ]
+              },
+              "workers": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/Workers"
+                  },
+                  {
+                    "properties": {
+                      "failed": {
+                        "const": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Timing": {
+      "additionalProperties": false,
+      "description": "Run timing with monotonic ``elapsedMs`` as accounting authority.\n\nWall-clock timestamps are presentation/audit metadata and may diverge after\nsystem clock adjustments; timeout admission uses only elapsedMs.",
+      "properties": {
+        "startedAt": {
+          "format": "date-time",
+          "title": "Startedat",
+          "type": "string"
+        },
+        "finishedAt": {
+          "format": "date-time",
+          "title": "Finishedat",
+          "type": "string"
+        },
+        "elapsedMs": {
+          "description": "Monotonic engine elapsed time used for timeout accounting.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Elapsedms",
+          "type": "integer"
+        },
+        "timedOut": {
+          "title": "Timedout",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "startedAt",
+        "finishedAt",
+        "elapsedMs",
+        "timedOut"
+      ],
+      "title": "Timing",
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "properties": {
+        "modelCalls": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Modelcalls",
+          "type": "integer"
+        },
+        "inputTokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Inputtokens",
+          "type": "integer"
+        },
+        "outputTokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Outputtokens",
+          "type": "integer"
+        },
+        "costKnown": {
+          "title": "Costknown",
+          "type": "boolean"
+        },
+        "totalCostMicros": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Totalcostmicros"
+        }
+      },
+      "required": [
+        "modelCalls",
+        "inputTokens",
+        "outputTokens",
+        "costKnown",
+        "totalCostMicros"
+      ],
+      "title": "Usage",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "totalCostMicros": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "costKnown": {
+                "const": true
+              }
+            },
+            "required": [
+              "costKnown"
+            ]
+          },
+          "then": {
+            "properties": {
+              "totalCostMicros": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "VerificationCheckDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "checkId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Checkid",
+          "type": "string"
+        },
+        "domain": {
+          "enum": [
+            "acceptance",
+            "verification"
+          ],
+          "title": "Domain",
+          "type": "string"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskid"
+        },
+        "requirementIds": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Requirementids",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "commandIds": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Commandids",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "checkId",
+        "domain",
+        "taskId",
+        "requirementIds",
+        "commandIds"
+      ],
+      "title": "VerificationCheckDefinition",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "domain": {
+                "const": "verification"
+              }
+            },
+            "required": [
+              "domain"
+            ]
+          },
+          "then": {
+            "properties": {
+              "commandIds": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "domain": {
+                "const": "acceptance"
+              }
+            },
+            "required": [
+              "domain"
+            ]
+          },
+          "then": {
+            "properties": {
+              "commandIds": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "VerificationCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Commandid",
+          "type": "string"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskid"
+        },
+        "scopeId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Scopeid",
+          "type": "string"
+        },
+        "originalText": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Originaltext",
+          "type": "string"
+        },
+        "displayText": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Displaytext",
+          "type": "string"
+        },
+        "executionMode": {
+          "enum": [
+            "ARGV",
+            "TRUSTED_SHELL_EXPRESSION",
+            "INTERPRETER_SNIPPET",
+            "INVALID"
+          ],
+          "title": "Executionmode",
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "HOST_AUTHORITATIVE",
+            "EXPLICIT_USER_COMMAND",
+            "PREEXISTING_REPO_NATIVE",
+            "PREEXISTING_TASK_CHECKER",
+            "INFERRED_HEURISTIC"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "trustLevel": {
+          "enum": [
+            "TRUSTED",
+            "UNTRUSTED"
+          ],
+          "title": "Trustlevel",
+          "type": "string"
+        },
+        "requirement": {
+          "enum": [
+            "REQUIRED",
+            "ADVISORY"
+          ],
+          "title": "Requirement",
+          "type": "string"
+        },
+        "timeoutPolicy": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+          "title": "Timeoutpolicy",
+          "type": "string"
+        },
+        "requirementIds": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Requirementids",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "validationStatus": {
+          "enum": [
+            "VALID",
+            "INVALID"
+          ],
+          "title": "Validationstatus",
+          "type": "string"
+        },
+        "rejectionReason": {
+          "maxLength": 500,
+          "title": "Rejectionreason",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "evidentiaryCapability": {
+          "enum": [
+            "ASSERTIVE",
+            "NON_ASSERTIVE",
+            "UNKNOWN"
+          ],
+          "title": "Evidentiarycapability",
+          "type": "string"
+        },
+        "capabilityReason": {
+          "maxLength": 500,
+          "title": "Capabilityreason",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr][ \\t]+[A-Za-z0-9._~+/=-]{8,}|(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Cc][Oo][Oo][Kk][Ii][Ee])[ \\t]*[:=]|[A-Za-z][A-Za-z0-9+.-]*://[^/ \\t:@]+:[^/ \\t@]+@|(?:^|[^A-Za-z0-9])(?:(?:[A-Za-z][A-Za-z0-9]*[_-])?[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Ww][Ss][_-]?[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])[ \\t]*[:=][ \\t]*[\\\"']?[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|glpat-[A-Za-z0-9_-]{12,}|npm_[A-Za-z0-9_-]{12,}|pypi-[A-Za-z0-9_-]{12,}|hf_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----|[?&](?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn])=|(?:[Ff][Ii][Ll][Ee]|[Ss][Mm][Bb]|[Aa][Ff][Pp]|[Nn][Ff][Ss])://|(?:^|[^:])//[A-Za-z0-9._-]+(?:/[^ \\t,;]+)+|(?:^|[^A-Za-z0-9/])/(?!/)(?:[^/ \\t,;]+/)*[^ \\t,;]*|(?:^|[^A-Za-z0-9])[A-Za-z]:[\\\\/]|(?:^|[^A-Za-z0-9])(?:~/|\\\\\\\\)))[\\s\\S]*$"
+        },
+        "argv": {
+          "items": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Argv",
+          "type": "array"
+        }
+      },
+      "required": [
+        "commandId",
+        "taskId",
+        "scopeId",
+        "originalText",
+        "displayText",
+        "executionMode",
+        "provenance",
+        "trustLevel",
+        "requirement",
+        "timeoutPolicy",
+        "requirementIds",
+        "validationStatus",
+        "rejectionReason",
+        "evidentiaryCapability",
+        "capabilityReason",
+        "argv"
+      ],
+      "title": "VerificationCommand",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "validationStatus": {
+                "const": "VALID"
+              }
+            },
+            "required": [
+              "validationStatus"
+            ]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "argv": {
+                    "prefixItems": [
+                      {
+                        "const": "pytest"
+                      }
+                    ],
+                    "minItems": 1,
+                    "maxItems": 1
+                  },
+                  "originalText": {
+                    "const": "pytest"
+                  },
+                  "displayText": {
+                    "const": "pytest"
+                  },
+                  "executionMode": {
+                    "const": "ARGV"
+                  },
+                  "provenance": {
+                    "enum": [
+                      "PREEXISTING_REPO_NATIVE",
+                      "HOST_AUTHORITATIVE"
+                    ]
+                  },
+                  "trustLevel": {
+                    "const": "TRUSTED"
+                  },
+                  "requirement": {
+                    "const": "REQUIRED"
+                  },
+                  "rejectionReason": {
+                    "const": ""
+                  },
+                  "evidentiaryCapability": {
+                    "const": "ASSERTIVE"
+                  },
+                  "capabilityReason": {
+                    "const": "recognized_assertive_verification_command"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "argv": {
+                    "prefixItems": [
+                      {
+                        "const": "pytest"
+                      },
+                      {
+                        "const": "-q"
+                      }
+                    ],
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "originalText": {
+                    "const": "pytest -q"
+                  },
+                  "displayText": {
+                    "const": "pytest -q"
+                  },
+                  "executionMode": {
+                    "const": "ARGV"
+                  },
+                  "provenance": {
+                    "enum": [
+                      "PREEXISTING_REPO_NATIVE",
+                      "HOST_AUTHORITATIVE"
+                    ]
+                  },
+                  "trustLevel": {
+                    "const": "TRUSTED"
+                  },
+                  "requirement": {
+                    "const": "REQUIRED"
+                  },
+                  "rejectionReason": {
+                    "const": ""
+                  },
+                  "evidentiaryCapability": {
+                    "const": "ASSERTIVE"
+                  },
+                  "capabilityReason": {
+                    "const": "recognized_assertive_verification_command"
+                  }
+                }
+              }
+            ]
+          },
+          "else": {
+            "properties": {
+              "argv": {
+                "maxItems": 0
+              },
+              "executionMode": {
+                "const": "INVALID"
+              },
+              "rejectionReason": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "VerificationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "alysis.forge.verification-contract/v2",
+          "title": "Schema",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "const": 2,
+          "title": "Protocolversion",
+          "type": "integer"
+        },
+        "workspaceRef": {
+          "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{7,127}$",
+          "title": "Workspaceref",
+          "type": "string"
+        },
+        "approvedPlanFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Approvedplanfingerprint",
+          "type": "string"
+        },
+        "hostPlanFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Hostplanfingerprint",
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "$ref": "#/$defs/VerificationScope"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "title": "Scopes",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "requirements": {
+          "items": {
+            "$ref": "#/$defs/VerificationRequirement"
+          },
+          "maxItems": 1024,
+          "minItems": 1,
+          "title": "Requirements",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/VerificationCommand"
+          },
+          "maxItems": 512,
+          "title": "Commands",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/VerificationCheckDefinition"
+          },
+          "maxItems": 512,
+          "minItems": 1,
+          "title": "Checks",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "contractFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Contractfingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "protocolVersion",
+        "workspaceRef",
+        "approvedPlanFingerprint",
+        "hostPlanFingerprint",
+        "scopes",
+        "requirements",
+        "commands",
+        "checks",
+        "contractFingerprint"
+      ],
+      "title": "VerificationContract",
+      "type": "object"
+    },
+    "VerificationRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "requirementId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Requirementid",
+          "type": "string"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskid"
+        },
+        "text": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "HOST_AUTHORITATIVE",
+            "EXPLICIT_USER_COMMAND",
+            "PREEXISTING_REPO_NATIVE",
+            "PREEXISTING_TASK_CHECKER",
+            "INFERRED_HEURISTIC"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "trustLevel": {
+          "enum": [
+            "TRUSTED",
+            "UNTRUSTED"
+          ],
+          "title": "Trustlevel",
+          "type": "string"
+        },
+        "requirement": {
+          "enum": [
+            "REQUIRED",
+            "ADVISORY"
+          ],
+          "title": "Requirement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirementId",
+        "taskId",
+        "text",
+        "provenance",
+        "trustLevel",
+        "requirement"
+      ],
+      "title": "VerificationRequirement",
+      "type": "object"
+    },
+    "VerificationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "not_run"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/CheckResult"
+          },
+          "maxItems": 256,
+          "title": "Checks",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "status",
+        "checks"
+      ],
+      "title": "VerificationResult",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/CheckResult"
+                    },
+                    {
+                      "properties": {
+                        "status": {
+                          "const": "passed"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "contains": {
+                  "properties": {
+                    "status": {
+                      "const": "failed"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                },
+                "minContains": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not_run"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/CheckResult"
+                    },
+                    {
+                      "properties": {
+                        "status": {
+                          "const": "not_run"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "VerificationScope": {
+      "additionalProperties": false,
+      "properties": {
+        "scopeId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+          "title": "Scopeid",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "task",
+            "integration"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Taskid"
+        },
+        "cwd": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Cwd",
+          "type": "string",
+          "pattern": "^(?:\\.|(?![~/\\\\])(?!.*//)(?!(?:.*\\/)?\\.\\.?$)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))(?!.*[\\x00-\\x1f\\x7f:*?\\[\\]\\\\])[^/]+(?:\\/[^/]+)*)$"
+        },
+        "referencedPaths": {
+          "items": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Referencedpaths",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "allowedOutputs": {
+          "items": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Allowedoutputs",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "declaredInputs": {
+          "items": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "title": "Declaredinputs",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "scopeId",
+        "phase",
+        "taskId",
+        "cwd",
+        "referencedPaths",
+        "allowedOutputs",
+        "declaredInputs"
+      ],
+      "title": "VerificationScope",
+      "type": "object",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "taskId": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "task"
+              }
+            },
+            "required": [
+              "phase"
+            ]
+          },
+          "then": {
+            "properties": {
+              "taskId": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Workers": {
+      "additionalProperties": false,
+      "properties": {
+        "requested": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Requested",
+          "type": "integer"
+        },
+        "started": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Started",
+          "type": "integer"
+        },
+        "succeeded": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Succeeded",
+          "type": "integer"
+        },
+        "failed": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Failed",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requested",
+        "started",
+        "succeeded",
+        "failed"
+      ],
+      "title": "Workers",
+      "type": "object"
+    },
+    "WorkspacePathPolicy": {
+      "additionalProperties": false,
+      "description": "Filesystem comparison promise bound to the opaque workspace identity.",
+      "properties": {
+        "comparison": {
+          "enum": [
+            "case_sensitive",
+            "case_insensitive"
+          ],
+          "title": "Comparison",
+          "type": "string"
+        },
+        "unicodeNormalization": {
+          "const": "NFC",
+          "title": "Unicodenormalization",
+          "type": "string"
+        },
+        "symlinkPolicy": {
+          "const": "resolve_beneath_workspace",
+          "title": "Symlinkpolicy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "comparison",
+        "unicodeNormalization",
+        "symlinkPolicy"
+      ],
+      "title": "WorkspacePathPolicy",
+      "type": "object"
+    },
+    "WorkspaceScope": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "pattern": "^(?![~/\\\\])(?!.*//)(?!(?:.*\\/)?\\.\\.?$)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))(?!.*[\\x00-\\x1f\\x7f:?\\[\\]\\\\])[^*]+(?:\\/\\*\\*)?$"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind"
+      ],
+      "title": "WorkspaceScope",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "path": {
+                "pattern": "/\\*\\*$"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "directory"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "protocolVersion": {
+      "const": "2.0",
+      "type": "string"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "event": "#/$defs/EventEnvelope",
+      "request": "#/$defs/RequestEnvelope",
+      "response": "#/$defs/ResponseEnvelope"
+    },
+    "propertyName": "kind"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RequestEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ResponseEnvelope"
+    },
+    {
+      "$ref": "#/$defs/EventEnvelope"
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alysis.ai/forge-host/v2/forge-host-v2.schema.json",
+  "title": "Alysis Forge Host Protocol v2",
+  "description": "Strict, secret-safe, versioned Forge host envelopes."
+}

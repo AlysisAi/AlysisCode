@@ -830,6 +830,36 @@ test("Start Here remains responsive and error-free across 1,000 rapid state upda
   assert.ok(elapsed < 10_000, `1,000 renders took ${elapsed.toFixed(1)}ms`);
 });
 
+test("streaming preserves focused setup actions until readiness changes", () => {
+  const { window, messages, errors } = mountStartView();
+  const blocker = {
+    id: "provider", title: "Connect a model", detail: "Choose a provider",
+    actions: [{ label: "Configure provider", command: "alysis.configureProvider" }]
+  };
+  const extra = { ready: false, readiness: { ok: false, blockers: [blocker] } };
+  postState(window, { sessionId: "chat", items: [], running: false }, extra);
+  const button = window.document.querySelector("#connectFirstActions button");
+  button.focus();
+  postState(window, {
+    sessionId: "chat", running: true,
+    items: [{ id: "reply", kind: "assistant", title: "Alysis Code", text: "Progress", status: "running" }]
+  }, extra);
+  assert.equal(window.document.querySelector("#connectFirstActions button"), button);
+  assert.equal(window.document.activeElement, button);
+  button.click();
+  assert.equal(messages.at(-1)?.command, "alysis.configureProvider");
+  postState(window, { sessionId: "chat", items: [], running: false }, {
+    ready: false, readiness: { ok: false, blockers: [{ ...blocker, title: "Restart engine",
+      actions: [{ label: "Reconnect", command: "alysis.restartEngine" }] }] }
+  });
+  const replacement = window.document.querySelector("#connectFirstActions button");
+  assert.notEqual(replacement, button);
+  assert.equal(replacement.textContent, "Reconnect");
+  replacement.click();
+  assert.equal(messages.at(-1)?.command, "alysis.restartEngine");
+  assert.deepEqual(errors, []);
+});
+
 test("the composer clears on Send and Enter, stays clear on success, and cannot double-start", () => {
   const buttonMount = mountStartView();
   postState(buttonMount.window, {

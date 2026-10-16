@@ -1,0 +1,24 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.google_docs"
+name = "Google Docs"
+version = "1.0.0"
+description = "Google Docs tools through Google's official Workspace MCP preview. Requires Google OAuth setup and preview access."
+author = "Alysis AI (integration); Google (MCP service)"
+license = "MIT"
+homepage = "https://developers.google.com/workspace/guides/configure-mcp-servers"
+keywords = ["google", "workspace", "mcp", "docs"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+[[components.mcp_server]]
+id = "docs"
+transport = "http"
+url = "https://docsmcp.googleapis.com/mcp/v1"
+host_managed = true
+scopes = ["selected-google-account", "docs"]
+
+[security]
+contact = "https://github.com/KL1ME/Alysis-Code-App/issues"

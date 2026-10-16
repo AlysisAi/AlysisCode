@@ -7,6 +7,7 @@ from typing import Any
 from prompt_toolkit.completion import Completer, Completion
 
 from .chat.forge_visibility import command_visible
+from .tui.actions import MODEL_DESCRIPTION
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,23 @@ class ChatSlashCommandSpec:
     name: str
     usage: str
     description: str
+
+
+NAVIGATION_COMMAND_SPECS = (
+    ChatSlashCommandSpec("mcp", "/mcp", "Inspect MCP state, tools and connection controls"),
+    ChatSlashCommandSpec(
+        "extensions", "/extensions", "Inspect installed extensions and configuration"
+    ),
+    ChatSlashCommandSpec("plan", "/plan", "Choose Architect or Forge planning"),
+    ChatSlashCommandSpec("planning", "/planning", "Planning choices and return to previous mode"),
+    ChatSlashCommandSpec("find", "/find [text]", "Find text in this transcript"),
+    ChatSlashCommandSpec("copy-last", "/copy-last", "Copy last assistant response"),
+)
+
+DIFF_COMMAND_SPEC = ChatSlashCommandSpec("diff", "/diff", "Browse working-tree changes locally")
+REVIEW_COMMAND_SPEC = ChatSlashCommandSpec(
+    "review", "/review", "Choose a scope for structured review"
+)
 
 
 @dataclass(frozen=True)
@@ -67,11 +85,6 @@ SPECS: tuple[ChatSlashCommandSpec, ...] = (
     ChatSlashCommandSpec("permissions", "/permissions", "Change execution mode"),
     ChatSlashCommandSpec("persona", "/persona", "Switch persona: code, architect, ask, debug"),
     ChatSlashCommandSpec("ask", "/ask <question>", "One read-only turn; mode restored after"),
-    ChatSlashCommandSpec(
-        "objective",
-        "/objective [new <request>|amend <constraint>]",
-        "Show the current task, start a new one, or add a constraint",
-    ),
     ChatSlashCommandSpec("status", "/status", "Show session status"),
     ChatSlashCommandSpec("subagents", "/subagents", "Open an active subagent run"),
     ChatSlashCommandSpec("terminals", "/terminals [list|show|kill]", "Manage background processes"),
@@ -83,6 +96,7 @@ SPECS: tuple[ChatSlashCommandSpec, ...] = (
     ChatSlashCommandSpec("resume", "/resume [id]", "Resume a previous session"),
     ChatSlashCommandSpec("stream", "/stream", "Toggle live answer and reasoning output"),
     ChatSlashCommandSpec("trace", "/trace", "Set reasoning trace detail"),
+    ChatSlashCommandSpec("model", "/model [name]", MODEL_DESCRIPTION),
     ChatSlashCommandSpec("config", "/config", "Open or show configuration"),
     ChatSlashCommandSpec("login", "/login", "Connect your Alysis Code account or a subscription"),
     ChatSlashCommandSpec("logout", "/logout", "Disconnect your Alysis Code account"),
@@ -163,7 +177,9 @@ def max_completions_for_mode(mode: str) -> int:
 
     normalized = str(mode or "chat").strip().lower()
     if normalized == "forge":
-        top_level_count = len([spec for spec in SPECS if spec.name not in {"clear", "forge"}])
+        top_level_count = len(
+            [spec for spec in SPECS if spec.name not in {"clear", "forge", "plan"}]
+        )
         top_level_count += len(FORGE_SPECS)
         nested_count = len(_SHARED_NESTED_SPECS) + len(_FORGE_NESTED_SPECS)
         return max(top_level_count, nested_count)
@@ -179,9 +195,11 @@ class ChatSlashCompleter(Completer):
         *,
         mode_provider: Callable[[], str],
         skill_names_provider: Callable[[], Sequence[str]] | None = None,
+        extra_specs: Sequence[ChatSlashCommandSpec] = (),
     ) -> None:
         self._mode_provider = mode_provider
         self._skill_names_provider = skill_names_provider
+        self._extra_specs = tuple(extra_specs)
 
     def get_completions(self, document: Any, complete_event: Any) -> Iterable[Completion]:
         del complete_event
@@ -230,11 +248,18 @@ class ChatSlashCompleter(Completer):
 
     def _top_level_entries(self) -> list[_ChatSlashCompletionSpec]:
         specs = list(get_chat_specs())
+        specs.extend(self._extra_specs)
         mode = self._mode()
         if mode == "forge":
-            specs = [spec for spec in specs if spec.name not in {"clear", "forge"}]
+            specs = [spec for spec in specs if spec.name not in {"clear", "forge", "plan"}]
             specs.extend(get_forge_specs())
-        specs = [spec for spec in specs if command_visible(f"/{spec.name}", ui_mode=mode)]
+        planning_entry = any(spec.name == "plan" for spec in self._extra_specs)
+        specs = [
+            spec
+            for spec in specs
+            if command_visible(f"/{spec.name}", ui_mode=mode)
+            or (planning_entry and spec.name == "plan")
+        ]
         return [
             _ChatSlashCompletionSpec(
                 completion=f"/{spec.name}",

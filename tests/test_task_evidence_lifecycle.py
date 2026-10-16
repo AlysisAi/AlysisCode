@@ -8,7 +8,10 @@ from typing import Any
 import pytest
 
 from alysis_code.agent.acceptance_contract import AcceptanceCriterionKind, EvidenceOrigin
-from alysis_code.agent.task_state import recover_task_state_from_events, restore_session_task_state
+from alysis_code.agent.task_evidence import (
+    clear_conversation_evidence,
+    restore_conversation_evidence,
+)
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.execution_deadline import ExecutionDeadline
@@ -36,12 +39,18 @@ class _ScriptedClient:
 
 
 def _session(
-    root: Path, monkeypatch: pytest.MonkeyPatch, *, name: str = "source", checkpoint: bool = False
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    name: str = "source",
+    checkpoint: bool = False,
+    checks: bool = True,
 ):
     monkeypatch.setenv("ALYSIS_VERIFY_SANDBOX_MODE", "off")
     monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     command = '"' + sys.executable.replace("\\", "/") + '" check.py'
-    cfg = AppConfig(model="test-model", routing_mode="code_only", verify_commands=[command])
+    configured = {"verify_commands": [command]} if checks else {}
+    cfg = AppConfig(model="test-model", routing_mode="code_only", **configured)
     cfg.anytime_checkpoint.enabled = checkpoint
     if checkpoint:
         cfg.anytime_checkpoint.objective_command = command
@@ -68,7 +77,6 @@ def _rewrite_checker(session, command):
     )
     session.run_turn(
         f"Run `{command}` and report the result. Preserve check.py unchanged.",
-        task_relation="new_task",
     )
     assert not session.last_turn_outcome["verified_success"]
     assert session.last_turn_outcome["generation"] == 1
@@ -83,30 +91,26 @@ def test_rewritten_checker_cannot_become_authoritative_on_continuation_or_resume
     session, command = _session(tmp_path, monkeypatch)
     try:
         _rewrite_checker(session, command)
-        original_id = session.task_state.task_id
+        original_id = session._task_evidence_state.task_id
         original_revision = session.last_turn_outcome["acceptance_revision"]
         original_snapshot = session._task_evidence_state.snapshot
         if resume:
-            recovered = recover_task_state_from_events(
-                session.store.events_snapshot(), session_id=session.store.session_id
-            )
+            recovered = session.store.events_snapshot()
             old_session = session
             session, _ = _session(tmp_path, monkeypatch, name="resumed")
-            restore_session_task_state(
+            restore_conversation_evidence(
                 session,
                 recovered,
                 source_session_id=old_session.store.session_id,
-                expected_session_id=old_session.store.session_id,
             )
             old_session.close()
         session.client = _ScriptedClient(("shell_run", {"cmd": command}))
         session.run_turn(
-            "Continue the same task and run the required check."
+            f"Run `{command}`. Preserve check.py unchanged."
             if relation == "continuation"
-            else "Also preserve the logs directory unchanged.",
-            task_relation=relation,
+            else f"Run `{command}`. Preserve check.py and the logs directory unchanged.",
         )
-        assert session.task_state.task_id == original_id
+        assert session._task_evidence_state.task_id == original_id
         assert session._task_evidence_state.snapshot == original_snapshot
         assert session.last_turn_outcome["generation"] == 1
         assert "check.py" in session.last_turn_outcome["material_paths"]
@@ -122,7 +126,7 @@ def test_rewritten_checker_cannot_become_authoritative_on_continuation_or_resume
             for item in contract.evidence
             if item.command == command
         )
-        assert (contract.acceptance_revision == original_revision) is (relation == "continuation")
+        assert contract.acceptance_revision != original_revision
     finally:
         session.close()
 
@@ -151,16 +155,15 @@ def test_missing_or_untrusted_resumed_baseline_cannot_verify_current_checker(
             ] = "another-session"
         else:
             events.append({"type": "tool_call", "payload": {"name": "fs_write"}})
-        recovered = recover_task_state_from_events(events, session_id=source.store.session_id)
+        recovered = events
         resumed, _ = _session(tmp_path, monkeypatch, name="resumed")
-        restore_session_task_state(
+        restore_conversation_evidence(
             resumed,
             recovered,
             source_session_id=source.store.session_id,
-            expected_session_id=source.store.session_id,
         )
         resumed.client = _ScriptedClient(("shell_run", {"cmd": command}))
-        resumed.run_turn("Continue the task and run the check.", task_relation="continuation")
+        resumed.run_turn("Continue the task and run the check.")
         assert not resumed.last_turn_outcome["verified_success"]
         assert "acceptance_baseline_unavailable" in resumed.last_turn_outcome["problems"]
         assert not resumed._turn_execution_state.acceptance_contract.baseline_available
@@ -171,21 +174,19 @@ def test_missing_or_untrusted_resumed_baseline_cannot_verify_current_checker(
             resumed.close()
 
 
-def test_unchanged_checker_remains_authoritative_and_explicit_new_task_resets_baseline(
-    tmp_path, monkeypatch
-):
+def test_explicit_clear_resets_verification_baseline(tmp_path, monkeypatch):
     (tmp_path / "check.py").write_text("raise SystemExit(3)\n")
     session, command = _session(tmp_path, monkeypatch)
     try:
         _rewrite_checker(session, command)
-        old_task = session.task_state.task_id
-        for relation in ("new_task", "continuation"):
+        old_task = session._task_evidence_state.task_id
+        clear_conversation_evidence(session)
+        for _ in range(2):
             session.client = _ScriptedClient(("shell_run", {"cmd": command}))
             session.run_turn(
                 f"Run `{command}` and report the result. Preserve check.py unchanged.",
-                task_relation=relation,
             )
-            assert session.task_state.task_id != old_task
+            assert session._task_evidence_state.task_id != old_task
             assert session.last_turn_outcome["verified_success"]
             assert session.last_turn_outcome["generation"] == 0
             assert not session.last_turn_outcome["material_paths"]
@@ -208,31 +209,24 @@ def test_task_wide_generations_and_amended_requirements_scope_checkpoints(
                 calls.insert(0, ("fs_read", {"path": "score.txt"}))
             session.client = _ScriptedClient(*calls, ("shell_run", {"cmd": command}))
             session.run_turn(
-                f"Write score.txt and run `{command}`."
-                if score == 7
-                else "Continue by improving score.txt and run the check.",
-                task_relation="new_task" if score == 7 else "continuation",
+                f"Write score.txt and run `{command}`.",
             )
             assert session.last_turn_outcome["verified_success"]
             assert session._anytime_checkpoints.best["objective_value"] == score
             if resume and score == 7:
-                recovered = recover_task_state_from_events(
-                    session.store.events_snapshot(), session_id=session.store.session_id
-                )
+                recovered = session.store.events_snapshot()
                 owner = session.store.session_id
                 original_snapshot = session._task_evidence_state.snapshot
                 session.close()
                 session, _ = _session(tmp_path, monkeypatch, name=owner, checkpoint=True)
-                restore_session_task_state(
-                    session, recovered, source_session_id=owner, expected_session_id=owner
-                )
+                restore_conversation_evidence(session, recovered, source_session_id=owner)
                 assert session._task_evidence_state.snapshot == original_snapshot
                 assert session._acknowledged_checkpoint["objective_value"] == 7
         assert session.last_turn_outcome["generation"] == 2
         assert session._anytime_checkpoints.experiments_exhausted
         old_revision = session.last_turn_outcome["acceptance_revision"]
         session.client = _ScriptedClient()
-        session.run_turn("Also create additional.txt.", task_relation="amendment")
+        session.run_turn("Also create additional.txt.")
         assert session.last_turn_outcome["acceptance_revision"] != old_revision
         assert session._anytime_checkpoints.best is None
         assert not session._anytime_checkpoints.experiments_exhausted
@@ -272,7 +266,7 @@ def test_early_deadline_after_prior_turn_keeps_task_generation_without_reusing_p
         session.execution_deadline = ExecutionDeadline.from_duration(1, clock=lambda: clock[0])
         clock[0] = 2
         session.client = _ScriptedClient()
-        session.run_turn("Continue the task.", task_relation="continuation")
+        session.run_turn("Continue the task.")
         assert session.last_turn_outcome["outcome"] == "deadline_exceeded"
         assert session.last_turn_outcome["generation"] == 1
         assert session.last_turn_outcome["material_paths"] == ["check.py"]
@@ -280,6 +274,38 @@ def test_early_deadline_after_prior_turn_keeps_task_generation_without_reusing_p
         assert session.client.serial == 0
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("saved_parent", ["owner", "other-parent", None])
+def test_resumed_child_evidence_requires_its_parent(tmp_path, saved_parent):
+    from types import SimpleNamespace
+
+    from alysis_code.agent.acceptance_contract import AcceptanceWorkspaceSnapshot
+    from alysis_code.agent.task_evidence import TaskEvidenceState
+
+    baseline = TaskEvidenceState(
+        "evidence",
+        str(tmp_path.resolve()),
+        AcceptanceWorkspaceSnapshot(),
+        parent_session_id=saved_parent,
+    )
+    session = SimpleNamespace(
+        root=tmp_path,
+        evidence_parent_session_id="owner",
+        store=SimpleNamespace(append=lambda *args: None),
+    )
+    restore_conversation_evidence(
+        session,
+        [
+            {
+                "type": "session_task_evidence",
+                "session_id": "child",
+                "payload": baseline.to_payload(),
+            }
+        ],
+        source_session_id="child",
+    )
+    assert session._task_evidence_state.baseline_available is (saved_parent == "owner")
 
 
 def test_task_baseline_roundtrip_retains_entries_beyond_diagnostic_truncation(tmp_path):
@@ -302,7 +328,6 @@ def test_task_baseline_roundtrip_retains_entries_beyond_diagnostic_truncation(tm
     assert len(snapshot.as_payload()["preexisting_checker_fingerprints"]) == 200
     session = SimpleNamespace(
         root=tmp_path,
-        task_state=SimpleNamespace(task_id="task"),
         store=SimpleNamespace(append=lambda *args: None),
     )
     restore_task_evidence(
@@ -342,3 +367,40 @@ def test_chat_only_provider_timeout_keeps_deadline_and_provider_failures_distinc
         assert not session.last_turn_outcome["verified_success"]
     finally:
         session.close()
+
+
+def _last_final(session) -> str:
+    finals = [e["payload"] for e in session.store.events_snapshot() if e["type"] == "final"]
+    return str(finals[-1]["content"])
+
+
+def test_a_lost_baseline_marks_later_work_but_not_a_reply_that_does_none(tmp_path, monkeypatch):
+    # A turn stopped while a tool ran leaves its call logged and its evidence
+    # unwritten, so the resumed chat no longer trusts the task's baseline.
+    (tmp_path / "check.py").write_text("raise SystemExit(0)\n")
+    # No configured check: the lost baseline is the only problem left to report.
+    source, command = _session(tmp_path, monkeypatch, checks=False)
+    resumed = None
+    try:
+        source.client = _ScriptedClient(("shell_run", {"cmd": command}))
+        source.run_turn(f"Run `{command}` and report the result.")
+        events = json.loads(json.dumps(source.store.events_snapshot()))
+        events.append({"type": "tool_call", "payload": {"name": "shell_run"}})
+        resumed, _ = _session(tmp_path, monkeypatch, name="resumed", checks=False)
+        restore_conversation_evidence(resumed, events, source_session_id=source.store.session_id)
+
+        # A reply that changes and checks nothing has nothing to verify.
+        resumed.client = _ScriptedClient()
+        resumed.run_turn("Reply with one word: back.")
+        assert resumed.last_turn_outcome["problems"] == ["acceptance_baseline_unavailable"]
+        assert "Not verified" not in _last_final(resumed)
+
+        # Work done after the lost baseline still says it could not be verified.
+        resumed.client = _ScriptedClient(("fs_write", {"path": "notes.txt", "content": "x\n"}))
+        resumed.run_turn("Write notes.txt.")
+        assert "acceptance_baseline_unavailable" in resumed.last_turn_outcome["problems"]
+        assert "Not verified" in _last_final(resumed)
+    finally:
+        source.close()
+        if resumed:
+            resumed.close()

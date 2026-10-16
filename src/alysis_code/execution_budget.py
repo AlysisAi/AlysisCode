@@ -283,6 +283,7 @@ def compute_execution_prompt_budget_inputs(
             allow_write_globs=allow_write_globs,
             non_interactive=non_interactive,
             shell_runner=None,
+            shell_environment=prompt_context.shell_environment,
             verification_enabled=verification_enabled,
             authoritative_verification_commands=prompt_context.authoritative_verify_commands,
             subagents_enabled=prompt_context.resolved_subagents_enabled,

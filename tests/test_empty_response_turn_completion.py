@@ -92,8 +92,7 @@ def test_empty_stop_after_read_recovers_to_tools_and_visible_final(
     assert len(client.requests) == 4
     assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "2\n"
     assert [item["content"] for item in _payloads(session, "final")] == [
-        final_text
-        + "\n\nVerification status: unverified. No sufficient verification evidence was recorded."
+        final_text + "\n\nNot verified: no test or check confirmed this result."
     ]
     recovery = _payloads(session, "empty_model_response_model_control_anomaly")
     assert len(recovery) == 1

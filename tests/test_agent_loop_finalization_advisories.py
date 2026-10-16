@@ -445,7 +445,7 @@ def test_interactive_file_work_finishes_without_optional_model_review(tmp_path: 
     assert _event_payloads(log_path, "completion_gate_nudge") == []
     assert _event_payloads(log_path, "optional_finalization_failure_fallback") == []
     assert _event_payloads(log_path, "final")[-1]["content"].startswith(
-        accepted_text + "\n\nVerification status: unverified."
+        accepted_text + "\n\nNot verified:"
     )
     assert session.last_turn_outcome["verified_success"] is False
 

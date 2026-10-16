@@ -42,14 +42,6 @@ _INJECTED_ENV_NAMES = (
     "ALYSIS_TOOL_PATH",
     "ALYSIS_TOOL_SCOPE",
     "ALYSIS_TOOL_NAME",
-    # The runtime also exports each of these under its pre-rebrand name, so a
-    # tool must not be able to request one as passthrough env either. Spelled
-    # out rather than derived from branding, to keep this module import-free.
-    "SYLLIPTOR_WORKSPACE_ROOT",
-    "SYLLIPTOR_SESSION_ID",
-    "SYLLIPTOR_TOOL_PATH",
-    "SYLLIPTOR_TOOL_SCOPE",
-    "SYLLIPTOR_TOOL_NAME",
 )
 _WORKER_BOOTSTRAP_CODE = (
     "import importlib.util, sys; "
@@ -559,12 +551,7 @@ def _build_tool_env(
             "ALYSIS_TOOL_NAME": spec.name,
         }
     )
-    # Custom tools are user-authored and may still read the pre-rebrand names.
-    # Imported lazily by absolute name: this module is also loaded standalone by
-    # the worker, where a package-relative import at module scope would fail.
-    from alysis_code.branding import with_legacy_env_aliases
-
-    return with_legacy_env_aliases(env)
+    return env
 
 
 def _build_worker_bootstrap_env(tool_env: dict[str, str]) -> dict[str, str]:

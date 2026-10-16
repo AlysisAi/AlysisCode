@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "email": "alex@example.test",
+  "display_name": "Alex",
+  "billing": {
+    "status": "none",
+    "tier": "free",
+    "balance_microusd": 380000,
+    "month_burn_microusd": 150000,
+    "cycle_burn_microusd": 120000,
+    "burn_5h_microusd": 20000,
+    "burn_7d_microusd": 85000,
+    "cap_5h_microusd": 250000,
+    "cap_7d_microusd": 500000,
+    "free_allowance_microusd": 500000,
+    "unlimited_credits": false,
+    "free_granted_period": true,
+    "cancel_at_period_end": false,
+    "free_next_refill_at": "2026-11-01T10:00:00Z",
+    "current_period_end": null,
+    "model_promotions": [
+      {
+        "model": "standard",
+        "label": "Standard model",
+        "multiplier": 1
+      },
+      {
+        "model": "νέο-モデル",
+        "label": "Νέο μοντέλο",
+        "multiplier": 3
+      }
+    ]
+  }
+}

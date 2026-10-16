@@ -69,14 +69,17 @@ def task_outcome_record(
         problems.append("acceptance_criteria_unverified")
     if state.get("verification_coverage_stale"):
         problems.append("verification_stale")
+    connector_links = state.get("connector_link_evidence") or {}
+    if connector_links.get("unchecked_links"):
+        problems.append("connector_links_unverified")
     if (
         not hard
         and state.get("accepted_verification_evidence")
         and not state.get("material_edit_count")
-        and not state.get("verification_relevant_edit_generation")
     ):
         # A passing baseline proves the check ran, not that an otherwise
-        # unbound task was delivered. Read-only tasks can still qualify through
+        # unbound request was delivered. Prior turns' edit generations do not
+        # prove this request was implemented. Read-only tasks qualify through
         # explicit hard criteria; do not infer a mutation request from prose.
         problems.append("no_material_edits")
     outcome = TaskOutcome.COMPLETED_UNVERIFIED
@@ -92,13 +95,12 @@ def task_outcome_record(
         "blocked",
         "approval_declined",
         "prompt_blocked",
-        "task_requirements_unavailable",
-        "task_acceptance_persist_failed",
     }:
         outcome = TaskOutcome.BLOCKED
     elif exit_code != 0 or reason in {
         "max_steps_exhausted",
         "max_steps_exceeded",
+        "output_token_limit",
         "empty_response_stall_salvaged",
         "root_subagent_semantic_repetition_backstop",
         "subagent_repetition_backstop",
@@ -124,6 +126,7 @@ def task_outcome_record(
         "unresolved_criterion_ids": unresolved,
         "material_paths": list(state.get("touched_repo_paths") or []),
         "completion_certificate": certificate,
+        "connector_link_evidence": connector_links,
     }
 
 
@@ -132,12 +135,19 @@ def task_outcome_notice(record: dict[str, Any]) -> str:
     if record.get("verified_success"):
         return ""
     problems = record.get("problems") or []
+    if "connector_links_unverified" in problems:
+        other_problems = [
+            problem for problem in problems if problem != "connector_links_unverified"
+        ]
+        return "\n\nLink availability has not been verified." + (
+            " Required checks also failed or could not be confirmed." if other_problems else ""
+        )
     detail = (
-        "Required checks remain failed or unconfirmed."
+        "required checks failed or could not be confirmed."
         if problems
-        else "No sufficient verification evidence was recorded."
+        else "no test or check confirmed this result."
     )
-    return "\n\nVerification status: unverified. " + detail
+    return "\n\nNot verified: " + detail
 
 
 def task_outcome_fields(

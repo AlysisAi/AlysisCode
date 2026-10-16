@@ -166,7 +166,7 @@ def _report(candidate: Path, environment: str = "wsl") -> dict[str, object]:
             "protocol_version": "1",
             "sha256": binding["managed_cli_sha256"],
             "release_tag": "v1.2.3",
-            "source_repository": "https://github.com/AlysisAi/alysis-code",
+            "source_repository": "https://github.com/AlysisAi/AlysisCode",
             "source_sha": SOURCE_SHA,
             "signature_verified": True,
         },

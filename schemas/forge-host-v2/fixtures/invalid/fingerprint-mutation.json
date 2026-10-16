@@ -1,0 +1,278 @@
+{
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "messageId": "msg_planready001",
+  "operationId": "operation_plan0001",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "kind": "event",
+  "sequence": 1,
+  "identity": {
+    "sessionId": "ses_abcdefgh",
+    "generationId": "gen_abcdefgh",
+    "runId": null,
+    "revision": 1
+  },
+  "payload": {
+    "type": "plan.ready",
+    "planDefinition": {
+      "schema": "alysis.forge-host.plan/v2",
+      "projectGoal": "Build the /api route for Café reports.",
+      "summary": "Create and verify the scoped report module.",
+      "requirements": [
+        "Focused tests pass.",
+        "No private paths leave the host."
+      ],
+      "planningConstraints": {
+        "schemaVersion": 1,
+        "targetRoots": [
+          {
+            "path": "src",
+            "kind": "target_root",
+            "reasonCode": "user_target_root",
+            "evidence": "The user explicitly scoped implementation to src."
+          }
+        ],
+        "forbiddenRoots": [
+          {
+            "path": "vendor",
+            "kind": "forbidden_root",
+            "reasonCode": "user_forbidden_root",
+            "evidence": "The user required vendor to remain untouched."
+          }
+        ],
+        "decoyRoots": [],
+        "unrelatedRoots": []
+      },
+      "assetRefs": [
+        "asset_requirements01"
+      ],
+      "intent": {
+        "kind": "build",
+        "summary": "Add one repository-native report module.",
+        "affectedScopes": [
+          {
+            "path": "src",
+            "kind": "directory"
+          }
+        ]
+      },
+      "tasks": [
+        {
+          "taskId": "T01",
+          "order": 1,
+          "taskKind": "implementation",
+          "branch": "feat/T01-cafe-report",
+          "dependencies": [],
+          "title": "Implement Café report",
+          "description": "Create the scoped application behavior.",
+          "acceptance": [
+            {
+              "criterionId": "T01:criterion:1",
+              "description": "Focused tests pass."
+            }
+          ],
+          "estimatedScopes": [
+            {
+              "path": "src/**",
+              "kind": "directory"
+            }
+          ],
+          "writeScopes": [
+            {
+              "path": "src/café.py",
+              "kind": "file"
+            }
+          ]
+        }
+      ]
+    },
+    "hostPlanFingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "nativeApprovalDefinition": {
+      "schema": "alysis.forge-native-approval/v2",
+      "project_goal": "Build the /api route for Café reports.",
+      "summary": "Create and verify the scoped report module.",
+      "requirements": [
+        "Focused tests pass.",
+        "No private paths leave the host."
+      ],
+      "planning_constraints": {
+        "schema_version": 1,
+        "target_roots": [
+          {
+            "path": "src",
+            "kind": "target_root",
+            "reason_code": "user_target_root",
+            "evidence": "The user explicitly scoped implementation to src."
+          }
+        ],
+        "forbidden_roots": [
+          {
+            "path": "vendor",
+            "kind": "forbidden_root",
+            "reason_code": "user_forbidden_root",
+            "evidence": "The user required vendor to remain untouched."
+          }
+        ],
+        "decoy_roots": [],
+        "unrelated_roots": []
+      },
+      "assets": [
+        "asset_requirements01"
+      ],
+      "intent_record": {
+        "kind": "build",
+        "summary": "Add one repository-native report module.",
+        "affected_scopes": [
+          {
+            "path": "src",
+            "kind": "directory"
+          }
+        ]
+      },
+      "tasks": [
+        {
+          "id": "T01",
+          "task_kind": "implementation",
+          "branch": "feat/T01-cafe-report",
+          "dependencies": [],
+          "title": "Implement Café report",
+          "description": "Create the scoped application behavior.",
+          "acceptance_criteria": [
+            "Focused tests pass."
+          ],
+          "estimated_files": [
+            {
+              "path": "src/**",
+              "kind": "directory"
+            }
+          ],
+          "write_scope": [
+            {
+              "path": "src/café.py",
+              "kind": "file"
+            }
+          ]
+        }
+      ]
+    },
+    "nativeApprovalFingerprint": "7d86273ea1f7d27c4e509d5950dde659dca91e693103078250111fa7b0d6beda",
+    "verificationContract": {
+      "schema": "alysis.forge.verification-contract/v2",
+      "protocolVersion": 2,
+      "workspaceRef": "workspace_abcdefgh",
+      "approvedPlanFingerprint": "7d86273ea1f7d27c4e509d5950dde659dca91e693103078250111fa7b0d6beda",
+      "hostPlanFingerprint": "b1b7341b391c8459de5041a6734e471ac2f23c511862e7d265780cdc7227eaf7",
+      "scopes": [
+        {
+          "scopeId": "scope.T01",
+          "phase": "task",
+          "taskId": "T01",
+          "cwd": ".",
+          "referencedPaths": [
+            "src/café.py"
+          ],
+          "allowedOutputs": [
+            "src/café.py"
+          ],
+          "declaredInputs": []
+        }
+      ],
+      "requirements": [
+        {
+          "requirementId": "T01:criterion:1",
+          "taskId": "T01",
+          "text": "Focused tests pass.",
+          "provenance": "HOST_AUTHORITATIVE",
+          "trustLevel": "TRUSTED",
+          "requirement": "REQUIRED"
+        }
+      ],
+      "commands": [
+        {
+          "commandId": "command.pytest",
+          "taskId": "T01",
+          "scopeId": "scope.T01",
+          "originalText": "pytest -q",
+          "displayText": "pytest -q",
+          "executionMode": "ARGV",
+          "provenance": "PREEXISTING_REPO_NATIVE",
+          "trustLevel": "TRUSTED",
+          "requirement": "REQUIRED",
+          "timeoutPolicy": "session_verification_timeout",
+          "requirementIds": [
+            "T01:criterion:1"
+          ],
+          "validationStatus": "VALID",
+          "rejectionReason": "",
+          "evidentiaryCapability": "ASSERTIVE",
+          "capabilityReason": "recognized_assertive_verification_command",
+          "argv": [
+            "pytest",
+            "-q"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "checkId": "check.acceptance.T01",
+          "domain": "acceptance",
+          "taskId": "T01",
+          "requirementIds": [
+            "T01:criterion:1"
+          ],
+          "commandIds": []
+        },
+        {
+          "checkId": "check.verification.T01",
+          "domain": "verification",
+          "taskId": "T01",
+          "requirementIds": [
+            "T01:criterion:1"
+          ],
+          "commandIds": [
+            "command.pytest"
+          ]
+        }
+      ],
+      "contractFingerprint": "cf1db8e3edfb032e6775897c162a6b0335da1c096775f76c92c84039e128106e"
+    },
+    "executionAdmission": {
+      "schema": "alysis.forge-host.execution-admission/v2",
+      "workspaceRef": "workspace_abcdefgh",
+      "providerBindingRef": "provider_abcdefgh",
+      "workspacePathPolicy": {
+        "comparison": "case_insensitive",
+        "unicodeNormalization": "NFC",
+        "symlinkPolicy": "resolve_beneath_workspace"
+      },
+      "executionStrategy": {
+        "mode": "parallel",
+        "maxParallelWorkers": 2,
+        "integrationPolicy": "collect_then_integrate"
+      },
+      "perManagedTaskMaxSteps": 64,
+      "runTimeoutMs": 600000,
+      "fingerprint": "b9864d6e401538ba34e5fc3119da1b1442dd090109f73cfefc5e8df5a344bfe9"
+    },
+    "approvalPolicy": {
+      "required": true,
+      "scope": {
+        "schema": "alysis.forge-host.approval-scope/v2",
+        "kind": "filesystem",
+        "label": "Forge plan execution authority",
+        "workspaceRef": "workspace_abcdefgh",
+        "resources": [
+          {
+            "access": "write",
+            "kind": "file",
+            "path": "src/café.py"
+          }
+        ],
+        "fingerprint": "0df625b8b5fff25d51b17dc90d289a50aec920ef2fecc4eeefb93b3ee17ec415"
+      },
+      "risk": "high",
+      "summary": "Run the bound Forge plan, provider, strategy, writes, and verification commands.",
+      "fingerprint": "cfa110db67fd0ab1756fe9096fbc1c174d5a6870571ffd12c918e225415735e3"
+    }
+  }
+}

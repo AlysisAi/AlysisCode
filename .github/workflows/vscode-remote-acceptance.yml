@@ -36,7 +36,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
@@ -163,7 +163,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:GITHUB_REPOSITORY -ne 'AlysisAi/alysis-code') { throw 'Unexpected repository.' }
+          if ($env:GITHUB_REPOSITORY -ne 'AlysisAi/AlysisCode') { throw 'Unexpected repository.' }
           if ($env:GITHUB_REF -ne "refs/tags/$env:RELEASE_TAG") { throw 'Workflow must run from the exact release tag.' }
           if ($env:GITHUB_REF_TYPE -ne 'tag') { throw 'Workflow ref must be a tag.' }
           if ($env:CANDIDATE_RUN_ID -notmatch '^[1-9][0-9]*$') { throw 'candidate_run_id must be positive.' }

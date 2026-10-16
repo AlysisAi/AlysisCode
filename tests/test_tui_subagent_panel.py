@@ -105,7 +105,7 @@ def test_panel_renders_status_body_and_rotation_hint() -> None:
     assert "\u2713 three matches" in body
     assert "a: I found the poll path." in body
     assert "u: Keep the layout compact." in body
-    assert _text(rows[-1]) == "ctrl+b / ctrl+n to switch \u00b7 esc to close"
+    assert _text(rows[-1]) == "alt+left / alt+right to switch \u00b7 esc to close"
 
 
 def test_panel_and_picker_render_quiet_time_after_existing_activity_interval() -> None:
@@ -401,17 +401,19 @@ def _captured_app_with_children(monkeypatch, *, persona_cycle=None):
     return captured["app"]
 
 
-def _feed(app, key) -> None:
+def _feed(app, *keys) -> None:
     from prompt_toolkit.application.current import set_app
-    from prompt_toolkit.key_binding.key_processor import KeyPress
+    from prompt_toolkit.key_binding.key_processor import KeyPress, _Flush
 
     with set_app(app):
         app.timeoutlen = None
-        app.key_processor.feed(KeyPress(key))
+        app.key_processor.feed_multiple([KeyPress(key) for key in keys])
+        # Model the terminal timeout that completes a standalone Escape key.
+        app.key_processor.feed(_Flush)
         app.key_processor.process_keys()
 
 
-def test_ctrl_n_ctrl_b_cycle_and_escape_closes_panel(monkeypatch) -> None:
+def test_alt_right_alt_left_cycle_and_escape_closes_panel(monkeypatch) -> None:
     from prompt_toolkit.keys import Keys
     from prompt_toolkit.layout.containers import FloatContainer, HSplit
 
@@ -422,14 +424,14 @@ def test_ctrl_n_ctrl_b_cycle_and_escape_closes_panel(monkeypatch) -> None:
     panel = outer.content.children[2]
     assert not panel.filter()
 
-    _feed(app, Keys.ControlN)
+    _feed(app, Keys.Escape, Keys.Right)
     assert panel.filter()
-    _feed(app, Keys.ControlN)
+    _feed(app, Keys.Escape, Keys.Right)
     assert panel.filter()
-    _feed(app, Keys.ControlN)
+    _feed(app, Keys.Escape, Keys.Right)
     assert panel.filter()
 
-    _feed(app, Keys.ControlB)
+    _feed(app, Keys.Escape, Keys.Left)
     assert panel.filter()
     _feed(app, Keys.Escape)
     assert not panel.filter()
@@ -474,7 +476,7 @@ def test_escape_closes_selected_child_without_interrupting_turn() -> None:
         def _send_keys() -> None:
             pipe.send_text("go\r")
             assert started.wait(timeout=2.0)
-            pipe.send_text("\x0e")
+            pipe.send_text("\x1b[1;3C")
             time.sleep(0.05)
             pipe.send_text("\x1b")
             time.sleep(0.1)
@@ -589,19 +591,19 @@ def _run_spawn_tip_turns(keys: str, *, children_per_turn: int) -> list[tuple[str
 def test_parallel_child_spawns_print_one_tip_per_turn() -> None:
     transcript = _run_spawn_tip_turns("first\r/exit\r", children_per_turn=4)
 
-    assert transcript.count(("info", "tip: ctrl+n to follow subagent work")) == 1
+    assert transcript.count(("info", "tip: alt+right to follow subagent work")) == 1
 
 
 def test_spawn_tip_resets_for_the_next_turn() -> None:
     transcript = _run_spawn_tip_turns("first\rsecond\r/exit\r", children_per_turn=1)
 
-    assert transcript.count(("info", "tip: ctrl+n to follow subagent work")) == 2
+    assert transcript.count(("info", "tip: alt+right to follow subagent work")) == 2
 
 
 def test_spawn_tip_is_suppressed_when_panel_is_already_open() -> None:
-    transcript = _run_spawn_tip_turns("first\r\x0esecond\r/exit\r", children_per_turn=1)
+    transcript = _run_spawn_tip_turns("first\r\x1b[1;3Csecond\r/exit\r", children_per_turn=1)
 
-    assert transcript.count(("info", "tip: ctrl+n to follow subagent work")) == 1
+    assert transcript.count(("info", "tip: alt+right to follow subagent work")) == 1
 
 
 def _panel_lifecycle_state(*, selected: str = "") -> dict[str, object]:
@@ -1037,7 +1039,7 @@ def test_navigation_keeps_one_formatted_terminal_child_outcome(
         )
         assert "error" not in spawned, spawned
         assert child_started.wait(timeout=2.0)
-        _feed(app, Keys.ControlN)
+        _feed(app, Keys.Escape, Keys.Right)
         run_id = spawned["run_id"]
         if child_outcome == "cancelled":
             runtime["scheduler"].cancel(run_id=run_id, wait_for_running=True)
@@ -1045,7 +1047,7 @@ def test_navigation_keeps_one_formatted_terminal_child_outcome(
             release_child.set()
             collected = runtime["scheduler"].collect(run_id=run_id, timeout_s=2.0)
             assert not collected["pending_run_ids"], collected
-        _feed(app, Keys.ControlN)
+        _feed(app, Keys.Escape, Keys.Right)
 
     try:
         monkeypatch.setattr(Application, "run", _exercise)

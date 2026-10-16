@@ -642,7 +642,8 @@
         "sessions",
         "skill",
         "tool",
-        "update"
+        "update",
+        "agents"
       ],
       "status": "not_applicable_to_ide",
       "rationale": "Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision."
@@ -815,7 +816,7 @@
         "whoami"
       ],
       "status": "intentionally_cli_only",
-      "rationale": "These commands are terminal setup/maintenance, provider-account inspection, Power Mode gate diagnostics, legacy asset migration, local sandbox image management, server startup, or secret mutation flows; they must not be terminal-scraped or accept unsafe inline secrets through IDE protocol params."
+      "rationale": "These commands are terminal setup/maintenance, provider-account inspection, legacy asset migration, local sandbox image management, server startup, or secret mutation flows; they must not be terminal-scraped or accept unsafe inline secrets through IDE protocol params."
     },
     {
       "id": "cli.chat_slash.implemented",
@@ -865,21 +866,6 @@
       "status": "blocked_until_security_model",
       "rationale": "The VS Code extension exposes safe typed /trace and /terminals list/show/kill routes, but it does not expose arbitrary terminal creation, interactive PTY streaming, raw unredacted trace disclosure, or provider login/logout through untyped slash forwarding.",
       "security_or_lifecycle_reason": "Provider login/logout needs an IDE-owned browser/device-code and credential-removal lifecycle with explicit confirmation. Terminal start/interactive streaming needs an IDE-owned subscription lifecycle, cancellation model, and approval UX; raw trace disclosure remains blocked because provider headers, environment values, and prompt-like content must stay backend-redacted and bounded."
-    },
-    {
-      "id": "cli.chat_slash.power_cli_only",
-      "surface": "cli_chat_slash_command",
-      "name": "/power",
-      "status": "intentionally_cli_only",
-      "rationale": "Power Mode configuration and diagnostics are currently terminal-owned. The IDE bridge does not advertise a typed Power Mode lifecycle, so the extension must not forward /power text to the model or infer state from terminal output."
-    },
-    {
-      "id": "cli.chat_slash.objective_bridge_only",
-      "surface": "cli_chat_slash_command",
-      "name": "/objective",
-      "status": "implemented_in_bridge_only",
-      "rationale": "Host-owned task identity is a session-runtime concept. The IDE reaches the same transition through the typed chat.send task_relation field (new_task / amendment / continuation) instead of forwarding slash text; the current objective is reported by session.resume task_id and the session log.",
-      "bridge_only_rationale": "chat.send accepts task_relation today, so the extension can start a new task or amend the current one without a slash command; a native 'new task' affordance and an objective status readout are planned extension follow-ups once the task-brief lifecycle has been exercised in IDE sessions."
     },
     {
       "id": "cli.chat_slash.not_applicable",
@@ -1197,7 +1183,7 @@
       "surface": "ide_bridge_method",
       "name": "forge.swarm.reconcile",
       "status": "implemented_in_bridge_only",
-      "rationale": "Post-crash/reload reconciliation: a read-only per-task report (merged / interrupted with diff-available / unstarted) over run artifacts and preserved worktrees, plus explicit idempotent harvest/discard actions. Typed-client covered (forgeSwarmReconcile) but not yet surfaced as a cockpit recovery flow β€” it backs harvest/discard and crash recovery beneath the Run Swarm console.",
+      "rationale": "Post-crash/reload reconciliation: a read-only per-task report (merged / interrupted with diff-available / unstarted) over run artifacts and preserved worktrees, plus explicit idempotent harvest/discard actions. Typed-client covered (forgeSwarmReconcile) but not yet surfaced as a cockpit recovery flow \u03b2\u20ac\u201d it backs harvest/discard and crash recovery beneath the Run Swarm console.",
       "bridge_only_rationale": "The crash-recovery reconcile UX (a post-reload harvest/discard surface) lands as a follow-up; the method is typed-client covered and exercised by the swarm console's apply/discard paths but has no standalone user route yet."
     },
     {
@@ -1263,6 +1249,17 @@
       "status": "implemented_in_bridge_only",
       "rationale": "Durable session-scoped tasks use revision CAS and one active-task enforcement; structured questions use idempotency, expiry, crash recovery, fenced one-shot resolution, and bounded redacted payloads.",
       "bridge_only_rationale": "The backend and typed client are complete; native task progress and question controls belong to the subsequent frontend wave."
+    },
+    {
+      "id": "ide.methods.mid_turn_steering",
+      "surface": "ide_bridge_method",
+      "names": [
+        "chat.steer",
+        "chat.steer.take"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Hosts add a user message to the running turn through the same steering inbox the TUI uses; the turn reads it at its next step and logs steer_message_delivered with the text. chat.steer.take returns messages a finished turn did not read so the host can send them next. Refused without a running turn.",
+      "bridge_only_rationale": "The backend and typed client are complete; the Alysis Code desktop app is the first host to use them. A VS Code steering control belongs to a later frontend wave."
     },
     {
       "id": "ide.method.forge_cancel",
@@ -1501,6 +1498,100 @@
       "name": "/chat",
       "status": "not_applicable_to_ide",
       "rationale": "The CLI retired /chat in favor of the Ask persona and one-turn /ask. The IDE likewise guides users to ordinary chat or /persona ask."
+    },
+    {
+      "id": "cli.commands.provider_model_selection",
+      "surface": "cli_command",
+      "names": [
+        "auth models",
+        "auth select-model",
+        "profile select-model",
+        "auth reasoning"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "CLI provider model inventory and selection helpers. VS Code retains its existing typed provider/configuration controls rather than invoking these terminal commands."
+    },
+    {
+      "id": "ide.methods.composer_catalog",
+      "surface": "ide_bridge_method",
+      "name": "commands.list",
+      "status": "implemented_in_bridge_only",
+      "rationale": "Read-only CLI slash command metadata for host-native composer menus.",
+      "bridge_only_rationale": "Consumed by the desktop composer. The VS Code typed client supports this query but its command menu has not adopted the shared catalog."
+    },
+    {
+      "id": "ide.methods.feedback_delivery",
+      "surface": "ide_bridge_method",
+      "names": [
+        "feedback.prepare",
+        "feedback.send"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Hosts build the same private report as the TUI's /report \"Send to Alysis\" (feedback_delivery): redacted description, engine version and, only when asked, OS, Python version and the last session messages. feedback.send sends exactly the reviewed bytes, tied to the Alysis account when signed in and anonymous otherwise; the report_id makes retries safe.",
+      "bridge_only_rationale": "The backend and typed client are complete; the Alysis Code desktop app is the first host to use them. A VS Code report control belongs to a later frontend wave."
+    },
+    {
+      "id": "cli.commands.desktop_engine_contract",
+      "surface": "cli_command",
+      "names": [
+        "capabilities",
+        "forge _host-stdio",
+        "forge preflight",
+        "forge verification-check",
+        "forge workspace-check"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle."
+    },
+    {
+      "id": "ide.methods.desktop_host_responses",
+      "surface": "ide_bridge_method",
+      "names": [
+        "browser_start.respond",
+        "computer.respond",
+        "task_budget.respond"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Capability-negotiated responses from the trusted Alysis Code desktop host for browser start, Computer Use and per-turn task budgets.",
+      "bridge_only_rationale": "The desktop owns these private media, approval and budget boundaries. VS Code does not negotiate or implement the desktop host capability; these methods are intentionally excluded from its typed client coverage, while bridge dispatch and protocol documentation remain required."
+    },
+    {
+      "id": "cli.commands.subagent_models",
+      "surface": "cli_command",
+      "names": [
+        "agents list",
+        "agents set"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "Subagent model settings. Hosts read them with the agents.list bridge method; the desktop host saves with `agents set`, as it saves other settings with `config set`. VS Code has no subagent settings page yet."
+    },
+    {
+      "id": "ide.methods.subagent_models",
+      "surface": "ide_bridge_method",
+      "name": "agents.list",
+      "status": "implemented_in_bridge_only",
+      "rationale": "Read-only subagent and role model metadata for host settings pages: each subagent's model and provider as a run would resolve them, and why one is unavailable.",
+      "bridge_only_rationale": "Consumed by the desktop Settings. The VS Code typed client supports this query but has no subagent settings page."
+    },
+    {
+      "id": "ide.methods.host_question_dispatch",
+      "surface": "ide_bridge_method",
+      "names": [
+        "host.action.dispatched",
+        "session.userQuestions.get",
+        "session.userQuestions.answer",
+        "session.userQuestions.touch"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Host dispatch receipts and structured user questions are scoped to the active session and job.",
+      "bridge_only_rationale": "These negotiated host interfaces are available to desktop clients. The VS Code frontend does not yet implement the question or dispatch UI."
+    },
+    {
+      "id": "cli.commands.profile_check",
+      "surface": "cli_command",
+      "name": "profile check",
+      "status": "intentionally_cli_only",
+      "rationale": "Validate a saved profile or a key read from stdin without changing stored credentials."
     }
   ]
 }

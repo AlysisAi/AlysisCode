@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .failure_category import is_provider_throttling_error, is_provider_unavailable_error
-from .llm.types import LLMResponse, LLMUsage
+from .llm.types import LLMResponse, LLMStreamNoProgressError, LLMUsage
 from .logging_redaction import redact_log_text
 from .run_provenance import (
     extract_system_fingerprint,
@@ -95,6 +95,12 @@ _HIDDEN_PAYLOAD_KEYS = {
     "tool_calls",
     "tools",
 }
+_ATTEMPT_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z")
+_ATTEMPT_USAGE_SOURCES = frozenset({"provider", "estimated", "none"})
+# Attempt terminal reasons that name the call-level failure category directly.
+# A budget abort keeps the category it always had ("deadline"); timeouts keep
+# "no_progress" only when the stream watchdog raised them, as before.
+_ATTEMPT_REASON_FAILURE_CATEGORIES = {"cancelled": "cancelled", "budget_abort": "deadline"}
 _SECRET_VALUE_RE = re.compile(
     r"(?i)\b(?:sk|tvly|ghp|github_pat|xoxb|xapp|ya29|AIza|key|token)[-_A-Za-z0-9]{10,}\b"
 )
@@ -316,6 +322,9 @@ class ProviderCallTelemetryRecorder:
         self._first_reasoning_delta_ms: float | None = None
         self._reasoning_delta_count = 0
         self._retry_count = 0
+        # Set only by clients that report when an attempt really begins; see
+        # note_attempt_started.
+        self._retries_started: int | None = None
         self._retry_reasons: list[str] = []
         # Captured from the live HTTP response, so it survives into the error
         # payload too: the request id on a 429 is often the only handle a
@@ -354,6 +363,16 @@ class ProviderCallTelemetryRecorder:
             safe[key] = max(0, value) if type(value) is int else None
         for key in ("stream", "done_received", "usage_observed", "finish_reason_observed"):
             safe[key] = attempt.get(key) is True
+        started_at = attempt.get("request_started_at")
+        safe["request_started_at"] = (
+            started_at
+            if isinstance(started_at, str) and _ATTEMPT_TIMESTAMP_RE.fullmatch(started_at)
+            else None
+        )
+        retry_index = attempt.get("retry_index")
+        safe["retry_index"] = retry_index if type(retry_index) is int and retry_index >= 0 else None
+        usage_source = attempt.get("usage_source")
+        safe["usage_source"] = usage_source if usage_source in _ATTEMPT_USAGE_SOURCES else None
         reason = attempt.get("terminal_reason")
         safe["terminal_reason"] = (
             reason
@@ -361,11 +380,12 @@ class ProviderCallTelemetryRecorder:
             in {
                 "done",
                 "response",
-                "eof_before_done",
+                "stream_truncated",
                 "http_error",
                 "transport_error",
-                "no_progress",
-                "deadline",
+                "timeout_first_event",
+                "timeout_stall",
+                "budget_abort",
                 "cancelled",
                 "malformed_event",
                 "callback_error",
@@ -448,6 +468,19 @@ class ProviderCallTelemetryRecorder:
         except Exception:  # noqa: BLE001 - provenance must not break a call
             self._response_headers = {}
 
+    def note_attempt_started(self, *, retry_index: int) -> None:
+        """Record that a provider-level attempt really began.
+
+        ``on_retry`` fires when a retry is scheduled, before its backoff; a
+        retry cancelled during that backoff never ran. For clients that call
+        this, ``retry_count`` counts only retries that started.
+        """
+        try:
+            index = max(0, int(retry_index))
+        except (TypeError, ValueError):
+            return
+        self._retries_started = max(self._retries_started or 0, index)
+
     def on_retry(self, attempt: int, reason: str, _wait_seconds: float) -> None:
         try:
             self._retry_count = max(self._retry_count, int(attempt))
@@ -498,8 +531,12 @@ class ProviderCallTelemetryRecorder:
                 failure_category = "client_error"
             elif terminal_reason == "malformed_event":
                 failure_category = "invalid_response"
-            elif terminal_reason in {"cancelled", "deadline", "no_progress"}:
-                failure_category = terminal_reason
+            elif terminal_reason in _ATTEMPT_REASON_FAILURE_CATEGORIES:
+                failure_category = _ATTEMPT_REASON_FAILURE_CATEGORIES[terminal_reason]
+            elif terminal_reason in {"timeout_first_event", "timeout_stall"} and isinstance(
+                exc, LLMStreamNoProgressError
+            ):
+                failure_category = "no_progress"
         payload = self._base_payload(
             latency_ms=latency_ms,
             status_category=("failed" if self.operation == "cache_keepalive" else failure_category),
@@ -550,7 +587,9 @@ class ProviderCallTelemetryRecorder:
                 self.token_reconciliation,
                 None,
             ),
-            "retry_count": self._retry_count,
+            "retry_count": (
+                self._retry_count if self._retries_started is None else self._retries_started
+            ),
             "retry_reasons": list(self._retry_reasons),
             "attempts": copy.deepcopy(self._attempts),
             "attempt_count": self._attempt_count,

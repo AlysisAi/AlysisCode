@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -183,6 +184,35 @@ def test_library_import_does_not_silently_generate_consumer_outputs(tmp_path):
     )
     assert not result["profile_passed"]
     assert "import created" in result["consumer_profile_report"]["checks"][0]["output"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["a b"], ['say "hi"'], ["50%", "", "end"], ["C:\\dir with space\\x", "tab\there"]],
+)
+def test_check_commands_run_exactly_as_the_platform_shell_runs_them(tmp_path, arguments):
+    # A staged path with a space forces quoting on every platform, wherever Python lives.
+    (tmp_path / "sub dir").mkdir()
+    (tmp_path / "sub dir" / "show args.py").write_text(
+        "import json, sys; print(json.dumps(sys.argv[1:]))\n", encoding="utf-8"
+    )
+    words = [sys.executable, "sub dir/show args.py", *arguments]
+    command = subprocess.list2cmdline(words) if os.name == "nt" else shlex.join(words)
+    terminal = subprocess.run(
+        command, shell=True, cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert terminal == json.dumps(arguments)
+
+    result = run_profile(
+        tmp_path,
+        {
+            "profile": "cli",
+            "artifacts": ["sub dir/show args.py"],
+            "checks": [{"name": "same", "command": command, "stdout_contains": [terminal]}],
+        },
+    )
+
+    assert result["profile_passed"], result
 
 
 def test_cli_positive_and_negative_cases_use_real_exit_and_output(tmp_path):

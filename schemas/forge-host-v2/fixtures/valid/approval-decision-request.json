@@ -1,0 +1,26 @@
+{
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "messageId": "msg_approvaldec1",
+  "operationId": "operation_decide01",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "kind": "request",
+  "requestId": "req_approvaldec1",
+  "idempotencyKey": "idem_approvaldec1",
+  "payload": {
+    "type": "approval.decision",
+    "identity": {
+      "sessionId": "ses_abcdefgh",
+      "generationId": "gen_abcdefgh",
+      "runId": null,
+      "revision": 1
+    },
+    "expectedRevision": 1,
+    "approvalOperationId": "operation_approve01",
+    "approvalId": "approval_abcdefgh",
+    "actionFingerprint": "b82b57a861876d1fa1a87627a4b57217af5ad1c0574a115016ae11f42a10f5d3",
+    "scopeFingerprint": "0df625b8b5fff25d51b17dc90d289a50aec920ef2fecc4eeefb93b3ee17ec415",
+    "expiresAt": "2026-08-21T09:10:00Z",
+    "decision": "allow_once"
+  }
+}

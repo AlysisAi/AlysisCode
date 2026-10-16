@@ -20,6 +20,7 @@ from alysis_code.cli_impl import setup_wizard as setup_wizard_mod
 from alysis_code.cli_impl.commands import welcome as welcome_mod
 from alysis_code.compaction.conversation_compactor import CompactionState
 from alysis_code.config import AppConfig, ConfigError, load_config, save_config
+from alysis_code.profile_presets import get_preset
 from alysis_code.profiles import ProfileSpec
 
 
@@ -192,12 +193,12 @@ def test_run_rejects_blank_instruction_before_agent_call(
 def test_setup_wizard_saves_config(monkeypatch, tmp_path: Path) -> None:
     _patch_setup_wizard_dependencies(monkeypatch)
     runner = CliRunner()
+    custom_choice = len(get_preset("openai-responses").suggested_models) + 1
     result = runner.invoke(
         alysis_app,
         ["setup"],
-        # Model choice 10 = "type a custom model" (the Responses preset lists
-        # nine suggestions); the typed retired alias canonicalizes.
-        input=f"\n1\n1\npersisted-key\n10\ngpt-5-nano\n1\n{tmp_path}\n",
+        # Keep exercising custom alias entry as the curated model list grows.
+        input=f"\n1\n1\npersisted-key\n{custom_choice}\ngpt-5-nano\n1\n{tmp_path}\n",
         env=_env(tmp_path),
     )
     assert result.exit_code == 0
@@ -213,12 +214,11 @@ def test_setup_wizard_saves_config(monkeypatch, tmp_path: Path) -> None:
 def test_setup_wizard_can_persist_api_key(monkeypatch, tmp_path: Path) -> None:
     _patch_setup_wizard_dependencies(monkeypatch)
     runner = CliRunner()
+    custom_choice = len(get_preset("openai-responses").suggested_models) + 1
     result = runner.invoke(
         alysis_app,
         ["setup"],
-        # Model choice 10 = "type a custom model" (the Responses preset lists
-        # nine suggestions); the typed retired alias canonicalizes.
-        input=f"\n1\n1\npersisted-key\n10\ngpt-5-nano\n1\n{tmp_path}\n",
+        input=f"\n1\n1\npersisted-key\n{custom_choice}\ngpt-5-nano\n1\n{tmp_path}\n",
         env=_env(tmp_path),
     )
     assert result.exit_code == 0
@@ -631,7 +631,6 @@ def test_chat_visible_command_lists_match_curated_surface() -> None:
         "/permissions",
         "/persona",
         "/ask",
-        "/objective",
         "/status",
         "/subagents",
         "/terminals",
@@ -660,8 +659,6 @@ def test_chat_visible_command_lists_match_curated_surface() -> None:
         [command for command in cli_mod._CHAT_GLOBAL_VISIBLE_COMMANDS if command != "/assets"]
         + [
             "/forge resume",
-            "/objective new",
-            "/objective amend",
             "/usage hud",
             "/usage hud on",
             "/usage hud off",
@@ -1811,6 +1808,8 @@ def test_dark_owl_panel_remaps_pale_grays() -> None:
 
 
 def test_print_welcome_banner_keeps_compact_owl_beside_text_at_80_columns(monkeypatch) -> None:
+    # This layout assertion uses an unframed logo, independent of host theme discovery.
+    monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(
         cli_mod.shutil,
         "get_terminal_size",
@@ -2329,10 +2328,11 @@ def test_setup_wizard_can_pick_first_suggested_model(monkeypatch, tmp_path: Path
 def test_setup_wizard_reprompts_invalid_workspace(monkeypatch, tmp_path: Path) -> None:
     _patch_setup_wizard_dependencies(monkeypatch)
     runner = CliRunner()
+    custom_choice = len(get_preset("openai-responses").suggested_models) + 1
     result = runner.invoke(
         alysis_app,
         ["setup"],
-        input=f"\n1\n1\npersisted-key\n10\ngpt-5-nano\n1\n/does/not/exist\n{tmp_path}\n",
+        input=f"\n1\n1\npersisted-key\n{custom_choice}\ngpt-5-nano\n1\n/does/not/exist\n{tmp_path}\n",
         env=_env(tmp_path),
     )
     assert result.exit_code == 0

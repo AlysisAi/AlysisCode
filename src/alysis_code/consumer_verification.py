@@ -47,11 +47,14 @@ os.environ.update({
     "ALYSIS_CONSUMER_RANK": str(spec["rank"]),
     "ALYSIS_CONSUMER_WORLD_SIZE": str(spec["workers"]),
 })
-shell = os.environ.get("COMSPEC", "cmd.exe") if os.name == "nt" else "/bin/sh"
-argv = [shell, "/d", "/s", "/c", spec["command"]] if os.name == "nt" else [shell, "-c", spec["command"]]
 if os.name == "nt":
-    raise SystemExit(subprocess.call(argv, env=dict(os.environ), stdin=subprocess.DEVNULL))
-os.execvpe(shell, argv, dict(os.environ))
+    # cmd.exe parses its own command line and does not undo the backslash quoting that
+    # subprocess applies to a list. Hand it the exact line, as Python's shell=True and
+    # Node's spawn(shell) do: /d skips AutoRun, /s strips only the outer pair of quotes.
+    shell = os.environ.get("COMSPEC", "cmd.exe")
+    line = '"' + shell + '" /d /s /c "' + spec["command"] + '"'
+    raise SystemExit(subprocess.call(line, env=dict(os.environ), stdin=subprocess.DEVNULL))
+os.execvpe("/bin/sh", ["/bin/sh", "-c", spec["command"]], dict(os.environ))
 """
 
 

@@ -38,7 +38,6 @@ def test_get_chat_specs_match_curated_visible_surface() -> None:
         "permissions",
         "persona",
         "ask",
-        "objective",
         "status",
         "subagents",
         "terminals",
@@ -50,6 +49,7 @@ def test_get_chat_specs_match_curated_visible_surface() -> None:
         "resume",
         "stream",
         "trace",
+        "model",
         "config",
         "login",
         "logout",
@@ -84,7 +84,7 @@ def test_permissions_completion_is_unique_and_mode_is_removed() -> None:
     assert _completion_names(completer, "/permissions") == ["permissions"]
     assert names.count("permissions") == 1
     assert "mode" not in names
-    assert _completion_names(completer, "/mode") == []
+    assert _completion_names(completer, "/mode") == ["model"]
 
 
 def test_chat_completions_exclude_hidden_and_removed_commands() -> None:
@@ -94,7 +94,7 @@ def test_chat_completions_exclude_hidden_and_removed_commands() -> None:
 
     assert "quit" not in spec_names
     assert "ctx" not in spec_names
-    assert "model" not in spec_names
+    assert "model" in spec_names
     assert "model-info" not in spec_names
     assert "paste-image" not in spec_names
     assert "clear-images" not in spec_names

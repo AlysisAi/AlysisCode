@@ -383,15 +383,9 @@ def resolve_effective_cache_capability(
     auth_spec = _coerce_spec(auth_cache_capability, source="auth_adapter")
     preset_spec = _coerce_spec(preset_cache_capability, source="preset")
     profile_spec = _coerce_spec(profile_cache_capability, source="profile")
-    if auth_spec is not None:
-        state = _apply_spec(state, auth_spec, origin="auth_adapter")
-        state = _apply_scoped_specs(
-            state,
-            auth_spec,
-            model=normalized_model,
-            base_url=base_url,
-            origin="auth_adapter",
-        )
+    # A provider endpoint can serve both API-key and subscription traffic.
+    # Its generic preset is the default; the selected auth adapter defines the
+    # actual account route. Explicit profile preferences remain the final layer.
     if preset_spec is not None:
         state = _apply_spec(state, preset_spec, origin="preset")
         state = _apply_scoped_specs(
@@ -400,6 +394,15 @@ def resolve_effective_cache_capability(
             model=normalized_model,
             base_url=base_url,
             origin="preset",
+        )
+    if auth_spec is not None:
+        state = _apply_spec(state, auth_spec, origin="auth_adapter")
+        state = _apply_scoped_specs(
+            state,
+            auth_spec,
+            model=normalized_model,
+            base_url=base_url,
+            origin="auth_adapter",
         )
     if profile_spec is not None:
         state = _apply_spec(state, profile_spec, origin="profile")

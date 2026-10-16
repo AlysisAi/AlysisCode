@@ -88,7 +88,7 @@ def _release_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
                 target=target,
                 path=runtime,
                 url=(
-                    f"https://github.com/AlysisAi/alysis-code/releases/download/"
+                    f"https://github.com/AlysisAi/AlysisCode/releases/download/"
                     f"{RELEASE_TAG}/{executable}"
                 ),
                 sbom_path=dependency,
@@ -100,12 +100,12 @@ def _release_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
         signing_key_path=private_path,
         artifacts=artifacts,
         release_tag=RELEASE_TAG,
-        source_repository="https://github.com/AlysisAi/alysis-code",
+        source_repository="https://github.com/AlysisAi/AlysisCode",
         source_commit=SOURCE_SHA,
         signing_key_id="test-release-key",
         provenance_issuer="https://token.actions.githubusercontent.com",
         provenance_builder_id=(
-            "https://github.com/AlysisAi/alysis-code/.github/workflows/"
+            "https://github.com/AlysisAi/AlysisCode/.github/workflows/"
             f"managed-cli-vsix-release.yml@refs/tags/{RELEASE_TAG}"
         ),
     )

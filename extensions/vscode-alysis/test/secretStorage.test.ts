@@ -40,14 +40,15 @@ test("per-provider keys are stored separately and survive switching providers", 
   assert.deepEqual(await secrets.listProfilesWithKeys(), ["anthropic"]);
 });
 
-test("provider credentials carry the declared env var and skip entries without one", async () => {
+test("provider credentials preserve custom keys without a vendor environment alias", async () => {
   const secrets = new AlysisSecretStore(new MemorySecretStorage());
 
   await secrets.setProfileApiKey("anthropic", "anthropic-key", "anthropic_api_key");
   await secrets.setProfileApiKey("local", "local-key", "");
 
   assert.deepEqual(await secrets.listProviderCredentials(), [
-    { profile: "anthropic", envVar: "ANTHROPIC_API_KEY", value: "anthropic-key" }
+    { profile: "anthropic", envVar: "ANTHROPIC_API_KEY", value: "anthropic-key" },
+    { profile: "local", envVar: "", value: "local-key" }
   ]);
 });
 
@@ -65,7 +66,7 @@ test("an invalid env var name is dropped rather than forwarded to the CLI", asyn
   await secrets.setProfileApiKey("weird", "key", "not a var; export EVIL=1");
 
   assert.equal(await secrets.getProfileApiKey("weird"), "key");
-  assert.deepEqual(await secrets.listProviderCredentials(), []);
+  assert.deepEqual(await secrets.listProviderCredentials(), [{ profile: "weird", envVar: "", value: "key" }]);
 });
 
 test("resolveApiKey prefers the profile key and falls back to the legacy global key", async () => {

@@ -37,8 +37,8 @@ attestations as described in the sandbox guide.
   before any moving or release alias is promoted.
 - Actual Docker-default ACL boundary checks and complete filesystem inventories
   run on both native architectures for every variant before promotion. Retain
-  inputs and receipts for every supported release and its rollback window under
-  the [input custody policy](../../docs/sandbox-input-retention-20261004.md).
+  inputs and receipts for every supported release throughout its supported
+  lifetime, including the rollback window.
 
 Changing a pinned version requires changing its matching digest in the same
 review and passing the sandbox release-contract tests.

@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,7 @@ _STATUS_KEYS = frozenset(
         "connection",
         "authenticated",
         "account_label",
+        "credential_scope",
         "method",
         "detail",
         "transport",
@@ -55,11 +57,29 @@ class _StubAdapter:
     display_name = "ChatGPT Codex subscription"
     protocol = "openai_responses"
 
-    def __init__(self, status: ProviderAccountStatus) -> None:
-        self._status = status
+    def __init__(
+        self,
+        status: ProviderAccountStatus,
+        credential_scope: str = "fixture-route-scope",
+    ) -> None:
+        self._status = replace(status, credential_scope=credential_scope)
 
     def account_status(self) -> ProviderAccountStatus:
         return self._status
+
+    def route_credential_scope(self) -> str:
+        raise AssertionError("JSON status must not reload the credential scope")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let auth CLI tests inspect the developer's real credential vault."""
+
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "isolated-config"))
+    monkeypatch.setenv(
+        token_store_mod.OAUTH_KEY_SOURCE_ENV,
+        token_store_mod.KEY_SOURCE_FILESYSTEM,
+    )
 
 
 @pytest.fixture
@@ -128,9 +148,32 @@ def test_auth_status_json_reports_available_keyring_without_a_fallback(
     payload = _sole_json_object(result.stdout)
     assert payload["authenticated"] is True
     assert payload["account_label"] == "developer@example.test"
+    assert payload["credential_scope"] == "fixture-route-scope"
     assert payload["transport"] == "native Alysis Code client (openai_responses)"
     assert payload["keyring_available"] is True
     assert payload["credential_fallback"] is None
+
+
+def test_auth_status_json_omits_route_scope_for_an_unusable_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_mod, "load_config", AppConfig)
+    monkeypatch.setattr(
+        auth_mod,
+        "create_provider_auth",
+        lambda _id: _StubAdapter(
+            ProviderAccountStatus(connected=True, verified=False),
+            credential_scope="must-not-bind",
+        ),
+    )
+
+    result = CliRunner().invoke(app, ["auth", "status", "openai-codex", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = _sole_json_object(result.stdout)
+    assert payload["authenticated"] is True
+    assert payload["verified"] is False
+    assert payload["credential_scope"] is None
 
 
 def test_auth_status_never_reads_the_keyring_just_to_report_state(

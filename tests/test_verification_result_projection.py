@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -138,7 +140,12 @@ def test_real_verification_keeps_full_evidence_and_replays_concise_content(
         "    def test_report(self):\n        print('x' * 1200 + 'END_REPORT')\n"
         "        self.assertEqual(2 + 2, 4)\n"
     )
-    command = f"{shlex.quote(sys.executable)} -m unittest discover -v"
+    executable = (
+        subprocess.list2cmdline([Path(sys.executable).as_posix()])
+        if os.name == "nt"
+        else shlex.quote(sys.executable)
+    )
+    command = f"{executable} -m unittest discover -v"
     cfg = AppConfig(
         model="test-model",
         routing_mode="code_only",
