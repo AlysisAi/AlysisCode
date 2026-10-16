@@ -91,3 +91,31 @@ def test_legacy_gateway_shape_still_gets_product_label():
     # Synthetic domain parts exercise legacy classification without a deployment URL.
     host = ".".join(("synthetic", "supabase", "co"))
     assert display_endpoint(f"https://{host}/functions/v1/llm/v1") == ALYSIS_GATEWAY_LABEL
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://dashscope-us.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://coding-intl.dashscope.aliyuncs.com/v1", "qwen"),
+        ("https://DASHSCOPE.ALIYUNCS.COM./compatible-mode/v1", "qwen"),
+        ("https://notdashscope.aliyuncs.com/v1", None),
+        ("https://dashscope.aliyuncs.com.example.net/v1", None),
+        ("https://dashscope.attacker.example/v1", None),
+        ("https://example.net/dashscope/v1", None),
+        # Current production endpoints: workspace, trial, and token-plan Model Studio.
+        ("https://my-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://trial.us-east-1.maas.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "qwen"),
+        ("https://maas.aliyuncs.com/v1", None),
+        ("https://evilmaas.aliyuncs.com/v1", None),
+        ("https://my-workspace.cn-beijing.maas.aliyuncs.com.attacker.example/v1", None),
+    ],
+)
+def test_dashscope_provider_detection_requires_owned_host(
+    url: str, expected: str | None
+) -> None:
+    assert known_provider_key_from_base_url(url) == expected
