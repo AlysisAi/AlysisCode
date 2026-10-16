@@ -80,6 +80,7 @@ def test_real_git_quoted_diff_paths_round_trip(tmp_path: Path) -> None:
     assert set(iter_patch_paths(patch)) == set(names)
     assert set(parse_patch_changed_files(patch)) == set(names)
 
+
 @pytest.mark.parametrize(
     "path",
     [
