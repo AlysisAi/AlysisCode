@@ -74,8 +74,7 @@ export class AlysisSecretStore {
 
   /**
    * Store a provider key for one profile. `envVar` is the variable the CLI profile declares as its
-   * api_key_env; an empty value records the profile as key-bearing without an env mapping (the key
-   * then only reaches the CLI through the legacy ALYSIS_API_KEY path).
+   * api_key_env; an empty value still forwards the key through the profile-scoped IDE override.
    */
   public async setProfileApiKey(profile: string, value: string, envVar = ""): Promise<void> {
     const name = normalizeProfileName(profile);
@@ -115,21 +114,19 @@ export class AlysisSecretStore {
   }
 
   /**
-   * Every stored provider credential that declares an env var, for forwarding into the bridge.
+   * Every stored provider credential, for forwarding into the bridge's profile-scoped overrides.
    *
    * All of them are forwarded, not just the active profile's: the CLI resolves the key for whichever
    * profile is active at request time, and the active profile can change (profile.use) without
    * restarting the bridge. Forwarding only the profile that was active at spawn time would make a
-   * switched-to provider read as unconfigured until the next restart. Entries whose key or env var
-   * has since become unreadable/invalid are skipped rather than forwarded blank.
+   * switched-to provider read as unconfigured until the next restart. A missing or invalid vendor
+   * env name omits only that alias; custom providers still receive their own scoped key. Unreadable
+   * or empty keys are skipped rather than forwarded blank.
    */
   public async listProviderCredentials(): Promise<ProviderCredential[]> {
     const index = await this.readIndex();
     const credentials: ProviderCredential[] = [];
     for (const [profile, envVar] of Object.entries(index)) {
-      if (!envVar) {
-        continue;
-      }
       const value = await this.getProfileApiKey(profile);
       if (!value) {
         continue;

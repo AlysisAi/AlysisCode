@@ -315,7 +315,7 @@ class TestBackgroundPromotionThreshold(unittest.TestCase):
         )
 
     def test_legacy_threshold_env_override_is_used(self) -> None:
-        env = {"SYLLIPTOR_SHELL_BACKGROUND_PROMOTION_SECONDS": "3.5"}
+        env = {"ALYSIS_SHELL_BACKGROUND_PROMOTION_SECONDS": "3.5"}
         self.assertEqual(dt.resolve_background_promotion_seconds(env), 3.5)
 
 

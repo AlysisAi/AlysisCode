@@ -136,6 +136,17 @@ function engineBlocker(input: CockpitReadinessInput): CockpitBlocker | undefined
   const runtime = input.runtime;
   const managed = isManagedRuntime(runtime);
 
+  if (runtime.runtimeSelection.validating) {
+    return {
+      id: "runtime_validating",
+      severity: "error",
+      title: "Preparing the Alysis Code engine…",
+      detail: "Validating and installing the signed runtime. Your connection will be available when this finishes.",
+      actions: [],
+      progress: true
+    };
+  }
+
   // Production installs own their signed runtime. Never direct those users to a separate pipx
   // executable: that would silently change the extension's trust and lifecycle boundary.
   if (runtime.runtimeSelection.origin === "unavailable") {

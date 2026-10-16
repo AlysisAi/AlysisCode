@@ -44,6 +44,19 @@ test("CockpitRuntimeState publishes bounded managed-runtime provenance without a
   assert.equal("executablePath" in runtime.snapshot().runtimeSelection, false);
 });
 
+test("CockpitRuntimeState clears validation progress even when the other runtime fields are unchanged", () => {
+  const runtime = new CockpitRuntimeState();
+  const config = configWithCli({ executionAllowed: false });
+  config.runtimeSelection = {
+    origin: "unavailable", production: false, message: "Preparing runtime.", validating: true
+  };
+  runtime.applyConfig(config);
+  assert.equal(runtime.snapshot().runtimeSelection.validating, true);
+  config.runtimeSelection = { ...config.runtimeSelection, validating: false };
+  runtime.applyConfig(config);
+  assert.equal(runtime.snapshot().runtimeSelection.validating, undefined);
+});
+
 test("CockpitRuntimeState does not keep stale CLI health green when origin becomes blocked", () => {
   const runtime = new CockpitRuntimeState();
 

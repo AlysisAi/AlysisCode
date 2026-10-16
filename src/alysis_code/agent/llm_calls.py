@@ -18,7 +18,7 @@ from ..internal_artifacts import provider_history_messages
 from ..language_policy import DEFAULT_REPLY_LANGUAGE, DEFAULT_REPLY_SCRIPT
 from ..llm.base import effective_tools_for_client
 from ..llm.types import LLMError
-from .prompt_context import _INLINE_CODE_SPAN_RE, TASK_BRIEF_REQUEST_CONTEXT_KEY
+from .prompt_context import _INLINE_CODE_SPAN_RE
 from .turn_path import (
     _build_turn_language_system_message,
     _normalize_turn_language_name,
@@ -235,6 +235,73 @@ def _safe_forced_tool_choice_for_recovery(
 # Ephemeral request-message injection
 # ---------------------------------------------------------------------------
 
+# Content of a tool result the provider must see but the session never recorded: the turn
+# was stopped while the call ran, or the call never started.
+UNAVAILABLE_TOOL_RESULT_CONTENT = "[tool result unavailable: the call was stopped or did not run]"
+
+
+def _with_tool_results_after_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put every assistant tool call's result directly after it, as providers require.
+
+    OpenAI-compatible providers (DeepSeek, GLM, the hosted gateway) reject a request when an
+    assistant message with ``tool_calls`` is not followed by one tool message per call
+    ("insufficient tool messages following tool_calls message"). The tool loop appends
+    controller notes right after a call's result, so in a batch of two or more calls a note
+    (seen live: ``blast_radius_scope_advisory`` after the first call) lands between the
+    results. Every later request of that session then fails, including the next turn's.
+    A turn stopped between an assistant message and its results would leave the same gap.
+
+    For the request only, this moves system and user messages that sit inside a batch to just
+    after the batch's results, and answers calls that have no result with
+    ``UNAVAILABLE_TOOL_RESULT_CONTENT``. A well-formed history comes back unchanged, so the
+    order (and the provider's prompt cache) is untouched in the normal case.
+    """
+
+    out: list[dict[str, Any]] = []
+    index = 0
+    count = len(messages)
+    while index < count:
+        message = messages[index]
+        index += 1
+        out.append(message)
+        if str(message.get("role") or "") != "assistant":
+            continue
+        raw_calls = message.get("tool_calls")
+        if not isinstance(raw_calls, list):
+            continue
+        pending = list(
+            dict.fromkeys(
+                str(call.get("id") or "").strip()
+                for call in raw_calls
+                if isinstance(call, dict) and str(call.get("id") or "").strip()
+            )
+        )
+        if not pending:
+            continue
+        results: list[dict[str, Any]] = []
+        moved: list[dict[str, Any]] = []
+        while index < count and pending:
+            following = messages[index]
+            role = str(following.get("role") or "")
+            if role == "assistant":
+                break
+            if role == "tool":
+                call_id = str(following.get("tool_call_id") or "").strip()
+                if call_id not in pending:
+                    break
+                pending.remove(call_id)
+                results.append(following)
+            else:
+                moved.append(following)
+            index += 1
+        out.extend(results)
+        out.extend(
+            {"role": "tool", "tool_call_id": call_id, "content": UNAVAILABLE_TOOL_RESULT_CONTENT}
+            for call_id in pending
+        )
+        out.extend(moved)
+    return out
+
 
 def _request_messages_with_volatile_suffix(
     *,
@@ -243,38 +310,19 @@ def _request_messages_with_volatile_suffix(
     turn_user_contexts: list[str] | tuple[str, ...] | None = None,
     step_system_prompts: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
-    """Preserve transcript order with host task context before the current turn.
-
-    Keep persistent history in its recorded order. The host's retained task
-    identity is pinned for compaction but changes on accepted amendments. Send
-    marked records near the current turn without relabeling their authority or
-    moving them after the user's request. Earlier conversation stays reusable.
-    Other context refreshes still reach the model even when they invalidate a
-    reusable prefix. Internal artifacts retain their neutral projection.
-    """
+    """Preserve transcript order and append transient context for this request."""
 
     cleaned_turn_system = [str(prompt or "").strip() for prompt in (turn_system_prompts or [])]
     cleaned_turn_user = [str(content or "").strip() for content in (turn_user_contexts or [])]
     cleaned_step_system = [str(prompt or "").strip() for prompt in (step_system_prompts or [])]
     history: list[dict[str, Any]] = []
-    retained_summaries: list[dict[str, Any]] = []
-    current_turn_index: int | None = None
     for message in provider_history_messages(messages):
         projected = dict(message)
-        retained_brief = projected.pop(TASK_BRIEF_REQUEST_CONTEXT_KEY, False) is True
-        tool_context = projected.pop(TOOL_CONTEXT_MESSAGE_KEY, False) is True
-        if retained_brief and projected.get("role") == "user":
-            retained_summaries.append(projected)
-        else:
-            if projected.get("role") == "user" and not tool_context:
-                current_turn_index = len(history)
-            history.append(projected)
-    if current_turn_index is None:
-        current_turn_index = len(history)
+        projected.pop(TOOL_CONTEXT_MESSAGE_KEY, None)
+        history.append(projected)
+    history = _with_tool_results_after_tool_calls(history)
     return [
-        *history[:current_turn_index],
-        *retained_summaries,
-        *history[current_turn_index:],
+        *history,
         *({"role": "system", "content": prompt} for prompt in cleaned_turn_system if prompt),
         *({"role": "user", "content": content} for content in cleaned_turn_user if content),
         *({"role": "system", "content": prompt} for prompt in cleaned_step_system if prompt),

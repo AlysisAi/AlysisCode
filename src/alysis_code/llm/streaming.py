@@ -8,6 +8,22 @@ from typing import Any
 
 from .types import LLMError
 
+# How streamed chat-completions chunks are assembled into content and tool-call
+# arguments. "concat" appends each chunk as received: the OpenAI streaming
+# contract, where a chunk carries only new text. "cumulative" is for a provider
+# that re-sends text already received (the reply so far, or a restart of it)
+# and trims each chunk with de-duplication heuristics, which also drop
+# legitimate repeats from an ordinary incremental stream. "auto" resolves per
+# provider and is "concat" unless the provider is known to need "cumulative".
+STREAM_ASSEMBLY_AUTO = "auto"
+STREAM_ASSEMBLY_CONCAT = "concat"
+STREAM_ASSEMBLY_CUMULATIVE = "cumulative"
+STREAM_ASSEMBLY_SETTINGS = (
+    STREAM_ASSEMBLY_AUTO,
+    STREAM_ASSEMBLY_CONCAT,
+    STREAM_ASSEMBLY_CUMULATIVE,
+)
+
 
 def iter_lines_from_text_chunks(chunks: Iterator[str]) -> Iterator[str]:
     """Frame decoded chunks in linear time while preserving CR/LF boundaries."""

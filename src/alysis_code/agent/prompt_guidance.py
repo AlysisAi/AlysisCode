@@ -17,6 +17,7 @@ from ..prompt_guidance_catalog import (
     profile_family,
     profile_variant,
 )
+from .connector_result_evidence import CONNECTOR_COMPLETION_GUIDANCE
 from .prompt_families import FAMILY_EXPANSIONS, FAMILY_WORKFLOWS
 
 GuidanceProfile = PromptGuidanceProfile
@@ -157,6 +158,8 @@ def render_guidance(section: GuidanceSection, profile: GuidanceProfile) -> str:
             parts.extend((_EXPANDED_EXECUTION, FAMILY_EXPANSIONS[family]))
         parts.append(_MODEL_COMPLETION)
         text = "\n\n".join(parts)
+    if section == "workflow":
+        text += "\n\n" + CONNECTOR_COMPLETION_GUIDANCE
     return f'<alysis_guidance section="{section}">\n{text}\n</alysis_guidance>'
 
 

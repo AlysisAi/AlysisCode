@@ -74,7 +74,7 @@ jobs:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           EVIDENCE_RUN_ID: ${{ inputs.evidence_run_id }}
           EVIDENCE_RUN_ATTEMPT: ${{ fromJSON(inputs.workflow_run_attempts).evidence }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           INSTALLED_LIVE_PROVIDER_RUN_ID: ${{ inputs.installed_live_provider_run_id }}
           INSTALLED_LIVE_PROVIDER_RUN_ATTEMPT: ${{ fromJSON(inputs.workflow_run_attempts).installed_live_provider }}
           REMOTE_ACCEPTANCE_REMOTE_SSH_RUN_ATTEMPT: ${{ fromJSON(inputs.workflow_run_attempts).remote_acceptance_remote_ssh }}

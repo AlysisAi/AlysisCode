@@ -23,10 +23,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 RELIABILITY_TESTS = (
-    "test_task_identity_lifecycle.py",
-    "test_task_identity_hardening.py",
-    "test_task_identity_second_review.py",
-    "test_task_identity_third_review.py",
+    "test_objective_removed.py",
     "test_task_evidence_lifecycle.py",
     "test_acceptance_contract.py",
     "test_acceptance_contract_integration.py",
@@ -168,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": "running",
         "python": sys.version,
         "platform": platform.platform(),
-        "dependency_mode": "caller_environment; CI uses uv sync --frozen --extra dev",
+        "dependency_mode": "caller_environment; CI uses uv sync --frozen --extra dev --extra documents",
         "dependencies": dict(
             sorted(
                 (item.metadata["Name"], item.version) for item in importlib.metadata.distributions()

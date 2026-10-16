@@ -45,7 +45,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
@@ -161,7 +161,7 @@ jobs:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "AlysisAi/alysis-code"
+          test "$GITHUB_REPOSITORY" = "AlysisAi/AlysisCode"
           test "$GITHUB_REF" = "refs/tags/$REQUESTED_TAG"
           test "$GITHUB_REF_TYPE" = "tag"
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]

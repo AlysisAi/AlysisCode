@@ -22,25 +22,32 @@ def _harden_stdio() -> None:
             pass
 
 
+def _apply_host_tls() -> None:
+    """Honour ``ALYSIS_EXTRA_CA_CERTS`` (set by the IDE extension) before any HTTP
+    client is built. Failures are reported on stderr and leave the default trust
+    store in place; they never block startup."""
+    import os
+
+    if not os.environ.get("ALYSIS_EXTRA_CA_CERTS"):
+        return
+    import sys
+
+    from .host_tls import apply_extra_ca_certs
+
+    try:
+        apply_extra_ca_certs(warn=lambda message: print(message, file=sys.stderr))
+    except Exception as exc:  # pragma: no cover - defensive: never fail launch on TLS setup
+        print(f"ALYSIS_EXTRA_CA_CERTS ignored: {exc}", file=sys.stderr)
+
+
 _harden_stdio()
+_apply_host_tls()
 
 # Source-alignment markers for checks that read this legacy entrypoint after the
 # command implementation moved into cli_impl/commands.
 # Chat command marker: "/forge"
 # Prompt hotkey marker: @kb.add("c-b")
 from .cli_impl.commands.cli_surface import *
-
-
-def legacy_app() -> None:
-    """Entry point for the deprecated ``sylliptor`` command.
-
-    Forwards to ``alysis`` silently. The alias exists so muscle memory, shell
-    aliases, CI scripts and IDE configs written against the old name keep
-    working — announcing that on every launch only put a stray line above the
-    TUI. The removal timeline lives in ``docs/migration-alysis-code.md``.
-    """
-    app()
-
 
 if __name__ == "__main__":
     app()

@@ -13,7 +13,6 @@ from __future__ import annotations
 import select
 import socket
 import ssl
-import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -23,18 +22,19 @@ from typing import Any
 import httpcore
 import httpx
 
+from ..cancellation import CooperativeCancellationError
+
 _LEGACY_TOKEN_OBSERVATION_SECONDS = 0.05
-_MACOS_READ_POLL_SECONDS = 0.1
 
 
-def _shutdown_then_close(stream: Any) -> None:
-    """Interrupt a blocking socket operation before closing its stream.
+def _shutdown_stream(stream: Any) -> None:
+    """Interrupt a blocking socket operation without invalidating its descriptor.
 
     On macOS in particular, ``socket.close()`` in one thread need not wake a
     concurrent SSL ``recv()`` in another. ``shutdown(SHUT_RDWR)`` is the
     cross-thread interruption boundary; closing afterward releases ownership.
-    Both operations are deliberately best-effort because an I/O failure may
-    already have retired the socket.
+    This is deliberately best-effort because an I/O failure may already have
+    retired the socket. The owner must defer close until in-flight I/O returns.
     """
 
     get_extra_info = getattr(stream, "get_extra_info", None)
@@ -50,6 +50,10 @@ def _shutdown_then_close(stream: Any) -> None:
             shutdown(socket.SHUT_RDWR)
         except Exception:
             pass
+
+
+def _shutdown_then_close(stream: Any) -> None:
+    _shutdown_stream(stream)
     close = getattr(stream, "close", None)
     if callable(close):
         try:
@@ -67,46 +71,113 @@ class _InterruptibleNetworkStream:
         self._state_lock = threading.Lock()
         self._interrupted = False
         self._closed = False
+        self._close_requested = False
+        self._active_io = 0
         self._tls_socket: socket.socket | None = None
 
-    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+    def _begin_io(self) -> Any:
         with self._state_lock:
-            stream = self._stream
-        if sys.platform != "darwin":
-            return stream.read(max_bytes, timeout=timeout)
+            if self._interrupted or self._closed:
+                raise OSError("HTTP request cancelled or closed")
+            self._active_io += 1
+            return self._stream
 
-        # On macOS, shutdown from another thread can leave a TLS or plain
-        # response-body recv blocked. Keep httpcore's total read timeout, but
-        # make each underlying read short enough to observe an abort promptly.
-        until = None if timeout is None else time.monotonic() + timeout
-        while True:
-            with self._state_lock:
-                if self._interrupted:
-                    raise OSError("HTTP request cancelled")
-            remaining = None if until is None else until - time.monotonic()
-            if remaining is not None and remaining <= 0:
-                raise httpcore.ReadTimeout("The read operation timed out")
-            poll = (
-                _MACOS_READ_POLL_SECONDS
-                if remaining is None
-                else min(_MACOS_READ_POLL_SECONDS, remaining)
-            )
-            try:
-                return stream.read(max_bytes, timeout=poll)
-            except httpcore.ReadTimeout:
-                if until is not None and time.monotonic() >= until:
-                    raise
+    def _end_io(self) -> None:
+        with self._state_lock:
+            self._active_io -= 1
+            close_requested = self._close_requested
+        if close_requested:
+            self.close()
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        stream = self._begin_io()
+        try:
+            raw = stream.get_extra_info("socket")
+            if isinstance(raw, socket.socket):
+                return self._socket_io(raw, max_bytes, timeout=timeout)
+            return stream.read(max_bytes, timeout=timeout)
+        finally:
+            self._end_io()
 
     def write(self, buffer: bytes, timeout: float | None = None) -> None:
-        with self._state_lock:
-            stream = self._stream
-        stream.write(buffer, timeout=timeout)
+        stream = self._begin_io()
+        try:
+            raw = stream.get_extra_info("socket")
+            if isinstance(raw, socket.socket):
+                self._socket_io(raw, buffer, timeout=timeout)
+                return
+            stream.write(buffer, timeout=timeout)
+        finally:
+            self._end_io()
+
+    def _socket_io(self, raw: socket.socket, data: int | bytes, *, timeout: float | None) -> bytes:
+        """Bound socket waits without abandoning a blocked read on Windows.
+
+        TLS recv/send, like the handshake, may ignore cross-thread shutdown on
+        Windows. Nonblocking operations preserve SSL buffering and partial writes;
+        select only waits for the direction requested by OpenSSL. Cancellation
+        and the original operation deadline are checked between bounded waits.
+        """
+        reading = isinstance(data, int)
+        pending = memoryview(b"" if reading else data)
+        original_timeout = raw.gettimeout()
+        until = None if timeout is None else time.monotonic() + timeout
+        raw.setblocking(False)
+        try:
+            while True:
+                with self._state_lock:
+                    if self._interrupted:
+                        raise OSError("HTTP request cancelled")
+                try:
+                    if reading:
+                        return raw.recv(data)
+                    if not pending:
+                        return b""
+                    sent = raw.send(pending)
+                    if not sent:
+                        raise OSError("HTTP socket closed during write")
+                    pending = pending[sent:]
+                    continue
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError) as exc:
+                    wants_read = isinstance(exc, ssl.SSLWantReadError) or (
+                        isinstance(exc, BlockingIOError) and reading
+                    )
+                    remaining = None if until is None else until - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        raise TimeoutError("HTTP socket operation timed out") from exc
+                    wait = 0.05 if remaining is None else min(0.05, remaining)
+                    self._wait_socket_ready(raw, wants_read, wait)
+        except TimeoutError as exc:
+            error = httpcore.ReadTimeout if reading else httpcore.WriteTimeout
+            raise error(str(exc)) from exc
+        except OSError as exc:
+            error = httpcore.ReadError if reading else httpcore.WriteError
+            raise error(str(exc)) from exc
+        finally:
+            raw.settimeout(original_timeout)
+
+    @staticmethod
+    def _wait_socket_ready(raw: socket.socket, reading: bool, wait: float) -> None:
+        select.select([raw] if reading else [], [] if reading else [raw], [], wait)
 
     def start_tls(
         self,
         ssl_context: Any,
         server_hostname: str | None = None,
         timeout: float | None = None,
+    ) -> _InterruptibleNetworkStream:
+        stream = self._begin_io()
+        try:
+            return self._start_tls(stream, ssl_context, server_hostname, timeout)
+        finally:
+            self._end_io()
+
+    def _start_tls(
+        self,
+        stream: Any,
+        ssl_context: Any,
+        server_hostname: str | None,
+        timeout: float | None,
     ) -> _InterruptibleNetworkStream:
         # httpcore's SSL wrapping detaches its raw socket before the handshake
         # completes. Publish the actual SSL socket before any blocking handshake
@@ -133,8 +204,6 @@ class _InterruptibleNetworkStream:
                     wrapped.close()
                     raise
 
-        with self._state_lock:
-            stream = self._stream
         try:
             tls_stream = stream.start_tls(
                 HandshakeContext(),
@@ -186,7 +255,8 @@ class _InterruptibleNetworkStream:
 
     def close(self) -> None:
         with self._state_lock:
-            if self._closed:
+            self._close_requested = True
+            if self._closed or self._active_io:
                 return
             self._closed = True
             stream = self._stream
@@ -198,7 +268,7 @@ class _InterruptibleNetworkStream:
     def interrupt(self) -> None:
         with self._state_lock:
             self._interrupted = True
-            self._closed = True
+            self._close_requested = True
             stream = self._stream
             tls_socket = self._tls_socket
         try:
@@ -210,9 +280,12 @@ class _InterruptibleNetworkStream:
             # Still attempt shutdown if a concurrent ordinary close already
             # started. That close is precisely the operation that may leave a
             # read blocked on platforms where close alone is not an interrupt.
-            _shutdown_then_close(stream)
+            # macOS can leave a timeout-backed recv waiting if another thread
+            # closes its descriptor before the shutdown readiness is consumed.
+            # Keep it valid until the owned read/write/TLS operation retires.
+            _shutdown_stream(stream)
         finally:
-            self._owner.forget(self)
+            self.close()
 
 
 class _InterruptibleNetworkBackend:
@@ -472,6 +545,10 @@ def cancellable_httpx_request(
             raise_if_cancelled(cancellation_token)
             yield response
             raise_if_cancelled(cancellation_token)
+    except CooperativeCancellationError:
+        # Protected transports already scrubbed their cancellation outcome.
+        # Preserve it without chaining a second exception to the private request.
+        raise
     except Exception:
         # Closing a live transport can surface through provider-specific httpx
         # exceptions. Once the token fired, its reason is the truthful outcome.

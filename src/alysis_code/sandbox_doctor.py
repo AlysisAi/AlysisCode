@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from .branding import default_sandbox_docker_image, env_get
+from .command_text import command_text
 from .config import AppConfig
 from .sandbox_runner import build_shell_runner_from_settings
 from .sandbox_settings import ShellSandboxSettings, resolve_shell_sandbox_settings
@@ -294,7 +295,7 @@ def pull_sandbox_images(
                 ["docker", "pull", image],
                 check=False,
                 capture_output=True,
-                text=True,
+                **command_text(),
                 timeout=timeout_s,
             )
         except subprocess.TimeoutExpired:
@@ -512,7 +513,7 @@ def _run_docker_info() -> SandboxCheck:
             ["docker", "info"],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=_DOCKER_INFO_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -532,7 +533,7 @@ def _docker_image_check(image: str, *, label: str) -> SandboxCheck:
             ["docker", "image", "inspect", image],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=_DOCKER_IMAGE_INSPECT_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

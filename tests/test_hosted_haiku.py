@@ -17,6 +17,7 @@ from alysis_code.reasoning_contracts import reasoning_contract_for
 from alysis_code.tools.registry import iter_builtin_tool_metadata
 
 MODEL = "claude-haiku-5-5"
+pytestmark = pytest.mark.usefixtures("configured_hosted_api")
 
 
 def config(provider="alysis"):

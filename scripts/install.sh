@@ -1,7 +1,7 @@
 #!/bin/sh
 # Alysis Code installer for Linux, macOS, and Windows through WSL.
 #
-#   curl -LsSf https://raw.githubusercontent.com/AlysisAi/alysis-code/main/scripts/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.sh | sh
 #
 # Installs uv (https://docs.astral.sh/uv/) when it is missing, then installs the
 # `alysis-code` package from PyPI as an isolated uv tool with its own Python.

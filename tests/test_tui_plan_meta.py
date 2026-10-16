@@ -548,19 +548,19 @@ def test_selected_text_copies_plan_meta_block_cleanly():
 
 def test_forge_emit_sites_match_parser_contract():
     """The parser keys on literals owned by this repo — keep them in sync."""
-    import alysis_code.cli_impl.commands.forge_helpers as forge_helpers
+    import alysis_code.forge_planner_engine as forge_planner_engine
     import alysis_code.plan_assistant as plan_assistant
     import alysis_code.plan_reconciliation as plan_reconciliation
     import alysis_code.task_readiness as task_readiness
 
-    source = Path(forge_helpers.__file__).read_text(encoding="utf-8")
+    source = Path(forge_planner_engine.__file__).read_text(encoding="utf-8")
     # Status lines the headline fold matches by prefix.
     assert "Applied planner update to plan." in source
     assert "Planner update contained no applicable changes." in source
     assert "Planner update ignored because" in source
     assert "Final planner error:" in source
     # Warning-group labels used on the planner turn path.
-    labels = set(re.findall(r"emit_warning_group\(\s*\"([^\"]+)\"", source))
+    labels = set(re.findall(r"ForgePlannerWarning\(\s*\"([^\"]+)\"", source))
     assert labels <= {"Planner", "Plan reconciliation"}
     assert "Planner" in labels
     # Subject-prefix literals the grouping regexes key on, at their emit sites.

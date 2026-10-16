@@ -5,12 +5,15 @@ import os
 import queue
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
+from alysis_code.cancellation import CooperativeCancellationError, EventCancellationToken
 from alysis_code.mcp import transport_stdio as transport_mod
+from alysis_code.mcp.cancellation import mcp_cancellation_scope
 from alysis_code.mcp.client import McpClientError, McpStdioClient
 from alysis_code.mcp.config import load_resolved_mcp_config, user_mcp_config_path
 from alysis_code.mcp.errors import McpProcessError
@@ -20,6 +23,8 @@ from alysis_code.mcp.transport_stdio import (
     McpStdioTransportProtocolError,
     McpStdioTransportTimeoutError,
     build_stdio_subprocess_env,
+    resolve_windows_command,
+    windows_batch_command_line,
 )
 from alysis_code.runtime_kind import RuntimeKind
 
@@ -35,9 +40,232 @@ _WARM_STARTUP_TIMEOUT_S = 2.0
 _LOW_CALL_TIMEOUT_S = transport_mod._STDOUT_RESPONSE_QUIESCENCE_WAIT_S / 2
 
 
+def test_turn_cancellation_notifies_only_its_request_and_connection_recovers(tmp_path, monkeypatch):
+    marker = tmp_path / "request-started"
+    cancelled = tmp_path / "request-cancelled"
+    server = _resolved_stdio_script_server(
+        tmp_path,
+        monkeypatch,
+        f"""
+        import json, sys
+        from pathlib import Path
+        active = None
+        for line in sys.stdin:
+            request = json.loads(line)
+            method = request['method']
+            if method == 'tools/call':
+                active = request['id']
+                Path({str(marker)!r}).touch()
+                continue
+            if method == 'notifications/cancelled':
+                assert request['params']['requestId'] == active
+                Path({str(cancelled)!r}).touch()
+                print(json.dumps({{'jsonrpc':'2.0','id':active,'result':{{}}}}), flush=True)
+                continue
+            if 'id' in request:
+                print(json.dumps({{'jsonrpc':'2.0','id':request['id'],'result':{{}}}}), flush=True)
+    """,
+    )
+    transport = transport_mod.McpStdioTransport(server=server, workspace_root=tmp_path)
+    event = threading.Event()
+    errors = []
+
+    def request():
+        try:
+            with mcp_cancellation_scope(EventCancellationToken(event)):
+                transport.request(method="tools/call", params={"name": "wait"}, timeout_s=30)
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=request)
+    try:
+        worker.start()
+        deadline = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists()
+        event.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert len(errors) == 1 and isinstance(errors[0], CooperativeCancellationError)
+        assert transport.request(method="ping", params={}, timeout_s=3).result == {}
+        assert cancelled.exists()
+        assert not transport.closed
+    finally:
+        event.set()
+        transport.close()
+        worker.join(timeout=2)
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("mixed_batch", [False, True])
+def test_agent_stop_reaches_stdio_tool_and_next_turn_recovers(tmp_path, monkeypatch, mixed_batch):
+    from alysis_code.agent_loop import create_session
+    from alysis_code.config import AppConfig
+    from alysis_code.llm.types import LLMResponse, ToolCall
+
+    started = tmp_path / "started"
+    cancelled = tmp_path / "cancelled"
+    _resolved_stdio_script_server(
+        tmp_path,
+        monkeypatch,
+        f"""
+        import json, sys
+        from pathlib import Path
+        for line in sys.stdin:
+            request = json.loads(line)
+            method = request['method']
+            if method == 'notifications/cancelled':
+                Path({str(cancelled)!r}).touch()
+                continue
+            if 'id' not in request:
+                continue
+            result = {{}}
+            if method == 'initialize':
+                result = {{'protocolVersion':'2024-11-05','capabilities':{{'tools':{{}}}},
+                    'serverInfo':{{'name':'cancellation-fixture','version':'1'}}}}
+            elif method == 'tools/list':
+                result = {{'tools':[{{'name':'wait','description':'Wait for an external event.',
+                    'inputSchema':{{'type':'object','properties':{{}}}}}}]}}
+            elif method == 'tools/call':
+                if not Path({str(cancelled)!r}).exists():
+                    Path({str(started)!r}).touch()
+                    continue
+                result = {{'content':[{{'type':'text','text':'Recovered'}}]}}
+            print(json.dumps({{'jsonrpc':'2.0','id':request['id'],'result':result}}), flush=True)
+    """,
+        trust="explicit",
+        call_timeout_s=5,
+    )
+    cfg = AppConfig(model="mcp-cancellation-test", stream=False, routing_mode="code_only")
+    cfg.web_search_mode = "off"
+    session = create_session(
+        cfg=cfg,
+        root=tmp_path,
+        mode="fullaccess",
+        yes=False,
+        max_steps=4,
+        no_log=False,
+        api_key_override="test",
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+        enable_compaction=False,
+    )
+
+    class Client:
+        model = cfg.model
+        temperature = 0.2
+        calls = 0
+
+        def chat(self, *, messages, **kwargs):
+            pending = set()
+            for message in messages:
+                if message.get("role") == "tool":
+                    pending.discard(message.get("tool_call_id"))
+                else:
+                    assert not pending, f"Provider received unanswered tool calls: {pending}"
+                    pending.update(call["id"] for call in message.get("tool_calls", []))
+            assert not pending, f"Provider received unanswered tool calls: {pending}"
+            self.calls += 1
+            if self.calls == 1:
+                calls = [ToolCall(id="wait", name="mcp__alpha__wait", arguments={})]
+                if mixed_batch:
+                    calls.insert(0, ToolCall(id="before", name="capability_status", arguments={}))
+                    calls.append(ToolCall(id="after", name="capability_status", arguments={}))
+                return LLMResponse(
+                    content="",
+                    tool_calls=calls,
+                    raw={},
+                )
+            return LLMResponse(content="Recovered.", tool_calls=[], raw={})
+
+    session.client = Client()
+    event = threading.Event()
+    errors = []
+
+    def run():
+        try:
+            session.run_turn(
+                "Use the MCP wait tool.", cancellation_token=EventCancellationToken(event)
+            )
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run)
+    try:
+        worker.start()
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert started.exists(), errors
+        event.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive(), "Stop did not reach the pending MCP request"
+        assert len(errors) == 1 and isinstance(errors[0], CooperativeCancellationError)
+        results = [message for message in session.messages if message.get("role") == "tool"]
+        interrupted = [
+            message
+            for message in results
+            if json.loads(message["content"]).get("status") == "interrupted"
+        ]
+        assert {message["tool_call_id"] for message in interrupted} == (
+            {"wait", "after"} if mixed_batch else {"wait"}
+        )
+        if mixed_batch:
+            assert sum(message["tool_call_id"] == "before" for message in results) == 1
+        assert "tool_call_interrupted" in session.store.path.read_text()
+        from alysis_code.mcp.cancellation import complete_interrupted_mcp_batch
+
+        assert (
+            complete_interrupted_mcp_batch(session.messages, mcp_tool_names={"mcp__alpha__wait"})
+            == []
+        )
+        session.client = Client()
+        assert session.run_turn("Use the MCP wait tool again.") == 0
+        assert cancelled.exists()
+        assert session.client.calls == 2
+    finally:
+        event.set()
+        worker.join(timeout=6)
+        session.close()
+
+
+def test_interrupted_mcp_batch_cleanup_does_not_rewrite_previous_turns_or_other_tools():
+    from copy import deepcopy
+
+    from alysis_code.mcp.cancellation import complete_interrupted_mcp_batch
+
+    previous = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "old",
+                "function": {"name": "mcp__alpha__wait", "arguments": "{}"},
+            }
+        ],
+    }
+    for tail in (
+        [{"role": "user", "content": "A new request"}],
+        [
+            {"role": "user", "content": "A new request"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "other",
+                        "function": {"name": "capability_status", "arguments": "{}"},
+                    }
+                ],
+            },
+        ],
+    ):
+        messages = [deepcopy(previous), *tail]
+        before = deepcopy(messages)
+        assert complete_interrupted_mcp_batch(messages, mcp_tool_names={"mcp__alpha__wait"}) == []
+        assert messages == before
 
 
 def _resolved_stdio_server(
@@ -1381,5 +1609,106 @@ def test_stdio_client_rejects_malformed_prompt_get_result(
         with pytest.raises(McpClientError) as exc_info:
             client.get_prompt(name="review_pr")
         assert "prompts/get result.messages must be an array" in str(exc_info.value)
+    finally:
+        client.close()
+
+
+def test_resolve_windows_command_finds_script_launchers_on_the_child_path(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    launcher = bin_dir / "npx.cmd"
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    # Windows environment names are case-insensitive; `Path` is how many shells spell it.
+    env = {"Path": f'{tmp_path / "empty"}{os.pathsep}"{bin_dir}"', "PATHEXT": ".exe;.cmd"}
+
+    assert resolve_windows_command("npx", env=env) == os.fspath(launcher)
+    assert resolve_windows_command("npx.cmd", env=env) == os.fspath(launcher)
+    assert resolve_windows_command("uvx", env=env) is None
+    assert resolve_windows_command(os.fspath(bin_dir / "npx"), env=env) is None
+    assert resolve_windows_command("", env=env) is None
+
+
+def test_windows_batch_command_line_quotes_cmd_metacharacters() -> None:
+    command_line = windows_batch_command_line(
+        r"C:\Program Files\nodejs\npx.cmd",
+        ["-y", "@scope/server", "https://host/mcp?a=1&b=2", "two words", "C:\\dir name\\", ""],
+    )
+
+    assert command_line == (
+        r'"C:\Program Files\nodejs\npx.cmd" -y @scope/server "https://host/mcp?a=1&b=2" '
+        r'"two words" "C:\dir name\\" ""'
+    )
+
+
+@pytest.mark.parametrize("argument", ["50%", 'say "hi"', "two\nlines"])
+def test_windows_batch_command_line_refuses_what_quoting_cannot_protect(argument: str) -> None:
+    with pytest.raises(ValueError, match="argument 1 contains"):
+        windows_batch_command_line(r"C:\tools\launcher.cmd", [argument])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows command lookup")
+def test_stdio_client_starts_a_bare_cmd_launcher_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_record = tmp_path / "argv.json"
+    recorder = tmp_path / "record_argv.py"
+    recorder.write_text(
+        textwrap.dedent(
+            f"""\
+            import json, os, runpy, sys
+            from pathlib import Path
+            Path(os.environ["ARGV_RECORD"]).write_text(json.dumps(sys.argv[1:]))
+            sys.argv = [{os.fspath(_FIXTURE_SERVER)!r}]
+            runpy.run_path(sys.argv[0], run_name="__main__")
+            """
+        ),
+        encoding="utf-8",
+    )
+    (bin_dir / "probe-launcher.cmd").write_bytes(
+        f'@echo off\r\n"{sys.executable}" -S "{recorder}" %*\r\n'.encode()
+    )
+    server = _resolved_stdio_server(
+        tmp_path,
+        monkeypatch,
+        {"tools_pages": [[{"name": "echo", "inputSchema": {"type": "object"}}]]},
+        command="probe-launcher",
+        args=["--marker=a&b", "two words"],
+        env={
+            "ALYSIS_TEST_MCP_CONFIG": os.fspath(tmp_path / "fixture-server.json"),
+            "ARGV_RECORD": os.fspath(argv_record),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        },
+    )
+    client = McpStdioClient(server=server, workspace_root=tmp_path)
+    try:
+        assert [tool.name for tool in client.list_tools()] == ["echo"]
+    finally:
+        client.close()
+    assert json.loads(argv_record.read_text(encoding="utf-8")) == ["--marker=a&b", "two words"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows command lookup")
+def test_stdio_client_reports_an_unsafe_cmd_launcher_argument_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "probe-launcher.cmd").write_bytes(b"@echo off\r\n")
+    server = _resolved_stdio_server(
+        tmp_path,
+        monkeypatch,
+        {},
+        command="probe-launcher",
+        args=["100%"],
+        env={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+    )
+    client = McpStdioClient(server=server, workspace_root=tmp_path)
+    try:
+        with pytest.raises(McpProcessError, match="cannot receive safely"):
+            client.list_tools()
     finally:
         client.close()

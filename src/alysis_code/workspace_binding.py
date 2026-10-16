@@ -96,13 +96,17 @@ def resolve_workspace_binding(
     create_if_missing: bool = False,
     allow_broad_workspace: bool = False,
     source: str = "explicit_path",
+    allow_subprocess: bool = True,
 ) -> WorkspaceBinding:
     requested_path, created_path = prepare_workspace_path(
         path,
         create_if_missing=create_if_missing,
     )
     try:
-        workspace_context = resolve_workspace_context(requested_path)
+        workspace_context = resolve_workspace_context(
+            requested_path,
+            allow_subprocess=allow_subprocess,
+        )
     except WorkspaceContextError as e:
         raise WorkspaceBindingError(str(e)) from e
 

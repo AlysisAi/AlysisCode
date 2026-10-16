@@ -16,6 +16,7 @@ from uuid import uuid4
 from ..atomic_io import atomic_write_json
 from ..branding import default_sandbox_docker_image, env_get
 from ..bwrap_etc import ensure_minimal_etc_dir
+from ..command_text import command_text
 from ..forge_events import EVENT_RUN_COMPLETED, is_terminal_event, parse_event_line
 from ..logging_redaction import redact_log_text
 from ..run_outcome import task_outcome_fields, task_outcome_record
@@ -50,7 +51,7 @@ def _supports_bwrap_unshare_cgroup() -> bool:
             ["bwrap", "--help"],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except OSError:
         return False
@@ -217,7 +218,7 @@ class BwrapProcessRunner:
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            **command_text(),
             cwd=os.fspath(workspace_abs),
             bufsize=1,
             start_new_session=True,
@@ -282,7 +283,7 @@ class DockerProcessRunner:
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            **command_text(),
             cwd=os.fspath(workspace_abs),
             bufsize=1,
             start_new_session=True,

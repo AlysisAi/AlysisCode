@@ -15,6 +15,11 @@ from alysis_code.profiles import add_profile, set_active_profile
 from alysis_code.reasoning_contracts import ALWAYS_ON, reasoning_contract_for
 
 
+@pytest.fixture(autouse=True)
+def configured_hosted_endpoint(monkeypatch):
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
+
+
 def hosted_config():
     preset = get_preset("alysis")
     cfg = AppConfig(model="glm-5.3-flash", base_url=preset.base_url)

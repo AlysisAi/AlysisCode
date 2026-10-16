@@ -189,7 +189,7 @@ def test_inaccessible_skill_bundle_is_reported_without_breaking_discovery(
     assert len(validation.errors) == 1
     assert "Failed to inspect skill bundle" in validation.errors[0].message
     assert "blocked" not in discovered.skills
-    assert len(discovered.skills) == 8
+    assert len(discovered.skills) == 9
     assert all(skill.source_scope == "bundled" for skill in discovered.ordered)
     assert len(discovered.issues) == 1
     assert "Failed to inspect skill bundle" in discovered.issues[0].message
@@ -458,7 +458,7 @@ def test_resolve_skill_catalog_applies_global_and_project_enable_disable(
         user_config_dir=user_cfg,
     )
     assert "verification-playbook" not in disabled_catalog.effective.skills
-    assert len(disabled_catalog.effective.ordered) == 8
+    assert len(disabled_catalog.effective.ordered) == 9
     assert all(skill.source_scope == "bundled" for skill in disabled_catalog.effective.ordered)
 
     project_state = set_project_skill_override(
@@ -473,7 +473,7 @@ def test_resolve_skill_catalog_applies_global_and_project_enable_disable(
         user_config_dir=user_cfg,
     )
     assert "verification-playbook" in enabled_catalog.effective.skills
-    assert len(enabled_catalog.effective.ordered) == 9
+    assert len(enabled_catalog.effective.ordered) == 10
 
 
 def test_remove_managed_skill_deletes_bundle_and_state(
@@ -766,7 +766,7 @@ def test_create_session_uses_effective_enabled_skills(
     )
     try:
         assert "verification-playbook" not in session.skill_registry
-        assert len(session.skills_ordered) == 8
+        assert len(session.skills_ordered) == 9
         assert all(skill.source_scope == "bundled" for skill in session.skills_ordered)
     finally:
         session.close()
@@ -798,7 +798,7 @@ def test_create_session_tolerates_invalid_project_skill_state(
     )
     try:
         assert session.skills_ordered[0].name == "docs-consistency"
-        assert len(session.skills_ordered) == 9
+        assert len(session.skills_ordered) == 10
         assert all(skill.source_scope == "bundled" for skill in session.skills_ordered[1:])
     finally:
         session.close()

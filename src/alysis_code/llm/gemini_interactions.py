@@ -10,6 +10,7 @@ import httpx
 from ..branding import env_get
 from ..error_text import sanitize_error_text_for_output
 from ..provider_telemetry import ProviderCallTelemetryRecorder
+from .cancellable_http import provider_httpx_client
 from .http_cancellation import cancellable_httpx_send, raise_if_cancelled
 from .metadata import (
     GEMINI_INTERACTIONS_PROVIDER_METADATA_KEY,
@@ -21,6 +22,7 @@ from .metadata import (
     merge_canonical_headers,
     stamp_response_for_route,
 )
+from .protocols import reasoning_trace_callback
 from .provider_limits import (
     DEFAULT_PROVIDER_CONCURRENCY_CAPS,
     ProviderRetrySettings,
@@ -201,7 +203,9 @@ class GeminiInteractionsClient:
 
         def _send_request() -> InputTokenCount | None:
             try:
-                with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                with provider_httpx_client(
+                    timeout=self.timeout_s, transport=self._transport
+                ) as client:
                     response = client.post(url, headers=self._headers(), json=payload)
             except httpx.HTTPError as exc:
                 raise LLMError(
@@ -253,6 +257,11 @@ class GeminiInteractionsClient:
         cancellation_token: Any | None = None,
     ) -> LLMResponse:
         del on_text_delta
+        on_reasoning_delta = reasoning_trace_callback(
+            on_reasoning_delta,
+            capability=getattr(self, "reasoning_trace_capability", None),
+            stream=stream,
+        )
         messages = gate_messages_for_provider_route(messages, self.route_identity)
         if stream:
             raise LLMError("Gemini Interactions prototype does not support streaming yet")
@@ -357,7 +366,9 @@ class GeminiInteractionsClient:
             nonlocal request_plan_metadata
             thinking_summaries_fallback_used = False
             try:
-                with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                with provider_httpx_client(
+                    timeout=self.timeout_s, transport=self._transport
+                ) as client:
                     while True:
                         response = cancellable_httpx_send(
                             client=client,

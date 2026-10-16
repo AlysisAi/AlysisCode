@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from alysis_code import __version__
 
 from ..atomic_io import atomic_write_json, atomic_write_text
+from ..command_text import command_text
 from ..custom_tools.discovery import global_custom_tools_root, project_custom_tools_root
 from ..custom_tools.trust import (
     ProjectToolTrustKey,
@@ -49,6 +50,7 @@ from ..hooks.trust import (
 from ..mcp.config import _load_user_mcp_config, user_mcp_config_path
 from ..mcp.models import UserMcpConfigFile
 from ..skills.install import install_skill_bundle, remove_managed_skill
+from .bundled import bundled_manifest
 from .manifest import (
     PluginManifest,
     PluginManifestError,
@@ -94,6 +96,9 @@ class PluginInstallResult:
     scope: Scope
     components_installed: ComponentInstallSummary
     trust_was_prompted: bool
+    source_kind: str = "git"
+    package_sha256: str | None = None
+    upstream_commit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,7 @@ class PermissionsSummary(BaseModel):
     required_env: tuple[str, ...]
     mcp_scopes: tuple[str, ...]
     hook_events: tuple[str, ...]
+    host_managed_mcp_servers: tuple[str, ...] = ()
 
 
 class TrustPromptRequest(BaseModel):
@@ -144,6 +150,9 @@ class TrustPromptRequest(BaseModel):
     permissions_summary: PermissionsSummary
     security: Security | None
     is_reinstall_with_new_commit: bool
+    source_kind: str = "git"
+    package_sha256: str | None = None
+    upstream_commit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +160,13 @@ class _ResolvedSource:
     display_url: str
     git_url: str
     commit: str
+    bundled_content: bytes | None = None
+    package_sha256: str | None = None
+    upstream_commit: str | None = None
+
+    @property
+    def source_kind(self) -> str:
+        return "bundled" if self.bundled_content is not None else "git"
 
 
 @dataclass(frozen=True)
@@ -181,11 +197,14 @@ def install_plugin(
 
     with tempfile.TemporaryDirectory(prefix="alysis-plugin-") as temp_dir:
         staging_root = Path(temp_dir)
-        _clone_pinned_git_repo(
-            git_url=source_ref.git_url,
-            commit=source_ref.commit,
-            destination=staging_root,
-        )
+        if source_ref.bundled_content is not None:
+            (staging_root / "alysis-plugin.toml").write_bytes(source_ref.bundled_content)
+        else:
+            _clone_pinned_git_repo(
+                git_url=source_ref.git_url,
+                commit=source_ref.commit,
+                destination=staging_root,
+            )
         try:
             manifest = load_manifest(staging_root)
         except PluginManifestError as exc:
@@ -211,6 +230,9 @@ def install_plugin(
                 scope=scope,
                 components_installed=_summary_from_record(existing_record),
                 trust_was_prompted=False,
+                source_kind=source_ref.source_kind,
+                package_sha256=source_ref.package_sha256,
+                upstream_commit=source_ref.upstream_commit,
             )
 
         request = TrustPromptRequest(
@@ -227,6 +249,9 @@ def install_plugin(
             is_reinstall_with_new_commit=(
                 existing_record is not None and existing_record.commit != source_ref.commit
             ),
+            source_kind=source_ref.source_kind,
+            package_sha256=source_ref.package_sha256,
+            upstream_commit=source_ref.upstream_commit,
         )
         if not trust_prompt(request):
             raise PluginInstallError("install rejected by user")
@@ -290,6 +315,9 @@ def install_plugin(
                 manifest_sha256=manifest_sha256,
                 scope=scope,
                 summary=installed_summary,
+                source_kind=source_ref.source_kind,
+                package_sha256=source_ref.package_sha256,
+                upstream_commit=source_ref.upstream_commit,
             )
             _save_extension_state(scope=scope, repo_root=resolved_repo_root, state=updated_state)
         except Exception as exc:  # noqa: BLE001
@@ -309,6 +337,9 @@ def install_plugin(
             scope=scope,
             components_installed=installed_summary,
             trust_was_prompted=True,
+            source_kind=source_ref.source_kind,
+            package_sha256=source_ref.package_sha256,
+            upstream_commit=source_ref.upstream_commit,
         )
 
 
@@ -596,6 +627,16 @@ def _resolve_source(source: str) -> _ResolvedSource:
         entry = find_by_id(registry, raw)
         if entry is None:
             raise PluginInstallError(f"registry id not found: {raw}")
+        if entry.source_kind == "bundled":
+            content = bundled_manifest(entry)
+            return _ResolvedSource(
+                display_url=f"bundled://{entry.id}/sha256/{entry.package_sha256}",
+                git_url="",
+                commit=entry.commit,
+                bundled_content=content,
+                package_sha256=entry.package_sha256,
+                upstream_commit=entry.upstream_commit,
+            )
         if not _SHA40_RE.fullmatch(entry.commit or ""):
             raise PluginInstallError(f"registry entry has invalid commit for {raw}: {entry.commit}")
         return _ResolvedSource(
@@ -647,7 +688,7 @@ def _run_git(args: list[str], *, cwd: Path | None) -> subprocess.CompletedProces
             check=True,
             timeout=120,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except subprocess.TimeoutExpired as exc:
         raise PluginInstallError(f"git command timed out after 120s: {' '.join(args)}") from exc
@@ -701,13 +742,17 @@ def _permissions_summary(manifest: PluginManifest) -> PermissionsSummary:
         env_name for tool in manifest.components.tool for env_name in tool.required_env
     } | {env_name for server in manifest.components.mcp_server for env_name in server.env}
     return PermissionsSummary(
-        network=any(tool.network for tool in manifest.components.tool),
+        network=bool(manifest.components.mcp_server)
+        or any(tool.network for tool in manifest.components.tool),
         filesystem_write=any(tool.filesystem == "write" for tool in manifest.components.tool),
         required_env=tuple(sorted(required_env)),
         mcp_scopes=tuple(
             sorted({scope for server in manifest.components.mcp_server for scope in server.scopes})
         ),
         hook_events=tuple(sorted({hook.event for hook in manifest.components.hook})),
+        host_managed_mcp_servers=tuple(
+            server.id for server in manifest.components.mcp_server if server.host_managed
+        ),
     )
 
 
@@ -746,6 +791,9 @@ def _state_with_installed_record(
     manifest_sha256: str,
     scope: Scope,
     summary: ComponentInstallSummary,
+    source_kind: str = "git",
+    package_sha256: str | None = None,
+    upstream_commit: str | None = None,
 ) -> ExtensionState:
     updated = state.model_copy(deep=True)
     updated.installed[plugin_id] = InstalledExtensionState(
@@ -765,6 +813,9 @@ def _state_with_installed_record(
             "mcp_server": list(summary.mcp_server_ids),
             "hook": list(summary.hook_ids),
         },
+        source_kind=source_kind,
+        package_sha256=package_sha256,
+        upstream_commit=upstream_commit,
     )
     updated.enabled = _with_normalized_id(updated.enabled, plugin_id)
     return updated
@@ -895,16 +946,19 @@ def _install_mcp_servers(
     user_config_dir: Path | None,
 ) -> list[str]:
     installed = [server.id for server in manifest.components.mcp_server if server.enabled]
-    if not installed:
-        return []
+    direct_servers = [
+        server
+        for server in manifest.components.mcp_server
+        if server.enabled and not server.host_managed
+    ]
+    if not direct_servers:
+        return installed
     path = _user_mcp_config_path(user_config_dir=user_config_dir)
     snapshot = _read_optional_text(path)
     config = _load_user_mcp_config(path) if path.exists() else UserMcpConfigFile()
     dumped = config.model_dump(mode="json", exclude_none=True)
     servers = dict(dumped.get("servers", {}))
-    for server in manifest.components.mcp_server:
-        if not server.enabled:
-            continue
+    for server in direct_servers:
         key = _mcp_server_key(manifest.plugin.id, server.id)
         payload: dict[str, Any] = {
             "transport": server.transport,

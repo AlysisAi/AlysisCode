@@ -1,0 +1,71 @@
+{
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "messageId": "msg_evidence001",
+  "operationId": "operation_run00001",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "kind": "event",
+  "sequence": 4,
+  "identity": {
+    "sessionId": "ses_abcdefgh",
+    "generationId": "gen_abcdefgh",
+    "runId": "run_abcdefgh",
+    "revision": 2
+  },
+  "payload": {
+    "type": "evidence.ready",
+    "evidence": [
+      {
+        "evidenceId": "evidence_accept01",
+        "role": "acceptance",
+        "kind": "test",
+        "status": "passed",
+        "checkId": "check.acceptance.T01",
+        "taskId": "T01",
+        "requirementIds": [
+          "T01:criterion:1"
+        ],
+        "commandIds": [],
+        "realExecution": null,
+        "exitCode": null,
+        "timedOut": null,
+        "summary": "Acceptance behavior passed.",
+        "artifactRefs": [
+          "artifact_report001"
+        ]
+      },
+      {
+        "evidenceId": "evidence_verify01",
+        "role": "verification",
+        "kind": "test",
+        "status": "passed",
+        "checkId": "check.verification.T01",
+        "taskId": "T01",
+        "requirementIds": [
+          "T01:criterion:1"
+        ],
+        "commandIds": [
+          "command.pytest"
+        ],
+        "realExecution": true,
+        "exitCode": 0,
+        "timedOut": false,
+        "summary": "Repository-native pytest passed.",
+        "artifactRefs": [
+          "artifact_report001"
+        ]
+      }
+    ],
+    "artifacts": [
+      {
+        "artifactId": "artifact_report001",
+        "role": "report",
+        "kind": "report",
+        "status": "created",
+        "workspaceRelativePath": "reports/verification.json",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sizeBytes": 321
+      }
+    ]
+  }
+}

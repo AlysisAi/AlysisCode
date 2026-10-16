@@ -47,8 +47,8 @@ class PersonaDefinition:
     default_exec_mode: str
     model_role: str
     overlay_prompt: str = ""
-    # Optional write scope narrowing (Kilo-fileRegex-style, but enforced by
-    # the host gate's allow_write_globs machinery, not by prompt convention).
+    # Optional write scope narrowing, enforced by the host gate's
+    # allow_write_globs machinery, not by prompt convention.
     # Persona and user scopes are independent constraints: a write must match
     # both whenever both are present. Empty means "no persona scoping".
     allow_write_globs: tuple[str, ...] = ()
@@ -84,7 +84,11 @@ BUILTIN_PERSONAS: dict[str, PersonaDefinition] = {
             "outlines. You may create and edit MARKDOWN documents only "
             "(plans, specs, ADRs); the host's write scope blocks every other "
             "file type, and the host owns all persona and mode state and "
-            "execution gating. Do not attempt code edits or repository "
+            "execution gating. Inspect the existing context first. For an "
+            "ambiguous brief, clarify consequential goals, constraints, and "
+            "success criteria in small rounds; reuse prior answers and stop "
+            "asking once the plan is actionable. Use the question tool only "
+            "when it is available and a reasonable fallback exists. Do not attempt code edits or repository "
             "mutations beyond markdown plans. When the user wants the plan "
             "implemented, propose switching to the code persona (the "
             "switch_mode tool asks; the user decides)."

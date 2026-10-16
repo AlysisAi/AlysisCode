@@ -1,0 +1,30 @@
+{
+  "profile": "alysis.forge-host.git-branch/phase0-v1",
+  "valid": [
+    "feat/T01-cafe-report",
+    "feat/-dash",
+    "_portable",
+    "release/v1.0"
+  ],
+  "invalid": [
+    "feat..evil",
+    "feat/.hidden",
+    "feat//evil",
+    "feat/",
+    "feat.",
+    "feat/foo.lock",
+    "HEAD"
+  ],
+  "aliasPolicies": [
+    {
+      "comparison": "case_sensitive",
+      "branches": ["Feat/T01", "feat/t01"],
+      "valid": true
+    },
+    {
+      "comparison": "case_insensitive",
+      "branches": ["Feat/T01", "feat/t01"],
+      "valid": false
+    }
+  ]
+}

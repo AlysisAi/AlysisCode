@@ -22,6 +22,17 @@ from alysis_code.error_text import redact_sensitive_error_text
 from alysis_code.mcp.oauth import build_pkce_challenge
 from alysis_code.mcp.transport_stdio import live_stdio_transport_diagnostics
 
+
+@pytest.fixture
+def configured_hosted_api(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Explicit deployment configuration for offline hosted-service tests."""
+    api_url = "https://hosted.example.invalid/api"
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", api_url)
+    for name in ("ALYSIS_GATEWAY_URL", "ALYSIS_SUPABASE_URL", "ALYSIS_CLOUD_PUBLIC_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    return api_url
+
+
 _FORGE_EXECUTION_TEST_FILES = {
     "test_forge_exec.py",
     "test_forge_swarm.py",

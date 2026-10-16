@@ -541,18 +541,27 @@ def _resolve_startup_workspace_binding(
 
 def _chat_mode_rows() -> list[tuple[str, str, str]]:
     return [
-        ("review", "1) safe (review)", "Asks before file writes and shell commands."),
+        (
+            "review",
+            "1) safe (review)",
+            "Ask for approval: asks before file writes and commands; read-only commands run.",
+        ),
         (
             "auto",
             "2) fast (auto)",
-            "Auto-runs normal operations; approval-gated sensitive actions still ask.",
+            "Approve for me: runs normal work; a reviewer model decides sensitive actions "
+            "and asks you when unsure.",
         ),
         (
             "readonly",
             "3) read (readonly)",
             "Read-only analysis with inspection-only tools; no writes, shell, or verification.",
         ),
-        ("fullaccess", "4) full (fullaccess)", "No write/shell safety guards or prompts."),
+        (
+            "fullaccess",
+            "4) full (fullaccess)",
+            "No sandbox or prompts; still asks before deleting the project or home folder.",
+        ),
     ]
 
 

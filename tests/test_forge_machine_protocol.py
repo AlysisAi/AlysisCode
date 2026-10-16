@@ -930,7 +930,7 @@ def test_human_mode_prints_prose_and_no_events(tmp_path: Path) -> None:
     assert all(parse_event_line(line) is None for line in result.stdout.splitlines())
 
 
-def test_plan_stdout_is_pure_ndjson_in_a_real_process(tmp_path: Path) -> None:
+def test_plan_stdout_is_pure_ndjson_when_prompted_goal_needs_intent(tmp_path: Path) -> None:
     """`forge plan` prompts; in machine mode the prompt must not reach stdout.
 
     This runs a real subprocess because the click test runner echoes prompts to stdout
@@ -940,6 +940,10 @@ def test_plan_stdout_is_pure_ndjson_in_a_real_process(tmp_path: Path) -> None:
     repo.mkdir()
     env = dict(os.environ)
     env.update(_env(tmp_path))
+    # Enforce the test's credential-free premise even on a developer or CI host that
+    # exports a provider key. Reading the inherited values is neither necessary nor safe.
+    env.pop("ALYSIS_API_KEY", None)
+    env.pop("OPENAI_API_KEY", None)
 
     completed = subprocess.run(
         [
@@ -952,21 +956,19 @@ def test_plan_stdout_is_pure_ndjson_in_a_real_process(tmp_path: Path) -> None:
             os.fspath(repo),
             "--machine",
         ],
-        input="/goal Machine protocol\n/task Implement src/feature.py\n/done\n",
+        input="Machine protocol\n",
         capture_output=True,
         text=True,
         env=env,
         timeout=180,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == EXIT_ERROR, completed.stderr
     events = _parse_ndjson_stream(completed.stdout)
     assert events[0]["event"] == EVENT_RUN_STARTED
-    plan_saved = _events_by_name(events, EVENT_PLAN_SAVED)
-    assert len(plan_saved) == 1
-    assert plan_saved[0]["data"]["task_count"] == 1
-    assert plan_saved[0]["data"]["plan_json"]
+    assert not _events_by_name(events, EVENT_PLAN_SAVED)
     terminal = _assert_exactly_one_terminal(events)
-    assert terminal["event"] == EVENT_RUN_COMPLETED
+    assert terminal["event"] == EVENT_ERROR
+    assert "requires --intent" in terminal["data"]["message"]
     # The prompt still has to go somewhere a human driving it can see.
-    assert "plan" in completed.stderr
+    assert "Forge goal" in completed.stderr

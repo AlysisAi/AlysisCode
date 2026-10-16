@@ -81,7 +81,7 @@ def _valid_report() -> dict[str, Any]:
         "started_at": "2026-07-30T10:00:00.000Z",
         "completed_at": "2026-07-30T10:01:00.000Z",
         "release_tag": "v0.1.1",
-        "source_repository": "https://github.com/AlysisAi/alysis-code",
+        "source_repository": "https://github.com/AlysisAi/AlysisCode",
         "source_sha": "a" * 40,
         "candidate_run_id": 123,
         "workflow_run_id": 456,

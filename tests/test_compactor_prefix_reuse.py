@@ -3,25 +3,18 @@
 from __future__ import annotations
 
 import copy
-import io
 import json
 import socket
 from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
-from rich.console import Console
 from test_openai_codex_instruction_prefix import _OfflineSubscriptionAuth
 
-from alysis_code import cli as cli_mod
 from alysis_code.agent import session as session_mod
 from alysis_code.agent.llm_calls import _request_messages_with_volatile_suffix
-from alysis_code.agent.prompt_context import TASK_BRIEF_REQUEST_CONTEXT_KEY
-from alysis_code.cli_impl.chat.loop import _handle_chat_command_impl
-from alysis_code.cli_impl.chat.state import _ForgeChatState
 from alysis_code.compaction.conversation_compactor import (
     MEMORY_MARKER,
     ConversationCompactor,
@@ -587,69 +580,6 @@ def test_compatibility_rejection_snapshot_must_match_before_reuse(tmp_path: Path
     assert requests == []
 
 
-def test_manual_compact_handler_falls_back_when_task_projection_changes_the_prefix(
-    tmp_path: Path,
-) -> None:
-    main_requests: list[dict[str, Any]] = []
-    summary_requests: list[dict[str, Any]] = []
-    main = _client("compat", main_requests)
-    compactor = _compactor(
-        tmp_path, main_client=main, compactor_client=_client("compat", summary_requests)
-    )
-    history = _history(turns=5)
-    history.insert(
-        1,
-        {
-            "role": "user",
-            "content": "Latest retained brief is bookkeeping, not an older user request.",
-            TASK_BRIEF_REQUEST_CONTEXT_KEY: True,
-        },
-    )
-    history.append({"role": "user", "content": "Explain the retained finding now."})
-    compactor.state.pinned_prefix_len = 2
-    original = copy.deepcopy(history)
-    main.chat(
-        messages=_request_messages_with_volatile_suffix(messages=history),
-        tools=copy.deepcopy(TOOLS),
-        stream=False,
-    )
-    session = SimpleNamespace(
-        root=tmp_path,
-        client=main,
-        conversation_compactor=compactor,
-        messages=history,
-        tool_list=copy.deepcopy(TOOLS),
-        store=compactor._store,
-        request_context_measurement=object(),
-    )
-    output = io.StringIO()
-    result = _handle_chat_command_impl(
-        cli_mod,
-        input_text="/compact retain the explanation",
-        root=tmp_path,
-        session=session,
-        pending_images=[],
-        console=Console(file=output, force_terminal=False),
-        forge_state=_ForgeChatState(),
-    )
-    assert result == "handled"
-    assert "Compaction" in output.getvalue()
-    assert len(summary_requests) == 1
-    summary_wire = summary_requests[0]
-    # The host brief belongs before the current user turn. Projecting a shorter
-    # history would put it before an older turn and break the shared prefix;
-    # keep the isolated summarizer rather than claim reuse of different input.
-    assert summary_wire["messages"][0]["content"].startswith(
-        "You maintain compact conversation memory"
-    )
-    assert not summary_wire.get("tools")
-    assert "Latest retained brief" not in json.dumps(summary_wire)
-    assert session.request_context_measurement is None
-    assert compactor.state.history_chunk_index == 1
-    assert any(MEMORY_MARKER in str(message.get("content", "")) for message in session.messages)
-    assert history == original
-
-
 @pytest.mark.parametrize("surface", ["hosted", "unsupported"])
 def test_summary_prefix_cannot_enable_server_executed_tools(tmp_path: Path, surface: str) -> None:
     requests: list[dict[str, Any]] = []
@@ -691,7 +621,7 @@ def test_responses_prefix_preserves_tools_with_none_after_final_auth_projection(
     options = {"web_search_mode": search_mode}
     if subscription:
         options.update(
-            base_url="https://chatgpt.com/backend-api/codex",
+            base_url="https://api.openai.com/v1",
             provider_auth=_OfflineSubscriptionAuth(),
         )
     main = _client("responses", main_requests, **options)
@@ -737,7 +667,16 @@ def test_responses_prefix_preserves_tools_with_none_after_final_auth_projection(
     if search_mode in {"auto", "native"}:
         assert any(tool["type"].startswith("web_search") for tool in summary["tools"])
     else:
-        assert all(tool["type"] == "function" for tool in summary["tools"])
+        assert all(
+            tool["type"] == ("namespace" if subscription else "function")
+            for tool in summary["tools"]
+        )
+        if subscription:
+            assert all(
+                function["type"] == "function"
+                for namespace in summary["tools"]
+                for function in namespace["tools"]
+            )
     assert (working, tools) == original
 
 
@@ -793,7 +732,7 @@ def test_responses_none_rejection_keeps_failure_evidence_and_isolated_fallback(
     options = {}
     if subscription:
         options.update(
-            base_url="https://chatgpt.com/backend-api/codex",
+            base_url="https://api.openai.com/v1",
             provider_auth=_OfflineSubscriptionAuth(),
         )
     main = _client("responses", [], **options)

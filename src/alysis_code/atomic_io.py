@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import stat
 import tempfile
 from contextlib import suppress
 from pathlib import Path
@@ -48,11 +49,17 @@ def _fsync_dir(path: Path) -> None:
 
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        existing_mode = None
     fd, temp_path = _atomic_temp_path(path)
     try:
         with os.fdopen(fd, "w", encoding=encoding, newline="") as handle:
             handle.write(text)
             handle.flush()
+            if existing_mode is not None:
+                os.chmod(temp_path, existing_mode)
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
         _fsync_dir(path.parent)

@@ -16,10 +16,10 @@ from ..repo_scan import RepoScanResult
 from ..runtime_artifacts import is_runtime_artifact_path
 from ..verification_command_analysis import (
     CheckerEntrypointFingerprint,
+    VerificationCommandEvidentiaryCapability,
     analyze_verification_command,
 )
 from ..verify_gate import assess_verification_command_execution
-from .task_state import SessionTaskState
 from .turn_contract import (
     MAX_EXPECTATIONS,
     MIN_EXPECTED_OUTPUT_LITERAL_LEN,
@@ -54,7 +54,6 @@ class AcceptanceCriterionStatus(StrEnum):
 
 class AcceptanceCriterionSource(StrEnum):
     USER_INSTRUCTION = "user_instruction"
-    TASK_BRIEF = "task_brief"
     PLANNING_CONSTRAINT = "planning_constraint"
     HOST_VERIFICATION = "host_verification"
     REPO_SCAN = "repo_scan"
@@ -380,13 +379,26 @@ class AcceptanceContract:
 
 
 _BACKTICK_COMMAND_RE = re.compile(r"`([^`\n]+)`")
+_PATH_EXTENSIONS = (
+    r"py|js|ts|tsx|jsx|json|toml|yaml|yml|txt|md|html|css|csv|xml|sql|sh|go|rs|java|rb|php|"
+    r"out|expected|actual|bin|docx|xlsx|pptx|pdf|png|jpg|jpeg|webp"
+)
+_QUOTED_PATH = "|".join(
+    rf"(?<={re.escape(quote)})(?:[A-Za-z]:)?"
+    rf"[^\x00-\x1f{re.escape(quote)}<>|?:]+?\.(?:{_PATH_EXTENSIONS})(?={re.escape(quote)})"
+    for quote in ('"', "'", "`")
+)
 _PATH_RE = re.compile(
     r"(?<![\w.-])("
+    # Native file names commonly contain spaces. A quoted document path must be
+    # captured whole, not as an invented relative path beginning after the space.
+    rf"{_QUOTED_PATH}|"
     r"(?:[A-Za-z]:[\\/]|[\\/]{1,2}|\.{1,2}[\\/])?"
     r"(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_.-]+)?|"
     r"(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+\."
-    r"(?:py|js|ts|tsx|jsx|json|toml|yaml|yml|txt|md|html|css|csv|xml|sql|sh|go|rs|java|rb|php|out|expected|actual|bin)"
-    r")(?=$|[`\s,;:!?\]\)}]|[.](?:\s|$))"
+    rf"(?:{_PATH_EXTENSIONS})"
+    r")(?=$|[`\"'\s,;:!?\]\)}]|[.](?:\s|$))",
+    re.I,
 )
 _PORT_RE = re.compile(r"\bport\s+([1-9][0-9]{1,4})\b", re.I)
 _THRESHOLD_RE = re.compile(
@@ -424,10 +436,14 @@ _INPUT_ROLE_RE = re.compile(
     r"\b(?:read\s+from|input|initial|reference|source|given\s+at|provided\s+at|load\s+from|using)\b",
     re.I,
 )
+# A source connector can switch from an output to its inputs inside one clause.
+# Bare nouns such as "source" must not override "create source code at ...".
+_INPUT_CONNECTOR_RE = re.compile(r"\b(?:using|from|given\s+at|provided\s+at)\b", re.I)
 _PRESERVATION_ROLE_RE = re.compile(
     r"\b(?:do\s+not|don't|dont|without|never|leave|keep|preserve)\b"
     r"[^;\n]{0,80}?"
-    r"\b(?:modify|change|touch|overwrite|alter|remove|delete|unchanged|intact)\b|"
+    r"\b(?:modif(?:y|ying)|chang(?:e|ing)|touch(?:ing)?|overwrit(?:e|ing)|alter(?:ing)?|"
+    r"remov(?:e|ing)|delet(?:e|ing)|unchanged|intact)\b|"
     r"\b(?:preserve|keep)\b[^;\n]{0,80}?\b(?:unchanged|intact)\b",
     re.I,
 )
@@ -473,10 +489,9 @@ def build_acceptance_contract(
     instruction: str,
     authoritative_verification_commands: list[str] | None = None,
     effective_verification_commands: list[str] | None = None,
-    task_brief: str = "",
     repo_scan: RepoScanResult | None = None,
     planning_constraints: Any | None = None,
-    task_state: SessionTaskState | None = None,
+    delegated: bool = False,
     generation: int = 0,
     workspace_snapshot: AcceptanceWorkspaceSnapshot | None = None,
     baseline_available: bool = True,
@@ -491,22 +506,13 @@ def build_acceptance_contract(
             effective_verification_commands=effective_verification_commands,
         )
     )
-    # A rendered brief can contain inferred summaries and historic context. Only
-    # host-accepted request text may create user obligations.
-    if task_state is not None and not isinstance(task_state, SessionTaskState):
-        raise TypeError("task_state must be a host-owned SessionTaskState")
+    # Only the current host-supplied request creates explicit obligations.
     instruction_source = (
         AcceptanceCriterionSource.DELEGATED_TASK
-        if task_state is not None
-        and (task_state.origin == "delegated" or task_state.parent_session_id is not None)
+        if delegated
         else AcceptanceCriterionSource.USER_INSTRUCTION
     )
-    texts = (
-        [task_state.objective, *task_state.amendments]
-        if task_state is not None
-        else [str(instruction or "")]
-    )
-    texts = [item for item in texts if item]
+    texts = [instruction] if instruction else []
     criteria: list[AcceptanceCriterion] = []
     allowed_output_paths: set[str] = set()
     path_refs = _extract_path_refs(root=root, texts=texts)
@@ -718,7 +724,7 @@ def build_acceptance_contract(
         )
 
     return AcceptanceContract(
-        task_id=task_state.task_id if task_state is not None else "",
+        task_id="",
         generation=generation,
         criteria=_dedupe_criteria(criteria),
         snapshot=snapshot,
@@ -861,23 +867,48 @@ def record_acceptance_tool_effect(
     exit_code = exit_code if type(exit_code) is int else None
     discovered, executed = _observed_test_counts(command=command, result=result, output=output)
     allowed = evidence_allowed
+    # Two different questions meet here. "Did the command really run, here and
+    # now, without side effects?" is about execution. "Can this command prove
+    # anything beyond its own exit status?" is about evidentiary capability.
+    # Verification evidence needs both. A command the user named is its own
+    # acceptance check, so that criterion needs only the first.
+    capability_verdicts = _evidentiary_capability_verdicts(command) if command else frozenset()
+    execution_observed = bool(command)
     if command:
         if (
             not same_workspace
             or not current
-            or result.get("real_execution") is False
             or exit_code is None
             or executed == 0
             or discovered == 0
             or touched_paths
         ):
             allowed = False
+            execution_observed = False
+        if result.get("real_execution") is False:
+            allowed = False
+            if str(result.get("non_execution_reason") or "") not in capability_verdicts:
+                execution_observed = False
         if exit_code is not None:
             assessment = assess_verification_command_execution(
                 command=command, exit_code=exit_code, output=output
             )
             if assessment.real_execution is False:
                 allowed = False
+                if str(assessment.non_execution_reason or "") not in capability_verdicts:
+                    execution_observed = False
+    explicit_command_allowed = allowed
+    if (
+        allowed is False
+        and execution_observed
+        and (
+            evidence_allowed is not False
+            or str(result.get("verification_evidence_reason") or "") in capability_verdicts
+        )
+    ):
+        # Every refusal was about capability, none about the run itself. The
+        # evidence record below still carries ``allowed`` (not verification).
+        explicit_command_allowed = True
     host_covered_commands: tuple[str, ...] = ()
     covered_payload = result.get("verification_evidence_covered_commands")
     if normalized_tool == "verify_run" and allowed is True and isinstance(covered_payload, list):
@@ -921,6 +952,7 @@ def record_acceptance_tool_effect(
                 passed=command_passed,
                 origin=origin,
                 evidence_allowed=allowed,
+                explicit_command_allowed=explicit_command_allowed,
                 host_covered_commands=host_covered_commands,
             )
         )
@@ -1252,6 +1284,18 @@ def _dedupe_criteria(criteria: list[AcceptanceCriterion]) -> list[AcceptanceCrit
     return out
 
 
+def _mask_path_tokens(text: str) -> str:
+    # Preserve offsets while ensuring a filename such as input/write.csv cannot
+    # introduce a new action or split a coordinated list of source files.
+    # Use non-whitespace so an "and <path>" list cannot become "and <verb>".
+    def masked(match: re.Match[str]) -> str:
+        token = match.group(0)
+        length = len(token.rstrip(".,;:!?)]}"))
+        return "\x00" * length + token[length:]
+
+    return _PATH_RE.sub(masked, text)
+
+
 def _iter_clauses(texts: list[str]) -> list[str]:
     clauses: list[str] = []
     boundary = re.compile(
@@ -1265,21 +1309,32 @@ def _iter_clauses(texts: list[str]) -> list[str]:
         re.I,
     )
     for text in texts:
-        for clause in boundary.split(str(text or "")):
-            normalized = " ".join(clause.split())
+        text = str(text or "")
+        start = 0
+        spans = []
+        for match in boundary.finditer(_mask_path_tokens(text)):
+            spans.append((start, match.start()))
+            start = match.end()
+        spans.append((start, len(text)))
+        for start, end in spans:
+            clause = text[start:end]
+            # Whitespace inside a quoted native filename is significant.
+            normalized = clause.strip()
             if normalized:
                 clauses.append(normalized)
     return clauses
 
 
-def _clause_path_role(clause: str) -> AcceptancePathRole:
-    if _PRESERVATION_ROLE_RE.search(clause):
-        return AcceptancePathRole.PRESERVATION_TARGET
-    if _OUTPUT_ROLE_RE.search(clause):
+def _prefix_path_role(prefix: str) -> AcceptancePathRole:
+    output = list(_OUTPUT_ROLE_RE.finditer(prefix))
+    source = list(_INPUT_CONNECTOR_RE.finditer(prefix))
+    if output:
+        if source and source[-1].start() > output[-1].start():
+            return AcceptancePathRole.EXISTING_INPUT
         return AcceptancePathRole.REQUIRED_OUTPUT
-    if _INPUT_ROLE_RE.search(clause):
+    if source or _INPUT_ROLE_RE.search(prefix):
         return AcceptancePathRole.EXISTING_INPUT
-    if _CHECKER_ROLE_RE.search(clause):
+    if _CHECKER_ROLE_RE.search(prefix):
         return AcceptancePathRole.VERIFICATION_CHECKER
     return AcceptancePathRole.UNKNOWN_REFERENCE
 
@@ -1289,13 +1344,14 @@ def _path_role(
     path_match: re.Match[str],
 ) -> AcceptancePathRole:
     path_start = path_match.start(1)
+    masked = _mask_path_tokens(clause)
     preservation = None
-    for candidate in _PRESERVATION_ROLE_RE.finditer(clause):
+    for candidate in _PRESERVATION_ROLE_RE.finditer(masked):
         if candidate.start() >= path_start:
             break
         preservation = candidate
     if preservation is None:
-        return _clause_path_role(clause)
+        return _prefix_path_role(masked[:path_start])
     if path_start < preservation.end():
         return AcceptancePathRole.PRESERVATION_TARGET
 
@@ -1308,7 +1364,7 @@ def _path_role(
     # carries across it only after binding a path, which preserves path lists.
     if not scope_is_complete and prior_path is not None:
         return AcceptancePathRole.PRESERVATION_TARGET
-    return _clause_path_role(clause[boundary + 1 :])
+    return _prefix_path_role(masked[boundary + 1 : path_start])
 
 
 def _clean_path_token(path: str) -> str:
@@ -2098,6 +2154,27 @@ def _observed_command(
     return ""
 
 
+def _evidentiary_capability_verdicts(command: str) -> frozenset[str]:
+    """Reasons that only say what ``command`` can prove, never how it ran.
+
+    These are the verdicts the command analysis gives for this exact command
+    when it is not an assertive check (unknown, non-assertive, or a shape that
+    cannot assert by itself). An assertive command has none, so every refusal
+    of it is about the run. Reasons such as a mutation, another working
+    directory, zero tests, an execution-layer failure, a missing pipeline
+    status or an unmatched command are never capability verdicts.
+    """
+    analysis = analyze_verification_command(command, trusted=True)
+    if (
+        analysis.evidentiary_capability == VerificationCommandEvidentiaryCapability.ASSERTIVE
+        and not analysis.rejection_reason
+    ):
+        return frozenset()
+    return frozenset(
+        {analysis.rejection_reason, analysis.inconclusive_reason, analysis.capability_reason} - {""}
+    )
+
+
 def _command_passed(*, status: str, result: dict[str, Any]) -> bool | None:
     if status == "failed":
         return False
@@ -2136,9 +2213,12 @@ def _update_command_and_threshold_criteria(
     passed: bool | None,
     origin: EvidenceOrigin,
     evidence_allowed: bool | None = None,
+    explicit_command_allowed: bool | None = None,
     host_covered_commands: tuple[str, ...] = (),
 ) -> list[str]:
     matched: list[str] = []
+    if explicit_command_allowed is None:
+        explicit_command_allowed = evidence_allowed
     for criterion in contract.criteria:
         if criterion.kind == AcceptanceCriterionKind.EXPLICIT_COMMAND_IO and any(
             _commands_equivalent(observed, candidate)
@@ -2147,7 +2227,7 @@ def _update_command_and_threshold_criteria(
         ):
             status = (
                 AcceptanceCriterionStatus.BLOCKED
-                if passed is True and evidence_allowed is False
+                if passed is True and explicit_command_allowed is False
                 else AcceptanceCriterionStatus.PASSED
                 if passed is True
                 else AcceptanceCriterionStatus.FAILED

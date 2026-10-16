@@ -18,6 +18,22 @@ class LLMStreamNoProgressError(LLMError):
     """A streaming attempt produced no meaningful provider payload in time."""
 
 
+class LLMOutputLimitError(LLMError):
+    """A terminal token limit with accounted usage and safe continuation state.
+
+    Keep this an error for callers that require a complete response. The agent
+    turn can explicitly recover using ``response`` instead of replaying the
+    same provider request or treating partial output as a finished answer.
+    """
+
+    def __init__(self, response: LLMResponse) -> None:
+        super().__init__(
+            "The model reached its output token limit before finishing (max_output_tokens). "
+            "Increase the response allowance, lower reasoning effort, or compact the conversation."
+        )
+        self.response = response
+
+
 class UsageConfidence(StrEnum):
     AUTHORITATIVE = "authoritative"
     REPORTED = "reported"
@@ -55,10 +71,9 @@ class CostSource(StrEnum):
 class ReasoningOutputKind(StrEnum):
     """Visibility class for provider-produced reasoning output.
 
-    ``SUMMARY`` is safe, provider-generated explanatory text intended for
-    display. ``PROVIDER_REASONING`` is a provider-visible reasoning channel
-    that may contain a much more detailed chain and must not be rendered by
-    the default chat trace.
+    ``SUMMARY`` is provider-generated explanatory text. ``PROVIDER_REASONING``
+    is text returned through a provider's explicit reasoning channel. Both can
+    be displayed by trace; encrypted state and signatures are metadata only.
     """
 
     SUMMARY = "summary"

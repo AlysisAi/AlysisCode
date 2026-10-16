@@ -9,6 +9,7 @@ from alysis_code.agent.errors import AgentRuntimeError
 from alysis_code.agent.tools_assembly import build_tools
 from alysis_code.config import AppConfig
 from alysis_code.host_actions import (
+    HOST_ACTION_TOOL_NAMES,
     HOST_ACTIONS,
     HostActionError,
     normalize_host_action_arguments,
@@ -38,6 +39,8 @@ def _build_tools(
     actions: tuple[str, ...] = (),
     handler: Any | None = None,
     surface: Any | None = None,
+    host_mcp: dict[str, Any] | None = None,
+    google_mcp: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return build_tools(
         root=root,
@@ -49,6 +52,8 @@ def _build_tools(
         surface=surface,
         host_action_capabilities=actions,
         host_action_handler=handler,
+        host_mcp=host_mcp,
+        google_mcp=google_mcp,
     )
 
 
@@ -65,17 +70,15 @@ class _ApprovalSurface(NoopSurface):
 
 
 def test_host_action_tool_metadata_is_complete() -> None:
-    for action in HOST_ACTIONS:
-        tool_name = {
-            "tasks.list": "ide_task_list",
-            "tasks.run": "ide_task_run",
-            "tasks.status": "ide_task_status",
-            "tasks.terminate": "ide_task_terminate",
-            "debug.list": "ide_debug_list",
-            "debug.start": "ide_debug_start",
-            "debug.stop": "ide_debug_stop",
-            "debug.status": "ide_debug_status",
-        }[action]
+    # MCP tool schemas come from the negotiated catalog rather than built-in metadata.
+    assert set(HOST_ACTION_TOOL_NAMES) == set(HOST_ACTIONS) - {
+        "mcp.github.call",
+        "mcp.github.discover",
+        "mcp.github.describe",
+        "mcp.google.call",
+    }
+    for action in HOST_ACTION_TOOL_NAMES:
+        tool_name = HOST_ACTION_TOOL_NAMES[action]
         metadata = get_builtin_tool_metadata(tool_name)
         assert metadata is not None
         assert metadata.optional is True
@@ -386,22 +389,43 @@ def test_fullaccess_cannot_bypass_opaque_host_execution_approval(tmp_path: Path)
     assert calls == []
 
 
-def test_fullaccess_rejects_session_style_opaque_execution_approval(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "action", "arguments"),
+    [
+        ("ide_task_run", "tasks.run", {"task_id": "task-1"}),
+        ("ide_debug_start", "debug.start", {"configuration_id": "debug-1"}),
+    ],
+)
+@pytest.mark.parametrize(
+    "decision",
+    [
+        ApprovalDecision(allow=True),
+        ApprovalDecision(allow=True, allow_for_session=True),
+        ApprovalDecision(allow=False),
+    ],
+)
+def test_fullaccess_dispatches_opaque_host_execution_without_prompt(
+    tmp_path: Path,
+    tool_name: str,
+    action: str,
+    arguments: dict[str, str],
+    decision: ApprovalDecision,
+) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
-    surface = _ApprovalSurface(ApprovalDecision(allow=True, allow_for_session=True))
+    # Full access authorizes this request by mode, so the surface's hypothetical
+    # answer must neither be requested nor affect dispatch.
+    surface = _ApprovalSurface(decision)
     tools = _build_tools(
         tmp_path,
         mode="fullaccess",
-        actions=("debug.start",),
+        actions=(action,),
         handler=lambda action, args: calls.append((action, args)) or {},
         surface=surface,
     )
 
-    with pytest.raises(AgentRuntimeError, match="Session approval cannot authorize"):
-        tools["ide_debug_start"].run({"configuration_id": "debug-1"})
-
-    assert calls == []
-    assert surface.requests[0].allow_for_session_scope is None
+    assert tools[tool_name].run(arguments) == {}
+    assert calls == [(action, arguments)]
+    assert surface.requests == []
 
 
 def test_allow_once_dispatches_exact_opaque_host_execution(tmp_path: Path) -> None:
@@ -427,3 +451,83 @@ def test_allow_once_dispatches_exact_opaque_host_execution(tmp_path: Path) -> No
     assert calls == [("tasks.run", {"task_id": "task-1"})]
     assert "task_id: task-1" in surface.requests[0].preview
     assert str(tmp_path.resolve()) in surface.requests[0].preview
+
+
+@pytest.mark.parametrize("mode", ["readonly", "auto", "fullaccess"])
+def test_desktop_terminal_tools_require_capability_and_full_access(
+    tmp_path: Path, mode: str
+) -> None:
+    calls = []
+    tools = _build_tools(
+        tmp_path,
+        mode=mode,
+        actions=HOST_ACTIONS,
+        handler=lambda action, args: calls.append((action, args)) or {"accepted": True},
+    )
+    assert "desktop_terminal_list" in tools
+    assert "desktop_terminal_read" in tools
+    for name in ("open", "write", "close"):
+        assert (f"desktop_terminal_{name}" in tools) == (mode == "fullaccess")
+    if mode == "fullaccess":
+        tools["desktop_terminal_write"].run({"terminal_id": "one", "text": "Καλημέρα 世界\n"})
+        assert calls == [("terminal.write", {"terminal_id": "one", "text": "Καλημέρα 世界\n"})]
+    unbound = _build_tools(tmp_path, mode="fullaccess", handler=lambda *_: {})
+    assert not any(name.startswith("desktop_terminal_") for name in unbound)
+
+
+@pytest.mark.parametrize(
+    "action,args",
+    [
+        ("terminal.open", {"cwd": "/other"}),
+        ("terminal.read", {"terminal_id": "one", "since": True}),
+        ("terminal.read", {"terminal_id": "one", "since": -1}),
+        ("terminal.write", {"terminal_id": "one", "text": "x" * 4097}),
+        ("terminal.close", {"terminal_id": "one\n"}),
+    ],
+)
+def test_desktop_terminal_arguments_are_bounded(action: str, args: dict[str, Any]) -> None:
+    with pytest.raises(HostActionError):
+        normalize_host_action_arguments(action, args)
+
+
+def test_desktop_terminal_output_is_bounded_and_unicode_preserved() -> None:
+    result = {
+        "terminal_id": "one",
+        "text": "Καλημέρα 世界",
+        "next_seq": 2,
+        "truncated": False,
+        "status": "running",
+        "exit_code": None,
+    }
+    assert normalize_host_action_result("terminal.read", result) == result
+    with pytest.raises(HostActionError):
+        normalize_host_action_result("terminal.read", {**result, "text": "x" * 12001})
+
+
+def test_browser_writes_are_available_without_routine_approval_but_not_in_plan(
+    tmp_path: Path,
+) -> None:
+    surface = _ApprovalSurface(ApprovalDecision(allow=False))
+    calls = []
+    tools = _build_tools(
+        tmp_path,
+        mode="auto",
+        actions=("browser.snapshot", "browser.click"),
+        handler=lambda action, args: calls.append((action, args)) or {"ok": True},
+        surface=surface,
+    )
+    assert tools["embedded_browser_click"].run(
+        {"tab_id": "tab", "snapshot_id": "s", "ref": "e"}
+    ) == {"ok": True}
+    assert not surface.requests
+    assert calls[0][0] == "browser.click"
+    readonly = _build_tools(
+        tmp_path,
+        mode="readonly",
+        actions=("browser.snapshot", "browser.click"),
+        handler=lambda *_: {},
+    )
+    assert "embedded_browser_snapshot" in readonly
+    assert "embedded_browser_click" not in readonly
+    assert "write" in get_builtin_tool_metadata("embedded_browser_click").categories
+    assert "read" not in get_builtin_tool_metadata("embedded_browser_click").categories

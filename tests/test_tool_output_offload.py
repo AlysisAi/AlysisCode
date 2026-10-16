@@ -618,6 +618,52 @@ def test_offloaded_diff_preserves_pagination_and_full_patch(
     assert json.loads(saved["content_json"])["diff"] == payload["diff"]
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "embedded_browser_open",
+        "embedded_browser_read",
+        "embedded_browser_navigate",
+        "embedded_browser_back",
+        "embedded_browser_forward",
+        "embedded_browser_reload",
+    ],
+)
+@pytest.mark.parametrize("next_offset", [6000, None])
+def test_offloaded_browser_page_preserves_tab_and_continuation(
+    tmp_path: Path,
+    tool_name: str,
+    next_offset: int | None,
+) -> None:
+    offloader = ToolOutputOffloader(
+        artifact_layout=SessionArtifactLayout(filesystem_root=tmp_path / "session-store"),
+        workspace_root=tmp_path,
+        threshold_chars=6000,
+        preview_chars=200,
+    )
+    payload = {
+        "tab_id": "tab-1",
+        "title": "Example page",
+        "url": "https://example.com/",
+        "text": "x" * 6000,
+        "links": [],
+        "next_offset": next_offset,
+    }
+    result = offloader.maybe_offload(
+        tool_name=tool_name,
+        tool_call_id="browser-page",
+        step=1,
+        result=payload,
+        content_json=json.dumps(payload),
+    )
+    assert result.offloaded is True
+    stub = json.loads(result.content_for_message)
+    for key in ("tab_id", "title", "url", "next_offset"):
+        assert stub[key] == payload[key]
+    saved = json.loads(Path(result.artifact_fs_path).read_text(encoding="utf-8"))
+    assert json.loads(saved["content_json"]) == payload
+
+
 def test_session_data_dir_override_keeps_offloads_outside_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1014,3 +1060,71 @@ def test_create_session_no_log_with_explicit_artifact_root_keeps_offload_enabled
         assert session.tool_output_offload_enabled is True
     finally:
         session.close()
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "embedded_browser_snapshot",
+        "embedded_browser_click",
+        "embedded_browser_type",
+        "embedded_browser_select",
+        "embedded_browser_scroll",
+        "embedded_browser_key",
+    ],
+)
+def test_offloaded_browser_snapshot_keeps_observation_identity(tmp_path, tool_name):
+    offloader = ToolOutputOffloader(
+        artifact_layout=SessionArtifactLayout(filesystem_root=tmp_path / "session-store"),
+        workspace_root=tmp_path,
+        threshold_chars=6000,
+        preview_chars=200,
+    )
+    payload = {
+        "tab_id": "tab",
+        "snapshot_id": "observed",
+        "url": "https://example.com/",
+        "text": "x" * 6000,
+        "elements": [{"ref": "e1", "role": "textbox", "name": "Date", "input_type": "date"}],
+        "focused_ref": "e1",
+        "viewport": {"width": 800, "height": 600},
+    }
+    result = offloader.maybe_offload(
+        tool_name=tool_name,
+        tool_call_id="snapshot",
+        step=1,
+        result=payload,
+        content_json=json.dumps(payload),
+    )
+    stub = json.loads(result.content_for_message)
+    assert stub["snapshot_id"] == "observed"
+    assert stub["elements"] == payload["elements"]
+    assert stub["elements_truncated"] is False
+    assert stub["viewport"] == payload["viewport"]
+    assert stub["focused_ref"] == "e1"
+    saved = json.loads(Path(result.artifact_fs_path).read_text())
+    assert json.loads(saved["content_json"])["elements"] == payload["elements"]
+
+
+def test_browser_offloaded_controls_are_bounded_and_preserve_real_refs(tmp_path):
+    offloader = ToolOutputOffloader(
+        artifact_layout=SessionArtifactLayout(filesystem_root=tmp_path / "session-store"),
+        workspace_root=tmp_path,
+        threshold_chars=6000,
+        preview_chars=200,
+    )
+    elements = [{"ref": f"control-{i}", "role": "button", "name": "x" * 500} for i in range(80)]
+    payload = {"tab_id": "tab", "snapshot_id": "observed", "text": "x" * 6000, "elements": elements}
+    result = offloader.maybe_offload(
+        tool_name="embedded_browser_snapshot",
+        tool_call_id="bounded",
+        step=1,
+        result=payload,
+        content_json=json.dumps(payload),
+    )
+    stub = json.loads(result.content_for_message)
+    assert stub["elements_truncated"] is True
+    assert 0 < len(stub["elements"]) < 20
+    assert len(json.dumps(stub["elements"], ensure_ascii=False)) <= 3500
+    assert all(element in elements for element in stub["elements"])
+    assert "never guess" in stub["element_details"]

@@ -106,6 +106,7 @@ def test_delayed_bind_is_not_ready_until_its_owned_listener_exists(manager):
     port = free_port()
     before = time.monotonic()
     started = manager.start(cmd=server(port, 0.25), cwd=manager.root, readiness=readiness(port))
+    assert started.payload["readiness"]["status"] == "ready", json.dumps(started.payload, indent=2)
     assert time.monotonic() - before >= 0.25
     assert started.payload["readiness"]["strength"] == "owned_endpoint"
     assert started.payload["readiness"]["endpoint_owned"] is True
@@ -211,10 +212,8 @@ def test_missing_os_listener_visibility_fails_closed(manager, monkeypatch):
     def denied(*_args, **_kwargs):
         raise psutil.AccessDenied()
 
-    if dsm.platform.system().lower() == "darwin":
-        monkeypatch.setattr(dsm.psutil.Process, "net_connections", denied)
-    else:
-        monkeypatch.setattr(dsm.psutil, "net_connections", denied)
+    monkeypatch.setattr(dsm.psutil, "net_connections", denied)
+    monkeypatch.setattr(dsm, "_macos_tcp_listeners", lambda _: denied())
     result = manager._check_readiness(
         metadata=manager._read_metadata(started.service_id), timeout_s=0
     )
@@ -222,8 +221,8 @@ def test_missing_os_listener_visibility_fails_closed(manager, monkeypatch):
     assert "AccessDenied" in result["detail"]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires the native macOS listener table")
 def test_macos_process_listener_inspection_without_global_privileges(manager, monkeypatch):
-    monkeypatch.setattr(dsm.platform, "system", lambda: "Darwin")
 
     def denied(*_args, **_kwargs):
         raise psutil.AccessDenied()
@@ -489,3 +488,28 @@ def test_container_proxy_requires_launch_identity_and_application_listener(
     )
     assert outcome["endpoint_owned"] is expected
     assert bool(len(calls) == 2) == bool(label == "svc_test")
+
+
+@pytest.mark.parametrize("owner_header,owner", [("pid", "123"), ("process:pid", "Worker Name:123")])
+def test_macos_listener_table_preserves_owner_and_wildcard_family(owner_header, owner):
+    table = (
+        f"Proto Recv-Q Send-Q Local Address Foreign Address (state) rhiwat shiwat {owner_header} epcb\n"
+        f"tcp4 0 0 127.0.0.1.8080 *.* LISTEN 1 1 {owner} 0\n"
+        f"tcp6 0 0 *.8081 *.* LISTEN 1 1 {owner} 0\n"
+        f"tcp46 0 0 *.8082 *.* LISTEN 1 1 {owner} 0\n"
+    )
+    rows = dsm._parse_macos_tcp_listeners(table)
+    assert [(r.laddr.ip, r.laddr.port, r.pid) for r in rows] == [
+        ("127.0.0.1", 8080, 123),
+        ("::", 8081, 123),
+        ("0.0.0.0", 8082, 123),
+        ("::", 8082, 123),
+    ]
+
+
+@pytest.mark.parametrize(
+    "output", ["", "tcp4 0 0 unknown", "Proto Local Address (state) pid\ntcp4 malformed"]
+)
+def test_macos_listener_table_rejects_missing_or_unparseable_ownership(output):
+    with pytest.raises(ValueError):
+        dsm._parse_macos_tcp_listeners(output)

@@ -107,7 +107,7 @@ def test_an_actual_test_runner_can_report_real_test_failure_and_exit127(
         "def pytest_sessionfinish(session, exitstatus):\n"
         "    if exitstatus != 0:\n        session.exitstatus = 127\n"
     )
-    argv = [sys.executable, "-m", "pytest", "-q"]
+    argv = [Path(sys.executable).as_posix(), "-m", "pytest", "-q"]
     command = shlex.join(argv)
     env = {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""}
     env.pop("ALYSIS_TEST_FAIL", None)
@@ -128,7 +128,8 @@ def test_an_actual_test_runner_can_report_real_test_failure_and_exit127(
     output = failed.stdout + failed.stderr
     assert failed.returncode == 127
     assert "FAILED tests/test_app.py::test_behavior" in output
+    assert "1 failed" in output
     _observe(tmp_path, state, tool, command, failed.returncode, output)
     assert state.last_verification_passed is False
     assert "verification_failed" in _guarded_problems(state)
-    assert state.latest_regression_diff["agent_authored"]
+    assert state.latest_regression_diff["agent_authored"], state.latest_regression_diff

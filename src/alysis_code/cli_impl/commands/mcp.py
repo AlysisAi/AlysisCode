@@ -273,6 +273,7 @@ def _mcp_status_payload(
     prompt_stale_ids = {
         str(server_id) for server_id in metadata.get("prompt_stale_server_ids") or []
     }
+    startup_errors = manager.server_startup_errors()
     rows: list[dict[str, str]] = []
     json_rows: list[dict[str, Any]] = []
     for server in manager.active_servers:
@@ -323,13 +324,18 @@ def _mcp_status_payload(
             prompt_label += " refresh:yes"
         else:
             prompt_label = "disabled"
+        startup_error = startup_errors.get(server.id)
         row = {
             "server_id": server.id,
             "transport": server.transport,
-            "tools": _mcp_status_surface_label(
-                loaded=tool_loaded,
-                count=tool_count,
-                stale=tool_stale,
+            "tools": (
+                "failed"
+                if startup_error is not None
+                else _mcp_status_surface_label(
+                    loaded=tool_loaded,
+                    count=tool_count,
+                    stale=tool_stale,
+                )
             ),
             "resources": _mcp_status_surface_label(
                 loaded=resource_loaded,
@@ -357,6 +363,7 @@ def _mcp_status_payload(
                 "manual_prompt_refresh_available": server.id in prompt_enabled_ids,
                 "operator_action": actions,
                 "prompt_error": prompt_errors.get(server.id),
+                "startup_error": startup_error,
             }
         )
     return {
@@ -574,7 +581,15 @@ def mcp_status(
         if not table_rows:
             console.print("No active MCP servers for this runtime.")
             return
+        from rich.markup import escape
+
         console.print(_mcp_status_table(rows=table_rows))
+        for json_row in payload.get("rows") or []:
+            if json_row.get("startup_error"):
+                console.print(
+                    f"[yellow]MCP server {escape(str(json_row['server_id']))} did not start:"
+                    f"[/yellow] {escape(str(json_row['startup_error']))}"
+                )
         for error in bootstrap_errors:
             console.print(f"[yellow]Snapshot warning:[/yellow] {error}")
         for server_id, error in prompt_errors.items():

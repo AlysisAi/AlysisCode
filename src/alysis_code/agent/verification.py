@@ -96,7 +96,6 @@ from .reproduction_first import (
     match_repro_artifacts,
     repro_blocks_finalization,
 )
-from .task_state import SessionTaskState
 from .turn_contract import (
     AdvisoryCompletion,
     DispositionRecord,
@@ -563,6 +562,7 @@ class TurnExecutionState:
     )
     acceptance_contract: AcceptanceContract | None = None
     latest_completion_certificate: dict[str, Any] = field(default_factory=dict)
+    connector_link_evidence: dict[str, Any] = field(default_factory=dict)
 
     def refresh_verification_coverage(self) -> None:
         self.covered_verification_commands = {
@@ -1157,6 +1157,7 @@ class TurnExecutionState:
     def as_payload(self) -> dict[str, Any]:
         return {
             "execution_requested": self.execution_requested,
+            "connector_link_evidence": dict(self.connector_link_evidence),
             "expected_verification_commands": sorted(self.expected_verification_commands),
             "covered_verification_commands": sorted(self.covered_verification_commands),
             "missing_verification_commands": sorted(self.missing_verification_commands()),
@@ -3470,13 +3471,7 @@ def _build_interactive_turn_verify_task(
     session: Any,
     instruction: str,
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    state = getattr(session, "task_state", None)
-    task_texts = (
-        [state.objective, *reversed(state.amendments)]
-        if isinstance(state, SessionTaskState)
-        else [str(instruction or "").strip()]
-    )
-    task_texts = [text for text in task_texts if text]
+    task_texts = [instruction] if instruction else []
     task_paths: list[str] = []
     for text in task_texts:
         for path in _extract_workspace_relation_paths_from_text(root=session.root, text=text):

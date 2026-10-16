@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import shutil
 import subprocess
+import sys
 import uuid
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 
 
@@ -87,6 +89,21 @@ def _decode_text(blob: bytes) -> str:
         return blob.decode("utf-16-le", errors="ignore").strip()
 
 
+def _read_png_macos() -> bytes:
+    # Pillow uses macOS's built-in osascript to read the native image clipboard.
+    from PIL import Image, ImageGrab
+
+    try:
+        image = ImageGrab.grabclipboard()
+        if not isinstance(image, Image.Image):
+            raise ClipboardError("macOS clipboard does not contain image data.")
+        with image, BytesIO() as output:
+            image.save(output, format="PNG")
+            return output.getvalue()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise ClipboardError(f"Could not read macOS clipboard image: {exc}") from exc
+
+
 def _read_png_wl_paste() -> bytes:
     if shutil.which("wl-paste") is None:
         raise ClipboardError("wl-paste is not installed.")
@@ -143,18 +160,23 @@ def _read_png_powershell() -> bytes:
 
 
 def _read_clipboard_png() -> bytes:
+    if sys.platform == "darwin":
+        readers = (_read_png_macos,)
+        hint = (
+            "Copy an image to the macOS clipboard (for example, Control+Shift+Command+4), "
+            "then try again, or attach a saved image with /image <path>. "
+        )
+    else:
+        readers = (_read_png_wl_paste, _read_png_xclip, _read_png_powershell)
+        hint = "Try installing wl-paste or xclip, or ensure Windows clipboard has an image. "
     errors: list[str] = []
-    for reader in (_read_png_wl_paste, _read_png_xclip, _read_png_powershell):
+    for reader in readers:
         try:
             return reader()
         except ClipboardError as e:
             errors.append(str(e))
     detail = "; ".join(errors)
-    raise ClipboardError(
-        "Could not read an image from clipboard. "
-        "Try installing wl-paste or xclip, or ensure Windows clipboard has an image. "
-        f"Details: {detail}"
-    )
+    raise ClipboardError(f"Could not read an image from clipboard. {hint}Details: {detail}")
 
 
 def paste_clipboard_image(*, root: Path, output_path: str | None = None) -> Path:

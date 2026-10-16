@@ -12,7 +12,7 @@ const { createManagedCliReleaseSignatureVerifier, MANAGED_CLI_RELEASE_PUBLIC_KEY
 const { PROTOCOL_VERSION } = require("../out/src/client/AlysisProtocol");
 
 const EXTENSION_ROOT = path.resolve(__dirname, "..");
-const SOURCE = "https://github.com/AlysisAi/alysis-code";
+const SOURCE = "https://github.com/AlysisAi/AlysisCode";
 
 function parseArgs(argv) {
   const passthrough = [];
@@ -138,7 +138,7 @@ async function main() {
   const result = spawnSync(process.execPath, [path.join(vsceRoot, vscePackage.bin.vsce),
     "package", "--no-dependencies", "--target", target,
     "--baseContentUrl", `${SOURCE}/blob/${artifact.sourceCommit}/extensions/vscode-alysis`,
-    "--baseImagesUrl", `https://raw.githubusercontent.com/AlysisAi/alysis-code/${artifact.sourceCommit}/extensions/vscode-alysis`,
+    "--baseImagesUrl", `https://raw.githubusercontent.com/AlysisAi/AlysisCode/${artifact.sourceCommit}/extensions/vscode-alysis`,
     ...passthrough], { cwd: EXTENSION_ROOT, stdio: "inherit" });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;

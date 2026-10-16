@@ -314,10 +314,10 @@ def test_mcp_manager_rejects_invalid_tool_schema(
         runtime_kind=RuntimeKind.FORGE_EXEC,
     )
     try:
-        with pytest.raises(ConfigError) as exc_info:
-            _ = manager.tool_bindings
-        assert isinstance(exc_info.value, McpConfigError)
-        message = str(exc_info.value)
+        # The server is left out of the session; its reason is kept for status.
+        assert manager.tool_bindings == ()
+        assert isinstance(manager._server_startup_errors["alpha"], McpConfigError)
+        message = manager.server_startup_errors()["alpha"]
         assert "alpha" in message
         assert "broken-tool" in message
         assert "inputSchema" in message
@@ -612,9 +612,8 @@ def test_mcp_manager_still_rejects_genuinely_large_structural_schema(
         runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
     )
     try:
-        with pytest.raises(ConfigError) as exc_info:
-            _ = manager.tool_bindings
-        message = str(exc_info.value)
+        assert manager.tool_bindings == ()
+        message = manager.server_startup_errors()["alpha"]
         assert "too_large_structure" in message
         assert "inputSchema" in message
         assert "too large" in message
@@ -644,9 +643,8 @@ def test_mcp_manager_rejects_missing_configured_tool_names(
         },
     )
     try:
-        with pytest.raises(ConfigError) as exc_info:
-            _ = manager.tool_bindings
-        message = str(exc_info.value)
+        assert manager.tool_bindings == ()
+        message = manager.server_startup_errors()["alpha"]
         assert "alpha" in message
         assert "missing-tool" in message
         assert "allowed_tools" in message
@@ -1118,9 +1116,9 @@ def test_mcp_manager_rejects_oversized_resource_snapshot(
         server_overrides={"resources_mode": "listed_read_only"},
     )
     try:
-        with pytest.raises(ConfigError) as exc_info:
-            _ = manager.tool_bindings
-        assert "resource exposure is too large for server 'alpha'" in str(exc_info.value)
+        assert manager.tool_bindings == ()
+        errors = manager.server_startup_errors()
+        assert "resource exposure is too large for server 'alpha'" in errors["alpha"]
     finally:
         manager.close()
 
@@ -1934,9 +1932,9 @@ def test_create_forge_task_scoped_mcp_manager_with_non_empty_scope_keeps_live_bo
         task_scope=ForgeTaskMcpScope(allow_resources=True),
     )
     try:
-        with pytest.raises(Exception) as exc_info:
-            _ = manager.tool_bindings
-        assert missing_command in str(exc_info.value)
+        # Bootstrap really tried to start the server; its failure is kept per server.
+        assert manager.tool_bindings == ()
+        assert missing_command in manager.server_startup_errors()["alpha"]
     finally:
         manager.close()
 
@@ -2626,3 +2624,141 @@ def test_create_session_persists_runtime_kind_and_mcp_startup_metadata(
     assert payload["chat_turn_fixed_override"] == 4
     assert payload["mcp"]["config_present"] is False
     assert payload["mcp"]["resolved_server_count"] == 0
+
+
+def _echo_tools(count: int, *, prefix: str) -> list[dict[str, object]]:
+    return [
+        {
+            "name": f"{prefix}_{index:02d}",
+            "inputSchema": {"type": "object", "properties": {}, "required": []},
+        }
+        for index in range(count)
+    ]
+
+
+def test_mcp_manager_skips_a_server_that_fails_to_start_and_keeps_the_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _load_multi_server_manager(
+        tmp_path,
+        monkeypatch,
+        servers={
+            "alpha": {"fixture_payload": {"tools_pages": [_echo_tools(2, prefix="echo")]}},
+            "broken": {"command": "alysis-test-command-that-does-not-exist", "args": []},
+        },
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+    )
+    try:
+        aliases = [binding.tool_alias for binding in manager.tool_bindings]
+        assert aliases == ["mcp__alpha__echo_00", "mcp__alpha__echo_01"]
+        assert manager.closed is False
+
+        errors = manager.server_startup_errors()
+        assert list(errors) == ["broken"]
+        assert "failed to launch process" in errors["broken"]
+
+        snapshot = manager.catalog_snapshot_metadata()
+        assert snapshot["failed_server_ids"] == ["broken"]
+        assert [entry["server_id"] for entry in snapshot["server_catalogs"]] == ["alpha"]
+
+        assert manager.server_lifecycle_status(server_id="alpha")["connection_state"] == (
+            "connected"
+        )
+        broken = manager.server_lifecycle_status(server_id="broken")
+        assert broken["connection_state"] == "failed"
+        assert broken["startup_failed"] is True
+        assert broken["exposed_tool_count"] == 0
+        with pytest.raises(RuntimeError, match="did not start when this session began"):
+            manager.restart_server(server_id="broken")
+    finally:
+        manager.close()
+
+
+def test_mcp_manager_skips_the_server_that_would_exceed_the_session_tool_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _load_multi_server_manager(
+        tmp_path,
+        monkeypatch,
+        servers={
+            "alpha": {"fixture_payload": {"tools_pages": [_echo_tools(40, prefix="a")]}},
+            "beta": {"fixture_payload": {"tools_pages": [_echo_tools(30, prefix="b")]}},
+            "gamma": {"fixture_payload": {"tools_pages": [_echo_tools(20, prefix="g")]}},
+        },
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+    )
+    try:
+        servers = {binding.server_id for binding in manager.tool_bindings}
+        assert servers == {"alpha", "gamma"}
+        assert len(manager.tool_bindings) == 60
+        errors = manager.server_startup_errors()
+        assert list(errors) == ["beta"]
+        assert "too large for one session (70 tools)" in errors["beta"]
+    finally:
+        manager.close()
+
+
+def test_mcp_manager_closes_an_early_lease_when_its_server_fails_at_catalog_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _load_manager(
+        tmp_path,
+        monkeypatch,
+        {"tools_pages": [_echo_tools(1, prefix="echo")]},
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+        server_overrides={"allowed_tools": ["missing-tool"]},
+    )
+    try:
+        # A lifecycle enable before the first catalog build leaves a session lease behind.
+        assert manager.enable_server(server_id="alpha")["connected"] is True
+        [lease] = manager._client_leases_by_server_id["alpha"]
+
+        assert manager.tool_bindings == ()
+        assert "missing-tool" in manager.server_startup_errors()["alpha"]
+        assert lease.closed is True
+        assert "alpha" not in manager._client_leases_by_server_id
+        status = manager.server_lifecycle_status(server_id="alpha")
+        assert status["connection_state"] == "failed"
+        assert status["connected"] is False
+    finally:
+        manager.close()
+
+
+def test_mcp_manager_reads_tool_annotations_into_bindings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema = {"type": "object", "properties": {}, "required": []}
+    manager = _load_manager(
+        tmp_path,
+        monkeypatch,
+        {
+            "tools_pages": [
+                [
+                    {
+                        "name": "lookup",
+                        "inputSchema": schema,
+                        "annotations": {"readOnlyHint": True},
+                    },
+                    {
+                        "name": "drop",
+                        "inputSchema": schema,
+                        "annotations": {"destructiveHint": True},
+                    },
+                    {"name": "plain", "inputSchema": schema},
+                ]
+            ]
+        },
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+    )
+    try:
+        hints = {
+            binding.tool_name: (binding.read_only_hint, binding.destructive_hint)
+            for binding in manager.tool_bindings
+        }
+        assert hints == {
+            "lookup": (True, False),
+            "drop": (False, True),
+            "plain": (False, False),
+        }
+    finally:
+        manager.close()

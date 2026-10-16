@@ -12,6 +12,8 @@ from .noop_surface import NoopSurface
 from .types import (
     ApprovalDecision,
     ApprovalRequest,
+    PatchEvent,
+    StandingApproval,
     SubagentEndEvent,
     SubagentStartEvent,
     ToolEndEvent,
@@ -46,6 +48,10 @@ class HiddenApprovalSurface(NoopSurface):
             return self._parent_surface.request_approval(request)
         with self._approval_lock:
             return self._parent_surface.request_approval(request)
+
+    def standing_approval(self, request: ApprovalRequest) -> StandingApproval | None:
+        standing = getattr(self._parent_surface, "standing_approval", None)
+        return standing(request) if callable(standing) else None
 
     def emit_message_delta(
         self,
@@ -156,6 +162,31 @@ class HiddenApprovalSurface(NoopSurface):
         role: str | None = None,
     ) -> None:
         _ = (command, success, summary, worker_id, role)
+
+    def emit_approval_reviewed(
+        self,
+        outcome: str,
+        subject: str,
+        reason: str = "",
+        *,
+        risk: str = "",
+        approval_kind: str = "",
+        worker_id: str | None = None,
+        role: str | None = None,
+    ) -> None:
+        # Approvals are forwarded to the parent, so their reviews are too: the person
+        # sees what was approved on their behalf, whichever agent asked.
+        forward = getattr(self._parent_surface, "emit_approval_reviewed", None)
+        if callable(forward):
+            forward(
+                outcome,
+                subject,
+                reason,
+                risk=risk,
+                approval_kind=approval_kind,
+                worker_id=worker_id,
+                role=role,
+            )
 
     def emit_review_gate_decision(
         self,
@@ -512,6 +543,16 @@ class NestedSubagentSurface(HiddenApprovalSurface):
                 nesting_depth=max(int(event.nesting_depth), 0) + 1,
             )
         )
+
+    def on_patch_generated(self, event: PatchEvent) -> None:
+        with _PARENT_SURFACE_FORWARD_LOCK:
+            self._parent_surface.on_patch_generated(
+                replace(
+                    event,
+                    subagent_name=self._subagent_label or self._subagent_name,
+                    workspace_view=self._workspace_view,
+                )
+            )
 
     def on_tool_end(self, event: ToolEndEvent) -> None:
         self._observe_event("tool_completed")

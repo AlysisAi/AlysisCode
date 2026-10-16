@@ -65,7 +65,10 @@ jobs:
           version: "0.11.23"
 
       - name: Sync locked test dependencies
-        run: uv sync --frozen --python "${{ matrix.python-version }}" --extra dev
+        run: uv sync --frozen --python "${{ matrix.python-version }}" --extra dev --extra documents
+
+      - name: Check public repository contents
+        run: uv run --frozen --no-sync python scripts/qa/check_public_repo.py
 
       - name: Lint
         run: uv run --frozen --no-sync ruff check .
@@ -102,7 +105,7 @@ jobs:
         with:
           version: "0.11.23"
       - name: Sync locked qualification dependencies
-        run: uv sync --frozen --python "3.12" --extra dev
+        run: uv sync --frozen --python "3.12" --extra dev --extra documents
       - name: Qualify source and installed wheel
         run: >-
           uv run --frozen --no-sync python scripts/qa/qualify_production_reliability.py
@@ -143,7 +146,7 @@ jobs:
           version: "0.11.23"
 
       - name: Sync locked smoke dependencies
-        run: uv sync --frozen --python "3.12" --extra dev
+        run: uv sync --frozen --python "3.12" --extra dev --extra documents
 
       - name: Smoke test CLI
         run: |
@@ -220,7 +223,7 @@ jobs:
           version: "0.11.23"
 
       - name: Sync locked bridge dependencies
-        run: uv sync --frozen --extra dev
+        run: uv sync --frozen --extra dev --extra documents
 
       - name: Install extension dependencies
         working-directory: extensions/vscode-alysis
@@ -288,7 +291,7 @@ jobs:
           version: "0.11.23"
 
       - name: Verify built-in AgentBox integration and project resolution
-        run: uv run --frozen --extra dev python -m pytest tests/test_agentbox_integration.py -q
+        run: uv run --frozen --extra dev --extra documents python -m pytest tests/test_agentbox_integration.py -q
 
   package:
     name: package smoke
@@ -319,7 +322,7 @@ jobs:
           version: "0.11.23"
 
       - name: Install frozen build dependencies
-        run: uv sync --frozen --no-editable --extra dev
+        run: uv sync --frozen --no-editable --extra dev --extra documents
 
       - name: Build deterministic distributions from the frozen environment
         shell: bash

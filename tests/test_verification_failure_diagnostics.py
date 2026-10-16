@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -205,7 +207,7 @@ def test_nudge_fallback_does_not_invent_latest_failed_outcome() -> None:
 def test_actual_session_delivers_failure_identity_and_separate_real_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, one_shot: bool
 ) -> None:
-    for prefix in ("ALYSIS", "SYLLIPTOR"):
+    for prefix in ("ALYSIS", "ALYSIS"):
         for suffix in ("VERIFY_SANDBOX_MODE", "SHELL_SANDBOX_MODE"):
             monkeypatch.delenv(f"{prefix}_{suffix}", raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
@@ -220,7 +222,11 @@ def test_actual_session_delivers_failure_identity_and_separate_real_pass(
         "import unittest\nclass Passing(unittest.TestCase):\n"
         "    def test_value(self):\n        self.assertEqual(2 + 2, 4)\n"
     )
-    executable = shlex.quote(sys.executable)
+    executable = (
+        subprocess.list2cmdline([Path(sys.executable).as_posix()])
+        if os.name == "nt"
+        else shlex.quote(sys.executable)
+    )
     failed = f"{executable} -m unittest tests.test_required -v"
     passed = f"{executable} -m unittest tests.test_passing -v"
     final = LLMResponse(content="The checks are complete.", tool_calls=[], raw={})

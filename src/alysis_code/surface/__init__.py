@@ -1,6 +1,7 @@
 from .base import Surface
 from .events import (
     EVENT_REGISTRY,
+    ApprovalReviewed,
     ConfigFormRequest,
     ErrorRaised,
     Event,
@@ -26,6 +27,7 @@ from .types import (
     ApprovalDecision,
     ApprovalRequest,
     PatchEvent,
+    StandingApproval,
     StatusEvent,
     SubagentEndEvent,
     SubagentStartEvent,
@@ -45,6 +47,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "ApprovalDecision",
+    "ApprovalReviewed",
     "ApprovalRequest",
     "ConfigFormRequest",
     "EVENT_REGISTRY",
@@ -58,6 +61,7 @@ __all__ = [
     "NestedSubagentSurface",
     "NoopSurface",
     "PatchEvent",
+    "StandingApproval",
     "PlanNodeUpdated",
     "PromptForInput",
     "ReviewGateDecision",

@@ -300,7 +300,11 @@ class AlysisHarborAgent(BaseInstalledAgent):
             "--mode",
             "fullaccess",
             "--yes",
-            "--no-stream",
+            # Streaming chosen on the command line, which --strict-provenance
+            # requires: the token-plan endpoint closes a non-streaming request
+            # at 900 s, and a stream survives long thinking.
+            "--stream",
+            "--strict-provenance",
             "--max-steps",
             self._max_steps,
             "--temperature",
@@ -362,7 +366,7 @@ class AlysisHarborAgent(BaseInstalledAgent):
         return env
 
     def _shared_env(self) -> dict[str, str]:
-        return {
+        env = {
             "PYTHONUNBUFFERED": "1",
             "ALYSIS_BASE_URL": self._base_url,
             "ALYSIS_INSTALL_SPEC": self._install_spec,
@@ -373,6 +377,12 @@ class AlysisHarborAgent(BaseInstalledAgent):
             "ALYSIS_TBENCH_WEB_SEARCH_MODE": self._web_search_mode,
             "ALYSIS_VERIFY_SANDBOX_MODE": "off",
         }
+        # --strict-provenance refuses a run whose thinking setting is not
+        # explicit; the host's setting is forwarded unchanged.
+        thinking = _first_clean(self._get_env("ALYSIS_LLM_ENABLE_THINKING"))
+        if thinking:
+            env["ALYSIS_LLM_ENABLE_THINKING"] = thinking
+        return env
 
     async def _copy_runtime_artifacts(self, environment: BaseEnvironment) -> None:
         command = (

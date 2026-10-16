@@ -4,12 +4,14 @@ import base64
 import json
 import mimetypes
 import os
+import platform
 import re
 import threading
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..agent import _patchable
 from ..compaction.conversation_compactor import MEMORY_MARKER, PINS_MARKER
@@ -26,8 +28,27 @@ from ..extensions.activation import (
     WorkspaceTrustPromptFn,
     resolve_active_plugins,
 )
-from ..extensions.models import normalize_extension_id, plugin_slug_from_id
-from ..extensions.state import load_global_state, load_project_state
+from ..extensions.component_activation import (
+    PluginActivationIndex as _PluginActivationIndex,
+)
+from ..extensions.component_activation import (
+    build_plugin_activation_index as _build_plugin_activation_index,
+)
+from ..extensions.component_activation import (
+    component_plugin_allowed,
+    skill_plugin_id,
+)
+from ..extensions.component_activation import (
+    filter_discovered_skills_for_plugins as _filter_discovered_skills_for_plugins,
+)
+from ..host_images import (
+    HostImageValidationError,
+    active_host_image_coordinate_instruction,
+    is_configured_host_image_candidate,
+    prepared_host_image,
+    read_validated_host_image,
+    validate_ide_host_image,
+)
 from ..internal_artifacts import provider_history_messages
 from ..personas import DEFAULT_PERSONA, normalize_persona, persona_modes_enabled
 from ..repo_scan import (
@@ -41,8 +62,9 @@ from ..session_store import SessionStore
 from ..skills import (
     ConventionDocument,
     DiscoveredSkills,
-    SkillBundle,
+    SkillCatalog,
     SkillCatalogEntry,
+    SkillLifecycleState,
     build_skill_advertise_block,
     discover_skills,
     load_repo_conventions,
@@ -77,99 +99,10 @@ from ..workspace_binding import WorkspaceBinding
 from ..workspace_context import WORKSPACE_KIND_PLAIN_DIR, resolve_workspace_context
 from .errors import SessionWorkdirError
 from .prompt_guidance import render_guidance, replace_guidance
-from .turn_contract import (
-    TurnEffect,
-    TurnOutcome,
-    TurnRelation,
-    TurnSemantics,
-    TurnTargetKind,
-)
 
-if TYPE_CHECKING:
-    from .task_state import SessionTaskState
-
-
-@dataclass(frozen=True)
-class _PluginActivationIndex:
-    slug_to_plugin_id: dict[str, str]
-    skill_lookup_to_plugin_id: dict[str, str]
-
-
-def _build_plugin_activation_index(repo_root: Path) -> _PluginActivationIndex:
-    slug_to_plugin_id: dict[str, str] = {}
-    skill_lookup_to_plugin_id: dict[str, str] = {}
-    try:
-        states = (load_global_state(), load_project_state(repo_root))
-    except RuntimeError:
-        states = (load_global_state(),)
-    for state in states:
-        for raw_plugin_id, record in state.installed.items():
-            plugin_id = normalize_extension_id(record.id or raw_plugin_id)
-            if not plugin_id:
-                continue
-            slug_to_plugin_id[plugin_slug_from_id(plugin_id)] = plugin_id
-            for skill_id in record.component_ids.get("skill", []):
-                normalized_skill = str(skill_id or "").strip().casefold()
-                if normalized_skill:
-                    skill_lookup_to_plugin_id[normalized_skill] = plugin_id
-    return _PluginActivationIndex(
-        slug_to_plugin_id=slug_to_plugin_id,
-        skill_lookup_to_plugin_id=skill_lookup_to_plugin_id,
-    )
-
-
-def _component_plugin_allowed(
-    plugin_id: str | None,
-    activation_decision: ActivationDecision,
-    dropped_counts: Counter[str],
-) -> bool:
-    if plugin_id is None:
-        return True
-    normalized = normalize_extension_id(plugin_id)
-    if normalized in activation_decision.enabled_plugin_ids:
-        return True
-    dropped_counts[normalized] += 1
-    return False
-
-
-def _skill_plugin_id(skill: SkillBundle, index: _PluginActivationIndex) -> str | None:
-    for lookup_key in skill.lookup_keys():
-        plugin_id = index.skill_lookup_to_plugin_id.get(lookup_key.casefold())
-        if plugin_id is not None:
-            return plugin_id
-    return None
-
-
-def _filter_discovered_skills_for_plugins(
-    *,
-    discovered: DiscoveredSkills,
-    activation_decision: ActivationDecision,
-    index: _PluginActivationIndex,
-) -> tuple[DiscoveredSkills, Counter[str]]:
-    dropped_counts: Counter[str] = Counter()
-    kept_ordered = tuple(
-        skill
-        for skill in discovered.ordered
-        if _component_plugin_allowed(
-            _skill_plugin_id(skill, index),
-            activation_decision,
-            dropped_counts,
-        )
-    )
-    kept_keys = {skill.name.casefold() for skill in kept_ordered}
-    kept_skills = {
-        key: skill
-        for key, skill in discovered.skills.items()
-        if key.casefold() in kept_keys or skill.name.casefold() in kept_keys
-    }
-    return (
-        DiscoveredSkills(
-            skills=dict(sorted(kept_skills.items(), key=lambda item: item[0])),
-            ordered=kept_ordered,
-            issues=discovered.issues,
-        ),
-        dropped_counts,
-    )
+# Keep the compatibility exports used by agent_loop and session/tool assembly.
+_component_plugin_allowed = component_plugin_allowed
+_skill_plugin_id = skill_plugin_id
 
 
 def _merge_dropped_counts(*counters: Counter[str]) -> dict[str, int]:
@@ -180,8 +113,9 @@ def _merge_dropped_counts(*counters: Counter[str]) -> dict[str, int]:
 
 
 _BASE_CLARIFICATION_RULE = (
-    "- When the user request is genuinely ambiguous or scope-defining, "
-    "ask one concise clarifying question before starting. Otherwise proceed."
+    "- Inspect relevant context before asking. Proceed with reasonable assumptions for "
+    "reversible details; clarify only consequential choices that the user must make. "
+    "Continue independent work while a decision is pending."
 )
 
 SYSTEM_PROMPT = (
@@ -200,7 +134,9 @@ Core objective
 - Inspect unverified repository/runtime claims; answer social/meta/resolved questions directly.
 - For non-trivial work, make a short plan before editing; update as needed.
 - Use tools for resolvable questions. For underspecified actionable requests, state and use a reasonable option.
-- When the user request is genuinely ambiguous or scope-defining, ask one concise clarifying question before starting. Otherwise proceed.
+"""
+    + _BASE_CLARIFICATION_RULE
+    + """
 
 Deliverables
 - Never require an internal tool/subagent name; deliver outcomes with available capabilities.
@@ -221,7 +157,7 @@ Security and trust boundaries
 
 Environment and approvals
 - Modes: readonly forbids writes/shell; review may require approval; auto honors runtime confirmation; fullaccess has no mode-level write/shell guards.
-- Non-interactive runs must avoid approval-gated actions; environment context is authoritative.
+- Non-interactive runs must avoid approval-gated actions. Environment context is authoritative: answer questions about its os, shell, date or mode from it, without running a command.
 
 Repo-global working rules
 - Prefer structured built-in tools over raw shell when equivalent. Read the smallest relevant scope first. If the user names a specific file/path, read that exact path before concluding it is missing or empty.
@@ -275,6 +211,17 @@ Skills lifecycle
 _SYSTEM_PROMPT_SUBAGENT_SECTION = render_guidance("delegation", "balanced")
 
 
+_SYSTEM_PROMPT_QUESTION_SECTION = """
+
+Questions and assumptions
+- Clear tasks need no questions. Ask only consequential user-owned goals, audience, behavior, scope, constraints, or success criteria.
+- Prefer one question; batch up to three independent questions per decision. Follow up only for new consequential uncertainty, never on a timer or tool count.
+- Reuse answers; do not repeat answered, dismissed, or timed-out questions without new user direction. State material assumptions.
+- Planning/interviews can use small rounds; stop when actionable. Planning is not permission to implement.
+- Use request_user_input when available for optional questions with a reasonable fallback; continue independent work. Follow its format and timeout guidance. Never use it for permissions, secrets, or essential inputs with no safe fallback: identify the missing input and hold the dependent action.
+"""
+
+
 _SYSTEM_PROMPT_PERSONA_SECTION = """
 
 Persona modes
@@ -300,11 +247,6 @@ ALWAYS_PROTECTED_WRITE_PREFIXES = [
     ".alysis_images",
     ".git",
     "alysis-feedback",
-    # Pre-rebrand equivalents. A repo that still carries these must keep the
-    # same write protection, or the agent could clobber its own run history.
-    ".sylliptor",
-    ".sylliptor_images",
-    "sylliptor-feedback",
 ]
 
 _MODE_FULLACCESS = "fullaccess"
@@ -343,79 +285,75 @@ _IMAGE_ATTACHMENT_TURN_SYSTEM_HINT = (
     "Do not infer visual details from file paths, filenames, or terminal text."
 )
 
-_TASK_BRIEF_MARKER = "<task_brief>"
+_DESKTOP_CONTEXT_PREFIX = "[Alysis Desktop context - not typed by the user]"
+DESKTOP_CONTEXT_PREFIXES = (_DESKTOP_CONTEXT_PREFIX,)
 
-# Host-owned metadata, never inferred from arbitrary conversation text. The
-# retained brief stays pinned for compaction, but changes on accepted task
-# amendments and is projected before the current user turn for providers.
-TASK_BRIEF_REQUEST_CONTEXT_KEY = "alysis_task_brief_context"
+_DESKTOP_CONTEXT_USER_MARKER_RE = re.compile(r"\n\s*User message:\s*\n", re.IGNORECASE)
 
-# Line-based projection used by consumers that only need a glimpse of the
-# brief text (verification hints); the pinned brief itself is rendered from
-# the host state with the character budgets below.
-_TASK_BRIEF_MAX_CURRENT_LINES = 3
-
-_TASK_BRIEF_MAX_PRIOR_LINES = 3
-
-_TASK_BRIEF_MAX_LINE_CHARS = 120
-
-# Bounded prompt projection of the exact host state. The accepted request is
-# rendered exactly (its own lines, spacing, indentation and case) up to this
-# many *rendered* characters, and every accepted constraint exactly up to the
-# constraint budget. The budgets count what is rendered (bullet prefixes and
-# line breaks included), so the whole brief is bounded by
-# ``_TASK_BRIEF_MAX_CHARS`` whatever the request looks like — one long line,
-# thousands of short ones. Text beyond a budget is announced explicitly and
-# is delivered exactly by the pinned ``<task_requirements>`` message.
-_TASK_BRIEF_OBJECTIVE_MAX_CHARS = 4000
-
-_TASK_BRIEF_CONSTRAINTS_MAX_CHARS = 2000
-
-# Fixed rendering overhead of a brief: marker lines, section headers and the
-# two announcement lines. Every rendered brief is asserted (and tested) to
-# stay within the two budgets plus this overhead.
-_TASK_BRIEF_OVERHEAD_MAX_CHARS = 512
-
-_TASK_BRIEF_MAX_CHARS = (
-    _TASK_BRIEF_OBJECTIVE_MAX_CHARS
-    + _TASK_BRIEF_CONSTRAINTS_MAX_CHARS
-    + _TASK_BRIEF_OVERHEAD_MAX_CHARS
-)
-
-# Exact delivery of the accepted requirements when the brief cannot carry
-# them all: a second pinned host message, ``<task_requirements>``, rendered
-# from the same host state, carrying the complete accepted request and every
-# accepted constraint verbatim up to this many characters. It is part of the
-# pinned prompt prefix, so it survives compaction, a failed-turn rollback, a
-# history rollover and a resume without depending on the transcript copy or
-# on any generated summary. Beyond the budget the message says exactly how
-# much is missing and that the missing requirements must not be assumed —
-# a bounded clarification condition instead of silent partial delivery.
-_TASK_REQUIREMENTS_MARKER = "<task_requirements>"
-
-_TASK_REQUIREMENTS_MAX_CHARS = 24_000
-
-_TASK_REQUIREMENTS_OVERHEAD_MAX_CHARS = 1024
-
-# Rendered while the host holds no accepted task (legitimate empty startup).
-_TASK_BRIEF_EMPTY_STATUS = "awaiting_substantive_repo_request"
-
-# Rendered when a resumed log carried task-state events the host could not
-# read. Names the limitation instead of guessing a task from other messages.
-_TASK_BRIEF_UNRECOVERED_STATUS = "task_state_unrecoverable_after_resume"
+_DESKTOP_ATTACHED_ITEM_MARKER = "\n[Attached item]\n"
 
 _INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
 
 _REPO_REL_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.\\/\\-]+")
 
 
+_APPROVED_PLAN_MARKER = "Approved plan:\n"
+_APPROVED_PLAN_EXECUTE_MARKER = "Now execute this task"
+
+
+def extract_approved_plan_user_message(text: str) -> str | None:
+    """Return the user request preceding an approved-plan execution envelope.
+
+    Kept here after the standalone plan-mode module was removed: hosts may still
+    submit ``<request> Approved plan: ... Now execute this task`` envelopes, and
+    only the user-authored request may bind controller contracts.
+    """
+
+    clean = str(text or "").strip()
+    if not clean:
+        return None
+    plan_idx = clean.find(_APPROVED_PLAN_MARKER)
+    execute_idx = clean.find(_APPROVED_PLAN_EXECUTE_MARKER)
+    if plan_idx < 0 or execute_idx < 0 or plan_idx >= execute_idx:
+        return None
+    base = clean[:plan_idx].rstrip()
+    if not base:
+        return None
+    return base
+
+
+def extract_user_visible_instruction(text: str) -> str:
+    """Return only the user-authored request from a host-managed instruction.
+
+    Desktop injects capability guidance and recent conversation before a stable
+    ``User message:`` boundary. That context is useful to the model, but it is
+    not user acceptance criteria and must never drive execution gates, task
+    briefs, or UI display. Attachment payloads remain model-visible while the
+    controller contracts bind only to the user's text that precedes them.
+    """
+
+    raw = str(text or "")
+    approved_plan = extract_approved_plan_user_message(raw)
+    if approved_plan and approved_plan != raw:
+        return approved_plan.strip()
+
+    stripped = raw.lstrip()
+    if stripped.startswith(DESKTOP_CONTEXT_PREFIXES):
+        markers = tuple(_DESKTOP_CONTEXT_USER_MARKER_RE.finditer(stripped))
+        if markers:
+            # The host boundary is appended after all managed conversation
+            # context. A quoted earlier occurrence is untrusted conversation
+            # data, so only the final marker can delimit the live request.
+            stripped = stripped[markers[-1].end() :]
+
+    attachment_index = stripped.find(_DESKTOP_ATTACHED_ITEM_MARKER)
+    if attachment_index >= 0:
+        stripped = stripped[:attachment_index]
+    return stripped.strip()
+
+
 def _workspace_kind_is_repo_backed(workspace_kind: str | None) -> bool:
     return str(workspace_kind or "").strip() in {"git_repo", "git_repo_no_head"}
-
-
-def _workspace_kind_supports_task_brief(workspace_kind: str | None) -> bool:
-    normalized = str(workspace_kind or "").strip()
-    return normalized in {"git_repo", "git_repo_no_head", WORKSPACE_KIND_PLAIN_DIR}
 
 
 def _workspace_kind_is_plain_dir(workspace_kind: str | None) -> bool:
@@ -891,6 +829,39 @@ def _sandbox_git_policy_line(cfg: Any) -> str | None:
     )
 
 
+def session_shell_environment(cfg: Any, *, shell_disabled: bool) -> str | None:
+    """The shell this session's shell_run uses, named for <environment_context>.
+
+    It is the decision create_session makes for the session's runner: a disabled runner in
+    readonly mode or for sensitive media, otherwise the runner built from
+    select_shell_sandbox_backend on these sandbox settings. The runner never changes for
+    the life of a session, so the session keeps this value and every refresh reuses it.
+    """
+    if shell_disabled:
+        return "none (shell commands are disabled in this session)"
+    try:
+        from ..sandbox_runner import describe_shell_backend, select_shell_sandbox_backend
+        from ..sandbox_settings import resolve_shell_sandbox_settings
+
+        settings = resolve_shell_sandbox_settings(cfg)
+        return describe_shell_backend(select_shell_sandbox_backend(settings))
+    except Exception:  # noqa: BLE001 - a context line must never break prompt assembly
+        return None
+
+
+def _host_os_name() -> str:
+    system = platform.system()
+    return {"windows": "Windows", "darwin": "macOS", "linux": "Linux"}.get(
+        system.lower(), system or "unknown"
+    )
+
+
+def _local_date() -> date:
+    # The date only, never the time: the block is part of the cached prompt prefix, so it
+    # must not change within a day.
+    return date.today()
+
+
 def _environment_context_message(
     *,
     mode: str,
@@ -909,14 +880,18 @@ def _environment_context_message(
     one_shot_execution: bool,
     persona_allow_write_globs: list[str] | None = None,
     git_policy: str | None = None,
+    shell: str | None = None,
 ) -> str:
     allow_payload = (
         json.dumps(allow_write_globs, ensure_ascii=True)
         if allow_write_globs is not None
         else "null"
     )
-    lines = [
-        "<environment_context>",
+    lines = ["<environment_context>", f"os: {_host_os_name()}"]
+    if shell:
+        lines.append(f"shell: {shell}")
+    lines += [
+        f"date: {_local_date().isoformat()}",
         f"mode: {mode}",
     ]
     if persona and persona != DEFAULT_PERSONA:
@@ -1064,6 +1039,7 @@ def refresh_session_environment_context_message(session: Any) -> bool:
         one_shot_execution=one_shot_execution,
         persona_allow_write_globs=persona_allow_write_globs,
         git_policy=_sandbox_git_policy_line(getattr(session, "cfg", None)),
+        shell=getattr(session, "shell_environment", None),
     )
 
     for idx, message in enumerate(messages_obj):
@@ -1107,370 +1083,6 @@ def _session_repo_scan(session: Any) -> RepoScanResult | None:
         return RepoScanResult.from_dict(raw)
     except Exception:  # noqa: BLE001
         return None
-
-
-def _empty_task_brief_message() -> str:
-    # The host accepts and renders the task before the first model request.
-    return f"{_TASK_BRIEF_MARKER}status: {_TASK_BRIEF_EMPTY_STATUS}</task_brief>"
-
-
-def _unrecovered_task_brief_message() -> str:
-    return f"{_TASK_BRIEF_MARKER}status: {_TASK_BRIEF_UNRECOVERED_STATUS}</task_brief>"
-
-
-def _task_brief_item(line: str) -> str:
-    """One exact line of accepted text as a brief item.
-
-    ``- `` followed by the line exactly as accepted (leading spaces, tabs,
-    double spaces and case included); a blank line is the bare item ``-`` so
-    the request's line structure is reproduced exactly and the model can read
-    the text back verbatim.
-    """
-
-    return f"- {line}" if line else "-"
-
-
-def _task_brief_objective_lines(objective: str) -> tuple[list[str], int]:
-    """Project the accepted request into the brief within its budget.
-
-    Returns the rendered items and the number of characters of the request
-    that were not rendered. Lines are the request's own (``\\n``-separated),
-    rendered exactly and whole; the budget counts rendered characters
-    (prefix and line break included), so the projection is bounded whatever
-    the line structure. Only when the first line alone exceeds the budget is
-    its head shown with ``...`` so the brief is never empty.
-    """
-
-    text = str(objective or "")
-    if not text.strip():
-        return [], 0
-    raw_lines = text.split("\n")
-    rendered: list[str] = []
-    used = 0
-    delivered = 0
-    for index, line in enumerate(raw_lines):
-        item = _task_brief_item(line)
-        cost = len(item) + 1
-        if used + cost <= _TASK_BRIEF_OBJECTIVE_MAX_CHARS:
-            rendered.append(item)
-            used += cost
-            # Delivered request characters: the line plus its separator.
-            delivered += len(line) + (1 if index < len(raw_lines) - 1 else 0)
-            continue
-        if not rendered:
-            head_budget = _TASK_BRIEF_OBJECTIVE_MAX_CHARS - len("- ") - len("...") - 1
-            head = line[: max(0, head_budget)]
-            rendered.append(f"- {head}...")
-            delivered += len(head)
-        break
-    return rendered, max(0, len(text) - delivered)
-
-
-def _task_brief_constraint_lines(amendments: tuple[str, ...]) -> tuple[list[str], int]:
-    """Project the accepted amendments within their budget.
-
-    Returns the rendered items and the number of amendments that are *not*
-    shown in full. Each amendment is rendered exactly, newest amendment
-    first, as one ``- `` item per line of its text in its original order
-    (a blank line is the bare item ``-``, repeated lines are repeated); the
-    budget counts rendered characters. An amendment that does not fit whole
-    is not rendered, except that the first one is shown clipped (``...``)
-    when it alone exceeds the whole budget so the section is never empty —
-    and it still counts as not shown in full.
-    """
-
-    rendered: list[str] = []
-    used = 0
-    omitted = 0
-    for text in amendments:
-        items = [_task_brief_item(line) for line in str(text).split("\n")]
-        cost = sum(len(item) + 1 for item in items)
-        if used + cost <= _TASK_BRIEF_CONSTRAINTS_MAX_CHARS:
-            rendered.extend(items)
-            used += cost
-            continue
-        omitted += 1
-        if not rendered:
-            head_budget = _TASK_BRIEF_CONSTRAINTS_MAX_CHARS - len("- ") - len("...") - 1
-            head = str(text).split("\n")[0]
-            rendered.append(f"- {head[: max(0, head_budget)]}...")
-            used = _TASK_BRIEF_CONSTRAINTS_MAX_CHARS
-    return rendered, omitted
-
-
-def task_brief_carries_full_objective(state: SessionTaskState) -> bool:
-    """Whether the pinned brief alone shows the complete accepted request."""
-
-    if state.objective_truncated:
-        return False
-    _lines, omitted = _task_brief_objective_lines(state.objective)
-    return omitted == 0
-
-
-def task_brief_carries_full_requirements(state: SessionTaskState) -> bool:
-    """Whether the pinned brief alone shows every accepted requirement exactly:
-    the complete request and every accepted amendment in full.
-
-    A multi-line amendment is never "fully carried" by the brief's flat item
-    list, which cannot show where one amendment ends and the next begins;
-    its exact block is delivered by the ``<task_requirements>`` message.
-    """
-
-    if not task_brief_carries_full_objective(state):
-        return False
-    if any("\n" in str(text) for text in state.amendments):
-        return False
-    _lines, omitted = _task_brief_constraint_lines(state.amendments)
-    return omitted == 0
-
-
-def _task_requirements_amendment_block(text: str) -> str:
-    """One accepted amendment, verbatim, between explicit delimiters."""
-
-    return f"<accepted_amendment>\n{text}\n</accepted_amendment>"
-
-
-def _task_requirements_projection(
-    state: SessionTaskState,
-) -> tuple[str, int, list[str], int]:
-    """What the ``<task_requirements>`` message delivers within its budget.
-
-    Returns ``(request_text, request_missing_chars, amendment_blocks,
-    amendments_missing)``: the request delivered exactly (its head when it
-    does not fit), how many characters of it are not delivered, the
-    amendments delivered exactly (each a verbatim ``<accepted_amendment>``
-    block, newest first) and how many are not. Amendments are complete units
-    and are placed first within the budget (newest first, contiguously); the
-    request takes what remains — whole when it fits, otherwise its head.
-    """
-
-    budget = _TASK_REQUIREMENTS_MAX_CHARS
-    items: list[str] = []
-    missing = 0
-    used = 0
-    for text in state.amendments:
-        block = _task_requirements_amendment_block(str(text))
-        cost = len(block) + 1
-        if missing == 0 and used + cost <= budget:
-            items.append(block)
-            used += cost
-            continue
-        missing += 1
-    remaining = max(0, budget - used)
-    objective = state.objective
-    if len(objective) <= remaining:
-        request_text = objective
-        request_missing = 0
-    else:
-        request_text = objective[:remaining]
-        request_missing = len(objective) - remaining
-    return request_text, request_missing, items, missing
-
-
-def task_requirements_delivered_by_pinned_messages(state: SessionTaskState) -> bool:
-    """Whether the pinned host messages (brief + requirements) carry every
-    accepted requirement exactly.
-
-    False only when the accepted request or its constraints exceed the
-    requirements delivery budget (or the request hit the host's hard limit):
-    the transcript copy of the accepted message is then the only complete
-    model-visible channel, the turn runtime keeps it through a rollback, and
-    the requirements message states the bounded clarification condition.
-    """
-
-    if state.objective_truncated:
-        return False
-    if task_brief_carries_full_requirements(state):
-        return True
-    _text, request_missing, _items, constraints_missing = _task_requirements_projection(state)
-    return request_missing == 0 and constraints_missing == 0
-
-
-def _user_message_texts(messages: list[dict[str, Any]]) -> list[str]:
-    texts: list[str] = []
-    for message in messages:
-        if str(message.get("role") or "") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            texts.append(content)
-        elif isinstance(content, list):
-            texts.append(_message_text_content(message))
-    return texts
-
-
-def undelivered_task_requirements(
-    messages: list[dict[str, Any]], state: SessionTaskState | None
-) -> list[str]:
-    """Accepted requirements whose exact text the model would *not* see.
-
-    Checks actual delivery in ``messages`` (the outgoing model context), not
-    the size of the host state: a requirement is delivered when the pinned
-    ``<task_brief>`` carries it in full, when the pinned
-    ``<task_requirements>`` message present in ``messages`` carries it
-    verbatim, or when a user message in ``messages`` still contains its exact
-    text (the accepted request's own message, or its rehydrated copy). Returns
-    the names of the requirements that fail all three — ``accepted request``
-    and/or ``accepted amendment <n>`` (1 = newest) — so the turn runtime can
-    refuse to act on them instead of letting the model proceed from a partial
-    view after compaction, a history rollover or a resume.
-    """
-
-    if state is None:
-        return []
-    user_texts = _user_message_texts(messages)
-    brief_present = any(text.lstrip().startswith(_TASK_BRIEF_MARKER) for text in user_texts)
-    if brief_present and task_brief_carries_full_requirements(state):
-        return []
-    requirements_present = any(
-        text.lstrip().startswith(_TASK_REQUIREMENTS_MARKER) for text in user_texts
-    )
-    request_text, request_missing, blocks, _missing = _task_requirements_projection(state)
-
-    def in_transcript(needle: str) -> bool:
-        return any(
-            needle in text
-            for text in user_texts
-            if not text.lstrip().startswith((_TASK_BRIEF_MARKER, _TASK_REQUIREMENTS_MARKER))
-        )
-
-    missing: list[str] = []
-    objective_pinned = (
-        requirements_present and request_missing == 0 and not state.objective_truncated
-    )
-    if not objective_pinned and not in_transcript(state.objective):
-        missing.append("accepted request")
-    delivered_blocks = set(blocks) if requirements_present else set()
-    for index, text in enumerate(state.amendments, start=1):
-        if _task_requirements_amendment_block(str(text)) in delivered_blocks:
-            continue
-        if in_transcript(str(text)):
-            continue
-        missing.append(f"accepted amendment {index}")
-    return missing
-
-
-def _render_task_requirements_from_state(state: SessionTaskState | None) -> str | None:
-    """The pinned ``<task_requirements>`` message, or ``None`` when the brief
-    already carries every accepted requirement exactly (the ordinary case).
-
-    Rendered from the host state only. The accepted request is reproduced
-    verbatim between ``<accepted_request>`` and ``</accepted_request>``;
-    every accepted amendment is reproduced verbatim — line order, repeated
-    lines, blank lines, indentation, line endings — between
-    ``<accepted_amendment>`` and ``</accepted_amendment>``, newest first.
-    Bounded by ``_TASK_REQUIREMENTS_MAX_CHARS`` plus a fixed overhead: what
-    does not fit is announced with its exact size and an instruction not to
-    assume it (the turn runtime additionally refuses to act while the exact
-    text is not in the outgoing request; see ``turn/core.py``).
-    """
-
-    if state is None or task_brief_carries_full_requirements(state):
-        return None
-    request_text, request_missing, items, constraints_missing = _task_requirements_projection(state)
-    complete = request_missing == 0 and constraints_missing == 0 and not state.objective_truncated
-    lines = [
-        _TASK_REQUIREMENTS_MARKER,
-        "source: host_owned_task_state",
-        f"delivery: {'complete' if complete else 'partial'}",
-    ]
-    if request_missing > 0:
-        lines.append(
-            f"accepted_request: {len(state.objective)} characters; the first "
-            f"{len(request_text)} follow verbatim"
-        )
-    else:
-        lines.append(f"accepted_request: {len(state.objective)} characters, verbatim")
-    lines.append("<accepted_request>")
-    lines.append(request_text)
-    lines.append("</accepted_request>")
-    if state.objective_truncated:
-        lines.append(
-            "[accepted request exceeded the host limit; the complete text is in the "
-            "originating user message]"
-        )
-    elif request_missing > 0:
-        lines.append(
-            f"[accepted request continues: {request_missing} more characters beyond the "
-            f"host delivery budget of {_TASK_REQUIREMENTS_MAX_CHARS} characters; they are "
-            "available only while the original request message is still in this "
-            "conversation. Do not assume requirements you cannot see: ask the user to "
-            "restate them before acting on them.]"
-        )
-    if state.amendments:
-        lines.append(f"accepted_amendments: {len(state.amendments)}, verbatim, newest first")
-        lines.extend(items)
-        if constraints_missing > 0:
-            lines.append(
-                f"[{constraints_missing} accepted amendment(s) beyond the host delivery "
-                "budget; they are available only while their original messages are still in "
-                "this conversation. Do not assume requirements you cannot see: ask the user to "
-                "restate them before acting on them.]"
-            )
-    lines.append("</task_requirements>")
-    return "\n".join(lines) + "\n"
-
-
-def _render_task_brief_from_state(state: SessionTaskState | None, *, unrecovered: bool) -> str:
-    """Bounded projection of the exact host-owned task state.
-
-    The brief carries the accepted request exactly up to
-    ``_TASK_BRIEF_OBJECTIVE_MAX_CHARS`` rendered characters and every accepted
-    constraint exactly up to ``_TASK_BRIEF_CONSTRAINTS_MAX_CHARS``. Text beyond
-    a budget is announced explicitly and delivered by the pinned
-    ``<task_requirements>`` message, never dropped silently. Identity fields
-    (task id, origin event) stay host-side; replaced objectives are identity
-    history, not current focus.
-    """
-
-    if state is None:
-        return _unrecovered_task_brief_message() if unrecovered else _empty_task_brief_message()
-    current_items, omitted_chars = _task_brief_objective_lines(state.objective)
-    if not current_items:
-        return _empty_task_brief_message()
-    if state.objective_truncated:
-        current_items.append(
-            _task_brief_item(
-                "[accepted request exceeded the host limit; the complete text is in the "
-                "originating user message]"
-            )
-        )
-    elif omitted_chars > 0:
-        current_items.append(
-            _task_brief_item(
-                f"[accepted request continues: {omitted_chars} more characters; "
-                "the complete text is in the pinned <task_requirements> message]"
-            )
-        )
-    prior_items, omitted_constraints = _task_brief_constraint_lines(state.amendments)
-    if omitted_constraints > 0:
-        prior_items.append(
-            _task_brief_item(
-                f"[{omitted_constraints} accepted constraint(s) not shown in full; "
-                "the complete list is in the pinned <task_requirements> message]"
-            )
-        )
-    return _render_task_brief_message(current_items=current_items, prior_items=prior_items)
-
-
-def _render_task_brief_message(
-    *,
-    current_items: list[str],
-    prior_items: list[str],
-) -> str:
-    """Assemble the brief from already-rendered ``- `` items."""
-
-    lines = [
-        _TASK_BRIEF_MARKER,
-        "source: direct_user_repo_turns",
-        "current_focus:",
-    ]
-    lines.extend(current_items)
-    if prior_items:
-        lines.append("recent_user_constraints:")
-        lines.extend(prior_items)
-    lines.append("</task_brief>")
-    return "\n".join(lines) + "\n"
 
 
 def _message_text_content(message: dict[str, Any]) -> str:
@@ -1626,7 +1238,6 @@ def refresh_session_workspace_binding_context_message(session: Any) -> bool:
     refreshed_content = _session_workspace_binding_context_message(session)
     pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
     existing_index: int | None = None
-    task_brief_index: int | None = None
     environment_index: int | None = None
     for idx, message in enumerate(messages_obj):
         if str(message.get("role") or "") != "user":
@@ -1637,24 +1248,12 @@ def refresh_session_workspace_binding_context_message(session: Any) -> bool:
         stripped = content.lstrip()
         if existing_index is None and stripped.startswith("<workspace_binding_context>"):
             existing_index = idx
-        if task_brief_index is None and stripped.startswith(_TASK_BRIEF_MARKER):
-            task_brief_index = idx
         if environment_index is None and stripped.startswith("<environment_context>"):
             environment_index = idx
-        if (
-            existing_index is not None
-            and task_brief_index is not None
-            and environment_index is not None
-        ):
+        if existing_index is not None and environment_index is not None:
             break
     if existing_index is None:
-        insert_index = (
-            task_brief_index
-            if task_brief_index is not None
-            else environment_index
-            if environment_index is not None
-            else pinned_prefix_len
-        )
+        insert_index = environment_index if environment_index is not None else pinned_prefix_len
         messages_obj.insert(insert_index, {"role": "user", "content": refreshed_content})
         if insert_index <= pinned_prefix_len:
             _set_session_pinned_prefix_len(session, pinned_prefix_len + 1)
@@ -1726,118 +1325,12 @@ def _is_host_managed_user_context_message(text: str) -> bool:
             "<resume_context>",
             "<workspace_binding_context>",
             "<scoped_prompt_prelude>",
-            _TASK_BRIEF_MARKER,
-            _TASK_REQUIREMENTS_MARKER,
+            "<task_brief>",  # Legacy saved-session context.
+            "<task_requirements>",
             "<subagent_context>",
             "<environment_context>",
         )
     )
-
-
-def _normalize_task_brief_key(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "").strip()).casefold()
-
-
-def _normalize_task_brief_line(line: str) -> str:
-    raw = str(line or "").strip()
-    if not raw:
-        return ""
-    match = re.match(r"^([-*+]|\d+[.)])\s+(.*)$", raw)
-    if match:
-        prefix = f"{match.group(1)} "
-        body = match.group(2)
-    else:
-        prefix = ""
-        body = raw
-    compact = re.sub(r"\s+", " ", body).strip()
-    if not compact:
-        return ""
-    candidate = f"{prefix}{compact}".strip()
-    if len(candidate) <= _TASK_BRIEF_MAX_LINE_CHARS:
-        return candidate
-    return candidate[: _TASK_BRIEF_MAX_LINE_CHARS - 3].rstrip() + "..."
-
-
-def _task_brief_lines_from_text(text: str, *, max_lines: int) -> list[str]:
-    lines: list[str] = []
-    for raw_line in str(text or "").splitlines():
-        normalized = _normalize_task_brief_line(raw_line)
-        if normalized:
-            lines.append(normalized)
-        if len(lines) >= max_lines:
-            break
-    if lines:
-        return lines
-    normalized = _normalize_task_brief_line(text)
-    if normalized:
-        return [normalized]
-    return []
-
-
-def _semantics_describes_workspace_task(
-    semantics: TurnSemantics,
-    *,
-    route: str,
-) -> bool:
-    workspace_effects = {
-        TurnEffect.READ_WORKSPACE,
-        TurnEffect.WRITE_WORKSPACE,
-        TurnEffect.RUN_COMMANDS,
-    }
-    # With no contract the effect set is empty because nothing classified the
-    # turn, not because the turn wants nothing. On a repo route the workspace
-    # framing is still the right one.
-    if not bool(getattr(semantics, "contract_available", True)):
-        return str(route or "").strip().lower() == "repo"
-    if set(semantics.requested_effects) & workspace_effects:
-        return True
-    if any(
-        target.kind in {TurnTargetKind.WORKSPACE, TurnTargetKind.WORKSPACE_PATH}
-        for target in semantics.targets
-    ):
-        return True
-    return str(route or "").strip().lower() == "repo" and semantics.outcome in {
-        TurnOutcome.INSPECT,
-        TurnOutcome.REVIEW,
-        TurnOutcome.PLAN,
-        TurnOutcome.CHANGE,
-        TurnOutcome.RUN,
-        TurnOutcome.ARTIFACT,
-        TurnOutcome.MANAGE_CAPABILITY,
-    }
-
-
-def _task_relation_from_turn_semantics(
-    *,
-    turn_semantics: TurnSemantics,
-    route: str,
-    has_active_task: bool,
-) -> str | None:
-    """Map a legacy router contract onto a host task transition.
-
-    Returns the ``task_state`` relation to apply, or ``None`` when the contract
-    describes something that must not touch the task (an acknowledgement, an
-    explanation of prior work, a non-workspace turn, or an unclassifiable turn
-    while a task is already active). The rendering itself always comes from the
-    host-owned state, never from this mapping.
-    """
-
-    if not _semantics_describes_workspace_task(turn_semantics, route=route):
-        return None
-    relation = turn_semantics.relation
-    if relation in {
-        TurnRelation.ACKNOWLEDGE,
-        TurnRelation.EXPLAIN_PRIOR,
-        TurnRelation.SUMMARIZE_PRIOR,
-    }:
-        return None
-    if relation is TurnRelation.CONTINUE:
-        return "continuation"
-    if relation is TurnRelation.REFINE:
-        return "amendment" if has_active_task else "new_task"
-    if relation is TurnRelation.UNKNOWN:
-        return None if has_active_task else "new_task"
-    return "new_task"
 
 
 def _resolve_session_pinned_prefix_len(session: Any) -> int:
@@ -1859,82 +1352,6 @@ def _resolve_session_pinned_prefix_len(session: Any) -> int:
         if isinstance(content, str) and content.lstrip().startswith("<environment_context>"):
             return idx + 1
     return len(messages_obj)
-
-
-def _task_brief_content_is_placeholder(content: str) -> bool:
-    # Recognize our serialized empty records, including the old saved-session
-    # form. A substantive brief quoting a status must not become a placeholder.
-    return str(content or "").strip() in {
-        _empty_task_brief_message(),
-        _unrecovered_task_brief_message(),
-        f"{_TASK_BRIEF_MARKER}status: awaiting_substantive_repo_request</task_brief>",
-    }
-
-
-def _session_task_brief_content(session: Any) -> str:
-    """The rendered brief as the model sees it (a projection of ``task_state``)."""
-
-    messages_obj = getattr(session, "messages", None)
-    if not isinstance(messages_obj, list):
-        return ""
-    for message in messages_obj:
-        if str(message.get("role") or "") != "user":
-            continue
-        content = str(message.get("content") or "")
-        if content.startswith(_TASK_BRIEF_MARKER):
-            return content
-    return ""
-
-
-def _session_task_requirements_content(session: Any) -> str:
-    """The pinned ``<task_requirements>`` message as the model sees it (``""`` when
-    the brief carries every requirement and no such message exists)."""
-
-    messages_obj = getattr(session, "messages", None)
-    if not isinstance(messages_obj, list):
-        return ""
-    for message in messages_obj:
-        if str(message.get("role") or "") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str) and content.startswith(_TASK_REQUIREMENTS_MARKER):
-            return content
-    return ""
-
-
-def _session_task_state(session: Any) -> SessionTaskState | None:
-    from .task_state import SessionTaskState
-
-    state = getattr(session, "task_state", None)
-    return state if isinstance(state, SessionTaskState) else None
-
-
-def session_renders_task_brief(session: Any) -> bool:
-    """Whether this session is one the host renders the pinned ``<task_brief>``
-    (and, when needed, ``<task_requirements>``) for: a top-level session in a
-    workspace kind that supports the brief. Child sessions receive their task
-    as the delegated user turn and are not covered by the delivery guarantee.
-    """
-
-    if int(getattr(session, "subagent_depth", 0) or 0) > 0:
-        return False
-    store_obj = getattr(session, "store", None)
-    workspace_kind = getattr(store_obj, "workspace_kind", None)
-    return _workspace_kind_supports_task_brief(workspace_kind)
-
-
-def _session_has_active_workspace_task(session: Any) -> bool:
-    """Whether the host holds an accepted task for this session.
-
-    Reads the authoritative state only. Neither the rendered prompt text nor
-    the set of files a turn touched is evidence that a task exists.
-    """
-
-    store_obj = getattr(session, "store", None)
-    workspace_kind = getattr(store_obj, "workspace_kind", None)
-    if not _workspace_kind_supports_task_brief(workspace_kind):
-        return False
-    return _session_task_state(session) is not None
 
 
 def _workspace_hint_from_repo_scan(*, root: Path, repo_scan: RepoScanResult) -> str:
@@ -2109,221 +1526,6 @@ def _set_session_pinned_prefix_len(session: Any, value: int) -> None:
             pass
 
 
-def _ensure_session_task_brief_message(
-    session: Any,
-) -> tuple[list[dict[str, Any]], int, str, bool] | None:
-    messages_obj = getattr(session, "messages", None)
-    if not isinstance(messages_obj, list):
-        return None
-    store_obj = getattr(session, "store", None)
-    workspace_kind = getattr(store_obj, "workspace_kind", None)
-    if not _workspace_kind_supports_task_brief(workspace_kind):
-        return None
-
-    pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
-    existing_index: int | None = None
-    environment_index: int | None = None
-    inserted_placeholder = False
-
-    for idx, message in enumerate(messages_obj):
-        if str(message.get("role") or "") != "user":
-            continue
-        content = message.get("content")
-        if not isinstance(content, str):
-            continue
-        stripped = content.lstrip()
-        if (
-            existing_index is None
-            and idx < pinned_prefix_len
-            and stripped.startswith(_TASK_BRIEF_MARKER)
-        ):
-            existing_index = idx
-        if environment_index is None and stripped.startswith("<environment_context>"):
-            environment_index = idx
-        if existing_index is not None and environment_index is not None:
-            break
-
-    if existing_index is None and int(getattr(session, "subagent_depth", 0) or 0) > 0:
-        # A child receives its substantive task as the delegated user turn. The
-        # top-level empty-session placeholder would contradict that real brief
-        # and needlessly become part of the child's pinned prompt prefix.
-        return None
-
-    if existing_index is None:
-        insert_index = environment_index if environment_index is not None else pinned_prefix_len
-        messages_obj.insert(
-            insert_index,
-            {
-                "role": "user",
-                "content": _empty_task_brief_message(),
-                TASK_BRIEF_REQUEST_CONTEXT_KEY: True,
-            },
-        )
-        if insert_index <= pinned_prefix_len:
-            _set_session_pinned_prefix_len(session, pinned_prefix_len + 1)
-        existing_index = insert_index
-        inserted_placeholder = True
-
-    # Restore the marker for older sessions only in their host-owned pinned
-    # prefix. A later user message quoting our tag remains ordinary history.
-    if existing_index < _resolve_session_pinned_prefix_len(session):
-        messages_obj[existing_index] = {
-            **messages_obj[existing_index],
-            TASK_BRIEF_REQUEST_CONTEXT_KEY: True,
-        }
-
-    current_content = str(messages_obj[existing_index].get("content") or "")
-    if (
-        _task_brief_content_is_placeholder(current_content)
-        and current_content != _empty_task_brief_message()
-    ):
-        current_content = _empty_task_brief_message()
-        messages_obj[existing_index] = {**messages_obj[existing_index], "content": current_content}
-        inserted_placeholder = True
-    if not current_content:
-        current_content = _empty_task_brief_message()
-    return messages_obj, existing_index, current_content, inserted_placeholder
-
-
-def refresh_session_task_brief_message(
-    session: Any,
-    *,
-    pending_instruction: str | None = None,
-    turn_semantics: TurnSemantics | None = None,
-    route: str = "repo",
-) -> bool:
-    """Re-render the pinned ``<task_brief>`` from the host-owned task state.
-
-    Idempotent: the session holds exactly one brief message, and repeated
-    calls with unchanged state change nothing. Returns whether the
-    model-visible brief changed (including first insertion of the placeholder).
-
-    ``pending_instruction`` + ``turn_semantics`` is the legacy router-contract
-    entry point: the contract's relation is mapped onto a host task transition
-    (``_task_relation_from_turn_semantics``) and applied to the state first.
-    The unified turn path does not use it; it accepts the turn instruction
-    through ``task_state.accept_session_task`` before the first model request.
-    """
-
-    if turn_semantics is not None:
-        from .task_state import accept_session_task
-
-        relation = _task_relation_from_turn_semantics(
-            turn_semantics=turn_semantics,
-            route=route,
-            has_active_task=_session_task_state(session) is not None,
-        )
-        if relation is not None:
-            # accept_session_task re-renders; the rendering below is a no-op
-            # repeat that reports the combined change.
-            before = _session_task_brief_content(session)
-            accept_session_task(
-                session,
-                instruction=str(pending_instruction or ""),
-                relation=relation,
-            )
-            ensured = _ensure_session_task_brief_message(session)
-            if ensured is None:
-                return False
-            _, _, current_content, inserted_placeholder = ensured
-            return inserted_placeholder or current_content != before
-
-    ensured = _ensure_session_task_brief_message(session)
-    if ensured is None:
-        return False
-    messages_obj, existing_index, current_content, inserted_placeholder = ensured
-    state = _session_task_state(session)
-    next_content = _render_task_brief_from_state(
-        state,
-        unrecovered=bool(getattr(session, "task_state_unrecovered", False)),
-    )
-    brief_changed = inserted_placeholder
-    if next_content != current_content:
-        messages_obj[existing_index] = {**messages_obj[existing_index], "content": next_content}
-        brief_changed = True
-    requirements_changed = _sync_session_task_requirements_message(
-        session,
-        messages_obj,
-        brief_index=existing_index,
-        content=_render_task_requirements_from_state(state),
-    )
-    return brief_changed or requirements_changed
-
-
-def _find_session_task_requirements_index(messages_obj: list[dict[str, Any]]) -> int | None:
-    for idx, message in enumerate(messages_obj):
-        if str(message.get("role") or "") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str) and content.lstrip().startswith(_TASK_REQUIREMENTS_MARKER):
-            return idx
-    return None
-
-
-def _sync_session_task_requirements_message(
-    session: Any,
-    messages_obj: list[dict[str, Any]],
-    *,
-    brief_index: int,
-    content: str | None,
-) -> bool:
-    """Keep exactly one pinned ``<task_requirements>`` message, right after the
-    brief, iff the host state needs one; returns whether the prompt changed.
-
-    The message is pinned (part of the cacheable prefix the compactor never
-    summarises), so ``pinned_prefix_len`` grows by one when it is inserted
-    inside the prefix and shrinks by one when it is removed from there.
-    """
-
-    existing_index = _find_session_task_requirements_index(messages_obj)
-    pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
-    if content is None:
-        if existing_index is None:
-            return False
-        del messages_obj[existing_index]
-        if existing_index < pinned_prefix_len:
-            _set_session_pinned_prefix_len(session, pinned_prefix_len - 1)
-        return True
-    if existing_index is None:
-        insert_index = brief_index + 1
-        messages_obj.insert(
-            insert_index,
-            {"role": "user", "content": content, TASK_BRIEF_REQUEST_CONTEXT_KEY: True},
-        )
-        if insert_index <= pinned_prefix_len:
-            _set_session_pinned_prefix_len(session, pinned_prefix_len + 1)
-        return True
-    if (
-        str(messages_obj[existing_index].get("content") or "") == content
-        and messages_obj[existing_index].get(TASK_BRIEF_REQUEST_CONTEXT_KEY) is True
-    ):
-        return False
-    messages_obj[existing_index] = {
-        **messages_obj[existing_index],
-        "content": content,
-        TASK_BRIEF_REQUEST_CONTEXT_KEY: True,
-    }
-    return True
-
-
-def drop_session_task_requirements_message(session: Any) -> bool:
-    """Remove the pinned ``<task_requirements>`` message (if any) and keep the
-    pinned prefix length consistent; used before the model-visible history is
-    replaced wholesale so a re-render starts from a clean prefix."""
-
-    messages_obj = getattr(session, "messages", None)
-    if not isinstance(messages_obj, list):
-        return False
-    existing_index = _find_session_task_requirements_index(messages_obj)
-    if existing_index is None:
-        return False
-    pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
-    del messages_obj[existing_index]
-    if existing_index < pinned_prefix_len:
-        _set_session_pinned_prefix_len(session, pinned_prefix_len - 1)
-    return True
-
-
 def _workspace_binding_context_message(
     *,
     workspace_root: Path | str,
@@ -2368,6 +1570,7 @@ def _compose_session_system_prompt(
     include_subagent_guidance: bool,
     include_one_shot_guidance: bool,
     include_persona_guidance: bool = False,
+    include_question_guidance: bool = False,
     guidance_profile: PromptGuidanceProfile | None = "balanced",
 ) -> str:
     prompt = base_prompt.strip()
@@ -2410,6 +1613,10 @@ def _compose_session_system_prompt(
         persona_section = _SYSTEM_PROMPT_PERSONA_SECTION.strip()
         if persona_section and persona_section not in prompt:
             sections.append(persona_section)
+    if include_question_guidance and not include_one_shot_guidance:
+        question_section = _SYSTEM_PROMPT_QUESTION_SECTION.strip()
+        if question_section not in prompt:
+            sections.append(question_section)
 
     if not sections:
         return prompt
@@ -2566,6 +1773,9 @@ def _image_attachment_instruction_text(instruction: str, *, image_count: int) ->
         "Use the visual content when answering. Do not infer image details from filenames, "
         "paths, or terminal text.]"
     )
+    coordinate_note = active_host_image_coordinate_instruction()
+    if coordinate_note:
+        note = f"{note}\n{coordinate_note}"
     if not instruction:
         return note
     return f"{instruction}\n\n{note}"
@@ -2578,27 +1788,70 @@ def _build_user_message(
     image_paths: list[str] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     log_payload: dict[str, Any] = {"content": instruction}
+    display_content = extract_user_visible_instruction(instruction)
+    if display_content and display_content != instruction:
+        log_payload["display_content"] = display_content
     if not image_paths:
         return {"role": "user", "content": instruction}, log_payload
 
     content_parts: list[dict[str, Any]] = []
     image_entries: list[dict[str, Any]] = []
+    supported_host_image_mime_types = frozenset(
+        {
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+            "image/tiff",
+        }
+    )
 
     for raw_path in image_paths:
         candidate = Path(raw_path).expanduser()
         resolved = candidate if candidate.is_absolute() else root / candidate
         resolved = resolved.resolve()
 
-        if not resolved.exists() or not resolved.is_file():
+        prepared = prepared_host_image(raw_path)
+        host_image = prepared[0] if prepared is not None else None
+        if prepared is None and is_configured_host_image_candidate(raw_path, workspace_root=root):
+            try:
+                host_image = validate_ide_host_image(
+                    raw_path,
+                    max_bytes=MAX_IMAGE_BYTES,
+                    supported_mime_types=supported_host_image_mime_types,
+                )
+            except HostImageValidationError as exc:
+                raise ConfigError(
+                    f"Host screen image rejected ({exc.code}): {exc.message}"
+                ) from exc
+            resolved = host_image.path
+
+        if prepared is None and (not resolved.exists() or not resolved.is_file()):
+            if host_image is not None:
+                raise ConfigError("Host screen image is no longer available.")
             raise ConfigError(f"Image file not found: {raw_path}")
 
-        mime, _ = mimetypes.guess_type(resolved.name)
+        mime = (
+            host_image.mime_type
+            if host_image is not None
+            else mimetypes.guess_type(resolved.name)[0]
+        )
         if not mime or not mime.startswith("image/"):
             raise ConfigError(
                 f"Unsupported image type for {raw_path}. Use a common image extension."
             )
 
-        raw = resolved.read_bytes()
+        try:
+            raw = (
+                prepared[1]
+                if prepared is not None
+                else read_validated_host_image(host_image, max_bytes=MAX_IMAGE_BYTES)
+                if host_image is not None
+                else resolved.read_bytes()
+            )
+        except HostImageValidationError as exc:
+            raise ConfigError(f"Host screen image rejected ({exc.code}): {exc.message}") from exc
         if len(raw) > MAX_IMAGE_BYTES:
             raise ConfigError(
                 f"Image is too large ({len(raw)} bytes): {raw_path}. "
@@ -2612,13 +1865,15 @@ def _build_user_message(
                 "image_url": {"url": f"data:{mime};base64,{b64}"},
             }
         )
-        image_entries.append(
-            {
-                "path": os.fspath(resolved),
-                "mime": mime,
-                "bytes": len(raw),
-            }
-        )
+        image_entry: dict[str, Any] = {
+            "mime": mime,
+            "bytes": len(raw),
+        }
+        if host_image is not None:
+            image_entry["source"] = "host-screen"
+        else:
+            image_entry["path"] = os.fspath(resolved)
+        image_entries.append(image_entry)
 
     content_parts.append(
         {
@@ -2632,6 +1887,107 @@ def _build_user_message(
     message = {"role": "user", "content": content_parts}
     log_payload["images"] = image_entries
     return message, log_payload
+
+
+_EPHEMERAL_HOST_IMAGE_MESSAGES_ATTR = "_alysis_ephemeral_host_image_messages"
+
+
+def _register_ephemeral_host_image_message(
+    session: Any,
+    *,
+    message: dict[str, Any],
+    log_payload: dict[str, Any],
+) -> None:
+    image_entries = log_payload.get("images")
+    if not isinstance(image_entries, list):
+        return
+    host_ordinals = frozenset(
+        index
+        for index, entry in enumerate(image_entries)
+        if isinstance(entry, dict) and entry.get("source") == "host-screen"
+    )
+    if not host_ordinals:
+        return
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    host_urls: set[str] = set()
+    image_ordinal = 0
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "image_url":
+            continue
+        image_url = part.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else None
+        if image_ordinal in host_ordinals and isinstance(url, str):
+            host_urls.add(url)
+        image_ordinal += 1
+    if not host_urls:
+        return
+    pending = getattr(session, _EPHEMERAL_HOST_IMAGE_MESSAGES_ATTR, None)
+    if not isinstance(pending, list):
+        pending = []
+        setattr(session, _EPHEMERAL_HOST_IMAGE_MESSAGES_ATTR, pending)
+    pending.append((message, frozenset(host_urls)))
+
+
+def scrub_ephemeral_host_images(
+    session: Any,
+    *,
+    additional_messages: list[dict[str, Any]] | None = None,
+) -> None:
+    try:
+        pending = getattr(session, _EPHEMERAL_HOST_IMAGE_MESSAGES_ATTR, None)
+    except BaseException:  # noqa: BLE001 - sensitive cleanup must not escape
+        pending = None
+    try:
+        setattr(session, _EPHEMERAL_HOST_IMAGE_MESSAGES_ATTR, [])
+    except BaseException:  # noqa: BLE001 - sensitive cleanup must not escape
+        pass
+    host_urls: set[str] = set()
+    messages: list[dict[str, Any]] = []
+    if isinstance(additional_messages, list):
+        messages.extend(message for message in additional_messages if isinstance(message, dict))
+    if isinstance(pending, list):
+        for item in tuple(pending):
+            if not isinstance(item, tuple) or len(item) != 2:
+                continue
+            message, urls = item
+            if isinstance(message, dict):
+                messages.append(message)
+            if isinstance(urls, frozenset):
+                host_urls.update(url for url in urls if isinstance(url, str))
+    try:
+        session_messages = getattr(session, "messages", None)
+    except BaseException:  # noqa: BLE001 - sensitive cleanup must not escape
+        session_messages = None
+    if isinstance(session_messages, list):
+        messages.extend(message for message in session_messages if isinstance(message, dict))
+    seen_messages: set[int] = set()
+    for message in messages:
+        if id(message) in seen_messages:
+            continue
+        seen_messages.add(id(message))
+        try:
+            content = message.get("content")
+        except BaseException:  # noqa: BLE001 - sensitive cleanup must not escape
+            continue
+        if not isinstance(content, list):
+            continue
+        scrubbed: list[Any] = []
+        for part in content:
+            try:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image_url = part.get("image_url")
+                    url = image_url.get("url") if isinstance(image_url, dict) else None
+                    if isinstance(url, str) and url in host_urls:
+                        continue
+            except BaseException:  # noqa: BLE001 - sensitive cleanup must not escape
+                continue
+            scrubbed.append(part)
+        try:
+            message["content"] = scrubbed
+        except BaseException:  # noqa: BLE001 - sensitive cleanup must not escape
+            pass
 
 
 @dataclass(frozen=True)
@@ -2667,6 +2023,7 @@ class PreparedSessionPromptContext:
     prompt_guidance_profile: PromptGuidanceProfile | None
     messages: list[dict[str, Any]]
     pinned_prefix_len: int
+    shell_environment: str | None = None
 
 
 def prepare_session_prompt_context(
@@ -2691,10 +2048,16 @@ def prepare_session_prompt_context(
     subagent_registry: dict[str, SubagentDefinition] | None = None,
     workspace_binding: WorkspaceBinding | None = None,
     workspace_trust_prompt: WorkspaceTrustPromptFn | None = None,
+    sensitive_media: bool = False,
 ) -> PreparedSessionPromptContext:
+    verification_enabled = bool(verification_enabled and not sensitive_media)
     if workspace_binding is None:
         session_root = root.resolve()
-        workspace_context = resolve_workspace_context(session_root)
+        workspace_context = resolve_workspace_context(
+            session_root,
+            allow_subprocess=not sensitive_media,
+        )
+        session_root = workspace_context.workspace_root.resolve()
         binding_requested_path: str | None = None
         binding_source: str | None = None
         binding_risk_level: str | None = None
@@ -2707,11 +2070,23 @@ def prepare_session_prompt_context(
         binding_risk_level = workspace_binding.risk_level
         binding_created_path = workspace_binding.created_path
 
-    activation_decision = resolve_active_plugins(
-        repo_root=session_root,
-        workspace_trust_prompt=workspace_trust_prompt,
-    )
-    plugin_activation_index = _build_plugin_activation_index(session_root)
+    if sensitive_media:
+        activation_decision = ActivationDecision(
+            enabled_plugin_ids=frozenset(),
+            workspace_trust_was_prompted=False,
+            workspace_trust_granted=False,
+            untrusted_project_plugin_ids=frozenset(),
+        )
+        plugin_activation_index = _PluginActivationIndex(
+            slug_to_plugin_id={},
+            skill_lookup_to_plugin_id={},
+        )
+    else:
+        activation_decision = resolve_active_plugins(
+            repo_root=session_root,
+            workspace_trust_prompt=workspace_trust_prompt,
+        )
+        plugin_activation_index = _build_plugin_activation_index(session_root)
 
     session_cfg = clone_cfg(cfg)
     authoritative_verify_commands = _normalized_authoritative_verify_commands(
@@ -2728,10 +2103,16 @@ def prepare_session_prompt_context(
     )
     resolved_skills_enabled = resolve_skills_enabled(session_cfg)
     skills_auto_invoke = bool(getattr(session_cfg, "skills_auto_invoke", True))
+    if sensitive_media:
+        resolved_subagents_enabled = False
+        resolved_skills_enabled = False
+        skills_auto_invoke = False
     if subagent_depth > 0:
         resolved_subagents_enabled = False
     effective_one_shot_execution = bool(one_shot_execution and subagent_depth == 0)
-    if subagent_registry is None:
+    if sensitive_media:
+        resolved_subagent_registry = {}
+    elif subagent_registry is None:
         try:
             resolved_subagent_registry = load_subagent_registry(
                 root=session_root,
@@ -2753,9 +2134,18 @@ def prepare_session_prompt_context(
         if resolved_skills_enabled
         else DiscoveredSkills(skills={}, ordered=(), issues=())
     )
-    skill_catalog = resolve_skill_catalog(
-        discovered=raw_discovered_skills,
-        workspace_root=workspace_context.workspace_root,
+    skill_catalog = (
+        SkillCatalog(
+            effective=raw_discovered_skills,
+            entries=(),
+            global_state=SkillLifecycleState(),
+            project_state=SkillLifecycleState(),
+        )
+        if sensitive_media
+        else resolve_skill_catalog(
+            discovered=raw_discovered_skills,
+            workspace_root=workspace_context.workspace_root,
+        )
     )
     discovered_skills, skills_dropped_counts = _filter_discovered_skills_for_plugins(
         discovered=skill_catalog.effective,
@@ -2783,6 +2173,7 @@ def prepare_session_prompt_context(
         ),
         include_skill_discovery_guidance=(
             trusted_system_prompt_override is None
+            and resolved_skills_enabled
             and skills_auto_invoke
             and bool(discovered_skills.ordered)
         ),
@@ -2797,7 +2188,14 @@ def prepare_session_prompt_context(
         include_persona_guidance=(
             trusted_system_prompt_override is None
             and subagent_depth == 0
+            and not sensitive_media
             and persona_modes_enabled(cfg)
+        ),
+        include_question_guidance=(
+            trusted_system_prompt_override is None
+            and subagent_depth == 0
+            and not non_interactive
+            and not effective_one_shot_execution
         ),
     )
 
@@ -2813,7 +2211,7 @@ def prepare_session_prompt_context(
             if allow_write_globs is not None
             else None
         )
-    repo_scan_needed = _should_prepare_repo_scan(
+    repo_scan_needed = not sensitive_media and _should_prepare_repo_scan(
         cfg=session_cfg,
         verification_enabled=verification_enabled,
         authoritative_verification_commands=authoritative_verify_commands,
@@ -2830,7 +2228,11 @@ def prepare_session_prompt_context(
             repo_scan = None
     planner_workspace_context = repo_scan.to_dict() if repo_scan is not None else None
     recommended_verification_commands: list[str] = []
-    repo_summary_data = _repo_summary_data(session_root)
+    repo_summary_data = (
+        _RepoSummaryData(text="", top_level_paths=(), source="sensitive_media")
+        if sensitive_media
+        else _repo_summary_data(session_root)
+    )
     repo_summary = repo_summary_data.text
     if effective_one_shot_execution:
         repo_summary, _ = _resolve_one_shot_repo_bootstrap_context(
@@ -2874,6 +2276,9 @@ def prepare_session_prompt_context(
         authoritative=is_authoritative_verify_command_selection(effective_verification_selection),
     )
     configured_persona = str(getattr(cfg, "default_persona", "code") or "code").strip().lower()
+    shell_environment = session_shell_environment(
+        session_cfg, shell_disabled=mode == "readonly" or sensitive_media
+    )
     environment_context = _environment_context_message(
         mode=mode,
         persona=(
@@ -2911,11 +2316,15 @@ def prepare_session_prompt_context(
         ),
         one_shot_execution=effective_one_shot_execution,
         git_policy=_sandbox_git_policy_line(cfg),
+        shell=shell_environment,
     )
-    repo_conventions, conventions_context = _repo_conventions_context(
-        focus_path=workspace_context.focus_path,
-        workspace_root=workspace_context.workspace_root,
-    )
+    if sensitive_media:
+        repo_conventions, conventions_context = (), None
+    else:
+        repo_conventions, conventions_context = _repo_conventions_context(
+            focus_path=workspace_context.focus_path,
+            workspace_root=workspace_context.workspace_root,
+        )
     skill_context = (
         build_skill_advertise_block(
             skills=discovered_skills.ordered,
@@ -2968,16 +2377,6 @@ def prepare_session_prompt_context(
         )
         if subagent_context:
             messages.append({"role": "user", "content": subagent_context})
-    if subagent_depth == 0 and _workspace_kind_supports_task_brief(
-        workspace_context.workspace_kind
-    ):
-        messages.append(
-            {
-                "role": "user",
-                "content": _empty_task_brief_message(),
-                TASK_BRIEF_REQUEST_CONTEXT_KEY: True,
-            }
-        )
     messages.append({"role": "user", "content": environment_context})
 
     return PreparedSessionPromptContext(
@@ -3012,4 +2411,5 @@ def prepare_session_prompt_context(
         prompt_guidance_profile=prompt_guidance_profile,
         messages=messages,
         pinned_prefix_len=len(messages),
+        shell_environment=shell_environment,
     )

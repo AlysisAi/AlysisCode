@@ -29,7 +29,7 @@ jobs:
       - name: Validate tag matches package version and official source
         shell: bash
         env:
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
@@ -79,7 +79,7 @@ jobs:
         with:
           version: "0.11.23"
       - name: Sync locked qualification dependencies
-        run: uv sync --frozen --python "3.12" --extra dev
+        run: uv sync --frozen --python "3.12" --extra dev --extra documents
       - name: Qualify source and installed wheel
         run: >-
           uv run --frozen --no-sync python scripts/qa/qualify_production_reliability.py
@@ -124,7 +124,7 @@ jobs:
           version: "0.11.23"
 
       - name: Install frozen development and build dependencies
-        run: uv sync --frozen --no-editable --extra dev
+        run: uv sync --frozen --no-editable --extra dev --extra documents
 
       - name: Reject vulnerable or unapproved locked dependencies
         run: uv run --frozen --no-sync python scripts/release/audit_locked_dependencies.py

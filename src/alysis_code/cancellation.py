@@ -48,6 +48,11 @@ class EventCancellationToken:
 
         return self._event.wait(timeout)
 
+    def wait_cancelled(self, timeout: float | None = None) -> bool:
+        """Wait for cancellation without exposing the backing event."""
+
+        return self.wait(timeout)
+
 
 class CombinedCancellationToken:
     """Observe caller and budget cancellation without replacing either reason.
@@ -224,3 +229,19 @@ class InteractiveCancellationToken:
         """Wait until cancellation or ``timeout`` without polling."""
 
         return self._event.wait(timeout)
+
+    def wait_cancelled(self, timeout: float | None = None) -> bool:
+        """Wait for cancellation without exposing the backing event."""
+
+        return self.wait(timeout)
+
+
+def raise_if_cancelled(cancellation_token: Any | None) -> None:
+    """Raise the token's native cancellation outcome when it is cancelled."""
+
+    if cancellation_token is None or not bool(getattr(cancellation_token, "is_cancelled", False)):
+        return
+    throw_if_cancelled = getattr(cancellation_token, "throw_if_cancelled", None)
+    if callable(throw_if_cancelled):
+        throw_if_cancelled("cancelled_by_user")
+    raise KeyboardInterrupt("cancelled_by_user")

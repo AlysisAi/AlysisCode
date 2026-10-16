@@ -48,7 +48,10 @@ def _fault_server(phase: str) -> Iterator[tuple[str, threading.Event]]:
                 connection.settimeout(0.1)
                 connected.set()
                 if phase in {"tls_handshake", "headers"}:
-                    stop.wait(5)
+                    # Keep the fault active until the owning test finishes.
+                    # A fixed timeout can disconnect before a longer managed
+                    # deadline, turning cancellation into a provider failure.
+                    stop.wait()
                     continue
                 try:
                     request = b""
@@ -59,7 +62,7 @@ def _fault_server(phase: str) -> Iterator[tuple[str, threading.Event]]:
                         continue
                     connection.sendall(b"HTTP/1.1 200 OK\r\ncontent-length: 100000\r\n\r\n")
                     if phase == "body":
-                        stop.wait(5)
+                        stop.wait()
                     else:
                         while not stop.wait(0.02):
                             connection.sendall(b"x")

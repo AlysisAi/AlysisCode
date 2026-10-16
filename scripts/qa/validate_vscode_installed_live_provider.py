@@ -314,7 +314,7 @@ def validate_installed_live_provider_evidence(
         raise InstalledLiveProviderEvidenceError("extension_mode must be production")
     if report.get("runtime_origin") != "managed" or report.get("runtime_production") is not True:
         raise InstalledLiveProviderEvidenceError("runtime must be managed production")
-    if report.get("source_repository") != "https://github.com/AlysisAi/alysis-code":
+    if report.get("source_repository") != "https://github.com/AlysisAi/AlysisCode":
         raise InstalledLiveProviderEvidenceError("source_repository is invalid")
     if not HEX_64.fullmatch(str(report.get("managed_cli_sha256", ""))):
         raise InstalledLiveProviderEvidenceError("managed_cli_sha256 is invalid")

@@ -280,74 +280,6 @@ def _handle_idle_skill_invocation(
     )
 
 
-_OBJECTIVE_USAGE_LINES = (
-    "[yellow]Usage:[/yellow] /objective — show the task this session is working on",
-    "       /objective new <request> — start a new task (history is kept)",
-    "       /objective amend <constraint> — add a constraint to the current task",
-)
-
-
-def _handle_objective_command(
-    *,
-    arg: str,
-    session: Any,
-    console: Console,
-) -> str | _ChatExecutionRequest:
-    """``/objective``: inspect or deliberately change the session's task.
-
-    The host owns task identity; ordinary messages never replace the objective
-    on their own (a greeting or a question keeps it). ``/objective new`` is the
-    explicit way to start task B after task A without ``/clear``: the request
-    text becomes the objective before the turn's first model request while the
-    conversation history stays intact. ``/objective amend`` adds a constraint
-    to the current task without replacing it. Neither form changes execution
-    mode, approvals, or permissions.
-    """
-
-    from ...agent.task_state import SessionTaskState
-
-    parts = str(arg or "").strip().split(maxsplit=1)
-    subcommand = parts[0].lower() if parts else ""
-    remainder = parts[1].strip() if len(parts) > 1 else ""
-    if not subcommand:
-        state = getattr(session, "task_state", None)
-        if isinstance(state, SessionTaskState):
-            objective = " ".join(state.objective.split())
-            console.print(f"Objective ({state.task_id}): {objective}")
-            if state.objective_truncated:
-                console.print(
-                    "  (the accepted request exceeded the host limit; the complete text is "
-                    "in the session log)"
-                )
-            for line in state.amendments:
-                console.print(f"  constraint: {line}")
-        elif bool(getattr(session, "task_state_unrecovered", False)):
-            console.print(
-                "No usable task: the resumed log's task state could not be read. Ordinary "
-                "messages are delivered but do not establish a task here; use "
-                "/objective new <request> to establish one."
-            )
-        else:
-            console.print("No task accepted yet. Use /objective new <request> to establish one.")
-        return "handled"
-    if subcommand == "new":
-        if not remainder:
-            console.print("[yellow]Usage:[/yellow] /objective new <request>")
-            return "handled"
-        return _ChatExecutionRequest(instruction=remainder, task_relation="new_task")
-    if subcommand == "amend":
-        if not remainder:
-            console.print("[yellow]Usage:[/yellow] /objective amend <constraint>")
-            return "handled"
-        if not isinstance(getattr(session, "task_state", None), SessionTaskState):
-            console.print("[yellow]No task to amend.[/yellow] Use /objective new <request> first.")
-            return "handled"
-        return _ChatExecutionRequest(instruction=remainder, task_relation="amendment")
-    for line in _OBJECTIVE_USAGE_LINES:
-        console.print(line)
-    return "handled"
-
-
 def _handle_chat_command(
     *,
     input_text: str,
@@ -494,8 +426,6 @@ def _handle_chat_command(
             mode_override="readonly",
             restore_mode_after=current_mode,
         )
-    if cmd == "/objective":
-        return _handle_objective_command(arg=arg, session=session, console=console)
     if cmd == "/chat":
         # Retired in favor of the Ask persona; the chat_only plumbing stays
         # accepted-and-ignored for one release (no producer).

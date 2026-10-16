@@ -5,9 +5,14 @@ import json
 import httpx
 import pytest
 
-from alysis_code.llm.anthropic_messages import AnthropicMessagesClient
+from alysis_code.llm.anthropic_messages import (
+    AnthropicMessagesClient,
+    _anthropic_messages_from_messages,
+)
+from alysis_code.llm.base import require_omitted_reasoning_display
 from alysis_code.llm.metadata import (
     PROVIDER_METADATA_KEY,
+    assistant_message_from_response,
     attach_provider_metadata_to_assistant_message,
     stamp_provider_metadata_for_route,
     strip_provider_metadata_from_message,
@@ -28,6 +33,55 @@ def _client(transport: httpx.BaseTransport) -> AnthropicMessagesClient:
         model="claude-sonnet-4-6",
         transport=transport,
     )
+
+
+@pytest.mark.parametrize("role", ["system", "developer"])
+def test_controller_continuation_is_not_sent_as_assistant_prefill(role):
+    messages = [
+        {"role": "user", "content": "Fix the issue."},
+        {"role": "assistant", "content": "The change is ready."},
+        {"role": role, "content": "Verify the change before finalizing."},
+    ]
+    system, wire = _anthropic_messages_from_messages(messages)
+    assert system == "Verify the change before finalizing."
+    assert wire[-1] == {
+        "role": "user",
+        "content": [{"type": "text", "text": "Continue following the instructions above."}],
+    }
+    assert wire[-2]["content"] == [{"type": "text", "text": "The change is ready."}]
+    assert len(messages) == 3  # Wire normalization must not change durable history.
+
+
+def test_plain_assistant_prefill_is_not_rewritten_as_controller_continuation():
+    _, wire = _anthropic_messages_from_messages(
+        [
+            {"role": "system", "content": "Reply in JSON."},
+            {"role": "user", "content": "List two colors."},
+            {"role": "assistant", "content": '{"colors": ['},
+        ]
+    )
+    assert wire[-1]["role"] == "assistant"
+
+
+def test_controller_nudge_does_not_insert_user_before_pending_tool_result():
+    _, wire = _anthropic_messages_from_messages(
+        [
+            {"role": "user", "content": "Read a file."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "fs_read", "arguments": '{"path":"a.py"}'},
+                    }
+                ],
+            },
+            {"role": "system", "content": "Wait for the tool result."},
+        ]
+    )
+    assert wire[-1]["role"] == "assistant"
 
 
 def _web_search_function_tool() -> dict[str, object]:
@@ -1948,6 +2002,216 @@ def test_thinking_without_trace_requests_omitted_display() -> None:
         "thinking": "",
         "signature": "sig-omitted",
     }
+
+
+def test_computer_use_marker_forces_omitted_display_in_default_thinking_mode() -> None:
+    captured: dict[str, object] = {}
+    reasoning_deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_default_computer_use_thinking",
+                "model": "claude-sonnet-5",
+                "role": "assistant",
+                "type": "message",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "",
+                        "signature": "sig-default-computer-use",
+                    },
+                    {"type": "text", "text": "Done."},
+                ],
+            },
+        )
+
+    client = AnthropicMessagesClient(
+        base_url="https://api.anthropic.com/v1",
+        api_key="test-key",
+        model="claude-sonnet-5",
+        transport=httpx.MockTransport(handler),
+    )
+    require_omitted_reasoning_display(client)
+
+    response = client.chat(
+        messages=[{"role": "user", "content": "Inspect the approved UI."}],
+        on_reasoning_delta=reasoning_deltas.append,
+    )
+
+    assert captured["thinking"] == {"type": "adaptive", "display": "omitted"}
+    assert response.content == "Done."
+    assert reasoning_deltas == []
+    assert response.reasoning == ()
+
+
+def test_computer_use_anthropic_tool_loop_replays_empty_signed_thinking_exactly() -> None:
+    requests: list[dict[str, object]] = []
+    empty_thinking_block = {
+        "type": "thinking",
+        "thinking": "",
+        "signature": "sig-empty:AA+/=_Ω",
+    }
+    native_tool_block = {
+        "type": "tool_use",
+        "id": "toolu_computer_state_strict",
+        "name": "computer_state",
+        "input": {},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        requests.append(body)
+        assert body["thinking"] == {"type": "adaptive", "display": "omitted"}
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_computer_use_observe",
+                    "model": "claude-sonnet-5",
+                    "role": "assistant",
+                    "type": "message",
+                    "content": [empty_thinking_block, native_tool_block],
+                    "stop_reason": "tool_use",
+                },
+            )
+
+        replayed_assistant = body["messages"][1]
+        assert replayed_assistant["role"] == "assistant"
+        replayed_thinking = replayed_assistant["content"][0]
+        assert replayed_thinking == empty_thinking_block
+        assert json.dumps(
+            replayed_thinking,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8") == json.dumps(
+            empty_thinking_block,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        assert replayed_assistant["content"][1] == native_tool_block
+        assert body["messages"][2] == {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_computer_state_strict",
+                    "content": '{"snapshot_id":"snapshot-strict","elements":[]}',
+                }
+            ],
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_computer_use_done",
+                "model": "claude-sonnet-5",
+                "role": "assistant",
+                "type": "message",
+                "content": [{"type": "text", "text": "Done."}],
+                "stop_reason": "end_turn",
+            },
+        )
+
+    client = AnthropicMessagesClient(
+        base_url="https://api.anthropic.com/v1",
+        api_key="test-key",
+        model="claude-sonnet-5",
+        transport=httpx.MockTransport(handler),
+    )
+    require_omitted_reasoning_display(client)
+    messages = [{"role": "user", "content": "Observe the approved UI."}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "computer_state",
+                "description": "Observe the approved UI.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+
+    observed = client.chat(messages=messages, tools=tools)
+    assert len(observed.tool_calls) == 1
+    assert observed.tool_calls[0].id == "toolu_computer_state_strict"
+    messages.extend(
+        [
+            assistant_message_from_response(observed),
+            {
+                "role": "tool",
+                "tool_call_id": observed.tool_calls[0].id,
+                "name": observed.tool_calls[0].name,
+                "content": '{"snapshot_id":"snapshot-strict","elements":[]}',
+            },
+        ]
+    )
+    completed = client.chat(messages=messages, tools=tools)
+
+    assert completed.content == "Done."
+    assert len(requests) == 2
+
+
+def test_computer_use_anthropic_rejects_nonempty_thinking_under_omitted_contract() -> None:
+    captured: dict[str, object] = {}
+    private_summary = "PRIVATE_DESKTOP_SUMMARY_MUST_NOT_ESCAPE"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_computer_use_violated_omission",
+                "model": "claude-sonnet-5",
+                "role": "assistant",
+                "type": "message",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": private_summary,
+                        "signature": "sig-violated-omission",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_violated_omission",
+                        "name": "computer_state",
+                        "input": {},
+                    },
+                ],
+                "stop_reason": "tool_use",
+            },
+        )
+
+    client = AnthropicMessagesClient(
+        base_url="https://api.anthropic.com/v1",
+        api_key="test-key",
+        model="claude-sonnet-5",
+        transport=httpx.MockTransport(handler),
+    )
+    require_omitted_reasoning_display(client)
+
+    with pytest.raises(LLMError) as raised:
+        client.chat(
+            messages=[{"role": "user", "content": "Observe the approved UI."}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "computer_state",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+
+    assert captured["thinking"] == {"type": "adaptive", "display": "omitted"}
+    assert "omitted" in str(raised.value).casefold()
+    assert private_summary not in str(raised.value)
 
 
 def test_manual_thinking_uses_safe_budget_and_omits_forced_tool_choice() -> None:

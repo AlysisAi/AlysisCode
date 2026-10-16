@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -35,7 +37,12 @@ def _tools(
         "        self.assertEqual(2 + 2, 4)\n",
         encoding="utf-8",
     )
-    command = f"{shlex.quote(sys.executable)} -m unittest discover -s tests -v"
+    executable = (
+        subprocess.list2cmdline([Path(sys.executable).as_posix()])
+        if os.name == "nt"
+        else shlex.quote(sys.executable)
+    )
+    command = f"{executable} -m unittest discover -s tests -v"
     cfg = AppConfig(model="test-model", verify_commands=[command])
     cfg.extra_fields["verify_sandbox"] = {"mode": "off"}
     store = SessionStore(

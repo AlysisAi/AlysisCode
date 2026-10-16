@@ -221,11 +221,6 @@ def _pick_source(
     """
     resolved_env_name = env_name
     raw_env = _clean_text(environ.get(env_name))
-    if not raw_env and env_name.startswith("ALYSIS_"):
-        legacy_env_name = "SYLLIPTOR_" + env_name.removeprefix("ALYSIS_")
-        raw_env = _clean_text(environ.get(legacy_env_name))
-        if raw_env:
-            resolved_env_name = legacy_env_name
     if raw_env:
         return raw_env, f"env:{resolved_env_name}"
     if config_key in config_values:

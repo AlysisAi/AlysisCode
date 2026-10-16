@@ -40,6 +40,7 @@ from .console import (
     safe_write,
 )
 from .events import (
+    ApprovalReviewed,
     ConfigFormRequest,
     ErrorRaised,
     Event,
@@ -73,12 +74,14 @@ from .types import (
     ApprovalDecision,
     ApprovalRequest,
     PatchEvent,
+    StandingApproval,
     StatusEvent,
     SubagentEndEvent,
     SubagentStartEvent,
     ToolEndEvent,
     ToolOutputEvent,
     ToolStartEvent,
+    approval_review_line,
     remote_site_outcome,
 )
 
@@ -669,7 +672,7 @@ class RichSurface:
         self._stream_buffer.append(clean_delta)
 
     def on_reasoning_start(self, block_id: str) -> None:
-        """Open a provider-call-scoped safe-summary block."""
+        """Open a provider-call-scoped reasoning block."""
 
         if self._trace_level == "off":
             return
@@ -681,7 +684,7 @@ class RichSurface:
         self._reasoning_summary_block_id = normalized
 
     def on_reasoning_token(self, delta: str) -> None:
-        """Buffer a safe provider-generated reasoning summary for display."""
+        """Buffer a provider-returned reasoning text for display."""
 
         if self._trace_level == "off" or not delta:
             return
@@ -1098,6 +1101,20 @@ class RichSurface:
         state = "passed" if success else "failed"
         self._emit_event_info(f"{prefix}Verify {state}: {command} · {summary}")
 
+    def emit_approval_reviewed(
+        self,
+        outcome: str,
+        subject: str,
+        reason: str = "",
+        *,
+        risk: str = "",
+        approval_kind: str = "",
+        worker_id: str | None = None,
+        role: str | None = None,
+    ) -> None:
+        prefix = self._event_scope_prefix(worker_id=worker_id, role=role)
+        self._emit_event_info(f"{prefix}{approval_review_line(outcome, subject, reason)}")
+
     def emit_review_gate_decision(
         self,
         decision: str,
@@ -1211,6 +1228,16 @@ class RichSurface:
                 event.command,
                 event.success,
                 event.summary,
+                worker_id=event.worker_id,
+                role=event.role,
+            )
+        elif event.type == ApprovalReviewed.type:
+            self.emit_approval_reviewed(
+                event.outcome,
+                event.subject,
+                event.reason,
+                risk=event.risk,
+                approval_kind=event.approval_kind,
                 worker_id=event.worker_id,
                 role=event.role,
             )
@@ -1415,6 +1442,16 @@ class RichSurface:
                 return self._prompt_approval_choice_fallback()
         finally:
             self.approval_wait_ms_total += int((time.perf_counter() - wait_started) * 1000)
+
+    def standing_approval(self, request: ApprovalRequest) -> StandingApproval | None:
+        """An earlier "always" answer already covers ``request``."""
+
+        scope_info = approval_session_scope_for_request(request)
+        if scope_info.key is not None and scope_info.key in self._allow_for_session:
+            return StandingApproval("allow", "you allowed this earlier in this session")
+        if request_matches_dir_grants(request, self._session_dir_grants):
+            return StandingApproval("allow", "you allowed this folder earlier in this session")
+        return None
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
         self._stop_thinking_spinner()

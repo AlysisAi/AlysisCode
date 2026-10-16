@@ -13,6 +13,7 @@ from typing import Any, Literal
 from ..config import AppConfig
 from ..forge import RunPaths
 from ..model_registry import ModelRegistry
+from ..project_data import ProjectDataError, project_artifact_path
 from .comprehender import AssetComprehender
 from .index import AssetIndex
 from .ingestion import ingest_asset
@@ -508,9 +509,9 @@ def _read_text_preview(root: Path, repo_relative_path: str | None, *, limit: int
     if not repo_relative_path:
         return ""
     try:
-        path = (root / repo_relative_path).resolve()
+        path = project_artifact_path(root, repo_relative_path).resolve()
         return _preview(path.read_text(encoding="utf-8", errors="replace"), limit)
-    except OSError:
+    except (OSError, ProjectDataError):
         return ""
 
 

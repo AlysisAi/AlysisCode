@@ -815,7 +815,7 @@ def test_repeated_non_final_progress_accepts_after_single_nudge(
     # The failed edit supplies execution evidence; unresolved work stays visible
     # after bounded correction, while preserving the model's own summary.
     assert surface.final_messages[-1].startswith(repeated_progress_text)
-    assert "No changes made:" in surface.final_messages[-1]
+    assert "No files were changed" in surface.final_messages[-1]
     assert len(_event_payloads(log_path, "continuation_nudge")) == 1
     assert _event_payloads(log_path, "completion_gate_accepted_with_open_problems")
     assert _event_payloads(log_path, "one_shot_incomplete_after_retries") == []
@@ -882,7 +882,7 @@ def test_non_final_progress_continuation_cap_accepts_second_final(
     # The failed edit supplies execution evidence; unresolved work stays visible
     # after bounded correction, while preserving the model's own summary.
     assert surface.final_messages[-1].startswith(final_progress_text)
-    assert "No changes made:" in surface.final_messages[-1]
+    assert "No files were changed" in surface.final_messages[-1]
     assert len(_event_payloads(log_path, "continuation_nudge")) == 1
     assert _event_payloads(log_path, "completion_gate_accepted_with_open_problems")
     assert _event_payloads(log_path, "one_shot_incomplete_after_retries") == []
@@ -933,7 +933,7 @@ def test_completion_gate_open_problems_accepts_second_final(
     # The failed edit supplies execution evidence; unresolved work stays visible
     # after bounded correction, while preserving the model's own summary.
     assert surface.final_messages[-1].startswith(latest_final_text)
-    assert "No changes made:" in surface.final_messages[-1]
+    assert "No files were changed" in surface.final_messages[-1]
     assert len(_event_payloads(log_path, "completion_gate_nudge")) == 1
     accepted_events = _event_payloads(log_path, "completion_gate_accepted_with_open_problems")
     assert accepted_events

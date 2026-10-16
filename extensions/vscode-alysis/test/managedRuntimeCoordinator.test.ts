@@ -58,7 +58,7 @@ test("runtime evidence includes immutable release identity only when installed m
     ...ACTIVE,
     release: {
       tag: "v2.0.0",
-      sourceRepository: "https://github.com/AlysisAi/alysis-code",
+      sourceRepository: "https://github.com/AlysisAi/AlysisCode",
       sourceCommit: "c".repeat(40)
     }
   };
@@ -76,7 +76,7 @@ test("runtime evidence includes immutable release identity only when installed m
     target: "linux-x64",
     sha256: "a".repeat(64),
     releaseTag: "v2.0.0",
-    sourceRepository: "https://github.com/AlysisAi/alysis-code",
+    sourceRepository: "https://github.com/AlysisAi/AlysisCode",
     sourceCommit: "c".repeat(40),
     releaseSignatureVerified: true
   });
@@ -280,7 +280,7 @@ test("a build that ships no bundle reports the actionable install message, not a
   assert.match(reason, /No signed managed Alysis Code CLI runtime/i);
   assert.match(reason, /pipx install alysis-code/);
   assert.match(reason, /alysis\.locateCli/);
-  assert.match(reason, /https:\/\/github\.com\/AlysisAi\/alysis-code#install/);
+  assert.match(reason, /https:\/\/github\.com\/AlysisAi\/AlysisCode#install/);
   assert.equal(coordinator.evidence().code, "BUNDLED_RUNTIME_MISSING");
 });
 

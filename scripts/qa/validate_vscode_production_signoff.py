@@ -114,7 +114,7 @@ def _validate_remediation_issue(value: object) -> None:
         or parsed.netloc != "github.com"
         or parsed.query
         or parsed.fragment
-        or re.fullmatch(r"/AlysisAi/alysis-code/issues/[1-9][0-9]*", parsed.path) is None
+        or re.fullmatch(r"/AlysisAi/AlysisCode/issues/[1-9][0-9]*", parsed.path) is None
     ):
         _fail("rollback.remediation_issue must be an immutable official issue URL.")
 

@@ -87,7 +87,7 @@
   {
     "id": "bundled_fix_ci_normal",
     "workspace": "workspaces/bundled_fix_ci",
-    "task": "The build's slug check is failing. Inspect ci.log, reproduce the failing command locally, fix the evidenced cause, and rerun only the affected check.",
+    "task": "The build's slug check is failing. Inspect ci-output.txt, reproduce the failing command locally, fix the evidenced cause, and rerun only the affected check.",
     "invocation_mode": "normal",
     "expected_skills": ["fix-ci"],
     "verification_command": "python ci_check.py",
@@ -96,7 +96,7 @@
   {
     "id": "bundled_fix_ci_explicit",
     "workspace": "workspaces/bundled_fix_ci",
-    "task": "Use ci.log to reproduce the failed slug job, implement the smallest repair, and rerun python ci_check.py without weakening the check.",
+    "task": "Use ci-output.txt to reproduce the failed slug job, implement the smallest repair, and rerun python ci_check.py without weakening the check.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "fix-ci",
     "expected_skills": ["fix-ci"],
@@ -239,5 +239,53 @@
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
     "tags": ["bundled-pack", "negative-control", "skill-creator-adjacent"]
+  },
+  {
+    "id": "bundled_alysis_docs_normal",
+    "workspace": "workspaces/bundled_negative_controls",
+    "task": "How do I configure and switch between model provider profiles in Alysis Code? Explain the supported commands with official documentation links. Do not change any settings or files.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "alysis-docs"
+    ],
+    "verification_command": "python -c \"import hashlib; from pathlib import Path; assert hashlib.sha256(Path('README.md').read_bytes()).hexdigest() == '11c07b41fda22674dc59cabb5c6cbea4ccc6ec1e21d7c5b55e37e63d4863d15f'\"",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ],
+    "notes": "Activation and unchanged fixture are scored automatically. Review the session transcript separately for successful documentation retrieval and answer accuracy."
+  },
+  {
+    "id": "bundled_alysis_docs_explicit",
+    "workspace": "workspaces/bundled_negative_controls",
+    "task": "Explain how Alysis Code discovers skills and how I can disable automatic skill invocation, using official documentation. Do not change any settings or files.",
+    "invocation_mode": "explicit_skill",
+    "expected_skills": [
+      "alysis-docs"
+    ],
+    "verification_command": "python -c \"import hashlib; from pathlib import Path; assert hashlib.sha256(Path('README.md').read_bytes()).hexdigest() == '11c07b41fda22674dc59cabb5c6cbea4ccc6ec1e21d7c5b55e37e63d4863d15f'\"",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ],
+    "notes": "Activation and unchanged fixture are scored automatically. Review the session transcript separately for successful documentation retrieval and answer accuracy.",
+    "explicit_skill_name": "alysis-docs"
+  },
+  {
+    "id": "bundled_alysis_docs_negative",
+    "workspace": "workspaces/bundled_negative_controls",
+    "task": "In a project I am editing with Alysis, what does a Python ValueError mean? Use README.md only; do not change anything.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python -c \"import hashlib; from pathlib import Path; assert hashlib.sha256(Path('README.md').read_bytes()).hexdigest() == '11c07b41fda22674dc59cabb5c6cbea4ccc6ec1e21d7c5b55e37e63d4863d15f'\"",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "alysis-docs-adjacent"
+    ],
+    "notes": "Activation and unchanged fixture are scored automatically. Review the session transcript separately for successful documentation retrieval and answer accuracy."
   }
 ]

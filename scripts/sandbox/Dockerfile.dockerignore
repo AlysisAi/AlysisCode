@@ -7,6 +7,11 @@
 !pyproject.toml
 !uv.lock
 !README.md
+!LICENSE
+!NOTICE
+!schemas/
+!schemas/forge-host-v2/
+!schemas/forge-host-v2/forge-host-v2.schema.json
 
 .git
 .venv

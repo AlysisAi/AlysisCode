@@ -41,7 +41,7 @@ JetBrains preview setup and limitations are documented in
    workspace acceptance, with dedicated credentials and an approved provider spending limit.
 5. Collect candidate-bound signoff and rollback evidence before explicit Marketplace promotion.
 
-Production builds, attestations, and promotion use `AlysisAi/alysis-code`. The source tag must
+Production builds, attestations, and promotion use `AlysisAi/AlysisCode`. The source tag must
 match the CLI version; existing tags are never moved. The extension version is independent.
 The `0.3.x` line selects `channel: beta` and publishes only through the Marketplace pre-release
 channel after all evidence gates pass. A GitHub source release does not replace those gates.

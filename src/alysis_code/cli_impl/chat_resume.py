@@ -773,10 +773,8 @@ def _resume_chat_session(
     if history_messages:
         new_session.messages.extend(history_messages)
 
-    # The fresh session bootstrap carries the empty task placeholder. Restore
-    # the host-owned task identity from the persisted log so the first resumed
-    # model request names the same objective the interrupted session had.
-    task_state_note = _restore_chat_resume_task_state(
+    # Restore workspace verification provenance without pinning an objective.
+    _restore_chat_resume_evidence(
         new_session,
         path=target_path,
         source_session_id=requested_id,
@@ -809,7 +807,6 @@ def _resume_chat_session(
             "compaction_memory_reinjected": compaction_memory_reinjected,
             "historical_model_restored": historical_model_restored,
             "model_restore_reason": model_restore_reason,
-            **task_state_note,
         },
     )
 

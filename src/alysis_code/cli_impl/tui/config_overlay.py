@@ -298,11 +298,11 @@ class ConfigOverlay:
                         numbered = bool(getattr(flow.screen(), "numbered", True))
                     except Exception:
                         numbered = True
-                right_text = (
-                    "↑↓ move · 1-9 pick · Enter select · Esc back"
-                    if numbered
-                    else "↑↓ move · Enter select · Esc back"
-                )
+                right_text = "↑↓ move · " + ("1-9 pick · " if numbered else "")
+                right_text += "Enter select · "
+                if self._save_available():
+                    right_text += "s save · "
+                right_text += "Esc back"
         elif mode == "input":
             # Honour the screen's own action verb ("Enter save", "Enter add",
             # …) so the legend never contradicts what Enter actually does.
@@ -478,6 +478,16 @@ class ConfigOverlay:
 
     # ----------------------------------------------------------- key handling
 
+    def _save_available(self) -> bool:
+        # The same shortcut activates the visible save action in either flow.
+        # Input fields, confirmations, and busy stages must keep their own keys.
+        return bool(
+            self._open["on"]
+            and self.flow is not None
+            and self._mode() == "list"
+            and any(row.value == "__save__" for row in self.flow.screen().rows)
+        )
+
     def _on_enter(self) -> None:
         flow = self.flow
         if flow is None:
@@ -496,13 +506,7 @@ class ConfigOverlay:
         is_list = Condition(lambda: self._open["on"] and self._mode() == "list")
         is_confirm = Condition(lambda: self._open["on"] and self._mode() == "confirm")
         is_busy = Condition(lambda: self._open["on"] and self._mode() == "busy")
-        is_menu = Condition(
-            lambda: (
-                self._open["on"]
-                and self.flow is not None
-                and getattr(self.flow, "stage", "") == "menu"
-            )
-        )
+        can_save = Condition(self._save_available)
 
         @kb.add("enter", filter=is_open & ~is_busy, eager=True)
         def _enter(event: Any) -> None:
@@ -549,11 +553,11 @@ class ConfigOverlay:
                 self.flow.back()
             self._pump()
 
-        @kb.add("s", filter=is_menu, eager=True)
-        @kb.add("S", filter=is_menu, eager=True)
+        @kb.add("s", filter=can_save, eager=True)
+        @kb.add("S", filter=can_save, eager=True)
         def _save(event: Any) -> None:
             if self.flow is not None:
-                self.flow._goto("saving")
+                self.flow.choose("__save__")
             self._pump()
 
         @kb.add("y", filter=is_confirm, eager=True)
