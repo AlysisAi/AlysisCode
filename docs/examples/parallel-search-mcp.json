@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "servers": {
+    "parallel": {
+      "transport": "http",
+      "url": "https://search.parallel.ai/mcp",
+      "trust": "explicit",
+      "enabled_in": ["interactive_chat", "one_shot"],
+      "allowed_tools": ["web_search", "web_fetch"]
+    }
+  }
+}
