@@ -132,9 +132,9 @@ def _resolved_diff_paths(
         if not old or not new:
             raise ValueError("Malformed quoted Git diff header")
         return old, new
-    if not old or not new:
-        raise ValueError("Malformed Git diff header")
     if not (payload.startswith("a/") and len(_diff_separator_positions(payload)) > 1):
+        if not old or not new:
+            raise ValueError("Malformed Git diff header")
         return old, new
 
     candidates = {

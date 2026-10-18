@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Preserve Git rename and copy paths containing ` b/` directory components
+  when diff headers require adjacent metadata to disambiguate the paths.
+
 ## 0.15.1 - 2026-10-15
 
 - Keep the release qualification's simulated stalled provider connected until
