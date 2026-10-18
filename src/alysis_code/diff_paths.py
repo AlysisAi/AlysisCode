@@ -224,7 +224,7 @@ def parse_patch_changed_files(patch_text: str) -> list[str]:
     seen: set[str] = set()
     saw_diff_header = False
 
-    for a_path, b_path in _iter_diff_header_paths(patch_text):
+    for _a_path, b_path in _iter_diff_header_paths(patch_text):
         saw_diff_header = True
         if b_path and b_path != "/dev/null" and b_path not in seen:
             seen.add(b_path)

@@ -23,7 +23,7 @@ from alysis_code.diff_paths import (
         (r"\360\237\223\246.txt", "📦.txt"),
         (r"two\tlines.txt", "two\tlines.txt"),
         (r"back\\slash.txt", r"back\slash.txt"),
-        (r'quote\"name.txt', 'quote"name.txt'),
+        (r"quote\"name.txt", 'quote"name.txt'),
         (r"a\nnewline.txt", "a\nnewline.txt"),
     ],
 )
@@ -167,17 +167,12 @@ def test_conflicting_metadata_fails_closed() -> None:
 
 
 def test_ambiguous_second_patch_fails_instead_of_silently_skipping() -> None:
-    patch = (
-        "diff --git a/normal b/normal\n"
-        "diff --git a/src b/old.txt b/dst b/new.txt\n"
-    )
+    patch = "diff --git a/normal b/normal\ndiff --git a/src b/old.txt b/dst b/new.txt\n"
     with pytest.raises(ValueError, match="Ambiguous unquoted"):
         iter_patch_paths(patch)
 
 
-@pytest.mark.parametrize(
-    "name", [" space.txt", "space.txt ", " space.txt ", "root b/ folder "]
-)
+@pytest.mark.parametrize("name", [" space.txt", "space.txt ", " space.txt ", "root b/ folder "])
 @pytest.mark.parametrize("quoted", [False, True])
 def test_real_git_paths_preserve_leading_and_trailing_spaces(
     tmp_path: Path, name: str, quoted: bool
