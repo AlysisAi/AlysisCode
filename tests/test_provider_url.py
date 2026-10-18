@@ -115,7 +115,5 @@ def test_legacy_gateway_shape_still_gets_product_label():
         ("https://my-workspace.cn-beijing.maas.aliyuncs.com.attacker.example/v1", None),
     ],
 )
-def test_dashscope_provider_detection_requires_owned_host(
-    url: str, expected: str | None
-) -> None:
+def test_dashscope_provider_detection_requires_owned_host(url: str, expected: str | None) -> None:
     assert known_provider_key_from_base_url(url) == expected

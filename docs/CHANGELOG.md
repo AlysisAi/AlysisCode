@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Recognize Alibaba Model Studio endpoints by owned hostname boundaries rather
+  than applying Qwen provider behavior to unrelated custom hosts.
+
 ## 0.15.1 - 2026-10-15
 
 - Keep the release qualification's simulated stalled provider connected until
