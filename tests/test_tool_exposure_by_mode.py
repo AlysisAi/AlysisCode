@@ -10,11 +10,16 @@ import pytest
 from rich.console import Console
 
 import alysis_code.agent_loop as agent_loop_mod
+from alysis_code.agent.errors import AgentRuntimeError
 from alysis_code.agent_loop import _tool_event_metadata, build_tools
 from alysis_code.config import AppConfig
 from alysis_code.custom_tools.discovery import discover_custom_tools
 from alysis_code.custom_tools.trust import trust_project_tool
-from alysis_code.mcp.manager import McpHostToolBinding, McpToolBinding
+from alysis_code.mcp.manager import (
+    McpHostToolBinding,
+    McpToolBinding,
+    mcp_tool_approval_hints,
+)
 from alysis_code.runtime_kind import RuntimeKind
 from alysis_code.session_store import SessionStore
 from alysis_code.surface import ApprovalDecision, ApprovalRequest, NoopSurface
@@ -68,7 +73,12 @@ class _RecordingSurface(NoopSurface):
         return ApprovalDecision(allow=self.allow)
 
 
-def _make_mcp_binding(*, session_mode: str | None = None) -> tuple[McpToolBinding, _FakeMcpClient]:
+def _make_mcp_binding(
+    *,
+    session_mode: str | None = None,
+    read_only_hint: bool = False,
+    destructive_hint: bool = False,
+) -> tuple[McpToolBinding, _FakeMcpClient]:
     client = _FakeMcpClient()
     binding = McpToolBinding(
         server_id="alpha",
@@ -78,6 +88,8 @@ def _make_mcp_binding(*, session_mode: str | None = None) -> tuple[McpToolBindin
         parameters={"type": "object", "properties": {}, "required": []},
         client=client,
         session_mode=session_mode,
+        read_only_hint=read_only_hint,
+        destructive_hint=destructive_hint,
     )
     return binding, client
 
@@ -877,7 +889,7 @@ def test_review_mode_custom_tool_execution_requires_approval(
 
 
 @pytest.mark.parametrize("mode", ["auto", "fullaccess"])
-def test_trusted_custom_tools_do_not_require_per_call_approval_outside_review(
+def test_trusted_custom_tools_follow_action_approval_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
@@ -899,7 +911,7 @@ def test_trusted_custom_tools_do_not_require_per_call_approval_outside_review(
     result = tools["project_echo"].run({})
 
     assert result["success"] is True
-    assert surface.requests == []
+    assert len(surface.requests) == (1 if mode == "auto" else 0)
 
 
 def test_build_tools_custom_tools_disabled_by_config_excludes_custom_tools(
@@ -924,3 +936,166 @@ def test_build_tools_custom_tools_disabled_by_config_excludes_custom_tools(
     )
 
     assert "project_echo" not in tools
+
+
+def test_review_mode_asks_before_each_unscoped_mcp_tool_call(
+    tmp_path: Path,
+) -> None:
+    binding, client = _make_mcp_binding()
+    surface = _RecordingSurface(allow=True)
+    tools = _build_tools(
+        tmp_path,
+        mode="review",
+        mcp_manager=_DummyMcpManager(binding),
+        non_interactive=False,
+        surface=surface,
+    )
+
+    tools["mcp__alpha__echo"].run({"text": "hi"})
+
+    assert client.called is True
+    [request] = surface.requests
+    assert request.kind == "mcp"
+    assert request.command == "mcp__alpha__echo"
+    assert request.metadata["mcp_server_id"] == "alpha"
+    assert request.metadata["mcp_tool_id"] == "echo"
+    assert request.metadata["access"] == "write"
+    assert '"text": "hi"' in request.preview
+    assert request.allow_for_session_scope is None
+
+
+def test_review_mode_declined_mcp_tool_call_never_reaches_the_server(tmp_path: Path) -> None:
+    binding, client = _make_mcp_binding()
+    surface = _RecordingSurface(allow=False)
+    tools = _build_tools(
+        tmp_path,
+        mode="review",
+        mcp_manager=_DummyMcpManager(binding),
+        non_interactive=False,
+        surface=surface,
+    )
+
+    with pytest.raises(AgentRuntimeError, match="MCP action was not approved"):
+        tools["mcp__alpha__echo"].run({})
+
+    assert client.called is False
+
+
+def test_review_mode_runs_a_tool_its_server_marks_read_only_without_asking(
+    tmp_path: Path,
+) -> None:
+    binding, client = _make_mcp_binding(read_only_hint=True)
+    surface = _RecordingSurface(allow=False)
+    tools = _build_tools(
+        tmp_path,
+        mode="review",
+        mcp_manager=_DummyMcpManager(binding),
+        non_interactive=False,
+        surface=surface,
+    )
+
+    tools["mcp__alpha__echo"].run({})
+
+    assert client.called is True
+    assert surface.requests == []
+
+
+def test_review_mode_mcp_tool_call_fails_closed_when_nobody_can_be_asked(
+    tmp_path: Path,
+) -> None:
+    binding, client = _make_mcp_binding()
+    tools = _build_tools(
+        tmp_path,
+        mode="review",
+        mcp_manager=_DummyMcpManager(binding),
+        non_interactive=True,
+        surface=_RecordingSurface(allow=True),
+    )
+
+    with pytest.raises(AgentRuntimeError, match="Nobody can be asked"):
+        tools["mcp__alpha__echo"].run({})
+
+    assert client.called is False
+
+
+def test_auto_mode_asks_for_unscoped_and_destructive_mcp_tools(tmp_path: Path) -> None:
+    plain, plain_client = _make_mcp_binding()
+    surface = _RecordingSurface(allow=True)
+    tools = _build_tools(
+        tmp_path,
+        mode="auto",
+        mcp_manager=_DummyMcpManager(plain),
+        non_interactive=False,
+        surface=surface,
+        yes=False,
+    )
+    tools["mcp__alpha__echo"].run({})
+    assert plain_client.called is True
+    assert len(surface.requests) == 1
+    surface.requests.clear()
+
+    destructive, destructive_client = _make_mcp_binding(destructive_hint=True)
+    tools = _build_tools(
+        tmp_path,
+        mode="auto",
+        mcp_manager=_DummyMcpManager(destructive),
+        non_interactive=False,
+        surface=surface,
+        yes=False,
+    )
+    tools["mcp__alpha__echo"].run({})
+    assert destructive_client.called is True
+    [request] = surface.requests
+    assert request.kind == "mcp"
+    assert request.metadata["destructive"] is True
+    assert "outside the project sandbox" in request.reason
+    # A destructive tool asks every time: no "allow for this chat".
+    assert request.allow_for_session_scope is None
+
+
+@pytest.mark.parametrize(("mode", "yes"), [("auto", True), ("fullaccess", False)])
+def test_full_access_bypasses_mcp_prompts_but_yes_does_not(
+    tmp_path: Path, mode: str, yes: bool
+) -> None:
+    binding, client = _make_mcp_binding(destructive_hint=True)
+    surface = _RecordingSurface(allow=False)
+    tools = _build_tools(
+        tmp_path,
+        mode=mode,
+        mcp_manager=_DummyMcpManager(binding),
+        non_interactive=False,
+        surface=surface,
+        yes=yes,
+    )
+
+    if mode == "auto":
+        with pytest.raises(AgentRuntimeError, match="MCP action was not approved"):
+            tools["mcp__alpha__echo"].run({})
+        assert client.called is False
+        assert len(surface.requests) == 1
+    else:
+        tools["mcp__alpha__echo"].run({})
+        assert client.called is True
+        assert surface.requests == []
+
+
+@pytest.mark.parametrize(
+    ("annotations", "expected"),
+    [
+        (None, (False, False)),
+        ({}, (False, False)),
+        ({"readOnlyHint": True}, (True, False)),
+        ({"readOnlyHint": True, "destructiveHint": False}, (True, False)),
+        ({"destructiveHint": True}, (False, True)),
+        ({"readOnlyHint": True, "destructiveHint": True}, (False, True)),
+        ({"readOnlyHint": "true"}, (False, False)),
+        ("not-an-object", (False, False)),
+    ],
+)
+def test_mcp_tool_approval_hints_trust_only_explicit_booleans(
+    annotations: object, expected: tuple[bool, bool]
+) -> None:
+    raw_tool: dict[str, object] = {"name": "echo", "inputSchema": {"type": "object"}}
+    if annotations is not None:
+        raw_tool["annotations"] = annotations
+    assert mcp_tool_approval_hints(raw_tool) == expected

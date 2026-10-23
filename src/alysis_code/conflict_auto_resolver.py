@@ -10,6 +10,7 @@ from typing import Any
 
 from .agent_loop import run_agent
 from .branding import env_get_from
+from .command_text import command_text
 from .config import AppConfig, ConfigError, clone_cfg
 from .execution_shared import (
     build_task_execution_instruction_bundle,
@@ -223,7 +224,7 @@ def _run_git(
         cmd,
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
     )
 
 

@@ -67,7 +67,7 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           REPOSITORY: ${{ github.repository }}
@@ -100,10 +100,17 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   build-scan-pr:
-    name: build, scan, and smoke dev (pr)
+    name: build, scan, and smoke ${{ matrix.variant }} (${{ matrix.platform.arch }}, pr)
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, dev, server]
+        platform:
+          - {arch: amd64, runner: ubuntu-latest}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
     permissions:
       contents: read
     steps:
@@ -122,16 +129,16 @@ jobs:
         with:
           context: .
           file: ./scripts/sandbox/Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.platform.arch }}
           push: false
           load: true
           provenance: false
           sbom: false
           tags: alysis-sandbox-pr:${{ github.sha }}
-          cache-from: type=gha,scope=sandbox-pr-dev-amd64
-          cache-to: type=gha,mode=max,scope=sandbox-pr-dev-amd64
+          cache-from: type=gha,scope=sandbox-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=sandbox-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}
           build-args: |
-            VARIANT=dev
+            VARIANT=${{ matrix.variant }}
             SOURCE_URL=https://github.com/${{ github.repository }}
             GIT_SHA=${{ github.sha }}
             VERSION=pr-${{ github.sha }}
@@ -142,7 +149,7 @@ jobs:
         with:
           image-ref: alysis-sandbox-pr:${{ github.sha }}
           format: sarif
-          output: trivy-pr-dev-amd64.sarif
+          output: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.sarif
           exit-code: "1"
           ignore-unfixed: false
           vuln-type: os,library
@@ -153,18 +160,21 @@ jobs:
 
       - name: Smoke local PR image
         shell: bash
+        env:
+          ARCH: ${{ matrix.platform.arch }}
+          VARIANT: ${{ matrix.variant }}
         run: |
           set -euo pipefail
-          docker run --rm --platform linux/amd64 \
+          docker run --rm --platform "linux/$ARCH" -e VARIANT \
             "alysis-sandbox-pr:${GITHUB_SHA}" \
-            sh -euc 'test "$(id -u)" = 1000; python --version; git --version; rg --version; node --version; npm --version; go version; rustc --version; cargo --version'
+            sh -euc 'test "$(id -u)" = 1000; python --version; git --version; rg --version; if [ "$VARIANT" != base ]; then node --version; npm --version; go version; rustc --version; cargo --version; fi; if [ "$VARIANT" = server ]; then alysis --version; fi'
 
       - name: Upload Trivy SARIF artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: trivy-pr-dev-amd64-sarif
-          path: trivy-pr-dev-amd64.sarif
+          name: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}-sarif
+          path: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.sarif
           if-no-files-found: error
           retention-days: 30
 

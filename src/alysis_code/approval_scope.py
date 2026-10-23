@@ -35,6 +35,13 @@ _FILE_SCOPE_KINDS = frozenset(
     }
 )
 _COMMAND_SCOPE_KINDS = frozenset({"shell_run", "shell_background"})
+_DESTRUCTIVE_APPROVAL_KINDS = frozenset({"fs_delete"})
+_DESTRUCTIVE_COMMAND_PATTERN = re.compile(
+    r"(?:^|[;&|]\s*|\bsudo\s+)(?:rm\s+(?:-[^\s]*[rR][^\s]*\s+|--recursive\b)|"
+    r"rmdir\b|git\s+(?:reset\s+--hard|clean\s+-[^\s]*f|checkout\s+--)|"
+    r"(?:drop\s+(?:database|schema|table)|truncate\s+table)\b)",
+    re.IGNORECASE,
+)
 
 # ---- directory-scoped session grants --------------------------------------
 # An exact-file-set "always" can never cover the next file of a batch (every
@@ -355,3 +362,14 @@ def _is_command_like_kind(kind: str) -> bool:
         or kind.startswith("mcp_")
         or kind.startswith("mcp_tool_run:")
     )
+
+
+def approval_request_is_destructive(request: Any) -> bool:
+    kind = str(getattr(request, "kind", "") or "approval").strip().casefold()
+    if kind in _DESTRUCTIVE_APPROVAL_KINDS:
+        return True
+    metadata = getattr(request, "metadata", None)
+    if isinstance(metadata, dict) and metadata.get("destructive") is True:
+        return True
+    command = getattr(request, "command", None)
+    return bool(command and _DESTRUCTIVE_COMMAND_PATTERN.search(str(command)))

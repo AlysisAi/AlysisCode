@@ -43,7 +43,7 @@ def test_legacy_runtime_plugin_opt_in_is_honored(monkeypatch) -> None:
             return ()
 
     monkeypatch.delenv(RUNTIME_PLUGIN_OPT_IN_ENV, raising=False)
-    monkeypatch.setenv("SYLLIPTOR_ENABLE_AGENT_RUNTIME_PLUGINS", "1")
+    monkeypatch.setenv("ALYSIS_ENABLE_AGENT_RUNTIME_PLUGINS", "1")
     monkeypatch.setattr(
         "alysis_code.agent_runtimes.builtins.entry_points",
         lambda: _EntryPoints(),

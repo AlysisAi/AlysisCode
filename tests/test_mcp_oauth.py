@@ -87,6 +87,10 @@ def _install_memory_keyring(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, 
 
 @pytest.fixture(autouse=True)
 def _default_memory_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep generic keyring tests independent of the host running pytest. Tests
+    # for platform policy override this explicitly.
+    monkeypatch.delenv(token_store_mod.OAUTH_KEY_SOURCE_ENV, raising=False)
+    monkeypatch.setattr(token_store_mod, "_platform_system", lambda: "Linux")
     _install_memory_keyring(monkeypatch)
 
 
@@ -514,6 +518,36 @@ def test_planned_key_source_reports_the_fallback_without_creating_key_material(
         "keyring_availability",
         lambda: token_store_mod.KeyringOutcome(available=True, backend="test.Backend"),
     )
+    assert token_store_mod.planned_key_source() == token_store_mod.KEY_SOURCE_KEYRING
+
+
+def test_planned_key_source_uses_explicit_filesystem_policy_without_probing_keyring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The desktop app sets this policy for its bundled runtime on every platform.
+    monkeypatch.setenv(token_store_mod.OAUTH_KEY_SOURCE_ENV, token_store_mod.KEY_SOURCE_FILESYSTEM)
+    monkeypatch.setattr(token_store_mod, "_platform_system", lambda: "Darwin")
+
+    def _unexpected_probe() -> token_store_mod.KeyringOutcome:
+        raise AssertionError("the filesystem policy must bypass keyring probing")
+
+    monkeypatch.setattr(token_store_mod, "keyring_availability", _unexpected_probe)
+
+    assert token_store_mod.planned_key_source() == token_store_mod.KEY_SOURCE_FILESYSTEM
+
+
+def test_planned_key_source_keeps_keyring_first_on_macos_without_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(token_store_mod.OAUTH_KEY_SOURCE_ENV, raising=False)
+    monkeypatch.delenv("ALYSIS_OAUTH_KEY_SOURCE", raising=False)
+    monkeypatch.setattr(token_store_mod, "_platform_system", lambda: "Darwin")
+    monkeypatch.setattr(
+        token_store_mod,
+        "keyring_availability",
+        lambda: token_store_mod.KeyringOutcome(available=True),
+    )
+
     assert token_store_mod.planned_key_source() == token_store_mod.KEY_SOURCE_KEYRING
 
 

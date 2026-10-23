@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .cli_common import *
 from .update import _cached_update_notice
+from ...command_text import command_text
 
 
 def _is_narrow_terminal() -> bool:
@@ -402,7 +403,7 @@ def _current_branch_label(root: Path) -> str:
         ["git", "-C", os.fspath(root), "rev-parse", "--abbrev-ref", "HEAD"],
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
     )
     if proc.returncode != 0:
         return "-"
@@ -417,7 +418,7 @@ def _is_git_dirty(root: Path) -> bool:
         ["git", "-C", os.fspath(root), "status", "--porcelain"],
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
     )
     if proc.returncode != 0:
         return False

@@ -181,6 +181,46 @@ def subscription_selection_supported(profile: ProfileSpec, models: Any) -> bool:
     return not supported or profile.reasoning_effort in supported
 
 
+def migrate_subscription_endpoints(cfg: AppConfig) -> bool:
+    """Point subscription profiles saved by an earlier release at their adapter's endpoint.
+
+    A subscription adapter owns its protocol and endpoint: the client factory and the
+    startup check reject a profile that disagrees. When an adapter moves endpoint, a
+    profile saved before the move names an endpoint the adapter lists in
+    ``legacy_base_urls``. Such profiles take the adapter's current protocol and endpoint
+    here, in memory on load; the next config save writes them. Any other differing
+    endpoint is an override and stays rejected.
+    """
+
+    profiles = _profile_dict(cfg)
+    if not profiles:
+        return False
+    from .provider_auth import provider_auth_connection
+
+    updated: dict[str, dict[str, Any]] = {}
+    for name, data in profiles.items():
+        if not isinstance(data, dict):
+            continue
+        provider_id = str(data.get("auth_provider") or "").strip()
+        stored = str(data.get("base_url") or "").strip()
+        if not provider_id or not stored:
+            continue
+        connection = provider_auth_connection(provider_id)
+        if connection is None or _same_base_url(stored, connection.base_url):
+            continue
+        if not any(_same_base_url(stored, legacy) for legacy in connection.legacy_base_urls):
+            continue
+        updated[name] = {
+            **data,
+            "protocol": connection.protocol,
+            "base_url": connection.base_url,
+        }
+    if not updated:
+        return False
+    _set_profile_dict(cfg, {**profiles, **updated})
+    return True
+
+
 def apply_hosted_prompt_cache_defaults(cfg: AppConfig, profile: ProfileSpec) -> bool:
     """Upgrade untouched hosted cache settings once, without saving during reads.
 
@@ -493,38 +533,11 @@ def rename_profile(cfg: AppConfig, old: str, new: str) -> None:
         set_active_profile(cfg, new_name)
 
 
-def _rename_cloud_profile(extra_fields: dict[str, Any]) -> bool:
-    """Rename the hosted Pro profile from its pre-rebrand key.
-
-    Pre-rebrand installs stored the hosted provider as a profile literally named
-    "sylliptor", including in ``active_profile``. Left alone, a Pro user would
-    open the CLI to find their subscription profile missing.
-    """
-    from .config import CLOUD_PROFILE_KEY, LEGACY_CLOUD_PROFILE_KEY
-
-    profiles = extra_fields.get("profiles")
-    if not isinstance(profiles, dict) or LEGACY_CLOUD_PROFILE_KEY not in profiles:
-        return False
-    if CLOUD_PROFILE_KEY in profiles:
-        # Both present: the current one is authoritative, drop the stale entry.
-        profiles.pop(LEGACY_CLOUD_PROFILE_KEY, None)
-    else:
-        entry = dict(profiles.pop(LEGACY_CLOUD_PROFILE_KEY))
-        entry["name"] = CLOUD_PROFILE_KEY
-        profiles[CLOUD_PROFILE_KEY] = entry
-
-    if str(extra_fields.get("active_profile") or "") == LEGACY_CLOUD_PROFILE_KEY:
-        extra_fields["active_profile"] = CLOUD_PROFILE_KEY
-    extra_fields["profiles"] = profiles
-    return True
-
-
 def migrate_legacy_to_profiles(cfg: AppConfig) -> bool:
     extra_fields = dict(getattr(cfg, "extra_fields", {}) or {})
     if isinstance(extra_fields.get("profiles"), dict):
-        renamed = _rename_cloud_profile(extra_fields)
         cfg.extra_fields = extra_fields
-        return renamed
+        return False
 
     base_url = str(getattr(cfg, "base_url", "") or "").strip()
     if not base_url or _same_base_url(base_url, DEFAULT_OPENAI_BASE_URL):

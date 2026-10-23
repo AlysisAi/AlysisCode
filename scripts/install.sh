@@ -1,7 +1,7 @@
 #!/bin/sh
 # Alysis Code installer for Linux, macOS, and Windows through WSL.
 #
-#   curl -LsSf https://raw.githubusercontent.com/AlysisAi/alysis-code/main/scripts/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.sh | sh
 #
 # Installs uv (https://docs.astral.sh/uv/) when it is missing, then installs the
 # `alysis-code` package from PyPI as an isolated uv tool with its own Python.
@@ -19,7 +19,7 @@ UV_INSTALLER_URL="https://astral.sh/uv/install.sh"
 PACKAGE="alysis-code"
 # Every console script the package ships; uv refuses to overwrite files it does
 # not own, so an existing pipx or pip install is detected up front.
-ENTRY_POINTS="alysis alysis-code sylliptor"
+ENTRY_POINTS="alysis alysis-code alysis-ide-bridge"
 
 say() {
     printf '%s\n' "$*"
@@ -229,7 +229,8 @@ main() {
         say "under /mnt/c. File access there is much slower."
     fi
     say ""
-    say "Next: go to your project folder and run 'alysis'. The first run opens a short setup."
+    say "Next: run 'alysis login' and approve the code in your browser to use your Alysis credits."
+    say "Then go to your project folder and run 'alysis'. You can also choose your own provider in setup."
 }
 
 main "$@"

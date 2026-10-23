@@ -13,6 +13,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -94,6 +95,8 @@ def _create_persona_session(
     mode: str = "review",
     persona_modes_enabled_cfg: bool = True,
     run_turn: Any = None,
+    default_persona: str = "code",
+    log_path: Path | None = None,
 ) -> tuple[io.StringIO, StdioBridge, str, dict[str, Any]]:
     """A bridge session whose fake agent session carries the chat persona state.
 
@@ -110,6 +113,7 @@ def _create_persona_session(
     def _load_config() -> AppConfig:
         cfg = AppConfig(model="test-model", subagents_enabled=False)
         cfg.persona_modes_enabled = persona_modes_enabled_cfg
+        cfg.default_persona = default_persona
         return cfg
 
     monkeypatch.setattr(stdio_bridge, "load_config", _load_config)
@@ -128,9 +132,16 @@ def _create_persona_session(
 
         def __init__(self) -> None:
             self.events: list[tuple[str, dict[str, Any]]] = []
+            # With log_path the store keeps a session log on disk, so a later session
+            # (a later turn of the same chat) can read the persona back from it.
+            self.path = log_path
+            self.sessions_dir = log_path.parent if log_path is not None else None
 
         def append(self, name: str, payload: dict[str, Any]) -> None:
             self.events.append((name, payload))
+            if self.path is not None:
+                with Path(self.path).open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"type": name, "payload": payload}) + "\n")
 
     created_sessions: list[Any] = []
 
@@ -141,7 +152,14 @@ def _create_persona_session(
             self.surface = kwargs["surface"]
             self.store = FakeStore()
             self.messages: list[dict[str, Any]] = []
-            self.persona = "code"
+            # Like create_session: the configured default names the persona, but
+            # applying it (mode, write scope, model role) is the caller's job.
+            self.persona = default_persona if persona_modes_enabled_cfg else "code"
+            # What session.resume's history replay touches on a real session.
+            self.pinned_prefix_len = 0
+            self.conversation_compactor = SimpleNamespace(
+                state=SimpleNamespace(pinned_prefix_len=0)
+            )
             self.persona_restore_mode: str | None = None
             self.persona_restore_write_globs: list[str] | None = None
             self.allow_write_globs: list[str] | None = None
@@ -488,3 +506,156 @@ def test_session_status_reports_persona_defaults_before_any_switch(
     assert status["ok"] is True
     assert status["result"]["persona"] == "code"
     assert status["result"]["persona_source"] == "config"
+
+
+def test_session_create_applies_the_default_persona_like_chat_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out, bridge, session_id, context = _create_persona_session(
+        tmp_path, monkeypatch, mode="review", default_persona="ask"
+    )
+
+    create = _response_by_id(out, "create")
+    assert create["result"]["mode"] == "readonly", "the persona's narrower mode is in effect"
+    agent_session = context["created_sessions"][0]
+    assert agent_session.persona == "ask"
+    assert agent_session.persona_restore_mode == "review"
+    assert context["applied_modes"] == ["readonly"]
+    events = _events_of_type(out, "persona_changed")
+    assert [event["payload"] for event in events] == [
+        {"persona": "ask", "effective_mode": "readonly", "source": "config"}
+    ]
+
+    listed = _send_bridge_request(bridge, out, "session.personas.list", {"session_id": session_id})
+    assert listed["result"]["active"] == "ask"
+    assert listed["result"]["active_source"] == "config"
+    status = _send_bridge_request(bridge, out, "session.status", {"session_id": session_id})
+    assert status["result"]["mode"] == "readonly"
+
+    # Choosing the active persona again changes nothing, and now nothing needs to change.
+    again = _send_bridge_request(
+        bridge,
+        out,
+        "session.persona.set",
+        {"session_id": session_id, "persona": "ask"},
+        request_id="set-again",
+    )
+    assert again["result"]["changed"] is False
+    assert again["result"]["effective_mode"] == "readonly"
+
+
+def test_session_create_with_the_code_default_changes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out, _bridge, _session_id, context = _create_persona_session(
+        tmp_path, monkeypatch, mode="review", log_path=tmp_path / "chat.jsonl"
+    )
+
+    assert _response_by_id(out, "create")["result"]["mode"] == "review"
+    assert context["applied_modes"] == []
+    assert _events_of_type(out, "persona_changed") == []
+    store_events = context["created_sessions"][0].store.events
+    assert [name for name, _payload in store_events if name == "persona_switch_applied"] == []
+
+
+def test_a_session_that_continues_a_chat_log_restores_the_chat_persona(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "chat.jsonl"
+    out, bridge, session_id, _context = _create_persona_session(
+        tmp_path, monkeypatch, default_persona="architect", log_path=log_path
+    )
+    switched = _send_bridge_request(
+        bridge,
+        out,
+        "session.persona.set",
+        {"session_id": session_id, "persona": "ask"},
+        request_id="set-ask",
+    )
+    assert switched["result"]["changed"] is True
+
+    # The chat's next turn runs in a new bridge process that continues the same log.
+    out2, bridge2, session_id2, context2 = _create_persona_session(
+        tmp_path, monkeypatch, default_persona="architect", log_path=log_path
+    )
+
+    assert _response_by_id(out2, "create")["result"]["mode"] == "readonly"
+    assert context2["created_sessions"][0].persona == "ask"
+    events = _events_of_type(out2, "persona_changed")
+    assert [event["payload"] for event in events] == [
+        {"persona": "ask", "effective_mode": "readonly", "source": "resume"}
+    ], "the chat's own persona, not the default applied over it"
+    listed = _send_bridge_request(
+        bridge2, out2, "session.personas.list", {"session_id": session_id2}
+    )
+    assert listed["result"]["active"] == "ask"
+    assert listed["result"]["active_source"] == "resume"
+
+
+def test_resuming_another_session_restores_that_session_persona(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        StdioBridge,
+        "_change_ledger_for_session",
+        lambda self, session: SimpleNamespace(adopt_session=lambda *args: None),
+    )
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    out, bridge, session_id, context = _create_persona_session(
+        tmp_path, monkeypatch, log_path=sessions / "live.jsonl"
+    )
+    (sessions / "retained.jsonl").write_text(
+        json.dumps({"type": "user_message", "payload": {"content": "explain the parser"}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "persona_switch_applied",
+                "payload": {"persona": "ask", "effective_mode": "readonly", "source": "user"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    resume = _send_bridge_request(
+        bridge,
+        out,
+        "session.resume",
+        {"session_id": session_id, "target_session_id": "retained"},
+        request_id="resume",
+    )
+
+    assert resume["ok"] is True
+    assert context["created_sessions"][0].persona == "ask"
+    events = _events_of_type(out, "persona_changed")
+    assert [event["payload"] for event in events] == [
+        {"persona": "ask", "effective_mode": "readonly", "source": "resume"}
+    ]
+    listed = _send_bridge_request(bridge, out, "session.personas.list", {"session_id": session_id})
+    assert listed["result"]["active"] == "ask"
+    assert listed["result"]["active_source"] == "resume"
+    status = _send_bridge_request(bridge, out, "session.status", {"session_id": session_id})
+    assert status["result"]["mode"] == "readonly"
+
+
+def test_load_resumed_persona_reads_a_given_log(tmp_path: Path) -> None:
+    other = tmp_path / "other.jsonl"
+    other.write_text(
+        json.dumps({"type": "persona_switch_applied", "payload": {"persona": "architect"}})
+        + "\n"
+        + json.dumps({"type": "persona_switch_applied", "payload": {"persona": "debug"}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _Session:
+        cfg = AppConfig(model="test-model")
+        store = None
+
+    assert chat_loop._load_resumed_persona(_Session(), other) == "debug"
+    assert chat_loop._load_resumed_persona(_Session()) is None

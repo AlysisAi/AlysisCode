@@ -9,10 +9,12 @@ from typing import Any
 
 import httpx
 
+from ..cancellation import CooperativeCancellationError
 from ..error_text import sanitize_error_text_for_output
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from ..request_estimation import estimate_provider_payload_tokens
 from ..web_search_adapters import ANTHROPIC_MESSAGES_ADAPTER, AUTO_WEB_SEARCH_ADAPTER
+from .base import omitted_reasoning_display_required, serial_tool_calls_required
 from .cache_capabilities import CACHE_CONTROL_FIELD
 from .cache_control_blocks import (
     count_cache_control_blocks,
@@ -21,6 +23,7 @@ from .cache_control_blocks import (
     strip_cache_control_blocks,
 )
 from .cache_policy import merge_cache_policy_metadata
+from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
 from .http_cancellation import (
     cancellable_httpx_request,
     cancellable_httpx_send,
@@ -37,6 +40,7 @@ from .metadata import (
     merge_canonical_headers,
     stamp_response_for_route,
 )
+from .protocols import reasoning_trace_callback
 from .provider_limits import (
     DEFAULT_PROVIDER_CONCURRENCY_CAPS,
     ProviderRetrySettings,
@@ -238,6 +242,7 @@ def _anthropic_thinking_plan(
     reasoning_effort: str | None,
     max_tokens: int,
     request_summary: bool,
+    force_omitted_display: bool = False,
 ) -> _AnthropicThinkingPlan:
     effort = str(reasoning_effort or "").strip().casefold() or None
     if effort == "ultra":
@@ -274,12 +279,13 @@ def _anthropic_thinking_plan(
         # think by default, requesting ``display=summarized`` changes visibility
         # only; the provider still owns effort and whether a simple turn thinks.
         default_active = _thinking_enabled_by_default(model)
+        display_config = None
+        if default_active and force_omitted_display:
+            display_config = {"type": "adaptive", "display": "omitted"}
+        elif default_active and request_summary:
+            display_config = {"type": "adaptive", "display": "summarized"}
         return _AnthropicThinkingPlan(
-            config=(
-                {"type": "adaptive", "display": "summarized"}
-                if default_active and request_summary
-                else None
-            ),
+            config=display_config,
             output_effort=None,
             active=default_active,
         )
@@ -292,7 +298,7 @@ def _anthropic_thinking_plan(
     if version is not None and version.major < 4:
         raise LLMError(f"Anthropic model {model!r} does not support extended thinking")
 
-    display = "summarized" if request_summary else "omitted"
+    display = "summarized" if request_summary and not force_omitted_display else "omitted"
     if _uses_adaptive_thinking(model):
         config: dict[str, Any] = {"type": "adaptive", "display": display}
     else:
@@ -683,6 +689,7 @@ def _anthropic_messages_from_messages(
     system_parts: list[str] = []
     system_blocks: list[dict[str, Any]] = []
     anthropic_messages: list[dict[str, Any]] = []
+    trailing_system_instruction = False
 
     def _flush_system_parts() -> None:
         if not system_parts:
@@ -696,8 +703,12 @@ def _anthropic_messages_from_messages(
         if not isinstance(message, dict):
             continue
         role = str(message.get("role") or "").strip()
+        if role not in {"system", "developer"}:
+            trailing_system_instruction = False
         if role in {"system", "developer"}:
             content = message.get("content")
+            if _content_to_text(content).strip():
+                trailing_system_instruction = True
             if isinstance(content, list) and count_cache_control_blocks(content) > 0:
                 _flush_system_parts()
                 system_blocks.extend(_anthropic_blocks_from_content(content, role="system"))
@@ -748,6 +759,23 @@ def _anthropic_messages_from_messages(
                 )
             continue
         raise LLMError(f"Anthropic Messages cannot send message role {role!r}")
+    if (
+        trailing_system_instruction
+        and anthropic_messages
+        and anthropic_messages[-1]["role"] == "assistant"
+        and not any(block.get("type") == "tool_use" for block in anthropic_messages[-1]["content"])
+    ):
+        # Hoisting a controller nudge into `system` leaves the previous answer
+        # at the end of `messages`, which current Claude models reject as an
+        # assistant prefill. Start a fresh response without downgrading or
+        # duplicating the actual controller instruction. This wire-only cue
+        # never becomes a user turn in the persisted conversation.
+        anthropic_messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Continue following the instructions above."}],
+            }
+        )
     if system_blocks:
         _flush_system_parts()
         system: str | list[dict[str, Any]] | None = system_blocks
@@ -1327,6 +1355,14 @@ class _AnthropicStreamAccumulator:
             block["type"] = "unknown"
         block.setdefault("_stream_index", index)
         self.content_blocks[index] = block
+        if (
+            block.get("type") == "thinking"
+            and self.reasoning_is_summary
+            and self.on_reasoning_delta is not None
+        ):
+            thinking = block.get("thinking")
+            if isinstance(thinking, str) and thinking:
+                self.on_reasoning_delta(thinking)
         if str(block.get("type") or "") in {"tool_use", "server_tool_use"}:
             self.input_json_chunks.setdefault(index, [])
 
@@ -1621,16 +1657,18 @@ class AnthropicMessagesClient:
             "model": self.model,
             "messages": anthropic_messages,
         }
+        force_omitted_display = omitted_reasoning_display_required(self)
         thinking_plan = _anthropic_thinking_plan(
             model=self.model,
             enable_thinking=self.enable_thinking,
             reasoning_effort=self.reasoning_effort,
             max_tokens=self.default_max_tokens,
             request_summary=False,
+            force_omitted_display=force_omitted_display,
         )
         if thinking_plan.config is not None:
             payload["thinking"] = copy.deepcopy(thinking_plan.config)
-            if self._thinking_display_supported is False:
+            if self._thinking_display_supported is False and not force_omitted_display:
                 payload = _without_thinking_display(payload)
         if system:
             payload["system"] = system
@@ -1666,7 +1704,9 @@ class AnthropicMessagesClient:
 
         def _send_request() -> InputTokenCount | None:
             try:
-                with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                with provider_httpx_client(
+                    timeout=self.timeout_s, transport=self._transport
+                ) as client:
                     response = client.post(url, headers=self._headers(), json=payload)
             except httpx.HTTPError as exc:
                 raise LLMError(
@@ -1746,6 +1786,11 @@ class AnthropicMessagesClient:
         tool_choice = plan.tool_choice
         response_format = plan.response_format
         stream = plan.stream
+        on_reasoning_delta = reasoning_trace_callback(
+            on_reasoning_delta,
+            capability=getattr(self, "reasoning_trace_capability", None),
+            stream=stream,
+        )
         temperature = plan.temperature
         max_tokens = plan.max_tokens
         if response_format is not None:
@@ -1761,6 +1806,7 @@ class AnthropicMessagesClient:
         effective_max_tokens = (
             int(max_tokens) if max_tokens is not None else self.default_max_tokens
         )
+        force_omitted_display = omitted_reasoning_display_required(self)
         thinking_plan = _anthropic_thinking_plan(
             model=self.model,
             enable_thinking=self.enable_thinking,
@@ -1769,6 +1815,7 @@ class AnthropicMessagesClient:
             request_summary=(
                 on_reasoning_delta is not None and self._thinking_display_supported is not False
             ),
+            force_omitted_display=force_omitted_display,
         )
         temperature_omit_reason = documented_temperature_omit_reason(self.model)
         if thinking_plan.active:
@@ -1782,7 +1829,7 @@ class AnthropicMessagesClient:
         }
         if thinking_plan.config is not None:
             payload["thinking"] = copy.deepcopy(thinking_plan.config)
-            if self._thinking_display_supported is False:
+            if self._thinking_display_supported is False and not force_omitted_display:
                 payload = _without_thinking_display(payload)
         if thinking_plan.output_effort is not None:
             payload["output_config"] = {"effort": thinking_plan.output_effort}
@@ -1797,6 +1844,30 @@ class AnthropicMessagesClient:
             payload["stream"] = True
         if system:
             payload["system"] = system
+
+        def _validate_omitted_reasoning_response(response: LLMResponse) -> LLMResponse:
+            if not force_omitted_display:
+                return response
+            metadata = response.provider_metadata
+            anthropic_metadata = (
+                metadata.get(_ANTHROPIC_METADATA_KEY) if isinstance(metadata, dict) else None
+            )
+            blocks = (
+                anthropic_metadata.get("content_blocks")
+                if isinstance(anthropic_metadata, dict)
+                else None
+            )
+            if isinstance(blocks, list) and any(
+                isinstance(block, dict)
+                and block.get("type") == "thinking"
+                and bool(block.get("thinking"))
+                for block in blocks
+            ):
+                raise LLMError(
+                    "Anthropic Messages violated the required omitted reasoning display contract"
+                )
+            return response
+
         forced_tool_choice_omitted = False
         if tool_mapping.tools:
             payload["tools"] = tool_mapping.tools
@@ -1805,18 +1876,27 @@ class AnthropicMessagesClient:
                 removed_alysis_web_search=tool_mapping.removed_alysis_web_search,
                 added_builtin_web_search=tool_mapping.added_builtin_web_search,
             )
-            if mapped_tool_choice is not None:
+            serial_calls = serial_tool_calls_required(self)
+            if mapped_tool_choice is not None or serial_calls:
+                effective_tool_choice = copy.deepcopy(mapped_tool_choice or {"type": "auto"})
                 if (
                     thinking_plan.active
                     and _claude_model_version(self.model) != _ClaudeModelVersion("haiku", 5, 5)
-                    and mapped_tool_choice.get("type") in {"any", "tool"}
+                    and effective_tool_choice.get("type") in {"any", "tool"}
                 ):
                     # Anthropic rejects forced tool use while extended thinking
                     # is active. Leaving the choice unset preserves automatic
                     # tool selection without failing the entire turn.
                     forced_tool_choice_omitted = True
+                    if serial_calls:
+                        payload["tool_choice"] = {
+                            "type": "auto",
+                            "disable_parallel_tool_use": True,
+                        }
                 else:
-                    payload["tool_choice"] = mapped_tool_choice
+                    if serial_calls:
+                        effective_tool_choice["disable_parallel_tool_use"] = True
+                    payload["tool_choice"] = effective_tool_choice
         elif tool_choice is not None:
             raise LLMError("Anthropic Messages tool_choice requires at least one available tool")
 
@@ -1984,7 +2064,16 @@ class AnthropicMessagesClient:
         def _send_request() -> LLMResponse:
             url = f"{self.base_url}/messages"
             try:
-                with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                client_context = (
+                    cancellation_aware_httpx_client(
+                        timeout_s=self.timeout_s,
+                        transport=self._transport,
+                        cancellation_token=cancellation_token,
+                    )
+                    if cancellation_token is not None and not stream
+                    else provider_httpx_client(timeout=self.timeout_s, transport=self._transport)
+                )
+                with client_context as client:
                     request_payload = payload
                     active_request_plan_metadata = request_plan_metadata
                     if self._thinking_display_supported is False and (
@@ -2129,21 +2218,25 @@ class AnthropicMessagesClient:
                                         continue
                                     raise self._llm_error_from_response(response)
                                 return _response_with_cache_policy_metadata(
-                                    self._parse_stream_response(
-                                        response,
-                                        on_text_delta=(
-                                            _tracked_text_delta
-                                            if telemetry_on_text_delta is not None
-                                            else None
-                                        ),
-                                        on_reasoning_delta=(
-                                            _tracked_reasoning_delta
-                                            if telemetry_on_reasoning_delta is not None
-                                            else None
-                                        ),
-                                        reasoning_is_summary=(
-                                            _payload_requests_summarized_thinking(request_payload)
-                                        ),
+                                    _validate_omitted_reasoning_response(
+                                        self._parse_stream_response(
+                                            response,
+                                            on_text_delta=(
+                                                _tracked_text_delta
+                                                if telemetry_on_text_delta is not None
+                                                else None
+                                            ),
+                                            on_reasoning_delta=(
+                                                _tracked_reasoning_delta
+                                                if telemetry_on_reasoning_delta is not None
+                                                else None
+                                            ),
+                                            reasoning_is_summary=(
+                                                _payload_requests_summarized_thinking(
+                                                    request_payload
+                                                )
+                                            ),
+                                        )
                                     ),
                                     cache_policy,
                                     active_request_plan_metadata,
@@ -2263,6 +2356,8 @@ class AnthropicMessagesClient:
                             )
                             continue
                         break
+            except CooperativeCancellationError:
+                raise
             except httpx.DecodingError as e:
                 raise_if_cancelled(cancellation_token)
                 err = LLMError(
@@ -2286,10 +2381,14 @@ class AnthropicMessagesClient:
             if response.status_code >= 400:
                 raise self._llm_error_from_response(response)
             return _response_with_cache_policy_metadata(
-                self._parse_chat_response(
-                    response,
-                    on_reasoning_delta=telemetry_on_reasoning_delta,
-                    reasoning_is_summary=_payload_requests_summarized_thinking(request_payload),
+                _validate_omitted_reasoning_response(
+                    self._parse_chat_response(
+                        response,
+                        on_reasoning_delta=telemetry_on_reasoning_delta,
+                        reasoning_is_summary=(
+                            _payload_requests_summarized_thinking(request_payload)
+                        ),
+                    )
                 ),
                 cache_policy,
                 active_request_plan_metadata,

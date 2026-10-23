@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0 — pre-release preparation
+
+- Bundle a signed, platform-specific CLI runtime; validate its signature and integrity before
+  starting the bridge. The final source tag selects the bundled CLI version.
+- Allow local providers without an API key, including switching back to a configured local server.
+- Forward custom-endpoint keys through the provider-specific credential channel even when the
+  provider has no named environment variable.
+- Wait for initial runtime validation before Runtime Details, Check Setup, and Bridge Health;
+  show preparation progress while validation is pending.
+- Package only the intended runtime and presentation assets, excluding local QA output and other
+  unexpected files from the VSIX.
+- Update the development dependency source-map-js to 1.2.2 to address its high-severity source-map
+  denial-of-service advisory.
+- Verify packaged installations on the minimum supported VS Code version and current Stable.
+
+Marketplace publication is pending the signed candidate, provider/remote acceptance, and release
+signoff. Development component VSIX files do not contain the production runtime.
+
 ## Marketplace preparation — 22 September 2026
 
 - Remove saved API keys from the correct provider-specific SecretStorage entry. When multiple

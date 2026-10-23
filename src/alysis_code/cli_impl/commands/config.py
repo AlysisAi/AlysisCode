@@ -19,6 +19,7 @@ from ...config import (
     save_persisted_api_key,
     set_config_value,
 )
+from ...llm.metadata import credential_scope_fingerprint
 from . import _patchable
 from ._shared import _console
 
@@ -31,9 +32,12 @@ def config_show() -> None:
     cfg = _patchable("load_config", load_config)()
     data = cfg.model_dump()
     data["config_path"] = os.fspath(config_path())
-    api_key = _patchable("resolve_api_key", resolve_api_key)()
+    api_key = _patchable("resolve_api_key", resolve_api_key)(cfg)
     data["api_key_set"] = bool(api_key.key)
-    data["api_key_source"] = "stored" if api_key.source == "stored:legacy" else api_key.source
+    data["api_key_source"] = api_key.source
+    # Match the live route identity used by the Computer Use IDE boundary while
+    # keeping the credential itself outside this machine-readable snapshot.
+    data["credential_id"] = credential_scope_fingerprint(api_key.key)
     data["credentials_path"] = os.fspath(credentials_path())
     data["active_profile"] = str((cfg.extra_fields or {}).get("active_profile") or "")
     role_models = (cfg.extra_fields or {}).get("role_models")

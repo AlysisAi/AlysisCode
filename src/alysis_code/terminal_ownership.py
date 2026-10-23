@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .branding import canonical_user_data_dir, env_get
+from .command_text import command_text
 
 _SCHEMA_VERSION = 1
 _MAX_RECORD_BYTES = 8192
@@ -268,7 +269,7 @@ def _pid_start_token(pid: int) -> str | None:
             ["ps", "-o", "lstart=", "-p", str(pid)],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=2.0,
         )
     except (OSError, subprocess.SubprocessError):

@@ -24,6 +24,7 @@ from ..approval_scope import (
     exact_verify_command_set_scope,
 )
 from ..assets.local_tools import LocalAssetViewer
+from ..branding import env_get
 from ..config import (
     AppConfig,
     ConfigError,
@@ -40,6 +41,7 @@ from ..context.tool_schema_budgeter import (
     compact_custom_mcp_tool_parameters,
 )
 from ..crash_diagnostics import CrashDiagnosticLogger
+from ..critical_paths import critical_delete_targets
 from ..custom_tools import (
     CustomToolDiscoveryResult,
     CustomToolSessionState,
@@ -47,6 +49,8 @@ from ..custom_tools import (
     build_custom_tool_session_state,
     run_custom_tool,
 )
+from ..desktop_connections import CONNECTION_TOOL_NAMES
+from ..desktop_terminal import TERMINAL_TOOLS, TERMINAL_WRITE_ACTIONS
 from ..diff_paths import iter_patch_paths
 from ..dispatch_timing import (
     DISPATCH_OVERHEAD_OPERATION,
@@ -55,6 +59,8 @@ from ..dispatch_timing import (
 )
 from ..durable_service_manager import DurableServiceManager, ProcessOwnership
 from ..edit_discipline import EditDisciplineState
+from ..embedded_browser import BROWSER_READ_TOOL_NAMES, BROWSER_WRITE_ACTIONS
+from ..embedded_browser_visual import EmbeddedBrowserViewer, OpenPanelViewer
 from ..execution_deadline import (
     DEFAULT_DEADLINE_CLEANUP_RESERVE_SECONDS,
     MINIMUM_TOOL_START_SECONDS,
@@ -67,6 +73,7 @@ from ..execution_deadline import (
 from ..extensions.activation import ActivationDecision
 from ..extensions.models import normalize_extension_id
 from ..host_actions import (
+    GITHUB_WRITE_ACTIONS,
     HOST_ACTION_TOOL_NAMES,
     HostActionError,
     HostActionHandler,
@@ -80,14 +87,42 @@ from ..ide.managed_browser import (
     ManagedBrowserService,
 )
 from ..ide.protocol import redact_secrets
-from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager
+from ..mcp.github_discovery import (
+    ACTIONS as GITHUB_DISCOVERY_ACTIONS,
+)
+from ..mcp.github_discovery import (
+    CALL as GITHUB_DISCOVERY_CALL,
+)
+from ..mcp.github_discovery import (
+    TOOL_SPECS as GITHUB_DISCOVERY_TOOL_SPECS,
+)
+from ..mcp.github_discovery import (
+    GitHubDiscoveryState,
+    discovery_result,
+    wrap_discovery_result,
+)
+from ..mcp.github_host import (
+    GITHUB_MCP_ACTION,
+    GITHUB_MCP_SERVER_ID,
+    assert_host_mcp_current,
+    tool_parameters,
+    wrap_mcp_result,
+)
+from ..mcp.google_host import GOOGLE_MCP_ACTION, assert_google_current, wrap_google_result
+from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager, McpToolBinding
 from ..mcp.models import ResolvedMcpConfig, ResolvedMcpServer
+from ..mcp.untrusted_content import build_host_owned_mcp_tool_description
+from ..mcp.visual_delivery import McpVisualDelivery
 from ..model_registry import ModelRegistry
+from ..open_panels import PANEL_READ_TOOL_NAMES
 from ..personas import is_persona_name, persona_modes_enabled
 from ..pipeline_facts import resolve_pipeline_stage_status
 from ..policy import evaluate_shell_command
 from ..process_reaping import ProcessGroupRegistry
+from ..read_only_commands import is_read_only_command
 from ..runtime_kind import RuntimeKind, normalize_runtime_kind
+from ..sandbox_runner import select_shell_sandbox_backend
+from ..sandbox_settings import resolve_shell_sandbox_settings
 from ..service_persistence import (
     PersistentServiceRecord,
     PersistentServiceRegistry,
@@ -104,11 +139,13 @@ from ..subagents import (
     routable_subagent_names,
 )
 from ..surface import (
+    ApprovalDecision,
     ApprovalRequest,
     NoopSurface,
     PatchEvent,
 )
 from ..surface.base import Surface
+from ..surface.types import approval_review_line
 from ..task_scope import (
     ancestor_directory_scope_patterns,
     is_non_material_untracked_path,
@@ -177,6 +214,7 @@ from ..verify_gate import (
     is_authoritative_verify_command_selection,
     required_verify_commands,
     resolve_verify_commands,
+    resolve_verify_sandbox_mode,
     run_task_verification,
     trusted_shell_expression_command_set,
     validation_errors_for_selection,
@@ -190,9 +228,17 @@ from ..web_research import (
     canonicalize_web_url_input,
     normalize_web_url,
 )
+from ..windows_command_policy import most_severe_windows_finding
 from ..workspace_context import resolve_workspace_context
 from . import _patchable
-from .errors import AgentRuntimeError, ApprovalDeclinedError, SessionWorkdirError
+from .action_approval import decide_action_approval
+from .approval_review import ApprovalReviewer, ReviewVerdict
+from .computer_use_evidence import observed_facts, valid_facts
+from .errors import (
+    AgentRuntimeError,
+    ApprovalDeclinedError,
+    SessionWorkdirError,
+)
 from .mutation_classification import classify_mutation_paths
 from .prompt_context import (
     _MODE_FULLACCESS,
@@ -446,7 +492,8 @@ def _filter_mcp_config_for_plugins(
     servers = tuple(
         server
         for server in config.servers
-        if _component_plugin_allowed(
+        if server.id != GITHUB_MCP_SERVER_ID
+        and _component_plugin_allowed(
             _mcp_server_plugin_id(server),
             activation_decision,
             dropped_counts,
@@ -479,6 +526,11 @@ def _fullaccess_denylist_match(cmd: str) -> str | None:
     for pattern in FULLACCESS_DENYLIST_PATTERNS:
         if re.search(pattern, normalized, flags=re.IGNORECASE):
             return pattern
+    # The cmd.exe and PowerShell counterparts (rd /s /q C:\, Format-Volume, iwr … | iex …),
+    # found by parsing rather than by pattern; see windows_command_policy.
+    windows_finding = most_severe_windows_finding(cmd)
+    if windows_finding is not None and windows_finding.severity == "catastrophic":
+        return windows_finding.reason
     return None
 
 
@@ -507,7 +559,9 @@ class ToolDef:
     metadata: dict[str, Any] = field(default_factory=dict)
     # Host-only delivery interface, preserved when dispatch guards replace run.
     # It is deliberately excluded from model schemas and persistence metadata.
-    visual_delivery: LocalAssetViewer | None = field(default=None, repr=False, compare=False)
+    visual_delivery: LocalAssetViewer | McpVisualDelivery | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def as_openai_tool(self) -> dict[str, Any]:
         family = _model_schema_family(self.metadata)
@@ -631,6 +685,14 @@ def _drop_schema_descriptions(value: Any) -> Any:
     return _drop_model_facing_schema_prose(value)
 
 
+def _shell_run_model_description(shell_environment: str | None) -> str:
+    """The shell_run description, naming the session's shell when it has one."""
+    base = _BUILTIN_MODEL_DESCRIPTIONS["shell_run"]
+    if not shell_environment or shell_environment.startswith("none"):
+        return base
+    return f"{base} Commands run in {shell_environment}, so use that shell's syntax."
+
+
 _BUILTIN_MODEL_DESCRIPTIONS: dict[str, str] = {
     "report_blocker": "Report a final unresolvable blocker.",
     "fs_read": (
@@ -650,7 +712,7 @@ _BUILTIN_MODEL_DESCRIPTIONS: dict[str, str] = {
     ),
     "web_fetch": "Fetch a supplied/search URL.",
     "asset_view": "View a local image, crop, or timestamped video frame.",
-    "capability_status": "Inspect configured and observed web/visual readiness.",
+    "capability_status": "Inspect web/visual readiness and local PDF/Office creation, editing and review commands.",
     "web_search": (
         "Search current sources for unstable/requested facts; includes UTC retrieved_at. "
         "Fetch URLs with web_fetch."
@@ -770,6 +832,11 @@ _READONLY_MAIN_SESSION_BUILTIN_TOOL_NAMES = frozenset(
 )
 
 
+_READONLY_TOP_LEVEL_TERMINAL_TOOL_NAMES = frozenset(
+    spec[1] for spec in TERMINAL_TOOLS if not spec[5]
+)
+
+
 _READONLY_TOP_LEVEL_WEB_TOOL_NAMES = frozenset({"web_fetch", "web_search"})
 
 # Delegation is a read-safe control plane at the top level.  Nested children do
@@ -808,7 +875,9 @@ _SHELL_CANCELLATION_TOKEN_ARG = object()
 
 # Tools whose dispatch can block on a running process, and which therefore need
 # the cancellation token so PR2's watchdog can preempt a wait already in flight.
-_SHELL_CANCELLABLE_WAIT_TOOL_NAMES = frozenset({"shell_wait"})
+# ``shell_run`` and ``verify_run`` wait on their own foreground commands: with the
+# token, a Stop ends such a command at once instead of when it finishes.
+_SHELL_CANCELLABLE_WAIT_TOOL_NAMES = frozenset({"shell_wait", "shell_run", "verify_run"})
 
 
 def _built_in_tool_exposed_in_mode(
@@ -822,9 +891,17 @@ def _built_in_tool_exposed_in_mode(
     if normalized_mode != "readonly":
         return True
     normalized_tool_name = str(tool_name or "").strip()
+    if subagent_depth == 0 and normalized_tool_name in {"request_user_input", "wait_user_input"}:
+        return True
     if normalized_tool_name in _READONLY_MAIN_SESSION_BUILTIN_TOOL_NAMES:
         return True
-    if subagent_depth == 0 and normalized_tool_name in _READONLY_TOP_LEVEL_SUBAGENT_TOOL_NAMES:
+    if subagent_depth == 0 and normalized_tool_name in (
+        _READONLY_TOP_LEVEL_SUBAGENT_TOOL_NAMES
+        | _READONLY_TOP_LEVEL_TERMINAL_TOOL_NAMES
+        | BROWSER_READ_TOOL_NAMES
+        | PANEL_READ_TOOL_NAMES
+        | CONNECTION_TOOL_NAMES
+    ):
         return True
     if normalized_tool_name not in _READONLY_TOP_LEVEL_WEB_TOOL_NAMES:
         return False
@@ -879,7 +956,11 @@ def _unified_diff(old: str, new: str, path: str) -> str:
         fromfile=f"a/{path}",
         tofile=f"b/{path}",
     )
-    return "".join(diff)
+    # difflib leaves unterminated source lines unterminated too. Joining them
+    # directly merges deletion/addition rows and corrupts both display and stats.
+    return "".join(
+        line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in diff
+    )
 
 
 def build_tools(
@@ -902,6 +983,7 @@ def build_tools(
     persona_allow_write_globs: list[str] | None = None,
     non_interactive: bool = False,
     shell_runner: Any | None = None,
+    shell_environment: str | None = None,
     process_group_registry: ProcessGroupRegistry | None = None,
     terminal_manager: TerminalManager | None = None,
     durable_service_manager: DurableServiceManager | None = None,
@@ -940,6 +1022,8 @@ def build_tools(
     managed_browser_cancel_check: Callable[[], bool] | None = None,
     host_action_handler: HostActionHandler | None = None,
     host_action_capabilities: Collection[str] | None = None,
+    host_mcp: dict[str, Any] | None = None,
+    google_mcp: list[dict[str, Any]] | None = None,
     subagent_coordinator: SubagentCoordinator | None = None,
     subagent_coordinator_sink: Callable[[SubagentCoordinator], None] | None = None,
     child_scheduler_sink: Callable[[ChildScheduler], None] | None = None,
@@ -948,6 +1032,7 @@ def build_tools(
     read_ledger_sink: Callable[[SessionReadLedger], None] | None = None,
     readonly_child_web_tool_names: Collection[str] | None = None,
     child_managed_browser_tool_names: Collection[str] | None = None,
+    approval_reviewer: ApprovalReviewer | None = None,
 ) -> dict[str, ToolDef]:
     root = root.resolve()
     workspace_context = resolve_workspace_context(root)
@@ -973,6 +1058,8 @@ def build_tools(
         )
     )
     effective_host_actions = normalized_host_action_capabilities(host_action_capabilities)
+    if host_mcp is not None or env_get("ALYSIS_DESKTOP_GITHUB_POLICY") is not None:
+        effective_host_actions -= {"github.repo.read", "github.pr.list", "github.pr.create"}
     read_ledger = SessionReadLedger(
         root=root,
         enabled=bool(getattr(cfg, "read_ledger_enabled", True)),
@@ -1157,6 +1244,170 @@ def build_tools(
     # constructs an inconsistent fullaccess+scope session. Normal persona
     # application also clamps that combination to review.
     is_full_access_mode = mode == _MODE_FULLACCESS and not persona_write_scope_active
+
+    # Without a usable sandbox and with the host's "ask" fallback, commands run on the host,
+    # each after the user approves it. This replaces the sandbox, so --yes does not skip it;
+    # only Full access or a sandbox mode of "off" does. See select_shell_sandbox_backend.
+    def _shell_commands_need_approval() -> bool:
+        return bool(getattr(shell_runner, "requires_command_approval", False))
+
+    # Who answers an action approval. "Ask for approval" (review) and every mode without a
+    # reviewer: a person. "Approve for me" (auto): the reviewer, unless a standing rule
+    # decides first or the request always needs a person. See agent/approval_review.py.
+    # The reviewer stands in for a person, so it only answers where a person could be asked:
+    # unattended runs (Forge workers and one-shot runs without a host) keep failing
+    # closed, as before.
+    can_ask_person = not non_interactive or host_managed_approvals
+    unified_host_approvals = getattr(surface, "host_action_approval_protocol", 0) == 1
+
+    def _approver_unavailable() -> bool:
+        return not can_ask_person
+
+    def _announce_review(request: ApprovalRequest, verdict: ReviewVerdict) -> None:
+        subject = " ".join(str(request.command or request.kind).split())
+        if len(subject) > 160:
+            subject = subject[:159] + "…"
+        store.append(
+            "approval_review",
+            {
+                "kind": request.kind,
+                "subject": subject,
+                "flagged_because": request.reason,
+                "outcome": verdict.outcome,
+                "risk": verdict.risk,
+                "reason": verdict.reason,
+                "error": verdict.error,
+                "model": verdict.model,
+                "elapsed_ms": verdict.elapsed_ms,
+            },
+        )
+        reviewed = getattr(surface, "emit_approval_reviewed", None)
+        try:
+            if callable(reviewed):
+                reviewed(
+                    verdict.outcome,
+                    subject,
+                    verdict.reason or verdict.error,
+                    risk=verdict.risk,
+                    approval_kind=request.kind,
+                )
+            else:
+                surface.emit_info(
+                    approval_review_line(verdict.outcome, subject, verdict.reason or verdict.error)
+                )
+        except Exception:  # noqa: BLE001 - a notice never blocks the action
+            pass
+
+    def _request_action_approval(
+        request: ApprovalRequest, *, requires_authorization: bool = True
+    ) -> ApprovalDecision:
+        decision = decide_action_approval(
+            request,
+            mode=mode,
+            root=root,
+            surface=surface,
+            can_ask_person=can_ask_person,
+            reviewer=approval_reviewer,
+            announce=_announce_review,
+            requires_authorization=requires_authorization,
+        )
+        if not decision.allow and decision.status == "denied_by_policy":
+            raise AgentRuntimeError(
+                "The permission rules blocked this action before dispatch.",
+                result_payload={
+                    "error_code": "approval_denied_by_policy",
+                    "dispatch_state": "not_dispatched",
+                },
+            )
+        return decision
+
+    def _admit_routine_action(
+        kind: str,
+        preview: str,
+        *,
+        files: list[str] | None = None,
+        command: str | None = None,
+        access: str = "write",
+    ) -> None:
+        _request_action_approval(
+            ApprovalRequest(
+                kind=kind,
+                reason="Apply the current permission rules.",
+                preview=preview,
+                files=files or [],
+                command=command,
+                metadata={"access": access},
+            ),
+            requires_authorization=False,
+        )
+
+    def _critical_delete_reason(cmd: str, cwd: str | None) -> str | None:
+        try:
+            working_folder = (root / cwd).resolve() if cwd else root
+            targets = critical_delete_targets(cmd, cwd=working_folder, workspace_root=root)
+        except Exception:  # noqa: BLE001 - the circuit breaker never breaks a command
+            return None
+        if not targets:
+            return None
+        home = Path.home().resolve()
+        described: list[str] = []
+        for target in targets:
+            if target == root:
+                described.append(f"the project folder ({target})")
+            elif target in root.parents:
+                described.append(f"{target}, which contains the project folder")
+            elif target == home:
+                described.append(f"your home folder ({target})")
+            elif target in home.parents:
+                described.append(f"{target}, which contains your home folder")
+            else:
+                described.append(f"{target}")
+        return "This command deletes " + "; ".join(described)
+
+    verify_commands_need_approval = False
+    if cfg is not None:
+        try:
+            verify_sandbox_mode = resolve_verify_sandbox_mode(cfg)
+            verify_commands_need_approval = (
+                verify_sandbox_mode != "off"
+                and select_shell_sandbox_backend(
+                    replace(resolve_shell_sandbox_settings(cfg), mode=verify_sandbox_mode)
+                ).requires_command_approval
+            )
+        except (ConfigError, VerifyError):
+            verify_commands_need_approval = False  # the verification run reports the error
+
+    def _approve_unsandboxed_command(
+        cmd: str,
+        *,
+        tool_name: str,
+        concern: str | None = None,
+        session_grant_allowed: bool = True,
+    ) -> None:
+        if _approver_unavailable():
+            raise AgentRuntimeError(
+                "No sandbox is available on this computer, so each command needs your "
+                "approval, and this run cannot ask for it. Install Docker (or bubblewrap on "
+                "Linux), or use Full access."
+            )
+        reason = (
+            "No sandbox is available on this computer, so this command will run "
+            "with your normal permissions."
+        )
+        choice = _request_action_approval(
+            ApprovalRequest(
+                kind=tool_name,
+                reason=f"{concern}. {reason}" if concern else reason,
+                preview=cmd,
+                command=cmd,
+                allow_for_session_scope=exact_command_scope(cmd, kind=tool_name)
+                if session_grant_allowed
+                else None,
+            )
+        )
+        if not choice.allow:
+            raise ApprovalDeclinedError(tool_name)
+
     deny_prefixes: list[str] = []
     if not is_full_access_mode:
         seen_deny_prefixes: set[str] = set()
@@ -1383,12 +1634,12 @@ def build_tools(
         return findings
 
     def guard_sensitive_files(kind: str, *, files: list[str]) -> list[dict[str, str]]:
-        """Require one-time human consent that broad/session policy cannot satisfy."""
+        """Flag sensitive access for the common authority; retain output redaction."""
 
         findings = _sensitive_path_findings(files)
         if not findings:
             return []
-        if non_interactive and not host_managed_approvals:
+        if not is_full_access_mode and non_interactive and not host_managed_approvals:
             raise AgentRuntimeError(
                 f"Explicit one-time user approval is required for {kind} on a sensitive file."
             )
@@ -1400,7 +1651,7 @@ def build_tools(
                 "File contents are intentionally omitted from this approval preview.",
             ]
         )
-        decision = surface.request_approval(
+        decision = _request_action_approval(
             ApprovalRequest(
                 kind=kind,
                 reason="sensitive files require an explicit one-time approval",
@@ -1410,6 +1661,9 @@ def build_tools(
                     "mandatory_explicit_approval": True,
                     "allow_for_session_disabled": True,
                     "sensitive_categories": categories,
+                    "access": "read"
+                    if kind in {"fs_read", "fs_list", "asset_view", "consumer_verification"}
+                    else "write",
                 },
                 # Deliberately no allow_for_session_scope: stored grants must
                 # never authorize current or future sensitive-file access.
@@ -1429,6 +1683,7 @@ def build_tools(
         return findings
 
     def guard_sensitive_read(kind: str, *, path: str) -> list[dict[str, str]]:
+        _admit_routine_action(kind, path, files=[path], access="read")
         findings = _sensitive_path_findings([path])
         if findings and not (root / path).exists():
             message = (
@@ -1467,16 +1722,17 @@ def build_tools(
         }
 
     def guard_write(kind: str, preview: str, *, files: list[str] | None = None) -> None:
+        _admit_routine_action(kind, preview, files=files)
         if is_full_access_mode:
             return
         if mode == "readonly":
             raise AgentRuntimeError(f"Blocked in readonly mode: {kind}")
         if mode == "review":
-            if non_interactive and not host_managed_approvals:
+            if _approver_unavailable():
                 raise AgentRuntimeError(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
                 )
-            decision = surface.request_approval(
+            decision = _request_action_approval(
                 ApprovalRequest(
                     kind=kind,
                     reason="review mode requires confirmation for write operations",
@@ -1490,11 +1746,11 @@ def build_tools(
             if not decision.allow:
                 raise ApprovalDeclinedError(kind)
         if mode == "auto" and kind == "fs_delete" and not yes:
-            if non_interactive and not host_managed_approvals:
+            if _approver_unavailable():
                 raise AgentRuntimeError(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
                 )
-            decision = surface.request_approval(
+            decision = _request_action_approval(
                 ApprovalRequest(
                     kind=kind,
                     reason="file deletion requires confirmation",
@@ -1508,7 +1764,31 @@ def build_tools(
             if not decision.allow:
                 raise ApprovalDeclinedError(kind)
 
-    def guard_shell(cmd: str, *, tool_name: str = "shell_run") -> None:
+    def _ask_person_before_critical_delete(cmd: str, *, tool_name: str, concern: str) -> None:
+        # The common engine authority handles this flagged action in the effective mode.
+        if not is_full_access_mode and not can_ask_person:
+            raise AgentRuntimeError(
+                f"Blocked: {concern}. This mode requires a person and this run cannot ask."
+            )
+        decision = _request_action_approval(
+            ApprovalRequest(
+                kind=tool_name,
+                reason=concern,
+                preview=cmd,
+                command=cmd,
+                metadata={
+                    "mandatory_explicit_approval": True,
+                    "allow_for_session_disabled": True,
+                    "critical_delete": True,
+                },
+                allow_for_session_scope=None,
+            )
+        )
+        if not decision.allow:
+            raise ApprovalDeclinedError(tool_name)
+
+    def guard_shell(cmd: str, *, tool_name: str = "shell_run", cwd: str | None = None) -> None:
+        _admit_routine_action(tool_name, cmd, command=cmd)
         if persona_write_scope_active:
             raise AgentRuntimeError(
                 f"Blocked while persona write scope is active: {tool_name}. "
@@ -1520,55 +1800,85 @@ def build_tools(
             raise AgentRuntimeError(
                 f"Blocked fullaccess shell command by denylist pattern: {matched_pattern}"
             )
-        if is_full_access_mode:
-            return
-        if mode == "readonly":
+        if mode == "readonly" and not is_full_access_mode:
             raise AgentRuntimeError(f"Blocked in readonly mode: {tool_name}")
+        critical = _critical_delete_reason(cmd, cwd)
+        if is_full_access_mode:
+            if critical:
+                _ask_person_before_critical_delete(cmd, tool_name=tool_name, concern=critical)
+            return
         decision = evaluate_shell_command(cmd)
         if not decision.allowed:
             raise AgentRuntimeError(f"Blocked command: {decision.reason}")
+        if critical is None and is_read_only_command(cmd):
+            # Commands that only look (ls, git status, rg, Get-ChildItem…) need no approval
+            # in any mode that runs commands; see read_only_commands.
+            return
+        if _shell_commands_need_approval():
+            # Whoever answers sees every reason the command was flagged, not only the sandbox.
+            _approve_unsandboxed_command(
+                cmd,
+                tool_name=tool_name,
+                concern=critical
+                or (f"sensitive command: {decision.reason}" if decision.needs_confirm else None),
+                session_grant_allowed=critical is None,
+            )
+            return
         if mode == "review":
-            if non_interactive and not host_managed_approvals:
+            if _approver_unavailable():
                 raise AgentRuntimeError(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
                 )
-            decision = surface.request_approval(
+            decision = _request_action_approval(
                 ApprovalRequest(
                     kind=tool_name,
-                    reason="review mode requires confirmation for shell commands",
+                    reason=critical or "review mode requires confirmation for shell commands",
                     preview=cmd,
                     command=cmd,
-                    allow_for_session_scope=exact_command_scope(cmd, kind=tool_name),
+                    allow_for_session_scope=None
+                    if critical
+                    else exact_command_scope(cmd, kind=tool_name),
                 )
             )
             if not decision.allow:
                 raise ApprovalDeclinedError(tool_name)
             return
-        # auto mode
-        if decision.needs_confirm and not yes:
-            if non_interactive and not host_managed_approvals:
+        # auto mode: a delete aimed at the project or home folder is reviewed even with --yes.
+        concern = critical or (
+            f"sensitive command: {decision.reason}" if decision.needs_confirm and not yes else None
+        )
+        if concern:
+            if _approver_unavailable():
                 raise AgentRuntimeError(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
                 )
-            choice = surface.request_approval(
+            choice = _request_action_approval(
                 ApprovalRequest(
                     kind=tool_name,
-                    reason=f"sensitive command: {decision.reason}",
+                    reason=concern,
                     preview=cmd,
                     command=cmd,
-                    allow_for_session_scope=exact_command_scope(cmd, kind=tool_name),
+                    allow_for_session_scope=None
+                    if critical
+                    else exact_command_scope(cmd, kind=tool_name),
                 )
             )
             if not choice.allow:
                 raise ApprovalDeclinedError(tool_name)
 
     def guard_terminal_op(op_name: str) -> None:
+        _admit_routine_action(op_name, op_name)
         if is_full_access_mode:
             return
         if mode == "readonly":
             raise AgentRuntimeError(f"Blocked in readonly mode: {op_name}")
 
     def guard_verify(commands: list[str]) -> None:
+        _admit_routine_action(
+            "verify_run",
+            "\n".join(commands),
+            command=commands[0] if len(commands) == 1 else f"{len(commands)} verification commands",
+        )
         if persona_write_scope_active:
             raise AgentRuntimeError(
                 "Blocked while persona write scope is active: verify_run. "
@@ -1592,12 +1902,35 @@ def build_tools(
             commands[0] if len(commands) == 1 else f"{len(commands)} verification commands"
         )
 
+        if verify_commands_need_approval:
+            if _approver_unavailable():
+                raise AgentRuntimeError(
+                    "No sandbox is available on this computer, so verification commands need "
+                    "your approval, and this run cannot ask for it. Install Docker (or "
+                    "bubblewrap on Linux), or use Full access."
+                )
+            choice = _request_action_approval(
+                ApprovalRequest(
+                    kind="verify_run",
+                    reason=(
+                        "No sandbox is available on this computer, so these checks will run "
+                        "with your normal permissions."
+                    ),
+                    preview=preview,
+                    command=command_label,
+                    allow_for_session_scope=exact_verify_command_set_scope(commands),
+                )
+            )
+            if not choice.allow:
+                raise ApprovalDeclinedError("verify_run")
+            return
+
         if mode == "review":
-            if non_interactive and not host_managed_approvals:
+            if _approver_unavailable():
                 raise AgentRuntimeError(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
                 )
-            decision = surface.request_approval(
+            decision = _request_action_approval(
                 ApprovalRequest(
                     kind="verify_run",
                     reason="review mode requires confirmation for verification commands",
@@ -1611,11 +1944,11 @@ def build_tools(
             return
 
         if sensitive_reason and not yes:
-            if non_interactive and not host_managed_approvals:
+            if _approver_unavailable():
                 raise AgentRuntimeError(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
                 )
-            choice = surface.request_approval(
+            choice = _request_action_approval(
                 ApprovalRequest(
                     kind="verify_run",
                     reason=f"sensitive command in verification set: {sensitive_reason}",
@@ -1708,6 +2041,7 @@ def build_tools(
         run: Callable[[dict[str, Any]], dict[str, Any]],
         parameters: dict[str, Any] | None = None,
         visual_delivery: LocalAssetViewer | None = None,
+        model_description: str | None = None,
     ) -> ToolDef:
         metadata = require_builtin_tool_metadata(name)
         return ToolDef(
@@ -1719,16 +2053,10 @@ def build_tools(
             metadata={
                 "tool_type": "builtin",
                 "compact_parameters_for_model": True,
-                "model_description": _BUILTIN_MODEL_DESCRIPTIONS.get(
-                    metadata.name, metadata.description
-                ),
+                "model_description": model_description
+                or _BUILTIN_MODEL_DESCRIPTIONS.get(metadata.name, metadata.description),
             },
         )
-
-    def _custom_tool_requires_approval(spec: Any) -> bool:
-        if mode == "review":
-            return True
-        return False
 
     def _run_custom_tool(spec: Any, args: dict[str, Any]) -> dict[str, Any]:
         if mode == "readonly":
@@ -1742,26 +2070,24 @@ def build_tools(
             f"{_custom_tool_capability_summary(spec)}\n"
             f"args:\n{args_preview}"
         )
-        if _custom_tool_requires_approval(spec):
-            if non_interactive and not host_managed_approvals:
-                raise AgentRuntimeError(
-                    "Confirmation required for custom tool execution. Re-run with --yes or adjust plan."
-                )
-            decision = surface.request_approval(
-                ApprovalRequest(
-                    kind=f"custom_tool_run:{spec.name}",
-                    reason="review mode requires confirmation for custom tools",
-                    preview=preview,
-                    files=[spec.relative_tool_path],
-                    command=spec.name,
-                    metadata={"custom_tool": spec.metadata(include_output_schema=True)},
-                )
+        decision = _request_action_approval(
+            ApprovalRequest(
+                kind=f"custom_tool_run:{spec.name}",
+                reason="Authorize this custom tool within the current task",
+                preview=preview,
+                files=[spec.relative_tool_path],
+                command=spec.name,
+                metadata={
+                    "custom_tool": spec.metadata(include_output_schema=True),
+                    "access": "write",
+                },
             )
-            if not decision.allow:
-                raise ApprovalDeclinedError(
-                    f"custom tool '{spec.name}'",
-                    message=f"User declined: custom tool '{spec.name}'",
-                )
+        )
+        if not decision.allow:
+            raise ApprovalDeclinedError(
+                f"custom tool '{spec.name}'",
+                message=f"User declined: custom tool '{spec.name}'",
+            )
         artifact_dir: Path | None = None
         artifact_reference_prefix: str | None = None
         if store.artifact_persistence_enabled:
@@ -1782,6 +2108,7 @@ def build_tools(
         run: Callable[[dict[str, Any]], dict[str, Any]],
         parameters: dict[str, Any] | None = None,
         visual_delivery: LocalAssetViewer | None = None,
+        model_description: str | None = None,
     ) -> None:
         if not _built_in_tool_exposed_in_mode(
             tool_name=name,
@@ -1791,7 +2118,13 @@ def build_tools(
         ):
             return
         tools.append(
-            _make_tool_def(name, run=run, parameters=parameters, visual_delivery=visual_delivery)
+            _make_tool_def(
+                name,
+                run=run,
+                parameters=parameters,
+                visual_delivery=visual_delivery,
+                model_description=model_description,
+            )
         )
 
     local_asset_viewer = LocalAssetViewer(
@@ -1847,6 +2180,25 @@ def build_tools(
         return _mark_sensitive_result(result, sensitive)
 
     _append_builtin_tool("fs_read", run=_fs_read)
+
+    from ..user_questions import QUESTION_CANCELLATION_TOKEN, question_broker
+
+    questions = question_broker(surface)
+    if (
+        questions is not None
+        and subagent_depth == 0
+        and (not non_interactive or getattr(surface, "host_managed_user_questions", False) is True)
+        and not one_shot_execution
+        and resolved_runtime_kind == RuntimeKind.INTERACTIVE_CHAT
+    ):
+        _append_builtin_tool("request_user_input", run=questions.request)
+        _append_builtin_tool(
+            "wait_user_input",
+            run=lambda args: questions.collect(
+                args.get("request_id", ""),
+                cancellation_token=args.get(QUESTION_CANCELLATION_TOKEN),
+            ),
+        )
 
     # report_blocker is a top-level completion-gate control signal, not a
     # repository action. Keep the runtime-kind check here as a fail-closed
@@ -1917,7 +2269,7 @@ def build_tools(
                         "asking again."
                     ),
                 }
-            decision = surface.request_approval(
+            decision = _request_action_approval(
                 ApprovalRequest(
                     kind="persona_switch",
                     reason=f"model proposes a persona switch: {reason or 'no reason given'}",
@@ -1991,19 +2343,21 @@ def build_tools(
         else:
             diff = _unified_diff(prepared.original_content, prepared.updated_content, path)
             store.append("diff_preview", {"path": path, "diff": diff[:20000]})
-            surface.on_patch_generated(
-                PatchEvent(
-                    files=[path],
-                    diff=diff,
-                    summary=f"1 file changed via fs_edit ({path})",
-                )
-            )
             guard_write("fs_edit", diff[:20000] or f"(no diff) {path}", files=[path])
         try:
             result = write_prepared_fs_edit(prepared, root=root)
         except StaleFileError as error:
             return _stale_file_result(error)
         read_ledger.invalidate(path)
+        if not sensitive:
+            surface.on_patch_generated(
+                PatchEvent(
+                    files=[path],
+                    diff=diff,
+                    applied=True,
+                    summary=f"1 file changed via fs_edit ({path})",
+                )
+            )
         return _mark_sensitive_result(result, sensitive)
 
     _append_builtin_tool("fs_edit", run=_fs_edit)
@@ -2136,7 +2490,7 @@ def build_tools(
                 resolved.append(path)
         preconditions = {path: capture_file_precondition(root=root, path=path) for path in resolved}
         sensitive = guard_sensitive_files("fs_delete", files=resolved)
-        # Mixed batches (Codex review, PR #26): the sensitive gate above prompts
+        # Mixed batches (PR #26): the sensitive gate above prompts
         # for the SENSITIVE findings only. Every ordinary file in the batch must
         # still appear in a write approval of its own - otherwise it would ride
         # along unapproved. Single-file semantics unchanged: a lone sensitive
@@ -2211,11 +2565,14 @@ def build_tools(
             )
         else:
             if prepared.precondition.exists:
-                old = _patchable("fs_read", fs_read)(root=root, path=path, max_bytes=2_000_000)[
-                    "content"
-                ]
+                old_result = _patchable("fs_read", fs_read)(
+                    root=root, path=path, max_bytes=2_000_000
+                )
+                old = old_result["content"]
+                diff_truncated = bool(old_result.get("truncated"))
             else:
                 old = ""
+                diff_truncated = False
             if edit_discipline is not None and old:
                 # Free: `old` is already in hand for the diff preview below, so
                 # scoring the overwrite costs no I/O and never scans the
@@ -2229,19 +2586,22 @@ def build_tools(
                     rewrite_warning = None
             diff = _unified_diff(old, content, path)
             store.append("diff_preview", {"path": path, "diff": diff[:20000]})
-            surface.on_patch_generated(
-                PatchEvent(
-                    files=[path],
-                    diff=diff,
-                    summary=f"1 file changed via fs_write ({path})",
-                )
-            )
             guard_write("fs_write", diff[:20000] or f"(no diff) {path}", files=[path])
         try:
             result = write_prepared_fs_write(prepared, root=root)
         except StaleFileError as error:
             return _stale_file_result(error)
         read_ledger.invalidate(path)
+        if not sensitive:
+            surface.on_patch_generated(
+                PatchEvent(
+                    files=[path],
+                    diff=diff,
+                    applied=True,
+                    summary=f"1 file changed via fs_write ({path})",
+                    diff_truncated=diff_truncated,
+                )
+            )
         if rewrite_warning is not None:
             # Attached only after the write succeeded, so the model never reads
             # advice about an overwrite that did not happen.
@@ -2424,7 +2784,7 @@ def build_tools(
             raise AgentRuntimeError(
                 "Managed browser state changes require an IDE host-managed approval."
             )
-        decision = surface.request_approval(
+        decision = _request_action_approval(
             ApprovalRequest(
                 kind=kind,
                 reason="managed browser actions can launch processes or change remote page state",
@@ -2751,6 +3111,9 @@ def build_tools(
     web_search_probe = WebSearchCapabilityProbe()
 
     def _capability_status(_args: dict[str, Any]) -> dict[str, Any]:
+        from alysis_code.documents import pdf_capability_status
+        from alysis_code.office import office_capability_status
+
         return {
             "web_search": web_search_probe.status(
                 cfg=cfg, api_key=api_key, exposed=web_search_exposed_in_mode
@@ -2768,6 +3131,8 @@ def build_tools(
                 "basis": "URL provenance and network reachability are checked per request",
             },
             "asset_view": local_asset_viewer.status(),
+            "pdf": pdf_capability_status(),
+            "office": office_capability_status(),
         }
 
     _append_builtin_tool("capability_status", run=_capability_status)
@@ -3512,6 +3877,7 @@ def build_tools(
                 optional_kwargs={
                     "timeout_s": verify_timeout_s,
                     "process_group_registry": process_group_registry,
+                    "cancel_check": _cancellation_probe(args.get(_SHELL_CANCELLATION_TOKEN_ARG)),
                 },
             ),
         )
@@ -3666,11 +4032,12 @@ def build_tools(
             base_field_name="cwd_base",
             allow_empty=True,
         )
-        guard_shell(cmd)
+        guard_shell(cmd, cwd=effective_cwd)
         store.append("cmd", {"cmd": cmd, "cwd": effective_cwd})
         started = perf_counter()
         result: dict[str, Any] | None = None
         command_seconds = 0.0
+        cancel_check = _cancellation_probe(args.get(_SHELL_CANCELLATION_TOKEN_ARG))
 
         def _run_shell_command() -> Any:
             # Timed on its own so that the workspace walks mutation detection
@@ -3690,6 +4057,7 @@ def build_tools(
                     optional_kwargs={
                         "timeout_s": shell_timeout_s,
                         "capture_pipeline_status": _evidence_v2_enabled(cfg),
+                        "cancel_check": cancel_check,
                     },
                 )
             finally:
@@ -3754,7 +4122,7 @@ def build_tools(
                         "cwd": effective_cwd,
                         "runner": shell_runner,
                     },
-                    optional_kwargs={"timeout_s": shell_timeout_s},
+                    optional_kwargs={"timeout_s": shell_timeout_s, "cancel_check": cancel_check},
                 )
             except Exception:  # noqa: BLE001
                 return None
@@ -3816,7 +4184,11 @@ def build_tools(
         )
         return result
 
-    _append_builtin_tool("shell_run", run=_shell)
+    _append_builtin_tool(
+        "shell_run",
+        run=_shell,
+        model_description=_shell_run_model_description(shell_environment),
+    )
 
     def _require_terminal_manager() -> TerminalManager:
         if terminal_manager is None:
@@ -4226,7 +4598,7 @@ def build_tools(
             base_field_name="cwd_base",
             allow_empty=True,
         )
-        guard_shell(cmd, tool_name="shell_background")
+        guard_shell(cmd, tool_name="shell_background", cwd=effective_cwd_relpath)
         cwd_path = root if not effective_cwd_relpath else (root / effective_cwd_relpath).resolve()
         try:
             probe_port = resolve_probe_port(requested=args.get("probe_port"), cmd=cmd)
@@ -4502,12 +4874,12 @@ def build_tools(
         except ValueError as exc:
             raise AgentRuntimeError(f"Invalid workspace preview request: {exc}") from exc
         if effective_access == "lan" and not yes and not is_full_access_mode:
-            if non_interactive and not host_managed_approvals:
+            if _approver_unavailable():
                 raise AgentRuntimeError(
                     "LAN preview exposure requires interactive approval. Use local access or "
                     "re-run in an approval-capable session."
                 )
-            decision = surface.request_approval(
+            decision = _request_action_approval(
                 ApprovalRequest(
                     kind="workspace_preview_lan",
                     reason=(
@@ -4615,6 +4987,13 @@ def build_tools(
 
     _append_builtin_tool("session_set_workdir", run=_session_set_workdir)
 
+    browser_viewer = EmbeddedBrowserViewer(
+        root=root, cfg=cfg or AppConfig(), execution_deadline=execution_deadline
+    )
+    panel_viewer = OpenPanelViewer(
+        root=root, cfg=cfg or AppConfig(), execution_deadline=execution_deadline
+    )
+
     def _host_action(tool_name: str, action: str, args: dict[str, Any]) -> dict[str, Any]:
         if host_action_handler is None or action not in effective_host_actions:
             raise AgentRuntimeError(
@@ -4622,7 +5001,26 @@ def build_tools(
             )
         try:
             normalized = normalize_host_action_arguments(action, args)
-            if action in {"tasks.run", "debug.start"}:
+            if action in BROWSER_WRITE_ACTIONS and (
+                mode == "readonly" or persona_write_scope_active
+            ):
+                raise AgentRuntimeError(f"Blocked by the current write scope: {tool_name}")
+            if (
+                action in TERMINAL_WRITE_ACTIONS
+                and not is_full_access_mode
+                and not unified_host_approvals
+            ):
+                raise AgentRuntimeError(
+                    "Interactive host terminal input requires Full access for this chat."
+                )
+            if action in GITHUB_WRITE_ACTIONS:
+                if persona_write_scope_active or mode == "readonly":
+                    raise AgentRuntimeError(f"Blocked by the current write scope: {tool_name}")
+                if not host_managed_approvals:
+                    raise AgentRuntimeError(f"Host-managed approval is required for {tool_name}.")
+                # GitHub writes require the host's exact account/repository/operation approval.
+                # The host owns this approval after validating its immutable session binding.
+            if action in {"tasks.run", "debug.start"} and not unified_host_approvals:
                 if persona_write_scope_active:
                     raise AgentRuntimeError(
                         f"Blocked while persona write scope is active: {tool_name}. "
@@ -4637,7 +5035,7 @@ def build_tools(
                 else:
                     identifier_field = "task_id" if action == "tasks.run" else "configuration_id"
                     opaque_id = normalized[identifier_field]
-                    decision = surface.request_approval(
+                    decision = _request_action_approval(
                         ApprovalRequest(
                             kind=tool_name,
                             reason=(
@@ -4673,6 +5071,18 @@ def build_tools(
 
     host_tool_actions = {tool_name: action for action, tool_name in HOST_ACTION_TOOL_NAMES.items()}
     for tool_name, action in host_tool_actions.items():
+        if action in BROWSER_WRITE_ACTIONS and persona_write_scope_active:
+            continue
+        if action == "browser.screenshot" and browser_viewer.status()["state"] != "ready":
+            continue
+        if action == "panels.screenshot" and panel_viewer.status()["state"] != "ready":
+            continue
+        if (
+            action in TERMINAL_WRITE_ACTIONS
+            and not is_full_access_mode
+            and not unified_host_approvals
+        ):
+            continue
         if action not in effective_host_actions or host_action_handler is None:
             continue
 
@@ -4682,11 +5092,38 @@ def build_tools(
             _tool_name: str = tool_name,
             _action: str = action,
         ) -> dict[str, Any]:
+            if _action == "browser.snapshot" and "assertions" in args:
+                assertions = args["assertions"]
+                if not valid_facts(assertions):
+                    raise AgentRuntimeError("Invalid observation assertions.")
+                result = _host_action(
+                    _tool_name, _action, {k: v for k, v in args.items() if k != "assertions"}
+                )
+                return {**result, "goal_evidence": observed_facts(result, assertions)}
             if _action in {"tasks.terminate", "debug.stop"}:
                 guard_terminal_op(_tool_name)
+            if _action in {"browser.screenshot", "panels.screenshot"}:
+                viewer = panel_viewer if _action == "panels.screenshot" else browser_viewer
+                if viewer.status()["state"] != "ready":
+                    raise AgentRuntimeError("The configured model cannot receive screenshots.")
+                result = _host_action(_tool_name, _action, args)
+                try:
+                    return viewer.capture(result)
+                except ValueError as exc:
+                    raise AgentRuntimeError(str(exc)) from exc
             return _host_action(_tool_name, _action, args)
 
-        _append_builtin_tool(tool_name, run=_run_host_action)
+        _append_builtin_tool(
+            tool_name,
+            run=_run_host_action,
+            visual_delivery=(
+                panel_viewer
+                if action == "panels.screenshot"
+                else browser_viewer
+                if action == "browser.screenshot"
+                else None
+            ),
+        )
 
     _append_builtin_tool(
         "git_status",
@@ -4736,13 +5173,6 @@ def build_tools(
             )
         else:
             store.append("diff_preview", {"patch": preview})
-            surface.on_patch_generated(
-                PatchEvent(
-                    files=patch_paths,
-                    diff=patch,
-                    summary=f"{len(patch_paths)} file(s) changed via git_apply_patch",
-                )
-            )
             guard_write("git_apply_patch", preview or "(empty patch)", files=patch_paths)
         try:
             for precondition in preconditions:
@@ -4750,6 +5180,15 @@ def build_tools(
             result = git_apply_patch(root=root, patch=patch)
         except StaleFileError as error:
             return _stale_file_result(error)
+        if not sensitive and result.get("applied"):
+            surface.on_patch_generated(
+                PatchEvent(
+                    files=patch_paths,
+                    diff=patch,
+                    applied=True,
+                    summary=f"{len(patch_paths)} file(s) changed via git_apply_patch",
+                )
+            )
         return _mark_sensitive_result(result, sensitive)
 
     _append_builtin_tool("git_apply_patch", run=_git_apply)
@@ -4819,6 +5258,7 @@ def build_tools(
             crash_diagnostics=crash_diagnostics,
             tools=tools,
             command_mutation_metadata=_command_mutation_metadata,
+            approval_reviewer=approval_reviewer,
             workspace_provider=workspace_provider,
             child_run_registry=child_run_registry,
             helpers_enabled_for_children=(
@@ -5006,6 +5446,7 @@ def build_tools(
                 crash_diagnostics=crash_diagnostics,
                 tools=tools,
                 command_mutation_metadata=_command_mutation_metadata,
+                approval_reviewer=approval_reviewer,
                 helper_only=True,
                 helper_allowed_names=tuple(helper_names),
             )
@@ -5046,20 +5487,237 @@ def build_tools(
             )
         )
 
+    if (
+        host_mcp is not None
+        and GITHUB_MCP_ACTION in effective_host_actions
+        and host_action_handler is not None
+        and host_mcp["protocol_version"] == 2
+        and GITHUB_DISCOVERY_ACTIONS <= effective_host_actions
+    ):
+        discovery_state = GitHubDiscoveryState()
+        for action, name, description, parameters in GITHUB_DISCOVERY_TOOL_SPECS:
+
+            def _run_github_discovery(args: dict[str, Any], *, _action=action) -> dict[str, Any]:
+                try:
+                    assert_host_mcp_current(root, host_mcp)
+                    normalized = normalize_host_action_arguments(_action, args)
+                    restricted = mode == "readonly" or persona_write_scope_active
+                    discovery_state.check(
+                        _action,
+                        normalized,
+                        readonly=restricted,
+                        approvals=host_managed_approvals,
+                    )
+                    result = host_action_handler(_action, normalized)
+                    assert_host_mcp_current(root, host_mcp)
+                    # The production broker additionally resets state per job, checks
+                    # cancellation/fences and rejects stale responses before returning.
+                    if _action == GITHUB_DISCOVERY_CALL:
+                        discovery_state.check(
+                            _action,
+                            normalized,
+                            readonly=restricted,
+                            approvals=host_managed_approvals,
+                        )
+                        return wrap_mcp_result(normalized["name"], result)
+                    result = discovery_result(_action, result)
+                    if persona_write_scope_active and mode != "readonly":
+                        result = {**result, "tools": [t for t in result["tools"] if t["readOnly"]]}
+                    discovery_state.record(_action, normalized, result, readonly=restricted)
+                    return wrap_discovery_result(_action, result)
+                except HostActionError as exc:
+                    raise AgentRuntimeError(
+                        exc.message, result_payload=exc.to_result_payload()
+                    ) from exc
+
+            tools.append(
+                ToolDef(
+                    name=name,
+                    description=description,
+                    parameters=copy.deepcopy(parameters),
+                    run=_run_github_discovery,
+                    metadata={
+                        "tool_type": "mcp",
+                        "plugin_id": "alysis.github",
+                        "compact_parameters_for_model": True,
+                    },
+                )
+            )
+
+    if (
+        host_mcp is not None
+        and GITHUB_MCP_ACTION in effective_host_actions
+        and host_action_handler is not None
+        and host_mcp["protocol_version"] == 1
+    ):
+        for mcp_tool in host_mcp["tools"]:
+            if not mcp_tool["readOnly"] and (mode == "readonly" or persona_write_scope_active):
+                continue
+
+            def _run_host_mcp(
+                args: dict[str, Any], *, _tool: dict[str, Any] = mcp_tool
+            ) -> dict[str, Any]:
+                try:
+                    assert_host_mcp_current(root, host_mcp)
+                    if not _tool["readOnly"] and (
+                        mode == "readonly"
+                        or persona_write_scope_active
+                        or not host_managed_approvals
+                    ):
+                        raise AgentRuntimeError(
+                            "Host-managed approval and an unrestricted write scope are required for this MCP tool."
+                        )
+                    normalized = normalize_host_action_arguments(
+                        GITHUB_MCP_ACTION, {"name": _tool["name"], "arguments": args}
+                    )
+                    result = host_action_handler(GITHUB_MCP_ACTION, normalized)
+                    assert_host_mcp_current(root, host_mcp)
+                    return wrap_mcp_result(_tool["name"], result)
+                except HostActionError as exc:
+                    raise AgentRuntimeError(
+                        exc.message, result_payload=exc.to_result_payload()
+                    ) from exc
+
+            tools.append(
+                ToolDef(
+                    name=f"mcp__github__{mcp_tool['name']}",
+                    description=build_host_owned_mcp_tool_description(
+                        server_id=GITHUB_MCP_SERVER_ID,
+                        tool_name=mcp_tool["name"],
+                        server_description=mcp_tool["description"],
+                    ),
+                    parameters=tool_parameters(mcp_tool),
+                    run=_run_host_mcp,
+                    metadata={
+                        "tool_type": "mcp",
+                        "plugin_id": "alysis.github",
+                        "compact_parameters_for_model": True,
+                        "model_description_max_chars": 1000,
+                    },
+                )
+            )
+
+    if (
+        google_mcp
+        and GOOGLE_MCP_ACTION in effective_host_actions
+        and host_action_handler is not None
+    ):
+        for catalog in google_mcp:
+            for google_tool in catalog["tools"]:
+                if not google_tool["readOnly"] and (
+                    mode == "readonly" or persona_write_scope_active
+                ):
+                    continue
+
+                def _run_google(
+                    args: dict[str, Any], *, _tool=google_tool, _catalog=catalog
+                ) -> dict[str, Any]:
+                    try:
+                        assert_google_current(root, _catalog)
+                        if not _tool["readOnly"] and (
+                            mode == "readonly"
+                            or persona_write_scope_active
+                            or not host_managed_approvals
+                        ):
+                            raise AgentRuntimeError(
+                                "Host-managed approval is required for Google writes."
+                            )
+                        normalized = normalize_host_action_arguments(
+                            GOOGLE_MCP_ACTION,
+                            {
+                                "service": _catalog["service"],
+                                "name": _tool["name"],
+                                "arguments": args,
+                            },
+                        )
+                        result = host_action_handler(GOOGLE_MCP_ACTION, normalized)
+                        assert_google_current(root, _catalog)
+                        return wrap_google_result(_catalog, _tool["name"], result)
+                    except HostActionError as exc:
+                        raise AgentRuntimeError(
+                            exc.message, result_payload=exc.to_result_payload()
+                        ) from exc
+
+                tools.append(
+                    ToolDef(
+                        name=f"mcp__google_{catalog['service']}__{google_tool['name']}",
+                        description=build_host_owned_mcp_tool_description(
+                            server_id=catalog["server_id"],
+                            tool_name=google_tool["name"],
+                            server_description=google_tool["description"],
+                        ),
+                        parameters=tool_parameters(google_tool),
+                        run=_run_google,
+                        metadata={
+                            "tool_type": "mcp",
+                            "plugin_id": catalog["plugin_id"],
+                            "compact_parameters_for_model": True,
+                            "model_description_max_chars": 1000,
+                        },
+                    )
+                )
+
     if mcp_manager is not None and _mcp_tool_exposed_in_mode(
         mode=mode,
         write_scope_restricted=persona_write_scope_active,
     ):
         for binding in mcp_manager.tool_bindings:
+            if google_mcp and any(
+                binding.tool_alias.startswith(f"mcp__google_{c['service']}__") for c in google_mcp
+            ):
+                continue
+            if host_mcp is not None and binding.tool_alias.startswith("mcp__github__"):
+                # A user-configured server cannot impersonate the selected plugin's tools.
+                continue
             bound_binding = binding.bind_session_mode(mode)
+            channel = McpVisualDelivery(cfg) if isinstance(bound_binding, McpToolBinding) else None
+            if channel is not None:
+                bound_binding = replace(bound_binding, visual_delivery=channel)
+
+            def run_bound_mcp(args: dict[str, Any], *, binding=bound_binding) -> dict[str, Any]:
+                read_only = getattr(binding, "read_only_hint", False) is True
+                decision = _request_action_approval(
+                    ApprovalRequest(
+                        kind="mcp",
+                        reason="This configured MCP tool can act outside the project sandbox.",
+                        preview=f"{binding.tool_alias}\n"
+                        + json.dumps(redact_secrets(args), ensure_ascii=True, sort_keys=True),
+                        command=binding.tool_alias,
+                        metadata={
+                            "access": "read" if read_only else "write",
+                            "mcp_server": getattr(binding, "server_id", binding.tool_alias),
+                            "mcp_tool": binding.tool_name,
+                            "mcp_server_id": getattr(binding, "server_id", binding.tool_alias),
+                            "mcp_tool_id": binding.tool_name,
+                            "destructive": getattr(binding, "destructive_hint", False),
+                        },
+                    ),
+                    requires_authorization=not read_only,
+                )
+                if not decision.allow:
+                    raise AgentRuntimeError(
+                        "MCP action was not approved.",
+                        result_payload={
+                            "error_code": "approval_" + (decision.status or "denied"),
+                            "dispatch_state": "not_dispatched",
+                            "recoverable": True,
+                        },
+                    )
+                return binding.run(args)
+
             tools.append(
                 ToolDef(
                     name=bound_binding.tool_alias,
                     description=bound_binding.description,
                     parameters=bound_binding.parameters,
-                    run=bound_binding.run,
+                    run=run_bound_mcp,
+                    visual_delivery=channel,
                     metadata={
                         "tool_type": "mcp",
+                        "ephemeral_io": getattr(bound_binding, "ephemeral_io", False),
+                        "requested_result_summary": getattr(
+                            bound_binding, "requested_result_summary", False
+                        ),
                         "compact_parameters_for_model": True,
                         "model_description_max_chars": 1000,
                     },

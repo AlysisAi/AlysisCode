@@ -34,6 +34,7 @@ from alysis_code.skills.validation import (
 )
 
 _BUNDLED_SKILL_NAMES = {
+    "alysis-docs",
     "address-pr-comments",
     "code-review",
     "commit",

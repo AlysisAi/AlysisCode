@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -56,7 +58,7 @@ def _exercise(
     check_cleanup_boundary: bool = False,
     recreate_before_final_cleanup: bool = False,
 ) -> dict[str, Any]:
-    for prefix in ("ALYSIS", "SYLLIPTOR"):
+    for prefix in ("ALYSIS", "ALYSIS"):
         for suffix in ("VERIFY_SANDBOX_MODE", "SHELL_SANDBOX_MODE"):
             monkeypatch.delenv(f"{prefix}_{suffix}", raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
@@ -68,7 +70,11 @@ def _exercise(
     if preexisting_deleted:
         (root / _TEMPORARY).write_text(_REPRO)
 
-    executable = shlex.quote(sys.executable)
+    executable = (
+        subprocess.list2cmdline([sys.executable])
+        if os.name == "nt"
+        else shlex.quote(sys.executable)
+    )
     focused = [
         f"{executable} -m unittest tests.test_repro.Reproduction.test_nonempty -v",
         f"{executable} -m unittest tests.test_app -v",
@@ -288,7 +294,9 @@ def test_scope_retirement_requires_confirmed_absence_and_known_created_provenanc
     ) == (missing,)
 
 
-def test_broken_leaf_symlink_and_existing_test_are_not_retired(tmp_path: Path) -> None:
+def test_broken_leaf_symlink_and_existing_test_are_not_retired(
+    tmp_path: Path, require_symlinks: None
+) -> None:
     (tmp_path / "tests").mkdir()
     broken = "tests/test_broken.py"
     existing = "tests/test_existing.py"

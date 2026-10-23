@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+from .command_text import command_text
 from .file_classification import classify_path, is_generated_or_vendor_path
 from .git_ops import GitOpsError
 from .git_safe import build_git_cmd, build_git_process_env, configured_git_filter_drivers
@@ -1264,7 +1265,7 @@ def _run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
         build_git_cmd(root, args),
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
         env={
             **os.environ,
             **build_git_process_env(),

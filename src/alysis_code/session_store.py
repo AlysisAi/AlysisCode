@@ -5,8 +5,9 @@ import json
 import os
 import re
 import socket
+import stat
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Any
 
 from .config import AppConfig, default_sessions_dir
 from .logging_redaction import redact_log_text
+from .managed_session import ManagedSessionPersistence
 from .session_artifacts import SessionArtifactLayout
 from .web_research import SessionWebResearchTracker
 
@@ -166,6 +168,7 @@ class SessionStore:
         active_workdir: str | None = None,
         active_workdir_relpath: str | None = None,
         owner: str | None = None,
+        managed_session_persistence: ManagedSessionPersistence | None = None,
     ) -> None:
         self.enabled = enabled
         self.sessions_dir = sessions_dir
@@ -185,12 +188,25 @@ class SessionStore:
         self.runtime_kind = runtime_kind
         self.active_workdir = active_workdir or cwd
         self.active_workdir_relpath = active_workdir_relpath
-        self.path = sessions_dir / f"{session_id}.jsonl"
+        self._managed_session_persistence = managed_session_persistence
+        if managed_session_persistence is not None:
+            if managed_session_persistence.session_id != session_id:
+                raise ValueError("Managed session id does not match SessionStore")
+            # The root command already canonicalized and sealed this captured
+            # path before provider setup.  Resolving it again here would
+            # reintroduce a pathname race after the retained writer is final.
+            if Path(sessions_dir) != managed_session_persistence.sessions_dir:
+                raise ValueError("Managed session directory does not match SessionStore")
+            self.sessions_dir = managed_session_persistence.sessions_dir
+            self.path = managed_session_persistence.path
+        else:
+            self.path = sessions_dir / f"{session_id}.jsonl"
         self._lock = threading.RLock()
         self.artifact_persistence_enabled = (
             enabled if artifact_persistence_enabled is None else bool(artifact_persistence_enabled)
         )
         self._events: list[dict[str, Any]] = []
+        self._transient_payload_redactor: Callable[[Any], Any] | None = None
         self._web_research = SessionWebResearchTracker()
         # An uncommitted-record boundary the store still owes the log: set
         # when a failed write could not be truncated away and the boundary
@@ -201,16 +217,37 @@ class SessionStore:
 
         self._fh = None
         if self.enabled:
-            # A durable log was requested. It either opens, or the store
-            # refuses to exist: silently continuing without a log would
-            # indistinguishably look like a deliberate ``--no-log`` session.
-            try:
-                self.sessions_dir.mkdir(parents=True, exist_ok=True)
-                self._fh = self.path.open("a", encoding="utf-8")
-            except OSError as exc:
-                raise SessionStoreUnavailableError(
-                    f"session log {self.path} cannot be opened for writing: {exc}"
-                ) from exc
+            if managed_session_persistence is not None:
+                # The explicit App-managed path was admitted before provider
+                # setup.  Never downgrade a failure at this security boundary
+                # to best-effort logging.
+                self._fh = managed_session_persistence.claim_text_writer()
+            else:
+                try:
+                    self.sessions_dir.mkdir(parents=True, exist_ok=True)
+                    fd = os.open(
+                        self.path,
+                        os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+                        0o600,
+                    )
+                    try:
+                        metadata = os.fstat(fd)
+                        if (
+                            not stat.S_ISREG(metadata.st_mode)
+                            or metadata.st_nlink != 1
+                            or (hasattr(os, "getuid") and metadata.st_uid != os.getuid())
+                        ):
+                            raise OSError("Session transcript must be an owned regular file")
+                        if os.name == "posix":
+                            os.fchmod(fd, 0o600)
+                        self._fh = os.fdopen(fd, "a", encoding="utf-8")
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                except OSError as exc:
+                    raise SessionStoreUnavailableError(
+                        f"session log {self.path} cannot be opened for writing: {exc}"
+                    ) from exc
             self._adopt_uncommitted_sidecar()
             if self._pending_uncommitted is not None:
                 self.close()
@@ -253,8 +290,14 @@ class SessionStore:
         only, as before.
         """
 
-        event = self._build_event(event_type=event_type, payload=payload)
         with self._lock:
+            payload = self._redact_transient_payload(payload)
+            observation_payload = (
+                self._redact_transient_payload(observation_payload)
+                if observation_payload is not None
+                else None
+            )
+            event = self._build_event(event_type=event_type, payload=payload)
             event_id = f"{self.session_id}:{len(self._events) + 1}"
             event["event_id"] = event_id
             if self.enabled:
@@ -548,14 +591,32 @@ class SessionStore:
         self.active_workdir = cwd
         self.active_workdir_relpath = active_workdir_relpath
 
+    def set_transient_payload_redactor(
+        self,
+        redactor: Callable[[Any], Any] | None,
+    ) -> None:
+        """Install a turn-scoped redactor for events and store-owned artifacts."""
+
+        with self._lock:
+            self._transient_payload_redactor = redactor
+
+    def _redact_transient_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        redactor = self._transient_payload_redactor
+        if redactor is None:
+            return payload
+        redacted = redactor(payload)
+        return redacted if isinstance(redacted, dict) else {}
+
     def append_artifact_jsonl(self, *parts: str, payload: dict[str, Any]) -> Path | None:
-        if not self.enabled:
-            return None
-        path = self.runtime_artifact_path(*parts)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(redact_log_text(json.dumps(payload, ensure_ascii=True) + "\n"))
-        return path
+        with self._lock:
+            if not self.enabled:
+                return None
+            payload = self._redact_transient_payload(payload)
+            path = self.runtime_artifact_path(*parts)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(redact_log_text(json.dumps(payload, ensure_ascii=True) + "\n"))
+            return path
 
     def events_snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -644,6 +705,22 @@ class SessionStore:
         self._web_research.clear_pending()
 
     def _hydrate_from_existing_log(self) -> bool:
+        if self._managed_session_persistence is not None:
+            events = self._managed_session_persistence.events_snapshot()
+            if not events:
+                return False
+            self._events = events
+            for index, event in enumerate(self._events, start=1):
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                self._web_research.observe_event(
+                    event_type=str(event.get("type") or "").strip(),
+                    payload=payload,
+                    ts=str(event.get("ts") or "").strip() or None,
+                    event_id=(
+                        str(event.get("event_id") or "").strip() or f"{self.session_id}:{index}"
+                    ),
+                )
+            return True
         try:
             if not self.path.exists():
                 return False

@@ -1,3 +1,30 @@
+# Ship only reviewed runtime and listing assets. Local reports, credentials, and
+# future development files stay out even when a developer packages a used checkout.
+**
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!SUPPORT.md
+!dist/extension.js
+!media/startView.css
+!media/startView.html
+!media/startView.js
+!media/THIRD_PARTY_NOTICES.txt
+!media/walkthrough/*.md
+!resources/alysis-logo.png
+!resources/alysis-logo.svg
+!resources/icon.png
+!resources/managed-cli-release-public.pem
+!resources/screenshots/*.png
+!resources/managed-cli/manifest.json
+!resources/managed-cli/alysis-win32-x64.exe
+!resources/managed-cli/alysis-win32-arm64.exe
+!resources/managed-cli/alysis-darwin-x64
+!resources/managed-cli/alysis-darwin-arm64
+!resources/managed-cli/alysis-linux-x64
+!resources/managed-cli/alysis-linux-arm64
+
 .gitignore
 .vscode/**
 .vscode-test/**

@@ -294,12 +294,15 @@ def test_advertised_ide_methods_have_dispatch_docs_protocol_and_client_coverage(
     ts_protocol_methods = parity.extract_ts_protocol_method_features()
     ts_client_methods = parity.extract_ts_bridge_client_method_features()
     protocol_contract_methods = parity.extract_protocol_contract_method_features()
+    extension_methods = {
+        ref for ref in health_methods if ref.name not in parity.DESKTOP_HOST_ONLY_METHODS
+    }
     client_required_methods = {
-        ref for ref in health_methods if ref.name not in parity.TS_CLIENT_COVERAGE_EXEMPT_METHODS
+        ref for ref in extension_methods if ref.name not in parity.TS_CLIENT_COVERAGE_EXEMPT_METHODS
     }
 
     assert health_methods <= dispatch_methods
-    assert health_methods <= ts_protocol_methods
+    assert extension_methods <= ts_protocol_methods
     assert health_methods == protocol_contract_methods
     assert client_required_methods <= ts_client_methods
 

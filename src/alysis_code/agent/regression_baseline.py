@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..branding import env_get
+from ..config import split_command_words
 from ..pipeline_facts import pipeline_meaningful_stage
 from .verification_commands import _normalize_shell_command_for_match
 
@@ -419,7 +420,9 @@ def command_is_test_runner(command: str) -> bool:
     """
     meaningful = pipeline_meaningful_stage(command)
     target = meaningful if meaningful is not None else str(command or "")
-    tokens = target.split()
+    tokens = split_command_words(target)
+    if tokens is None:
+        return False
     index = 0
     while index < len(tokens):
         token = tokens[index]

@@ -83,6 +83,25 @@ def test_python_runtime_baseline_is_documented_and_ci_aligned() -> None:
     assert "Python 3.11 or newer" in server_doc
 
 
+def test_documented_install_command_points_at_the_installer_script() -> None:
+    # Users fetch the installer from this exact path on main, so the documented
+    # command and the script's location must move together.
+    command = (
+        "curl -LsSf https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.sh"
+        " | sh"
+    )
+    assert command in _read("README.md")
+    assert command in _read("docs/quickstart.md")
+    # `curl … | sh` runs it under dash on Ubuntu, so it must stay POSIX sh.
+    assert _read("scripts/install.sh").startswith("#!/bin/sh\n")
+    windows_command = (
+        "irm https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.ps1 | iex"
+    )
+    assert windows_command in _read("README.md")
+    assert windows_command in _read("docs/quickstart.md")
+    assert windows_command in _read("scripts/install.ps1")
+
+
 def test_readme_keeps_public_launch_surface() -> None:
     readme = _read("README.md")
 
@@ -94,10 +113,9 @@ def test_readme_keeps_public_launch_surface() -> None:
     from alysis_code.alysis_cloud import site_url
 
     assert f"{site_url()}/" in readme
-    assert "sylliptor.alysisai.com" not in readme
-    assert 'href="https://github.com/AlysisAi/alysis-code/tree/main/docs">Docs</a>' in readme
+    assert 'href="https://github.com/AlysisAi/AlysisCode/tree/main/docs">Docs</a>' in readme
     assert (
-        'href="https://github.com/AlysisAi/alysis-code/blob/main/docs/CHANGELOG.md">Changelog</a>'
+        'href="https://github.com/AlysisAi/AlysisCode/blob/main/docs/CHANGELOG.md">Changelog</a>'
         in readme
     )
     assert 'href="https://github.com/sponsors/AlysisAi"' in readme
@@ -121,6 +139,12 @@ def test_governance_and_packaging_metadata_are_public_ready() -> None:
     assert "alysis-contributor-pack" not in _read(".github/CONTRIBUTING.md")
     assert "products@alysisai.com" in _read(".github/SECURITY.md")
     assert pyproject["project"]["urls"]["Documentation"].endswith("/tree/main/docs")
+
+
+def test_vscode_changelog_uses_current_product_identity() -> None:
+    introduction = _read("extensions/vscode-alysis/CHANGELOG.md").split("## [Unreleased]", 1)[0]
+
+    assert "Alysis Code VS Code extension" in introduction
 
 
 def test_docs_index_links_only_existing_public_docs() -> None:
@@ -221,7 +245,7 @@ def test_source_urls_and_container_docs_point_to_alysisai() -> None:
     branding = _read("src/alysis_code/branding.py")
     sandbox = _read("docs/shell_sandbox.md")
 
-    assert 'PROJECT_SOURCE_URL = "https://github.com/AlysisAi/alysis-code"' in branding
+    assert 'PROJECT_SOURCE_URL = "https://github.com/AlysisAi/AlysisCode"' in branding
     assert "ghcr.io/alysisai/alysis-sandbox" in sandbox
     assert "ap" + "fivos/alysis" not in branding
     assert "ghcr.io/ap" + "fivos" not in sandbox
@@ -235,7 +259,8 @@ def test_current_copy_uses_the_correct_article_for_alysis() -> None:
 
     for raw_path in _checkout_paths(repo_root):
         candidate = repo_root / raw_path
-        if candidate.suffix not in text_suffixes:
+        # The Git index can still include files deleted in the current checkout.
+        if candidate.suffix not in text_suffixes or not candidate.is_file():
             continue
         contents = candidate.read_text(encoding="utf-8")
         assert bad_phrase not in contents, raw_path

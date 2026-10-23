@@ -4,7 +4,15 @@ import os
 from pathlib import Path, PurePosixPath
 
 ROOT_RUNTIME_ARTIFACT_DIR_NAMES = frozenset(
-    {".alysis", ".alysis_images", ".git", "alysis-feedback"}
+    {
+        ".alysis",
+        ".alysis_images",
+        ".git",
+        "alysis-feedback",
+        # The desktop host holds this lock during an explicit project-data
+        # migration to ``.alysis``. Keep it outside user changes.
+        ".alysis-migration.lock",
+    }
 )
 RUNTIME_CACHE_DIR_NAMES = frozenset(
     {
@@ -23,6 +31,7 @@ RUNTIME_ARTIFACT_GIT_EXCLUDE_ENTRIES = (
     "/.alysis/",
     "/.alysis_images/",
     "/alysis-feedback/",
+    "/.alysis-migration.lock/",
     "__pycache__/",
     ".mypy_cache/",
     ".pytest_cache/",

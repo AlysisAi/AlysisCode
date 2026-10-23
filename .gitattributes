@@ -1,1 +1,4 @@
 * text=auto eol=lf
+
+# SSE events end with a blank line, including the final event.
+tests/fixtures/stream_parity/*.sse whitespace=-blank-at-eof

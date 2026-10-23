@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -40,6 +40,46 @@ MIN_LEASE_SECONDS = 1.0
 MAX_LEASE_SECONDS = 24 * 60 * 60.0
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]*$")
 _ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
+
+# A lease owner that holds its file (``hold_owner``) is known to be gone once its
+# file can be locked: the operating system frees the lock when the process ends,
+# however it ends. Files of gone owners older than this are removed.
+_OWNER_DIR_NAME = "prompt-queue-owners"
+_STALE_OWNER_FILE_SECONDS = 60 * 60.0
+
+
+def _owner_file_name(owner_id: str) -> str:
+    return hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:32] + ".lock"
+
+
+def _lock_without_waiting(handle: Any) -> bool:
+    """Take an exclusive lock on an open file; False when another holder has it."""
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(handle: Any) -> None:
+    with suppress(OSError):
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class PromptState(str, Enum):
@@ -177,7 +217,104 @@ class DurablePromptQueue:
         self._clock = clock
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         self._lock = threading.RLock()
+        self._held_owners: dict[str, Any] = {}
         self._prepare_storage()
+
+    def hold_owner(self, owner_id: str) -> bool:
+        """Show other processes that ``owner_id`` is alive, for as long as this one runs.
+
+        The owner locks a small file next to the database. When its process
+        ends, however it ends, the operating system frees the lock, and the
+        owner's running prompt can be reclaimed at once instead of after its
+        lease (up to ``DEFAULT_LEASE_SECONDS``). Returns whether it is held.
+        """
+
+        owner_id = _validate_identifier(owner_id, "owner", max_length=256)
+        with self._lock:
+            if owner_id in self._held_owners:
+                return True
+            owners = self.path.parent / _OWNER_DIR_NAME
+            try:
+                owners.mkdir(parents=True, exist_ok=True)
+                handle = open(owners / _owner_file_name(owner_id), "a+b")  # noqa: SIM115
+            except OSError:
+                return False
+            if not _lock_without_waiting(handle):
+                handle.close()
+                return False
+            self._held_owners[owner_id] = handle
+        self._remove_stale_owner_files()
+        return True
+
+    def release_owner(self, owner_id: str) -> None:
+        """Stop holding ``owner_id``; its running prompts become reclaimable.
+
+        The file stays, unlocked, so other processes see the owner is gone; it
+        is removed with other old files of gone owners.
+        """
+
+        with self._lock:
+            handle = self._held_owners.pop(owner_id, None)
+        if handle is None:
+            return
+        _unlock(handle)
+        handle.close()
+
+    def _owner_is_gone(self, owner_id: Any) -> bool:
+        """True only for an owner that held its file and whose process has ended.
+
+        An owner without a file (an older engine) is never called gone: its
+        lease runs out as before.
+        """
+
+        if not isinstance(owner_id, str) or not owner_id or owner_id in self._held_owners:
+            return False
+        path = self.path.parent / _OWNER_DIR_NAME / _owner_file_name(owner_id)
+        try:
+            handle = open(path, "r+b")  # noqa: SIM115
+        except OSError:
+            return False
+        try:
+            if not _lock_without_waiting(handle):
+                return False
+            _unlock(handle)
+            return True
+        finally:
+            handle.close()
+
+    def _expire_gone_owner_leases(
+        self, connection: sqlite3.Connection, *, session_id: str, now: float
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT sequence, lease_owner FROM prompt_queue_items
+            WHERE session_id = ? AND state = 'running' AND lease_expires_at > ?
+            """,
+            (session_id, now),
+        ).fetchall()
+        for row in rows:
+            if self._owner_is_gone(row["lease_owner"]):
+                connection.execute(
+                    """
+                    UPDATE prompt_queue_items SET lease_expires_at = ?, updated_at = ?
+                    WHERE sequence = ? AND state = 'running' AND lease_owner = ?
+                    """,
+                    (now, now, row["sequence"], row["lease_owner"]),
+                )
+
+    def _remove_stale_owner_files(self) -> None:
+        owners = self.path.parent / _OWNER_DIR_NAME
+        cutoff = time.time() - _STALE_OWNER_FILE_SECONDS
+        with suppress(OSError):
+            for path in owners.glob("*.lock"):
+                with suppress(OSError):
+                    if path.stat().st_mtime >= cutoff:
+                        continue
+                    with open(path, "r+b") as handle:
+                        if not _lock_without_waiting(handle):
+                            continue
+                        _unlock(handle)
+                    path.unlink()
 
     def enqueue(
         self,
@@ -322,7 +459,7 @@ class DurablePromptQueue:
         with self._connection() as connection:
             row = connection.execute(
                 """
-                SELECT state, lease_expires_at FROM prompt_queue_items
+                SELECT state, lease_expires_at, lease_owner FROM prompt_queue_items
                 WHERE session_id = ? AND prompt_id = ?
                 """,
                 (session_id, prompt_id),
@@ -332,7 +469,7 @@ class DurablePromptQueue:
         return row["state"] == PromptState.PENDING.value or (
             row["state"] == PromptState.RUNNING.value
             and row["lease_expires_at"] is not None
-            and float(row["lease_expires_at"]) <= now
+            and (float(row["lease_expires_at"]) <= now or self._owner_is_gone(row["lease_owner"]))
         )
 
     def claim_next(
@@ -357,6 +494,7 @@ class DurablePromptQueue:
         lease_token = uuid.uuid4().hex
 
         with self._lock, self._transaction() as connection:
+            self._expire_gone_owner_leases(connection, session_id=session_id, now=now)
             active = connection.execute(
                 """
                 SELECT 1 FROM prompt_queue_items
@@ -628,6 +766,7 @@ class DurablePromptQueue:
             return {"pending": 0, "recovered": 0, "active": 0}
         now = self._now()
         with self._lock, self._transaction() as connection:
+            self._expire_gone_owner_leases(connection, session_id=source, now=now)
             conflict = connection.execute(
                 """
                 SELECT 1

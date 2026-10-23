@@ -93,11 +93,11 @@ def _start_subscription(flow: SetupFlow, runtime_id: str = "openai-codex") -> No
 
 class FakeSubscriptionAdapter:
     provider_id = "openai-codex"
-    display_name = "ChatGPT Codex subscription"
+    display_name = "ChatGPT subscription"
     description = "test"
     profile_name = "chatgpt-codex"
     auth_hint = "test"
-    base_url = "https://chatgpt.com/backend-api/codex"
+    base_url = "https://api.openai.com/v1"
     protocol = "openai_responses"
     supports_previous_response_id = False
 
@@ -282,7 +282,7 @@ def test_flow_subscription_skips_api_key_provider_steps(monkeypatch, tmp_path):
     picker_rows = {row.value: row for row in picker_screen.rows}
     # Subscription sign-ins and API-key providers share one merged list.
     assert runtime_value in picker_rows
-    assert picker_rows[runtime_value].label == "ChatGPT Codex subscription"
+    assert picker_rows[runtime_value].label == "ChatGPT subscription"
     assert "openai-responses" in picker_rows
 
     flow.back()
@@ -324,7 +324,7 @@ def test_flow_subscription_skips_api_key_provider_steps(monkeypatch, tmp_path):
     assert cfg.extra_fields["profiles"]["chatgpt-codex"]["auth_provider"] == "openai-codex"
     summary = " ".join(text for text, _tone in flow._summary_lines())
     assert "Connection  AI subscription" in summary
-    assert "Provider    ChatGPT Codex subscription" in summary
+    assert "Provider    ChatGPT subscription" in summary
     assert "Sign-in     not connected" in summary
     assert "(delegated)" not in summary
     assert "delegated run" not in summary.lower()

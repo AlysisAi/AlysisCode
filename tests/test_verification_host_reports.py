@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,7 +78,12 @@ def test_real_long_failing_baseline_survives_preview_and_later_pass(tmp_path: Pa
         "    def test_existing(self):\n"
         "        self.assertEqual(2 + 2, 4)\n"
     )
-    command = f"{shlex.quote(sys.executable)} -m unittest discover -s tests -v"
+    executable = (
+        subprocess.list2cmdline([Path(sys.executable).as_posix()])
+        if os.name == "nt"
+        else shlex.quote(sys.executable)
+    )
+    command = f"{executable} -m unittest discover -s tests -v"
     tools = _tools(root, [command])
     state = TurnExecutionState(execution_requested=True)
     state.blast_radius_scope = select_blast_radius_scope(

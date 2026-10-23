@@ -150,6 +150,7 @@ def subagent_panel_rows(
     height: int,
     position: int,
     total: int,
+    key_hint: str | None = None,
 ) -> list[list[tuple[str, str]]]:
     """Render header, newest body entries, and footer within ``height`` rows."""
     width = max(12, int(width))
@@ -168,7 +169,7 @@ def subagent_panel_rows(
         used += min(len(wrapped), room)
     body_rows = [row for group in reversed(selected) for row in group]
     footer = _fit_segments(
-        [(_S_HINT, f"ctrl+b / ctrl+n to switch {_MIDDLE_DOT} esc to close")],
+        [(_S_HINT, key_hint or f"alt+left / alt+right to switch {_MIDDLE_DOT} esc to close")],
         width,
     )
     return [

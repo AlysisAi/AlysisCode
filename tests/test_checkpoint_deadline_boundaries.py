@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -10,6 +12,7 @@ import pytest
 
 from alysis_code.agent import checkpoint_worker
 from alysis_code.agent.anytime_checkpoint import AnytimeCheckpointManager
+from alysis_code.command_text import command_text
 from alysis_code.config import AnytimeCheckpointConfig
 from alysis_code.session_artifacts import SessionArtifactLayout
 
@@ -103,6 +106,64 @@ checkpoint_worker.main()
     return [sys.executable, "-I", "-c", code]
 
 
+@pytest.fixture
+def ready_stall_worker(monkeypatch):
+    """Reach the I/O fault under the real deadline, independent of cold imports.
+
+    Cold worker startup has its own bounded publication test below. These tests
+    need to exercise cancellation after the specific filesystem fault is reached.
+    """
+    processes = []
+    original_popen = subprocess.Popen
+
+    def prepare(manager, marker, phase):
+        ready = marker.with_suffix(".ready")
+        command = _stall_command(manager, marker, phase)
+        command[-1] = command[-1].replace(
+            "checkpoint_worker.main()",
+            f"Path({str(ready)!r}).write_text('ready')\ncheckpoint_worker.main()",
+        )
+        options = (
+            {"creationflags": subprocess.CREATE_NO_WINDOW}
+            if os.name == "nt"
+            else {"start_new_session": True}
+        )
+        process = original_popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **command_text(),
+            **options,
+        )
+        processes.append(process)
+        stop_at = time.monotonic() + 10
+        while not ready.exists():
+            assert process.poll() is None, "fault-injection worker exited during setup"
+            assert time.monotonic() < stop_at, "fault-injection worker did not become ready"
+            time.sleep(0.01)
+        adopted = False
+
+        def adopt_worker(args, **kwargs):
+            nonlocal adopted
+            if args == command and not adopted:
+                adopted = True
+                return process
+            return original_popen(args, **kwargs)
+
+        monkeypatch.setattr(checkpoint_worker, "worker_command", lambda: command)
+        monkeypatch.setattr(checkpoint_worker.subprocess, "Popen", adopt_worker)
+
+    yield prepare
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
 def _assert_worker_gone(marker):
     identity = json.loads(marker.read_text())
     try:
@@ -145,16 +206,16 @@ main()
 
 
 @pytest.mark.parametrize("phase", ["read", "archive", "publish"])
-def test_hung_checkpoint_io_is_reaped_and_cannot_replace_prior_best(tmp_path, monkeypatch, phase):
+def test_hung_checkpoint_io_is_reaped_and_cannot_replace_prior_best(
+    tmp_path, ready_stall_worker, phase
+):
     manager = _manager(tmp_path)
     _seed_prior_checkpoint(manager)
     previous = dict(manager.best)
     index = manager._task_index("bounded-checkpoint")
     index_before = index.read_bytes()
     marker = tmp_path / "worker-entered.json"
-    monkeypatch.setattr(
-        checkpoint_worker, "worker_command", lambda: _stall_command(manager, marker, phase)
-    )
+    ready_stall_worker(manager, marker, phase)
     (manager.root / "deliverable.py").write_text("value = 3\n")
     started = time.monotonic()
     event = _preserve(manager, 1, 3, remaining=1.6)
@@ -171,13 +232,11 @@ def test_hung_checkpoint_io_is_reaped_and_cannot_replace_prior_best(tmp_path, mo
     assert index.read_bytes() == index_before
 
 
-def test_resume_archive_validation_has_the_same_owned_io_deadline(tmp_path, monkeypatch):
+def test_resume_archive_validation_has_the_same_owned_io_deadline(tmp_path, ready_stall_worker):
     manager = _manager(tmp_path)
     _seed_prior_checkpoint(manager)
     marker = tmp_path / "restore-entered.json"
-    monkeypatch.setattr(
-        checkpoint_worker, "worker_command", lambda: _stall_command(manager, marker, "restore")
-    )
+    ready_stall_worker(manager, marker, "restore")
     resumed = AnytimeCheckpointManager(
         root=manager.root, layout=manager.layout, config=manager.config
     )
@@ -201,17 +260,15 @@ def test_expired_checkpoint_never_spawns_a_worker(tmp_path, monkeypatch):
     assert manager.best is None
 
 
-def test_unacknowledged_publication_cannot_replace_receipt_on_resume(tmp_path, monkeypatch):
+def test_unacknowledged_publication_cannot_replace_receipt_on_resume(
+    tmp_path, monkeypatch, ready_stall_worker
+):
     manager = _manager(tmp_path)
     _seed_prior_checkpoint(manager)
     receipt = dict(manager.best)
     marker = tmp_path / "published-before-timeout.json"
     command = checkpoint_worker.worker_command
-    monkeypatch.setattr(
-        checkpoint_worker,
-        "worker_command",
-        lambda: _stall_command(manager, marker, "after_publish"),
-    )
+    ready_stall_worker(manager, marker, "after_publish")
     (manager.root / "deliverable.py").write_text("value = 3\n")
     event = _preserve(manager, 1, 3, remaining=1.6)
     assert marker.exists(), "Must reach the post-publication acknowledgment boundary"

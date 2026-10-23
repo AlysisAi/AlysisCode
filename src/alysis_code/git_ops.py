@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .command_text import command_text
 from .git_safe import build_git_cmd, build_git_process_env
 from .runtime_artifacts import is_runtime_artifact_path, runtime_artifact_git_exclude_entries
 
@@ -49,7 +50,7 @@ def _run_git(
             cmd,
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             input=input_text,
             env=build_git_process_env(),
             timeout=timeout_s,
@@ -161,7 +162,7 @@ def ensure_info_exclude_entries(root: Path, entries: list[str]) -> Path:
     if not to_append:
         return exclude_path
 
-    with exclude_path.open("a", encoding="utf-8") as fh:
+    with exclude_path.open("a", encoding="utf-8", newline="\n") as fh:
         for entry in to_append:
             fh.write(entry + "\n")
     return exclude_path
@@ -204,7 +205,10 @@ def ensure_runtime_artifact_excludes(root: Path) -> Path:
             _RUNTIME_ARTIFACT_EXCLUDE_END,
         ]
     )
-    exclude_path.write_text("\n".join(preserved_lines) + "\n", encoding="utf-8")
+    # LF on every platform: Git reads a CRLF blank line here as an empty pattern that
+    # matches every path ending in "/", so `git check-ignore --no-index dir/` (the @ file
+    # index) reported every folder as ignored. Rewriting with LF also repairs old files.
+    exclude_path.write_text("\n".join(preserved_lines) + "\n", encoding="utf-8", newline="\n")
     return exclude_path
 
 

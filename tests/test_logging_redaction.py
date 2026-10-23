@@ -70,9 +70,8 @@ class RedactorTestCase(unittest.TestCase):
 class TestCapture(RedactorTestCase):
     def test_captures_named_and_credential_like_variables(self) -> None:
         # SecretRedactor iterates sorted by name, so this order is the
-        # documented contract rather than an accident. The rename moved the
-        # prefix from SYLLIPTOR_ (after GITHUB_) to ALYSIS_ (before it), which
-        # is why the expected order changed. Redaction itself is unaffected:
+        # documented contract rather than an accident. The ALYSIS_ variables
+        # precede GITHUB_ variables alphabetically. Redaction itself is unaffected:
         # _compile orders variants by length, independently of this tuple.
         self.assertEqual(
             self.redactor.secret_names,

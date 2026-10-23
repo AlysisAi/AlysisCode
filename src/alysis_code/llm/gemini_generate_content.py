@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import logging
+import secrets
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -12,6 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ..cancellation import CooperativeCancellationError
 from ..error_text import sanitize_error_text_for_output
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from ..reasoning_contracts import WIRE_THINKING_LEVEL, reasoning_contract_for
@@ -19,6 +21,7 @@ from ..request_estimation import estimate_provider_payload_tokens
 from ..token_budget import estimate_tokens
 from ..web_search_adapters import AUTO_WEB_SEARCH_ADAPTER, GEMINI_GROUNDING_ADAPTER
 from .cache_policy import merge_cache_policy_metadata
+from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
 from .http_cancellation import (
     cancellable_httpx_request,
     cancellable_httpx_send,
@@ -36,6 +39,7 @@ from .metadata import (
     merge_canonical_headers,
     stamp_response_for_route,
 )
+from .protocols import reasoning_trace_callback
 from .provider_limits import (
     DEFAULT_PROVIDER_CONCURRENCY_CAPS,
     ProviderRetrySettings,
@@ -906,6 +910,40 @@ def _collect_function_call_names(content: dict[str, Any], call_names: dict[str, 
             call_names[call_id] = name
 
 
+def _collect_idless_function_call_names(
+    content: dict[str, Any],
+    message: dict[str, Any],
+    call_names: dict[str, str],
+    idless_call_ids: set[str],
+) -> None:
+    """Pair native ID-less calls with their local assistant ToolCall IDs."""
+
+    parts = content.get("parts")
+    raw_tool_calls = message.get("tool_calls")
+    if not isinstance(parts, list) or not isinstance(raw_tool_calls, list):
+        return
+    native_calls = [
+        part.get("functionCall")
+        for part in parts
+        if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)
+    ]
+    if len(native_calls) != len(raw_tool_calls):
+        return
+    for native_call, raw_tool_call in zip(native_calls, raw_tool_calls, strict=True):
+        if not isinstance(native_call, dict) or native_call.get("id") not in {None, ""}:
+            continue
+        if not isinstance(raw_tool_call, dict):
+            continue
+        local_call_id = str(raw_tool_call.get("id") or raw_tool_call.get("call_id") or "").strip()
+        function = raw_tool_call.get("function")
+        local_name = str(function.get("name") or "").strip() if isinstance(function, dict) else ""
+        native_name = str(native_call.get("name") or "").strip()
+        name = native_name or local_name
+        if local_call_id and name:
+            call_names[local_call_id] = name
+            idless_call_ids.add(local_call_id)
+
+
 def _is_function_response_user_content(content: dict[str, Any]) -> bool:
     if str(content.get("role") or "") != "user":
         return False
@@ -926,6 +964,7 @@ def _gemini_contents_from_messages(
     system_parts: list[str] = []
     contents: list[dict[str, Any]] = []
     call_names: dict[str, str] = {}
+    idless_call_ids: set[str] = set()
     for message in messages:
         if not isinstance(message, dict):
             continue
@@ -945,6 +984,12 @@ def _gemini_contents_from_messages(
             if metadata_content is not None:
                 contents.append(metadata_content)
                 _collect_function_call_names(metadata_content, call_names)
+                _collect_idless_function_call_names(
+                    metadata_content,
+                    message,
+                    call_names,
+                    idless_call_ids,
+                )
                 continue
             parts = _gemini_parts_from_content(message.get("content"))
             parts.extend(_tool_call_parts_from_message(message))
@@ -966,11 +1011,12 @@ def _gemini_contents_from_messages(
             response_payload = _json_response_payload(message.get("content"))
             function_response_part = {
                 "functionResponse": {
-                    "id": call_id,
                     "name": name,
                     "response": response_payload,
                 }
             }
+            if call_id not in idless_call_ids:
+                function_response_part["functionResponse"]["id"] = call_id
             if contents and _is_function_response_user_content(contents[-1]):
                 parts = contents[-1].setdefault("parts", [])
                 if isinstance(parts, list):
@@ -1181,33 +1227,21 @@ def _reasoning_outputs_from_parts(parts: list[Any]) -> tuple[ReasoningOutput, ..
     return tuple(outputs)
 
 
-def _gemini_function_call_id(function_call: dict[str, Any], index: int) -> str:
-    return str(function_call.get("id") or f"call_{index}").strip()
+def _gemini_function_call_id(
+    function_call: dict[str, Any],
+    index: int,
+    *,
+    fallback_scope: str = "",
+) -> str:
+    native_id = str(function_call.get("id") or "").strip()
+    if native_id:
+        return native_id
+    scope = str(fallback_scope or "").strip() or secrets.token_hex(16)
+    digest = hashlib.sha256(f"{scope}:{index}".encode()).hexdigest()[:32]
+    return f"alysis_gemini_idless_{digest}"
 
 
-def _candidate_content_with_normalized_function_call_ids(
-    content: dict[str, Any],
-) -> dict[str, Any]:
-    copied = copy.deepcopy(content)
-    parts = copied.get("parts")
-    if not isinstance(parts, list):
-        return copied
-    for index, part in enumerate(parts):
-        if not isinstance(part, dict):
-            continue
-        function_call = part.get("functionCall")
-        if not isinstance(function_call, dict):
-            continue
-        name = str(function_call.get("name") or "").strip()
-        if not name:
-            continue
-        call_id = _gemini_function_call_id(function_call, index)
-        if call_id:
-            function_call["id"] = call_id
-    return copied
-
-
-def _parse_tool_calls(parts: list[Any]) -> list[ToolCall]:
+def _parse_tool_calls(parts: list[Any], *, fallback_scope: str = "") -> list[ToolCall]:
     tool_calls: list[ToolCall] = []
     for index, part in enumerate(parts):
         if not isinstance(part, dict):
@@ -1218,7 +1252,11 @@ def _parse_tool_calls(parts: list[Any]) -> list[ToolCall]:
         name = str(function_call.get("name") or "").strip()
         if not name:
             continue
-        call_id = _gemini_function_call_id(function_call, index)
+        call_id = _gemini_function_call_id(
+            function_call,
+            index,
+            fallback_scope=fallback_scope,
+        )
         raw_args = function_call.get("args")
         args = dict(raw_args) if isinstance(raw_args, dict) else _json_arguments(raw_args)
         metadata: dict[str, Any] = {"part_index": index}
@@ -1317,7 +1355,10 @@ def _gemini_provider_metadata(
             metadata[_camel_to_snake(key)] = copy.deepcopy(value)
     content = _candidate_content(candidate)
     if isinstance(content, dict):
-        metadata["content"] = _candidate_content_with_normalized_function_call_ids(content)
+        # Thought signatures are bound to the provider's exact Part. In
+        # particular, FunctionCall.id is optional; never insert a local fallback
+        # ID into the native replay envelope.
+        metadata["content"] = copy.deepcopy(content)
     metadata.update(_grounding_metadata_payload(candidate))
     usage = data.get("usageMetadata")
     if isinstance(usage, dict):
@@ -1678,7 +1719,9 @@ class GeminiGenerateContentClient:
 
         def _send_request() -> InputTokenCount | None:
             try:
-                with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                with provider_httpx_client(
+                    timeout=self.timeout_s, transport=self._transport
+                ) as client:
                     response = client.post(url, headers=self._headers(), json=payload)
             except httpx.HTTPError as exc:
                 raise LLMError(
@@ -1931,7 +1974,7 @@ class GeminiGenerateContentClient:
             # Config-apply path: clamp per-delete latency so a hanging endpoint
             # cannot stall a config save for max_entries * timeout_s.
             timeout_s = min(self.timeout_s, _GEMINI_EXPLICIT_CACHE_EVICT_ALL_TIMEOUT_S)
-            with httpx.Client(timeout=timeout_s, transport=self._transport) as client:
+            with provider_httpx_client(timeout=timeout_s, transport=self._transport) as client:
                 for index, signature in enumerate(signatures):
                     lifecycle: dict[str, Any] = {}
                     self._evict_cached_content_entry(
@@ -2133,6 +2176,11 @@ class GeminiGenerateContentClient:
         max_tokens: int | None = None,
         cancellation_token: Any | None = None,
     ) -> LLMResponse:
+        on_reasoning_delta = reasoning_trace_callback(
+            on_reasoning_delta,
+            capability=getattr(self, "reasoning_trace_capability", None),
+            stream=stream,
+        )
         if self.prompt_cache_key or self.prompt_cache_retention:
             raise LLMError("Gemini GenerateContent does not support prompt_cache_key settings")
 
@@ -2374,7 +2422,16 @@ class GeminiGenerateContentClient:
             operation = "streamGenerateContent?alt=sse" if stream else "generateContent"
             url = f"{self.base_url}/models/{encoded_model}:{operation}"
             try:
-                with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                client_context = (
+                    cancellation_aware_httpx_client(
+                        timeout_s=self.timeout_s,
+                        transport=self._transport,
+                        cancellation_token=cancellation_token,
+                    )
+                    if cancellation_token is not None and not stream
+                    else provider_httpx_client(timeout=self.timeout_s, transport=self._transport)
+                )
+                with client_context as client:
                     request_payload = payload
                     active_request_plan_metadata = request_plan_metadata
                     cached_content_name: str | None = None
@@ -2687,6 +2744,8 @@ class GeminiGenerateContentClient:
                             )
                             continue
                         break
+            except CooperativeCancellationError:
+                raise
             except httpx.DecodingError as e:
                 raise_if_cancelled(cancellation_token)
                 err = LLMError(
@@ -2799,7 +2858,8 @@ class GeminiGenerateContentClient:
             raise LLMError("Unexpected Gemini GenerateContent payload: missing content parts")
 
         text = _extract_text(parts)
-        tool_calls = _parse_tool_calls(parts)
+        response_scope = str(data.get("responseId") or "").strip() or secrets.token_hex(16)
+        tool_calls = _parse_tool_calls(parts, fallback_scope=response_scope)
         if not text and not tool_calls:
             finish_reason = str(candidate.get("finishReason") or "").strip()
             suffix = f" (finish_reason={finish_reason})" if finish_reason else ""

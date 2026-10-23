@@ -23,10 +23,10 @@ from scripts.release.build_managed_cli_manifest import (
 
 SOURCE_COMMIT = "a" * 40
 SIGNING_KEY_ID = "test-release-2026-01"
-SOURCE_REPOSITORY = "https://github.com/AlysisAi/alysis-code"
+SOURCE_REPOSITORY = "https://github.com/AlysisAi/AlysisCode"
 PROVENANCE_ISSUER = "https://token.actions.githubusercontent.com"
 PROVENANCE_BUILDER = (
-    "https://github.com/AlysisAi/alysis-code/.github/workflows/"
+    "https://github.com/AlysisAi/AlysisCode/.github/workflows/"
     f"managed-cli-vsix-release.yml@refs/tags/{RELEASE_TAG}"
 )
 

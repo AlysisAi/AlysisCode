@@ -14,6 +14,7 @@ from typing import Any
 
 from .agent.prompt_context import _build_user_message
 from .branding import env_get
+from .command_text import command_text
 from .compaction.settings import resolve_compaction_settings
 from .config import AppConfig
 from .execution_budget import (
@@ -1107,7 +1108,7 @@ def _run_git_capture(
         return subprocess.run(
             cmd,
             capture_output=True,
-            text=text,
+            **command_text(text),
             check=False,
             env=build_git_process_env(),
             timeout=_READ_ONLY_GIT_TIMEOUT_S,

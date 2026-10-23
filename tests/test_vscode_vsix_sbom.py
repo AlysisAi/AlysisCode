@@ -336,7 +336,7 @@ def _candidate(
                 target=target,
                 path=path,
                 url=(
-                    "https://github.com/AlysisAi/alysis-code/releases/download/"
+                    "https://github.com/AlysisAi/AlysisCode/releases/download/"
                     f"{RELEASE_TAG}/{executable}"
                 ),
                 sbom_path=dependency_sbom,
@@ -348,12 +348,12 @@ def _candidate(
         signing_key_path=private_key_path,
         artifacts=artifacts,
         release_tag=RELEASE_TAG,
-        source_repository="https://github.com/AlysisAi/alysis-code",
+        source_repository="https://github.com/AlysisAi/AlysisCode",
         source_commit="a" * 40,
         signing_key_id="test-release-key",
         provenance_issuer="https://token.actions.githubusercontent.com",
         provenance_builder_id=(
-            "https://github.com/AlysisAi/alysis-code/.github/workflows/"
+            "https://github.com/AlysisAi/AlysisCode/.github/workflows/"
             f"managed-cli-vsix-release.yml@refs/tags/{RELEASE_TAG}"
         ),
     )

@@ -235,6 +235,7 @@ def test_ensure_runtime_artifact_excludes_installs_shared_entries(
         "/.alysis/",
         "/.alysis_images/",
         "/alysis-feedback/",
+        "/.alysis-migration.lock/",
         "__pycache__/",
         ".mypy_cache/",
         ".pytest_cache/",
@@ -244,6 +245,52 @@ def test_ensure_runtime_artifact_excludes_installs_shared_entries(
         "*.pyo",
         "# END alysis runtime artifacts",
     ]
+
+
+def test_info_exclude_writes_use_lf_and_repair_crlf_files(monkeypatch, tmp_path: Path) -> None:
+    # Windows text mode used to write "\r\n"; Git reads a CRLF blank line in info/exclude
+    # as an empty pattern that matches every path ending in "/".
+    git_dir = tmp_path / ".git"
+    (git_dir / "info").mkdir(parents=True)
+    exclude_path = git_dir / "info" / "exclude"
+    exclude_path.write_bytes(b"# another tool\r\n.kilo/setup-script\r\n\r\n")
+
+    def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        args = _git_args(cmd)
+        if args == ["rev-parse", "--git-path", "info/exclude"]:
+            return _cp(returncode=0, stdout=str(exclude_path) + "\n")
+        raise AssertionError(f"unexpected git args: {args}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ensure_runtime_artifact_excludes(tmp_path)
+    ensure_info_exclude_entries(tmp_path, ["/extra/"])
+
+    data = exclude_path.read_bytes()
+    assert b"\r" not in data
+    assert data.startswith(
+        b"# another tool\n.kilo/setup-script\n\n# BEGIN alysis runtime artifacts\n"
+    )
+    assert data.endswith(b"# END alysis runtime artifacts\n/extra/\n")
+
+
+def test_folders_stay_unignored_after_runtime_excludes_in_a_real_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    exclude_path = repo / ".git" / "info" / "exclude"
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    exclude_path.write_bytes(b"# another tool\r\n*.tmp\r\n\r\n")
+
+    ensure_runtime_artifact_excludes(repo)
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "-v", "src/"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, result.stdout
 
 
 def test_ensure_runtime_artifact_excludes_adds_grounded_rust_target_entries(
@@ -277,6 +324,7 @@ def test_ensure_runtime_artifact_excludes_adds_grounded_rust_target_entries(
         "/.alysis/",
         "/.alysis_images/",
         "/alysis-feedback/",
+        "/.alysis-migration.lock/",
         "__pycache__/",
         ".mypy_cache/",
         ".pytest_cache/",
@@ -315,6 +363,7 @@ def test_ensure_runtime_artifact_excludes_removes_legacy_broad_target_entry(
         "/.alysis/",
         "/.alysis_images/",
         "/alysis-feedback/",
+        "/.alysis-migration.lock/",
         "__pycache__/",
         ".mypy_cache/",
         ".pytest_cache/",

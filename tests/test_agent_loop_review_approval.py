@@ -228,8 +228,9 @@ def test_review_mode_shell_run_requires_approval(tmp_path: Path) -> None:
         yes=False,
     )
 
+    # "echo hi" would run unasked: read-only commands need no approval (read_only_commands).
     with pytest.raises(AgentRuntimeError, match="User declined: shell_run"):
-        tools["shell_run"].run({"cmd": "echo hi"})
+        tools["shell_run"].run({"cmd": "make build"})
 
 
 def test_review_mode_non_interactive_can_use_host_managed_approval(tmp_path: Path) -> None:

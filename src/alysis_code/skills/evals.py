@@ -16,6 +16,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Protocol, cast
 
+from ..command_text import command_text
 from .discovery import project_skill_root_relative_paths
 from .eval_models import (
     SkillsEvalArtifacts,
@@ -1470,7 +1471,7 @@ def run_shell_verification_command(
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        **command_text(),
         **process_group_kwargs,
     )
     try:

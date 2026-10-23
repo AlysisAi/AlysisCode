@@ -1547,7 +1547,7 @@ def test_chat_streams_single_function_call_with_id_and_thought_signature() -> No
     assert metadata["content"]["parts"][0]["thoughtSignature"] == "stream-thought"
 
 
-def test_chat_streams_function_call_without_provider_id_normalizes_metadata_id() -> None:
+def test_chat_streams_function_call_without_provider_id_keeps_native_part_idless() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return _sse_response(
             _sse_event(
@@ -1582,12 +1582,14 @@ def test_chat_streams_function_call_without_provider_id_normalizes_metadata_id()
     )
 
     assert response.content == "I will read."
-    assert [(tool.id, tool.name, tool.arguments) for tool in response.tool_calls] == [
-        ("call_1", "fs_read", {"path": "README.md"})
-    ]
+    assert len(response.tool_calls) == 1
+    tool_call = response.tool_calls[0]
+    assert tool_call.id.startswith("alysis_gemini_idless_")
+    assert len(tool_call.id) == len("alysis_gemini_idless_") + 32
+    assert (tool_call.name, tool_call.arguments) == ("fs_read", {"path": "README.md"})
     metadata = response.provider_metadata["gemini_generate_content"]  # type: ignore[index]
     function_call = metadata["content"]["parts"][1]["functionCall"]
-    assert function_call["id"] == "call_1"
+    assert "id" not in function_call
     assert response.tool_calls[0].provider_metadata == {
         "gemini_generate_content": {"part_index": 1, "thoughtSignature": "stream-thought"}
     }

@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+import traceback
 import warnings
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable
@@ -37,9 +38,11 @@ from ..cancellation import (
     EventCancellationToken,
     InteractiveCancellationToken,
 )
+from ..command_text import command_text
 from ..compaction.conversation_compactor import ConversationCompactor
 from ..compaction.settings import resolve_compaction_settings
 from ..compaction.tool_output_offload import ToolOutputOffloader
+from ..computer_use_diagnostics import DIAGNOSTIC_ATTRIBUTE, computer_use_provider_diagnostic
 from ..config import (
     AppConfig,
     ConfigError,
@@ -59,9 +62,15 @@ from ..crash_diagnostics import (
     build_crash_diagnostic_logger,
     build_error_event_fields,
 )
-from ..custom_tools import CustomToolSessionState, build_custom_tool_session_state
+from ..custom_tools import (
+    CustomToolDiscoveryResult,
+    CustomToolSessionState,
+    ProjectToolTrustState,
+    build_custom_tool_session_state,
+)
 from ..durable_service_manager import DurableServiceManager
 from ..edit_discipline import EditDisciplineState
+from ..embedded_browser_visual import ComputerUseViewer
 from ..error_text import sanitize_error_text_for_output
 from ..execution_deadline import (
     MINIMUM_FORCED_SUMMARY_SECONDS,
@@ -83,6 +92,7 @@ from ..hooks import (
     load_resolved_hooks_config,
 )
 from ..host_actions import HostActionHandler
+from ..host_images import HostScreenRedactor
 from ..internal_artifacts import (
     ArtifactVisibility,
     mark_message_internal,
@@ -90,8 +100,13 @@ from ..internal_artifacts import (
 )
 from ..llm.base import (
     ChatClient,
+    RequiredToolCallingUnsupportedError,
     count_input_tokens_if_supported,
     effective_tools_for_client,
+    require_omitted_reasoning_display,
+    require_serial_tool_calls,
+    require_stateless_responses,
+    require_tool_calling,
 )
 from ..llm.cache_policy import build_prompt_cache_namespace, derive_prompt_cache_stream_key
 from ..llm.factory import _resolve_base_url, make_llm_client
@@ -102,8 +117,8 @@ from ..llm.metadata import (
 )
 from ..llm.openai_compat import OpenAICompatClient as _OpenAICompatClient
 from ..llm.protocols import OPENAI_COMPAT_PROTOCOL, get_provider_protocol_capabilities
-from ..llm.provider_limits import ProviderRetrySettings, resolve_provider_retry_settings
-from ..llm.types import UsageConfidence, UsageSource
+from ..llm.provider_limits import provider_retry_snapshot_values
+from ..llm.types import LLMUsage, UsageConfidence, UsageSource
 from ..mcp.config import load_resolved_mcp_config
 from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager, create_mcp_manager
 from ..model_metadata_policy import ActiveModelRef, evaluate_active_model_metadata_policy
@@ -128,6 +143,7 @@ from ..profile_presets import find_preset_for_profile
 from ..profiles import get_active_profile, resolve_effective_base_url
 from ..provider_telemetry import (
     ProviderCallTelemetryRecorder,
+    base_url_host,
     provider_telemetry_operation,
     provider_telemetry_record_count,
     set_provider_telemetry_sink,
@@ -200,13 +216,25 @@ from ..workspace_provisioning import (
     provisioning_already_attempted,
     resolve_provisioning_decision,
 )
+from .approval_review import ApprovalReviewer
+from .browser_start import build_browser_start_tool, build_computer_start_tools
 from .cache_keepalive import (
     CacheKeepaliveRequest,
     ParentCacheKeepalive,
     cache_keepalive_unsupported_reason,
 )
+from .computer_use_files import COMPUTER_USE_FILE_TOOL_NAMES
+from .computer_use_tools import (
+    COMPUTER_USE_TOOL_NAMES,
+    COMPUTER_USE_VERIFICATION_TOOL_NAMES,
+    ComputerUseHostRequest,
+    build_computer_use_tools,
+    reset_computer_use_snapshot_binding,
+)
+from .computer_use_upload_objectives import UploadObjectiveBinding, capture_upload_objective
+from .computer_use_uploads import COMPUTER_USE_UPLOAD_TOOL_NAMES
 from .empty_response_stall import EmptyResponseStallTracker
-from .errors import SessionWorkdirError
+from .errors import AgentRuntimeError, SessionWorkdirError
 from .llm_calls import _main_agent_chat, _rewrite_final_summary_for_language
 from .prompt_context import (
     _build_plugin_activation_index,
@@ -225,6 +253,7 @@ from .prompt_context import (
     resolve_session_active_workdir_path,
     resolve_session_active_workdir_relpath,
     resolve_workdir_relpath_within_workspace,
+    scrub_ephemeral_host_images,
     set_session_active_workdir,
 )
 from .read_ledger import SessionReadLedger
@@ -250,18 +279,9 @@ if TYPE_CHECKING:
     from ..ide.managed_browser import ManagedBrowserService
 from .steering import SteerInbox
 from .subagent_execution import ChildScheduler, SubagentCoordinator
-from .task_state import TASK_STATE_SCHEMA_VERSION, SessionTaskState, validate_task_relation
 
 OpenAICompatClient = _OpenAICompatClient
 _DEFAULT_CREATE_MCP_MANAGER = create_mcp_manager
-
-
-def _skill_selector_provider_retry_settings(
-    cfg: AppConfig | None,
-) -> ProviderRetrySettings:
-    """Keep the optional selector to one provider attempt on every protocol."""
-
-    return replace(resolve_provider_retry_settings(cfg), disable_retries=True)
 
 
 def _build_workspace_trust_prompt(
@@ -384,7 +404,7 @@ def _git_branch(root: Path) -> str:
             ["git", "-C", os.fspath(root), "rev-parse", "--abbrev-ref", "HEAD"],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except OSError:
         return "-"
@@ -400,7 +420,7 @@ def _git_is_dirty(root: Path) -> bool:
             ["git", "-C", os.fspath(root), "status", "--porcelain"],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
         )
     except OSError:
         return False
@@ -511,6 +531,471 @@ def _add_event_diagnostics(
     return payload
 
 
+_PROTECTED_COMPUTER_USE_FAILURE_MESSAGE = (
+    "Computer Use stopped because the protected provider or host request failed."
+)
+_SCRUBBED_EXCEPTION_MESSAGE = "[redacted: protected Computer Use failure]"
+
+
+def _protected_computer_use_failure(error: BaseException) -> BaseException:
+    """Return a payload-free replacement while preserving control-flow semantics."""
+
+    if isinstance(error, BaseExceptionGroup):
+        for nested in error.exceptions:
+            control_flow = _protected_control_flow_exception(nested)
+            if control_flow is not None:
+                return _protected_computer_use_failure(control_flow)
+    if isinstance(error, CooperativeCancellationError):
+        try:
+            return type(error)("cancelled_by_user")
+        except BaseException:  # noqa: BLE001 - concrete bridge cancellation types vary
+            return CooperativeCancellationError("cancelled_by_user")
+    if isinstance(error, KeyboardInterrupt):
+        return KeyboardInterrupt()
+    if isinstance(error, SystemExit):
+        code = error.code if isinstance(error.code, int | None) else 1
+        return SystemExit(code)
+    if isinstance(error, GeneratorExit):
+        return GeneratorExit()
+    if not isinstance(error, Exception):
+        try:
+            replacement = type(error)()
+        except BaseException:  # noqa: BLE001 - custom cancellation types vary
+            replacement = None
+        if isinstance(replacement, BaseException):
+            return replacement
+    replacement = AgentRuntimeError(_PROTECTED_COMPUTER_USE_FAILURE_MESSAGE)
+    setattr(replacement, DIAGNOSTIC_ATTRIBUTE, computer_use_provider_diagnostic(error))
+    return replacement
+
+
+def _protected_control_flow_exception(error: BaseException) -> BaseException | None:
+    """Find a cancellation/control-flow signal, including inside exception groups."""
+
+    if isinstance(
+        error,
+        (CooperativeCancellationError, KeyboardInterrupt, SystemExit, GeneratorExit),
+    ):
+        return error
+    if isinstance(error, BaseExceptionGroup):
+        for nested in error.exceptions:
+            control_flow = _protected_control_flow_exception(nested)
+            if control_flow is not None:
+                return control_flow
+    if not isinstance(error, Exception):
+        return error
+    return None
+
+
+def _scrub_sensitive_transport_carrier(
+    carrier: object | None,
+    *,
+    seen: set[int],
+) -> None:
+    """Best-effort zeroization for HTTP request/response objects on error paths."""
+
+    if carrier is None or isinstance(carrier, (str, bytes, int, float, bool)):
+        return
+    carrier_id = id(carrier)
+    if carrier_id in seen:
+        return
+    seen.add(carrier_id)
+
+    for linked_name in ("request", "response"):
+        try:
+            linked = getattr(carrier, linked_name, None)
+        except BaseException:  # noqa: BLE001 - cleanup must remain best effort
+            linked = None
+        if linked is not carrier:
+            try:
+                _scrub_sensitive_transport_carrier(linked, seen=seen)
+            except BaseException:  # noqa: BLE001 - zeroization must not escape
+                pass
+
+    for content_name in ("_content", "_body"):
+        try:
+            if hasattr(carrier, content_name):
+                setattr(carrier, content_name, b"")
+        except BaseException:  # noqa: BLE001 - third-party transports vary
+            pass
+
+    try:
+        stream = getattr(carrier, "stream", None)
+    except BaseException:  # noqa: BLE001 - third-party transports vary
+        stream = None
+    if stream is not None:
+        try:
+            if hasattr(stream, "_stream"):
+                stream._stream = b""
+        except BaseException:  # noqa: BLE001 - third-party transports vary
+            pass
+        try:
+            if hasattr(stream, "_content"):
+                stream._content = b""
+        except BaseException:  # noqa: BLE001 - third-party transports vary
+            pass
+
+    for mapping_name in ("headers", "extensions"):
+        try:
+            mapping = getattr(carrier, mapping_name, None)
+            clear = getattr(mapping, "clear", None)
+            if callable(clear):
+                clear()
+        except BaseException:  # noqa: BLE001 - third-party transports vary
+            pass
+
+    try:
+        url = getattr(carrier, "url", None)
+        copy_with = getattr(url, "copy_with", None)
+        if callable(copy_with):
+            carrier.url = copy_with(
+                username=None,
+                password=None,
+                path="/",
+                query=None,
+                fragment=None,
+            )
+    except BaseException:  # noqa: BLE001 - URL implementations vary
+        pass
+
+
+def _detach_sensitive_exception(error: BaseException) -> None:
+    """Clear BaseException-owned state without invoking subclass overrides."""
+
+    # Several built-in exceptions retain payloads in C-level slots independent
+    # from ``BaseException.args`` and ``__dict__``. Zeroize those carriers only
+    # after the payload-free outward replacement has been created.
+    slot_values: tuple[tuple[str, object], ...] = ()
+    if isinstance(error, SystemExit):
+        slot_values = (("code", 1),)
+    elif isinstance(error, UnicodeDecodeError):
+        slot_values = (
+            ("encoding", "utf-8"),
+            ("object", b""),
+            ("start", 0),
+            ("end", 0),
+            ("reason", _SCRUBBED_EXCEPTION_MESSAGE),
+        )
+    elif isinstance(error, (UnicodeEncodeError, UnicodeTranslateError)):
+        slot_values = (
+            ("encoding", "utf-8"),
+            ("object", ""),
+            ("start", 0),
+            ("end", 0),
+            ("reason", _SCRUBBED_EXCEPTION_MESSAGE),
+        )
+    elif isinstance(error, StopIteration):
+        slot_values = (("value", None),)
+    elif isinstance(error, OSError):
+        slot_values = (
+            ("filename", None),
+            ("filename2", None),
+            ("strerror", _SCRUBBED_EXCEPTION_MESSAGE),
+        )
+    elif isinstance(error, SyntaxError):
+        slot_values = (
+            ("msg", _SCRUBBED_EXCEPTION_MESSAGE),
+            ("filename", None),
+            ("text", None),
+        )
+    elif isinstance(error, ImportError):
+        slot_values = (
+            ("msg", _SCRUBBED_EXCEPTION_MESSAGE),
+            ("name", None),
+            ("path", None),
+        )
+    elif isinstance(error, AttributeError):
+        slot_values = (("name", None), ("obj", None))
+    elif isinstance(error, NameError):
+        slot_values = (("name", None),)
+    for attribute, value in slot_values:
+        try:
+            BaseException.__setattr__(error, attribute, value)
+        except BaseException:  # noqa: BLE001 - zeroization must not escape
+            pass
+    # User-defined exception subclasses can retain independent payloads in
+    # ``__slots__`` even after args/dict/traceback detachment. Best-effort
+    # overwrite every declared custom slot without invoking subclass setters.
+    try:
+        error_type_mro = type(error).__mro__
+    except BaseException:  # noqa: BLE001 - hostile metaclasses must not escape
+        error_type_mro = ()
+    for error_type in error_type_mro:
+        try:
+            declared_slots = vars(error_type).get("__slots__", ())
+        except BaseException:  # noqa: BLE001 - cleanup must remain best effort
+            declared_slots = ()
+        if isinstance(declared_slots, str):
+            declared_slots = (declared_slots,)
+        if not isinstance(declared_slots, (tuple, list)):
+            continue
+        for slot_name in declared_slots:
+            if not isinstance(slot_name, str) or slot_name in {"__dict__", "__weakref__"}:
+                continue
+            if slot_name.startswith("__") and not slot_name.endswith("__"):
+                owner_name = error_type.__name__.lstrip("_")
+                slot_name = f"_{owner_name}{slot_name}"
+            try:
+                BaseException.__setattr__(error, slot_name, None)
+            except BaseException:  # noqa: BLE001 - extension slots can be typed/read-only
+                pass
+    try:
+        current_traceback = BaseException.__getattribute__(error, "__traceback__")
+        if current_traceback is not None:
+            traceback.clear_frames(current_traceback)
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        pass
+    for attribute, value in (
+        ("args", (_SCRUBBED_EXCEPTION_MESSAGE,)),
+        ("__traceback__", None),
+        ("__cause__", None),
+        ("__context__", None),
+    ):
+        try:
+            BaseException.__setattr__(error, attribute, value)
+        except BaseException:  # noqa: BLE001 - zeroization must not escape
+            pass
+
+
+def _scrub_sensitive_exception_chain(error: BaseException) -> None:
+    """Detach tracebacks and sensitive transport state from an exception graph."""
+
+    pending: list[BaseException] = [error]
+    seen_exceptions: set[int] = set()
+    seen_carriers: set[int] = set()
+    while pending:
+        current = pending.pop()
+        current_id = id(current)
+        if current_id in seen_exceptions:
+            continue
+        seen_exceptions.add(current_id)
+
+        try:
+            cause = BaseException.__getattribute__(current, "__cause__")
+            context = BaseException.__getattribute__(current, "__context__")
+            if isinstance(cause, BaseException):
+                pending.append(cause)
+            if isinstance(context, BaseException):
+                pending.append(context)
+
+            try:
+                nested = getattr(current, "exceptions", ())
+            except BaseException:  # noqa: BLE001 - custom properties vary
+                nested = ()
+            if isinstance(nested, tuple):
+                pending.extend(item for item in nested if isinstance(item, BaseException))
+
+            try:
+                state = BaseException.__getattribute__(current, "__dict__")
+            except BaseException:  # noqa: BLE001 - custom exceptions vary
+                state = {}
+            state_values = tuple(state.values()) if isinstance(state, dict) else ()
+            for value in state_values:
+                if isinstance(value, BaseException):
+                    pending.append(value)
+                    continue
+                if isinstance(value, dict):
+                    nested_values = tuple(value.values())
+                    pending.extend(
+                        item for item in nested_values if isinstance(item, BaseException)
+                    )
+                    try:
+                        value.clear()
+                    except BaseException:  # noqa: BLE001 - best-effort cleanup
+                        pass
+
+            for carrier_name in ("request", "response"):
+                try:
+                    carrier = getattr(current, carrier_name, None)
+                except BaseException:  # noqa: BLE001 - custom properties vary
+                    carrier = None
+                try:
+                    _scrub_sensitive_transport_carrier(carrier, seen=seen_carriers)
+                except BaseException:  # noqa: BLE001 - zeroization must not escape
+                    pass
+
+            try:
+                state.clear()
+            except BaseException:  # noqa: BLE001 - best-effort cleanup
+                pass
+        except BaseException:  # noqa: BLE001 - zeroization must not escape
+            pass
+        finally:
+            _detach_sensitive_exception(current)
+
+
+_OMIT_SENSITIVE_IMAGE_PART = object()
+
+
+def _without_sensitive_image_parts(value: Any) -> Any:
+    if isinstance(value, dict):
+        if value.get("type") == "image_url":
+            return _OMIT_SENSITIVE_IMAGE_PART
+        cleaned: dict[Any, Any] = {}
+        for key, item in value.items():
+            clean_item = _without_sensitive_image_parts(item)
+            if clean_item is not _OMIT_SENSITIVE_IMAGE_PART:
+                cleaned[key] = clean_item
+        return cleaned
+    if isinstance(value, list):
+        cleaned_items = (_without_sensitive_image_parts(item) for item in value)
+        return [item for item in cleaned_items if item is not _OMIT_SENSITIVE_IMAGE_PART]
+    if isinstance(value, tuple):
+        cleaned_items = (_without_sensitive_image_parts(item) for item in value)
+        return tuple(item for item in cleaned_items if item is not _OMIT_SENSITIVE_IMAGE_PART)
+    return value
+
+
+def _sanitized_sensitive_message_history(
+    value: Any,
+    *,
+    redactor: HostScreenRedactor | None,
+) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    try:
+        active_redactor = redactor if redactor is not None else HostScreenRedactor()
+        redacted = active_redactor.redact_value(value)
+        without_images = _without_sensitive_image_parts(redacted)
+        if not isinstance(without_images, list):
+            return None
+        return [item for item in without_images if isinstance(item, dict)]
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        return None
+
+
+def _overwrite_sensitive_message_aliases(
+    original: Any,
+    sanitized: list[dict[str, Any]],
+) -> None:
+    if not isinstance(original, list):
+        return
+    original_messages = [item for item in original if isinstance(item, dict)]
+    for original_message, safe_message in zip(original_messages, sanitized, strict=False):
+        try:
+            original_message.clear()
+            original_message.update(copy.deepcopy(safe_message))
+        except BaseException:  # noqa: BLE001 - zeroization must not escape
+            try:
+                original_message.clear()
+            except BaseException:  # noqa: BLE001 - zeroization must not escape
+                pass
+
+
+def _force_revoke_sensitive_session_state(
+    session: Any,
+    *,
+    redactor: HostScreenRedactor | None,
+) -> None:
+    """Fail-closed revocation used when a protected turn cannot exit cleanly."""
+
+    try:
+        session_state = object.__getattribute__(session, "__dict__")
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        return
+    if not isinstance(session_state, dict):
+        return
+
+    try:
+        original_messages = session_state.get("messages")
+        original_startup_messages = session_state.get("startup_messages")
+        safe_startup_messages = _sanitized_sensitive_message_history(
+            original_startup_messages,
+            redactor=redactor,
+        )
+        safe_messages = _sanitized_sensitive_message_history(
+            original_messages,
+            redactor=redactor,
+        )
+        if safe_startup_messages is None:
+            safe_startup_messages = []
+        if safe_messages is None:
+            safe_messages = copy.deepcopy(safe_startup_messages)
+        _overwrite_sensitive_message_aliases(
+            original_startup_messages,
+            safe_startup_messages,
+        )
+        _overwrite_sensitive_message_aliases(original_messages, safe_messages)
+        session_state["startup_messages"] = safe_startup_messages
+        session_state["messages"] = safe_messages
+        if isinstance(original_startup_messages, list):
+            original_startup_messages.clear()
+        if isinstance(original_messages, list):
+            original_messages.clear()
+        if not any(
+            message.get("role") == "system" and bool(message.get("content"))
+            for message in safe_messages
+        ):
+            session_state["sensitive_session_poisoned"] = True
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        session_state["startup_messages"] = []
+        session_state["messages"] = []
+        session_state["sensitive_session_poisoned"] = True
+
+    try:
+        pending = session_state.get("_alysis_ephemeral_host_image_messages")
+        session_state["_alysis_ephemeral_host_image_messages"] = []
+        if isinstance(pending, list):
+            for item in tuple(pending):
+                if not isinstance(item, tuple) or len(item) != 2:
+                    continue
+                pending_message = item[0]
+                safe_pending = _sanitized_sensitive_message_history(
+                    [pending_message],
+                    redactor=redactor,
+                )
+                if safe_pending is not None:
+                    _overwrite_sensitive_message_aliases([pending_message], safe_pending)
+            pending.clear()
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        pass
+
+    try:
+        cache_state = session_state.get("host_screen_client_cache_state")
+        session_state["host_screen_client_cache_state"] = None
+        if isinstance(cache_state, tuple) and len(cache_state) == 2:
+            original_values = cache_state[1]
+            if isinstance(original_values, dict):
+                original_values.clear()
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        pass
+
+    try:
+        session_redactor = session_state.get("host_screen_redactor")
+        session_state["host_screen_redactor"] = None
+        for active_redactor in (redactor, session_redactor):
+            try:
+                redactor_state = object.__getattribute__(active_redactor, "__dict__")
+                if isinstance(redactor_state, dict):
+                    for field_name in ("_paths", "_payloads"):
+                        values = redactor_state.get(field_name)
+                        if isinstance(values, set):
+                            values.clear()
+                        redactor_state[field_name] = set()
+            except BaseException:  # noqa: BLE001 - zeroization must not escape
+                pass
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        pass
+
+    try:
+        store = session_state.get("store")
+        store_state = object.__getattribute__(store, "__dict__")
+        if isinstance(store_state, dict):
+            store_state["_transient_payload_redactor"] = None
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        pass
+
+    try:
+        tools = session_state.get("tools")
+        tools_state = object.__getattribute__(tools, "__dict__")
+        binding = tools_state.get("_snapshot_binding") if isinstance(tools_state, dict) else None
+        binding_state = object.__getattribute__(binding, "__dict__")
+        if isinstance(binding_state, dict):
+            binding_state["snapshot_id"] = None
+    except BaseException:  # noqa: BLE001 - zeroization must not escape
+        pass
+
+
 @dataclass
 class AgentSession:
     cfg: AppConfig
@@ -587,6 +1072,9 @@ class AgentSession:
     api_key: str = ""
     api_key_source: str = "missing"
     shell_runner: Any | None = None
+    # The shell shell_run uses, as <environment_context> names it ("cmd.exe (host)",
+    # "sh (Docker sandbox)", ...). Set with the runner; neither changes during a session.
+    shell_environment: str | None = None
     no_log: bool = False
     non_interactive: bool = False
     one_shot_execution: bool = False
@@ -664,11 +1152,7 @@ class AgentSession:
     active_workdir_relpath: str = "."
     session_source: str = "startup"
     session_source_metadata: dict[str, Any] = field(default_factory=dict)
-    # Host-owned task identity. None is the legitimate startup state.
-    task_state: SessionTaskState | None = None
-    task_state_unrecovered: bool = False
-    task_parent_session_id: str | None = None
-    task_sequence_high_water: int = 0
+    evidence_parent_session_id: str | None = None
     pinned_prefix_len: int = 0
     startup_context_baseline_tokens: int = 0
     request_context_measurement: RequestContextMeasurement | None = None
@@ -682,10 +1166,17 @@ class AgentSession:
     crash_diagnostic_log_path: str | None = None
     agentbox_telemetry: AgentBoxTelemetry | None = None
     process_group_registry: ProcessGroupRegistry | None = None
+    host_screen_redactor: HostScreenRedactor | None = None
+    host_screen_client_cache_state: tuple[Any, dict[str, Any]] | None = None
+    sensitive_media: bool = False
+    sensitive_session_poisoned: bool = False
     # Empty-response handling is budgeted per session, not per turn: two failed
     # recovery cycles mean the endpoint is not answering, and re-spending the
     # budget every turn would reintroduce the unbounded retrying this bounds.
     empty_response_stall_tracker: EmptyResponseStallTracker | None = None
+    # Answers action approvals in "Approve for me" (auto) mode; kept across tool rebuilds
+    # (mode and model switches) and shared with subagents.
+    approval_reviewer: ApprovalReviewer | None = None
 
     def workspace_write_contract_allows_writes(self) -> bool:
         """Return the effective write capability after role/tool filtering."""
@@ -816,6 +1307,48 @@ class AgentSession:
             client._provider_retry_event_observer = _record_retry
         except Exception:  # noqa: BLE001 - diagnostics must not break a provider.
             pass
+
+    def activate_host_screen_redactor(self, redactor: HostScreenRedactor) -> None:
+        self.host_screen_redactor = redactor
+        self.store.set_transient_payload_redactor(redactor.redact_value)
+
+    def redact_host_screen_value(self, value: Any) -> Any:
+        redactor = self.host_screen_redactor
+        return redactor.redact_value(value) if redactor is not None else value
+
+    def clear_host_screen_redactor(self) -> None:
+        try:
+            self.store.set_transient_payload_redactor(None)
+        finally:
+            self.host_screen_redactor = None
+
+    def disable_host_screen_client_cache(self) -> None:
+        client = self.client
+        disabled_values = {
+            "prompt_cache_key": None,
+            "prompt_cache_retention": None,
+            "prompt_cache_policy_metadata": None,
+            "prompt_cache_request_field_values": {},
+            "prompt_cache_control_enabled": False,
+            "explicit_cached_content_enabled": False,
+            "session_id": None,
+        }
+        original: dict[str, Any] = {}
+        for name, disabled_value in disabled_values.items():
+            if not hasattr(client, name):
+                continue
+            original[name] = copy.deepcopy(getattr(client, name))
+            setattr(client, name, disabled_value)
+        self.host_screen_client_cache_state = (client, original)
+
+    def restore_host_screen_client_cache(self) -> None:
+        state = self.host_screen_client_cache_state
+        self.host_screen_client_cache_state = None
+        if state is None:
+            return
+        client, original = state
+        for name, value in original.items():
+            setattr(client, name, value)
 
     def _reap_tracked_process_groups(self, *, event: ReapEvent) -> None:
         """Terminate or report the process groups this session's runner started.
@@ -990,7 +1523,7 @@ class AgentSession:
                 self.store.close()
 
     def _hook_warning(self, message: str, *, code: str = "hook_warning") -> None:
-        clean = str(message or "").strip()
+        clean = str(self.redact_host_screen_value(message) or "").strip()
         if not clean:
             return
         self.store.append("warning", {"warning": code, "message": clean})
@@ -1019,7 +1552,7 @@ class AgentSession:
         return result
 
     def _hook_notice(self, message: str) -> None:
-        clean = str(message or "").strip()
+        clean = str(self.redact_host_screen_value(message) or "").strip()
         if not clean:
             return
         self.store.append("hook_notice", {"message": clean})
@@ -1048,7 +1581,7 @@ class AgentSession:
         appended_count = 0
         for role, messages in (("system", system_messages), ("user", user_messages)):
             for raw_message in messages:
-                text = str(raw_message or "").strip()
+                text = str(self.redact_host_screen_value(raw_message) or "").strip()
                 if not text:
                     continue
                 self.messages.append({"role": role, "content": text})
@@ -1196,6 +1729,61 @@ class AgentSession:
         try:
             tool_list = effective_tools_for_client(client, tool_list)
             usage = getattr(response, "usage", None)
+            if self.sensitive_media and usage is not None:
+
+                def _non_negative_usage_int(name: str) -> int | None:
+                    value = getattr(usage, name, None)
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                        return None
+                    return value
+
+                def _non_negative_usage_float(name: str) -> float | None:
+                    value = getattr(usage, name, None)
+                    if isinstance(value, bool) or not isinstance(value, int | float):
+                        return None
+                    parsed = float(value)
+                    return parsed if parsed >= 0 and parsed < float("inf") else None
+
+                source = getattr(usage, "source", UsageSource.PROVIDER_RESPONSE)
+                if not isinstance(source, UsageSource):
+                    source = UsageSource.PROVIDER_RESPONSE
+                confidence = getattr(usage, "confidence", UsageConfidence.REPORTED)
+                if not isinstance(confidence, UsageConfidence):
+                    confidence = UsageConfidence.REPORTED
+                # Computer Use accounting retains only provider-independent
+                # numeric totals. Provider model labels, arbitrary raw usage
+                # maps (including their keys), and currency strings are an
+                # unnecessary durable channel for snapshot-derived content.
+                usage = LLMUsage(
+                    prompt_tokens=_non_negative_usage_int("prompt_tokens"),
+                    completion_tokens=_non_negative_usage_int("completion_tokens"),
+                    total_tokens=_non_negative_usage_int("total_tokens"),
+                    cached_prompt_tokens=_non_negative_usage_int("cached_prompt_tokens"),
+                    input_tokens_uncached=_non_negative_usage_int("input_tokens_uncached"),
+                    input_tokens_uncached_derived=bool(
+                        getattr(usage, "input_tokens_uncached_derived", False)
+                    ),
+                    cache_read_input_tokens=_non_negative_usage_int("cache_read_input_tokens"),
+                    cache_creation_input_tokens=_non_negative_usage_int(
+                        "cache_creation_input_tokens"
+                    ),
+                    cache_creation_5m_input_tokens=_non_negative_usage_int(
+                        "cache_creation_5m_input_tokens"
+                    ),
+                    cache_creation_1h_input_tokens=_non_negative_usage_int(
+                        "cache_creation_1h_input_tokens"
+                    ),
+                    reasoning_tokens=_non_negative_usage_int("reasoning_tokens"),
+                    provider_cost_usd=_non_negative_usage_float("provider_cost_usd"),
+                    provider_cost_currency=None,
+                    raw_provider_usage=None,
+                    source=source,
+                    confidence=confidence,
+                    output_includes_reasoning=bool(
+                        getattr(usage, "output_includes_reasoning", True)
+                    ),
+                    total_includes_reasoning=bool(getattr(usage, "total_includes_reasoning", True)),
+                )
             prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
             usage_context = usage_context_from_client_response(
                 client=client,
@@ -1208,7 +1796,12 @@ class AgentSession:
             prompt_token_confidence = str(
                 usage_context.get("api_usage_confidence") or UsageConfidence.REPORTED.value
             )
-            if prompt_tokens is None:
+            # Protected Computer Use must remain promptly stoppable after the
+            # main provider response. A provider-specific count endpoint is
+            # optional accounting and can otherwise start a second blocking
+            # network request after the response cancellation checkpoint.
+            # Keep the local estimator for sensitive turns instead.
+            if prompt_tokens is None and not self.sensitive_media:
                 try:
                     counted_input = count_input_tokens_if_supported(
                         client=client,
@@ -1245,7 +1838,11 @@ class AgentSession:
             usage_record = build_usage_record(
                 role=role_override or self.usage_role,
                 requested_model=getattr(client, "model", None) or self.client.model,
-                response_model=getattr(response, "response_model", None),
+                response_model=(
+                    getattr(client, "model", None) or self.client.model
+                    if self.sensitive_media
+                    else getattr(response, "response_model", None)
+                ),
                 messages=list(messages or []),
                 response_content=str(getattr(response, "content", "") or ""),
                 response_tool_calls=response_tool_calls,
@@ -1434,16 +2031,22 @@ class AgentSession:
         final_event_payload: dict[str, Any] | None = None,
         internal_fallback: bool = False,
         internal_fallback_kind: str = "",
+        allow_language_rewrite: bool = True,
     ) -> str:
         emitted_text = str(final_text or "").strip()
-        emitted_text, rewrite_payload = _rewrite_final_summary_for_language(
-            client=self.client,
-            final_text=emitted_text,
-            language=language,
-            script=script,
-            explicit_language_override=explicit_language_override,
-            record_usage=lambda **kw: self._record_llm_usage(client=self.client, **kw),
-        )
+        rewrite_payload = None
+        if allow_language_rewrite and not self.sensitive_media:
+            emitted_text, rewrite_payload = _rewrite_final_summary_for_language(
+                client=self.client,
+                final_text=emitted_text,
+                language=language,
+                script=script,
+                explicit_language_override=explicit_language_override,
+                record_usage=lambda **kw: self._record_llm_usage(client=self.client, **kw),
+            )
+        # The protected provider already received the explicit language
+        # directive. Starting a second provider request here would make Stop
+        # non-interruptible after the Computer Use work itself has completed.
         if rewrite_payload is not None:
             self.store.append("final_summary_rewrite", rewrite_payload)
         # Host verdicts and artifact identity are appended after any model
@@ -1454,7 +2057,7 @@ class AgentSession:
         contract = getattr(self._turn_execution_state, "acceptance_contract", None)
         if (
             checkpoint
-            and checkpoint.get("task_id") == getattr(self.task_state, "task_id", "")
+            and checkpoint.get("task_id") == getattr(self._task_evidence_state, "task_id", "")
             and contract is not None
             and checkpoint.get("acceptance_revision", "") == contract.acceptance_revision
         ):
@@ -1481,7 +2084,11 @@ class AgentSession:
                 kind=internal_fallback_kind or "forced_final_summary_fallback",
             )
         extra_payload: dict[str, Any] | None = None
-        if internal_fallback or PROVIDER_METADATA_KEY in history_message:
+        if (
+            internal_fallback
+            or PROVIDER_METADATA_KEY in history_message
+            or (self.sensitive_media and assistant_response is not None)
+        ):
             extra_payload = {"message": history_message}
         if internal_fallback:
             extra_payload = {
@@ -1887,6 +2494,7 @@ class AgentSession:
             assistant_response=resp if fallback_reason is None else None,
             internal_fallback=fallback_reason is not None,
             internal_fallback_kind=normalized_termination_kind,
+            allow_language_rewrite=allow_llm_summary,
             language=language,
             script=script,
             explicit_language_override=explicit_language_override,
@@ -1912,7 +2520,7 @@ class AgentSession:
         self, *, exit_code: int | None, reason: str, terminal: bool = True
     ) -> dict[str, Any]:
         state = self._turn_execution_state
-        task_id = getattr(self.task_state, "task_id", "")
+        task_id = getattr(self._task_evidence_state, "task_id", "")
         state_payload = state.as_payload() if state is not None else None
         baseline = self._task_evidence_state
         if state_payload is None and baseline is not None and baseline.task_id == task_id:
@@ -1967,17 +2575,9 @@ class AgentSession:
         ephemeral_user_messages: list[str] | tuple[str, ...] | None = None,
         cancellation_token: Any | None = None,
         chat_only: bool = False,
-        task_relation: str | None = None,
-        task_request_id: str | None = None,
     ) -> int:
-        # Rejected host input must not clear or republish the prior accepted
-        # task's outcome. Validate before entering the per-turn lifecycle.
-        try:
-            task_relation = validate_task_relation(task_relation)
-        except ValueError as exc:
-            self._emit_terminal_error(exc)
-            raise
         self._turn_execution_state = None
+        self.stop_reason = None
         self.last_turn_outcome = {}
         self._record_task_outcome(exit_code=None, reason="turn_started", terminal=False)
         turn_thread_id = threading.get_ident()
@@ -2060,198 +2660,314 @@ class AgentSession:
 
         self._turn_owner_thread_id = turn_thread_id
         self._bind_provider_retry_observer(self.client)
-        try:
-            if self.agentbox_telemetry is None:
-                return _run_turn(
-                    self,
-                    instruction,
-                    image_paths=image_paths,
-                    routing_mode_override=routing_mode_override,
-                    ephemeral_system_messages=ephemeral_system_messages,
-                    ephemeral_user_messages=ephemeral_user_messages,
-                    cancellation_token=cancellation_token,
-                    record_cancellation_request=record_cancellation_request,
-                    chat_only=chat_only,
-                    task_relation=task_relation,
-                    task_request_id=task_request_id,
-                )
-            self.agentbox_telemetry.task(instruction)
-            with self.agentbox_telemetry.turn():
-                return _run_turn(
-                    self,
-                    instruction,
-                    image_paths=image_paths,
-                    routing_mode_override=routing_mode_override,
-                    ephemeral_system_messages=ephemeral_system_messages,
-                    ephemeral_user_messages=ephemeral_user_messages,
-                    cancellation_token=cancellation_token,
-                    record_cancellation_request=record_cancellation_request,
-                    chat_only=chat_only,
-                    task_relation=task_relation,
-                    task_request_id=task_request_id,
-                )
-        except KeyboardInterrupt:
-            self._record_task_outcome(exit_code=130, reason="cancelled_by_user")
-            # Interactive Esc/Ctrl-C uses KeyboardInterrupt for its established
-            # caller control flow, but first publish cooperative cancellation so
-            # the finally block can stop every accepted child through the
-            # coordinator. This token belongs to one turn only; later messages
-            # receive a fresh token from their interactive host.
-            was_cancelled = bool(
-                cancellation_token is not None
-                and getattr(cancellation_token, "is_cancelled", False)
-            )
-            cancel = getattr(cancellation_token, "cancel", None)
-            if not was_cancelled and callable(cancel):
-                try:
-                    cancel()
-                except Exception:
-                    pass
-            cancellation_requested = bool(
-                cancellation_token is not None
-                and getattr(cancellation_token, "is_cancelled", False)
-            )
-            _record_turn_interrupted(
-                trigger="cancellation_token" if was_cancelled else "keyboard_interrupt",
-                cancellation_already_requested=was_cancelled,
-                cancellation_requested=cancellation_requested,
-            )
-            raise
-        except CooperativeCancellationError as exc:
-            # The budget watchdog cancels through the same cooperative channel a
-            # user does, so the two are told apart by reason. A budget stop is a
-            # normal outcome and is finalized cleanly. Interactive cancellation
-            # retains KeyboardInterrupt as the host boundary; every other
-            # cooperative stop falls through to terminal-failure handling.
-            if (
-                isinstance(cancellation_token, InteractiveCancellationToken)
-                and cancellation_token.is_cancelled
-            ):
-                raise KeyboardInterrupt(str(exc)) from None
-            if not is_budget_cancellation(exc):
-                self._record_task_outcome(exit_code=130, reason="cancelled")
-                self._emit_terminal_error(exc)
-                raise
-            return self._finalize_run_budget_stop()
-        except Exception as exc:
-            # Single authoritative terminal-failure boundary: every caller (one-shot
-            # run, interactive chat, Forge workers, subagents) routes turns through
-            # here, so one durable, redacted record makes a crashed build
-            # reconstructable from artifacts alone. Re-raise unchanged afterwards.
-            if (
-                isinstance(cancellation_token, InteractiveCancellationToken)
-                and cancellation_token.is_cancelled
-            ):
-                raise KeyboardInterrupt from None
-            category = classify_failure_category(exc)
-            self._record_task_outcome(
-                exit_code=1,
-                reason="provider_failure"
-                if category
-                in {
-                    FailureCategory.PROVIDER_UNAVAILABLE,
-                    FailureCategory.PROVIDER_THROTTLED,
-                    FailureCategory.PROVIDER_ERROR,
-                }
-                else "terminal_error",
-            )
-            self._emit_terminal_error(exc)
-            raise
-        finally:
-            # Same reasoning as the boundary above: this is the only per-turn point
-            # that sees normal returns, exceptions, and cancellation, so turn-level
-            # process hygiene belongs here rather than in the loop's success path.
-            for tool in self.tools.values():
-                visual_delivery = getattr(tool, "visual_delivery", None)
-                if visual_delivery is not None:
-                    visual_delivery.clear_visual_messages()
+        result: int | None = None
+        protected_failure: BaseException | None = None
+
+        # A native snapshot is a short-lived capability for one turn only. Revoke any
+        # residue before entering the provider loop, then again at the single cleanup
+        # boundary shared by success, cancellation, and exceptional exits.
+        def _execute_turn() -> int:
+            interrupted = False
             try:
+                if self.agentbox_telemetry is None:
+                    return _run_turn(
+                        self,
+                        instruction,
+                        image_paths=image_paths,
+                        routing_mode_override=routing_mode_override,
+                        ephemeral_system_messages=ephemeral_system_messages,
+                        ephemeral_user_messages=ephemeral_user_messages,
+                        cancellation_token=cancellation_token,
+                        record_cancellation_request=record_cancellation_request,
+                        chat_only=chat_only,
+                    )
+                self.agentbox_telemetry.task(instruction)
+                with self.agentbox_telemetry.turn():
+                    return _run_turn(
+                        self,
+                        instruction,
+                        image_paths=image_paths,
+                        routing_mode_override=routing_mode_override,
+                        ephemeral_system_messages=ephemeral_system_messages,
+                        ephemeral_user_messages=ephemeral_user_messages,
+                        cancellation_token=cancellation_token,
+                        record_cancellation_request=record_cancellation_request,
+                        chat_only=chat_only,
+                    )
+            except KeyboardInterrupt:
+                interrupted = True
+                self._record_task_outcome(exit_code=130, reason="cancelled_by_user")
+                # Interactive Esc/Ctrl-C uses KeyboardInterrupt for its established
+                # caller control flow, but first publish cooperative cancellation so
+                # the finally block can stop every accepted child through the
+                # coordinator. This token belongs to one turn only; later messages
+                # receive a fresh token from their interactive host.
+                was_cancelled = bool(
+                    cancellation_token is not None
+                    and getattr(cancellation_token, "is_cancelled", False)
+                )
+                cancel = getattr(cancellation_token, "cancel", None)
+                if not was_cancelled and callable(cancel):
+                    try:
+                        cancel()
+                    except Exception:
+                        pass
                 cancellation_requested = bool(
                     cancellation_token is not None
                     and getattr(cancellation_token, "is_cancelled", False)
                 )
+                _record_turn_interrupted(
+                    trigger="cancellation_token" if was_cancelled else "keyboard_interrupt",
+                    cancellation_already_requested=was_cancelled,
+                    cancellation_requested=cancellation_requested,
+                )
+                raise
+            except CooperativeCancellationError as exc:
+                interrupted = True
+                # The budget watchdog cancels through the same cooperative channel a
+                # user does, so the two are told apart by reason. A budget stop is a
+                # normal outcome and is finalized cleanly. Interactive cancellation
+                # retains KeyboardInterrupt as the host boundary; every other
+                # cooperative stop falls through to terminal-failure handling.
                 if (
                     isinstance(cancellation_token, InteractiveCancellationToken)
-                    and cancellation_requested
+                    and cancellation_token.is_cancelled
                 ):
-                    self._record_task_outcome(exit_code=130, reason="cancelled_by_user")
-                    # TUI cancellation is cooperative: it can unwind as a normal
-                    # return or as a provider-specific error rather than a direct
-                    # KeyboardInterrupt. The token is the durable authority in
-                    # every case, while the helper keeps the event one-per-turn.
-                    _record_turn_interrupted(
-                        trigger="cancellation_token",
-                        cancellation_already_requested=True,
-                        cancellation_requested=True,
-                    )
+                    raise KeyboardInterrupt(str(exc)) from None
+                if not is_budget_cancellation(exc):
+                    self._record_task_outcome(exit_code=130, reason="cancelled")
+                    if not self.sensitive_media:
+                        self._emit_terminal_error(exc)
+                    raise
+                return self._finalize_run_budget_stop()
+            except Exception as exc:
+                # Single authoritative terminal-failure boundary: every caller (one-shot
+                # run, interactive chat, Forge workers, subagents) routes turns through
+                # here, so one durable, redacted record makes a crashed build
+                # reconstructable from artifacts alone. Re-raise unchanged afterwards.
                 if (
-                    (turn_interrupted or cancellation_requested)
-                    and self.child_scheduler is not None
-                    and getattr(self, "_turn_owner_thread_id", None) == turn_thread_id
+                    isinstance(cancellation_token, InteractiveCancellationToken)
+                    and cancellation_token.is_cancelled
                 ):
-                    wait_timeout_s = (
-                        resolve_budget_grace_seconds()
-                        if (
-                            self.execution_deadline is not None
-                            and self.execution_deadline.is_exhausted()
-                        )
-                        else None
+                    raise KeyboardInterrupt from None
+                category = classify_failure_category(exc)
+                self._record_task_outcome(
+                    exit_code=1,
+                    reason="provider_failure"
+                    if category
+                    in {
+                        FailureCategory.PROVIDER_UNAVAILABLE,
+                        FailureCategory.PROVIDER_THROTTLED,
+                        FailureCategory.PROVIDER_ERROR,
+                    }
+                    else "terminal_error",
+                )
+                if not self.sensitive_media:
+                    self._emit_terminal_error(exc)
+                raise
+            finally:
+                # Same reasoning as the boundary above: this is the only per-turn point
+                # that sees normal returns, exceptions, and cancellation, so turn-level
+                # process hygiene belongs here rather than in the loop's success path.
+                for tool in self.tools.values():
+                    visual_delivery = getattr(tool, "visual_delivery", None)
+                    if visual_delivery is not None:
+                        visual_delivery.clear_visual_messages()
+                try:
+                    cancellation_requested = bool(
+                        cancellation_token is not None
+                        and getattr(cancellation_token, "is_cancelled", False)
                     )
-                    cancel_parent_turn = getattr(
-                        self.child_scheduler,
-                        "cancel_parent_turn",
-                        None,
-                    )
-                    if cancellation_token is not None and callable(cancel_parent_turn):
-                        cancellation = cancel_parent_turn(
-                            parent_cancellation_token=cancellation_token,
-                            wait_for_running=True,
-                            wait_timeout_s=wait_timeout_s,
+                    if interrupted or cancellation_requested:
+                        from ..mcp.cancellation import complete_interrupted_mcp_batch
+
+                        receipts = complete_interrupted_mcp_batch(
+                            self.messages,
+                            mcp_tool_names={
+                                name
+                                for name, tool in self.tools.items()
+                                if (getattr(tool, "metadata", None) or {}).get("tool_type") == "mcp"
+                            },
                         )
-                        pending_run_ids = list(cancellation.get("parent_scoped_run_ids") or [])
-                        cancellation_wait_started = bool(
-                            cancellation.get("cancellation_wait_started")
-                        )
-                    elif not isinstance(
-                        cancellation_token,
-                        InteractiveCancellationToken,
+                        for receipt in receipts:
+                            try:
+                                self.store.append("tool_result", receipt)
+                            except Exception:
+                                # Preserve the stop and usable in-memory history even
+                                # if the diagnostic store cannot write its receipt.
+                                pass
+                    if (
+                        isinstance(cancellation_token, InteractiveCancellationToken)
+                        and cancellation_requested
                     ):
-                        # Compatibility for scheduler implementations without
-                        # turn-token ownership. Interactive tokens must never use
-                        # this session-wide fallback because it could catch work
-                        # accepted by a later turn.
-                        pending_run_ids = self.child_scheduler.pending_run_ids()
-                        cancellation_wait_started = bool(pending_run_ids)
-                        if pending_run_ids:
-                            self.child_scheduler.cancel(
-                                run_id=pending_run_ids,
+                        self._record_task_outcome(exit_code=130, reason="cancelled_by_user")
+                        # TUI cancellation is cooperative: it can unwind as a normal
+                        # return or as a provider-specific error rather than a direct
+                        # KeyboardInterrupt. The token is the durable authority in
+                        # every case, while the helper keeps the event one-per-turn.
+                        _record_turn_interrupted(
+                            trigger="cancellation_token",
+                            cancellation_already_requested=True,
+                            cancellation_requested=True,
+                        )
+                    if (
+                        (turn_interrupted or cancellation_requested)
+                        and self.child_scheduler is not None
+                        and getattr(self, "_turn_owner_thread_id", None) == turn_thread_id
+                    ):
+                        wait_timeout_s = (
+                            resolve_budget_grace_seconds()
+                            if (
+                                self.execution_deadline is not None
+                                and self.execution_deadline.is_exhausted()
+                            )
+                            else None
+                        )
+                        cancel_parent_turn = getattr(
+                            self.child_scheduler,
+                            "cancel_parent_turn",
+                            None,
+                        )
+                        if cancellation_token is not None and callable(cancel_parent_turn):
+                            cancellation = cancel_parent_turn(
+                                parent_cancellation_token=cancellation_token,
                                 wait_for_running=True,
                                 wait_timeout_s=wait_timeout_s,
                             )
-                    else:
-                        pending_run_ids = []
-                        cancellation_wait_started = False
-                    if pending_run_ids and cancellation_wait_started:
-                        self.store.append(
-                            "subagent_turn_end_enforcement",
-                            {
-                                "policy": str(self.cfg.subagent_orchestration.turn_end_policy),
-                                "action": "parent_cancel",
-                                "run_ids": pending_run_ids,
-                            },
-                        )
-            finally:
-                try:
-                    if cancellation_request_clear is not None:
-                        cancellation_request_clear()
-                    if cancellation_unsubscribe is not None:
-                        cancellation_unsubscribe()
+                            pending_run_ids = list(cancellation.get("parent_scoped_run_ids") or [])
+                            cancellation_wait_started = bool(
+                                cancellation.get("cancellation_wait_started")
+                            )
+                        elif not isinstance(
+                            cancellation_token,
+                            InteractiveCancellationToken,
+                        ):
+                            # Compatibility for scheduler implementations without
+                            # turn-token ownership. Interactive tokens must never use
+                            # this session-wide fallback because it could catch work
+                            # accepted by a later turn.
+                            pending_run_ids = self.child_scheduler.pending_run_ids()
+                            cancellation_wait_started = bool(pending_run_ids)
+                            if pending_run_ids:
+                                self.child_scheduler.cancel(
+                                    run_id=pending_run_ids,
+                                    wait_for_running=True,
+                                    wait_timeout_s=wait_timeout_s,
+                                )
+                        else:
+                            pending_run_ids = []
+                            cancellation_wait_started = False
+                        if pending_run_ids and cancellation_wait_started:
+                            self.store.append(
+                                "subagent_turn_end_enforcement",
+                                {
+                                    "policy": str(self.cfg.subagent_orchestration.turn_end_policy),
+                                    "action": "parent_cancel",
+                                    "run_ids": pending_run_ids,
+                                },
+                            )
                 finally:
                     try:
-                        self._reap_tracked_process_groups(event=ReapEvent.TURN_FINALIZATION)
+                        if cancellation_request_clear is not None:
+                            cancellation_request_clear()
+                        if cancellation_unsubscribe is not None:
+                            cancellation_unsubscribe()
                     finally:
-                        if getattr(self, "_turn_owner_thread_id", None) == turn_thread_id:
-                            self._turn_owner_thread_id = None
+                        try:
+                            self._reap_tracked_process_groups(event=ReapEvent.TURN_FINALIZATION)
+                        finally:
+                            if getattr(self, "_turn_owner_thread_id", None) == turn_thread_id:
+                                self._turn_owner_thread_id = None
+
+        try:
+            if self.sensitive_media and self.sensitive_session_poisoned:
+                poisoned_error = AgentRuntimeError(_PROTECTED_COMPUTER_USE_FAILURE_MESSAGE)
+                poisoned_error.computer_use_error_code = "poisoned_session"  # type: ignore[attr-defined]
+                raise poisoned_error
+            reset_computer_use_snapshot_binding(self.tools)
+            result = _execute_turn()
+        except BaseException as exc:
+            # The inner lifecycle owns task outcomes and cooperative cancellation.
+            # Protected host failures additionally end the original exception's
+            # lifetime before publishing a sanitized replacement.
+            if self.sensitive_media:
+                protected_failure = _protected_computer_use_failure(exc)
+                _scrub_sensitive_exception_chain(exc)
+            else:
+                raise
+        finally:
+            cleanup_redactor = self.host_screen_redactor if self.sensitive_media else None
+            cleanup_failures: list[BaseException] = []
+            cleanup_steps = (
+                lambda: reset_computer_use_snapshot_binding(self.tools),
+                lambda: scrub_ephemeral_host_images(self),
+                self.restore_host_screen_client_cache,
+                self.clear_host_screen_redactor,
+                lambda: self._release_turn_owner_thread(turn_thread_id),
+            )
+            for cleanup_step in cleanup_steps:
+                try:
+                    cleanup_step()
+                except BaseException as cleanup_exc:
+                    cleanup_failures.append(cleanup_exc)
+
+            if self.sensitive_media and (protected_failure is not None or cleanup_failures):
+                _force_revoke_sensitive_session_state(self, redactor=cleanup_redactor)
+
+            if cleanup_failures and self.sensitive_media:
+                cleanup_control_flow = next(
+                    (
+                        control_flow
+                        for cleanup_failure in cleanup_failures
+                        if (control_flow := _protected_control_flow_exception(cleanup_failure))
+                        is not None
+                    ),
+                    None,
+                )
+                primary_control_flow = (
+                    _protected_control_flow_exception(protected_failure)
+                    if protected_failure is not None
+                    else None
+                )
+                if protected_failure is None:
+                    protected_failure = _protected_computer_use_failure(
+                        cleanup_control_flow or cleanup_failures[0]
+                    )
+                elif primary_control_flow is None and cleanup_control_flow is not None:
+                    protected_failure = _protected_computer_use_failure(cleanup_control_flow)
+                for cleanup_failure in cleanup_failures:
+                    _scrub_sensitive_exception_chain(cleanup_failure)
+                cleanup_failures.clear()
+                cleanup_failure = None
+            elif cleanup_failures:
+                raise cleanup_failures[-1]
+
+            if self.sensitive_media:
+                cleanup_redactor = None
+                cleanup_steps = ()
+                cleanup_step = None
+                cleanup_control_flow = None
+                primary_control_flow = None
+                control_flow = None
+
+        if protected_failure is not None:
+            # Leave the original handler before raising. Raising the replacement
+            # inside ``except`` would keep the raw exception reachable through
+            # ``__context__`` even with ``from None``.
+            instruction = _SCRUBBED_EXCEPTION_MESSAGE
+            image_paths = None
+            ephemeral_system_messages = None
+            ephemeral_user_messages = None
+            cancellation_token = None
+            self._emit_terminal_error(protected_failure)
+            raise protected_failure from None
+        if result is None:
+            raise AssertionError("run_turn completed without a result")
+        return result
+
+    def _release_turn_owner_thread(self, turn_thread_id: int) -> None:
+        if getattr(self, "_turn_owner_thread_id", None) == turn_thread_id:
+            self._turn_owner_thread_id = None
 
     def _finalize_run_budget_stop(self) -> int:
         """Finalize a watchdog-cancelled run as a clean budget stop.
@@ -2315,16 +3031,25 @@ class AgentSession:
         """
         try:
             fields = build_error_event_fields(error, operation=operation)
-        except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
+            redact_value = getattr(self, "redact_host_screen_value", None)
+            redacted_fields = redact_value(fields) if callable(redact_value) else fields
+            if not isinstance(redacted_fields, dict):
+                redacted_fields = {"error_type": type(error).__name__, "operation": operation}
+        except BaseException:  # noqa: BLE001 - diagnostics must never mask the real failure
             fields = {"error_type": type(error).__name__, "operation": operation}
+            redacted_fields = fields
         try:
-            self.store.append("terminal_error", dict(fields))
-        except Exception:  # noqa: BLE001 - best-effort durable record
+            self.store.append("terminal_error", dict(redacted_fields))
+        except BaseException:  # noqa: BLE001 - best-effort durable record
             pass
         if self.crash_diagnostics is not None:
             try:
-                self.crash_diagnostics.event("terminal_error", dict(fields), durable=True)
-            except Exception:  # noqa: BLE001 - best-effort diagnostic event
+                self.crash_diagnostics.event(
+                    "terminal_error",
+                    dict(redacted_fields),
+                    durable=True,
+                )
+            except BaseException:  # noqa: BLE001 - best-effort diagnostic event
                 pass
 
 
@@ -2480,9 +3205,35 @@ def create_session(
     managed_browser_cancel_check: Callable[[], bool] | None = None,
     host_action_handler: HostActionHandler | None = None,
     host_action_capabilities: Collection[str] | None = None,
+    host_mcp: dict[str, Any] | None = None,
+    google_mcp: list[dict[str, Any]] | None = None,
     readonly_child_web_tool_names: Collection[str] | None = None,
     child_managed_browser_tool_names: Collection[str] | None = None,
+    sensitive_media: bool = False,
+    browser_start_host_request: Callable[[Any], Any] | None = None,
+    computer_discovery: dict[str, Any] | None = None,
+    computer_use_host_request: ComputerUseHostRequest | None = None,
+    computer_use_response_mode: str = "status_only",
+    computer_observation_available: bool = False,
+    computer_use_verification_available: bool = False,
+    computer_use_files_available: bool = False,
+    computer_use_uploads_available: bool = False,
+    computer_use_upload_objective: UploadObjectiveBinding | dict[str, Any] | None = None,
+    managed_session_persistence: Any | None = None,
+    approval_reviewer: ApprovalReviewer | None = None,
 ) -> AgentSession:
+    # Copy the trusted original scope before any workspace/provider callback.
+    computer_use_upload_objective = capture_upload_objective(computer_use_upload_objective)
+    if computer_use_upload_objective is not None and not (
+        sensitive_media
+        and computer_use_host_request is not None
+        and computer_use_uploads_available
+        and computer_use_verification_available
+    ):
+        raise ConfigError("Upload objective evidence requires a sensitive upload verification host")
+    if sensitive_media and browser_start_host_request is not None:
+        raise ConfigError("Browser start requires an ordinary host session")
+    verification_enabled = bool(verification_enabled and not sensitive_media)
     surface = surface or NoopSurface()
     resolved_runtime_kind = resolve_session_runtime_kind(
         runtime_kind=runtime_kind,
@@ -2515,6 +3266,7 @@ def create_session(
         subagent_registry=subagent_registry,
         workspace_binding=workspace_binding,
         workspace_trust_prompt=workspace_trust_prompt,
+        sensitive_media=sensitive_media,
     )
     root = prompt_context.root
     workspace_context = prompt_context.workspace_context
@@ -2602,12 +3354,20 @@ def create_session(
     registry = ModelRegistry(cfg=session_cfg, api_key=api_key)
     # Deprecated no-op: recorded for observability and the (ignored)
     # AgentSession.routing_mode field; nothing consults it.
-    routing_mode = str(getattr(session_cfg, "routing_mode", "auto") or "auto")
+    routing_mode = (
+        "code_only"
+        if sensitive_media
+        else str(getattr(session_cfg, "routing_mode", "auto") or "auto")
+    )
     resolved_subagents_enabled = prompt_context.resolved_subagents_enabled
     resolved_skills_enabled = prompt_context.resolved_skills_enabled
     skills_auto_invoke = prompt_context.skills_auto_invoke
     activation_decision = prompt_context.activation_decision
-    plugin_activation_index = _build_plugin_activation_index(root)
+    plugin_activation_index = (
+        _PluginActivationIndex(slug_to_plugin_id={}, skill_lookup_to_plugin_id={})
+        if sensitive_media
+        else _build_plugin_activation_index(root)
+    )
     plugin_activation_dropped_counts: Counter[str] = Counter(
         prompt_context.plugin_activation_dropped_counts
     )
@@ -2621,13 +3381,20 @@ def create_session(
     if not session_id:
         session_id = make_session_id()
     provider_session_id = str(provider_session_id or "").strip() or session_id
-    prompt_cache_stream_key = resolve_prompt_cache_key(session_cfg)
-    if prompt_cache_stream_key is None and session_cfg.cache.prompt_cache_key_enabled:
+    prompt_cache_stream_key = None if sensitive_media else resolve_prompt_cache_key(session_cfg)
+    if (
+        prompt_cache_stream_key is None
+        and not sensitive_media
+        and session_cfg.cache.prompt_cache_key_enabled
+    ):
         prompt_cache_stream_key = derive_prompt_cache_stream_key(
             session_id=provider_session_id,
             parent_session_id=prompt_cache_parent_session_id,
         )
-    if mcp_manager is None:
+    if sensitive_media and mcp_manager is not None:
+        mcp_manager.close()
+        mcp_manager = None
+    if not sensitive_media and mcp_manager is None:
         create_mcp_manager_fn = _patchable("create_mcp_manager", create_mcp_manager)
         if create_mcp_manager_fn is not _DEFAULT_CREATE_MCP_MANAGER:
             mcp_manager = create_mcp_manager_fn(
@@ -2653,9 +3420,11 @@ def create_session(
     compaction_settings = resolve_compaction_settings(session_cfg)
     runtime_context_features = resolve_runtime_context_features(
         settings=compaction_settings,
-        enable_compaction=enable_compaction,
-        enable_tool_output_offload=enable_tool_output_offload,
-        enable_conversation_summarization=enable_conversation_summarization,
+        enable_compaction=enable_compaction and not sensitive_media,
+        enable_tool_output_offload=(False if sensitive_media else enable_tool_output_offload),
+        enable_conversation_summarization=(
+            False if sensitive_media else enable_conversation_summarization
+        ),
         logging_enabled=not no_log,
         explicit_session_artifact_root=session_log_dir_override is not None,
     )
@@ -2686,12 +3455,31 @@ def create_session(
         timeout_s=llm_timeout_s,
         temperature=coding_temperature,
         prompt_cache_key=prompt_cache_stream_key,
-        prompt_cache_retention=resolve_prompt_cache_retention(session_cfg),
+        prompt_cache_retention=(
+            None if sensitive_media else resolve_prompt_cache_retention(session_cfg)
+        ),
         prompt_cache_namespace=_prompt_cache_namespace(ROLE_CODING),
         enable_thinking=llm_enable_thinking,
         reasoning_effort=llm_reasoning_effort,
         session_id=provider_session_id,
     )
+    if sensitive_media and computer_use_host_request is not None:
+        require_tool_calling(
+            client,
+            COMPUTER_USE_TOOL_NAMES
+            + (COMPUTER_USE_VERIFICATION_TOOL_NAMES if computer_use_verification_available else ())
+            + (COMPUTER_USE_FILE_TOOL_NAMES if computer_use_files_available else ())
+            + (COMPUTER_USE_UPLOAD_TOOL_NAMES if computer_use_uploads_available else ()),
+        )
+        require_omitted_reasoning_display(client)
+        require_serial_tool_calls(client)
+        require_stateless_responses(client)
+        if getattr(client, "supports_tool_calling", True) is False:
+            raise RequiredToolCallingUnsupportedError(
+                "The selected model or provider does not support the required Computer Use "
+                "tools (computer_state, computer_action, computer_wait). Choose a tool-capable "
+                "model or provider."
+            )
     sessions_dir = (
         session_log_dir_override
         if session_log_dir_override is not None
@@ -2699,8 +3487,10 @@ def create_session(
     )
     try:
         store = SessionStore(
-            enabled=not no_log,
-            artifact_persistence_enabled=(not no_log) or session_log_dir_override is not None,
+            enabled=(not no_log) and not sensitive_media,
+            artifact_persistence_enabled=(
+                not sensitive_media and ((not no_log) or session_log_dir_override is not None)
+            ),
             sessions_dir=sessions_dir,
             session_id=session_id,
             cwd=str(initial_active_workdir),
@@ -2718,6 +3508,7 @@ def create_session(
             runtime_kind=resolved_runtime_kind.value,
             active_workdir=str(initial_active_workdir),
             active_workdir_relpath=initial_active_workdir_relpath,
+            managed_session_persistence=managed_session_persistence,
         )
     except SessionStoreUnavailableError as exc:
         # A durable session log was requested and cannot be provided. Refuse
@@ -2785,6 +3576,13 @@ def create_session(
     )
 
     usage_summary = UsageSummary()
+    empty_custom_tool_discovery = CustomToolDiscoveryResult(
+        global_tools=(),
+        project_tools=(),
+        effective_tools=(),
+        shadowed_tools=(),
+        issues=(),
+    )
     custom_tool_session_state = build_custom_tool_session_state(
         workspace_root=root,
         custom_tools_enabled=bool(getattr(session_cfg, "custom_tools_enabled", True)),
@@ -2797,6 +3595,8 @@ def create_session(
             allow_write_globs=allow_write_globs,
             persona_allow_write_globs=persona_allow_write_globs,
         ),
+        discovery=empty_custom_tool_discovery if sensitive_media else None,
+        trust_state=ProjectToolTrustState() if sensitive_media else None,
     )
     (
         custom_tool_session_state,
@@ -2890,7 +3690,26 @@ def create_session(
                 effective_values={
                     "llm_timeout_s": resolved_llm_timeout.seconds,
                     "llm_timeout_source": resolved_llm_timeout.source,
+                    **provider_retry_snapshot_values(session_cfg),
                     "prompt_guidance_profile": prompt_context.prompt_guidance_profile,
+                    # Transport and reasoning settings as the main client uses them.
+                    "stream": bool(session_cfg.stream),
+                    "llm_enable_thinking": llm_enable_thinking,
+                    "llm_enable_thinking_explicit": llm_enable_thinking is not None,
+                    # The main agent request never sends an output cap, so the
+                    # provider's documented default applies.
+                    "max_output_tokens": None,
+                    "max_output_tokens_source": "not_sent",
+                    "base_url_host": base_url_host(
+                        getattr(client, "base_url", None) or active_profile_base_url
+                    ),
+                    "reasoning_trace_adapter": getattr(client, "reasoning_trace_adapter", None),
+                    # concat or cumulative; None for a client without the setting.
+                    "stream_assembly": getattr(client, "stream_assembly", None),
+                    "subagents_enabled": resolved_subagents_enabled,
+                    "subagent_parallel_nonwriting_shared": bool(
+                        session_cfg.subagent_orchestration.parallel_nonwriting_shared
+                    ),
                 },
             ),
         )
@@ -2900,10 +3719,6 @@ def create_session(
         {
             "session_source": normalized_session_source,
             "session_source_metadata": normalized_session_source_metadata,
-            # Marks a log written by a task-state-aware runtime: on resume, a
-            # request without an acceptance record was not accepted, so the
-            # legacy first-user-message fallback never applies to this log.
-            "task_state_schema": TASK_STATE_SCHEMA_VERSION,
             "mode": mode,
             "runtime_kind": resolved_runtime_kind.value,
             "max_steps": max_steps,
@@ -2967,6 +3782,7 @@ def create_session(
             "yes": yes,
             "non_interactive": non_interactive,
             "one_shot_execution": effective_one_shot_execution,
+            "sensitive_media": bool(sensitive_media),
             "enable_chat_turn_step_budget": enable_chat_turn_step_budget,
             "workspace_grounding": prompt_context.workspace_grounding.to_payload(),
             "chat_turn_fixed_override": chat_turn_fixed_override,
@@ -3017,7 +3833,11 @@ def create_session(
             "compaction_max_chunk_messages": compaction_settings.max_chunk_messages,
             "compaction_safety_margin_tokens": compaction_settings.safety_margin_tokens,
             "compactor_model": compactor_model_name,
-            "mcp": mcp_manager.startup_metadata(),
+            "mcp": (
+                mcp_manager.startup_metadata()
+                if mcp_manager is not None
+                else {"disabled": True, "reason": "sensitive_media"}
+            ),
         },
     )
 
@@ -3105,10 +3925,20 @@ def create_session(
             )
         )
 
-    if mode == "readonly":
-        runner = DisabledShellRunner(reason="shell_run is disabled in readonly mode.")
+    if mode == "readonly" or sensitive_media:
+        runner = DisabledShellRunner(
+            reason=(
+                "shell_run is disabled for sensitive-media sessions."
+                if sensitive_media
+                else "shell_run is disabled in readonly mode."
+            )
+        )
         bg_runner = DisabledBackgroundRunner(
-            reason="Background shell tools are disabled in readonly mode."
+            reason=(
+                "Background shell tools are disabled for sensitive-media sessions."
+                if sensitive_media
+                else "Background shell tools are disabled in readonly mode."
+            )
         )
     else:
         runner = LazyShellRunner(_load_shell_runner_from_resolved_settings)
@@ -3127,14 +3957,15 @@ def create_session(
     # discovers it by failing a test run. Placed here because it must go through
     # the session's own shell runner -- the environment the agent's commands
     # resolve, and the one the operator's sandbox policy governs.
-    _pre_provision_declared_test_runner(
-        store=store,
-        root=workspace_context.workspace_root,
-        cfg=session_cfg,
-        runtime_kind=resolved_runtime_kind,
-        subagent_depth=subagent_depth,
-        shell_runner=runner,
-    )
+    if not sensitive_media:
+        _pre_provision_declared_test_runner(
+            store=store,
+            root=workspace_context.workspace_root,
+            cfg=session_cfg,
+            runtime_kind=resolved_runtime_kind,
+            subagent_depth=subagent_depth,
+            shell_runner=runner,
+        )
 
     terminal_manager = TerminalManager(
         runner=bg_runner,
@@ -3216,6 +4047,7 @@ def create_session(
             if (
                 resolved_runtime_kind == RuntimeKind.INTERACTIVE_CHAT
                 and not non_interactive
+                and not sensitive_media
                 and persona_modes_enabled(session_cfg)
             )
             else None
@@ -3242,8 +4074,11 @@ def create_session(
         )
         subagent_coordinator_holder: dict[str, SubagentCoordinator] = {}
         child_scheduler_holder: dict[str, ChildScheduler] = {}
-        tool_availability_holder: dict[str, ToolAvailabilitySnapshot] = {}
+        # Protected host tools bypass ordinary repository tool assembly and own
+        # an empty availability snapshot, isolated from the global registry.
+        tool_availability_holder: dict[str, ToolAvailabilitySnapshot] = {"snapshot": {}}
         read_ledger_holder: dict[str, SessionReadLedger] = {}
+        session_approval_reviewer = approval_reviewer or ApprovalReviewer()
 
         def _capture_subagent_coordinator(coordinator: SubagentCoordinator) -> None:
             subagent_coordinator_holder["coordinator"] = coordinator
@@ -3257,73 +4092,103 @@ def create_session(
         def _capture_read_ledger(ledger: SessionReadLedger) -> None:
             read_ledger_holder["ledger"] = ledger
 
-        tools = build_tools(
-            root=root,
-            console=console,
-            surface=surface,
-            persona_switch_state=persona_switch_state,
-            store=store,
-            process_group_registry=process_group_registry,
-            mode=mode,
-            yes=yes,
-            cfg=session_cfg,
-            api_key=api_key,
-            max_steps=max_steps,
-            no_log=no_log,
-            usage_role=usage_role,
-            usage_summary=usage_summary,
-            model_registry=registry,
-            deny_write_prefixes=deny_write_prefixes,
-            allow_write_globs=allow_write_globs,
-            persona_allow_write_globs=persona_allow_write_globs,
-            non_interactive=non_interactive,
-            shell_runner=runner,
-            terminal_manager=terminal_manager,
-            durable_service_manager=durable_service_manager,
-            persistent_service_registry=persistent_service_registry,
-            edit_discipline=edit_discipline_state,
-            managed_browser_service=managed_browser_service,
-            managed_browser_owner_id=managed_browser_owner_id,
-            managed_browser_cancel_check=managed_browser_cancel_check,
-            verification_enabled=verification_enabled,
-            authoritative_verification_commands=authoritative_verify_commands,
-            effective_verification_commands=effective_verification_commands,
-            verify_command_selection=prompt_context.effective_verification_selection,
-            get_verify_command_selection=_get_verify_command_selection,
-            one_shot_execution=effective_one_shot_execution,
-            completion_gate_tools_enabled=completion_gate_tools_enabled,
-            skills_enabled=resolved_skills_enabled,
-            skill_registry=discovered_skills.skills,
-            subagents_enabled=resolved_subagents_enabled,
-            helper_subagents_enabled=helper_subagents_enabled,
-            subagent_depth=subagent_depth,
-            subagent_registry=resolved_subagent_registry,
-            session_log_dir_override=session_log_dir_override,
-            step_budget_runtime=step_budget_runtime,
-            emit_web_search_runtime_diagnostics=(subagent_depth == 0),
-            runtime_kind=resolved_runtime_kind,
-            mcp_manager=mcp_manager,
-            custom_tool_session_state=custom_tool_session_state,
-            get_active_workdir_relpath=_get_active_workdir_relpath,
-            set_active_workdir_callback=_set_active_workdir,
-            create_session_factory=create_session,
-            prompt_cache_parent_session_id=(prompt_cache_parent_session_id or session_id),
-            execution_deadline=execution_deadline,
-            crash_diagnostic_log_path=resolved_crash_diagnostic_log_path,
-            crash_diagnostics=crash_diagnostics,
-            tool_dispatch_guard=tool_dispatch_guard,
-            host_action_handler=host_action_handler,
-            host_action_capabilities=host_action_capabilities,
-            child_scheduler_sink=_capture_child_scheduler,
-            tool_availability_sink=_capture_tool_availability,
-            parent_steer_inbox=parent_steer_inbox,
-            read_ledger_sink=_capture_read_ledger,
-            readonly_child_web_tool_names=readonly_child_web_tool_names,
-            child_managed_browser_tool_names=child_managed_browser_tool_names,
+        tools = (
+            (
+                build_computer_use_tools(
+                    computer_use_host_request,
+                    response_mode=computer_use_response_mode,
+                    observation_available=computer_observation_available,
+                    viewer=ComputerUseViewer(root=root, cfg=session_cfg)
+                    if computer_observation_available
+                    else None,
+                    verification_available=computer_use_verification_available,
+                    files_available=computer_use_files_available,
+                    uploads_available=computer_use_uploads_available,
+                    upload_objective=computer_use_upload_objective,
+                )
+                if sensitive_media and computer_use_host_request is not None
+                else {}
+            )
+            if sensitive_media
+            else build_tools(
+                root=root,
+                console=console,
+                surface=surface,
+                persona_switch_state=persona_switch_state,
+                store=store,
+                process_group_registry=process_group_registry,
+                mode=mode,
+                yes=yes,
+                cfg=session_cfg,
+                api_key=api_key,
+                max_steps=max_steps,
+                no_log=no_log,
+                usage_role=usage_role,
+                usage_summary=usage_summary,
+                model_registry=registry,
+                deny_write_prefixes=deny_write_prefixes,
+                allow_write_globs=allow_write_globs,
+                persona_allow_write_globs=persona_allow_write_globs,
+                non_interactive=non_interactive,
+                shell_runner=runner,
+                shell_environment=prompt_context.shell_environment,
+                terminal_manager=terminal_manager,
+                durable_service_manager=durable_service_manager,
+                persistent_service_registry=persistent_service_registry,
+                edit_discipline=edit_discipline_state,
+                managed_browser_service=managed_browser_service,
+                managed_browser_owner_id=managed_browser_owner_id,
+                managed_browser_cancel_check=managed_browser_cancel_check,
+                verification_enabled=verification_enabled,
+                authoritative_verification_commands=authoritative_verify_commands,
+                effective_verification_commands=effective_verification_commands,
+                verify_command_selection=prompt_context.effective_verification_selection,
+                get_verify_command_selection=_get_verify_command_selection,
+                one_shot_execution=effective_one_shot_execution,
+                completion_gate_tools_enabled=completion_gate_tools_enabled,
+                skills_enabled=resolved_skills_enabled,
+                skill_registry=discovered_skills.skills,
+                subagents_enabled=resolved_subagents_enabled,
+                helper_subagents_enabled=helper_subagents_enabled,
+                subagent_depth=subagent_depth,
+                subagent_registry=resolved_subagent_registry,
+                session_log_dir_override=session_log_dir_override,
+                step_budget_runtime=step_budget_runtime,
+                emit_web_search_runtime_diagnostics=(subagent_depth == 0),
+                runtime_kind=resolved_runtime_kind,
+                mcp_manager=mcp_manager,
+                custom_tool_session_state=custom_tool_session_state,
+                get_active_workdir_relpath=_get_active_workdir_relpath,
+                set_active_workdir_callback=_set_active_workdir,
+                create_session_factory=create_session,
+                prompt_cache_parent_session_id=(prompt_cache_parent_session_id or session_id),
+                execution_deadline=execution_deadline,
+                crash_diagnostic_log_path=resolved_crash_diagnostic_log_path,
+                crash_diagnostics=crash_diagnostics,
+                tool_dispatch_guard=tool_dispatch_guard,
+                host_action_handler=host_action_handler,
+                host_action_capabilities=host_action_capabilities,
+                host_mcp=host_mcp,
+                google_mcp=google_mcp,
+                subagent_coordinator_sink=_capture_subagent_coordinator,
+                child_scheduler_sink=_capture_child_scheduler,
+                tool_availability_sink=_capture_tool_availability,
+                parent_steer_inbox=parent_steer_inbox,
+                read_ledger_sink=_capture_read_ledger,
+                readonly_child_web_tool_names=readonly_child_web_tool_names,
+                child_managed_browser_tool_names=child_managed_browser_tool_names,
+                approval_reviewer=session_approval_reviewer,
+            )
         )
+        if browser_start_host_request is not None:
+            tools["browser_start"] = build_browser_start_tool(browser_start_host_request)
+            if computer_discovery is not None:
+                tools.update(
+                    build_computer_start_tools(browser_start_host_request, computer_discovery)
+                )
         if mcp_manager is not None and mcp_manager.resolved_config.has_any_config:
             store.append("mcp_catalog_snapshot", mcp_manager.catalog_snapshot_metadata())
-        tool_list = [t.as_openai_tool() for t in tools.values()]
+        tool_list = [tool.as_openai_tool() for tool in tools.values()]
         messages: list[dict[str, Any]] = list(prompt_context.messages)
         if active_workdir_relpath_override is not None:
             binding_context = _workspace_binding_context_message(
@@ -3388,7 +4253,15 @@ def create_session(
                     {"role": "user", "content": effective_subagent_context},
                 )
                 pinned_prefix_len += 1
-        hooks_config = load_resolved_hooks_config(workspace_context.workspace_root)
+        hooks_config = (
+            ResolvedHookConfig(
+                groups_by_event={},
+                loaded_paths=(),
+                untrusted_project_paths=(),
+            )
+            if sensitive_media
+            else load_resolved_hooks_config(workspace_context.workspace_root)
+        )
         hooks_config, hook_dropped_counts = _filter_hooks_config_for_plugins(
             config=hooks_config,
             activation_decision=activation_decision,
@@ -3550,7 +4423,7 @@ def create_session(
                 ),
             )
 
-        if _surface_needs_startup_git_status(surface):
+        if not sensitive_media and _surface_needs_startup_git_status(surface):
             git_branch = _patchable("_git_branch", _git_branch)
             git_is_dirty = _patchable("_git_is_dirty", _git_is_dirty)
             startup_branch = git_branch(root)
@@ -3675,6 +4548,7 @@ def create_session(
             steer_inbox=parent_steer_inbox,
             read_ledger=read_ledger_holder.get("ledger"),
             shell_runner=runner,
+            shell_environment=prompt_context.shell_environment,
             step_budget_runtime=step_budget_runtime,
             planner_workspace_context=prompt_context.planner_workspace_context,
             workspace_grounding=prompt_context.workspace_grounding,
@@ -3700,8 +4574,12 @@ def create_session(
                 runtime_version=f"alysis-{__version__}",
             ),
             process_group_registry=process_group_registry,
+            sensitive_media=bool(sensitive_media),
+            approval_reviewer=session_approval_reviewer,
         )
-        if subagent_depth == 0 and store.enabled:
+        # A subagent's reviewer is already bound to the parent conversation; bind() keeps it.
+        session_approval_reviewer.bind(session)
+        if subagent_depth == 0 and store.enabled and not sensitive_media:
             # Persist the process's provider/web-search telemetry to the run's artifact
             # dir so retry/throttle/latency history survives exit. Only the top-level
             # session registers the sink; nested subagent/candidate calls in the same
@@ -3724,7 +4602,8 @@ def create_session(
                 },
             )
         try:
-            mcp_manager.close()
+            if mcp_manager is not None:
+                mcp_manager.close()
         finally:
             store.close()
         raise

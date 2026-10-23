@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
+from ..desktop_connections import CONNECTION_TOOLS
+from ..desktop_terminal import TERMINAL_TOOLS
+from ..embedded_browser import BROWSER_TOOLS, BROWSER_WRITE_ACTIONS
+from ..open_panels import PANEL_TOOLS
+from ..user_questions import QUESTION_PARAMETERS, WAIT_PARAMETERS
 from .availability import is_tool_unavailable_result
 
 ToolFormatter = Callable[[dict[str, Any]], str]
@@ -758,6 +763,60 @@ class BuiltinToolMetadata:
 
 _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
     BuiltinToolMetadata(
+        name="request_user_input",
+        description=(
+            "Ask an optional question only when a user-owned choice materially changes the result "
+            "and cannot be resolved from context or inspection. Clear tasks normally need none. "
+            "Prefer one question; batch up to three related, independent questions. Ask about "
+            "goals, desired behavior, scope, constraints or real tradeoffs, not discoverable facts "
+            "or routine implementation details. Reuse prior answers; do not repeat a question "
+            "after an answer, dismissal or timeout without new user direction. "
+            "Supports single choice, multiple choice, and free text; custom text is always allowed. "
+            "Prefer 2-3 distinct choices with short tradeoffs; put your recommendation first, "
+            "marked '(Recommended)'. Do not add Other; the UI already offers custom text. "
+            "Returns a pending request_id immediately. Keep reasoning and doing independent work "
+            "while the user answers; only call wait_user_input when you need the answer or have "
+            "no independent work left. Unanswered questions time out after 60 seconds of user "
+            "inactivity. On timeout, use confirmed answers, make reasonable assumptions for "
+            "skipped questions, and continue without asking them again. "
+            "Never use timed questions for a required input with no safe fallback, grant permissions, request secrets, or ask what you can discover "
+            "with tools. No option is selected automatically; dismissal or timeout is not an answer. "
+            "Ask only when the answer materially affects the task."
+        ),
+        parameters=QUESTION_PARAMETERS,
+        categories=("session",),
+        rich=RichToolMetadata(
+            display_name="Ask User",
+            reasoning_hint="A user choice is needed.",
+            action_hint="Show questions in the TUI.",
+            fallback_hint="Use existing context when possible.",
+        ),
+        optional=True,
+        optional_unavailable_reason="questions require a top-level interactive TUI session",
+    ),
+    BuiltinToolMetadata(
+        name="wait_user_input",
+        description=(
+            "Wait for the request_user_input request_id and receive the user's structured answers. "
+            "Call after completing independent work, before work that depends on the answers. "
+            "Waits only for the remaining inactivity deadline, not a fresh 60 seconds. Returns "
+            "answered, timed_out, dismissed, cancelled, or already_delivered. On timed_out, use "
+            "any confirmed answers, state material assumptions for skipped questions, and continue "
+            "the task without repeating the questions. Dismissal, cancellation, or timeout does "
+            "not authorize an action and must not be interpreted as a selected default."
+        ),
+        parameters=WAIT_PARAMETERS,
+        categories=("session",),
+        rich=RichToolMetadata(
+            display_name="Wait for Answer",
+            reasoning_hint="The next decision needs the user's answer.",
+            action_hint="Wait for the question panel.",
+            fallback_hint="Respect dismissal or cancellation.",
+        ),
+        optional=True,
+        optional_unavailable_reason="questions require a top-level interactive TUI session",
+    ),
+    BuiltinToolMetadata(
         name="report_blocker",
         description=(
             "Report a concrete obstacle that prevents this top-level execute turn from "
@@ -828,7 +887,7 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
     ),
     BuiltinToolMetadata(
         name="capability_status",
-        description="Inspect current-session web and visual tool readiness, including configured versus observed operation, without making network requests.",
+        description="Inspect current-session web, visual and local PDF readiness without network requests. For PDF tasks, get the exact managed-interpreter creation and page-preview command here before probing converters.",
         parameters={"type": "object", "properties": {}, "required": []},
         categories=("read", "session"),
         rich=RichToolMetadata(
@@ -1210,6 +1269,100 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
         ),
         built_in_subagent_exposure="hidden",
     ),
+    *(
+        BuiltinToolMetadata(
+            name=name,
+            description=description,
+            parameters={
+                "type": "object",
+                "properties": properties,
+                "required": list(required),
+                "additionalProperties": False,
+            },
+            categories=("ide", "web", "write" if action in BROWSER_WRITE_ACTIONS else "read"),
+            rich=RichToolMetadata(
+                display_name=name.replace("_", " ").title(),
+                reasoning_hint=description,
+                action_hint=description,
+                fallback_hint="Use web_fetch if the desktop browser is unavailable.",
+            ),
+            built_in_subagent_exposure="hidden",
+            optional=True,
+            optional_unavailable_reason="The desktop host did not advertise its built-in browser.",
+        )
+        for action, name, description, properties, required in BROWSER_TOOLS
+    ),
+    *(
+        BuiltinToolMetadata(
+            name=name,
+            description=description,
+            parameters={
+                "type": "object",
+                "properties": properties,
+                "required": list(required),
+                "additionalProperties": False,
+            },
+            categories=("ide", "read"),
+            rich=RichToolMetadata(
+                display_name=name.replace("_", " ").title(),
+                reasoning_hint=description,
+                action_hint=description,
+                fallback_hint="Ask the user to open the file in Results and send their request again. Do not guess a file or version.",
+            ),
+            built_in_subagent_exposure="hidden",
+            optional=True,
+            optional_unavailable_reason="The desktop host did not advertise open-panel inspection.",
+        )
+        for action, name, description, properties, required in PANEL_TOOLS
+    ),
+    *(
+        BuiltinToolMetadata(
+            name=name,
+            description=description,
+            parameters={
+                "type": "object",
+                "properties": properties,
+                "required": list(required),
+                "additionalProperties": False,
+            },
+            categories=("ide", "read"),
+            rich=RichToolMetadata(
+                display_name=name.replace("_", " ").title(),
+                reasoning_hint=description,
+                action_hint=description,
+                fallback_hint="If unavailable, say connection status is unknown and direct the user to Plugins. A local project does not establish account access.",
+            ),
+            built_in_subagent_exposure="hidden",
+            optional=True,
+            optional_unavailable_reason="The desktop host did not advertise connection status or repository discovery.",
+        )
+        for action, name, description, properties, required in CONNECTION_TOOLS
+    ),
+    *(
+        BuiltinToolMetadata(
+            name=name,
+            description=description,
+            parameters={
+                "type": "object",
+                "properties": properties,
+                "required": list(required),
+                "additionalProperties": False,
+            },
+            categories=("ide", "shell", "write" if mutation else "read"),
+            rich=RichToolMetadata(
+                display_name=name.replace("desktop_terminal_", "Terminal ")
+                .replace("_", " ")
+                .title(),
+                reasoning_hint=description,
+                action_hint=description,
+                fallback_hint="Use the ordinary policy-checked shell tools if this desktop capability is unavailable.",
+            ),
+            built_in_subagent_exposure="hidden",
+            optional=True,
+            optional_unavailable_reason="The desktop host did not advertise this terminal capability.",
+        )
+        for action, name, description, properties, required, mutation in TERMINAL_TOOLS
+    ),
     BuiltinToolMetadata(
         name="ide_task_list",
         description=(
@@ -1374,6 +1527,159 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
         built_in_subagent_exposure="readonly",
         optional=True,
         optional_unavailable_reason="The trusted IDE host did not advertise debug.status.",
+    ),
+    BuiltinToolMetadata(
+        name="github_repo_read",
+        description="Read metadata for the workspace repository through the desktop selected GitHub account.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        categories=("read", "ide", "github"),
+        rich=RichToolMetadata(
+            display_name="Read GitHub Repository",
+            reasoning_hint="Use the linked desktop account and selected workspace repository.",
+            action_hint="Read metadata for the workspace repository through the desktop selected GitHub account.",
+            fallback_hint="If unavailable, link GitHub in the desktop app and start a new chat. Do not bypass with gh or raw remote Git commands.",
+        ),
+        built_in_subagent_exposure="readonly",
+        optional=True,
+        optional_unavailable_reason="The trusted desktop host did not advertise github.repo.read.",
+    ),
+    BuiltinToolMetadata(
+        name="github_pr_list",
+        description="List up to 30 open pull requests for the workspace repository through the desktop selected GitHub account.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "base": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Explicit branch name; no refspec, option, force, or deletion.",
+                },
+                "head": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Explicit branch name; no refspec, option, force, or deletion.",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        categories=("read", "ide", "github"),
+        rich=RichToolMetadata(
+            display_name="List GitHub Pull Requests",
+            reasoning_hint="Use the linked desktop account and selected workspace repository.",
+            action_hint="List up to 30 open pull requests for the workspace repository through the desktop selected GitHub account.",
+            fallback_hint="If unavailable, link GitHub in the desktop app and start a new chat. Do not bypass with gh or raw remote Git commands.",
+        ),
+        built_in_subagent_exposure="readonly",
+        optional=True,
+        optional_unavailable_reason="The trusted desktop host did not advertise github.pr.list.",
+    ),
+    BuiltinToolMetadata(
+        name="github_pr_create",
+        description="Create a pull request in the workspace repository through the selected GitHub account. The desktop host requires approval for the exact account and repository.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "base": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Explicit branch name; no refspec, option, force, or deletion.",
+                },
+                "head": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Explicit branch name; no refspec, option, force, or deletion.",
+                },
+                "title": {"type": "string", "maxLength": 256},
+                "body": {"type": "string", "maxLength": 4096},
+                "draft": {"type": "boolean", "default": True},
+            },
+            "required": ["base", "head", "title", "body"],
+            "additionalProperties": False,
+        },
+        categories=("write", "ide", "github"),
+        rich=RichToolMetadata(
+            display_name="Create GitHub Pull Request",
+            reasoning_hint="Use the linked desktop account and selected workspace repository.",
+            action_hint="Create a pull request in the workspace repository through the selected GitHub account. The desktop host requires approval for the exact account and repository.",
+            fallback_hint="If unavailable, link GitHub in the desktop app and start a new chat. Do not bypass with gh or raw remote Git commands.",
+        ),
+        optional=True,
+        optional_unavailable_reason="The trusted desktop host did not advertise github.pr.create.",
+    ),
+    BuiltinToolMetadata(
+        name="github_git_fetch",
+        description="Fetch origin through the selected GitHub account without pruning. The desktop host approves this local ref update.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        categories=("write", "ide", "github"),
+        rich=RichToolMetadata(
+            display_name="Fetch GitHub Changes",
+            reasoning_hint="Use the linked desktop account and selected workspace repository.",
+            action_hint="Fetch origin through the selected GitHub account without pruning. The desktop host approves this local ref update.",
+            fallback_hint="If unavailable, link GitHub in the desktop app and start a new chat. Do not bypass with gh or raw remote Git commands.",
+        ),
+        optional=True,
+        optional_unavailable_reason="The trusted desktop host did not advertise github.git.fetch.",
+    ),
+    BuiltinToolMetadata(
+        name="github_git_pull",
+        description="Fast-forward the current branch from the explicitly named origin branch through the selected GitHub account. Requires desktop approval; never discards changes.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Explicit branch name; no refspec, option, force, or deletion.",
+                }
+            },
+            "required": ["branch"],
+            "additionalProperties": False,
+        },
+        categories=("write", "ide", "github"),
+        rich=RichToolMetadata(
+            display_name="Pull GitHub Changes",
+            reasoning_hint="Use the linked desktop account and selected workspace repository.",
+            action_hint="Fast-forward the current branch from the explicitly named origin branch through the selected GitHub account. Requires desktop approval; never discards changes.",
+            fallback_hint="If unavailable, link GitHub in the desktop app and start a new chat. Do not bypass with gh or raw remote Git commands.",
+        ),
+        optional=True,
+        optional_unavailable_reason="The trusted desktop host did not advertise github.git.pull.",
+    ),
+    BuiltinToolMetadata(
+        name="github_git_push",
+        description="Push one explicitly named local branch to the same origin branch through the selected GitHub account. Requires desktop approval; force and deletion are unavailable.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Explicit branch name; no refspec, option, force, or deletion.",
+                }
+            },
+            "required": ["branch"],
+            "additionalProperties": False,
+        },
+        categories=("write", "ide", "github"),
+        rich=RichToolMetadata(
+            display_name="Push GitHub Branch",
+            reasoning_hint="Use the linked desktop account and selected workspace repository.",
+            action_hint="Push one explicitly named local branch to the same origin branch through the selected GitHub account. Requires desktop approval; force and deletion are unavailable.",
+            fallback_hint="If unavailable, link GitHub in the desktop app and start a new chat. Do not bypass with gh or raw remote Git commands.",
+        ),
+        optional=True,
+        optional_unavailable_reason="The trusted desktop host did not advertise github.git.push.",
     ),
     BuiltinToolMetadata(
         name="browser_start",

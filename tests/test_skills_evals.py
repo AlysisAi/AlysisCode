@@ -47,6 +47,7 @@ from alysis_code.skills.prompting import EXPLICIT_SKILL_CONTEXT_TOTAL_MAX_CHARS
 from alysis_code.verification_command_analysis import analyze_verification_command
 
 _BUNDLED_PACK_NAMES = {
+    "alysis-docs",
     "address-pr-comments",
     "code-review",
     "commit",
@@ -232,7 +233,7 @@ def test_load_bundled_pack_eval_cases_covers_positive_explicit_and_negative_case
 
     cases = load_skills_eval_cases(manifest)
 
-    assert len(cases) == 25
+    assert len(cases) == 28
     for name in sorted(_BUNDLED_PACK_NAMES):
         matching = [case for case in cases if case.expected_skills == (name,)]
         expected_normal_count = 2 if name == "commit" else 1
@@ -279,7 +280,7 @@ def test_load_bundled_pack_eval_cases_covers_positive_explicit_and_negative_case
     specific_ci = next(case for case in cases if case.id == "bundled_fix_ci_normal")
     assert specific_ci.expected_skills == ("fix-ci",)
     assert "failing" in specific_ci.task.casefold()
-    assert "ci.log" in specific_ci.task
+    assert "ci-output.txt" in specific_ci.task
 
     release_concept = next(
         case for case in cases if case.id == "bundled_negative_release_notes_concept"
@@ -1441,7 +1442,7 @@ def test_bundled_pack_synthetic_events_score_hit_miss_and_false_fire() -> None:
         events=[
             {
                 "type": "tool_call",
-                "payload": {"name": "fs_read", "arguments": {"path": "ci.log"}},
+                "payload": {"name": "fs_read", "arguments": {"path": "ci-output.txt"}},
             }
         ],
     )

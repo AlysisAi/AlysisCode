@@ -68,6 +68,32 @@ def test_load_chat_resume_messages_reads_user_and_assistant_events(tmp_path: Pat
     ]
 
 
+def test_load_chat_resume_messages_replays_steering_where_it_was_delivered(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "resume-steered.jsonl"
+    events = [
+        {"type": "user_message", "payload": {"content": "Write the parser"}},
+        {"type": "assistant_message", "payload": {"content": "Reading the grammar"}},
+        {
+            "type": "steer_message_delivered",
+            "payload": {"step": 2, "count": 1, "chars": 40, "messages": ["Use tabs, not spaces"]},
+        },
+        {"type": "final", "payload": {"content": "Done, with tabs"}},
+        # Older logs carried only the count; they replay as before.
+        {"type": "steer_message_delivered", "payload": {"step": 3, "count": 1, "chars": 9}},
+    ]
+    log_path.write_text("\n".join(json.dumps(ev) for ev in events) + "\n", encoding="utf-8")
+
+    loaded = cli_mod._load_chat_resume_messages(log_path)
+    assert loaded == [
+        {"role": "user", "content": "Write the parser"},
+        {"role": "assistant", "content": "Reading the grammar"},
+        {"role": "user", "content": "[Mid-turn message from the user] Use tabs, not spaces"},
+        {"role": "assistant", "content": "Done, with tabs"},
+    ]
+
+
 def test_load_chat_resume_messages_honors_conversation_clear_boundary(tmp_path: Path) -> None:
     log_path = tmp_path / "resume-after-clear.jsonl"
     events = [

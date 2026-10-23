@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -571,6 +572,60 @@ def test_capture_fails_closed_when_scoped_path_changes_while_git_stages_it(
 
     assert ledger.head("session-1") == baseline
     assert target.read_text(encoding="utf-8") == "human\n"
+
+
+def test_reconcile_reads_every_session_ref_with_one_git_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    storage = tmp_path / "external"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("one\n", encoding="utf-8")
+    ledger = _ledger(workspace, storage)
+    sessions = [f"session-{index}" for index in range(6)]
+    for session in sessions:
+        ledger.ensure_baseline(session)
+    calls: list[str] = []
+
+    def count_git(target: ChangeLedger) -> None:
+        original = target._git
+
+        def counting_git(args: list[str], **kwargs: Any) -> Any:
+            calls.append(args[0])
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(target, "_git", counting_git)
+
+    count_git(ledger)
+    for session in sessions:
+        assert ledger.head(session) is not None
+    # Each look reconciles all six sessions: one process each time, not one per session.
+    assert calls == ["for-each-ref"] * len(sessions)
+    calls.clear()
+    restarted = _ledger(workspace, storage)
+    count_git(restarted)
+    assert [checkpoint.kind for checkpoint in restarted.list("session-2")] == ["baseline"]
+    assert calls == ["for-each-ref"]
+
+
+def test_reconcile_restores_a_session_ref_deleted_after_its_checkpoint(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    storage = tmp_path / "external"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("one\n", encoding="utf-8")
+    ledger = _ledger(workspace, storage)
+    kept = ledger.ensure_baseline("session-kept")
+    lost = ledger.ensure_baseline("session-lost")
+    ref = "refs/heads/sessions/" + change_ledger_module._session_key("session-lost")
+    ledger._git(["update-ref", "-d", ref], check=True)
+    assert ledger._ref_oid(ref) is None
+
+    restarted = _ledger(workspace, storage)
+    assert restarted._ref_oid(ref) == lost.commit_oid
+    assert restarted.head("session-lost") == lost
+    assert restarted.head("session-kept") == kept
 
 
 def test_restart_recovers_ref_published_before_sqlite_metadata(

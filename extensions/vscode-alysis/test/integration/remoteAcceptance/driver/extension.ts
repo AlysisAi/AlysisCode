@@ -293,7 +293,7 @@ function assertRuntime(runtime: RuntimeEvidence | undefined, config: DriverConfi
   assert.equal(runtime.artifactVersion, config.expected_managed_artifact_version);
   assert.equal(runtime.sha256, config.expected_managed_cli_sha256);
   assert.equal(runtime.releaseTag, config.release_tag);
-  assert.equal(runtime.sourceRepository, "https://github.com/AlysisAi/alysis-code");
+  assert.equal(runtime.sourceRepository, "https://github.com/AlysisAi/AlysisCode");
   assert.equal(runtime.sourceCommit, config.source_sha);
   assert.equal(runtime.releaseSignatureVerified, true);
   assert.equal(runtime.cliPathOverride, "");

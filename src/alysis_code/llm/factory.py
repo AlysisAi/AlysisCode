@@ -7,12 +7,8 @@ from uuid import uuid4
 
 import httpx
 
-from ..config import (
-    resolve_llm_enable_thinking,
-    resolve_llm_reasoning_effort,
-    resolve_web_search_adapter,
-    resolve_web_search_mode,
-)
+from ..config import resolve_web_search_adapter, resolve_web_search_mode
+from ..model_reasoning import client_reasoning_settings
 from ..model_registry import ModelRegistry, resolve_model_provider_key
 from ..profile_presets import LOCAL_PROFILE_PRESET_KEYS, find_preset_for_profile
 from ..profiles import (
@@ -111,11 +107,13 @@ def make_llm_client(
                 "Choose the subscription model and reasoning effort in "
                 "/config → Default Model before using this connection."
             )
-    resolved_enable_thinking = (
-        resolve_llm_enable_thinking(cfg) if enable_thinking is None else enable_thinking
-    )
-    resolved_reasoning_effort = (
-        resolve_llm_reasoning_effort(cfg) if reasoning_effort is None else reasoning_effort
+    resolved_reasoning_effort, resolved_enable_thinking = client_reasoning_settings(
+        cfg,
+        model=model,
+        profile=resolved_profile,
+        reasoning_effort=reasoning_effort,
+        enable_thinking=enable_thinking,
+        transport=transport,
     )
     preset = find_preset_for_profile(resolved_profile)
     provider_key = str(preset.provider_key or "").strip() if preset is not None else ""
@@ -372,14 +370,19 @@ def make_llm_client(
             stream_no_progress_timeout_s=cfg.llm_stream_no_progress_timeout_s,
             inflight_deadline_grace_s=(cfg.subagent_orchestration.inflight_deadline_grace_s),
             route_identity=route_identity,
+            stream_assembly=cfg.llm_stream_assembly,
         ),
         reasoning_trace_capability,
     )
 
 
 def resolve_model_protocol(*, provider_key: str | None, model: str, protocol: str) -> str:
-    """Resolve model-specific transports for initial connections and live switches."""
-    if provider_key == "alysis" and model == "gpt-6-luna":
+    """Resolve model-specific transports for both initial connections and live switches."""
+    # Hosted OpenAI models need Responses for reasoning with function tools.
+    # Keep the managed endpoint and Alysis device credential on this route.
+    if provider_key == "alysis" and model in {"gpt-6-luna", "gpt-6.1-sol"}:
+        return OPENAI_RESPONSES_PROTOCOL
+    if provider_key == "openai" and model == "gpt-6.1-sol":
         return OPENAI_RESPONSES_PROTOCOL
     if provider_key == "alysis" and model in {"claude-sonnet-5-5", "claude-haiku-5-5"}:
         return ANTHROPIC_MESSAGES_PROTOCOL

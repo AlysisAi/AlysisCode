@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
+import inspect
 import json
 import logging
 import re
@@ -12,13 +14,25 @@ from typing import Any
 
 import httpx
 
+from ..cancellation import CooperativeCancellationError
+from ..computer_use_diagnostics import DIAGNOSTIC_CODES, set_safe_provider_error_fields
 from ..error_text import sanitize_error_text_for_output
 from ..execution_deadline import DeadlineExhausted
-from ..provider_auth import ProviderAuthAdapter
+from ..provider_auth import (
+    ProviderAuthAdapter,
+    ProviderAuthError,
+    ProviderCredentialScopeMismatchError,
+)
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from ..request_estimation import estimate_provider_payload_tokens
 from ..web_search_adapters import AUTO_WEB_SEARCH_ADAPTER, OPENAI_RESPONSES_ADAPTER
+from .base import (
+    omitted_reasoning_display_required,
+    serial_tool_calls_required,
+    stateless_responses_required,
+)
 from .cache_policy import merge_cache_policy_metadata
+from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
 from .http_cancellation import (
     cancellable_httpx_request,
     cancellable_httpx_send,
@@ -35,14 +49,20 @@ from .metadata import (
     merge_canonical_headers,
     stamp_response_for_route,
 )
-from .protocols import OPENAI_RESPONSES_PROTOCOL, get_provider_protocol_capabilities
+from .protocols import (
+    OPENAI_RESPONSES_PROTOCOL,
+    get_provider_protocol_capabilities,
+    reasoning_trace_callback,
+)
 from .provider_limits import (
     DEFAULT_PROVIDER_CONCURRENCY_CAPS,
+    DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS,
     ProviderRetrySettings,
     best_effort_provider_key,
     mark_provider_call_non_retryable,
     run_provider_limited_call,
 )
+from .rate_limit_metadata import HARD_QUOTA_CODES, retry_metadata
 from .request_plan import LLMRequestPlan, RequestCachePlan, WireRequestDiagnostics
 from .request_shape import build_request_shape_report
 from .streaming import (
@@ -57,6 +77,7 @@ from .types import (
     AssistantResponsePhase,
     InputTokenCount,
     LLMError,
+    LLMOutputLimitError,
     LLMResponse,
     LLMStreamNoProgressError,
     LLMUsage,
@@ -74,8 +95,27 @@ class ResponsesError(RuntimeError):
         super().__init__(sanitize_error_text_for_output(message))
 
 
+def _callable_accepts_keyword(callable_obj: Callable[..., Any], keyword: str) -> bool:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == keyword
+            and parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        )
+        for parameter in signature.parameters.values()
+    )
+
+
 _DEFAULT_ACCEPT_ENCODING = "identity"
-_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS = 60.0
+_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS = DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS
 _OPENAI_RESPONSES_METADATA_KEY = OPENAI_RESPONSES_PROVIDER_METADATA_KEY
 _WEB_SEARCH_MODES_ALLOWING_OPENAI_BUILTIN = frozenset({"auto", "native"})
 _RESPONSES_TOOL_CHOICE_STRINGS = frozenset({"auto", "none", "required"})
@@ -84,6 +124,12 @@ _RESPONSES_REASONING_EFFORTS = frozenset(
 )
 _RESPONSES_JSON_SCHEMA_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _ALYSIS_WEB_SEARCH_FUNCTION_NAME = "web_search"
+_RESPONSES_CALL_ID_MAX_LENGTH = 64
+_RESPONSES_CALL_ID_RE = re.compile(rf"^[A-Za-z0-9_-]{{1,{_RESPONSES_CALL_ID_MAX_LENGTH}}}$")
+# Canonical prefix for persisted and provider-visible normalized identifiers.
+_RESPONSES_CALL_ID_HASH_PREFIX = "alysis_"
+_RESPONSES_CALL_ID_HASH_LENGTH = _RESPONSES_CALL_ID_MAX_LENGTH - len(_RESPONSES_CALL_ID_HASH_PREFIX)
+_RESPONSES_CALL_ID_NORMALIZATION_SCHEME = "sha256-ascii-v1"
 _RESPONSES_HOSTED_WEB_SEARCH_TYPES = frozenset({"web_search", "web_search_preview"})
 _MIN_RESPONSES_OUTPUT_TOKENS = 16
 _LOGGER = logging.getLogger(__name__)
@@ -97,8 +143,17 @@ class _ResponsesContinuation:
 
 
 def _stable_request_signature(value: Any) -> str:
+    # Preserve existing valid-Unicode fingerprints and encode any isolated
+    # UTF-16 surrogates losslessly. This digest never normalizes opaque values.
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256(payload.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _json_bytes(value: Any) -> bytes:
+    """Encode JSON without HTTPX's strict UTF-8 conversion of lone surrogates."""
+    return json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode(
+        "ascii"
+    )
 
 
 def _non_negative_int(value: Any) -> int | None:
@@ -347,6 +402,102 @@ def _json_arguments(args: Any) -> str:
     return json.dumps(args, ensure_ascii=False, separators=(",", ":"))
 
 
+def _responses_call_id(value: Any, *, fallback: str) -> str:
+    """Return a stable Responses-compatible function call identifier.
+
+    OpenAI Responses currently caps ``call_id`` at 64 characters. Some
+    provider surfaces can nevertheless emit a longer identifier and then
+    reject that same identifier when the conversation is replayed. Preserve
+    already-compatible IDs byte-for-byte. Map every other value into a
+    provider-safe namespace using 216 bits of SHA-256, which avoids the prefix
+    truncation collisions created by simply slicing a long provider ID.
+
+    The function is deterministic so independently serialized
+    ``function_call`` and ``function_call_output`` items remain paired across
+    retries, transcript reloads, and process restarts.
+    """
+
+    raw = "" if value is None else str(value)
+    if not raw.strip():
+        raw = str(fallback or "call")
+    if _RESPONSES_CALL_ID_RE.fullmatch(raw):
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()
+    return _RESPONSES_CALL_ID_HASH_PREFIX + digest[:_RESPONSES_CALL_ID_HASH_LENGTH]
+
+
+def _responses_function_call_id(item: Mapping[str, Any], *, index: int) -> str:
+    raw_call_id = item.get("call_id")
+    if raw_call_id is None or not str(raw_call_id).strip():
+        raw_call_id = item.get("id")
+    return _responses_call_id(raw_call_id, fallback=f"call_{index}")
+
+
+def _responses_function_call_ids_by_output_index(
+    output_items: list[Any],
+) -> dict[int, str]:
+    """Canonicalize one assistant batch and reject ambiguous pairings."""
+
+    call_ids: dict[int, str] = {}
+    seen: set[str] = set()
+    for index, item in enumerate(output_items):
+        if not isinstance(item, dict) or str(item.get("type") or "") != "function_call":
+            continue
+        call_id = _responses_function_call_id(item, index=index)
+        if call_id in seen:
+            # This covers exact provider duplicates, repeated safe IDs, digest
+            # collisions, and a deliberate alias where a safe raw ID equals
+            # the canonical form of another raw ID. Any of those makes a
+            # function_call_output pairing ambiguous, so fail before dispatch.
+            raise LLMError(
+                "OpenAI Responses returned duplicate or ambiguous function call IDs "
+                "in one assistant batch"
+            )
+        seen.add(call_id)
+        call_ids[index] = call_id
+    return call_ids
+
+
+def _normalized_responses_output_items(
+    output_items: list[Any],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Copy output items and canonicalize every replayable function call ID."""
+
+    call_ids = _responses_function_call_ids_by_output_index(output_items)
+    normalized: list[dict[str, Any]] = []
+    rewritten = False
+    for index, raw_item in enumerate(output_items):
+        if not isinstance(raw_item, dict):
+            continue
+        item = copy.deepcopy(raw_item)
+        if index in call_ids:
+            call_id = call_ids[index]
+            original_call_id = item.get("call_id")
+            if not isinstance(original_call_id, str) or original_call_id != call_id:
+                rewritten = True
+            item["call_id"] = call_id
+        normalized.append(item)
+    return normalized, rewritten
+
+
+def _responses_metadata_requires_full_replay(metadata: Mapping[str, Any]) -> bool:
+    """Return whether a server-side continuation contains an unusable call ID.
+
+    A ``previous_response_id`` points at the provider's original response, so
+    its function-call IDs cannot be renamed client-side. When canonicalization
+    was necessary, replay the normalized function call and output together
+    instead of appending an output to an incompatible server-side anchor.
+    """
+
+    if metadata.get("call_ids_rewritten") is True:
+        return True
+    output_items = metadata.get("output_items")
+    if not isinstance(output_items, list):
+        return False
+    _normalized, rewritten = _normalized_responses_output_items(output_items)
+    return rewritten
+
+
 def _content_to_text(raw: Any) -> str:
     if raw is None:
         return ""
@@ -419,7 +570,7 @@ def _responses_message_content(raw: Any, *, role: str) -> str | list[dict[str, A
 def _chat_tool_call_parts(raw_tool_call: Any) -> tuple[str, str, str] | None:
     if not isinstance(raw_tool_call, dict):
         return None
-    call_id = str(raw_tool_call.get("id") or raw_tool_call.get("call_id") or "").strip()
+    raw_call_id = raw_tool_call.get("id") or raw_tool_call.get("call_id")
     function = raw_tool_call.get("function")
     if isinstance(function, dict):
         name = str(function.get("name") or "").strip()
@@ -429,8 +580,7 @@ def _chat_tool_call_parts(raw_tool_call: Any) -> tuple[str, str, str] | None:
         arguments = _json_arguments(raw_tool_call.get("arguments"))
     if not name:
         return None
-    if not call_id:
-        call_id = f"call_{name}"
+    call_id = _responses_call_id(raw_call_id, fallback=f"call_{name}")
     return call_id, name, arguments
 
 
@@ -444,11 +594,16 @@ def _metadata_output_items(message: dict[str, Any]) -> list[dict[str, Any]]:
     output_items = responses_metadata.get("output_items")
     if not isinstance(output_items, list):
         return []
-    copied: list[dict[str, Any]] = []
-    for item in output_items:
-        if isinstance(item, dict):
-            copied.append(copy.deepcopy(item))
-    return copied
+    normalized, _rewritten = _normalized_responses_output_items(output_items)
+    # Responses output items may carry response-only lifecycle annotations.
+    # The live /responses input schema rejects ``status`` when the same items
+    # are replayed manually (for example, a stateless encrypted-reasoning item
+    # followed by a function call). Preserve the opaque reasoning/call linkage
+    # byte-for-byte while removing only that output-only field at the request
+    # boundary.
+    for item in normalized:
+        item.pop("status", None)
+    return normalized
 
 
 def _metadata_responses_payload(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -492,6 +647,8 @@ def _responses_continuation_from_messages(
             continue
         responses_metadata = _metadata_responses_payload(message)
         if not responses_metadata:
+            continue
+        if _responses_metadata_requires_full_replay(responses_metadata):
             continue
         previous_response_id = str(responses_metadata.get("response_id") or "").strip()
         request_plan_metadata = responses_metadata.get("request_plan")
@@ -554,11 +711,18 @@ def _responses_input_from_messages(messages: list[dict[str, Any]]) -> list[dict[
                 input_items.append({"role": "assistant", "content": content})
             raw_tool_calls = message.get("tool_calls")
             if isinstance(raw_tool_calls, list):
+                seen_call_ids: set[str] = set()
                 for raw_tool_call in raw_tool_calls:
                     parts = _chat_tool_call_parts(raw_tool_call)
                     if parts is None:
                         continue
                     call_id, name, arguments = parts
+                    if call_id in seen_call_ids:
+                        raise LLMError(
+                            "OpenAI Responses cannot replay an assistant batch with duplicate "
+                            "or ambiguous function call IDs"
+                        )
+                    seen_call_ids.add(call_id)
                     input_items.append(
                         {
                             "type": "function_call",
@@ -569,9 +733,10 @@ def _responses_input_from_messages(messages: list[dict[str, Any]]) -> list[dict[
                     )
             continue
         if role == "tool":
-            call_id = str(message.get("tool_call_id") or message.get("call_id") or "").strip()
-            if not call_id:
+            raw_call_id = message.get("tool_call_id") or message.get("call_id")
+            if raw_call_id is None or not str(raw_call_id).strip():
                 raise LLMError("OpenAI Responses tool message is missing tool_call_id")
+            call_id = _responses_call_id(raw_call_id, fallback="call_tool")
             input_items.append(
                 {
                     "type": "function_call_output",
@@ -879,6 +1044,8 @@ def _responses_tools(
     capabilities = get_provider_protocol_capabilities(
         provider_key=provider_key or "", protocol=OPENAI_RESPONSES_PROTOCOL
     )
+    # A Responses-compatible gateway may only accept function tools. Auto search
+    # must retain the local function instead of upgrading it to a paid built-in.
     builtin_web_search_allowed = (
         capabilities is None or capabilities.supports_provider_hosted_web_search_adapter
     )
@@ -1029,6 +1196,11 @@ def _responses_reasoning(
 ) -> dict[str, Any] | None:
     reasoning: dict[str, Any] = {}
     effort = str(reasoning_effort or "").strip().lower()
+    if model == "gpt-6.1-sol" and (
+        (effort and effort not in {"low", "medium", "high", "xhigh", "max"})
+        or (not effort and enable_thinking is False)
+    ):
+        raise LLMError("GPT-6.1 Sol requires reasoning effort low, medium, high, xhigh, or max.")
     if provider_key == "alysis" and model == "gpt-6-luna":
         # Older hosted pickers exposed the generic Responses efforts. Preserve
         # saved configs and environment overrides at Luna's supported bounds.
@@ -1077,6 +1249,15 @@ def _source_to_dict(source: WebSearchSource) -> dict[str, Any]:
     return {"title": source.title, "url": source.url}
 
 
+def _response_hit_output_limit(data: dict[str, Any]) -> bool:
+    details = data.get("incomplete_details")
+    return (
+        data.get("status") == "incomplete"
+        and isinstance(details, dict)
+        and details.get("reason") == "max_output_tokens"
+    )
+
+
 def _responses_provider_metadata(data: dict[str, Any]) -> dict[str, Any] | None:
     metadata: dict[str, Any] = {}
     response_id = str(data.get("id") or "").strip()
@@ -1084,10 +1265,26 @@ def _responses_provider_metadata(data: dict[str, Any]) -> dict[str, Any] | None:
         metadata["response_id"] = response_id
     output = data.get("output")
     if isinstance(output, list):
-        metadata["output_items"] = copy.deepcopy(output)
+        if _response_hit_output_limit(data):
+            # No client-side calls from an interrupted generation are executed.
+            # Do not replay orphan calls (even syntactically valid ones), or use
+            # a stored response ID that would restore those calls server-side.
+            safe_output = [
+                item
+                for item in output
+                if isinstance(item, dict) and item.get("type") != "function_call"
+            ]
+            if len(safe_output) != len(output):
+                metadata.pop("response_id", None)
+            output = safe_output
+        normalized_output, call_ids_rewritten = _normalized_responses_output_items(output)
+        metadata["output_items"] = normalized_output
+        if call_ids_rewritten:
+            metadata["call_ids_rewritten"] = True
+            metadata["call_id_normalization"] = _RESPONSES_CALL_ID_NORMALIZATION_SCHEME
         web_search_calls = [
             copy.deepcopy(item)
-            for item in output
+            for item in normalized_output
             if isinstance(item, dict) and str(item.get("type") or "") == "web_search_call"
         ]
         if web_search_calls:
@@ -1177,13 +1374,14 @@ def _parse_response_tool_calls(data: dict[str, Any]) -> list[ToolCall]:
     output = data.get("output")
     if not isinstance(output, list):
         return []
+    call_ids = _responses_function_call_ids_by_output_index(output)
     tool_calls: list[ToolCall] = []
     for index, item in enumerate(output):
         if not isinstance(item, dict):
             continue
         if str(item.get("type") or "") != "function_call":
             continue
-        call_id = str(item.get("call_id") or item.get("id") or f"call_{index}").strip()
+        call_id = call_ids[index]
         name = str(item.get("name") or "").strip()
         if not name:
             continue
@@ -1206,7 +1404,9 @@ def _parse_response_tool_calls(data: dict[str, Any]) -> list[ToolCall]:
 
 
 def _response_from_json(data: dict[str, Any]) -> httpx.Response:
-    return httpx.Response(200, json=data)
+    return httpx.Response(
+        200, content=_json_bytes(data), headers={"content-type": "application/json"}
+    )
 
 
 def _event_output_index(data: dict[str, Any], *, event_type: str) -> int:
@@ -1277,7 +1477,13 @@ class _OpenAIResponsesStreamAccumulator:
 
         if event_type == "error":
             raise LLMError(f"OpenAI Responses stream error: {_stream_error_message(data)}")
-        if event_type in {"response.failed", "response.incomplete"}:
+        if event_type == "response.incomplete":
+            response = data.get("response")
+            if isinstance(response, dict) and _response_hit_output_limit(response):
+                self._handle_final_response(data)
+                return
+            raise LLMError(f"OpenAI Responses stream {event_type}: {_stream_error_message(data)}")
+        if event_type == "response.failed":
             raise LLMError(f"OpenAI Responses stream {event_type}: {_stream_error_message(data)}")
         if event_type in {"response.created", "response.in_progress", "response.queued"}:
             self._merge_response(data.get("response"))
@@ -1376,6 +1582,8 @@ class _OpenAIResponsesStreamAccumulator:
 
     def _handle_final_response(self, data: dict[str, Any]) -> None:
         self._merge_response(data.get("response"))
+        for index, item in self.output_items.items():
+            self._emit_completed_reasoning_summary(index, item)
         response = data.get("response")
         final_response = (
             copy.deepcopy(response) if isinstance(response, dict) else copy.deepcopy(self.response)
@@ -1391,6 +1599,25 @@ class _OpenAIResponsesStreamAccumulator:
         if not isinstance(item, dict):
             return
         self._set_output_item(index, item)
+        if str(data.get("type") or "").endswith(".done"):
+            self._emit_completed_reasoning_summary(index, item)
+
+    def _emit_completed_reasoning_summary(self, index: int, item: dict[str, Any]) -> None:
+        # Compatible endpoints may deliver a whole summary on the completed
+        # item/response instead of separate summary deltas. Reuse the same
+        # per-part deduplication and answer-ordering guard as summary.done.
+        if item.get("type") != "reasoning" or not isinstance(item.get("summary"), list):
+            return
+        for summary_index, part in enumerate(item["summary"]):
+            if isinstance(part, dict) and part.get("type") == "summary_text":
+                self._handle_reasoning_summary_done(
+                    {
+                        "output_index": index,
+                        "summary_index": summary_index,
+                        "item_id": item.get("id"),
+                        "text": part.get("text"),
+                    }
+                )
 
     def _set_output_item(self, index: int, item: dict[str, Any]) -> None:
         copied = copy.deepcopy(item)
@@ -1801,15 +2028,22 @@ class OpenAIResponsesClient:
         self._transport = transport
         self.extra_headers = canonicalize_extra_headers(extra_headers)
         self.provider_key = str(provider_key or "").strip() or None
-        self.route_identity = route_identity or build_provider_route_identity(
-            protocol="openai_responses",
-            base_url=self.base_url,
-            provider_key=self.provider_key,
-            model=self.model,
-            credential_scope=credential_scope_fingerprint(self.api_key),
-            routing_headers=self.extra_headers,
-            session_scope=credential_scope_fingerprint(session_id),
-        )
+        if route_identity is None:
+            credential_scope = credential_scope_fingerprint(self.api_key)
+            if provider_auth is not None:
+                auth_scope = getattr(provider_auth, "route_credential_scope", None)
+                if callable(auth_scope):
+                    credential_scope = str(auth_scope() or "").strip() or credential_scope
+            route_identity = build_provider_route_identity(
+                protocol="openai_responses",
+                base_url=self.base_url,
+                provider_key=self.provider_key,
+                model=self.model,
+                credential_scope=credential_scope,
+                routing_headers=self.extra_headers,
+                session_scope=credential_scope_fingerprint(session_id),
+            )
+        self.route_identity = route_identity
         self.web_search_mode = str(web_search_mode or "off").strip().lower()
         self.web_search_adapter = (
             str(web_search_adapter or AUTO_WEB_SEARCH_ADAPTER).strip().lower()
@@ -1858,6 +2092,8 @@ class OpenAIResponsesClient:
         return _responses_temperature_omit_key(self.base_url, self.model)
 
     def _should_request_reasoning_summary(self) -> bool:
+        if omitted_reasoning_display_required(self):
+            return False
         capability = getattr(self, "reasoning_trace_capability", None)
         if self.enable_thinking is False:
             return False
@@ -1870,7 +2106,13 @@ class OpenAIResponsesClient:
             is not False
         )
 
-    def _headers(self, url: str, *, force_refresh: bool = False) -> dict[str, str]:
+    def _headers(
+        self,
+        url: str,
+        *,
+        force_refresh: bool = False,
+        cancellation_token: Any | None = None,
+    ) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "alysis-code/0.1.0",
@@ -1889,14 +2131,48 @@ class OpenAIResponsesClient:
                     "x-session-id",
                 }:
                     headers.pop(key, None)
-            headers = merge_canonical_headers(
-                headers,
-                self.provider_auth.authorization_headers(
-                    url,
-                    force_refresh=force_refresh,
-                    session_id=self.session_id,
-                ),
-            )
+            expected_scope = str(self.route_identity.credential_scope or "").strip()
+            authorize_request = getattr(self.provider_auth, "authorize_request", None)
+            if callable(authorize_request):
+                if not expected_scope:
+                    raise ProviderAuthError(
+                        "The selected provider account is missing an approved route identity."
+                    )
+                authorization_kwargs: dict[str, Any] = {
+                    "force_refresh": force_refresh,
+                    "session_id": self.session_id,
+                    "expected_credential_scope": expected_scope or None,
+                }
+                if cancellation_token is not None and _callable_accepts_keyword(
+                    authorize_request,
+                    "cancellation_token",
+                ):
+                    authorization_kwargs["cancellation_token"] = cancellation_token
+                authorization = authorize_request(url, **authorization_kwargs)
+                live_scope = str(authorization.credential_scope or "").strip()
+                if expected_scope and not hmac.compare_digest(live_scope, expected_scope):
+                    raise ProviderCredentialScopeMismatchError(
+                        "The selected provider account changed before the request was sent."
+                    )
+                provider_headers = authorization.headers
+            else:
+                if expected_scope:
+                    raise ProviderAuthError(
+                        "The selected provider authentication adapter cannot bind requests "
+                        "to the approved account."
+                    )
+                authorization_headers = self.provider_auth.authorization_headers
+                authorization_kwargs = {
+                    "force_refresh": force_refresh,
+                    "session_id": self.session_id,
+                }
+                if cancellation_token is not None and _callable_accepts_keyword(
+                    authorization_headers,
+                    "cancellation_token",
+                ):
+                    authorization_kwargs["cancellation_token"] = cancellation_token
+                provider_headers = authorization_headers(url, **authorization_kwargs)
+            headers = merge_canonical_headers(headers, provider_headers)
         return _headers_with_default_accept_encoding(headers)
 
     @staticmethod
@@ -1937,21 +2213,52 @@ class OpenAIResponsesClient:
             body = response.text
             if len(body) > 1000:
                 body = body[:1000] + "...(truncated)"
-            return LLMError(
-                sanitize_error_text_for_output(f"LLM error {response.status_code}: {body}")
+            retry_after, reset_at = retry_metadata(response, {})
+            return set_safe_provider_error_fields(
+                LLMError(
+                    sanitize_error_text_for_output(f"LLM error {response.status_code}: {body}")
+                ),
+                status=response.status_code,
+                retry_after=retry_after,
+                reset_at=reset_at,
             )
         error_message = _extract_error_message(data)
-        if error_message:
-            err = LLMError(
-                sanitize_error_text_for_output(f"LLM error {response.status_code}: {error_message}")
-            )
+        raw_error = data.get("error") if isinstance(data, dict) else None
+        if isinstance(raw_error, dict) and isinstance(raw_error.get("code"), str):
+            error_text = json.dumps(data)
         else:
-            err = LLMError(
-                sanitize_error_text_for_output(f"LLM error {response.status_code}: {data!r}")
-            )
-        err.provider_status_code = response.status_code
-        err.provider_error_body = sanitize_error_text_for_output(json.dumps(data))
-        return err
+            error_text = error_message or repr(data)
+        error = LLMError(
+            sanitize_error_text_for_output(f"LLM error {response.status_code}: {error_text}")
+        )
+        detail = data.get("error") if isinstance(data, dict) else None
+        detail = detail if isinstance(detail, dict) else {}
+        # Subscription limits identify the reason in error.type, whereas the
+        # public API normally uses error.code. Both pass through the closed set.
+        codes = [
+            value
+            for value in (detail.get("code"), detail.get("type"))
+            if type(value) is str and value in DIAGNOSTIC_CODES
+        ]
+        code = next(
+            (value for value in codes if value in HARD_QUOTA_CODES), next(iter(codes), None)
+        )
+        retry_after, reset_at = retry_metadata(response, detail)
+        set_safe_provider_error_fields(
+            error,
+            status=response.status_code,
+            code=code,
+            parameter=detail.get("param"),
+            retry_after=retry_after,
+            reset_at=reset_at,
+        )
+        if error.provider_error_code in HARD_QUOTA_CODES:
+            mark_provider_call_non_retryable(error)
+        # Keep the hosted gateway display metadata alongside the closed fields
+        # used by protected desktop sessions.
+        error.provider_status_code = response.status_code
+        error.provider_error_body = sanitize_error_text_for_output(json.dumps(data))
+        return error
 
     def count_input_tokens(
         self,
@@ -1999,11 +2306,13 @@ class OpenAIResponsesClient:
             auth_refresh_used = False
             while True:
                 try:
-                    with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                    with provider_httpx_client(
+                        timeout=self.timeout_s, transport=self._transport
+                    ) as client:
                         response = client.post(
                             url,
                             headers=self._headers(url, force_refresh=auth_refresh_used),
-                            json=payload,
+                            content=_json_bytes(payload),
                         )
                 except httpx.HTTPError as exc:
                     raise LLMError(
@@ -2099,6 +2408,11 @@ class OpenAIResponsesClient:
         tool_choice = plan.tool_choice
         response_format = plan.response_format
         public_stream = plan.stream
+        on_reasoning_delta = reasoning_trace_callback(
+            on_reasoning_delta,
+            capability=getattr(self, "reasoning_trace_capability", None),
+            stream=public_stream,
+        )
         stream = public_stream or bool(
             self.provider_auth is not None
             and getattr(self.provider_auth, "requires_streaming", False)
@@ -2120,14 +2434,15 @@ class OpenAIResponsesClient:
         reasoning = _responses_reasoning(
             enable_thinking=self.enable_thinking,
             reasoning_effort=self.reasoning_effort,
-            request_summary=self._should_request_reasoning_summary(),
+            request_summary=(
+                on_reasoning_delta is not None and self._should_request_reasoning_summary()
+            ),
             provider_key=self.provider_key,
             model=self.model,
         )
         documented_temperature_reason = documented_temperature_omit_reason(
             self.model,
-            provider_key=self.provider_key
-            or best_effort_provider_key(base_url=self.base_url, model=self.model),
+            provider_key=self.provider_key,
             reasoning_effort=(reasoning or {}).get("effort"),
         )
         text_config = _responses_text_config(response_format)
@@ -2137,8 +2452,10 @@ class OpenAIResponsesClient:
         sent_input = full_input
         input_mode = "full"
         continuation_anchor_index: int | None = None
-        supports_previous_response_id = self.provider_auth is None or bool(
-            getattr(self.provider_auth, "supports_previous_response_id", True)
+        stateless_responses = stateless_responses_required(self)
+        supports_previous_response_id = not stateless_responses and (
+            self.provider_auth is None
+            or bool(getattr(self.provider_auth, "supports_previous_response_id", True))
         )
         if self.provider_key == "alysis":
             # Hosted credits meter the complete request. Shared upstream storage
@@ -2170,6 +2487,8 @@ class OpenAIResponsesClient:
                 "model": self.model,
                 "input": input_items,
             }
+            if stateless_responses:
+                payload["store"] = False
             if prior_response_id:
                 payload["previous_response_id"] = prior_response_id
             if (
@@ -2187,6 +2506,8 @@ class OpenAIResponsesClient:
                 payload["reasoning"] = copy.deepcopy(reasoning)
             if mapped_tools:
                 payload["tools"] = mapped_tools
+                if serial_tool_calls_required(self):
+                    payload["parallel_tool_calls"] = False
                 payload["tool_choice"] = (
                     "auto"
                     if tool_choice is None
@@ -2217,6 +2538,21 @@ class OpenAIResponsesClient:
                 payload["store"] = False
                 payload["include"] = ["reasoning.encrypted_content"]
                 payload.pop("temperature", None)
+            if stateless_responses:
+                # Authentication adapters may rewrite the complete provider
+                # dialect. Reassert the sensitive-session boundary after that
+                # rewrite so no route can re-enable storage or continuation.
+                # Stateless reasoning items can only be replayed when the API
+                # returns their encrypted continuation payload, so this include
+                # value is part of the required Computer Use protocol rather
+                # than an optional response enhancement.
+                payload["store"] = False
+                payload.pop("previous_response_id", None)
+                raw_include = payload.get("include")
+                include = list(raw_include) if isinstance(raw_include, list) else []
+                if "reasoning.encrypted_content" not in include:
+                    include.append("reasoning.encrypted_content")
+                payload["include"] = include
             if self._reasoning_summary_support_by_model.get(reasoning_summary_support_key) is False:
                 _without_responses_reasoning_summary(payload)
             return payload
@@ -2225,7 +2561,7 @@ class OpenAIResponsesClient:
             estimation_payload: dict[str, Any] = {
                 "input": payload.get("input", []),
             }
-            for key in ("tools", "text", "include"):
+            for key in ("tools", "text", "include", "parallel_tool_calls"):
                 if key in payload:
                     estimation_payload[key] = payload[key]
             return estimation_payload
@@ -2372,6 +2708,12 @@ class OpenAIResponsesClient:
                 nonlocal payload
                 if "include" not in payload:
                     return False
+                if stateless_responses:
+                    # ``reasoning.encrypted_content`` is required to continue a
+                    # manually replayed, store=false reasoning session. Failing
+                    # closed is safer than retrying a request whose next turn
+                    # cannot satisfy the provider's pairing contract.
+                    return False
                 if not _responses_include_unsupported(err):
                     return False
                 # Bounded: the retried payload has no ``include`` entries, so
@@ -2410,7 +2752,18 @@ class OpenAIResponsesClient:
 
             while True:
                 try:
-                    with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
+                    client_context = (
+                        cancellation_aware_httpx_client(
+                            timeout_s=self.timeout_s,
+                            transport=self._transport,
+                            cancellation_token=cancellation_token,
+                        )
+                        if cancellation_token is not None and not public_stream
+                        else provider_httpx_client(
+                            timeout=self.timeout_s, transport=self._transport
+                        )
+                    )
+                    with client_context as client:
                         if stream:
                             with cancellable_httpx_request(
                                 client=client,
@@ -2418,8 +2771,12 @@ class OpenAIResponsesClient:
                                 method="POST",
                                 url=url,
                                 stream=True,
-                                headers=self._headers(url, force_refresh=auth_refresh_used),
-                                json=payload,
+                                headers=self._headers(
+                                    url,
+                                    force_refresh=auth_refresh_used,
+                                    cancellation_token=cancellation_token,
+                                ),
+                                content=_json_bytes(payload),
                             ) as response:
                                 if response.status_code >= 400:
                                     response.read()
@@ -2481,9 +2838,15 @@ class OpenAIResponsesClient:
                             cancellation_token=cancellation_token,
                             method="POST",
                             url=url,
-                            headers=self._headers(url, force_refresh=auth_refresh_used),
-                            json=payload,
+                            headers=self._headers(
+                                url,
+                                force_refresh=auth_refresh_used,
+                                cancellation_token=cancellation_token,
+                            ),
+                            content=_json_bytes(payload),
                         )
+                except CooperativeCancellationError:
+                    raise
                 except httpx.DecodingError as e:
                     raise_if_cancelled(cancellation_token)
                     err = LLMError(
@@ -2542,7 +2905,7 @@ class OpenAIResponsesClient:
                     raise err
                 return _finalize_response(self._parse_chat_response(response))
 
-        return stamp_response_for_route(
+        result = stamp_response_for_route(
             telemetry.run(
                 lambda: run_provider_limited_call(
                     call=_send_request,
@@ -2569,6 +2932,11 @@ class OpenAIResponsesClient:
             ),
             self.route_identity,
         )
+        if _response_hit_output_limit(result.raw):
+            # Raise only after normalization, accounting and route stamping, and
+            # outside transport retries. Recovery belongs to the agent turn.
+            raise LLMOutputLimitError(result)
+        return result
 
     def _parse_stream_response(
         self,
@@ -2627,8 +2995,11 @@ class OpenAIResponsesClient:
         if not isinstance(data, dict):
             raise LLMError("Unexpected OpenAI Responses payload: expected JSON object")
 
+        output_limit_reached = _response_hit_output_limit(data)
+        if data.get("status") in {"failed", "incomplete"} and not output_limit_reached:
+            raise LLMError(f"OpenAI Responses: {_stream_error_message({'response': data})}")
         content = _extract_answer_text(data)
-        tool_calls = _parse_response_tool_calls(data)
+        tool_calls = [] if output_limit_reached else _parse_response_tool_calls(data)
         reasoning = _responses_reasoning_outputs(data)
         if not content and not tool_calls:
             refusal = _extract_refusal(data)
@@ -2639,9 +3010,10 @@ class OpenAIResponsesClient:
                 # A completed response with no output is a valid provider result,
                 # even though it gives the agent nothing to act on. Preserve that
                 # structure as an empty LLMResponse so the shared turn-level
-                # recovery and stall policy can decide what happens next. Other
-                # statuses remain provider failures and must stay explicit.
-                if status.casefold() != "completed":
+                # recovery and stall policy can decide what happens next. A
+                # token-limited response also needs normalization before chat()
+                # raises its recoverable error with usage and continuation state.
+                if status.casefold() != "completed" and not output_limit_reached:
                     suffix = f" (status={status})" if status else ""
                     raise LLMError(
                         f"OpenAI Responses returned no assistant text or tool calls{suffix}"
@@ -2701,13 +3073,13 @@ class OpenAIResponsesClient:
                 auth_refresh_used = False
                 try:
                     while True:
-                        with httpx.Client(
+                        with provider_httpx_client(
                             timeout=self.timeout_s, transport=self._transport
                         ) as client:
                             response = client.post(
                                 url,
                                 headers=self._headers(url, force_refresh=auth_refresh_used),
-                                json=request_payload,
+                                content=_json_bytes(request_payload),
                             )
                         if (
                             response.status_code == 401

@@ -945,9 +945,11 @@ def helper_subagent_names(
 
 def load_subagent_registry(
     *,
-    root: Path,
+    root: Path | None,
     include_visual_designer: bool = True,
 ) -> dict[str, SubagentDefinition]:
+    """Built-ins, then the project's ``.alysis_agents/`` (none when ``root`` is None),
+    then the user's ``agents/`` folder; a later file layers over an earlier one."""
     registry = built_in_subagents(include_visual_designer=include_visual_designer)
     for source in _candidate_agent_directories(root=root):
         for path in sorted(source.glob("*.md")):
@@ -1080,9 +1082,14 @@ def resolve_subagent_model_role(raw: str | None) -> str | None:
     return role or None
 
 
-def _candidate_agent_directories(*, root: Path) -> list[Path]:
-    project_dirs = [root / ".alysis_agents"]
-    user_dirs = [Path(user_config_dir("alysis", "alysis")) / "agents"]
+def user_agents_directory() -> Path:
+    """The user's own subagent files: custom agents and overrides of built-ins."""
+    return Path(user_config_dir("alysis", "alysis")) / "agents"
+
+
+def _candidate_agent_directories(*, root: Path | None) -> list[Path]:
+    project_dirs = [root / ".alysis_agents"] if root is not None else []
+    user_dirs = [user_agents_directory()]
     out: list[Path] = []
     for candidate in [*project_dirs, *user_dirs]:
         if candidate.exists() and candidate.is_dir():

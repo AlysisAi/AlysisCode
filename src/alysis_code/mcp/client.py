@@ -51,6 +51,8 @@ _SUPPORTED_PROTOCOL_VERSIONS_BY_TRANSPORT = {
 # Stdio observes immediate server activity after `notifications/initialized`
 # without making a quiet startup wait for the full configured timeout.
 _STDIO_INITIALIZED_NOTIFICATION_COMPLETION_TIMEOUT_S = 0.5
+# Bound encoded image retention before validation by the tool's visual channel.
+_MAX_IMAGE_BASE64_CHARS = ((8 * 1024 * 1024 + 2) // 3) * 4
 _ReadOnlyRequestResult = TypeVar("_ReadOnlyRequestResult")
 
 
@@ -1113,6 +1115,22 @@ def _normalize_content_items(
             summaries.append(f"text({len(text)} chars)")
             text_parts.append(text)
             continue
+
+        # Keep bounded image content in memory for the tool binding's visual
+        # channel. The binding removes these bytes before hooks or persistence.
+        if item_type == "image":
+            data = item.get("data")
+            if isinstance(data, str) and len(data) <= _MAX_IMAGE_BASE64_CHARS:
+                normalized.append(
+                    {
+                        "type": "image",
+                        "data": data,
+                        "mime_type": item.get("mimeType"),
+                        "summary": "image",
+                    }
+                )
+                summaries.append("image")
+                continue
 
         summary = f"{item_type} item omitted"
         payload: dict[str, Any] = {

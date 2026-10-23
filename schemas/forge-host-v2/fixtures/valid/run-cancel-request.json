@@ -1,0 +1,22 @@
+{
+  "idempotencyKey": "idem_runcancel001",
+  "kind": "request",
+  "messageId": "msg_runcancel001",
+  "operationId": "operation_run00001",
+  "payload": {
+    "expectedRevision": 2,
+    "identity": {
+      "generationId": "gen_abcdefgh",
+      "revision": 2,
+      "runId": "run_abcdefgh",
+      "sessionId": "ses_abcdefgh"
+    },
+    "message": "Stop after the current safe point.",
+    "reasonCode": "user.cancelled",
+    "type": "run.cancel"
+  },
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "requestId": "req_runcancel001",
+  "sentAt": "2026-08-21T09:00:00Z"
+}

@@ -3,7 +3,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
-from .types import InputTokenCount, LLMResponse, UsageContract
+from .types import InputTokenCount, LLMError, LLMResponse, UsageContract
+
+_REQUIRED_TOOL_NAMES_ATTRIBUTE = "_alysis_required_tool_names"
+_SERIAL_TOOL_CALLS_ATTRIBUTE = "_alysis_serial_tool_calls_required"
+_STATELESS_RESPONSES_ATTRIBUTE = "_alysis_stateless_responses_required"
+_OMITTED_REASONING_DISPLAY_ATTRIBUTE = "_alysis_omitted_reasoning_display_required"
+
+
+class RequiredToolCallingUnsupportedError(LLMError):
+    """The active route cannot supply tools that the current session requires."""
 
 
 @runtime_checkable
@@ -45,13 +54,85 @@ class InputTokenCountingClient(Protocol):
     ) -> InputTokenCount | None: ...
 
 
+def require_tool_calling(client: Any, tool_names: list[str] | tuple[str, ...]) -> None:
+    """Mark one session client as fail-closed when its fixed tools are unavailable.
+
+    Ordinary chat may legitimately retry a provider without optional tools. A host-mediated
+    Computer Use session cannot: omitting its fixed tools would turn a requested desktop action
+    into an ungrounded text-only answer. The marker is kept on the per-session client and is never
+    serialized into a provider request.
+    """
+
+    normalized = tuple(dict.fromkeys(str(name).strip() for name in tool_names if str(name).strip()))
+    if not normalized:
+        raise ValueError("required tool names must not be empty")
+    setattr(client, _REQUIRED_TOOL_NAMES_ATTRIBUTE, normalized)
+
+
+def require_serial_tool_calls(client: Any) -> None:
+    """Require one provider tool call per assistant response for this client.
+
+    Computer Use snapshot identifiers are linear capabilities: a later action
+    cannot be constructed safely until the model has received the preceding
+    host result. Provider request flags are advisory, so the agent loop also
+    enforces this marker before any tool in a returned batch is dispatched.
+    """
+
+    setattr(client, _SERIAL_TOOL_CALLS_ATTRIBUTE, True)
+
+
+def serial_tool_calls_required(client: Any) -> bool:
+    return getattr(client, _SERIAL_TOOL_CALLS_ATTRIBUTE, False) is True
+
+
+def require_stateless_responses(client: Any) -> None:
+    """Disable provider-side Responses storage and continuation for one client."""
+
+    setattr(client, _STATELESS_RESPONSES_ATTRIBUTE, True)
+
+
+def stateless_responses_required(client: Any) -> bool:
+    return getattr(client, _STATELESS_RESPONSES_ATTRIBUTE, False) is True
+
+
+def require_omitted_reasoning_display(client: Any) -> None:
+    """Prevent provider reasoning summaries from entering a sensitive session.
+
+    Computer Use providers must still be free to reason and to retain opaque
+    continuation capabilities.  They must not return a readable reasoning
+    summary derived from a private desktop snapshot, however.  This marker is
+    scoped to the per-session client and is never serialized into a request.
+    """
+
+    setattr(client, _OMITTED_REASONING_DISPLAY_ATTRIBUTE, True)
+
+
+def omitted_reasoning_display_required(client: Any) -> bool:
+    return getattr(client, _OMITTED_REASONING_DISPLAY_ATTRIBUTE, False) is True
+
+
+def required_tool_names_for_client(client: Any) -> tuple[str, ...]:
+    raw = getattr(client, _REQUIRED_TOOL_NAMES_ATTRIBUTE, ())
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(str(name).strip() for name in raw if str(name).strip())
+
+
 def effective_tools_for_client(
     client: Any,
     tools: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]] | None:
     """Return only tools the client's current transport state can send."""
 
-    return None if getattr(client, "supports_tool_calling", True) is False else tools
+    if getattr(client, "supports_tool_calling", True) is not False:
+        return tools
+    required = required_tool_names_for_client(client)
+    if required:
+        raise RequiredToolCallingUnsupportedError(
+            "The selected model or provider does not support the required Computer Use tools "
+            f"({', '.join(required)}). Choose a tool-capable model or provider."
+        )
+    return None
 
 
 def count_input_tokens_if_supported(

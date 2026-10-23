@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .command_text import command_text
 from .git_safe import build_git_process_env
 
 _HEAD_REF_PREFIX = "ref:"
@@ -42,10 +43,17 @@ class _GitResolution:
     current_branch: str | None
 
 
-def resolve_workspace_context(path: Path) -> WorkspaceContext:
+def resolve_workspace_context(
+    path: Path,
+    *,
+    allow_subprocess: bool = True,
+) -> WorkspaceContext:
     """Resolve workspace metadata for an existing directory without mutating the filesystem."""
     input_path = _resolve_input_path(path)
-    git_resolution = _resolve_git_resolution(input_path)
+    git_resolution = _resolve_git_resolution(
+        input_path,
+        allow_subprocess=allow_subprocess,
+    )
     if git_resolution is None:
         return WorkspaceContext(
             input_path=input_path,
@@ -87,10 +95,22 @@ def _resolve_input_path(path: Path) -> Path:
     return resolved
 
 
-def _resolve_git_resolution(path: Path) -> _GitResolution | None:
+def _resolve_git_resolution(
+    path: Path,
+    *,
+    allow_subprocess: bool = True,
+) -> _GitResolution | None:
     fs_root = _find_git_root_from_filesystem(path)
     if fs_root is None:
         return None
+    if not allow_subprocess:
+        current_branch, has_head_commit = _filesystem_head_state(fs_root)
+        return _GitResolution(
+            workspace_root=fs_root,
+            git_root=fs_root,
+            has_head_commit=has_head_commit,
+            current_branch=current_branch,
+        )
     git_root = _git_show_toplevel(path)
     if git_root is not None:
         return _git_resolution_from_root(git_root)
@@ -116,7 +136,7 @@ def _run_git(path: Path, args: list[str]) -> subprocess.CompletedProcess[str] | 
             ["git", "-C", os.fspath(path), *args],
             check=False,
             capture_output=True,
-            text=True,
+            **command_text(),
             env=_git_probe_env(),
             timeout=_GIT_PROBE_TIMEOUT_S,
         )

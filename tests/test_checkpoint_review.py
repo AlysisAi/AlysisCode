@@ -46,8 +46,9 @@ class _Client:
 
 
 @pytest.mark.parametrize("one_shot", [False, True])
+@pytest.mark.parametrize("prior_edit", [False, True])
 def test_passing_baseline_without_requested_edit_cannot_be_a_verified_checkpoint(
-    tmp_path, monkeypatch, one_shot
+    tmp_path, monkeypatch, one_shot, prior_edit
 ):
     monkeypatch.setenv("ALYSIS_VERIFY_SANDBOX_MODE", "off")
     monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
@@ -55,8 +56,21 @@ def test_passing_baseline_without_requested_edit_cannot_be_a_verified_checkpoint
     (tmp_path / "check.py").write_text('print("baseline check passed")\n')
     command = '"' + sys.executable.replace("\\", "/") + '" check.py'
     session = _session(tmp_path, command, "checkpoint-no-edit-review", one_shot=one_shot)
-    session.client = _Client([ToolCall(id="check", name="shell_run", arguments={"cmd": command})])
     try:
+        if prior_edit:
+            session.client = _Client(
+                [
+                    ToolCall(
+                        id="earlier",
+                        name="fs_write",
+                        arguments={"path": "notes.txt", "content": "earlier work"},
+                    )
+                ]
+            )
+            session.run_turn("Create notes.txt.")
+        session.client = _Client(
+            [ToolCall(id="check", name="shell_run", arguments={"cmd": command})]
+        )
         session.run_turn(
             'Change deliverable.py to print "Hello production" instead of its old behavior, '
             f"then run `{command}`."
@@ -96,7 +110,7 @@ def test_cli_resume_restores_checkpoint_identity_and_keeps_good_bytes_after_fail
     try:
         original.run_turn(f"Implement deliverable.py with value 7 and verify using `{command}`.")
         checkpoint = dict(original.last_turn_outcome["best_verified_checkpoint"])
-        task_id = original.task_state.task_id
+        task_id = original._task_evidence_state.task_id
     finally:
         original.close()
 
@@ -107,7 +121,7 @@ def test_cli_resume_restores_checkpoint_identity_and_keeps_good_bytes_after_fail
         )
         assert ok, message
         assert history
-        assert resumed.task_state.task_id == task_id
+        assert resumed._task_evidence_state.task_id == task_id
         assert resumed.store.session_id == "checkpoint-resume-origin"
         resumed.client = _Client(
             [
@@ -120,7 +134,7 @@ def test_cli_resume_restores_checkpoint_identity_and_keeps_good_bytes_after_fail
             provider_failure=True,
         )
         with pytest.raises(LLMError, match="Provider unavailable"):
-            resumed.run_turn("Continue the same task.", task_relation="continuation")
+            resumed.run_turn(f"Implement deliverable.py with value 7 and verify using `{command}`.")
         outcome = resumed.last_turn_outcome
         assert not outcome["verified_success"]
         assert outcome["task_id"] == task_id

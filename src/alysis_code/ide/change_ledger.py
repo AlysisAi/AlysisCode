@@ -28,6 +28,7 @@ _MAX_DIFF_BYTES = 2 * 1024 * 1024
 _DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024
 _DEFAULT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 _ZERO_OID = "0" * 40
+_SESSION_REF_PREFIX = "refs/heads/sessions/"
 _METADATA_PREFIX = "Alysis Code-Checkpoint-Metadata: "
 _PENDING_OPERATION_VERSION = 1
 _CHECKPOINT_METADATA_VERSION = 2
@@ -386,7 +387,7 @@ class ChangeLedger:
             self.pending_operation_path.unlink(missing_ok=True)
             return result
 
-    def redo(self, session_id: str) -> Checkpoint:
+    def redo(self, session_id: str, *, expected_checkpoint_id: str | None = None) -> Checkpoint:
         session = _validate_session_id(session_id)
         with self._lock:
             self._reconcile_storage(session_id=session)
@@ -396,6 +397,8 @@ class ChangeLedger:
             head = self._head_locked(db, owner)
             if head is None or head.kind != "revert" or not head.reverts_id:
                 raise ChangeLedgerError("The current checkpoint is not redoable.")
+            if expected_checkpoint_id is not None and head.checkpoint_id != expected_checkpoint_id:
+                raise ChangeLedgerError("The reviewed checkpoint is no longer current.")
             original = self._checkpoint_locked(db, head.reverts_id)
             paths = _record_paths(original.changes)
             self._require_paths_revertible(paths, original, head)
@@ -623,8 +626,10 @@ class ChangeLedger:
                 str(row["session_id"])
                 for row in db.execute("SELECT DISTINCT session_id FROM checkpoints").fetchall()
             )
+            # Read inside the write transaction: refs move only under it, as SQLite does.
+            ref_oids = self._session_ref_oids()
             for session in sorted(sessions):
-                self._reconcile_session_ref_locked(db, session)
+                self._reconcile_session_ref_locked(db, session, ref_oids)
             if pending is not None:
                 clear_pending = self._reconcile_pending_restore_locked(db, pending)
             db.commit()
@@ -635,10 +640,14 @@ class ChangeLedger:
         self,
         db: sqlite3.Connection,
         session_id: str,
+        ref_oids: dict[str, str],
     ) -> None:
         head = self._head_locked(db, session_id)
-        ref = f"refs/heads/sessions/{_session_key(session_id)}"
-        ref_oid = self._ref_oid(ref)
+        ref = f"{_SESSION_REF_PREFIX}{_session_key(session_id)}"
+        ref_oid = ref_oids.get(ref)
+        if ref_oid is None and head is not None:
+            # A head without its ref is repaired below; read that one ref as before first.
+            ref_oid = self._ref_oid(ref)
         if head is None and ref_oid is None:
             return
         if head is not None and ref_oid == head.commit_oid:
@@ -914,6 +923,25 @@ class ChangeLedger:
             return None
         return result.stdout.decode("ascii", errors="strict").strip()
 
+    def _session_ref_oids(self) -> dict[str, str]:
+        """Every session ref and the commit it names, read with one Git process.
+
+        Reconciling looks at every session the ledger has held, on every ledger
+        operation. One ``rev-parse`` per session cost a process start each: on
+        Windows 60-100 ms, so 25 sessions in a project made a resumed chat wait
+        about 3.5 s, and the wait grew with each new session.
+        """
+        output = self._git(
+            ["for-each-ref", "--format=%(objectname) %(refname)", _SESSION_REF_PREFIX],
+            check=True,
+        ).stdout
+        refs: dict[str, str] = {}
+        for line in output.decode("utf-8", errors="replace").splitlines():
+            oid, _, name = line.partition(" ")
+            if oid and name:
+                refs[name] = oid
+        return refs
+
     def _revision_list(self, revision: str) -> tuple[str, ...]:
         output = self._git(["rev-list", "--reverse", revision], check=True).stdout
         return tuple(line for line in output.decode("ascii").splitlines() if line)
@@ -1029,7 +1057,7 @@ class ChangeLedger:
             .stdout.decode()
             .strip()
         )
-        ref = f"refs/heads/sessions/{_session_key(session_id)}"
+        ref = f"{_SESSION_REF_PREFIX}{_session_key(session_id)}"
         update_args = ["update-ref", ref, commit_oid, parent_oid or _ZERO_OID]
         self._git(update_args, check=True)
         changes = self._changes_between(parent_oid, commit_oid)

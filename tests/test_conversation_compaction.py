@@ -16,7 +16,6 @@ from alysis_code.agent.turn_contract import (
 from alysis_code.agent_loop import (
     AgentSession,
     create_session,
-    refresh_session_task_brief_message,
 )
 from alysis_code.compaction.conversation_compactor import MEMORY_MARKER, PINS_MARKER
 from alysis_code.config import AppConfig
@@ -216,6 +215,71 @@ def _make_cfg() -> AppConfig:
     return cfg
 
 
+def test_hosted_envelope_pressure_compacts_below_the_token_window(tmp_path: Path) -> None:
+    from alysis_code.llm.openai_compat import OpenAICompatClient
+
+    cfg = _make_cfg()
+    cfg.extra_fields["compaction"].update(trigger_ratio=0.9, target_ratio=0.7)
+    cfg.extra_fields["model_metadata_overrides"] = {
+        "models": {
+            "gpt-5-nano": {
+                "context_window_tokens": 1_000_000,
+                "max_output_tokens": 8192,
+            }
+        }
+    }
+    session = create_session(
+        cfg=cfg,
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=2,
+        no_log=False,
+        api_key_override="x",
+        session_log_dir_override=tmp_path / "sessions",
+    )
+    try:
+        compactor = session.conversation_compactor
+        assert compactor is not None
+        compactor.update_main_client(
+            OpenAICompatClient(
+                base_url="https://gateway.test/v1",
+                api_key="test",
+                model="deepseek-flash",
+                provider_key="alysis",
+            )
+        )
+        compactor.compactor_client = _FakeCompactorClient(
+            [_summary(decisions=["retained"]) for _ in range(20)]
+        )
+        compactor._input_token_counter = None
+        for i in range(10):
+            session.messages.extend(
+                [
+                    {"role": "user", "content": f"old request {i} " + "abc " * 7500},
+                    {"role": "assistant", "content": f"old answer {i} " + "def " * 7500},
+                ]
+            )
+        session.messages.append({"role": "user", "content": "Continue the current task."})
+        args = {"tool_list": None, "main_model": "gpt-5-nano"}
+        assert not compactor.request_fits_input_budget(messages=session.messages, **args)
+        result, changed = compactor.maybe_compact(messages=session.messages, **args)
+        assert changed
+        assert result[-1]["content"] == "Continue the current task."
+        assert compactor.request_fits_input_budget(messages=result, **args)
+        checks = [
+            e["payload"]
+            for e in read_session_events(session.store.path)
+            if e["type"] == "compaction_check"
+        ]
+        assert checks[0]["used_tokens"] < checks[0]["target_tokens"]
+        assert checks[0]["request_capacity_ratio"] > 1
+        assert checks[-1]["request_capacity_ratio"] <= 0.7
+        assert compactor.state.history_chunk_index > 0
+    finally:
+        session.close()
+
+
 def _init_git_repo_with_commit(repo: Path) -> None:
     repo.mkdir()
     subprocess.run(
@@ -305,181 +369,6 @@ def test_compaction_writes_history_and_inserts_memory_message(tmp_path: Path) ->
     assert summary_path.exists()
     summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary_data["decisions"] == ["d1"]
-
-
-def test_repo_task_brief_stays_in_pinned_prefix_after_compaction(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_git_repo_with_commit(repo)
-
-    cfg = _make_cfg()
-    session = create_session(
-        cfg=cfg,
-        root=repo,
-        mode="auto",
-        yes=True,
-        max_steps=4,
-        no_log=False,
-        api_key_override="x",
-        session_log_dir_override=tmp_path / "logs",
-        session_id_override="compaction-task-brief",
-    )
-    session.client = _FakeMainClient()  # type: ignore[assignment]
-    assert session.conversation_compactor is not None
-    session.conversation_compactor.compactor_client = _FakeCompactorClient(  # type: ignore[assignment]
-        [_summary(decisions=["d1"])]
-    )
-
-    try:
-        original_pinned_prefix_len = session.pinned_prefix_len
-        first_instruction = "Fix src/app.py without changing the output shape."
-        refreshed = refresh_session_task_brief_message(
-            session,
-            pending_instruction=first_instruction,
-            turn_semantics=_workspace_change_semantics(
-                first_instruction,
-                relation=TurnRelation.NEW,
-            ),
-        )
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Fix src/app.py without changing the output shape.",
-            }
-        )
-        refinement = "Also preserve unknown values like pending."
-        refreshed = refresh_session_task_brief_message(
-            session,
-            pending_instruction=refinement,
-            turn_semantics=_workspace_change_semantics(
-                refinement,
-                relation=TurnRelation.REFINE,
-            ),
-        )
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Also preserve unknown values like pending.",
-            }
-        )
-        explanation = "Can you explain more about src/app.py?"
-        refreshed = refresh_session_task_brief_message(
-            session,
-            pending_instruction=explanation,
-            turn_semantics=_explain_prior_semantics(explanation),
-        )
-        _append_turns(session, count=7, prefix="old")
-        compacted, changed = session.conversation_compactor.compact_now(
-            messages=session.messages,
-            tool_list=session.tool_list,
-            main_model=session.client.model,
-            focus="task-brief",
-        )
-        session.messages = compacted
-    finally:
-        session.close()
-
-    pinned_messages = session.messages[: session.pinned_prefix_len]
-    task_brief_messages = [
-        str(message.get("content") or "")
-        for message in pinned_messages
-        if str(message.get("content") or "").startswith("<task_brief>")
-    ]
-
-    assert refreshed is False
-    assert changed is True
-    assert session.pinned_prefix_len == original_pinned_prefix_len
-    assert len(task_brief_messages) == 1
-    assert "current_focus:" in task_brief_messages[0]
-    assert "- Fix src/app.py without changing the output shape." in task_brief_messages[0]
-    assert "- Also preserve unknown values like pending." in task_brief_messages[0]
-    assert "- Can you explain more about src/app.py?" not in task_brief_messages[0]
-
-
-def test_plain_dir_task_brief_stays_in_pinned_prefix_after_compaction(tmp_path: Path) -> None:
-    cfg = _make_cfg()
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=4,
-        no_log=False,
-        api_key_override="x",
-        session_log_dir_override=tmp_path / "logs",
-        session_id_override="compaction-plain-dir-task-brief",
-    )
-    session.client = _FakeMainClient()  # type: ignore[assignment]
-    assert session.conversation_compactor is not None
-    session.conversation_compactor.compactor_client = _FakeCompactorClient(  # type: ignore[assignment]
-        [_summary(decisions=["d1"])]
-    )
-
-    try:
-        original_pinned_prefix_len = session.pinned_prefix_len
-        first_instruction = "Create timer.py here without changing the JSON output shape."
-        refreshed = refresh_session_task_brief_message(
-            session,
-            pending_instruction=first_instruction,
-            turn_semantics=_workspace_change_semantics(
-                first_instruction,
-                relation=TurnRelation.NEW,
-            ),
-        )
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Create timer.py here without changing the JSON output shape.",
-            }
-        )
-        refinement = "Also preserve unknown values like pending."
-        refreshed = refresh_session_task_brief_message(
-            session,
-            pending_instruction=refinement,
-            turn_semantics=_workspace_change_semantics(
-                refinement,
-                relation=TurnRelation.REFINE,
-            ),
-        )
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Also preserve unknown values like pending.",
-            }
-        )
-        explanation = "Can you explain `timer.py` more?"
-        refreshed = refresh_session_task_brief_message(
-            session,
-            pending_instruction=explanation,
-            turn_semantics=_explain_prior_semantics(explanation),
-        )
-        _append_turns(session, count=7, prefix="old")
-        compacted, changed = session.conversation_compactor.compact_now(
-            messages=session.messages,
-            tool_list=session.tool_list,
-            main_model=session.client.model,
-            focus="task-brief-plain-dir",
-        )
-        session.messages = compacted
-    finally:
-        session.close()
-
-    pinned_messages = session.messages[: session.pinned_prefix_len]
-    task_brief_messages = [
-        str(message.get("content") or "")
-        for message in pinned_messages
-        if str(message.get("content") or "").startswith("<task_brief>")
-    ]
-
-    assert refreshed is False
-    assert changed is True
-    assert session.pinned_prefix_len == original_pinned_prefix_len
-    assert len(task_brief_messages) == 1
-    assert "current_focus:" in task_brief_messages[0]
-    assert (
-        "- Create timer.py here without changing the JSON output shape." in task_brief_messages[0]
-    )
-    assert "- Also preserve unknown values like pending." in task_brief_messages[0]
-    assert "- Can you explain `timer.py` more?" not in task_brief_messages[0]
 
 
 def test_maybe_compact_does_not_compact_below_trigger_threshold(tmp_path: Path) -> None:

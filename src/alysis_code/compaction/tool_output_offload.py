@@ -221,6 +221,80 @@ class ToolOutputOffloader:
                 for key in ("diff_id", "offset", "next_offset", "total_chars")
                 if key in result
             }
+        if tool_name in {
+            "embedded_browser_open",
+            "embedded_browser_read",
+            "embedded_browser_navigate",
+            "embedded_browser_back",
+            "embedded_browser_forward",
+            "embedded_browser_reload",
+            "embedded_browser_snapshot",
+            "embedded_browser_click",
+            "embedded_browser_type",
+            "embedded_browser_select",
+            "embedded_browser_scroll",
+            "embedded_browser_key",
+        } and isinstance(result, dict):
+            # A stored page still needs its tab and cursor visible to the model,
+            # so it can continue reading without opening the wrong tab or restarting.
+            continuation_metadata = {
+                key: result[key]
+                for key in (
+                    "tab_id",
+                    "title",
+                    "url",
+                    "next_offset",
+                    "snapshot_id",
+                    "viewport",
+                    "focused_ref",
+                )
+                if key in result
+            }
+        if (
+            tool_name.startswith("embedded_browser_")
+            and continuation_metadata is not None
+            and isinstance(result, dict)
+            and isinstance(result.get("elements"), list)
+        ):
+            # Keep observed control refs usable after page text is offloaded. Never
+            # synthesize refs or shorten option values, which would change targets.
+            controls = []
+            for element in result["elements"][:20]:
+                if not isinstance(element, dict):
+                    continue
+                control = {
+                    key: element[key]
+                    for key in (
+                        "ref",
+                        "role",
+                        "name",
+                        "bounds",
+                        "editable",
+                        "disabled",
+                        "checked",
+                        "type",
+                        "input_type",
+                    )
+                    if key in element
+                }
+                if len(json.dumps([*controls, control], ensure_ascii=False)) > 3500:
+                    break
+                with_options = {
+                    **control,
+                    **{key: element[key] for key in ("options", "value") if key in element},
+                }
+                if len(json.dumps([*controls, with_options], ensure_ascii=False)) <= 3500:
+                    control = with_options
+                elif "options" in element or "value" in element:
+                    control["details_omitted"] = True
+                if len(json.dumps([*controls, control], ensure_ascii=False)) > 3500:
+                    break
+                controls.append(control)
+            continuation_metadata["elements"] = controls
+            continuation_metadata["elements_truncated"] = len(controls) < len(result["elements"])
+            continuation_metadata["element_details"] = (
+                "Use these observed refs with snapshot_id. Read the linked artifact for omitted controls or option values; never guess them."
+            )
         preview_text, preview_chars = _truncated_preview(content_json, self._preview_chars)
         shape_threshold_chars = self._transcript_shape_threshold_chars()
         if original_chars < shape_threshold_chars:

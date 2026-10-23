@@ -15,6 +15,8 @@ from alysis_code.model_registry import ModelRegistry
 from alysis_code.profile_presets import get_preset, make_profile_from_preset
 from alysis_code.profiles import add_profile, set_active_profile
 
+pytestmark = pytest.mark.usefixtures("configured_hosted_api")
+
 
 def hosted_config():
     preset = get_preset("alysis")

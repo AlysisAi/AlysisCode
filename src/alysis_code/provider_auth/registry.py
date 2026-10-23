@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import httpx
 
@@ -42,6 +43,47 @@ def create_provider_auth(
     return instance
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderAuthConnection:
+    """The transport a subscription adapter owns.
+
+    ``legacy_base_urls`` are endpoints the adapter used in earlier releases; a profile
+    saved then still names one of them and is moved to ``base_url`` on load.
+    """
+
+    protocol: str
+    base_url: str
+    legacy_base_urls: tuple[str, ...] = ()
+
+
+def provider_auth_connection(provider_id: str) -> ProviderAuthConnection | None:
+    """Return the adapter's protocol and endpoint, read without touching credentials.
+
+    Unknown adapters return None so callers keep their own error for them.
+    """
+
+    _ensure_builtins()
+    normalized = str(provider_id or "").strip()
+    factory = _FACTORIES.get(normalized)
+    if factory is None:
+        return None
+    source: object = factory
+    protocol = getattr(source, "protocol", None)
+    base_url = getattr(source, "base_url", None)
+    if not isinstance(protocol, str) or not isinstance(base_url, str):
+        source = create_provider_auth(normalized)
+        protocol = getattr(source, "protocol", None)
+        base_url = getattr(source, "base_url", None)
+    if not isinstance(protocol, str) or not isinstance(base_url, str):
+        return None
+    legacy = getattr(source, "legacy_base_urls", ())
+    return ProviderAuthConnection(
+        protocol=protocol,
+        base_url=base_url,
+        legacy_base_urls=tuple(str(item) for item in legacy or () if str(item).strip()),
+    )
+
+
 def provider_auth_ids() -> tuple[str, ...]:
     _ensure_builtins()
     return tuple(sorted(_FACTORIES))
@@ -69,7 +111,9 @@ def _ensure_builtins() -> None:
 
 
 __all__ = [
+    "ProviderAuthConnection",
     "create_provider_auth",
+    "provider_auth_connection",
     "provider_auth_ids",
     "provider_auth_setup_options",
     "register_provider_auth",

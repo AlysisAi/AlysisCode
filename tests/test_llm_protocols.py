@@ -199,7 +199,7 @@ def test_zai_coding_plan_capabilities_preserve_subscription_semantics() -> None:
     assert capabilities.supports_tool_calling is True
     assert capabilities.supports_structured_outputs is True
     assert capabilities.supports_provider_hosted_web_search_adapter is False
-    assert capabilities.reasoning_trace.adapter == "openai_compat_passive"
+    assert capabilities.reasoning_trace.adapter == "glm_reasoning"
     assert capabilities.reasoning_trace.has_safe_summary is False
     assert capabilities.cache_strategy == "implicit_provider"
     assert capabilities.usage_contract.billing_mode == BillingMode.SUBSCRIPTION

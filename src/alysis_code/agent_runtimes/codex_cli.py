@@ -12,6 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from ..command_text import command_text
 from ..config import AgentRuntimeSettings
 from .base import (
     AuthMethod,
@@ -111,7 +112,7 @@ class CodexCliRuntimeAdapter:
                 [executable, "--version"],
                 check=False,
                 capture_output=True,
-                text=True,
+                **command_text(),
                 timeout=_VERSION_TIMEOUT_SECONDS,
                 env=_runtime_environment(),
             )
@@ -145,7 +146,7 @@ class CodexCliRuntimeAdapter:
                 [probe.executable, "login", "status"],
                 check=False,
                 capture_output=True,
-                text=True,
+                **command_text(),
                 timeout=_STATUS_TIMEOUT_SECONDS,
                 env=_runtime_environment(),
             )
@@ -405,9 +406,7 @@ def _run_process(
         "stdin": subprocess.PIPE,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
+        **command_text(),
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

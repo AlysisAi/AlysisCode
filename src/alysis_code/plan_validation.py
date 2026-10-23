@@ -20,6 +20,7 @@ from .file_classification import (
 )
 from .mcp.forge_scope import normalize_task_mcp_scope
 from .planning_constraints import (
+    path_matches_planning_root,
     planning_constraints_from_plan,
     task_scope_constraint_violations,
 )
@@ -571,8 +572,15 @@ def _missing_explicit_scope_hints(
     task: dict[str, Any],
     estimated_files: list[str],
     write_scope: list[str],
+    forbidden_paths: tuple[str, ...] = (),
 ) -> list[str]:
-    explicit_paths = _explicit_task_path_hints(task)
+    explicit_paths = [
+        path
+        for path in _explicit_task_path_hints(task)
+        if not any(
+            path_matches_planning_root(path, forbidden_path) for forbidden_path in forbidden_paths
+        )
+    ]
     if not explicit_paths:
         return []
     scope_entries = [*estimated_files, *write_scope]
@@ -761,6 +769,7 @@ def find_plan_acceptance_issues(
             task=task,
             estimated_files=estimated_files,
             write_scope=write_scope,
+            forbidden_paths=tuple(item.path for item in planning_constraints.forbidden_roots),
         )
         if missing_explicit_scope:
             issues.append(

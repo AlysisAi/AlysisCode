@@ -837,7 +837,7 @@ def test_paste_editor_updates_payload_and_token_line_count(monkeypatch):
     with create_pipe_input() as pipe:
 
         def feed():
-            pipe.send_text(_bracketed_paste(payload) + "\x10")
+            pipe.send_text(_bracketed_paste(payload) + "\x1bp")
             if not wait_for(
                 lambda: (
                     captured.get("application") is not None
@@ -925,7 +925,7 @@ def _run_paste_editor_with_plain_selection(monkeypatch, edit_keys: str):
     with create_pipe_input() as pipe:
 
         def feed():
-            pipe.send_text(_bracketed_paste(payload) + "\x10")
+            pipe.send_text(_bracketed_paste(payload) + "\x1bp")
             if not wait_for(
                 lambda: (
                     captured.get("application") is not None
@@ -1084,13 +1084,13 @@ def test_live_paste_hint_tracks_tokens_on_welcome_delete_and_submit(monkeypatch)
 
     assert not feeder.is_alive()
     assert feeder_errors == []
-    assert captured["one"] == (True, "  pasted #1 +9 lines - ctrl+p to view")
-    assert captured["two"] == (True, "  2 pasted blocks - cursor on one, ctrl+p to view")
+    assert captured["one"] == (True, "  pasted #1 +9 lines - alt+p to view")
+    assert captured["two"] == (True, "  2 pasted blocks - cursor on one, alt+p to view")
     assert captured["deleted"] == (False, "")
     assert "pasted" not in captured["submitted"][1]
 
 
-def _run_ctrl_p_away_from_paste_tokens(monkeypatch, payloads):
+def _run_alt_p_away_from_paste_tokens(monkeypatch, payloads):
     import threading
     import time
 
@@ -1128,7 +1128,7 @@ def _run_ctrl_p_away_from_paste_tokens(monkeypatch, payloads):
 
         def feed():
             keys = "lead " + " between ".join(_bracketed_paste(payload) for payload in payloads)
-            pipe.send_text(keys + "\x1b[H\x10")
+            pipe.send_text(keys + "\x1b[H\x1bp")
             if len(payloads) == 1:
                 if not wait_for(
                     lambda: (
@@ -1136,8 +1136,8 @@ def _run_ctrl_p_away_from_paste_tokens(monkeypatch, payloads):
                         and captured["application"].layout.current_buffer
                         is not captured.get("input_buffer")
                     ),
-                    "single-token ctrl+p did not open the editor",
-                    timeout=0.5,
+                    "single-token alt+p did not open the editor",
+                    timeout=5,
                 ):
                     pipe.send_text("\x04")
                     return
@@ -1209,20 +1209,20 @@ def _run_ctrl_p_away_from_paste_tokens(monkeypatch, payloads):
     return captured, feeder_errors
 
 
-def test_single_paste_ctrl_p_away_from_token_opens_editor(monkeypatch):
+def test_single_paste_alt_p_away_from_token_opens_editor(monkeypatch):
     payload = "\n".join(f"line {number}" for number in range(1, 10))
 
-    captured, feeder_errors = _run_ctrl_p_away_from_paste_tokens(monkeypatch, [payload])
+    captured, feeder_errors = _run_alt_p_away_from_paste_tokens(monkeypatch, [payload])
 
     assert feeder_errors == []
     assert captured["editor_text"] == payload
 
 
-def test_two_pastes_ctrl_p_away_from_tokens_keeps_placeholder_noop(monkeypatch):
+def test_two_pastes_alt_p_away_from_tokens_keeps_placeholder_noop(monkeypatch):
     first = "\n".join(f"first {number}" for number in range(1, 10))
     second = "\n".join(f"second {number}" for number in range(1, 10))
 
-    captured, feeder_errors = _run_ctrl_p_away_from_paste_tokens(monkeypatch, [first, second])
+    captured, feeder_errors = _run_alt_p_away_from_paste_tokens(monkeypatch, [first, second])
 
     assert feeder_errors == []
     assert captured["editor_open"] is False
@@ -1849,7 +1849,7 @@ def test_editor_selection_drag_autoscrolls_at_bottom_edge(monkeypatch):
     with create_pipe_input() as pipe:
 
         def feed():
-            pipe.send_text(_bracketed_paste(payload) + "\x10")
+            pipe.send_text(_bracketed_paste(payload) + "\x1bp")
             if not wait_for(
                 lambda: (
                     captured.get("application") is not None

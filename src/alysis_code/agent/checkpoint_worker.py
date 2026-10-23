@@ -18,6 +18,8 @@ from typing import Any
 
 import psutil
 
+from ..command_text import command_text
+
 
 class CheckpointWorkerExpired(TimeoutError):
     def __init__(self, *, cleanup_pending: bool = False):
@@ -114,8 +116,7 @@ def run_checkpoint_worker(payload: dict[str, Any], *, timeout: float) -> dict[st
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
+        **command_text(),
         **options,
     )
     communication_finished = False

@@ -8,7 +8,7 @@ none is a substitute for another.
 
 See [the release status](vscode-marketplace-launch.md) for remaining production gates.
 Signing, attestations, and publication run from immutable source tags in the public
-`AlysisAi/alysis-code` repository. Component tests never authorize production publication.
+`AlysisAi/AlysisCode` repository. Component tests never authorize production publication.
 
 ## Signed release contract
 
@@ -115,7 +115,7 @@ Create a dedicated Entra application/service principal with a federated credenti
 - Subject: `repo:AlysisAi@252910184/alysis-code@1233295735:environment:managed-cli-native-signing`
 
 The public repository uses GitHub's immutable subject format, verified on 29 September 2026
-through `GET /repos/AlysisAi/alysis-code/actions/oidc/customization/sub` (`use_default: true`,
+through `GET /repos/AlysisAi/AlysisCode/actions/oidc/customization/sub` (`use_default: true`,
 `use_immutable_subject: true`). Its returned `sub_claim_prefix` includes the owner and repository
 IDs shown above. Use that exact prefix with the environment context; the older name-only subject
 does not match this repository's tokens. Recheck the endpoint before provisioning or changing
@@ -373,7 +373,7 @@ After the run:
 
 - Preserve the workflow run URL, source commit, exact VSIX/runtime SHA-256 values, public-key
   fingerprint, SBOMs, and attestation verification output with the release record.
-- Verify provenance with `gh attestation verify <artifact> --repo AlysisAi/alysis-code` before signing
+- Verify provenance with `gh attestation verify <artifact> --repo AlysisAi/AlysisCode` before signing
   the manifest and again before promotion.
 - A missing environment reviewer, invalid/missing fingerprint variable, unexpected public-key diff,
   absent SBOM/attestation, or native-signature failure blocks promotion.

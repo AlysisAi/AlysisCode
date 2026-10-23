@@ -1,3 +1,5 @@
+import base64
+import json
 import subprocess
 from pathlib import Path
 
@@ -60,11 +62,38 @@ def test_rejects_local_assistant_working_files(path: str) -> None:
     assert path_violation(path) == "local assistant working files"
 
 
-@pytest.mark.parametrize(
-    "path", ["extensions/vscode-alysis/package.json", "supabase/migrations/setup.sql"]
-)
-def test_rejects_unreleased_packages(path: str) -> None:
-    assert path_violation(path) == "unreleased editor or hosted-service package"
+def test_only_reviewed_editor_packages_are_public() -> None:
+    assert path_violation("extensions/vscode-alysis/package.json") is None
+    assert path_violation("extensions/jetbrains-alysis/README.md") is None
+    assert path_violation("extensions/shared-ui/README.md") is None
+    assert path_violation("extensions/unreleased/package.json") == "unreleased editor package"
+    assert path_violation("supabase/migrations/setup.sql") == "hosted-service implementation"
+
+
+def test_pinned_verification_key_must_be_public(tmp_path: Path) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    key_path = check_public_repo._PUBLIC_VERIFICATION_KEY
+    target = tmp_path / key_path
+    target.parent.mkdir(parents=True)
+    key = ed25519.Ed25519PrivateKey.generate()
+    target.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    assert collect_violations([key_path], tmp_path) == []
+    target.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    assert collect_violations([key_path], tmp_path) == [
+        f"{key_path}: expected a public verification key"
+    ]
 
 
 def test_rejects_power_mode_package() -> None:
@@ -125,4 +154,73 @@ def test_relative_links_require_exact_file_and_directory_case(tmp_path: Path) ->
         "README.md:3: broken relative link: Docs/guide.md",
         "README.md:5: broken relative link: Docs/",
         "README.md:8: broken relative link: docs/ΟΔΗΓΌΣ.md",
+    ]
+
+
+@pytest.mark.parametrize(
+    "path", ["outputs/release-notes.md", ".qa-results/scan.json", "private-attestation/signoff.md"]
+)
+def test_rejects_local_release_evidence(path: str) -> None:
+    assert path_violation(path) == "local runtime or build-output directory"
+
+
+@pytest.mark.parametrize("scheme", ["https", "postgresql"])
+def test_rejects_backend_deployment_hosts_without_echoing_them(tmp_path: Path, scheme: str) -> None:
+    host = ".".join(("synthetic-project", "supabase", "co"))
+    (tmp_path / "config.py").write_text(f'ENDPOINT = "{scheme}://{host}/api"\n')
+    assert collect_violations(["config.py"], tmp_path) == [
+        "config.py:1: deployment-specific backend host"
+    ]
+
+
+@pytest.mark.parametrize("role", ["anon", "service_role"])
+def test_rejects_backend_jwt_even_when_split_into_string_literals(
+    tmp_path: Path, role: str
+) -> None:
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps({"iss": "supabase", "ref": "synthetic-project", "role": role}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    (tmp_path / "client.py").write_text(
+        f'TOKEN = (\n    "header."\n    "{payload}."\n    "signature"\n)\n'
+    )
+    assert collect_violations(["client.py"], tmp_path) == [
+        "client.py:3: deployment-specific backend JWT"
+    ]
+
+
+@pytest.mark.parametrize("kind", ["publishable", "secret"])
+def test_rejects_backend_project_keys(tmp_path: Path, kind: str) -> None:
+    key = "_".join(("sb", kind, "synthetic-test-value"))
+    (tmp_path / "client.py").write_text(f'KEY = "{key}"\n')
+    assert collect_violations(["client.py"], tmp_path) == [
+        "client.py:1: deployment-specific backend key"
+    ]
+
+
+def test_allows_generic_backend_support_and_reserved_example_urls(tmp_path: Path) -> None:
+    (tmp_path / "client.py").write_text(
+        'ENV_NAME = "ALYSIS_SUPABASE_URL"\n'
+        'BASE_URL = "https://cloud.example.invalid/api"\n'
+        'VENDOR_DOMAIN = "supabase.co"\n'
+    )
+    assert collect_violations(["client.py"], tmp_path) == []
+
+
+def test_only_exact_public_cloud_default_is_allowed() -> None:
+    declaration = check_public_repo._PUBLIC_CLOUD_DEFAULT_DECLARATION
+    check = check_public_repo.deployment_content_violations
+    path = "src/alysis_code/alysis_cloud.py"
+    assert check(path, declaration.encode()) == []
+    assert check("other.py", declaration.encode()) == [
+        "other.py:1: deployment-specific backend host"
+    ]
+    assert check(path, declaration.replace("/functions/v1", "/rest/v1").encode())
+    assert check(path, (declaration + " # another declaration").encode())
+    key = "_".join(("sb", "secret", "synthetic-test-value"))
+    assert check(path, (declaration + "\nKEY = " + repr(key)).encode()) == [
+        f"{path}:2: deployment-specific backend key"
     ]

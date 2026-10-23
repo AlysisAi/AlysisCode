@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from .events import (
+    ApprovalReviewed,
     ConfigFormRequest,
     ErrorRaised,
     Event,
@@ -174,6 +175,19 @@ class Surface(Protocol):
     ) -> None:
         _ = (command, success, summary, worker_id, role)
 
+    def emit_approval_reviewed(
+        self,
+        outcome: str,
+        subject: str,
+        reason: str = "",
+        *,
+        risk: str = "",
+        approval_kind: str = "",
+        worker_id: str | None = None,
+        role: str | None = None,
+    ) -> None:
+        _ = (outcome, subject, reason, risk, approval_kind, worker_id, role)
+
     def emit_review_gate_decision(
         self,
         decision: str,
@@ -277,6 +291,16 @@ class Surface(Protocol):
                 event.command,
                 event.success,
                 event.summary,
+                worker_id=event.worker_id,
+                role=event.role,
+            )
+        elif event.type == ApprovalReviewed.type:
+            self.emit_approval_reviewed(
+                event.outcome,
+                event.subject,
+                event.reason,
+                risk=event.risk,
+                approval_kind=event.approval_kind,
                 worker_id=event.worker_id,
                 role=event.role,
             )

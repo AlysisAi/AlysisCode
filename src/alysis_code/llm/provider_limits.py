@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
+from ..cancellation import CooperativeCancellationError
 from ..failure_category import is_provider_throttling_error, provider_unavailable_retry_reason
 from ..provider_url import known_provider_key_from_base_url
 from ..transport_retry import (
@@ -23,6 +24,7 @@ from ..transport_retry import (
     mark_transport_connection_failure,
 )
 from .http_cancellation import raise_if_cancelled
+from .rate_limit_metadata import HARD_QUOTA_CODES, MAX_RETRY_SECONDS, bounded_seconds
 from .types import LLMStreamNoProgressError
 
 T = TypeVar("T")
@@ -31,6 +33,10 @@ DEFAULT_PROVIDER_CONCURRENCY_CAPS: dict[str, int] = {"qwen": 4}
 DEFAULT_PROVIDER_RETRY_MAX_RETRIES = 1
 DEFAULT_PROVIDER_RETRY_BASE_DELAY_SECONDS = 10.0
 DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS = 120.0
+# One value for every protocol client that caps provider-retry wall time, so
+# the config snapshot records the cap the clients actually pass. The window it
+# measures opens at a call's first failure (see run_provider_limited_call).
+DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS = 60.0
 
 _LOGGER = logging.getLogger(__name__)
 _JITTER_RATIO = 0.25
@@ -182,6 +188,24 @@ def resolve_provider_retry_settings(cfg: object | None) -> ProviderRetrySettings
     )
 
 
+def provider_retry_snapshot_values(cfg: object | None) -> dict[str, Any]:
+    """The provider retry policy as the session enforces it, for the snapshot.
+
+    Both budgets are recorded because a failure report cannot otherwise say
+    which one governed it: every retryable class gets the general budget, and
+    a connection dropped mid-response gets ``max(general, dedicated)`` (see
+    ``transport_retry.connection_drop_retry_budget``). The value recorded for
+    connection drops is that effective maximum.
+    """
+    settings = resolve_provider_retry_settings(cfg)
+    return {
+        "provider_retry_max_retries": settings.max_retries,
+        "connection_drop_retry_max_retries": connection_drop_retry_budget(settings.max_retries),
+        "provider_retry_wall_clock_cap_seconds": DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS,
+        "provider_retry_wall_clock_cap_starts_at": "first_failure",
+    }
+
+
 def resolve_provider_concurrency_cap(
     provider_concurrency_caps: Mapping[str, int | None] | None,
     provider_key: str | None,
@@ -222,6 +246,27 @@ def run_provider_limited_call(
     clock_fn: Callable[[], float] | None = None,
     cancellation_token: Any | None = None,
 ) -> T:
+    """Run ``call`` under the provider concurrency cap, retrying transient failures.
+
+    Retry budgets: every retryable class gets ``retry_settings.max_retries``
+    (the general budget, default 1). A connection dropped mid-response gets
+    ``max(general, DEFAULT_CONNECTION_DROP_MAX_RETRIES)`` -- 5 unless a caller
+    already configured more. Both maxima are recorded in the config snapshot
+    (``provider_retry_snapshot_values``).
+
+    ``retry_wall_clock_cap_seconds`` bounds how long the no-progress,
+    unavailable, truncated-stream and connection-drop classes may keep
+    retrying. Its window opens at the call's first failure, not at the start
+    of the first attempt: a request that failed after 900 s still gets its
+    retry, while fast failures keep retrying only until the window closes. A
+    retry may start only if it would begin, after its backoff, inside the
+    window. An attempt already in flight when the window closes is never
+    interrupted; the cap is consulted only once that attempt has failed.
+
+    The exception that finally escapes carries the attempts made and the
+    retries started (``provider_attempt_counts``), so a caller can report what
+    happened instead of assuming that retries took place.
+    """
     settings = retry_settings or ProviderRetrySettings()
     canonical_key = canonical_provider_key(provider_key)
     cap = resolve_provider_concurrency_cap(provider_concurrency_caps, canonical_key)
@@ -230,6 +275,9 @@ def run_provider_limited_call(
     jitter = random_fn or random.random
     clock = clock_fn or time.monotonic
     retry_started_at = clock()
+    # Opened by the first failure (see the docstring). ``retry_started_at``
+    # stays the call's start and only feeds the observer's ``elapsed_ms``.
+    cap_window_started_at: float | None = None
     retries_used = 0
 
     while True:
@@ -244,8 +292,13 @@ def run_provider_limited_call(
             # published for this attempt still owns the outcome.
             raise_if_cancelled(cancellation_token)
             return result
+        except CooperativeCancellationError:
+            # Cancellation is terminal, and protected transports have already
+            # removed exception chains that could retain request material.
+            raise
         except Exception as exc:
             raise_if_cancelled(cancellation_token)
+            _tag_provider_attempt_counts(exc, retries_started=retries_used)
             retry_reason = _provider_retry_reason(exc)
             if settings.disable_retries:
                 raise
@@ -277,12 +330,21 @@ def run_provider_limited_call(
                 wait_seconds = connection_drop_delay_seconds(retries_used, jitter_sample=jitter())
             else:
                 wait_seconds = _retry_delay_seconds(settings, retries_used, jitter)
+            failed_at = clock() if retry_wall_clock_cap_seconds is not None else None
+            if cap_window_started_at is None:
+                cap_window_started_at = failed_at
+            minimum_wait = bounded_seconds(getattr(exc, "provider_retry_after", 0))
+            # Never shorten the server's minimum delay to fit our retry cap.
+            # Return the timing to the caller if the wait exceeds this turn's budget.
+            if minimum_wait >= MAX_RETRY_SECONDS or minimum_wait > settings.max_delay_seconds:
+                raise
+            wait_seconds = max(wait_seconds, minimum_wait)
             if _retry_wall_clock_cap_blocks(
                 retry_reason=retry_reason,
-                retry_started_at=retry_started_at,
+                cap_window_started_at=cap_window_started_at,
+                now=failed_at,
                 wait_seconds=wait_seconds,
                 cap_seconds=retry_wall_clock_cap_seconds,
-                clock=clock,
             ):
                 _LOGGER.info(
                     "provider_retry_wall_clock_cap_blocked",
@@ -368,17 +430,24 @@ def run_provider_limited_call(
 def _retry_wall_clock_cap_blocks(
     *,
     retry_reason: str,
-    retry_started_at: float,
+    cap_window_started_at: float | None,
+    now: float | None,
     wait_seconds: float,
     cap_seconds: float | None,
-    clock: Callable[[], float],
 ) -> bool:
+    """Whether the wall-clock cap forbids starting another attempt.
+
+    The window runs for ``cap_seconds`` from ``cap_window_started_at`` (the
+    call's first failure). A retry is allowed only if it would start, after
+    its backoff, inside that window.
+    """
     if (
         retry_reason
         not in {
             "provider_no_progress",
             "provider_unavailable",
             "provider_stream_truncated",
+            "provider_throttled",
             # The larger connection-drop budget is still subject to any
             # wall-clock cap a caller set. A route that caps retry time meant
             # it, and a bigger attempt budget must not quietly escape it.
@@ -393,7 +462,9 @@ def _retry_wall_clock_cap_blocks(
         return False
     if cap <= 0:
         return True
-    elapsed = max(0.0, float(clock()) - float(retry_started_at))
+    if cap_window_started_at is None or now is None:
+        return False
+    elapsed = max(0.0, float(now) - float(cap_window_started_at))
     return elapsed + max(0.0, float(wait_seconds)) > cap
 
 
@@ -494,7 +565,44 @@ def mark_provider_call_non_retryable(exc: BaseException) -> None:
 
 
 def _is_provider_call_non_retryable(exc: BaseException) -> bool:
-    return bool(getattr(exc, PROVIDER_NON_RETRYABLE_ATTR, False))
+    code = getattr(exc, "provider_error_code", None)
+    return bool(getattr(exc, PROVIDER_NON_RETRYABLE_ATTR, False)) or (
+        type(code) is str and code in HARD_QUOTA_CODES
+    )
+
+
+PROVIDER_ATTEMPT_COUNT_ATTR = "_provider_attempt_count"
+PROVIDER_RETRY_COUNT_ATTR = "_provider_retry_count"
+
+
+def _tag_provider_attempt_counts(exc: BaseException, *, retries_started: int) -> None:
+    """Stamp a failure with the attempts made and the retries started so far.
+
+    Re-stamped on every failure, so the exception that finally escapes the
+    retry loop carries the final numbers. Never raises.
+    """
+    try:
+        setattr(exc, PROVIDER_ATTEMPT_COUNT_ATTR, int(retries_started) + 1)
+        setattr(exc, PROVIDER_RETRY_COUNT_ATTR, int(retries_started))
+    except Exception:  # noqa: BLE001 - never let tagging crash the caller
+        pass
+
+
+def provider_attempt_counts(exc: BaseException | None) -> tuple[int, int] | None:
+    """``(attempts, retries)`` a provider call really made before it failed.
+
+    Walks the cause/context chain because callers often re-raise the provider
+    error wrapped. ``None`` means the failure never went through
+    :func:`run_provider_limited_call`, which is not the same as zero retries.
+    """
+    if exc is None:
+        return None
+    for item in _iter_exception_chain(exc):
+        attempts = getattr(item, PROVIDER_ATTEMPT_COUNT_ATTR, None)
+        retries = getattr(item, PROVIDER_RETRY_COUNT_ATTR, None)
+        if type(attempts) is int and type(retries) is int:
+            return attempts, retries
+    return None
 
 
 def single_retry_is_worthwhile(exc: BaseException) -> bool:

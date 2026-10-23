@@ -122,7 +122,7 @@ def tls_contexts(
 
 
 def _wait_for_socket_read(worker: threading.Thread, *, timeout: float = 2.0) -> None:
-    """Wait until the worker is inside httpcore's real blocking recv call."""
+    """Wait until the worker is waiting for its real socket to become readable."""
 
     deadline = monotonic() + timeout
     pause = threading.Event()
@@ -130,7 +130,9 @@ def _wait_for_socket_read(worker: threading.Thread, *, timeout: float = 2.0) -> 
         frame = sys._current_frames().get(worker.ident or -1)
         while frame is not None:
             filename = Path(frame.f_code.co_filename).as_posix()
-            if frame.f_code.co_name == "read" and filename.endswith("/httpcore/_backends/sync.py"):
+            if frame.f_code.co_name == "_wait_socket_ready" and filename.endswith(
+                "/alysis_code/llm/http_cancellation.py"
+            ):
                 return
             frame = frame.f_back
         pause.wait(timeout=0.001)

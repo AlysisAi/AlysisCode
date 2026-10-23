@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
+from typing import Any, NoReturn
+from urllib.parse import urlsplit
 
 import typer
 
@@ -11,8 +12,10 @@ from ...config import (
     AppConfig,
     ConfigError,
     clear_persisted_profile_key,
+    config_transaction,
     load_config,
     rename_persisted_profile_key,
+    resolve_api_key,
     resolve_profile_api_key,
     save_config,
     save_persisted_profile_key,
@@ -78,13 +81,36 @@ def _profile_api_key_status(cfg: AppConfig, profile_name: str) -> str:
 
 
 @profile_app.command("list")
-def profile_list() -> None:
+def profile_list(
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON array."),
+) -> None:
     """List provider profiles."""
     from ...profiles import list_profiles
 
-    console = _console()
     cfg = _patchable("load_config", load_config)()
     active = str((cfg.extra_fields or {}).get("active_profile") or "")
+    profiles = list_profiles(cfg)
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "name": profile.name,
+                        "active": profile.name == active,
+                        "protocol": profile.protocol,
+                        "base_url": profile.base_url,
+                        "api_key": _profile_api_key_status(cfg, profile.name),
+                        "default_model": profile.default_model,
+                        "web_search": profile.web_search_adapter,
+                    }
+                    for profile in profiles
+                ],
+                sort_keys=True,
+            )
+        )
+        return
+
+    console = _console()
     table = _Table(title="Provider Profiles")
     table.add_column("name")
     table.add_column("active")
@@ -93,7 +119,7 @@ def profile_list() -> None:
     table.add_column("api_key")
     table.add_column("default_model")
     table.add_column("web_search")
-    for profile in list_profiles(cfg):
+    for profile in profiles:
         table.add_row(
             profile.name,
             "✓" if profile.name == active else "",
@@ -213,6 +239,101 @@ def profile_use(name: str = typer.Argument(..., help="Profile name.")) -> None:
         console.print(f"[red]Profile error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
     console.print(f"Active profile: {name}")
+
+
+@profile_app.command("select-model")
+def profile_select_model(
+    name: str = typer.Argument(..., help="Profile name."),
+    model: str = typer.Argument(..., help="Model to select for this profile."),
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON object."),
+) -> None:
+    """Atomically activate an API profile and select its model."""
+    from ...profiles import get_profile, set_active_profile, update_profile
+
+    profile_name = str(name or "").strip()
+    model_name = str(model or "").strip()
+    if not profile_name or not model_name:
+        _profile_selection_error(
+            "Profile name and model are required.",
+            json_output=json_output,
+        )
+
+    try:
+        with config_transaction(
+            loader=_patchable("load_config", load_config),
+            saver=_patchable("save_config", save_config),
+        ) as cfg:
+            profile = get_profile(cfg, profile_name)
+            if profile is None:
+                raise ConfigError(f"Profile not found: {profile_name}")
+            if profile.auth_provider:
+                raise ConfigError(
+                    "Subscription models must be selected with `alysis auth select-model`."
+                )
+            api_key = _patchable("resolve_api_key", resolve_api_key)(
+                cfg,
+                profile_name=profile.name,
+            )
+            if _profile_requires_api_key(cfg, profile) and not api_key.key:
+                raise ConfigError(
+                    f"API key is missing for hosted profile {profile.name!r}. "
+                    "Configure its API key before selecting this model."
+                )
+
+            # Provider activation, model selection, and the execution route are
+            # serialized into exactly one persistent write. This prevents the App
+            # from reporting an API selection while execution still delegates to
+            # the previously selected subscription runtime.
+            update_profile(cfg, profile.name, default_model=model_name)
+            set_active_profile(cfg, profile.name)
+            cfg.execution.backend = "native"
+            cfg.execution.runtime = None
+            # Subscription readiness belongs to that connection and must survive an
+            # API-profile switch so returning to an unready subscription still fails
+            # closed. The active API route itself is ready because its credential was
+            # validated above (or it is an explicitly keyless loopback provider).
+            cfg.extra_fields["onboarded"] = True
+    except ConfigError as exc:
+        _profile_selection_error(str(exc), json_output=json_output, cause=exc)
+
+    payload = {
+        "profile_name": profile.name,
+        "model": model_name,
+        "auth_provider": profile.auth_provider,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, sort_keys=True))
+        return
+    _console().print(f"Active profile: {profile.name} · model: {model_name}")
+
+
+def _profile_requires_api_key(cfg: AppConfig, profile: Any) -> bool:
+    """Require credentials for hosted API routes, while allowing local presets."""
+
+    from ...profiles import resolve_effective_base_url
+
+    base_url = resolve_effective_base_url(cfg=cfg, profile=profile)
+    host = str(urlsplit(base_url).hostname or "").strip("[]").lower()
+    if not host:
+        return False
+    return host not in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} and not host.endswith(
+        ".localhost"
+    )
+
+
+def _profile_selection_error(
+    message: str,
+    *,
+    json_output: bool,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    if json_output:
+        typer.echo(json.dumps({"ok": False, "error": message}, sort_keys=True))
+    else:
+        _console().print(f"[red]Profile error:[/red] {message}")
+    if cause is None:
+        raise typer.Exit(code=2)
+    raise typer.Exit(code=2) from cause
 
 
 @profile_app.command("rename")
@@ -380,9 +501,43 @@ def profile_convert(
 
 
 @profile_app.command("presets")
-def profile_presets() -> None:
+def profile_presets(
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON array."),
+) -> None:
     """List available provider presets."""
-    from ...profile_presets import PROFILE_PRESETS, preset_protocol_kind, preset_selection_label
+    from ...profile_presets import (
+        PROFILE_PRESETS,
+        model_options_for_preset,
+        preset_protocol_kind,
+        preset_selection_label,
+    )
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "key": preset.key,
+                        "label": preset_selection_label(preset),
+                        "protocol": preset.protocol,
+                        "kind": preset_protocol_kind(preset),
+                        "base_url": preset.base_url,
+                        "api_key_env": preset.api_key_env,
+                        "requires_api_key": bool(preset.api_key_env),
+                        "models": [
+                            {"id": model_id, "description": description}
+                            for model_id, _label, description in model_options_for_preset(preset)
+                        ],
+                        "default_model": (
+                            preset.suggested_models[0] if preset.suggested_models else ""
+                        ),
+                    }
+                    for preset in PROFILE_PRESETS
+                ],
+                sort_keys=True,
+            )
+        )
+        return
 
     table = _Table(title="Provider Presets")
     table.add_column("key")
@@ -451,3 +606,84 @@ def profile_clear_key(name: str = typer.Argument(..., help="Profile name.")) -> 
         _console().print(f"Removed API key for profile {name}.")
         return
     _console().print(f"No stored API key found for profile {name}.")
+
+
+@profile_app.command("check")
+def profile_check(
+    name: str = typer.Argument(..., help="Profile name or preset key."),
+    api_key_stdin: bool = typer.Option(
+        False, "--api-key-stdin", help="Check the API key read from stdin, not the saved one."
+    ),
+    base_url: str | None = typer.Option(None, "--base-url", help="Check against this base URL."),
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON object."),
+) -> None:
+    """Check an API key with one small request to the provider, as `alysis setup` does.
+
+    Nothing is saved. Exits 1 when the provider rejects the key.
+    """
+    from dataclasses import replace
+
+    from ...profile_presets import (
+        canonical_model_alias_for_preset,
+        get_preset,
+        make_profile_from_preset,
+    )
+    from ...profiles import get_profile
+    from ..setup_wizard import _validate_api_key
+
+    profile_name = str(name or "").strip()
+    cfg = _patchable("load_config", load_config)()
+    profile = get_profile(cfg, profile_name)
+    preset = get_preset(profile.name if profile is not None else profile_name)
+    if profile is None:
+        if preset is None:
+            _profile_selection_error(
+                f"Unknown profile or preset: {profile_name}", json_output=json_output
+            )
+        profile = make_profile_from_preset(preset, name=preset.key)
+    if profile.auth_provider:
+        _profile_selection_error(
+            "Subscription connections are checked with `alysis auth status`.",
+            json_output=json_output,
+        )
+    if base_url is not None and base_url.strip():
+        profile = replace(profile, base_url=base_url.strip())
+    if api_key_stdin:
+        key_value = sys.stdin.read().strip()
+    else:
+        key_value = str(resolve_profile_api_key(cfg, profile.name).key or "").strip()
+
+    # The same request as the setup wizard's key step: the preset's small validation model.
+    suggested: tuple[str, ...] = ()
+    validation_model = ""
+    if preset is not None:
+        suggested = tuple(
+            str(item).strip() for item in preset.suggested_models if str(item).strip()
+        )
+        hint = str(preset.validation_model or "").strip()
+        if hint:
+            validation_model = canonical_model_alias_for_preset(preset, hint)
+    result = _validate_api_key(
+        profile=profile,
+        api_key=key_value,
+        suggested_models=suggested,
+        validation_model=validation_model or None,
+    )
+    rejected = result.status == "failed"
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "ok": not rejected,
+                    "profile": profile.name,
+                    "status": result.status,
+                    "message": result.message,
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        style = "red" if rejected else "green" if result.status == "validated" else "yellow"
+        _console().print(f"[{style}]{result.status}[/{style}] {result.message}".rstrip())
+    if rejected:
+        raise typer.Exit(code=1)

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "x86_64",
   "repository": "https://apk.cgr.dev/chainguard",
-  "inventory_sha256": "a9336a4684b5f5e8312c6b797c998185b88c875982b06c27bd4ae2a5f226ac85",
+  "inventory_sha256": "74ca3707f674307ac4aae1cbd5a5209aedf98e861fd53a36800aefcd367fd029",
   "packages": [
     {
       "name": "apk-tools",
@@ -66,23 +66,23 @@
     },
     {
       "name": "ca-certificates",
-      "version": "20260909-r1",
+      "version": "20260909-r3",
       "architecture": "x86_64",
-      "installed_checksum": "Q11wyh4bzXYL+dl9Hc8JozUHR4fJQ=",
-      "filename": "ca-certificates-20260909-r1.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/ca-certificates-20260909-r1.apk",
-      "size": 146055,
-      "sha256": "8e58fdafef3cbe8fce57591f19206c79bdfc9bede5782bb42e7a51026d8b8f5a"
+      "installed_checksum": "Q1RG+s0YhAEu+zf70jp2tDaGBF+7Q=",
+      "filename": "ca-certificates-20260909-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/ca-certificates-20260909-r3.apk",
+      "size": 147251,
+      "sha256": "f7022e94fc186dbf103e01b5c9372d593807e95592ea0b5eda103dfd93cbcc64"
     },
     {
       "name": "ca-certificates-bundle",
-      "version": "20260909-r1",
+      "version": "20260909-r3",
       "architecture": "x86_64",
-      "installed_checksum": "Q1wITWZ+kxqTqLhGONBuiW43Vifvk=",
-      "filename": "ca-certificates-bundle-20260909-r1.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/ca-certificates-bundle-20260909-r1.apk",
-      "size": 117634,
-      "sha256": "20cf3234db4a7c8470ce5efa8ec602adc8736706231e30821eeddf3734540c44"
+      "installed_checksum": "Q18MLPVxhaLLo4YMbPIN2d/wZuNN4=",
+      "filename": "ca-certificates-bundle-20260909-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/ca-certificates-bundle-20260909-r3.apk",
+      "size": 119136,
+      "sha256": "3ab79193fee767156a846f9cc91a4a0c1600741c3823fe036e007e2606c92d1f"
     },
     {
       "name": "coreutils",
@@ -96,13 +96,13 @@
     },
     {
       "name": "curl",
-      "version": "8.22.0-r3",
+      "version": "8.23.0-r0",
       "architecture": "x86_64",
-      "installed_checksum": "Q1jW0TjjQ6ibJvuaTDdk5Tbxijc/Q=",
-      "filename": "curl-8.22.0-r3.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/curl-8.22.0-r3.apk",
-      "size": 237478,
-      "sha256": "323a1a7735cdc49702b8b056df7411837b170a0d69c370bc8e4747c958597207"
+      "installed_checksum": "Q1yMwkhouhkvfq0mJtwLOYCnYBe3Q=",
+      "filename": "curl-8.23.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/curl-8.23.0-r0.apk",
+      "size": 238302,
+      "sha256": "939668d933500c84937a2ef218753ffd821516d86d6cda86ee3af139d4a3e946"
     },
     {
       "name": "cyrus-sasl-heimdal-libs",
@@ -426,13 +426,13 @@
     },
     {
       "name": "libcurl-openssl4",
-      "version": "8.22.0-r4",
+      "version": "8.23.0-r0",
       "architecture": "x86_64",
-      "installed_checksum": "Q1wzjLvFA57OiEjEOZEEkyNz2SDsA=",
-      "filename": "libcurl-openssl4-8.22.0-r4.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/libcurl-openssl4-8.22.0-r4.apk",
-      "size": 594167,
-      "sha256": "d43c0dcafc79353ae8c362a532f384a98d5a060db6b77392851ff4dc4458fe70"
+      "installed_checksum": "Q1W5nQYZCCRqSLoqH3jubXORxum2g=",
+      "filename": "libcurl-openssl4-8.23.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/libcurl-openssl4-8.23.0-r0.apk",
+      "size": 603723,
+      "sha256": "42a3a0f4d8e1340d8eb23259f2f82b3669b74007e38f509634f01752a89e2e36"
     },
     {
       "name": "libexpat1",
@@ -485,14 +485,14 @@
       "sha256": "75c10d044558781f8002156542d1b250b34f9e3cd135f7779f426c943c7a656c"
     },
     {
-      "name": "libldap",
-      "version": "2.6.10-r5",
+      "name": "libldap-2.6",
+      "version": "2.6.14-r0",
       "architecture": "x86_64",
-      "installed_checksum": "Q1eKBFOIiOFp/taYhzAKnRW9DPYcg=",
-      "filename": "libldap-2.6.10-r5.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/libldap-2.6.10-r5.apk",
-      "size": 250509,
-      "sha256": "140df3743ee774109bec62bf0531321d2fbb501327cfbd855ab5a535ce3c4c90"
+      "installed_checksum": "Q1ZNAisf6KH5qXv6KSAZwq1Ny425Y=",
+      "filename": "libldap-2.6-2.6.14-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/libldap-2.6-2.6.14-r0.apk",
+      "size": 264766,
+      "sha256": "77acebc53da4d29d5715da8763f9d8586fe4b4b257a1be939d05a9f1069140d3"
     },
     {
       "name": "libmd",

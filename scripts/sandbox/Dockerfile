@@ -4,7 +4,7 @@
 # retained outside the runtime image, and installed without network access.
 ARG WOLFI_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:b71f01d7fbb063a921577f355a82ea665e98c96e73c89a6ea0bcb773875b129c
 ARG VARIANT=dev
-ARG SOURCE_URL=https://github.com/AlysisAi/alysis-code
+ARG SOURCE_URL=https://github.com/AlysisAi/AlysisCode
 ARG GIT_SHA=dev
 ARG VERSION=dev
 ARG SOURCE_DATE_EPOCH=0
@@ -12,7 +12,7 @@ ARG SOURCE_DATE_EPOCH=0
 FROM ${WOLFI_IMAGE} AS apk-inputs
 SHELL ["/bin/sh", "-euxc"]
 ARG TARGETARCH
-COPY scripts/sandbox/apk-locks/ /opt/apk-locks/
+COPY scripts/sandbox/apk-locks/${TARGETARCH}/ /opt/apk-locks/${TARGETARCH}/
 RUN case "${TARGETARCH}" in amd64|arm64) ;; *) exit 1 ;; esac; \
     mkdir -p /opt/apk-inputs; \
     cp /opt/apk-locks/${TARGETARCH}/* /opt/apk-inputs/; \
@@ -89,9 +89,9 @@ ARG TARGETARCH
 ARG NODE_VERSION=24.21.0
 ARG NODE_LINUX_AMD64_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 ARG NODE_LINUX_ARM64_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
-ARG GO_VERSION=1.26.8
-ARG GO_LINUX_AMD64_SHA256=d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b
-ARG GO_LINUX_ARM64_SHA256=211ffced9dcb9633a55eac6364816ec0ddd951389a740e88fa8b3337971bdda0
+ARG GO_VERSION=1.26.10
+ARG GO_LINUX_AMD64_SHA256=ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5
+ARG GO_LINUX_ARM64_SHA256=3f4227ce7b206a513e794f1393adb473a07b46e94d18bd15d1c684bbb7319797
 ARG RUSTUP_VERSION=1.28.2
 ARG RUSTUP_LINUX_AMD64_SHA256=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
 ARG RUSTUP_LINUX_ARM64_SHA256=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
@@ -186,8 +186,9 @@ WORKDIR /opt/alysis
 # The digest is an official multi-platform uv image; the lockfile supplies hashes
 # for all Python runtime and build dependencies.
 COPY --from=ghcr.io/astral-sh/uv@sha256:2381d6aa60c326b71fd40023f921a0a3b8f91b14d5db6b90402e65a635053709 /uv /usr/local/bin/uv
-COPY pyproject.toml uv.lock README.md /opt/alysis/
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE /opt/alysis/
 COPY src /opt/alysis/src
+COPY schemas/forge-host-v2/forge-host-v2.schema.json /opt/alysis/schemas/forge-host-v2/forge-host-v2.schema.json
 ENV UV_LINK_MODE=copy \
     UV_NO_DEV=1 \
     UV_PROJECT_ENVIRONMENT=/opt/alysis/.venv \

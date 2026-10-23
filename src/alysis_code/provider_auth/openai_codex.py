@@ -10,83 +10,95 @@ import secrets
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 
-from ..branding import env_get
-from ..chatgpt_codex_static_provider import resolve_chatgpt_codex_static_model
+from ..cancellation import CooperativeCancellationError
+from ..chatgpt_codex_static_provider import (
+    load_chatgpt_codex_static_models,
+    resolve_chatgpt_codex_static_model,
+)
 from ..host_browser import open_url
 from ..llm.cache_capabilities import (
     CACHE_STRATEGY_IMPLICIT_PROVIDER,
     CACHE_USAGE_SCHEMA_OPENAI,
     CacheCapabilitySpec,
 )
+from ..llm.cancellable_http import cancellation_aware_httpx_client
 from .base import (
     ProviderAccountStatus,
     ProviderAuthError,
+    ProviderCredentialScopeMismatchError,
     ProviderLoginRequiredError,
     ProviderModel,
     ProviderReasoningEffort,
+    ProviderRequestAuthorization,
+    reasoning_effort_label,
 )
 from .store import (
     ProviderTokenRecord,
     delete_provider_token,
     load_provider_token,
+    remember_subscription_registration,
     save_provider_token,
+    save_refreshed_provider_token,
+    subscription_registration,
 )
 
 SESSION_EXPIRED_DETAIL = "session expired"
 """Stable ``detail`` value meaning the stored session must be re-authorized."""
 
 _ISSUER = "https://auth.openai.com"
-_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_CODEX_BASE_URL = "https://api.openai.com/v1"
+# The ChatGPT Codex backend this adapter used before the Alysis app registration.
+# Profiles saved with it are moved to _CODEX_BASE_URL when the config loads.
+_LEGACY_CODEX_BASE_URLS = ("https://chatgpt.com/backend-api/codex",)
 _RESPONSES_URL = f"{_CODEX_BASE_URL}/responses"
 _MODELS_URL = f"{_CODEX_BASE_URL}/models"
-_DEFAULT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-# Matches the reviewed subscription snapshot. Pre-Astra client versions can
-# receive an older model catalog even when the account has access to Astra.
-_DEFAULT_CODEX_COMPAT_VERSION = "0.155.0"
-_CALLBACK_PORTS = (1455, 1457)
+_DEFAULT_CLIENT_ID = "dynamic_agent_client"
+_RESOURCE = "https://api.openai.com/v1"
+_PLAN_SCOPE = "chatgpt.tokens.use.direct"
+_TOKEN_URL = f"{_ISSUER}/api/accounts/oauth/token"
+_CALLBACK_PORTS = (1455, 1457, 0)
 _BROWSER_TIMEOUT_SECONDS = 300.0
-_DEVICE_TIMEOUT_SECONDS = 15.0 * 60.0
 _REFRESH_SKEW_SECONDS = 300.0
 _DEFAULT_TOKEN_LIFETIME_SECONDS = 3600.0
 _ALLOWED_REQUESTS = frozenset({_RESPONSES_URL, _MODELS_URL})
 _REFRESH_LOCKS: dict[str, threading.Lock] = {}
 _REFRESH_LOCKS_GUARD = threading.Lock()
 _LOGIN_LOCK = threading.Lock()
+_CANCELLATION_POLL_SECONDS = 0.05
 
 
-def _client_id() -> str:
-    return str(env_get("ALYSIS_OPENAI_OAUTH_CLIENT_ID") or "").strip() or _DEFAULT_CLIENT_ID
-
-
-def _codex_compat_version() -> str:
-    """Codex catalog compatibility version, intentionally not Alysis Code's version."""
-
-    return (
-        str(env_get("ALYSIS_OPENAI_CODEX_COMPAT_VERSION") or "").strip()
-        or _DEFAULT_CODEX_COMPAT_VERSION
-    )
+def _throw_if_cancelled(cancellation_token: Any | None) -> None:
+    if cancellation_token is None:
+        return
+    throw_if_cancelled = getattr(cancellation_token, "throw_if_cancelled", None)
+    if callable(throw_if_cancelled):
+        throw_if_cancelled("cancelled_by_user")
+        return
+    if bool(getattr(cancellation_token, "is_cancelled", False)):
+        raise CooperativeCancellationError("cancelled_by_user")
 
 
 class OpenAICodexSubscriptionAuth:
-    """ChatGPT-backed Codex Responses auth for Alysis Code's native agent loop.
+    """Sign in with ChatGPT plan usage for the native Alysis Code agent.
 
-    The model transport intentionally lives behind this adapter because the
-    ChatGPT Codex endpoint is a compatibility surface, not the ordinary OpenAI
-    API. Credentials are attached only to two exact, HTTPS allowlisted URLs.
+    The compatibility provider ID/profile is retained. Only public OpenAI
+    model/Responses endpoints receive a validated subscription credential.
     """
 
     provider_id = "openai-codex"
-    display_name = "ChatGPT Codex subscription"
-    description = "Use Codex models from ChatGPT while keeping Alysis Code's native agent."
+    display_name = "ChatGPT subscription"
+    description = "Use eligible models from your ChatGPT plan with Alysis Code's native agent."
     profile_name = "chatgpt-codex"
-    auth_hint = "Browser or device-code sign-in; credentials use Alysis Code's encrypted vault."
+    auth_hint = "Continue with ChatGPT; credentials use Alysis Code's encrypted vault."
     base_url = _CODEX_BASE_URL
+    legacy_base_urls = _LEGACY_CODEX_BASE_URLS
     protocol = "openai_responses"
     supports_previous_response_id = False
     supports_input_token_count = False
@@ -96,6 +108,7 @@ class OpenAICodexSubscriptionAuth:
         strategy=CACHE_STRATEGY_IMPLICIT_PROVIDER,
         enabled=True,
         reports_cache_read_tokens=True,
+        reports_cache_write_tokens=False,
         usage_schema=CACHE_USAGE_SCHEMA_OPENAI,
         emits_request_fields=False,
         notes=(
@@ -107,6 +120,7 @@ class OpenAICodexSubscriptionAuth:
     def __init__(self, *, transport: httpx.BaseTransport | None = None) -> None:
         self._transport = transport
         self._models_cache: tuple[ProviderModel, ...] | None = None
+        self._models_cache_scope = ""
 
     def account_status(self) -> ProviderAccountStatus:
         """Report account state without ever raising.
@@ -135,6 +149,17 @@ class OpenAICodexSubscriptionAuth:
             return ProviderAccountStatus(
                 connected=False,
                 detail="No ChatGPT subscription account is connected.",
+            )
+        if not record.client_id or not record.subject:
+            return ProviderAccountStatus(
+                connected=False, detail="Reconnect ChatGPT to authorize Alysis Code for plan usage."
+            )
+        if _PLAN_SCOPE not in record.scopes:
+            return ProviderAccountStatus(
+                connected=False,
+                verified=True,
+                account_label=record.account_label,
+                detail="ChatGPT plan usage is not enabled. Continue with ChatGPT to review permissions, or choose an API provider.",
             )
         try:
             record = self._valid_record(record)
@@ -165,6 +190,7 @@ class OpenAICodexSubscriptionAuth:
             connected=True,
             account_label=record.account_label,
             detail="Connected with ChatGPT.",
+            credential_scope=_credential_scope(record),
         )
 
     def route_credential_scope(self) -> str:
@@ -173,10 +199,7 @@ class OpenAICodexSubscriptionAuth:
         record = load_provider_token(self.provider_id)
         if record is None:
             return ""
-        material = record.account_id or record.account_label or record.access_token
-        if not material:
-            return ""
-        return hashlib.sha256(f"alysis-route-scope:v1:{material}".encode()).hexdigest()
+        return _credential_scope(record)
 
     def login(
         self,
@@ -186,23 +209,29 @@ class OpenAICodexSubscriptionAuth:
     ) -> ProviderAccountStatus:
         normalized = str(method or "browser").strip().lower()
         write = output_write or print
-        if normalized not in {"browser", "device-code"}:
+        if normalized == "device-code":
+            raise ProviderAuthError(
+                "Use Continue with ChatGPT. Device-code registration is not supported for this app."
+            )
+        if normalized not in {"browser", "browser-new-account"}:
             raise ProviderAuthError(f"Unsupported ChatGPT sign-in method: {method!r}.")
         if not _LOGIN_LOCK.acquire(blocking=False):
             raise ProviderAuthError("Another ChatGPT sign-in is already in progress.")
         try:
-            record = (
-                self._browser_login(write) if normalized == "browser" else self._device_login(write)
-            )
+            record = self._browser_login(write, new_account=normalized == "browser-new-account")
+            if _PLAN_SCOPE not in record.scopes:
+                previous = load_provider_token(self.provider_id)
+                if previous is not None and _PLAN_SCOPE in previous.scopes:
+                    remember_subscription_registration(self.provider_id, record)
+                    raise ProviderAuthError(
+                        "ChatGPT plan usage was not granted. Your previous account is still selected; try Continue with ChatGPT again."
+                    )
             save_provider_token(self.provider_id, record)
             self._models_cache = None
+            self._models_cache_scope = ""
         finally:
             _LOGIN_LOCK.release()
-        return ProviderAccountStatus(
-            connected=True,
-            account_label=record.account_label,
-            detail="Connected with ChatGPT.",
-        )
+        return self.account_status()
 
     def logout(self) -> ProviderAccountStatus:
         record = load_provider_token(self.provider_id)
@@ -211,11 +240,11 @@ class OpenAICodexSubscriptionAuth:
             try:
                 with self._client(timeout=10.0) as client:
                     response = client.post(
-                        f"{_ISSUER}/oauth/revoke",
-                        json={
+                        self._revocation_endpoint(),
+                        data={
                             "token": record.refresh_token,
                             "token_type_hint": "refresh_token",
-                            "client_id": _client_id(),
+                            "client_id": record.client_id or _DEFAULT_CLIENT_ID,
                         },
                     )
                 if response.status_code >= 400:
@@ -226,6 +255,7 @@ class OpenAICodexSubscriptionAuth:
                 revoke_error = f"remote revocation failed: {type(exc).__name__}"
         delete_provider_token(self.provider_id)
         self._models_cache = None
+        self._models_cache_scope = ""
         return ProviderAccountStatus(
             connected=False,
             verified=revoke_error is None,
@@ -242,41 +272,57 @@ class OpenAICodexSubscriptionAuth:
         *,
         force_refresh: bool = False,
         session_id: str | None = None,
+        expected_credential_scope: str | None = None,
+        cancellation_token: Any | None = None,
     ) -> Mapping[str, str]:
+        return self.authorize_request(
+            url,
+            force_refresh=force_refresh,
+            session_id=session_id,
+            expected_credential_scope=expected_credential_scope,
+            cancellation_token=cancellation_token,
+        ).headers
+
+    def authorize_request(
+        self,
+        url: str,
+        *,
+        force_refresh: bool = False,
+        session_id: str | None = None,
+        expected_credential_scope: str | None = None,
+        cancellation_token: Any | None = None,
+    ) -> ProviderRequestAuthorization:
+        """Bind proof and headers to one validated credential-store snapshot."""
+
         normalized_url = _canonical_request_url(url)
         if normalized_url not in _ALLOWED_REQUESTS:
             raise ProviderAuthError(
-                "Refusing to attach ChatGPT credentials to a non-Codex destination."
+                "Refusing to attach ChatGPT credentials to a non-OpenAI subscription destination."
             )
         record = load_provider_token(self.provider_id)
         if record is None:
             raise ProviderLoginRequiredError(
                 "ChatGPT is not connected. Run `alysis auth login openai-codex`."
             )
-        record = self._valid_record(record, force_refresh=force_refresh)
+        record = self._valid_record(
+            record,
+            force_refresh=force_refresh,
+            cancellation_token=cancellation_token,
+        )
+        credential_scope = _credential_scope(record)
+        expected_scope = str(expected_credential_scope or "").strip()
+        if expected_scope and not hmac.compare_digest(credential_scope, expected_scope):
+            raise ProviderCredentialScopeMismatchError(
+                "The selected ChatGPT account changed before the provider request was sent."
+            )
         headers: dict[str, str] = {
             "Authorization": f"Bearer {record.access_token}",
-            "ChatGPT-Account-Id": str(record.account_id or ""),
-            # The ChatGPT Codex backend gates model availability on the native
-            # Codex client identity as well as the account entitlement.  Keep
-            # these headers paired with the compatibility version used for model
-            # discovery; an Alysis Code-specific identity can make catalog-listed
-            # models fail at inference time with a misleading 404.
-            "originator": "codex_cli_rs",
-            "User-Agent": f"codex_cli_rs/{_codex_compat_version()}",
+            "User-Agent": "Alysis-Code",
         }
-        if not record.account_id:
-            headers.pop("ChatGPT-Account-Id", None)
-        normalized_session = str(session_id or "").strip()
-        if normalized_session:
-            headers.update(
-                {
-                    "session-id": normalized_session,
-                    "x-session-affinity": normalized_session,
-                    "X-Session-Id": normalized_session,
-                }
-            )
-        return headers
+        return ProviderRequestAuthorization(
+            credential_scope=credential_scope,
+            headers=headers,
+        )
 
     def adapt_responses_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         adapted = copy.deepcopy(dict(payload))
@@ -308,6 +354,8 @@ class OpenAICodexSubscriptionAuth:
                     item = copy.deepcopy(item)
                     item.pop("id", None)
                     item.pop("status", None)
+                    if item.get("type") == "function_call" and not item.get("namespace"):
+                        item["namespace"] = "alysis"
                     if host_message:
                         # Native Codex keeps later host context as developer input.
                         # Hoisting these notices would rewrite the instruction prefix
@@ -321,10 +369,26 @@ class OpenAICodexSubscriptionAuth:
                 adapted["instructions"] = f"{existing}\n\n{combined}" if existing else combined
 
         adapted["store"] = False
+        adapted["stream"] = True
         adapted.pop("temperature", None)
         adapted.pop("max_output_tokens", None)
         adapted.pop("prompt_cache_retention", None)
         adapted.pop("previous_response_id", None)
+        for key in (
+            "background",
+            "conversation",
+            "max_tool_calls",
+            "metadata",
+            "moderation",
+            "multi_agent",
+            "prompt",
+            "safety_identifier",
+            "top_logprobs",
+            "top_p",
+            "truncation",
+            "user",
+        ):
+            adapted.pop(key, None)
 
         include = adapted.get("include")
         include_values = list(include) if isinstance(include, list) else []
@@ -340,26 +404,84 @@ class OpenAICodexSubscriptionAuth:
 
         tools = adapted.get("tools")
         if isinstance(tools, list):
+            functions = []
+            retained = []
             for tool in tools:
-                if isinstance(tool, dict) and str(tool.get("type") or "") == "function":
-                    tool["strict"] = False
-                    tool["parameters"] = _sanitize_openai_tool_schema(
-                        tool.get("parameters", {"type": "object"})
+                if isinstance(tool, dict) and tool.get("type") in {"function", "custom"}:
+                    if tool.get("type") == "function":
+                        tool["strict"] = False
+                        tool["parameters"] = _sanitize_openai_tool_schema(
+                            tool.get("parameters", {"type": "object"})
+                        )
+                    functions.append(tool)
+                elif isinstance(tool, dict) and tool.get("type") in {"namespace", "web_search"}:
+                    retained.append(tool)
+                else:
+                    raise ProviderAuthError(
+                        "This hosted tool is not supported by ChatGPT plan usage."
                     )
+            if functions:
+                retained.append(
+                    {
+                        "type": "namespace",
+                        "name": "alysis",
+                        "description": "Alysis Code local tools",
+                        "tools": functions,
+                    }
+                )
+            adapted["tools"] = retained
+
+        choice = adapted.get("tool_choice")
+        if isinstance(choice, dict) and choice.get("type") in {"function", "custom"}:
+            # A bare forced function name cannot address a namespaced tool.
+            # Keep the namespace (including replay identity), but expose only
+            # the exact selected tool with required, serial calling. This has
+            # the same single-tool constraint without an invalid wire name.
+            matches = []
+            for namespace in adapted.get("tools") or []:
+                if not isinstance(namespace, dict) or namespace.get("type") != "namespace":
+                    continue
+                if choice.get("namespace") and choice["namespace"] != namespace.get("name"):
+                    continue
+                for tool in namespace.get("tools") or []:
+                    if (
+                        isinstance(tool, dict)
+                        and tool.get("type") == choice["type"]
+                        and tool.get("name") == choice.get("name")
+                    ):
+                        matches.append({**namespace, "tools": [tool]})
+            if len(matches) != 1:
+                raise ProviderAuthError(
+                    "The forced subscription tool is not uniquely available in this request."
+                )
+            adapted["tools"] = matches
+            adapted["tool_choice"] = "required"
+            adapted["parallel_tool_calls"] = False
         return adapted
 
     def list_models(self, *, refresh: bool = False) -> tuple[ProviderModel, ...]:
         if self._models_cache is not None and not refresh:
-            return self._models_cache
-        url = f"{_MODELS_URL}?{urlencode({'client_version': _codex_compat_version()})}"
-        headers = dict(self.authorization_headers(_MODELS_URL))
+            live_scope = self.route_credential_scope()
+            if live_scope and hmac.compare_digest(live_scope, self._models_cache_scope):
+                return self._models_cache
+            self._models_cache = None
+            self._models_cache_scope = ""
+        url = _MODELS_URL
+        authorization = self.authorize_request(_MODELS_URL)
+        headers = dict(authorization.headers)
         try:
             with self._client(timeout=20.0) as client:
                 response = client.get(url, headers=headers)
         except httpx.HTTPError as exc:
             raise ProviderAuthError("Could not load models for this ChatGPT account.") from exc
         if response.status_code == 401:
-            headers = dict(self.authorization_headers(_MODELS_URL, force_refresh=True))
+            headers = dict(
+                self.authorize_request(
+                    _MODELS_URL,
+                    force_refresh=True,
+                    expected_credential_scope=authorization.credential_scope,
+                ).headers
+            )
             try:
                 with self._client(timeout=20.0) as client:
                     response = client.get(url, headers=headers)
@@ -385,7 +507,7 @@ class OpenAICodexSubscriptionAuth:
                 continue
             model_id = str(raw.get("slug") or raw.get("id") or "").strip()
             visibility = str(raw.get("visibility") or "list").strip().lower()
-            if not model_id or visibility in {"hide", "hidden"}:
+            if not model_id or visibility != "list":
                 continue
             efforts: list[ProviderReasoningEffort] = []
             raw_efforts = raw.get("supported_reasoning_levels")
@@ -396,31 +518,38 @@ class OpenAICodexSubscriptionAuth:
                     effort_id = str(entry.get("effort") or entry.get("id") or "").strip()
                     # Ultra is advertised for the Codex app's orchestration,
                     # but /responses rejects it as a reasoning.effort value.
-                    # Verified live 2026-09-22; keep the source snapshot intact.
+                    # Documented separately from public Responses reasoning effort.
                     if not effort_id or effort_id.casefold() == "ultra":
                         continue
                     efforts.append(
                         ProviderReasoningEffort(
                             id=effort_id,
-                            label=effort_id.replace("_", " ").title(),
+                            label=reasoning_effort_label(effort_id),
                             description=str(entry.get("description") or "").strip(),
                         )
                     )
             static_model = resolve_chatgpt_codex_static_model(model_id)
-            if not efforts and static_model is not None:
-                efforts = [
-                    ProviderReasoningEffort(
-                        id=effort_id,
-                        label=effort_id.replace("_", " ").title(),
-                        description=description,
-                    )
-                    for effort_id, description in static_model.reasoning_efforts
-                    if effort_id.casefold() != "ultra"
-                ]
+            if raw_efforts is None:
+                from ..model_reasoning import official_openai_efforts
+
+                efforts = list(official_openai_efforts(model_id))
+                if not efforts and static_model is not None:
+                    efforts = [
+                        ProviderReasoningEffort(
+                            id=effort_id,
+                            label=reasoning_effort_label(effort_id),
+                            description=description,
+                        )
+                        for effort_id, description in static_model.reasoning_efforts
+                        if effort_id.casefold() != "ultra"
+                    ]
+            reviewed_priority = static_model.priority if static_model is not None else 9999
             try:
-                priority = int(raw.get("priority") or 9999)
+                priority = (
+                    int(raw["priority"]) if raw.get("priority") is not None else reviewed_priority
+                )
             except (TypeError, ValueError):
-                priority = static_model.priority if static_model is not None else 9999
+                priority = reviewed_priority
             input_modalities = _input_modalities(raw)
             if (
                 static_model is not None
@@ -438,11 +567,7 @@ class OpenAICodexSubscriptionAuth:
                         reasoning_efforts=tuple(efforts),
                         default_reasoning_effort=(
                             str(raw.get("default_reasoning_level") or "").strip()
-                            or (
-                                static_model.default_reasoning_effort
-                                if static_model is not None
-                                else None
-                            )
+                            or ("medium" if efforts else None)
                         ),
                         input_modalities=input_modalities,
                         context_window_tokens=(
@@ -462,22 +587,65 @@ class OpenAICodexSubscriptionAuth:
                     ),
                 )
             )
+        # /models lists only part of what a ChatGPT plan can use on this route. On
+        # 2026-10-04 an account whose catalog listed five models also completed
+        # /responses requests with gpt-6-luna, gpt-6-sol and gpt-6.1-sol. Offer every
+        # reviewed ChatGPT model the account's catalog does not mention, with its
+        # reviewed capabilities, so the picker matches what the plan can use.
+        # Entries the catalog hides stay hidden and failed discovery adds nothing.
+        # Only a catalog that already lists a reviewed full-tier (non-Luna) model
+        # gains the rest: a Luna-only catalog (a limited plan) or one the review
+        # does not cover is never broadened. OpenAI still authorizes every request.
+        advertised_ids = {
+            str(raw.get("slug") or raw.get("id") or "").strip().casefold()
+            for raw in raw_models
+            if isinstance(raw, dict)
+        }
+        listed_ids = {model.id.casefold() for _priority, model in parsed}
         parsed.sort(key=lambda pair: (pair[0], pair[1].label.casefold(), pair[1].id))
-        models = [model for _priority, model in parsed]
-        if models:
-            first = models[0]
-            models[0] = ProviderModel(
-                id=first.id,
-                label=first.label,
-                description=first.description,
-                is_default=True,
-                reasoning_efforts=first.reasoning_efforts,
-                default_reasoning_effort=first.default_reasoning_effort,
-                input_modalities=first.input_modalities,
-                context_window_tokens=first.context_window_tokens,
-                max_output_tokens=first.max_output_tokens,
-            )
+        # The account's own first listed model stays the default; a reviewed
+        # addition never becomes the default.
+        default_id = parsed[0][1].id if parsed else ""
+        reviewed_models = load_chatgpt_codex_static_models()
+        reviewed_ids = {reviewed.id.casefold() for reviewed in reviewed_models}
+        if any(model_id in reviewed_ids and "luna" not in model_id for model_id in listed_ids):
+            for reviewed in reviewed_models:
+                if reviewed.id.casefold() in advertised_ids:
+                    continue
+                default_effort = reviewed.default_reasoning_effort
+                if default_effort and default_effort.casefold() == "ultra":
+                    default_effort = None
+                parsed.append(
+                    (
+                        reviewed.priority,
+                        ProviderModel(
+                            id=reviewed.id,
+                            label=reviewed.label,
+                            description=_unlisted_model_description(reviewed.description),
+                            reasoning_efforts=tuple(
+                                ProviderReasoningEffort(
+                                    effort, reasoning_effort_label(effort), description
+                                )
+                                for effort, description in reviewed.reasoning_efforts
+                                if effort.casefold() != "ultra"
+                            ),
+                            default_reasoning_effort=default_effort,
+                            input_modalities=reviewed.input_modalities,
+                            context_window_tokens=reviewed.context_window_tokens,
+                            max_output_tokens=reviewed.max_output_tokens,
+                        ),
+                    )
+                )
+            parsed.sort(key=lambda pair: (pair[0], pair[1].label.casefold(), pair[1].id))
+        models = [
+            replace(model, is_default=True) if model.id == default_id else model
+            for _priority, model in parsed
+        ]
+        # Show the latest Sol first while preserving the provider's default
+        # and the relative order of every other model.
+        models.sort(key=lambda model: model.id != "gpt-6.1-sol")
         self._models_cache = tuple(models)
+        self._models_cache_scope = authorization.credential_scope
         return self._models_cache
 
     def _valid_record(
@@ -485,11 +653,32 @@ class OpenAICodexSubscriptionAuth:
         record: ProviderTokenRecord,
         *,
         force_refresh: bool = False,
+        cancellation_token: Any | None = None,
     ) -> ProviderTokenRecord:
+        if not record.client_id or not record.subject:
+            raise ProviderLoginRequiredError(
+                "Reconnect ChatGPT to authorize Alysis Code for plan usage."
+            )
+        if _PLAN_SCOPE not in record.scopes:
+            raise ProviderAuthError(
+                "ChatGPT plan usage is not enabled. Continue with ChatGPT to review permissions, or choose an API provider."
+            )
         if not force_refresh and record.expires_at > time.time() + _REFRESH_SKEW_SECONDS:
             return record
+        from ..task_budget import refuse_budgeted_auth_refresh
+
+        refuse_budgeted_auth_refresh()
         lock = _refresh_lock(self.provider_id)
-        with lock:
+        acquired = False
+        try:
+            if cancellation_token is None:
+                lock.acquire()
+                acquired = True
+            else:
+                while not acquired:
+                    _throw_if_cancelled(cancellation_token)
+                    acquired = lock.acquire(timeout=_CANCELLATION_POLL_SECONDS)
+            _throw_if_cancelled(cancellation_token)
             current = load_provider_token(self.provider_id)
             if current is None:
                 raise ProviderLoginRequiredError("ChatGPT credentials were removed; connect again.")
@@ -500,22 +689,37 @@ class OpenAICodexSubscriptionAuth:
             return self._refresh(
                 current,
                 allow_unexpired_fallback=not force_refresh,
+                cancellation_token=cancellation_token,
             )
+        finally:
+            if acquired:
+                lock.release()
 
     def _refresh(
         self,
         record: ProviderTokenRecord,
         *,
         allow_unexpired_fallback: bool,
+        cancellation_token: Any | None = None,
     ) -> ProviderTokenRecord:
         try:
-            with self._client(timeout=30.0) as client:
+            client_context = (
+                cancellation_aware_httpx_client(
+                    timeout_s=30.0,
+                    transport=self._transport,
+                    cancellation_token=cancellation_token,
+                )
+                if cancellation_token is not None
+                else self._client(timeout=30.0)
+            )
+            with client_context as client:
                 response = client.post(
-                    f"{_ISSUER}/oauth/token",
+                    _TOKEN_URL,
                     data={
                         "grant_type": "refresh_token",
                         "refresh_token": record.refresh_token,
-                        "client_id": _client_id(),
+                        "client_id": record.client_id,
+                        "resource": _RESOURCE,
                     },
                 )
         except httpx.HTTPError as exc:
@@ -530,6 +734,24 @@ class OpenAICodexSubscriptionAuth:
                 "invalid_grant",
                 "invalid_token",
             }:
+                # Another process may have consumed the rotating refresh token
+                # and committed its successor while this request was in flight.
+                # Reuse only a newer, still-valid record from the *same* public
+                # credential generation; a replacement login remains fail-closed.
+                try:
+                    current = load_provider_token(self.provider_id)
+                except ProviderAuthError:
+                    current = None
+                if (
+                    current is not None
+                    and current != record
+                    and hmac.compare_digest(
+                        current.credential_generation,
+                        record.credential_generation,
+                    )
+                    and current.expires_at > time.time()
+                ):
+                    return current
                 raise ProviderLoginRequiredError(
                     "ChatGPT session expired; connect your account again."
                 )
@@ -544,112 +766,105 @@ class OpenAICodexSubscriptionAuth:
         if not access_token or not refresh_token:
             raise ProviderLoginRequiredError("ChatGPT session expired; connect your account again.")
         id_token = str(data.get("id_token") or "").strip()
-        claims = _jwt_claims(id_token) if id_token else _jwt_claims(access_token)
+        claims = self._validate_id_token(id_token, record.client_id, None) if id_token else {}
+        if claims and claims["sub"] != record.subject:
+            raise ProviderLoginRequiredError(
+                "ChatGPT credential refresh resolved to a different account; connect again."
+            )
+        scopes = tuple(str(data["scope"]).split()) if "scope" in data else record.scopes
+        if _PLAN_SCOPE not in scopes:
+            raise ProviderLoginRequiredError("ChatGPT plan permission was removed; connect again.")
         refreshed = ProviderTokenRecord(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_at=_token_expiry(data, access_token),
-            account_id=_account_id(claims) or record.account_id,
-            account_label=_account_label(claims) or record.account_label,
+            account_id=record.account_id,
+            account_label=record.account_label,
+            credential_generation=record.credential_generation,
+            client_id=record.client_id,
+            subject=record.subject,
+            id_token=id_token or record.id_token,
+            scopes=scopes,
         )
-        save_provider_token(self.provider_id, refreshed)
-        return refreshed
+        return save_refreshed_provider_token(
+            self.provider_id,
+            expected=record,
+            refreshed=refreshed,
+        )
 
-    def _browser_login(self, write: Callable[[str], None]) -> ProviderTokenRecord:
+    def _browser_login(
+        self, write: Callable[[str], None], *, new_account: bool = False
+    ) -> ProviderTokenRecord:
+        registration = subscription_registration(self.provider_id)
+        active = load_provider_token(self.provider_id)
+        saved_client = "" if new_account else str(registration.get("client_id") or "")
+        client_id = saved_client or _DEFAULT_CLIENT_ID
         verifier = _pkce_verifier()
-        challenge = _pkce_challenge(verifier)
         expected_state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
         server = _bind_callback_server()
-        actual_port = int(server.server_address[1])
-        redirect_uri = f"http://localhost:{actual_port}/auth/callback"
+        redirect_uri = f"http://127.0.0.1:{int(server.server_address[1])}/auth/callback"
         params = {
             "response_type": "code",
-            "client_id": _client_id(),
+            "client_id": client_id,
             "redirect_uri": redirect_uri,
-            "scope": "openid profile email offline_access",
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "id_token_add_organizations": "true",
-            "codex_cli_simplified_flow": "true",
+            "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
+            "resource": _RESOURCE,
+            "ext_agent_host_id": registration["host_id"],
             "state": expected_state,
-            "originator": "alysis",
+            "nonce": nonce,
+            "code_challenge": _pkce_challenge(verifier),
+            "code_challenge_method": "S256",
         }
-        auth_url = f"{_ISSUER}/oauth/authorize?{urlencode(params)}"
+        if not saved_client:
+            params["agent_name_hint"] = "Alysis Code"
+        elif active and active.client_id == saved_client and active.id_token:
+            params["id_token_hint"] = active.id_token
+            if _PLAN_SCOPE not in active.scopes:
+                params["prompt"] = "consent"
+        auth_url = f"{_ISSUER}/api/accounts/authorize?{urlencode(params)}"
         callback: dict[str, str] = {}
         server.RequestHandlerClass = _callback_handler(callback, expected_state)
         server.timeout = 0.5
-        write("Opening ChatGPT sign-in in your browser…")
-        if not open_url(auth_url):
-            write(f"Open this URL to continue: {auth_url}")
-        deadline = time.monotonic() + _BROWSER_TIMEOUT_SECONDS
         try:
+            write("Opening Continue with ChatGPT in your browser…")
+            if not open_url(auth_url):
+                # A retained ID token must never enter live logs even on a browser failure.
+                raise ProviderAuthError(
+                    "Could not open the system browser. Check your default browser and try Continue with ChatGPT again."
+                )
+            deadline = time.monotonic() + _BROWSER_TIMEOUT_SECONDS
             while time.monotonic() < deadline and "done" not in callback:
                 server.handle_request()
         finally:
             server.server_close()
         if "done" not in callback:
-            raise ProviderAuthError("ChatGPT browser sign-in timed out after five minutes.")
+            raise ProviderAuthError(
+                "ChatGPT browser sign-in timed out after five minutes. Try again."
+            )
         if callback.get("error"):
-            raise ProviderAuthError(f"ChatGPT sign-in failed: {callback['error']}")
+            raise ProviderAuthError(
+                "ChatGPT sign-in was declined or rejected. No account was changed."
+            )
+        issued_client = callback.get("client_id") or saved_client
+        if (
+            not issued_client
+            or issued_client == _DEFAULT_CLIENT_ID
+            or (saved_client and issued_client != saved_client)
+        ):
+            raise ProviderAuthError(
+                "ChatGPT returned an incomplete or different app registration. Try again."
+            )
         code = callback.get("code") or ""
         if not code:
             raise ProviderAuthError("ChatGPT sign-in did not return an authorization code.")
-        return self._exchange_code(code=code, verifier=verifier, redirect_uri=redirect_uri)
-
-    def _device_login(self, write: Callable[[str], None]) -> ProviderTokenRecord:
-        try:
-            with self._client(timeout=30.0) as client:
-                response = client.post(
-                    f"{_ISSUER}/api/accounts/deviceauth/usercode",
-                    json={"client_id": _client_id()},
-                )
-        except httpx.HTTPError as exc:
-            raise ProviderAuthError("Could not start ChatGPT device-code sign-in.") from exc
-        if response.status_code >= 400:
-            raise ProviderAuthError(
-                f"ChatGPT device-code sign-in is unavailable (status {response.status_code})."
-            )
-        data = _json_object(response, "ChatGPT returned an invalid device-code response.")
-        device_auth_id = str(data.get("device_auth_id") or "").strip()
-        user_code = str(data.get("user_code") or data.get("usercode") or "").strip()
-        try:
-            interval = max(1.0, float(data.get("interval") or 5.0))
-        except (TypeError, ValueError):
-            interval = 5.0
-        if not device_auth_id or not user_code:
-            raise ProviderAuthError("ChatGPT returned an invalid device-code response.")
-        verification_url = f"{_ISSUER}/codex/device"
-        write(f"Open {verification_url}")
-        write(f"Enter this one-time code: {user_code}")
-        deadline = time.monotonic() + _DEVICE_TIMEOUT_SECONDS
-        code_data: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
-            try:
-                with self._client(timeout=30.0) as client:
-                    poll = client.post(
-                        f"{_ISSUER}/api/accounts/deviceauth/token",
-                        json={"device_auth_id": device_auth_id, "user_code": user_code},
-                    )
-            except httpx.HTTPError as exc:
-                raise ProviderAuthError("ChatGPT device-code sign-in was interrupted.") from exc
-            if poll.status_code < 400:
-                code_data = _json_object(poll, "ChatGPT returned an invalid device token.")
-                break
-            if poll.status_code not in {403, 404}:
-                raise ProviderAuthError(
-                    f"ChatGPT device-code sign-in failed with status {poll.status_code}."
-                )
-            time.sleep(min(interval, max(0.1, deadline - time.monotonic())))
-        if code_data is None:
-            raise ProviderAuthError("ChatGPT device-code sign-in timed out after 15 minutes.")
-        code = str(code_data.get("authorization_code") or "").strip()
-        verifier = str(code_data.get("code_verifier") or "").strip()
-        if not code or not verifier:
-            raise ProviderAuthError("ChatGPT returned an invalid device authorization.")
         return self._exchange_code(
             code=code,
             verifier=verifier,
-            redirect_uri=f"{_ISSUER}/deviceauth/callback",
+            redirect_uri=redirect_uri,
+            client_id=issued_client,
+            nonce=nonce,
+            expected_subject=None if new_account else registration.get("subject"),
         )
 
     def _exchange_code(
@@ -658,41 +873,88 @@ class OpenAICodexSubscriptionAuth:
         code: str,
         verifier: str,
         redirect_uri: str,
+        client_id: str,
+        nonce: str,
+        expected_subject: str | None = None,
     ) -> ProviderTokenRecord:
         try:
             with self._client(timeout=30.0) as client:
                 response = client.post(
-                    f"{_ISSUER}/oauth/token",
+                    _TOKEN_URL,
                     data={
                         "grant_type": "authorization_code",
                         "code": code,
                         "redirect_uri": redirect_uri,
-                        "client_id": _client_id(),
+                        "client_id": client_id,
                         "code_verifier": verifier,
+                        "resource": _RESOURCE,
                     },
                 )
         except httpx.HTTPError as exc:
-            raise ProviderAuthError("Could not complete ChatGPT token exchange.") from exc
+            raise ProviderAuthError("Could not complete ChatGPT sign-in. Try again.") from exc
         if response.status_code >= 400:
             raise ProviderAuthError(
-                f"ChatGPT token exchange failed with status {response.status_code}."
+                f"ChatGPT token exchange failed (status {response.status_code}). Start a fresh sign-in."
             )
         data = _json_object(response, "ChatGPT returned an invalid token response.")
         access_token = str(data.get("access_token") or "").strip()
         refresh_token = str(data.get("refresh_token") or "").strip()
         id_token = str(data.get("id_token") or "").strip()
-        if not access_token or not refresh_token:
+        if (
+            not access_token
+            or not refresh_token
+            or str(data.get("token_type") or "").lower() != "bearer"
+        ):
             raise ProviderAuthError("ChatGPT token response was incomplete.")
-        claims = _jwt_claims(id_token) if id_token else _jwt_claims(access_token)
+        claims = self._validate_id_token(id_token, client_id, nonce)
+        if expected_subject and claims["sub"] != expected_subject:
+            raise ProviderAuthError(
+                "The sign-in belongs to a different ChatGPT account. Use Switch account."
+            )
         return ProviderTokenRecord(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_at=_token_expiry(data, access_token),
-            account_id=_account_id(claims),
-            account_label=_account_label(claims),
+            account_id=claims["sub"],
+            account_label=str(claims.get("email") or "ChatGPT account"),
+            client_id=client_id,
+            subject=claims["sub"],
+            id_token=id_token,
+            scopes=tuple(str(data.get("scope") or "").split()),
+        )
+
+    def _discovery(self) -> dict[str, Any]:
+        try:
+            with self._client(timeout=20.0) as client:
+                response = client.get(f"{_ISSUER}/.well-known/openid-configuration")
+                response.raise_for_status()
+            data = _json_object(response, "Could not validate ChatGPT identity configuration.")
+            if data.get("issuer") != _ISSUER:
+                raise ValueError()
+            return data
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ProviderAuthError("Could not validate ChatGPT identity configuration.") from exc
+
+    def _revocation_endpoint(self) -> str:
+        endpoint = str(self._discovery().get("revocation_endpoint") or "")
+        _validate_auth_endpoint(endpoint)
+        return endpoint
+
+    def _validate_id_token(self, token: str, client_id: str, nonce: str | None) -> dict[str, Any]:
+        from .subscription_identity import validate_id_token
+
+        return validate_id_token(
+            token,
+            client_id=client_id,
+            nonce=nonce,
+            discovery=self._discovery(),
+            client_factory=self._client,
         )
 
     def _client(self, *, timeout: float) -> httpx.Client:
+        from ..task_budget import refuse_budgeted_auth_refresh
+
+        refuse_budgeted_auth_refresh()
         return httpx.Client(
             timeout=timeout,
             transport=self._transport,
@@ -705,14 +967,43 @@ def _refresh_lock(provider_id: str) -> threading.Lock:
         return _REFRESH_LOCKS.setdefault(provider_id, threading.Lock())
 
 
+def _validate_auth_endpoint(endpoint: str) -> None:
+    split = urlsplit(endpoint)
+    if (
+        split.scheme != "https"
+        or split.hostname != "auth.openai.com"
+        or split.port not in {None, 443}
+        or split.username
+        or split.password
+        or split.query
+        or split.fragment
+    ):
+        raise ProviderAuthError("ChatGPT returned an invalid identity endpoint.")
+
+
 def _canonical_request_url(url: str) -> str:
     split = urlsplit(str(url or ""))
-    if split.scheme != "https" or split.hostname != "chatgpt.com" or split.query or split.fragment:
+    if (
+        split.scheme != "https"
+        or split.hostname != "api.openai.com"
+        or split.username
+        or split.password
+        or split.query
+        or split.fragment
+    ):
         return ""
     port = split.port
     if port not in {None, 443}:
         return ""
-    return f"https://chatgpt.com{split.path.rstrip('/')}"
+    return f"https://api.openai.com{split.path.rstrip('/')}"
+
+
+def _credential_scope(record: ProviderTokenRecord) -> str:
+    """Derive the public route proof from a random, non-secret vault generation."""
+
+    return hashlib.sha256(
+        (f"alysis-provider-credential-generation:v1:{record.credential_generation}").encode("ascii")
+    ).hexdigest()
 
 
 def _pkce_verifier() -> str:
@@ -759,8 +1050,12 @@ def _callback_handler(
                 result.update({"done": "1", "error": "Missing authorization code."})
                 self._respond(400, "Missing authorization code.")
                 return
-            result.update({"done": "1", "code": code})
-            self._respond(200, "Connected. You can close this tab and return to Alysis Code.")
+            result.update(
+                {"done": "1", "code": code, "client_id": str((query.get("client_id") or [""])[0])}
+            )
+            self._respond(
+                200, "Sign-in response received. Return to Alysis Code to see the result."
+            )
 
         def log_message(self, _format: str, *_args: Any) -> None:
             return
@@ -820,40 +1115,6 @@ def _jwt_claims(token: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _auth_claims(claims: Mapping[str, Any]) -> Mapping[str, Any]:
-    nested = claims.get("https://api.openai.com/auth")
-    return nested if isinstance(nested, dict) else {}
-
-
-def _account_id(claims: Mapping[str, Any]) -> str | None:
-    for value in (
-        claims.get("chatgpt_account_id"),
-        _auth_claims(claims).get("chatgpt_account_id"),
-    ):
-        normalized = str(value or "").strip()
-        if normalized:
-            return normalized
-    organizations = claims.get("organizations")
-    if isinstance(organizations, list) and organizations:
-        first = organizations[0]
-        if isinstance(first, dict):
-            normalized = str(first.get("id") or "").strip()
-            if normalized:
-                return normalized
-    return None
-
-
-def _account_label(claims: Mapping[str, Any]) -> str | None:
-    email = str(claims.get("email") or "").strip()
-    profile = claims.get("https://api.openai.com/profile")
-    if not email and isinstance(profile, dict):
-        email = str(profile.get("email") or "").strip()
-    plan = str(_auth_claims(claims).get("chatgpt_plan_type") or "").strip()
-    if email and plan:
-        return f"{email} ({plan})"
-    return email or (f"ChatGPT {plan}" if plan else None)
-
-
 def _token_expiry(data: Mapping[str, Any], access_token: str) -> float:
     try:
         expires_in = float(data.get("expires_in") or 0)
@@ -889,6 +1150,13 @@ def _message_text(content: Any) -> str | None:
         else:
             return None
     return "\n".join(part for part in parts if part).strip()
+
+
+def _unlisted_model_description(description: str) -> str:
+    """Describe a reviewed model that the account's /models answer did not list."""
+
+    note = "access checked when used"
+    return f"{description} · {note}" if description else note.capitalize()
 
 
 def _positive_int(value: Any) -> int | None:

@@ -40,7 +40,14 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _command(options: str) -> str:
-    return f"{shlex.quote(sys.executable)} -m pytest {options}"
+    executable = (
+        # Forward slashes work in CMD and preserve the path in the shared
+        # POSIX-shaped verification-command observer.
+        subprocess.list2cmdline([Path(sys.executable).as_posix()])
+        if os.name == "nt"
+        else shlex.quote(sys.executable)
+    )
+    return f"{executable} -m pytest {options}"
 
 
 def _selected(repo: Path, options: str, **kwargs):
@@ -114,7 +121,17 @@ def test_configured_default_paths_do_not_claim_unselected_integration(
     assert _selected(repo, "integration/test_beta.py -q") == ("integration/test_beta.py",)
 
 
-@pytest.mark.parametrize("source", ["config", "inherited_environment", "inline_environment"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "config",
+        "inherited_environment",
+        pytest.param(
+            "inline_environment",
+            marks=pytest.mark.skipif(os.name == "nt", reason="POSIX inline environment syntax"),
+        ),
+    ],
+)
 def test_hidden_default_filter_cannot_bypass_selection_guard(
     repo: Path, monkeypatch: pytest.MonkeyPatch, source: str
 ):
@@ -151,6 +168,7 @@ def test_configuration_search_starts_from_explicit_argument_directory(repo: Path
     assert _selected(repo, "unit -q") is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX command/env shell builtins")
 def test_command_env_assignments_and_cleared_inherited_options(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ):

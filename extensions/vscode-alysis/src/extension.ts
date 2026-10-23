@@ -225,8 +225,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
       : runtimeValidatingConfig(managedRuntime.apply(readBaseConfig()));
   context.subscriptions.push(
     vscode.commands.registerCommand("alysis.runtimeEvidence", async () => {
-      // Activation returns before the bundled runtime has finished validation.
-      // Report its settled identity instead of a transient "unavailable" state.
+      // Activation returns before runtime validation finishes. Report the settled runtime identity.
       await runtimeValidation;
       const baseConfig = readBaseConfig();
       const config = managedRuntime.apply(baseConfig);
@@ -800,8 +799,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
   registerForgePlanCommand(context, forgeController);
   registerForgeExecuteCommand(context, forgeController);
   registerRunSwarmCommand(context, forgeController);
-  registerRunDoctorCommand(context, cliDiscovery, getConfig, output, statusBar, runtime);
-  registerShowBridgeHealthCommand(context, cliDiscovery, getConfig, output, statusBar, runtime);
+  registerRunDoctorCommand(context, cliDiscovery, getConfig, output, statusBar, runtime, () => runtimeValidation);
+  registerShowBridgeHealthCommand(context, cliDiscovery, getConfig, output, statusBar, runtime, () => runtimeValidation);
   registerConfigureProviderCommand(context, secrets, bridgeClient, getConfig, () =>
     ensureCredentialBridge(bridgeClient, secrets, getConfig(), output)
   );
@@ -1222,7 +1221,7 @@ export function runtimeValidatingConfig(config: AlysisConfig): AlysisConfig {
           cliPath: { ...config.security.cliPath, reason: RUNTIME_VALIDATION_PENDING_MESSAGE }
         }
       : undefined,
-    runtimeSelection: { ...config.runtimeSelection, message: RUNTIME_VALIDATION_PENDING_MESSAGE }
+    runtimeSelection: { ...config.runtimeSelection, validating: true, message: RUNTIME_VALIDATION_PENDING_MESSAGE }
   };
 }
 
@@ -1299,9 +1298,9 @@ function createExtensionManagedRuntime(
         protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION }
       },
       releasePolicy: {
-        sourceRepository: "https://github.com/AlysisAi/alysis-code",
+        sourceRepository: "https://github.com/AlysisAi/AlysisCode",
         provenanceIssuer: "https://token.actions.githubusercontent.com",
-        provenanceWorkflow: "https://github.com/AlysisAi/alysis-code/.github/workflows/managed-cli-vsix-release.yml"
+        provenanceWorkflow: "https://github.com/AlysisAi/AlysisCode/.github/workflows/managed-cli-vsix-release.yml"
       },
       requireSignature: true,
       signatureVerifier: createManagedCliReleaseSignatureVerifier(),

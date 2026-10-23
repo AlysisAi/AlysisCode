@@ -1,0 +1,22 @@
+{
+  "identity": {
+    "generationId": "gen_abcdefgh",
+    "revision": 1,
+    "runId": null,
+    "sessionId": "ses_abcdefgh"
+  },
+  "kind": "event",
+  "messageId": "msg_snapshot0001",
+  "operationId": "operation_plan0001",
+  "payload": {
+    "goal": "Implement the /api route.",
+    "pendingApprovalId": null,
+    "phase": "planning",
+    "terminal": null,
+    "type": "state.snapshot"
+  },
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "sequence": 1
+}

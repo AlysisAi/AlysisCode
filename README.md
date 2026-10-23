@@ -12,8 +12,8 @@
 
 <p align="center">
   <a href="https://alysiscode.com/">Website</a> ·
-  <a href="https://github.com/AlysisAi/alysis-code/tree/main/docs">Docs</a> ·
-  <a href="https://github.com/AlysisAi/alysis-code/blob/main/docs/CHANGELOG.md">Changelog</a>
+  <a href="https://github.com/AlysisAi/AlysisCode/tree/main/docs">Docs</a> ·
+  <a href="https://github.com/AlysisAi/AlysisCode/blob/main/docs/CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
@@ -21,10 +21,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AlysisAi/alysis-code/actions/workflows/ci.yml"><img src="https://github.com/AlysisAi/alysis-code/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/AlysisAi/AlysisCode/actions/workflows/ci.yml"><img src="https://github.com/AlysisAi/AlysisCode/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/alysis-code/"><img src="https://img.shields.io/pypi/v/alysis-code.svg" alt="PyPI version"></a>
   <a href="https://pypi.org/project/alysis-code/"><img src="https://img.shields.io/pypi/pyversions/alysis-code.svg" alt="Python versions"></a>
-  <a href="https://github.com/AlysisAi/alysis-code/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/alysis-code.svg" alt="License"></a>
+  <a href="https://github.com/AlysisAi/AlysisCode/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/alysis-code.svg" alt="License"></a>
 </p>
 
 ---
@@ -35,11 +35,33 @@ Alysis Code requires **Python 3.11+** and runs on macOS, Linux, and Windows.
 
 **1 — Install**
 
-```bash
-pipx install alysis-code
+On Windows, paste this into **PowerShell**:
+
+```powershell
+irm https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.ps1 | iex
 ```
 
-**2 — Launch in your project**
+On Linux, macOS, or inside a **WSL/Ubuntu terminal**:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.sh | sh
+```
+
+The installers provision uv and Python 3.12 when needed. No existing Python or pipx is required.
+PowerShell can use `alysis` immediately; after the shell installer, follow its PATH instructions
+or open a new terminal. If you already use pipx, `pipx install alysis-code` also works;
+run `pipx ensurepath` and restart your terminal if the command is missing.
+
+**2 — Connect your account**
+
+```sh
+alysis login
+```
+
+Approve the code in your browser to use your Alysis credits. No cloud environment variables
+are needed. Existing 0.15.1 users should upgrade first with `alysis update`.
+
+**3 — Launch in your project**
 
 ```bash
 cd your-project
@@ -50,7 +72,7 @@ The first run opens a guided setup wizard: choose **Use an API key** or **Use an
 connect a provider, and pick your default model. Re-run it anytime with `alysis-code setup`.
 (`alysis` works too, as a short alias.)
 
-**3 — Start building**
+**Start building**
 
 ```bash
 alysis-code chat                            # interactive coding session
@@ -158,7 +180,7 @@ More questions? See the [full FAQ](https://alysiscode.com/docs/faq).
 
 ---
 
-**Join the community** — [X](https://x.com/alysiscode) | [GitHub Issues](https://github.com/AlysisAi/alysis-code/issues)
+**Join the community** — [X](https://x.com/alysiscode) | [GitHub Issues](https://github.com/AlysisAi/AlysisCode/issues)
 
 
 ## Editor integrations
