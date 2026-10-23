@@ -79,6 +79,20 @@ def test_ci_runs_pinned_actionlint_before_packaging() -> None:
     assert "workflow-lint" in jobs["package"]["needs"]
 
 
+def test_extension_ci_checks_current_stable_before_tagging() -> None:
+    workflow = yaml.safe_load((WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["vscode-extension"]["steps"]
+    integration = [step for step in steps if "test:integration" in step.get("run", "")]
+    assert len(integration) == 4
+    for condition in ("runner.os == 'Linux'", "runner.os != 'Linux'"):
+        versions = {
+            step.get("env", {}).get("VSCODE_TEST_VERSION", "minimum")
+            for step in integration
+            if step["if"] == condition
+        }
+        assert versions == {"minimum", "stable"}
+
+
 def test_untrusted_context_is_not_interpolated_inside_shell_scripts() -> None:
     failures: list[str] = []
     forbidden = ("${{ inputs.", "${{ github.event.")

@@ -20,6 +20,11 @@ from alysis_code.tools.registry import iter_builtin_tool_metadata
 MODEL = "claude-sonnet-5-5"
 
 
+@pytest.fixture(autouse=True)
+def configured_hosted_endpoint(monkeypatch):
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
+
+
 def hosted_config():
     profile = replace(make_profile_from_preset(get_preset("alysis")), default_model=MODEL)
     cfg = AppConfig(model=MODEL, base_url=profile.base_url)
@@ -28,24 +33,11 @@ def hosted_config():
     return cfg
 
 
-def test_sonnet_free_picker_metadata_and_native_protocol():
+def test_sonnet_is_excluded_from_free_picker_but_retains_native_protocol():
     cfg = hosted_config()
     flow = ConfigFlow(cfg=cfg)
     flow.choose("default")
-    assert MODEL in [r.value for r in flow.screen().rows]
-    flow.choose(MODEL)
-    flow.submit_input("")
-    assert [r.value for r in flow.screen().rows] == [
-        "off",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-        "auto",
-    ]
-    flow.choose("medium")
-    assert flow.state.commit_to(cfg).saved
+    assert MODEL not in [r.value for r in flow.screen().rows]
     meta = ModelRegistry(cfg=cfg).get(MODEL)
     assert meta.context_window_tokens == 1_000_000
     assert meta.max_output_tokens == 128_000

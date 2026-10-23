@@ -46,6 +46,7 @@ def search_workspace_sessions(
     workspace_root: Path,
     query: str,
     limits: SessionSearchLimits | None = None,
+    git_root: Path | None = None,
 ) -> dict[str, Any]:
     active = _normalized_limits(limits or SessionSearchLimits())
     clean_query = _validated_query(query)
@@ -54,7 +55,12 @@ def search_workspace_sessions(
         raise SessionSearchError("Workspace path is invalid.")
 
     infos = filter_sessions_to_local_owner(list_sessions(sessions_dir))
-    all_scoped = [info for info in infos if session_belongs_to_workspace(info, canonical_workspace)]
+    canonical_git = canonical_workspace_path(git_root)
+    all_scoped = [
+        info
+        for info in infos
+        if session_belongs_to_workspace(info, canonical_workspace, canonical_git)
+    ]
     scoped = all_scoped[: active.max_sessions]
     lowered = clean_query.casefold()
     results: list[dict[str, Any]] = []
@@ -275,7 +281,7 @@ def _searchable_event_text(event: dict[str, Any]) -> str:
         "payload": payload if isinstance(payload, dict | list | str) else None,
     }
     try:
-        return json.dumps(redact_secrets(safe), ensure_ascii=True, sort_keys=True)
+        return json.dumps(redact_secrets(safe), ensure_ascii=False, sort_keys=True)
     except (TypeError, ValueError):
         return str(redact_secrets(safe))
 

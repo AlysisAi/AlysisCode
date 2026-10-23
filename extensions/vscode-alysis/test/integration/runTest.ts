@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 import { runVsCodeExtensionHostTests } from "./vsCodeExtensionHostInvocation";
 import { assertSuccessfulExtensionHostResult } from "./extensionHostResult";
+import { copyTestDependencyTree } from "./copyTestDependencyTree";
 
 const vscodeDownloadHost = "update.code.visualstudio.com";
 const extensionHostDownloadFailure =
@@ -61,44 +62,6 @@ async function preflightDownload(timeoutMs = 5000): Promise<void> {
     socket.once("error", (error) => finish(error));
     socket.connect(443, vscodeDownloadHost);
   });
-}
-
-function copyTestDependencyTree(
-  packageName: string,
-  sourceNodeModules: string,
-  targetNodeModules: string,
-  copied = new Set<string>(),
-  optional = false
-): void {
-  if (copied.has(packageName)) {
-    return;
-  }
-  if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(packageName)) {
-    throw new Error(`Unsafe Extension Host test dependency name: ${packageName}`);
-  }
-  const parts = packageName.split("/");
-  const sourceDirectory = resolve(sourceNodeModules, ...parts);
-  if (!existsSync(sourceDirectory)) {
-    if (optional) {
-      return;
-    }
-    throw new Error(`Extension Host test dependency is missing: ${packageName}`);
-  }
-  const manifestPath = resolve(sourceDirectory, "package.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-    dependencies?: Record<string, unknown>;
-    optionalDependencies?: Record<string, unknown>;
-  };
-  copied.add(packageName);
-  const targetDirectory = resolve(targetNodeModules, ...parts);
-  mkdirSync(resolve(targetDirectory, ".."), { recursive: true });
-  cpSync(sourceDirectory, targetDirectory, { recursive: true, force: true });
-  for (const dependency of Object.keys(manifest.dependencies ?? {})) {
-    copyTestDependencyTree(dependency, sourceNodeModules, targetNodeModules, copied);
-  }
-  for (const dependency of Object.keys(manifest.optionalDependencies ?? {})) {
-    copyTestDependencyTree(dependency, sourceNodeModules, targetNodeModules, copied, true);
-  }
 }
 
 async function main(): Promise<void> {

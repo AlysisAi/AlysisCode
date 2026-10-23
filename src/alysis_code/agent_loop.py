@@ -47,11 +47,6 @@ from .agent.prompt_context import (  # noqa: F401
     _SYSTEM_PROMPT_SKILL_LIFECYCLE_SECTION,
     _SYSTEM_PROMPT_SUBAGENT_SECTION,
     _SYSTEM_PROMPT_WRITE_SECTION,
-    _TASK_BRIEF_EMPTY_STATUS,
-    _TASK_BRIEF_MARKER,
-    _TASK_BRIEF_MAX_CURRENT_LINES,
-    _TASK_BRIEF_MAX_LINE_CHARS,
-    _TASK_BRIEF_MAX_PRIOR_LINES,
     ALWAYS_PROTECTED_WRITE_PREFIXES,
     CONVENTIONS_FILENAME,
     MAX_CONVENTIONS_CHARS,
@@ -67,7 +62,6 @@ from .agent.prompt_context import (  # noqa: F401
     _clean_workspace_hint,
     _component_plugin_allowed,
     _compose_session_system_prompt,
-    _empty_task_brief_message,
     _environment_context_message,
     _extract_repo_relative_paths_from_text,
     _extract_workspace_relation_paths_from_text,
@@ -79,8 +73,6 @@ from .agent.prompt_context import (  # noqa: F401
     _normalize_rel_match_path,
     _normalize_repo_relative_hint_path,
     _normalize_scope_list,
-    _normalize_task_brief_key,
-    _normalize_task_brief_line,
     _normalize_workspace_relpath,
     _normalized_authoritative_verify_commands,
     _normalized_verify_commands,
@@ -88,8 +80,6 @@ from .agent.prompt_context import (  # noqa: F401
     _PluginActivationIndex,
     _read_workspace_hint_text,
     _recent_visible_non_repo_history,
-    _render_task_brief_from_state,
-    _render_task_brief_message,
     _repo_conventions_context,
     _repo_summary_data,
     _RepoSummaryData,
@@ -99,9 +89,7 @@ from .agent.prompt_context import (  # noqa: F401
     _resolve_session_pinned_prefix_len,
     _session_focus_dir_path,
     _session_focus_relpath,
-    _session_has_active_workspace_task,
     _session_repo_scan,
-    _session_task_brief_content,
     _session_verify_command_selection,
     _session_workspace_binding_context_message,
     _session_workspace_grounding,
@@ -109,9 +97,6 @@ from .agent.prompt_context import (  # noqa: F401
     _should_prepare_repo_scan,
     _skill_plugin_id,
     _subagent_context_message,
-    _task_brief_content_is_placeholder,
-    _task_relation_from_turn_semantics,
-    _task_brief_lines_from_text,
     _truncate_non_repo_history_content,
     _untrusted_prompt_prelude_message,
     _workspace_binding_context_message,
@@ -121,33 +106,15 @@ from .agent.prompt_context import (  # noqa: F401
     _workspace_hint_from_top_level_metadata,
     _workspace_kind_is_plain_dir,
     _workspace_kind_is_repo_backed,
-    _workspace_kind_supports_task_brief,
     _workspace_relpath_for_path,
     _WorkspaceGroundingDescriptor,
     prepare_session_prompt_context,
     refresh_session_environment_context_message,
-    refresh_session_task_brief_message,
     refresh_session_workspace_binding_context_message,
     resolve_session_active_workdir_path,
     resolve_session_active_workdir_relpath,
     resolve_workdir_relpath_within_workspace,
     set_session_active_workdir,
-)
-
-# task identity re-exports
-from .agent.task_state import (  # noqa: F401
-    TASK_STATE_EVENT,
-    RecoveredTaskState,
-    SessionTaskState,
-    TaskPersistenceError,
-    TaskTransition,
-    accept_session_task,
-    clear_session_task,
-    instruction_is_task_candidate,
-    recover_task_state_from_events,
-    restore_session_task_state,
-    transition_task_state,
-    validate_task_relation,
 )
 
 # turn_path re-exports
@@ -542,6 +509,8 @@ def run_agent(
     chat_turn_fixed_override: int | None = None,
     session_log_dir_override: Path | None = None,
     session_id_override: str | None = None,
+    seed_messages: list[dict[str, Any]] | None = None,
+    managed_session_persistence: Any | None = None,
     surface: Surface | None = None,
     usage_role: str = "main",
     trusted_system_prompt_override: str | None = None,
@@ -668,6 +637,7 @@ def run_agent(
         chat_turn_fixed_override=chat_turn_fixed_override,
         session_log_dir_override=session_log_dir_override,
         session_id_override=session_id_override,
+        managed_session_persistence=managed_session_persistence,
         surface=surface,
         usage_role=usage_role,
         trusted_system_prompt_override=trusted_system_prompt_override,
@@ -747,16 +717,12 @@ def run_agent(
         )
         watchdog.arm()
     try:
+        if seed_messages:
+            session.messages.extend(seed_messages)
         turn_kwargs: dict[str, Any] = {
             "image_paths": image_paths,
             "cancellation_token": cancellation_token,
         }
-        if _run_turn_accepts_keyword(session.run_turn, "task_relation"):
-            # A run is one accepted task on a fresh session: declare it so the
-            # host installs the objective before the first model request
-            # instead of relying on the conservative default. Legacy embedder
-            # sessions without the keyword keep their exact call shape.
-            turn_kwargs["task_relation"] = "new_task"
         if ephemeral_system_messages:
             turn_kwargs["ephemeral_system_messages"] = list(ephemeral_system_messages)
         if ephemeral_user_messages:

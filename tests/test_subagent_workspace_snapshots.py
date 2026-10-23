@@ -29,6 +29,8 @@ def workspace(tmp_path: Path) -> Iterator[tuple[Path, SubagentWorkspaceProvider]
     root = tmp_path / "repo"
     root.mkdir()
     _git(root, "init", "-q")
+    # Byte-preservation assertions must not inherit a developer's CRLF policy.
+    _git(root, "config", "core.autocrlf", "false")
     (root / "app.txt").write_text("base\n", encoding="utf-8")
     (root / "dirty.txt").write_text("clean\n", encoding="utf-8")
     (root / "deleted.txt").write_text("delete me\n", encoding="utf-8")
@@ -85,7 +87,9 @@ def _filter_command(marker: Path) -> str:
 
 
 @pytest.mark.parametrize("kind", ["clean", "smudge", "process"])
-@pytest.mark.parametrize("attributes_source", ["working", "index", "info", "global"])
+@pytest.mark.parametrize(
+    "attributes_source", ["working", "index", "index_non_racy", "info", "global"]
+)
 def test_prepare_refuses_external_filters_without_running_them(
     workspace: tuple[Path, SubagentWorkspaceProvider],
     kind: str,
@@ -94,10 +98,10 @@ def test_prepare_refuses_external_filters_without_running_them(
     root, provider = workspace
     driver = "Example.Roundtrip-v2"
     attributes = f"*.txt filter={driver}\n"
-    if attributes_source in {"working", "index"}:
+    if attributes_source in {"working", "index", "index_non_racy"}:
         path = root / ".gitattributes"
         path.write_text(attributes, encoding="utf-8")
-        if attributes_source == "index":
+        if attributes_source.startswith("index"):
             _git(root, "add", ".gitattributes")
             path.unlink()
     elif attributes_source == "info":
@@ -109,6 +113,13 @@ def test_prepare_refuses_external_filters_without_running_them(
     marker = root.parent / "host-filter-ran"
     _git(root, "config", f"filter.{driver}.{kind}", _filter_command(marker))
     (root / "app.txt").write_text("parent changes\n", encoding="utf-8")
+    if attributes_source == "index_non_racy":
+        # Git can identify the changed file by size without hashing its content.
+        # Avoid racy-index rehashes of unchanged files accidentally exercising the
+        # filter guard before the snapshot switches to its separate HEAD index.
+        index_path = root / ".git" / "index"
+        metadata = index_path.stat()
+        os.utime(index_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 5_000_000_000))
     index = (root / ".git" / "index").read_bytes()
     head = _git(root, "rev-parse", "HEAD")
 

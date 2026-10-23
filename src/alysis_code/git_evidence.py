@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+from .command_text import command_text
 from .file_classification import classify_path, is_generated_or_vendor_path
 from .git_ops import GitOpsError
-from .git_safe import build_git_cmd, build_git_process_env
+from .git_safe import build_git_cmd, build_git_process_env, configured_git_filter_drivers
 from .runtime_artifacts import is_runtime_artifact_path
 
 PatchCaptureStatus = Literal["complete", "partial", "failed"]
@@ -445,11 +446,13 @@ def _snapshot_git(
     args: list[str],
     *,
     env: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> str:
     try:
         result = subprocess.run(
             build_git_cmd(root, args, env=env, disable_filters=True),
             env=build_git_process_env(env),
+            input=input_text.encode("utf-8") if input_text is not None else None,
             capture_output=True,
             check=False,
         )
@@ -504,17 +507,63 @@ def _check_snapshot_files(root: Path, *, excluded_paths: tuple[str, ...]) -> Non
         raise WorkspaceSnapshotError("unsupported_workspace_file", paths=tuple(sorted(unsupported)))
 
 
+def _check_snapshot_filters(root: Path, *, pathspecs: list[str]) -> None:
+    # Git status may recognize a size change without converting file content.
+    # Resolve attributes against the actual index before a HEAD-based temporary
+    # index can lose an index-only .gitattributes fallback.
+    try:
+        drivers = configured_git_filter_drivers(root)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise WorkspaceSnapshotError("workspace_snapshot_unreadable") from exc
+    if not drivers:
+        return
+    paths = _snapshot_git(
+        root,
+        [
+            "--no-optional-locks",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            *pathspecs,
+        ],
+    )
+    attributes = _snapshot_git(
+        root, ["check-attr", "-z", "--stdin", "filter"], input_text=paths
+    ).split("\0")
+    if attributes[-1] != "" or (len(attributes) - 1) % 3:
+        raise WorkspaceSnapshotError("workspace_snapshot_unreadable")
+    affected = tuple(
+        sorted(
+            {
+                attributes[index]
+                for index in range(0, len(attributes) - 1, 3)
+                if attributes[index + 2] in drivers
+            }
+        )
+    )
+    if affected:
+        raise WorkspaceSnapshotError(
+            "workspace_snapshot_git_failed",
+            paths=affected,
+            detail="Git snapshot refused: external Git filters are disabled for isolated workspaces",
+        )
+
+
 def _working_tree_snapshot(
     root: Path, *, base_ref: str, excluded_paths: tuple[str, ...] = ()
 ) -> str:
     _check_snapshot_files(root, excluded_paths=excluded_paths)
+    pathspecs = [".", *(f":(top,exclude,literal){path}" for path in excluded_paths)]
+    _check_snapshot_filters(root, pathspecs=pathspecs)
     # A separate index preserves both staged and unstaged parent work. Git handles
     # binary data, modes, names and ignored paths; no filename classifier is used.
     with tempfile.TemporaryDirectory(prefix="alysis-git-snapshot-") as scratch:
         env = build_git_process_env()
         env["GIT_INDEX_FILE"] = os.fspath(Path(scratch) / "index")
         _snapshot_git(root, ["read-tree", base_ref], env=env)
-        pathspecs = [".", *(f":(top,exclude,literal){path}" for path in excluded_paths)]
         _snapshot_git(root, ["add", "--all", "--", *pathspecs], env=env)
         tree = _snapshot_git(root, ["write-tree"], env=env).strip()
         gitlinks = tuple(
@@ -1216,7 +1265,7 @@ def _run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
         build_git_cmd(root, args),
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
         env={
             **os.environ,
             **build_git_process_env(),

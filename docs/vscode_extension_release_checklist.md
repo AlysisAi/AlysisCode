@@ -63,7 +63,8 @@ The workflow is artifact-only and cannot publish. For all six supported targets 
 - build from committed `uv.lock`, reject vulnerable/deprecated/quarantined dependencies, and emit
   a CycloneDX dependency SBOM;
 - apply and reverify Authenticode on Windows or Developer ID signing plus notarization and
-  `codesign`/`spctl` verification on macOS; Linux uses the documented hash-and-provenance policy;
+  strict `codesign` and `-R="notarized" --check-notarization` verification on macOS;
+  Linux uses the documented hash-and-provenance policy;
 - create and verify GitHub provenance and SBOM attestations bound to the exact repository, workflow,
   tag, and source commit;
 - assemble the six-target ECDSA manifest in a protected signing environment and bind release,
@@ -409,7 +410,8 @@ Run these in a disposable workspace with a current local `alysis` CLI:
   code-signing identity and release-time signature verification. The ECDSA P-256 managed-runtime
   manifest authenticates release artifacts but is not an Authenticode signature.
 - macOS managed-runtime executables require an organization-controlled Developer ID Application
-  identity, Apple notarization credentials, notarization, and successful `codesign`/`spctl`
+  identity, Apple notarization credentials, notarization, and successful strict `codesign`
+  plus `-R="notarized" --check-notarization`
   verification. Standalone Mach-O executables use Apple's online ticket and are not claimed to
   support direct stapling. Do not describe Darwin bundles as notarized until CI verifies them.
 - The managed-CLI/VSIX assembly workflow is manual and artifact-only while protected external

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from .forge_status import forge_status_bucket, forge_status_is_terminal
 
 # (role, text) — role drives styling in the app: "user" | "assistant" | "reasoning"
-# | "trace" | "error" | "warn" | "info" | "system".
+# | "trace" | "patch" (structured JSON) | "tool_output" | "error" | "warn" | "info" | "system".
 Entry = tuple[str, str]
 
 
@@ -33,6 +33,7 @@ class TuiTranscript:
         self._lock = threading.RLock()
         self._status: str | None = None
         self._assistant_index: int | None = None
+        self._response_assistant_indices: list[int] = []
         # Live provider-generated reasoning-summary block: index of the open
         # entry, when it started, and elapsed seconds for each closed block.
         self._reasoning_index: int | None = None
@@ -93,7 +94,7 @@ class TuiTranscript:
             self._reasoning_block_id = None
 
     def begin_reasoning(self, block_id: str) -> None:
-        """Open a safe-summary block with a stable provider-call identifier.
+        """Open a reasoning block with a stable provider-call identifier.
 
         Reusing the active identifier is idempotent. A different identifier
         closes the previous block first so retries and later agent steps can
@@ -171,6 +172,7 @@ class TuiTranscript:
             self._close_reasoning_locked()
             self.entries.append(("user", text))
             self._assistant_index = None
+            self._response_assistant_indices.clear()
             # A fresh submission ends the prior live Forge view (its final table
             # stays in scrollback only while it is the latest thing shown).
             self._forge = None
@@ -181,7 +183,19 @@ class TuiTranscript:
         with self._lock:
             self._close_reasoning_locked()
             self._assistant_index = None
+            self._response_assistant_indices.clear()
             self._status = None
+        self._touch()
+
+    def begin_assistant_response(self) -> None:
+        """Keep separate model responses in separate transcript blocks."""
+        # Gate candidates do not receive the final-message callback. Reconcile
+        # the preceding candidate before starting another provider response.
+        self.finish_assistant()
+        with self._lock:
+            self._close_reasoning_locked()
+            self._assistant_index = None
+            self._response_assistant_indices.clear()
         self._touch()
 
     def stream_assistant(self, delta: str) -> None:
@@ -193,6 +207,7 @@ class TuiTranscript:
             if self._assistant_index is None:
                 self.entries.append(("assistant", ""))
                 self._assistant_index = len(self.entries) - 1
+                self._response_assistant_indices.append(self._assistant_index)
             role, current = self.entries[self._assistant_index]
             self.entries[self._assistant_index] = (role, current + delta)
             self._status = None
@@ -203,14 +218,29 @@ class TuiTranscript:
         restream the reply from scratch, so the abandoned generation's tokens
         must not remain in front of it."""
         with self._lock:
-            if self._assistant_index is not None:
-                role, _current = self.entries[self._assistant_index]
-                self.entries[self._assistant_index] = (role, "")
+            # A trace/progress row can close the live block mid-response. Its
+            # text still belongs to the abandoned attempt and must be cleared.
+            for index in self._response_assistant_indices:
+                role, _current = self.entries[index]
+                self.entries[index] = (role, "")
         self._touch()
 
     def finish_assistant(self, text: str = "") -> None:
         with self._lock:
             self._close_reasoning_locked()
+            if len(self._response_assistant_indices) > 1:
+                combined = "".join(self.entries[i][1] for i in self._response_assistant_indices)
+                if not text:
+                    text = combined
+                if _normalize_visible(text).startswith(_normalize_visible(combined)):
+                    # Background trace rows can split one response into several
+                    # blocks. Reconcile its whole text before adding final-only
+                    # notices, retaining the trace rows and their metadata.
+                    first = self._response_assistant_indices[0]
+                    self.entries[first] = ("assistant", combined)
+                    for index in reversed(self._response_assistant_indices[1:]):
+                        self._remove_entry_locked(index)
+                    self._assistant_index = first
             if self._assistant_index is not None:
                 role, current = self.entries[self._assistant_index]
                 if not current and text:
@@ -224,7 +254,11 @@ class TuiTranscript:
                         and boundary_index > 0
                         and not current[boundary_index - 1].isspace()
                     )
-                    if (
+                    if txt_norm.startswith(cur_norm):
+                        # Finalization can append verification notices or
+                        # checkpoint links after the provider stops streaming.
+                        self.entries[self._assistant_index] = (role, text)
+                    elif (
                         cur_norm != txt_norm
                         and cur_norm.endswith(txt_norm)
                         and len(txt_norm) * 4 < len(cur_norm)
@@ -262,6 +296,20 @@ class TuiTranscript:
                         # final. The >=25% length guard keeps a pathological
                         # tail-fragment final from truncating a legit block.
                         self.entries[self._assistant_index] = (role, text)
+                # The response may have repeated an earlier answer in this same
+                # turn. Remove its live block once complete; the earlier answer
+                # remains visible, including any intervening tool or trace rows.
+                _, completed = self.entries[self._assistant_index]
+                previous_index = self._last_turn_assistant_index_locked(
+                    before_index=self._assistant_index
+                )
+                if previous_index is not None:
+                    previous = self.entries[previous_index][1]
+                    if _normalize_visible(completed).startswith(_normalize_visible(previous)):
+                        # A final can repeat a candidate and add a host notice,
+                        # or restate a token-limited answer before continuing.
+                        self.entries[previous_index] = (role, completed)
+                        self._remove_entry_locked(self._assistant_index)
             elif text.strip():
                 # A multi-step turn can re-emit the same answer after its live
                 # block was already closed by an intervening tool/trace line (which
@@ -269,21 +317,39 @@ class TuiTranscript:
                 # a verbatim repeat of the turn's most recent assistant block —
                 # otherwise the same reply stacks up 2-3 times. Content-based and
                 # provider-agnostic (see also the render-layer collapse in app.py).
-                last = self._last_turn_assistant_text_locked()
-                if last is None or _normalize_visible(last) != _normalize_visible(text):
+                last_index = self._last_turn_assistant_index_locked()
+                if last_index is not None and _normalize_visible(text).startswith(
+                    _normalize_visible(self.entries[last_index][1])
+                ):
+                    self.entries[last_index] = ("assistant", text)
+                else:
                     self.entries.append(("assistant", text))
             self._assistant_index = None
+            self._response_assistant_indices.clear()
             self._status = None
         self._touch()
 
-    def _last_turn_assistant_text_locked(self) -> str | None:
-        """Text of the most recent assistant entry within the current turn, or
-        ``None`` if none precedes a ``user`` boundary. Caller holds the lock."""
-        for role, text in reversed(self.entries):
+    def _remove_entry_locked(self, index: int) -> None:
+        """Remove a duplicate without shifting reasoning metadata onto other rows."""
+        self.entries.pop(index)
+        for metadata in (self._reasoning_secs, self._reasoning_block_ids):
+            shifted = {
+                key - (key > index): value for key, value in metadata.items() if key != index
+            }
+            metadata.clear()
+            metadata.update(shifted)
+        if self._reasoning_index is not None and self._reasoning_index > index:
+            self._reasoning_index -= 1
+
+    def _last_turn_assistant_index_locked(self, *, before_index: int | None = None) -> int | None:
+        """Most recent nonblank assistant entry before the user boundary."""
+        end = len(self.entries) if before_index is None else before_index
+        for index in range(end - 1, -1, -1):
+            role, text = self.entries[index]
             if role == "user":
                 return None
-            if role == "assistant":
-                return text
+            if role == "assistant" and text.strip():
+                return index
         return None
 
     # ---- transient status (working line) ----
@@ -464,6 +530,7 @@ class TuiTranscript:
         with self._lock:
             self.entries.clear()
             self._assistant_index = None
+            self._response_assistant_indices.clear()
             self._reasoning_index = None
             self._reasoning_start = None
             self._reasoning_block_id = None
@@ -487,6 +554,7 @@ class TuiTranscript:
         with self._lock:
             self.entries.clear()
             self._assistant_index = None
+            self._response_assistant_indices.clear()
             self._reasoning_index = None
             self._reasoning_start = None
             self._reasoning_block_id = None
@@ -520,7 +588,7 @@ class TuiTranscript:
             return self._reasoning_index, dict(self._reasoning_secs)
 
     def reasoning_block_ids(self) -> dict[int, str]:
-        """Return stable identifiers for safe-summary transcript entries."""
+        """Return stable identifiers for reasoning transcript entries."""
 
         with self._lock:
             return dict(self._reasoning_block_ids)
@@ -535,6 +603,16 @@ class TuiTranscript:
         """
         with self._lock:
             return list(self.entries), self._status, self._assistant_index
+
+    def last_response_text(self) -> str:
+        """Copy the latest nonempty assistant source, without rendered UI chrome."""
+        from .transcript_navigation import clean_response_text
+
+        with self._lock:
+            for role, text in reversed(self.entries):
+                if role == "assistant" and (clean := clean_response_text(text)):
+                    return clean
+        return ""
 
 
 __all__ = ["TuiTranscript", "Entry"]

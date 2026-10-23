@@ -1,0 +1,145 @@
+name: managed-cli-build-check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/managed-cli-build-check.yml
+      - .github/workflows/managed-cli-vsix-release.yml
+      - scripts/release/**
+      - uv.lock
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/managed-cli-build-check.yml
+      - .github/workflows/managed-cli-vsix-release.yml
+      - scripts/release/**
+      - uv.lock
+      - pyproject.toml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-cli-build-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Unsigned build and smoke (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win32-x64
+            runner: windows-latest
+          - target: win32-arm64
+            runner: windows-11-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-14
+          - target: linux-x64
+            runner: ubuntu-22.04
+            manylinux_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8
+          - target: linux-arm64
+            runner: ubuntu-22.04-arm
+            manylinux_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:e7035406e58d96b7407246af1f6514a3cbd753a0025b42b9adfbeadd3b29ba80
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.23"
+      - name: Install pinned patched native Python
+        id: runtime-python
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python scripts/release/install_managed_cli_python.py \
+            --target "${{ matrix.target }}" --destination "$RUNNER_TEMP/alysis-python" \
+            --github-output "$GITHUB_OUTPUT" \
+            --receipt "managed-cli-out/${{ matrix.target }}.python-runtime.json"
+      - name: Build pinned native OpenSSL for Windows ARM64
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        run: ./scripts/release/build_windows_arm64_openssl.ps1
+      - name: Install frozen Windows ARM64 build dependencies
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-arm64
+          OPENSSL_STATIC: "1"
+        run: uv sync --frozen --no-editable --extra managed-build
+      - name: Install frozen build dependencies
+        if: matrix.target != 'win32-arm64' && matrix.target != 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable || '3.11' }}
+        run: uv sync --frozen --no-editable --extra managed-build
+      - name: Build pinned static OpenSSL for Intel macOS
+        if: matrix.target == 'darwin-x64'
+        shell: bash
+        run: bash scripts/release/build_macos_x64_openssl.sh
+      - name: Install frozen Intel macOS dependencies
+        if: matrix.target == 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-x64
+          OPENSSL_STATIC: "1"
+        run: uv sync --frozen --no-editable --extra managed-build
+      - name: Check source-built native dependency inventory
+        if: matrix.target == 'win32-arm64' || matrix.target == 'darwin-x64'
+        shell: bash
+        run: |
+          uv export --frozen --extra managed-build --format cyclonedx1.5 --output-file "$RUNNER_TEMP/arm64.cdx.json"
+          uv run --frozen --no-sync python scripts/release/add_native_openssl_sbom.py "$RUNNER_TEMP/arm64.cdx.json"
+      - name: Build Linux runtime on glibc 2.28
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          MANYLINUX_IMAGE: ${{ matrix.manylinux_image }}
+          OUTPUT_NAME: alysis-${{ matrix.target }}
+        run: bash scripts/release/build_linux_managed_cli.sh
+      - name: Build native unsigned runtime
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          uv run --frozen --no-sync python -m PyInstaller \
+            --noconfirm --clean --onefile --name alysis \
+            --collect-all alysis_code scripts/release/managed_cli_entry.py
+          mkdir -p managed-cli-out
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
+          mv "dist/alysis${suffix}" "managed-cli-out/alysis-${{ matrix.target }}${suffix}"
+      - name: Smoke the actual native executable
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
+          uv run --frozen --no-sync python scripts/release/smoke_managed_cli.py \
+            "managed-cli-out/alysis-${{ matrix.target }}${suffix}"
+      - name: Check pinned interpreter SBOM binding
+        shell: bash
+        run: |
+          uv export --quiet --frozen --extra managed-build --format cyclonedx1.5 --output-file "$RUNNER_TEMP/python.cdx.json"
+          uv run --frozen --no-sync python -m scripts.release.add_managed_python_sbom \
+            "$RUNNER_TEMP/python.cdx.json" "managed-cli-out/${{ matrix.target }}.python-runtime.json"
+      - name: Smoke on the unchanged glibc 2.28 baseline
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          MANYLINUX_IMAGE: ${{ matrix.manylinux_image }}
+          EXECUTABLE: managed-cli-out/alysis-${{ matrix.target }}
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp \
+            --env EXECUTABLE="$EXECUTABLE" --volume "$PWD:/workspace:ro" \
+            --workdir /workspace "$MANYLINUX_IMAGE" \
+            /opt/python/cp311-cp311/bin/python scripts/release/smoke_managed_cli.py "$EXECUTABLE"

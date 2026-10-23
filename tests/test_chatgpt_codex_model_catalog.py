@@ -58,6 +58,7 @@ def test_subscription_snapshot_contains_current_visible_capacity_tiers() -> None
     models = {model.id: model for model in load_chatgpt_codex_static_models()}
 
     assert set(models) == {
+        "gpt-6.1-sol",
         "gpt-6-astra",
         "gpt-6-sol",
         "gpt-6-luna",
@@ -98,7 +99,9 @@ class _OfflineSubscriptionAdapter:
         raise RuntimeError("catalog offline")
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize(
+    "model", ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+)
 def test_registry_uses_subscription_snapshot_when_live_catalog_is_offline(
     monkeypatch, model
 ) -> None:
@@ -225,6 +228,9 @@ def test_live_adapter_fills_missing_fields_from_subscription_snapshot(monkeypatc
         refresh_token="refresh-secret",
         expires_at=9_999_999_999,
         account_id="account-123",
+        client_id="oaiapp_fixture",
+        subject="fixture-subject",
+        scopes=("chatgpt.tokens.use.direct", "resource.invoke"),
     )
     monkeypatch.setattr(
         "alysis_code.provider_auth.openai_codex.load_provider_token",
@@ -245,13 +251,15 @@ def test_live_adapter_fills_missing_fields_from_subscription_snapshot(monkeypatc
             },
         )
 
-    model = OpenAICodexSubscriptionAuth(transport=httpx.MockTransport(handler)).list_models(
+    models = OpenAICodexSubscriptionAuth(transport=httpx.MockTransport(handler)).list_models(
         refresh=True
-    )[0]
+    )
+    model = next(item for item in models if item.id == "gpt-5.5")
 
     assert model.context_window_tokens == 272_000
     assert model.input_modalities == ("text", "image")
     assert [effort.id for effort in model.reasoning_efforts] == [
+        "none",
         "low",
         "medium",
         "high",
@@ -268,6 +276,9 @@ def test_live_subscription_fields_remain_authoritative_over_snapshot(monkeypatch
         refresh_token="refresh-secret",
         expires_at=9_999_999_999,
         account_id="account-123",
+        client_id="oaiapp_fixture",
+        subject="fixture-subject",
+        scopes=("chatgpt.tokens.use.direct", "resource.invoke"),
     )
     monkeypatch.setattr(
         "alysis_code.provider_auth.openai_codex.load_provider_token",
@@ -294,9 +305,10 @@ def test_live_subscription_fields_remain_authoritative_over_snapshot(monkeypatch
             },
         )
 
-    model = OpenAICodexSubscriptionAuth(transport=httpx.MockTransport(handler)).list_models(
+    models = OpenAICodexSubscriptionAuth(transport=httpx.MockTransport(handler)).list_models(
         refresh=True
-    )[0]
+    )
+    model = next(item for item in models if item.id == "gpt-5.5")
 
     assert model.context_window_tokens == 200_000
     assert model.input_modalities == ("text",)

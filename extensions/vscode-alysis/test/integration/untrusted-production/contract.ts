@@ -129,7 +129,7 @@ export function buildUntrustedProductionSummary(
   requireEqual(evidence.source_sha, input.sourceSha, "Runtime source SHA");
   requireEqual(
     evidence.source_repository,
-    "https://github.com/AlysisAi/alysis-code",
+    "https://github.com/AlysisAi/AlysisCode",
     "Runtime source repository"
   );
   requireEqual(evidence.release_signature_verified, true, "Managed release signature");
@@ -164,7 +164,7 @@ export function buildUntrustedProductionSummary(
     started_at: input.startedAt,
     completed_at: input.completedAt,
     release_tag: input.releaseTag,
-    source_repository: "https://github.com/AlysisAi/alysis-code",
+    source_repository: "https://github.com/AlysisAi/AlysisCode",
     source_sha: input.sourceSha,
     candidate_run_id: input.candidateRunId,
     workflow_run_id: input.workflowRunId,

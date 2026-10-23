@@ -1,0 +1,998 @@
+{
+  "schema_version": 1,
+  "architecture": "aarch64",
+  "repository": "https://apk.cgr.dev/chainguard",
+  "inventory_sha256": "37be62e0dd5abfed1cd525c732c63aa22387f6c37e1370300a7ce3a9d0d52118",
+  "packages": [
+    {
+      "name": "apk-tools",
+      "version": "2.14.10-r16",
+      "architecture": "aarch64",
+      "installed_checksum": "Q17A6YTHqtvKqvkt7nNHb+g8g4rGs=",
+      "filename": "apk-tools-2.14.10-r16.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/apk-tools-2.14.10-r16.apk",
+      "size": 180511,
+      "sha256": "271ee8f19ea459d929377c7da22fd71a325c09cab8fe8d327b387a9db4f415f8"
+    },
+    {
+      "name": "bash",
+      "version": "5.3-r13",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1hrdc8lTyGTTKgWDVPXyZ0Ryc1O8=",
+      "filename": "bash-5.3-r13.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/bash-5.3-r13.apk",
+      "size": 750058,
+      "sha256": "04880e3fed0cb52f14d0b1eb6be7e4a51d2ae5cf74e306e8a36bd9a6118c8795"
+    },
+    {
+      "name": "binutils",
+      "version": "2.47-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q11ToNG1dljQqRlOcRxxtjFOynynI=",
+      "filename": "binutils-2.47-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/binutils-2.47-r1.apk",
+      "size": 24583750,
+      "sha256": "00d48b6c66fea01b2d20718387b57651ec5454dda7ea5d5ed9fdd741637135ac"
+    },
+    {
+      "name": "bubblewrap",
+      "version": "0.13.0-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1wo3nOs5cWZPvmyh31qNnSuKF0M8=",
+      "filename": "bubblewrap-0.13.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/bubblewrap-0.13.0-r0.apk",
+      "size": 90078,
+      "sha256": "c7fd3f9b89d29d359678d8ec82c8c65b8678fa6334685dc7eb7beff55e9e4da8"
+    },
+    {
+      "name": "build-base",
+      "version": "1-r9",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1BhxkGA1/DUcuyUoFoYl1+V2v/mQ=",
+      "filename": "build-base-1-r9.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/build-base-1-r9.apk",
+      "size": 2315,
+      "sha256": "328cd84761334517dc89ae3760670b6c35cadcce0ab0cfe539e5978bca0f7788"
+    },
+    {
+      "name": "busybox",
+      "version": "1.38.0-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q19vDfxgLQG5vl10qMzsN4no556cM=",
+      "filename": "busybox-1.38.0-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/busybox-1.38.0-r2.apk",
+      "size": 437793,
+      "sha256": "e9781cbfaa2abeac97979e306aab37e072c3fb2c84c1d179f983c0b1bc14bae4"
+    },
+    {
+      "name": "ca-certificates",
+      "version": "20260909-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1j7mIXPzCeapNE4yGkC+1i0P7II4=",
+      "filename": "ca-certificates-20260909-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ca-certificates-20260909-r3.apk",
+      "size": 152002,
+      "sha256": "7c1006265f616d259de5c099cdb8bdcdffeed2f42b534deba005d74832850f2a"
+    },
+    {
+      "name": "ca-certificates-bundle",
+      "version": "20260909-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q12NXUp1YSrgDFsj3YmYoLOz7Pngg=",
+      "filename": "ca-certificates-bundle-20260909-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ca-certificates-bundle-20260909-r3.apk",
+      "size": 119164,
+      "sha256": "4f57ebd7dc21d78ecce228f397d0a4ee46b5cfc777ac5f292821d41a97bfd896"
+    },
+    {
+      "name": "coreutils",
+      "version": "9.12-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q11NjO3qxjgPzAXlivL04cFYWq+74=",
+      "filename": "coreutils-9.12-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/coreutils-9.12-r3.apk",
+      "size": 782618,
+      "sha256": "687f62871ad1c3268064b436206a05b77695c6614013474110ea941bfe070497"
+    },
+    {
+      "name": "curl",
+      "version": "8.23.0-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1EWFDwpKxAiF9bU5bja5imuzAHHs=",
+      "filename": "curl-8.23.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/curl-8.23.0-r0.apk",
+      "size": 233785,
+      "sha256": "9fcfceca318fd77713dafde0381c0d1ce148e15a5ae4e8a91fbb8210ed20ccf5"
+    },
+    {
+      "name": "cyrus-sasl-heimdal-libs",
+      "version": "2.1.28-r58",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1NOAPW2cQulC8VW9tww3lp1GnV5k=",
+      "filename": "cyrus-sasl-heimdal-libs-2.1.28-r58.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/cyrus-sasl-heimdal-libs-2.1.28-r58.apk",
+      "size": 239214,
+      "sha256": "4d953f1db918d026e9a84fd630609668f8617cdbcf1a316f459bea9281f911ed"
+    },
+    {
+      "name": "findutils",
+      "version": "4.11.0-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1W36b19Xnorn/6xISY6NeoA0sfMg=",
+      "filename": "findutils-4.11.0-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/findutils-4.11.0-r2.apk",
+      "size": 177670,
+      "sha256": "e6d13169ac30770b651345f15084d08e7e1c2d677a06c7ccdf5d08533b9a6a86"
+    },
+    {
+      "name": "gcc",
+      "version": "16.2.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q18tGn4Lr9rCVDhjLsv5SBtEf240E=",
+      "filename": "gcc-16.2.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/gcc-16.2.0-r1.apk",
+      "size": 125903922,
+      "sha256": "855fce12976fe822ee382042225ce55f093c4d65c42735e56fbc261ae3b72491"
+    },
+    {
+      "name": "gdbm",
+      "version": "1.26-r6",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1N0X6UaUKWX9YpYLvolNm4Zgr0Kc=",
+      "filename": "gdbm-1.26-r6.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/gdbm-1.26-r6.apk",
+      "size": 280251,
+      "sha256": "aefad73ae24266edb4d1046030412879d28ee383cf1554ab8fd90a85fb805422"
+    },
+    {
+      "name": "git",
+      "version": "2.55.0-r8",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1wyxKQVaJL0OkXfx5ySiIzVAgQQk=",
+      "filename": "git-2.55.0-r8.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/git-2.55.0-r8.apk",
+      "size": 9270873,
+      "sha256": "6634783ab14ee07eb4294da520f21e91a90f76173e28a7d41c64f3194c8383bf"
+    },
+    {
+      "name": "glibc-2.44",
+      "version": "2.44-r7",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1U8npOxBwcakHXA8vkO5umoGSDu4=",
+      "filename": "glibc-2.44-2.44-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/glibc-2.44-2.44-r7.apk",
+      "size": 2315545,
+      "sha256": "ce1c1142f03a6e967a7a3b24fcb6ee00bd827b2daf5dedf3e1cf2ad486a490af"
+    },
+    {
+      "name": "glibc-2.44-dev",
+      "version": "2.44-r7",
+      "architecture": "aarch64",
+      "installed_checksum": "Q13gUj0DNBVp0HmmERZzRdnhRoc0U=",
+      "filename": "glibc-2.44-dev-2.44-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/glibc-2.44-dev-2.44-r7.apk",
+      "size": 13691433,
+      "sha256": "b15dd19187a403de6781c9481a7614c37c42cca3c73365e641f038852816f836"
+    },
+    {
+      "name": "glibc-2.44-locale-posix",
+      "version": "2.44-r7",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1fBwdSyJTh70jMlIH3aZnxr2vlVM=",
+      "filename": "glibc-2.44-locale-posix-2.44-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/glibc-2.44-locale-posix-2.44-r7.apk",
+      "size": 93716,
+      "sha256": "58c74b08587bfca93d24090bed09fc79a402cb119741d06e20b911145f2c6573"
+    },
+    {
+      "name": "gmp",
+      "version": "6.3.0-r10",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1quVNqP9y7WOCEWEVoibN8ZYQ1Iw=",
+      "filename": "gmp-6.3.0-r10.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/gmp-6.3.0-r10.apk",
+      "size": 305591,
+      "sha256": "18bf8564c1baf1919efe78b9c8485a983e30d4b402823248737883b69a328f5a"
+    },
+    {
+      "name": "gnutar",
+      "version": "1.35-r12",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1ut77yYCV79SBLQ4UvtqWFrv2i1A=",
+      "filename": "gnutar-1.35-r12.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/gnutar-1.35-r12.apk",
+      "size": 1149485,
+      "sha256": "e4cc43c018f315eb420c12a3408af61ba3869e82a7448c8fa046e92dd18fd3f5"
+    },
+    {
+      "name": "gnutar-rmt",
+      "version": "1.35-r12",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1Cbv8JlErDjhqnBuRcx2mmGpxPJA=",
+      "filename": "gnutar-rmt-1.35-r12.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/gnutar-rmt-1.35-r12.apk",
+      "size": 70436,
+      "sha256": "1f3b4f77a58da040f32ff567da0cadbc292c8c8f8c7ad16aeaf3b5cdff590518"
+    },
+    {
+      "name": "grep",
+      "version": "3.12-r8",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1Z5AEJmM2CyP5xXoTiSdPzv+jDis=",
+      "filename": "grep-3.12-r8.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/grep-3.12-r8.apk",
+      "size": 283553,
+      "sha256": "fccad6580fca9b4dc1045a3a4dbf4beb4c8a80d1157e9519679f187be3cb2432"
+    },
+    {
+      "name": "heimdal-libs",
+      "version": "7.8.0-r52",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1C2zkWGuNi8X/SpGNfAv+J4jF5yk=",
+      "filename": "heimdal-libs-7.8.0-r52.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/heimdal-libs-7.8.0-r52.apk",
+      "size": 1410446,
+      "sha256": "29ccd3f3fc9053ad5097ca0650e9a0652fd009c04fe10503ca94d9a0df1924c3"
+    },
+    {
+      "name": "isl",
+      "version": "0.28-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1OcHa6APPH2q+eKbFoTUYyhNL5uQ=",
+      "filename": "isl-0.28-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/isl-0.28-r3.apk",
+      "size": 1044778,
+      "sha256": "dc1534887bce7303972fdb1c11e999f6b8ed141bcfcd13e7677a0e307da13761"
+    },
+    {
+      "name": "keyutils-libs",
+      "version": "1.6.3-r40",
+      "architecture": "aarch64",
+      "installed_checksum": "Q172YL17EDYhm+eqKhx9fQejCm0Ek=",
+      "filename": "keyutils-libs-1.6.3-r40.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/keyutils-libs-1.6.3-r40.apk",
+      "size": 19713,
+      "sha256": "702666e52873749474490d9fbbabf0a6158aa5c4e7ab8a9827ea3c218f7a97a5"
+    },
+    {
+      "name": "krb5-conf",
+      "version": "1.0-r9",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1cRVp/4tI0buRLoYjuCDJ0WoM69w=",
+      "filename": "krb5-conf-1.0-r9.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/krb5-conf-1.0-r9.apk",
+      "size": 2907,
+      "sha256": "1166055ecdfcb518cd0d7fee4e33d22d62aa6e9dcadcdc98cc08fa673b53966e"
+    },
+    {
+      "name": "krb5-libs",
+      "version": "1.22.2-r4",
+      "architecture": "aarch64",
+      "installed_checksum": "Q15Fw8DM83bOcEsUIsWrybZ07/FfQ=",
+      "filename": "krb5-libs-1.22.2-r4.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/krb5-libs-1.22.2-r4.apk",
+      "size": 1049238,
+      "sha256": "65f2887ca0e4f3c29b8bcdb24c0341c2f8ee45b4e824be9301840512d5cf276b"
+    },
+    {
+      "name": "ld-linux-2.44",
+      "version": "2.44-r7",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1j6JOLwasaV5QPo5vdcw0hqRhv5s=",
+      "filename": "ld-linux-2.44-2.44-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ld-linux-2.44-2.44-r7.apk",
+      "size": 135882,
+      "sha256": "147e7b7442092e2b26fc130c5d776b66853549b73e2f097352f54e8a7a537e38"
+    },
+    {
+      "name": "libacl1",
+      "version": "2.4.0-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1Fr6qSQTxi/8VMXaZZ+DniFXPvcw=",
+      "filename": "libacl1-2.4.0-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libacl1-2.4.0-r3.apk",
+      "size": 33799,
+      "sha256": "1fdc81406b00176d1193c9f2cb122580a4e7c316c1e0224dc1b3b49479e0a274"
+    },
+    {
+      "name": "libatomic",
+      "version": "16.2.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q16NCYReXuR+aTBvr8FCYoieGCLsY=",
+      "filename": "libatomic-16.2.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libatomic-16.2.0-r1.apk",
+      "size": 30762,
+      "sha256": "923cab5fcdc646ea76ddebfd38626998d787cc10baff0803e3365d1e2bd5ef41"
+    },
+    {
+      "name": "libattr1",
+      "version": "2.6.0-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1Aug4FA/x21U2rBW3ek3Rut1CbCc=",
+      "filename": "libattr1-2.6.0-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libattr1-2.6.0-r3.apk",
+      "size": 19780,
+      "sha256": "62143068079d6cec423ef7a091910983541d1defc7f0e0029869e44662c2b9ad"
+    },
+    {
+      "name": "libaudit",
+      "version": "4.2.1-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1JIt9upMU4JeWVpnA0vwYKRjmOk0=",
+      "filename": "libaudit-4.2.1-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libaudit-4.2.1-r1.apk",
+      "size": 178943,
+      "sha256": "e0ddeb4e366810cc0911ed77e38abb2719c1065c29e5eb1fe7409c14e4eed9c0"
+    },
+    {
+      "name": "libbrotlicommon1",
+      "version": "1.2.0-r5",
+      "architecture": "aarch64",
+      "installed_checksum": "Q12VZKAM8jgDB7a9SFwRV1JmLee7M=",
+      "filename": "libbrotlicommon1-1.2.0-r5.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libbrotlicommon1-1.2.0-r5.apk",
+      "size": 78800,
+      "sha256": "e2e7c588d3b08e5306b1626a58786ec6f510fad0b86ab692ae1b3884d8879fa1"
+    },
+    {
+      "name": "libbrotlidec1",
+      "version": "1.2.0-r5",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1Ka5mRAVSVICIWNlWdjLSXQqPefE=",
+      "filename": "libbrotlidec1-1.2.0-r5.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libbrotlidec1-1.2.0-r5.apk",
+      "size": 39641,
+      "sha256": "21a461e188703f8c5331ee7f9cf331842b191c86eaf98820b50954e42e49126d"
+    },
+    {
+      "name": "libbrotlienc1",
+      "version": "1.2.0-r5",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1ocMgzsmLy56wvEc0FoMAulKJ1mI=",
+      "filename": "libbrotlienc1-1.2.0-r5.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libbrotlienc1-1.2.0-r5.apk",
+      "size": 449342,
+      "sha256": "cd429e5c2083d3cc3970c40e624f9b8d3760d7cdb167c10167b6fcc28434463f"
+    },
+    {
+      "name": "libbsd",
+      "version": "0.12.2-r8",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1aNXNubbId3mdJlTi+eLV88jcoBo=",
+      "filename": "libbsd-0.12.2-r8.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libbsd-0.12.2-r8.apk",
+      "size": 55013,
+      "sha256": "0ce5599d35d02b2fbc2bb776e9f54239494c34f6699a4257b0b1d52b2a4bd32f"
+    },
+    {
+      "name": "libbz2-1",
+      "version": "1.0.8-r24",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1EsjaG23mpU4hT4wUn72B62nBb8Y=",
+      "filename": "libbz2-1-1.0.8-r24.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libbz2-1-1.0.8-r24.apk",
+      "size": 50854,
+      "sha256": "157d9f50a1d7dcad3087d1895cd8e8cb310e79e356ae4ad62f8d88a5a1f02701"
+    },
+    {
+      "name": "libcap",
+      "version": "2.78-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1sJhsxgvzsMNTPhj/A9Mz8Jvsm74=",
+      "filename": "libcap-2.78-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libcap-2.78-r3.apk",
+      "size": 50265,
+      "sha256": "3f6943ce0090c7cdecf0ff698f4327e31e32e544df4e4a058a5c18ca7fd91f5d"
+    },
+    {
+      "name": "libcap-ng",
+      "version": "0.9.6-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q19FxCrUM6ovigxWVgufNCjIs24vg=",
+      "filename": "libcap-ng-0.9.6-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libcap-ng-0.9.6-r0.apk",
+      "size": 29161,
+      "sha256": "465ee22d18381d1a82747304bb9c662972178ddb93f27fdc9a93064abdead1b9"
+    },
+    {
+      "name": "libcom_err",
+      "version": "1.47.4-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1HV1PcBtYQJJ1g9lBTa/kKGI3CqA=",
+      "filename": "libcom_err-1.47.4-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libcom_err-1.47.4-r2.apk",
+      "size": 18066,
+      "sha256": "95d26f2b63a677d7102f55c3c48e856708e946af852e09792ae8a1f801c65269"
+    },
+    {
+      "name": "libcrypt1-2.44",
+      "version": "2.44-r7",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1xc3IY62B5Xeq1VWwTDBBWDIb/N0=",
+      "filename": "libcrypt1-2.44-2.44-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libcrypt1-2.44-2.44-r7.apk",
+      "size": 18621,
+      "sha256": "c7ec2f1c19bc990ab867eeae437caad6163677916912a8f33b681505fb41b9ec"
+    },
+    {
+      "name": "libcrypto3",
+      "version": "3.6.4-r8",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1RYUlAL7WrhkjOSkkbpesZ8b5xNg=",
+      "filename": "libcrypto3-3.6.4-r8.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libcrypto3-3.6.4-r8.apk",
+      "size": 2185184,
+      "sha256": "2721d930ece91f85e5357a2da3c7a33c319316c1c467bbfee0cced7c35960cc7"
+    },
+    {
+      "name": "libcurl-openssl4",
+      "version": "8.23.0-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1V/mGJ5UF65T6HECavkg2ngfEuv0=",
+      "filename": "libcurl-openssl4-8.23.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libcurl-openssl4-8.23.0-r0.apk",
+      "size": 572525,
+      "sha256": "5c6bd8be94a251457d7eb532e7e6eac1169da296db01f22ffbf828bd3b0b8221"
+    },
+    {
+      "name": "libexpat1",
+      "version": "2.8.5-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1Q+Bjcw+x0KCf8KeRxqAnMM7xAeM=",
+      "filename": "libexpat1-2.8.5-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libexpat1-2.8.5-r0.apk",
+      "size": 105035,
+      "sha256": "9a47099b7a94b4359b43dbe0da7471c4c60b50a7d5ca61c7cb1f64d4a23d2146"
+    },
+    {
+      "name": "libffi",
+      "version": "3.8.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q12TTvWz9pDB5nUlzwszrGQcvPyd8=",
+      "filename": "libffi-3.8.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libffi-3.8.0-r1.apk",
+      "size": 39792,
+      "sha256": "2fba0ea90deb408f0aedfb65b8908594b8d626399e8a892449ff7abcdf9c09db"
+    },
+    {
+      "name": "libgcc",
+      "version": "16.2.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q10B3sunNH1/57hljS+7r1oisdKB8=",
+      "filename": "libgcc-16.2.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libgcc-16.2.0-r1.apk",
+      "size": 87100,
+      "sha256": "9fc6555eab9f14e996649426ffb2a5bf17e34e3410a151a7d9ad7c92eb21885d"
+    },
+    {
+      "name": "libgomp",
+      "version": "16.2.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1JzrEzV2tZA4Rciv8S4ZS+XQ0Tok=",
+      "filename": "libgomp-16.2.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libgomp-16.2.0-r1.apk",
+      "size": 199195,
+      "sha256": "98d1a6b649236b33bae1597e41157d946f5a9c6ea4ad8c349ea6c8a71b30c562"
+    },
+    {
+      "name": "libidn2",
+      "version": "2.3.8-r9",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1/UW7VQerR6TDMSG0apG993AwAns=",
+      "filename": "libidn2-2.3.8-r9.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libidn2-2.3.8-r9.apk",
+      "size": 126205,
+      "sha256": "80bdf2704debb8235fb0fcac616a6673a0db0477c2ed496a31327a4b3437d33a"
+    },
+    {
+      "name": "libldap-2.6",
+      "version": "2.6.14-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1jglcaD1Nh5VxKYXmLpFlmsO+Ffs=",
+      "filename": "libldap-2.6-2.6.14-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libldap-2.6-2.6.14-r0.apk",
+      "size": 245768,
+      "sha256": "3cafd792198fb80bdf34a78c818e9f5b04f447847611a32394d1c898f8c601f8"
+    },
+    {
+      "name": "libmd",
+      "version": "1.3.0-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1oXX80XwxUV6iqVNfrfDvGit9WsA=",
+      "filename": "libmd-1.3.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libmd-1.3.0-r0.apk",
+      "size": 42195,
+      "sha256": "561f408bcebb89cb5a2f6a1c8d568eebb8a0fda9d979d71cdd87bbf08ce511f9"
+    },
+    {
+      "name": "libnghttp2-14",
+      "version": "1.70.0-r5",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1xbgMSFisur1yAsl5AnYwUgOIR4A=",
+      "filename": "libnghttp2-14-1.70.0-r5.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libnghttp2-14-1.70.0-r5.apk",
+      "size": 107343,
+      "sha256": "d0ebbc3852de729da57ec5874416b1426bb834aeb26bc2a8edc99df259f6b97b"
+    },
+    {
+      "name": "libpcre2-8-0",
+      "version": "10.49-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1o7nQwmNCEJVyFFSk8YZrtiR70y0=",
+      "filename": "libpcre2-8-0-10.49-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libpcre2-8-0-10.49-r1.apk",
+      "size": 288158,
+      "sha256": "951a1e197e06d20d19bfeaa71629cf5acc4f62174ae2802d071cb230b72b3d9b"
+    },
+    {
+      "name": "libpsl",
+      "version": "0.23.3-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1FtNP+G8KlHBoE6pYY1TgoyQivIc=",
+      "filename": "libpsl-0.23.3-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libpsl-0.23.3-r1.apk",
+      "size": 72866,
+      "sha256": "35665bce29a9c940f02da65c36ea2ff05d51e0d226c95d3891404a6b1bd9a2f0"
+    },
+    {
+      "name": "libquadmath",
+      "version": "16.2.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1oHKx/BuQPNBm389hd24xW9cJcf8=",
+      "filename": "libquadmath-16.2.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libquadmath-16.2.0-r1.apk",
+      "size": 12165,
+      "sha256": "7b926bb0dc6247af0aa843e211048fba9fa9ee77eaa7deeb85891cdf9ffb104e"
+    },
+    {
+      "name": "libselinux",
+      "version": "3.11-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1LitXP9rDpxiFAT2AjWLN0Syzazo=",
+      "filename": "libselinux-3.11-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libselinux-3.11-r2.apk",
+      "size": 365088,
+      "sha256": "6c96ee48b1ed094dd58598f3df0b2ae678a78d343b3d6f6cf25e6a59a685eea9"
+    },
+    {
+      "name": "libsemanage",
+      "version": "3.11-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1xb7srv+5qWkQ4/Md6/oRwyAdF4s=",
+      "filename": "libsemanage-3.11-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libsemanage-3.11-r2.apk",
+      "size": 148552,
+      "sha256": "717ce92004d36b396b8775dc21acee991903847169d04c2f7838085ab3b6241f"
+    },
+    {
+      "name": "libsepol",
+      "version": "3.11-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q14reSq/YXSV8tYXmDu3D6QhhYn4g=",
+      "filename": "libsepol-3.11-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libsepol-3.11-r3.apk",
+      "size": 436108,
+      "sha256": "d44df089fbd2260bba1ecc62e6cff0fa7f22382a86718fdb3f79e0f9086a92ae"
+    },
+    {
+      "name": "libssl3",
+      "version": "3.6.4-r8",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1RmMkyvVPE40DTvtkI7839h8vl9Q=",
+      "filename": "libssl3-3.6.4-r8.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libssl3-3.6.4-r8.apk",
+      "size": 497383,
+      "sha256": "d0f1df5ba0211d428951c6bc791c816b7563cb5fb38ea5022a6444548393357e"
+    },
+    {
+      "name": "libstdc++",
+      "version": "16.2.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1ftrK0W2Zrm5RSoejw1JhR7Js4fY=",
+      "filename": "libstdc++-16.2.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libstdc++-16.2.0-r1.apk",
+      "size": 1179404,
+      "sha256": "02f7d7bec8e641734b52855a33ff5474d6b0c0be24e9244b76c20c3f48c20768"
+    },
+    {
+      "name": "libstdc++-dev",
+      "version": "16.2.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1rTq/aiL8LBTko0qBdZp52WDJB4Q=",
+      "filename": "libstdc++-dev-16.2.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libstdc++-dev-16.2.0-r1.apk",
+      "size": 15685093,
+      "sha256": "d72506251e566c8e8c67f4d0e90765fd186cd191f9b2c2f2af089de996a34553"
+    },
+    {
+      "name": "libunistring",
+      "version": "1.4.2-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q17ifyyNFsE99nNhBPJgRVqgotMlk=",
+      "filename": "libunistring-1.4.2-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libunistring-1.4.2-r3.apk",
+      "size": 893768,
+      "sha256": "416850b27c2fea89a4fce1cb7508f6b68172a784a1c35d949fc51d7750a92267"
+    },
+    {
+      "name": "libuuid",
+      "version": "2.42.4-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1CUFwX+rqShPq/+wptEM5ozRMRNQ=",
+      "filename": "libuuid-2.42.4-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libuuid-2.42.4-r0.apk",
+      "size": 33228,
+      "sha256": "26c803afc91b4b027dd5fd9731745b43d8fe3b497988ecb74cee8a9a468a6632"
+    },
+    {
+      "name": "libverto",
+      "version": "0.3.2-r8",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1HF7aG2s3BbTyuEjV3/lgO8OVFGw=",
+      "filename": "libverto-0.3.2-r8.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libverto-0.3.2-r8.apk",
+      "size": 21464,
+      "sha256": "45adcadd6d35089116415aa2c75504629a6a87191e320a031e0d2fbf753e5890"
+    },
+    {
+      "name": "libxcrypt",
+      "version": "4.5.2-r5",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1r3mdxc03RLPM5NHUoCH+dXT/ZD0=",
+      "filename": "libxcrypt-4.5.2-r5.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libxcrypt-4.5.2-r5.apk",
+      "size": 105497,
+      "sha256": "b9211e0e4614dc9b8a0fe34f805bc14767493aa3b7dfd49ec53031adf705bd68"
+    },
+    {
+      "name": "libxcrypt-dev",
+      "version": "4.5.2-r5",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1ZT7vEDcz2m0tHnHyVPSqNvFOWp8=",
+      "filename": "libxcrypt-dev-4.5.2-r5.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libxcrypt-dev-4.5.2-r5.apk",
+      "size": 376687,
+      "sha256": "f79daa30710e2f6e0159a07e62a88e99b2c4ddde420a1e6f7b66f71b38b905ed"
+    },
+    {
+      "name": "libzstd1",
+      "version": "1.5.7-r10",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1kz4edCIbmdfwyQontw9gbdVLo9Q=",
+      "filename": "libzstd1-1.5.7-r10.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libzstd1-1.5.7-r10.apk",
+      "size": 587769,
+      "sha256": "a8d3bdad5a5700bd7d273f110defd4401595b4ecde88be04b3019a31981bd4f8"
+    },
+    {
+      "name": "linux-headers",
+      "version": "7.2.9-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1WXsjGd+C1dY7MGHX/BVwwn35ufY=",
+      "filename": "linux-headers-7.2.9-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/linux-headers-7.2.9-r0.apk",
+      "size": 2080525,
+      "sha256": "65cbe3036560442b540836ea5622ff5acf8d7879cbdc8d17bb11f5dfa68801f3"
+    },
+    {
+      "name": "linux-pam",
+      "version": "1.7.3-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1+nBMGay04QX1Yal+gKuqtE8GDQo=",
+      "filename": "linux-pam-1.7.3-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/linux-pam-1.7.3-r0.apk",
+      "size": 972729,
+      "sha256": "e6adc16833954b5d92a700b6ee9d3a22734094c39daa1f9e01c7938ec4a3a9bd"
+    },
+    {
+      "name": "make",
+      "version": "4.4.1-r15",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1drj5IU8afcXRmzqNGAFlpnmj6W4=",
+      "filename": "make-4.4.1-r15.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/make-4.4.1-r15.apk",
+      "size": 653670,
+      "sha256": "505a662fa56ce38d47e7796d1232754481ca49a243c8442044df8aeda0bdb768"
+    },
+    {
+      "name": "mpc",
+      "version": "1.4.1-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1IkHCC5jN08DLKCM8q9QF9U//RbY=",
+      "filename": "mpc-1.4.1-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/mpc-1.4.1-r1.apk",
+      "size": 80389,
+      "sha256": "dd29cfafe57946dfc7f4f0dcc1706ee391258f58d8354ada9d14a42e031dd9a6"
+    },
+    {
+      "name": "mpdecimal",
+      "version": "4.0.1-r4",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1iQqOy1RjBX9A3vKRlHrVNh5CXMU=",
+      "filename": "mpdecimal-4.0.1-r4.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/mpdecimal-4.0.1-r4.apk",
+      "size": 125557,
+      "sha256": "2d5ab7801739a0f728bce26535f6f521bb88e6ac1915a46aa9a1d3a9c52e4b8e"
+    },
+    {
+      "name": "mpfr",
+      "version": "4.2.2-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1Enq0Ck62e0+jxcPSS6A8jKiSU5s=",
+      "filename": "mpfr-4.2.2-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/mpfr-4.2.2-r3.apk",
+      "size": 640700,
+      "sha256": "faa4340a305c6bbf6d81f06bed74fbae85a0f9f2786c1913914ef0982a68d049"
+    },
+    {
+      "name": "ncurses",
+      "version": "6.6.20260926-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1YvhFRY49/PeSVf2h5pVGz8Vw2cg=",
+      "filename": "ncurses-6.6.20260926-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ncurses-6.6.20260926-r0.apk",
+      "size": 614757,
+      "sha256": "0c79c5578a2be405c7949017951923cc299664fd43b2d892fa20f4d6277e3b31"
+    },
+    {
+      "name": "ncurses-terminfo-base",
+      "version": "6.6.20260926-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1vEyEze0bLMewoGAzDn4n/606vi8=",
+      "filename": "ncurses-terminfo-base-6.6.20260926-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ncurses-terminfo-base-6.6.20260926-r0.apk",
+      "size": 118686,
+      "sha256": "6f997824b8e74044ad691c1983ec6efea4a08d383f1c1d2496c626009a21b7cc"
+    },
+    {
+      "name": "nghttp3",
+      "version": "1.18.0-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1ywFVX7AjSUUoAZUDxHmHKWOmdHk=",
+      "filename": "nghttp3-1.18.0-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/nghttp3-1.18.0-r1.apk",
+      "size": 102289,
+      "sha256": "c276c868be30fe59a42b3b7dc695d59e2b5d3433582aebfeaae74fbdec9d4a7d"
+    },
+    {
+      "name": "ngtcp2",
+      "version": "1.25.0-r5",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1ZBamq3sSW8Mc3fGd9eDCz9AX30o=",
+      "filename": "ngtcp2-1.25.0-r5.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ngtcp2-1.25.0-r5.apk",
+      "size": 213795,
+      "sha256": "ff107d1c1706aa1531a729c25fbc7eb7dc0a9a9947ef9b16aff1811b95055f8e"
+    },
+    {
+      "name": "openssf-compiler-options",
+      "version": "20250904-r11",
+      "architecture": "aarch64",
+      "installed_checksum": "Q14+cAr8taU1bIfOf2d/KX9DBCsl0=",
+      "filename": "openssf-compiler-options-20250904-r11.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/openssf-compiler-options-20250904-r11.apk",
+      "size": 11230,
+      "sha256": "afbcc8b08af58a664a69c6e4bf60624bebdc2af3d2d5cf540c5826ebe040cf70"
+    },
+    {
+      "name": "openssl-4.0-libcrypto",
+      "version": "4.0.2-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q19nSaX+wjmct2m2M6pEGnIalMIYg=",
+      "filename": "openssl-4.0-libcrypto-4.0.2-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/openssl-4.0-libcrypto-4.0.2-r2.apk",
+      "size": 2148213,
+      "sha256": "38cfd9b8be4b716d658fa39b6852de4658d9875d7d2b2baa9eabba0aedfac6fa"
+    },
+    {
+      "name": "openssl-4.0-libssl",
+      "version": "4.0.2-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1p5+SUPvDXEaXKeJmYTf8z7d+ct8=",
+      "filename": "openssl-4.0-libssl-4.0.2-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/openssl-4.0-libssl-4.0.2-r2.apk",
+      "size": 530579,
+      "sha256": "89a54491d200471c67ac8133c1922889abf31e85d90dd92ef5ad5e52d7570da7"
+    },
+    {
+      "name": "openssl-provider-legacy-allowed",
+      "version": "4.0.2-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1AqcaI4nZi8Tze6exu6bWqaoujQg=",
+      "filename": "openssl-provider-legacy-allowed-4.0.2-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/openssl-provider-legacy-allowed-4.0.2-r3.apk",
+      "size": 128989,
+      "sha256": "130d18f1961b28de64b473cf5684a05b53f5437175f158a8a21af0ce0d20da74"
+    },
+    {
+      "name": "pkgconf",
+      "version": "3.0.7-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1satPB73J8XJkIoB/v7xtBTmAs34=",
+      "filename": "pkgconf-3.0.7-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/pkgconf-3.0.7-r0.apk",
+      "size": 147064,
+      "sha256": "d23bed1419e8472d16bf3195d5469fd7b07fe1b5e1241f5ac96210f31c0f10a6"
+    },
+    {
+      "name": "posix-cc-wrappers",
+      "version": "2-r10",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1kIam+tLMmfdl+X3LwVfm9umHbRs=",
+      "filename": "posix-cc-wrappers-2-r10.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/posix-cc-wrappers-2-r10.apk",
+      "size": 3400,
+      "sha256": "1276b118e8e574204601706d56e0381210c4c9c4c1393ca793add9361e4b8810"
+    },
+    {
+      "name": "py3-pip-wheel",
+      "version": "26.2.1-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q135J+cWY2bGAHuQumBu+IHDoMu6g=",
+      "filename": "py3-pip-wheel-26.2.1-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/py3-pip-wheel-26.2.1-r2.apk",
+      "size": 1822337,
+      "sha256": "ad8bb1aac64699f30ccc25fcb53c0f25fd8a6aefb017b7bc50a0093637645869"
+    },
+    {
+      "name": "py3.12-pip",
+      "version": "26.2.1-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1I3d1xkXUt8CFXyVugI36gg1dZuQ=",
+      "filename": "py3.12-pip-26.2.1-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/py3.12-pip-26.2.1-r2.apk",
+      "size": 15203,
+      "sha256": "54571ed5edb86f71fb0eea964019d3bcfe886189dd5927a814b52c699938741d"
+    },
+    {
+      "name": "py3.12-pip-base",
+      "version": "26.2.1-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1zT7WxG16nt3qIQF4CfxqeBboXUM=",
+      "filename": "py3.12-pip-base-26.2.1-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/py3.12-pip-base-26.2.1-r2.apk",
+      "size": 4013121,
+      "sha256": "4ceca90648cc6bf0013f5f1776c5374755149a02562899da0350e79e2c62fc95"
+    },
+    {
+      "name": "py3.12-setuptools",
+      "version": "84.0.0-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1x8BvDwI/rz+HdmdSiCEvT9kf4j4=",
+      "filename": "py3.12-setuptools-84.0.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/py3.12-setuptools-84.0.0-r0.apk",
+      "size": 1871142,
+      "sha256": "f478deb6c76272d9c6ce206f03b9e24cbe94941987ba6927d6c63f812f1f5be5"
+    },
+    {
+      "name": "python-3.12",
+      "version": "3.12.15-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1RFa0+v0XXPBRtYuEIrKrzygUdAA=",
+      "filename": "python-3.12-3.12.15-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/python-3.12-3.12.15-r0.apk",
+      "size": 14669,
+      "sha256": "b68f636d4a2df03f7d49597be1ea67d6b8105827136804f7f31b4c5a3ac79d40"
+    },
+    {
+      "name": "python-3.12-base",
+      "version": "3.12.15-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1K/I/YlFZkHWMpVxQV83B54He1KE=",
+      "filename": "python-3.12-base-3.12.15-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/python-3.12-base-3.12.15-r0.apk",
+      "size": 12123405,
+      "sha256": "5b4da45c16cecc96fa6d90503fd40a64870e14846e4f2bb54a956ff54bdd0e94"
+    },
+    {
+      "name": "readline",
+      "version": "8.3-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1BmEgSRVEbSo6hg0gmugFfZRxwFw=",
+      "filename": "readline-8.3-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/readline-8.3-r3.apk",
+      "size": 338069,
+      "sha256": "8d4ae6286e3fdc2b50fdd911fe1aa474c771c5708184e721e2255283ec6d7e4e"
+    },
+    {
+      "name": "ripgrep",
+      "version": "15.2.0-r4",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1XqtHCjvs0Cv+Nzx4PRhyS8ui27I=",
+      "filename": "ripgrep-15.2.0-r4.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ripgrep-15.2.0-r4.apk",
+      "size": 2642237,
+      "sha256": "7b8e928502cd1e29595a23587392351da6f92b969003abef152b80239824e7f1"
+    },
+    {
+      "name": "sed",
+      "version": "4.10-r3",
+      "architecture": "aarch64",
+      "installed_checksum": "Q15hPRSR744JCqXNbcgRvv+Wysl8w=",
+      "filename": "sed-4.10-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/sed-4.10-r3.apk",
+      "size": 294910,
+      "sha256": "63022abd70ac48a4a257eace305d7260d77caa0672ce004a934aa9cd956b57e1"
+    },
+    {
+      "name": "shadow",
+      "version": "4.20.2-r1",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1O+3eurNT+8sZcEIjQNX+XylUnhU=",
+      "filename": "shadow-4.20.2-r1.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/shadow-4.20.2-r1.apk",
+      "size": 3241741,
+      "sha256": "1270cf7369b32436ab44c1a9b78442a4b63bf46490fd3dc3a066c45ce2ae390e"
+    },
+    {
+      "name": "sqlite-libs",
+      "version": "3.53.4-r2",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1zSOH3KuyuB1DDaUE3ltIplt89fg=",
+      "filename": "sqlite-libs-3.53.4-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/sqlite-libs-3.53.4-r2.apk",
+      "size": 932790,
+      "sha256": "638dc757e0f3380f61b79e5f3ee3d36581ea7b4955c2ae9235dd18c873ddb6ad"
+    },
+    {
+      "name": "tini",
+      "version": "0.19.0-r26",
+      "architecture": "aarch64",
+      "installed_checksum": "Q11tU6whtlC3oM6+8FjCZ52MC/QiM=",
+      "filename": "tini-0.19.0-r26.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/tini-0.19.0-r26.apk",
+      "size": 17633,
+      "sha256": "7d574d118182b382128fd1e257456151c6261b04e1f97ad073438bb4e7a3c239"
+    },
+    {
+      "name": "wolfi-base",
+      "version": "1-r7",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1+0E0UlaxkLWVTbmu8bjwYXhbZjo=",
+      "filename": "wolfi-base-1-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/wolfi-base-1-r7.apk",
+      "size": 1847,
+      "sha256": "576720f073c5afae22dcb20deae4cdc4907ae54a8ec71eb1c3f41e3b4afaf714"
+    },
+    {
+      "name": "wolfi-baselayout",
+      "version": "20230201-r30",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1aF/6XzN/J9leZvrqW26UuNZ1IXw=",
+      "filename": "wolfi-baselayout-20230201-r30.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/wolfi-baselayout-20230201-r30.apk",
+      "size": 13964,
+      "sha256": "2a6815ada2973deba196e24f4406fcd2619f6a070e693013563530705254a2b8"
+    },
+    {
+      "name": "wolfi-keys",
+      "version": "1-r13",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1MfuXifUsiF7Gi6pYnIuTfJM+2tk=",
+      "filename": "wolfi-keys-1-r13.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/wolfi-keys-1-r13.apk",
+      "size": 3900,
+      "sha256": "3c1b24d9d059f5ce3e6914fae4a9213e5d15019b6086d36e2ac1a373c259cc65"
+    },
+    {
+      "name": "xz",
+      "version": "5.8.4-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1FUHAkrcEZSBakKOelv4sEd0GHI8=",
+      "filename": "xz-5.8.4-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/xz-5.8.4-r0.apk",
+      "size": 393429,
+      "sha256": "d2c12615a9601d34f1500a782c38177d18417c576fe7b145e4e88b0165681874"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2.1_rc20260601-r0",
+      "architecture": "aarch64",
+      "installed_checksum": "Q1qEEcRLz25dJ+vO1267oeD0lDd0Y=",
+      "filename": "zlib-1.3.2.1_rc20260601-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/zlib-1.3.2.1_rc20260601-r0.apk",
+      "size": 61800,
+      "sha256": "1277ef82875509ef84b1fade06ef7b2e76486a4613605c5570d9d28588ed0a6f"
+    }
+  ]
+}

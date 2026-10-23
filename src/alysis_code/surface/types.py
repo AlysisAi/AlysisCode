@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 # Trace reason for results that only say the remote site blocked the call.
 DEFAULT_REMOTE_SITE_REASON = "site doesn't allow automated access"
@@ -107,6 +107,10 @@ class PatchEvent:
     files: list[str]
     diff: str
     summary: str = ""
+    applied: bool = False
+    diff_truncated: bool = False
+    subagent_name: str | None = None
+    workspace_view: str = "shared"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +124,33 @@ class ApprovalRequest:
     allow_for_session_scope: dict[str, object] | None = None
 
 
+def approval_review_line(outcome: str, subject: str, reason: str = "") -> str:
+    """One readable line for an approval the reviewer answered ("Approve for me")."""
+
+    lead = {
+        "allow": "Approved for you",
+        "deny": "Not approved",
+        "ask_person": "Asking you",
+    }.get(outcome, "Reviewed")
+    line = f"{lead}: {subject}"
+    return f"{line} - {reason}" if reason else line
+
+
+@dataclass(frozen=True, slots=True)
+class StandingApproval:
+    """What a surface's standing rules already decide about a request, before anyone is asked.
+
+    Surfaces may offer ``standing_approval(request) -> StandingApproval | None``: ``allow`` or
+    ``deny`` when a stored grant or permission rule decides the request, ``ask_person`` when a
+    rule says a person must answer this one (an "ask" rule, a folder outside the project), and
+    ``None`` when no rule applies. "Approve for me" consults it first, so a person's rules
+    always win over the reviewer.
+    """
+
+    outcome: Literal["allow", "deny", "ask_person"]
+    reason: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class ApprovalDecision:
     allow: bool
@@ -130,3 +161,4 @@ class ApprovalDecision:
     # it. Only offered where approval_scope.approval_dir_grant_candidate says
     # so (fs_delete, single non-root directory, never sensitive approvals).
     allow_for_session_dir: bool = False
+    status: str | None = None

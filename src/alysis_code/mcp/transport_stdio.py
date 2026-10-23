@@ -3,17 +3,20 @@ from __future__ import annotations
 import ctypes
 import os
 import queue
+import re
 import select
 import subprocess
 import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..cancellation import raise_if_cancelled
+from .cancellation import current_mcp_cancellation_token
 from .errors import McpProcessError, McpProtocolError, McpTimeoutError
 from .jsonrpc import (
     JsonRpcIdGenerator,
@@ -98,6 +101,13 @@ _CONSERVATIVE_ENV_KEYS = (
     "NODE_EXTRA_CA_CERTS",
 )
 _INTERNAL_CLIENT_REQUEST_CODE = -32603
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+_WINDOWS_BATCH_EXTENSIONS = frozenset({".bat", ".cmd"})
+# cmd.exe re-reads a batch file's arguments: quoting keeps these characters literal,
+# but nothing reliably protects a double quote, a percent sign or a line break.
+_WINDOWS_BATCH_QUOTED_CHARS = frozenset(" \t&|<>^(),;=!")
+_WINDOWS_BATCH_REFUSED_CHARS = frozenset('"%\r\n')
 _INVALID_STDOUT_UTF8_MESSAGE = "received invalid UTF-8 on stdio stdout"
 _LIVE_STDIO_TRANSPORTS: weakref.WeakSet[Any] = weakref.WeakSet()
 
@@ -157,6 +167,74 @@ class _FatalTransportState:
     stderr_read_sequence: int
     stderr_last_activity_monotonic: float
     fatal_monotonic: float
+
+
+def _env_value(env: Mapping[str, str], name: str) -> str:
+    """Windows environment names are case-insensitive (`Path` and `PATH` are one variable)."""
+    value = env.get(name)
+    if value is not None:
+        return value
+    folded = name.casefold()
+    for key, item in env.items():
+        if key.casefold() == folded:
+            return item
+    return ""
+
+
+def resolve_windows_command(command: str, *, env: Mapping[str, str]) -> str | None:
+    """Find a bare command the way a Windows shell would, or return None.
+
+    CreateProcess only adds ".exe" to a bare name and searches the parent's PATH, so a
+    launcher such as `npx` (npx.cmd) is never found. This looks on the child's PATH and
+    tries each PATHEXT extension. A command with a directory part is left alone.
+    """
+    if not command or os.path.dirname(command):
+        return None
+    extensions = [
+        ext.strip()
+        for ext in (_env_value(env, "PATHEXT") or _WINDOWS_DEFAULT_PATHEXT).split(";")
+        if ext.strip()
+    ]
+    suffix = os.path.splitext(command)[1].casefold()
+    if suffix and suffix in {ext.casefold() for ext in extensions}:
+        names = [command]
+    else:
+        names = [command + ext for ext in extensions]
+    for raw_directory in _env_value(env, "PATH").split(os.pathsep):
+        directory = raw_directory.strip().strip('"')
+        if not directory:
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+def windows_batch_command_line(executable: str, args: Sequence[str]) -> str:
+    """Build the command line for a .bat/.cmd launcher.
+
+    cmd.exe runs these files and reads their arguments again, so an unquoted `&` or `|`
+    would start a second command. Every value holding such a character is quoted, and
+    values that quoting cannot protect are refused.
+    """
+    parts: list[str] = []
+    for index, value in enumerate((executable, *args)):
+        refused = sorted(_WINDOWS_BATCH_REFUSED_CHARS.intersection(value))
+        if refused:
+            label = "the command" if index == 0 else f"argument {index}"
+            shown = ", ".join(repr(char) for char in refused)
+            raise ValueError(
+                f"{label} contains {shown}, which a .cmd or .bat launcher cannot receive "
+                "safely; point the command at the program itself (for example node.exe)."
+            )
+        if value and not _WINDOWS_BATCH_QUOTED_CHARS.intersection(value):
+            parts.append(value)
+            continue
+        # A quoted value must not end in a backslash that would escape the closing quote.
+        escaped = re.sub(r"(\\+)$", r"\1\1", value)
+        parts.append(f'"{escaped}"')
+    return " ".join(parts)
 
 
 def build_stdio_subprocess_env(
@@ -634,15 +712,9 @@ class McpStdioTransport:
         if self._closed:
             raise self._build_error("transport is already closed.")
         try:
-            self._process = subprocess.Popen(
-                [self.server.command, *self.server.args],
-                cwd=self.workspace_root,
-                env=self.spawn_env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-            )
+            self._process = self._spawn([self.server.command, *self.server.args])
+        except FileNotFoundError as exc:
+            self._process = self._spawn_resolved_windows_command(exc)
         except Exception as exc:  # noqa: BLE001
             raise self._build_error(f"failed to launch process: {exc}") from exc
         self._started = True
@@ -659,6 +731,35 @@ class McpStdioTransport:
         )
         self._stdout_thread.start()
         self._stderr_thread.start()
+
+    def _spawn(self, launch: list[str] | str) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            launch,
+            cwd=self.workspace_root,
+            env=self.spawn_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+
+    def _spawn_resolved_windows_command(
+        self, not_found: FileNotFoundError
+    ) -> subprocess.Popen[bytes]:
+        """Retry a bare command that Windows could not find, as `npx` -> `npx.cmd`."""
+        resolved = (
+            resolve_windows_command(self.server.command, env=self.spawn_env)
+            if _IS_WINDOWS
+            else None
+        )
+        if resolved is None:
+            raise self._build_error(f"failed to launch process: {not_found}") from not_found
+        try:
+            if os.path.splitext(resolved)[1].casefold() in _WINDOWS_BATCH_EXTENSIONS:
+                return self._spawn(windows_batch_command_line(resolved, self.server.args))
+            return self._spawn([resolved, *self.server.args])
+        except Exception as exc:  # noqa: BLE001
+            raise self._build_error(f"failed to launch process: {exc}") from exc
 
     def _stderr_reader(self) -> None:
         process = self._process
@@ -1110,6 +1211,8 @@ class McpStdioTransport:
     ) -> JsonRpcResponse:
         if timeout_s <= 0:
             raise self._build_error("timeout_s must be > 0.")
+        cancellation_token = current_mcp_cancellation_token()
+        raise_if_cancelled(cancellation_token)
         self.start()
         self._raise_if_fatal()
         request_id = self._id_generator.next()
@@ -1134,9 +1237,58 @@ class McpStdioTransport:
                 self._pending.pop(request_id, None)
                 self._set_request_state_locked(request_id, _REQUEST_STATE_CANCELLED)
             raise
+        try:
+            return self._wait_for_response(
+                request_id=request_id,
+                method=method,
+                timeout_s=timeout_s,
+                response_deadline=response_deadline,
+                response_queue=response_queue,
+                cancellation_token=cancellation_token,
+            )
+        except BaseException:
+            # Only this request is revoked. A pooled MCP connection (and other
+            # chats' connections) remains usable after the server acknowledges.
+            with self._pending_lock:
+                self._pending.pop(request_id, None)
+                request_state = self._request_states.get(request_id)
+                awaiting_response = request_state in {
+                    _REQUEST_STATE_AWAITING_RESPONSE,
+                    _REQUEST_STATE_RESPONSE_TIMED_OUT,
+                }
+                if (
+                    request_state is not None
+                    and request_state not in _REQUEST_STATES_DISCARD_LATE_RESPONSES
+                ):
+                    self._set_request_state_locked(request_id, _REQUEST_STATE_CANCELLED)
+            try:
+                # A received response has already completed the server's work,
+                # even while we are still checking trailing stdout for errors.
+                if awaiting_response and method != "initialize":
+                    self._send_serialized(
+                        build_jsonrpc_notification(
+                            method="notifications/cancelled",
+                            params={"requestId": request_id, "reason": "Request interrupted"},
+                        )
+                    )
+            except Exception:
+                pass
+            raise
+
+    def _wait_for_response(
+        self,
+        *,
+        request_id: int | str,
+        method: str,
+        timeout_s: float,
+        response_deadline: float,
+        response_queue: queue.Queue[Any],
+        cancellation_token: Any | None,
+    ) -> JsonRpcResponse:
         current_deadline = response_deadline
         observed_response = False
         while True:
+            raise_if_cancelled(cancellation_token)
             remaining = current_deadline - time.monotonic()
             if remaining <= 0:
                 try:
@@ -1158,7 +1310,11 @@ class McpStdioTransport:
                     ) from exc
             else:
                 try:
-                    response = response_queue.get(timeout=remaining)
+                    response = response_queue.get(
+                        timeout=min(remaining, 0.05)
+                        if cancellation_token is not None
+                        else remaining
+                    )
                 except queue.Empty:
                     continue
             if isinstance(response, _ObservedResponse):

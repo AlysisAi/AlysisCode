@@ -5,11 +5,10 @@ Runnable two ways:
     python3 tests/test_build_identity.py     # standalone, stdlib only
     pytest tests/test_build_identity.py
 
-The module under test is loaded directly from its file path so that importing
-it never executes ``alysis_code/__init__`` or any of the package's
-dependency-heavy import chain. That keeps these tests runnable in a bare
-interpreter with no third-party packages installed -- which is also the
-environment the release job stamps a tree from.
+The checkout's build modules and package initializer use only the standard
+library. Import them as package modules so shared command decoding works too.
+These tests also run the actual generator without site packages, matching the
+bare interpreter used to stamp the release tree.
 
 The git fixtures reproduce real ``git status --porcelain`` output, including
 the rename form and the generator's own self-inflicted modification, because
@@ -18,8 +17,9 @@ those are the two cases where a naive dirty check gives the wrong answer.
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,20 +27,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_MODULE_PATH = _REPO_ROOT / "src" / "alysis_code" / "build_identity.py"
 _COMMITTED_BUILD_INFO = _REPO_ROOT / "src" / "alysis_code" / "_build_info.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("_build_identity", _MODULE_PATH)
-    if spec is None or spec.loader is None:  # pragma: no cover - defensive
-        raise RuntimeError(f"cannot load {_MODULE_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    # Registered before execution because the module defines dataclasses, and
-    # ``dataclasses`` resolves annotations via ``sys.modules[cls.__module__]``.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
+    return importlib.import_module("alysis_code.build_identity")
 
 
 bi = _load_module()
@@ -65,6 +57,24 @@ def _git_runner(responses: dict[str, tuple[int, str]]):
 
     run.calls = calls  # type: ignore[attr-defined]
     return run
+
+
+class BareInterpreterTests(unittest.TestCase):
+    def test_generator_runs_without_site_packages(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-S",
+                str(_REPO_ROOT / "scripts" / "generate_build_info.py"),
+                "--print-only",
+                "--no-fetch",
+            ],
+            cwd=tempfile.gettempdir(),
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"commit:", completed.stdout)
 
 
 class BuildInfoRecordTests(unittest.TestCase):

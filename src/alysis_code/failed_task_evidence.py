@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .command_text import command_text
 from .execution_shared import safe_task_file_component
 from .git_safe import build_git_cmd
 
@@ -83,7 +84,7 @@ def _default_git_runner(root: Path, args: list[str]) -> subprocess.CompletedProc
         build_git_cmd(root, args),
         check=False,
         capture_output=True,
-        text=True,
+        **command_text(),
         timeout=_GIT_TIMEOUT_S,
     )
 

@@ -583,7 +583,7 @@ allow_tools:
   - search_rg
 deny_tools:
   - shell_run
-# Claude-style aliases are also supported:
+# Compatibility aliases are also supported:
 # tools: [fs_read, fs_list, symbol_search, search_rg]
 # disallowedTools: [shell_run]
 model_role: review

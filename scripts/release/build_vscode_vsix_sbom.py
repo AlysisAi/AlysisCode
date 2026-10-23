@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from uuid import NAMESPACE_URL, uuid5
 from zipfile import BadZipFile, ZipFile
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -163,6 +164,9 @@ def build_vsix_sbom(
         "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
+        # GitHub's attestation parser requires a document ID. Bind it to the
+        # exact package while keeping promotion's canonical rebuild deterministic.
+        "serialNumber": uuid5(NAMESPACE_URL, f"{extension_ref}#sha256={vsix_digest}").urn,
         "version": 1,
         "metadata": {
             "component": {

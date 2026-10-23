@@ -305,6 +305,8 @@ export ALYSIS_SHELL_SANDBOX_PROTECT_REPO_META=0
 ## Limitations
 
 - The shell sandbox isolates shell and verification command execution, not every host-side orchestration step.
-- Sandboxed commands can still modify the mounted workspace unless the Docker read-only option or task policy prevents it.
+- Sandboxed commands can modify the mounted workspace. The Docker read-only option
+  protects the image root filesystem; the workspace bind remains writable, with
+  protected repository metadata mounted read-only for arbitrary shell commands.
 - A sandbox reduces impact; it does not make untrusted code safe.
 - Custom tools have their own subprocess execution and capability checks; they are not automatically routed through the shell sandbox.

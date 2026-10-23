@@ -8,7 +8,7 @@ none is a substitute for another.
 
 See [the release status](vscode-marketplace-launch.md) for remaining production gates.
 Signing, attestations, and publication run from immutable source tags in the public
-`AlysisAi/alysis-code` repository. Component tests never authorize production publication.
+`AlysisAi/AlysisCode` repository. Component tests never authorize production publication.
 
 ## Signed release contract
 
@@ -43,6 +43,30 @@ compatibility, source, provenance, SBOM, native-signature, key, or artifact data
 closed.
 
 ## GitHub environments and credential inventory
+
+### Native build inputs
+
+Managed executables bundle CPython 3.12.15 from the six checksum- and size-pinned
+Astral distributions in `scripts/release/managed_cli_python.lock.json`. The installer
+checks the downloaded archive before extraction and probes the installed version,
+platform, architecture, OpenSSL, and Expat. The build SBOM binds that receipt to the
+committed distribution pin. This packaging interpreter is independent of the
+project's supported Python range and the interpreter used to bootstrap CI tools.
+
+Linux builds and executable smoke tests use the pinned manylinux glibc 2.28 images.
+The interpreter inside the image only bootstraps the pinned distribution; it is not
+the Python embedded in the executable. Windows ARM64 and Intel macOS build
+checksum-pinned OpenSSL 3.5.9, run its native test suite, and link it statically into
+cryptography. This supplies the missing Windows ARM64 development libraries and
+avoids an Intel macOS collision between cryptography and Python's `libssl.3.dylib`.
+The resulting OpenSSL component and dependency edge are recorded in the SBOM.
+
+The unsigned `managed-cli-build-check.yml` workflow exercises the same native build
+helpers, executable version/health/stdio checks, and runtime inventory before a new
+immutable release tag is created. It receives no signing environment and does not
+replace the signed candidate's provenance, signature, or installation checks.
+
+### Protected environments
 
 Create two GitHub environments. Both environments must have at least one required release
 maintainer and contain exactly the custom deployment tag pattern `v*`, with administrator bypass
@@ -91,7 +115,7 @@ Create a dedicated Entra application/service principal with a federated credenti
 - Subject: `repo:AlysisAi@252910184/alysis-code@1233295735:environment:managed-cli-native-signing`
 
 The public repository uses GitHub's immutable subject format, verified on 29 September 2026
-through `GET /repos/AlysisAi/alysis-code/actions/oidc/customization/sub` (`use_default: true`,
+through `GET /repos/AlysisAi/AlysisCode/actions/oidc/customization/sub` (`use_default: true`,
 `use_immutable_subject: true`). Its returned `sub_claim_prefix` includes the owner and repository
 IDs shown above. Use that exact prefix with the environment context; the older name-only subject
 does not match this repository's tokens. Recheck the endpoint before provisioning or changing
@@ -107,8 +131,12 @@ Integration references: [Azure OIDC setup](https://github.com/Azure/artifact-sig
 and [short-lived certificate management](https://learn.microsoft.com/en-us/azure/artifact-signing/concept-certificate-management).
 
 The Apple build imports its identity into an ephemeral runner keychain, checks the exact authority,
-submits the signed standalone executable to Apple, requires an `Accepted` response, and runs both
-`codesign` and `spctl`. Standalone Mach-O files use Apple's online notarization ticket and cannot be
+passes that identity to PyInstaller so embedded libraries are signed before the one-file archive
+is sealed, submits the signed executable to Apple, and requires an `Accepted` response. It checks
+the signature with `codesign --verify --strict` and the online ticket with
+`codesign --verify --strict -R="notarized" --check-notarization`. Apple documents this check for
+[non-app code](https://developer.apple.com/forums/thread/130560); `spctl --type execute` expects
+an app bundle and rejects standalone tools even after notarization. Standalone Mach-O files cannot be
 described as directly stapled. The manifest builder reads the validated evidence file directly;
 signer identity is never transferred through `GITHUB_ENV`.
 
@@ -161,6 +189,14 @@ The DER fingerprint observed on 28 September 2026 is
 This is the expected public identity, not proof of private-key custody or a configured
 GitHub environment. The resource PEM and embedded trust anchor remain unchanged.
 
+On 4 October 2026, the owner approved Perdikis10 as recovery custodian and a separate
+organization-controlled Azure Key Vault copy. Retrieval inside Azure Cloud Shell
+passed this checker against the unchanged public pin; private material went directly
+through stdin without a file or secret output. Access logging was verified from
+delivered records and temporary network access removed. The private operations
+record holds the vault/version coordinates and recovery procedure. This proves
+recovery custody, not the protected workflow's provisioned key or native signing.
+
 Once the custodian locates the approved backup, run the same checker **inside the
 approved secret-management boundary** with `--private-key-stdin` and
 `--approved-fingerprint <reviewed-public-DER-SHA256>`. Pipe the secret manager's export
@@ -205,7 +241,8 @@ Revoke affected certificates and access immediately if compromise is suspected.
 
 For planned Apple rotation, update the PKCS#12, password, and exact Developer ID authority together.
 Rotate the notary `.p8`, key ID, and issuer as one tested set when the API key changes. Require both
-macOS targets to pass `codesign`, notarization, and `spctl`; retain the certificate SHA-256 and Apple
+macOS targets to pass strict `codesign` verification, notarization, and the explicit
+`notarized` requirement with `--check-notarization`; retain the certificate SHA-256 and Apple
 submission IDs in the release record. Revoke replaced or exposed material in the Apple/CA portals
 after the clean run is verified.
 
@@ -322,7 +359,8 @@ After the run:
 - [ ] Independently download and hash all six VSIX files and managed runtimes. Re-run
       `gh attestation verify` with the repository, signer workflow, source tag, and source commit
       constraints used by CI.
-- [ ] Re-run `Get-AuthenticodeSignature` for Windows and `codesign --verify` plus `spctl --assess`
+- [ ] Re-run `Get-AuthenticodeSignature` for Windows and strict `codesign --verify` plus
+      `codesign --verify --strict -R="notarized" --check-notarization` for macOS
       for macOS; compare identities with the signed manifest and release record.
 - [ ] Preserve the workflow URL, approvals, logs, Apple submission IDs, manifest/public-key
       fingerprint, dependency and final SBOMs, production-dogfood summaries, and exact SHA-256
@@ -335,7 +373,7 @@ After the run:
 
 - Preserve the workflow run URL, source commit, exact VSIX/runtime SHA-256 values, public-key
   fingerprint, SBOMs, and attestation verification output with the release record.
-- Verify provenance with `gh attestation verify <artifact> --repo AlysisAi/alysis-code` before signing
+- Verify provenance with `gh attestation verify <artifact> --repo AlysisAi/AlysisCode` before signing
   the manifest and again before promotion.
 - A missing environment reviewer, invalid/missing fingerprint variable, unexpected public-key diff,
   absent SBOM/attestation, or native-signature failure blocks promotion.

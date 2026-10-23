@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..command_text import command_text
 from ..repo_scan import scan_workspace
 from ..verification_command_analysis import analyze_verification_command
 from ..workspace_context import resolve_workspace_context
@@ -181,7 +182,7 @@ def _git_changed_paths(root: Path) -> list[str]:
             ["git", "diff", "--name-only", "HEAD", "--"],
             cwd=root,
             capture_output=True,
-            text=True,
+            **command_text(),
             timeout=_GIT_TIMEOUT_S,
             check=False,
         )

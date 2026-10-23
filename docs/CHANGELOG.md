@@ -1,5 +1,145 @@
 # Changelog
 
+## 0.15.2 - 2026-10-21
+
+- Restore the default hosted API URL so a fresh installation can run
+  `alysis login`, read account status, and prepare online feedback without
+  environment configuration. Custom deployment overrides remain supported;
+  project keys and server credentials are not bundled.
+- Add a Windows PowerShell installer that provisions uv and Python, detects
+  conflicting installations, and updates PATH for the current and future terminals.
+- Clarify PowerShell, WSL, pipx prerequisites, and the account sign-in steps.
+- Require a complete simulated device login from the installed release wheel,
+  with no cloud environment variables, before publishing Python packages.
+- Refresh the sandbox's pinned certificate, curl, and Go security updates on
+  both supported architectures, with native image scans and smoke checks.
+- Require patched Certifi and Pillow releases and refresh their locked versions
+  so new and upgraded installations receive the current security fixes.
+
+## 0.15.1 - 2026-10-15
+
+- Keep the release qualification's simulated stalled provider connected until
+  the test completes. Its previous five-second disconnect could report a
+  provider failure before the managed deadline on Windows. Deadline and
+  process-cleanup assertions remain enforced.
+- Include all changes listed under 0.15.0 below. The 0.15.0 tag is preserved,
+  but its release qualification failed before package publication.
+
+## 0.15.0 - 2026-10-15
+
+- Expand the terminal workspace with inline diffs, file mentions, prompt history,
+  session navigation, integration inspection, planning, review, tool traces,
+  structured questions, and clearer subagent progress.
+- Add IDE command and skill discovery, explicit skill invocation, mid-turn
+  steering, and opt-in reasoning summary events.
+- Improve ChatGPT subscription registration, account selection, credential
+  refresh, saved profiles, endpoint migration, and reviewed model discovery.
+- Add GPT-6.1 Sol presets and model-specific reasoning controls. Preserve
+  reasoning choices across settings reloads and separate safe reasoning summaries
+  from final answers.
+- Recover more reliably from output limits, interrupted streams, provider retry
+  exhaustion, and cancellation. Improve caching and provider diagnostics.
+- Add approval review and safer command classification, with fixes for Windows
+  command execution, macOS image paste, sandbox fallback, and local listeners.
+- Clarify hosted-account billing and capacity errors without mislabeling them as
+  rejected API keys; direct model configuration guidance to `/config`.
+- Remove `/objective` and explicit task-relation state. State the current goal in
+  the conversation; steer an active turn when requirements change.
+- Stamp builds consistently and persist an installation identifier across client
+  sessions.
+- Add optional PDF, Word, spreadsheet, and presentation tools through the
+  `documents` extra, with path-scoped input and output acceptance checks.
+- Add host integration contracts for browser and computer actions, GitHub,
+  Google services, open panels, task budgets, and Forge verification.
+- Route `forge plan` and `forge run` through the shared host planner and approval
+  flow. Machine planning accepts an explicit goal and intent.
+- Add account usage/status, reviewed feedback delivery, corporate CA support,
+  and safer managed-session persistence on Windows.
+- Add `profile check`, subagent settings, bundled Alysis documentation guidance,
+  and persona restoration when IDE sessions start or resume.
+- Fix Windows `.git/info/exclude` line endings and VS Code provider setup,
+  startup readiness, and package inventory checks.
+- Align public links and release provenance checks with `AlysisAi/AlysisCode`.
+- Keep hosted deployment URLs and project keys out of public source and packages.
+  Hosted login, account status, and online feedback require runtime configuration
+  through `ALYSIS_CLOUD_API_URL`; see [Reference](reference.md). Other configured
+  providers remain available.
+- Preserve focused setup actions during streamed sidebar updates and avoid
+  repeatedly searching the transcript for static controls.
+- Keep background update checks bound to the data directory that scheduled them.
+- Repair sandbox dependency locks and server packaging, and update the bundled
+  Go toolchain to the 1.26.9 security patch.
+- Retire the `sylliptor` command and legacy branding aliases. Use `alysis` or
+  `alysis-code`, canonical `ALYSIS_` environment variables, `.alysis` project
+  data, and `alysis-plugin.toml` manifests. Back up and migrate legacy locations
+  explicitly before upgrading; this release does not move them automatically.
+
+
+## 0.14.9 — Claude Haiku 5.5 on Alysis Free — 2026-10-07
+
+- Add Claude Haiku 5.5 to the Alysis Free model picker and direct Anthropic
+  profiles, with native Messages routing, a 1M context window, prompt caching,
+  and adaptive thinking. Choose low, medium, high, xhigh, max, or off; Auto uses
+  the model's medium default. Pricing increases 5x above 100K total prompt tokens.
+- Replace the retired Sonnet Free campaign entry with Haiku 5.5. Existing
+  account credits and saved model preferences are retained.
+
+## 0.14.8 — production VSIX verification
+
+- Run final candidate evidence validation inside the frozen Python environment,
+  where its cryptographic verification dependencies are installed.
+- Update the VS Code test utility to 3.1.0 so current macOS releases resolve
+  their executable from the application metadata, while older versions remain supported.
+- Exercise both minimum and current Stable VS Code in extension CI before tagging.
+- Retry interrupted or incomplete pinned Python downloads up to three times,
+  requiring the original size and SHA-256 checks to pass before extraction.
+
+Version 0.14.7 passed main CI and PyPI publication. Its six native runtimes and
+signed manifest passed, but later VSIX verification exposed these harness issues.
+Existing release tags and published distributions remain unchanged. Marketplace
+promotion still requires the documented acceptance and signoff gates.
+
+## 0.14.7 — VSIX dependency audit and sidebar rendering
+
+- Update the VS Code extension's locked source-map-js dependency to 1.2.2,
+  resolving GHSA-68fv-2mgg-jv7q and restoring the release audit gate.
+- Avoid repainting unchanged permission controls and settings filters during
+  conversation updates, reducing sidebar render cost on Intel macOS.
+- Run extension CI on Intel macOS as well as Apple Silicon before tagging releases.
+- Synchronize the queued-command overflow test with actual input receipt so
+  loaded CI runners exercise the intended full-inbox behavior reliably.
+
+This replacement preserves the published 0.14.6 source tag and distributions.
+The VS Code 0.3.0 beta still requires candidate installation, acceptance, and
+promotion gates before Marketplace publication.
+
+## 0.14.6 — final VSIX attestation and startup validation
+
+- Give each final VSIX dependency report an RFC 4122 document ID accepted by
+  GitHub's attestation parser. Derive it from the exact package bytes so promotion
+  can reproduce the signed report without changing its identity.
+- Wait for startup runtime validation before reporting installed runtime evidence,
+  so a fresh installation does not report the bundled CLI as temporarily unavailable.
+
+All six 0.14.5 native runtimes and their assembled manifest passed signing, but
+final VSIX attestation failed before installation testing. This replacement
+preserves the existing tags; Marketplace pre-release 0.3.0 still requires the
+documented installation, acceptance, and promotion gates.
+
+## 0.14.5 — native managed-runtime packaging
+
+- Pin the six bundled runtimes to checksum-verified CPython 3.12.15 distributions,
+  including their observed OpenSSL and Expat versions in each dependency SBOM.
+- Build Linux executables with shared-library-capable Python on the existing
+  glibc 2.28 baseline, and build tested, static OpenSSL 3.5.9 for Windows ARM64
+  and Intel macOS cryptography.
+- Sign embedded macOS libraries during packaging and verify notarization using
+  Apple's documented check for standalone code. Preserve Windows API paths in Git Bash.
+- Add an unsigned native build and executable smoke check for all six targets.
+
+This source version prepares a replacement candidate after the protected `v0.14.4`
+native build failed. Marketplace pre-release 0.3.0 remains subject to the documented
+signing, installation, acceptance, and promotion gates.
 
 ## 0.14.4 — IDE integrations and release tooling
 
@@ -406,25 +546,25 @@ Public launch and repository-layout refresh.
 ## Earlier releases
 
 Release notes for versions before 0.9.8 remain available in the
-[GitHub Releases archive](https://github.com/AlysisAi/alysis-code/releases).
+[GitHub Releases archive](https://github.com/AlysisAi/AlysisCode/releases).
 
-[Unreleased]: https://github.com/AlysisAi/alysis-code/compare/v0.14.1...HEAD
-[0.14.1]: https://github.com/AlysisAi/alysis-code/compare/v0.14.0...v0.14.1
-[0.14.0]: https://github.com/AlysisAi/alysis-code/compare/v0.13.8...v0.14.0
-[0.13.8]: https://github.com/AlysisAi/alysis-code/compare/v0.13.7...v0.13.8
-[0.13.7]: https://github.com/AlysisAi/alysis-code/compare/v0.13.6.2...v0.13.7
-[0.13.6.2]: https://github.com/AlysisAi/alysis-code/compare/v0.13.6.1...v0.13.6.2
-[0.13.6.1]: https://github.com/AlysisAi/alysis-code/compare/v0.13.6...v0.13.6.1
-[0.13.6]: https://github.com/AlysisAi/alysis-code/compare/v0.13.5...v0.13.6
-[0.13.5]: https://github.com/AlysisAi/alysis-code/compare/v0.13.4...v0.13.5
-[0.13.4]: https://github.com/AlysisAi/alysis-code/compare/v0.13.3...v0.13.4
-[0.13.3]: https://github.com/AlysisAi/alysis-code/compare/v0.13.2...v0.13.3
-[0.13.2]: https://github.com/AlysisAi/alysis-code/compare/v0.13.1...v0.13.2
-[0.13.1]: https://github.com/AlysisAi/alysis-code/compare/v0.13.0...v0.13.1
-[0.13.0]: https://github.com/AlysisAi/alysis-code/compare/v0.12.0...v0.13.0
-[0.12.0]: https://github.com/AlysisAi/alysis-code/compare/v0.11.2...v0.12.0
-[0.11.2]: https://github.com/AlysisAi/alysis-code/compare/v0.11.1...v0.11.2
-[0.11.1]: https://github.com/AlysisAi/alysis-code/compare/v0.11.0...v0.11.1
-[0.11.0]: https://github.com/AlysisAi/alysis-code/compare/v0.10.0...v0.11.0
-[0.10.0]: https://github.com/AlysisAi/alysis-code/compare/v0.9.8...v0.10.0
-[0.9.8]: https://github.com/AlysisAi/alysis-code/releases/tag/v0.9.8
+[Unreleased]: https://github.com/AlysisAi/AlysisCode/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.8...v0.14.0
+[0.13.8]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.7...v0.13.8
+[0.13.7]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.6.2...v0.13.7
+[0.13.6.2]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.6.1...v0.13.6.2
+[0.13.6.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.6...v0.13.6.1
+[0.13.6]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.5...v0.13.6
+[0.13.5]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.4...v0.13.5
+[0.13.4]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.3...v0.13.4
+[0.13.3]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.2...v0.13.3
+[0.13.2]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.1...v0.13.2
+[0.13.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.11.2...v0.12.0
+[0.11.2]: https://github.com/AlysisAi/AlysisCode/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/AlysisAi/AlysisCode/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/AlysisAi/AlysisCode/compare/v0.9.8...v0.10.0
+[0.9.8]: https://github.com/AlysisAi/AlysisCode/releases/tag/v0.9.8

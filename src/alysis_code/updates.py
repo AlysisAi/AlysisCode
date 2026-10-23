@@ -20,7 +20,6 @@ from packaging.version import InvalidVersion, Version
 
 from .atomic_io import atomic_write_json
 from .branding import (
-    LEGACY_PYTHON_PACKAGE_NAME,
     PYTHON_PACKAGE_NAME,
     canonical_user_data_dir,
     env_get,
@@ -298,6 +297,7 @@ def check_for_updates(
     cache_path: Path | None = None,
 ) -> UpdateStatus:
     current_time = _utcnow() if now is None else _ensure_utc(now)
+    cache_path = cache_path or update_cache_path()
     if not force:
         cached = read_update_cache(cache_path)
         if cache_is_fresh(cached, cfg=cfg, now=current_time):
@@ -365,6 +365,9 @@ def maybe_refresh_update_cache_in_background(
     if not resolve_update_check_enabled(cfg):
         return False
     current_time = _utcnow() if now is None else _ensure_utc(now)
+    # Keep the request bound to the configuration that scheduled it, even if
+    # the process changes its data directory before the worker finishes.
+    path = path or update_cache_path()
     cached = read_update_cache(path)
     if cache_is_fresh(cached, cfg=cfg, now=current_time):
         return False
@@ -597,18 +600,7 @@ def should_prompt_for_update(
 
 
 def installed_distribution_name(preferred: str = PYTHON_PACKAGE_NAME) -> str:
-    """Return whichever distribution is actually installed.
-
-    An install predating the rename is registered as ``sylliptor-agent-cli``.
-    Introspection keyed on the new name would find nothing and report the
-    package as missing.
-    """
-    for name in (preferred, LEGACY_PYTHON_PACKAGE_NAME):
-        try:
-            importlib_metadata.distribution(name)
-        except importlib_metadata.PackageNotFoundError:
-            continue
-        return name
+    """Return the canonical distribution used for update introspection."""
     return preferred
 
 
@@ -811,7 +803,7 @@ def _legacy_distribution_plan(
                 reason="This looks like a pipx install, but `pipx` is not on PATH.",
             )
         # `pipx upgrade` cannot rename an app; the old one must go first or its
-        # `sylliptor` script would shadow the new package's alias.
+        # legacy command script would shadow the new package's alias.
         return InstallerPlan(
             method="pipx",
             supported=False,

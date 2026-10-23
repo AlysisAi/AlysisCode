@@ -45,7 +45,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
@@ -98,7 +98,7 @@ jobs:
     needs: validate-release-source
     environment: vscode-installed-live-provider-qa
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
@@ -134,7 +134,7 @@ jobs:
           version: "0.11.23"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: extensions/vscode-alysis/package-lock.json
       - name: Revalidate live-provider policy after approval
@@ -146,9 +146,9 @@ jobs:
           set -euo pipefail
           environment=vscode-installed-live-provider-qa
           gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-            "/repos/${GITHUB_REPOSITORY}/environments/${environment}" > "${environment}.json"
+            "repos/${GITHUB_REPOSITORY}/environments/${environment}" > "${environment}.json"
           gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-            "/repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
             > "${environment}-branch-policies.json"
           python scripts/release/validate_github_environment_policy.py \
             "${environment}.json" "${environment}-branch-policies.json" \
@@ -161,7 +161,7 @@ jobs:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "AlysisAi/alysis-code"
+          test "$GITHUB_REPOSITORY" = "AlysisAi/AlysisCode"
           test "$GITHUB_REF" = "refs/tags/$REQUESTED_TAG"
           test "$GITHUB_REF_TYPE" = "tag"
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -208,10 +208,44 @@ jobs:
           test -s "candidate/vscode-alysis-$TARGET.vsix"
           test -s "candidate/vscode-alysis-$TARGET.cdx.json"
           test -s "candidate/production-dogfood-$TARGET.json"
-      - name: Install frozen validators and compile the source-matched QA driver
+      - name: Install pinned patched native validation Python
+        id: runtime-python
         shell: bash
         run: |
-          uv sync --frozen --no-editable
+          python scripts/release/install_managed_cli_python.py \
+            --target "${{ matrix.target }}" --destination "$RUNNER_TEMP/alysis-python" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Build pinned native OpenSSL for Windows ARM64 validators
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        run: ./scripts/release/build_windows_arm64_openssl.ps1
+      - name: Install frozen Windows ARM64 validators
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-arm64
+          OPENSSL_STATIC: "1"
+        run: uv sync --frozen --no-editable
+      - name: Build pinned static OpenSSL for Intel macOS validators
+        if: matrix.target == 'darwin-x64'
+        shell: bash
+        run: bash scripts/release/build_macos_x64_openssl.sh
+      - name: Install frozen Intel macOS validators
+        if: matrix.target == 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-x64
+          OPENSSL_STATIC: "1"
+        run: uv sync --frozen --no-editable
+      - name: Install frozen validators
+        if: matrix.target != 'win32-arm64' && matrix.target != 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+        run: uv sync --frozen --no-editable
+      - name: Compile the source-matched QA driver
+        shell: bash
+        run: |
           npm --prefix extensions/vscode-alysis ci
           npm --prefix extensions/vscode-alysis run compile
       - name: Verify candidate attestations, SBOM, dogfood binding, and release identity

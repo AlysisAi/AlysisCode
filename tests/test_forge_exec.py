@@ -74,7 +74,12 @@ def _fake_git_workspace_context(*, repo: Path, path: Path) -> WorkspaceContext:
 
 
 def _patch_git_workspace_context(monkeypatch, *, repo: Path) -> None:
-    def fake_resolve_workspace_context(path: Path) -> WorkspaceContext:
+    def fake_resolve_workspace_context(
+        path: Path,
+        *,
+        allow_subprocess: bool = True,
+    ) -> WorkspaceContext:
+        _ = allow_subprocess
         return _fake_git_workspace_context(repo=repo, path=path)
 
     monkeypatch.setattr(cli_mod, "resolve_workspace_context", fake_resolve_workspace_context)
@@ -479,6 +484,26 @@ def _prepare_run_with_task_titles(
             title=title,
             description=f"Task created from planning chat: {title}",
             estimated_files=estimated_files,
+        )
+    save_plan(paths, plan)
+    return paths.plan_json_path, load_plan(paths)
+
+
+def _prepare_dependency_plan(
+    repo: Path,
+    *,
+    task_specs: list[tuple[str, str]],
+) -> tuple[Path, dict]:
+    paths = create_plan_run(repo)
+    plan = load_plan(paths)
+    plan["project_goal"] = "Check task dependencies"
+    plan["summary"] = "Check task dependencies"
+    for title, rel_path in task_specs:
+        add_task(
+            plan,
+            title=title,
+            description=f"Task created for dependency coverage: {title}",
+            estimated_files=[rel_path],
         )
     save_plan(paths, plan)
     return paths.plan_json_path, load_plan(paths)
@@ -1633,18 +1658,13 @@ def test_exec_enforces_dependencies(tmp_path: Path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    result = runner.invoke(
-        alysis_app,
-        ["forge", "plan", "--path", os.fspath(repo)],
-        input="/goal Dependency check\n/task Task one src/one.py\n/task Task two src/two.py\n/done\n",
-        env=_env(tmp_path),
+    plan_path, plan = _prepare_dependency_plan(
+        repo,
+        task_specs=[
+            ("Task one", "src/one.py"),
+            ("Task two", "src/two.py"),
+        ],
     )
-    assert result.exit_code == 0
-
-    pointer = _load_json(repo / ".alysis" / "current_run.json")
-    run_dir = repo / pointer["run_path"]
-    plan_path = run_dir / "plan" / "plan.json"
-    plan = _load_json(plan_path)
     first_id = plan["tasks"][0]["id"]
     second_id = plan["tasks"][1]["id"]
     plan["tasks"][1]["dependencies"] = [first_id]
@@ -1687,22 +1707,13 @@ def test_exec_blocks_inferred_ordered_dependency_even_if_plan_lacks_metadata(
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    result = runner.invoke(
-        alysis_app,
-        ["forge", "plan", "--path", os.fspath(repo)],
-        input=(
-            "/goal Dependency check\n"
-            "/task Update src/calc.py helper behavior\n"
-            "/task Update src/app.py caller after helper behavior\n"
-            "/done\n"
-        ),
-        env=_env(tmp_path),
+    plan_path, plan = _prepare_dependency_plan(
+        repo,
+        task_specs=[
+            ("Update src/calc.py helper behavior", "src/calc.py"),
+            ("Update src/app.py caller after helper behavior", "src/app.py"),
+        ],
     )
-    assert result.exit_code == 0
-
-    pointer = _load_json(repo / ".alysis" / "current_run.json")
-    plan_path = repo / pointer["run_path"] / "plan" / "plan.json"
-    plan = _load_json(plan_path)
     first_id = plan["tasks"][0]["id"]
     second_id = plan["tasks"][1]["id"]
     plan["tasks"][1]["dependencies"] = []
@@ -3485,18 +3496,13 @@ def test_exec_pr_dependency_enforcement_blocks_before_git(tmp_path: Path, monkey
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    result = runner.invoke(
-        alysis_app,
-        ["forge", "plan", "--path", os.fspath(repo)],
-        input="/goal Dependency check\n/task Task one src/one.py\n/task Task two src/two.py\n/done\n",
-        env=_env(tmp_path),
+    plan_path, plan = _prepare_dependency_plan(
+        repo,
+        task_specs=[
+            ("Task one", "src/one.py"),
+            ("Task two", "src/two.py"),
+        ],
     )
-    assert result.exit_code == 0
-
-    pointer = _load_json(repo / ".alysis" / "current_run.json")
-    run_dir = repo / pointer["run_path"]
-    plan_path = run_dir / "plan" / "plan.json"
-    plan = _load_json(plan_path)
     first_id = plan["tasks"][0]["id"]
     second_id = plan["tasks"][1]["id"]
     plan["tasks"][1]["dependencies"] = [first_id]

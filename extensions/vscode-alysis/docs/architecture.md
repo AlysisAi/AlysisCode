@@ -251,7 +251,7 @@ by `.github/workflows/managed-cli-vsix-release.yml`; see
 
 ## CLI compatibility and recovery
 
-The extension requires a local Alysis Code CLI. This build is tested against `alysis-code` `0.14.4`
+The extension requires a local Alysis Code CLI. This build is tested against `alysis-code` `0.15.2`
 (`MIN_RECOMMENDED_ALYSIS_CLI_VERSION`, kept equal to the monorepo `pyproject.toml` version by a unit
 test), with IDE Protocol v1 over stdio. The version is a soft gate; hard availability is decided per
 feature by capability negotiation, so an older CLI that still advertises the required methods works

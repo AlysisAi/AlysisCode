@@ -353,7 +353,7 @@ def test_make_llm_client_resolves_zai_coding_plan_subscription_contract() -> Non
 
     assert isinstance(client, OpenAICompatClient)
     assert client.provider_key == "zai_coding_plan"
-    assert client.reasoning_trace_capability.adapter == "openai_compat_passive"
+    assert client.reasoning_trace_capability.adapter == "glm_reasoning"
     assert client.reasoning_trace_capability.has_safe_summary is False
     assert client.usage_contract.billing_mode == BillingMode.SUBSCRIPTION
     assert client.usage_contract.response_usage_confidence.value == "reported"

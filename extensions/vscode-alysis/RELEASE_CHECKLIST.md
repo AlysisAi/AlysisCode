@@ -50,7 +50,8 @@
       webview assets, and icons, while excluding the unbundled `out/` tree, source, tests,
       `node_modules`, `.vscode-test`, source maps, lockfiles, and tsconfigs.
 - [ ] Production managed runtimes are Authenticode-signed on Windows and Developer ID signed and
-      notarized on macOS; `codesign` and `spctl` pass. Standalone Mach-O executables use Apple's
+      notarized on macOS; strict `codesign` and `-R="notarized" --check-notarization` pass.
+      Standalone Mach-O executables use Apple's
       online notarization ticket and are not described as directly stapled. ECDSA manifest
       attestation alone is not an OS signature.
 - [ ] Managed-runtime dependencies resolve only from committed `uv.lock`; exact PyInstaller/hook

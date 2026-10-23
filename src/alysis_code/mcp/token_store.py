@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from ..atomic_io import _fsync_dir
+from ..branding import env_get
 from .errors import (
     McpTokenStoreCorruptError,
     McpTokenStoreError,
@@ -31,19 +32,14 @@ from .errors import (
 
 CURRENT_ENVELOPE_VERSION = 2
 TOKEN_STORE_AAD = b"alysis-mcp-oauth-store"
-# Envelopes written before the Sylliptor -> Alysis Code rename were sealed with
-# the old AAD. AES-GCM authenticates it, so decryption of an existing store
-# fails outright unless we retry with this value. New writes always use the
-# current AAD, so a store re-seals itself on the next token refresh.
-LEGACY_TOKEN_STORE_AAD = b"sylliptor-mcp-oauth-store"
 KEY_SOURCE_KEYRING = "keyring"
 KEY_SOURCE_WEAK_FALLBACK = "weak-derived-fallback"
 KEY_SOURCE_DPAPI = "dpapi"
 KEY_SOURCE_FILESYSTEM = "filesystem-random"
+OAUTH_KEY_SOURCE_ENV = "ALYSIS_OAUTH_KEY_SOURCE"
 
 _ENVELOPE_KEYS = frozenset({"version", "key_source", "nonce", "ciphertext"})
 _KEYRING_SERVICE = "alysis-code"
-_LEGACY_KEYRING_SERVICE = "sylliptor-agent-cli"
 _KEYRING_ACCOUNT = "mcp-oauth-token-store-master-key"
 _WEAK_SALT_FILE_NAME = "mcp_oauth_tokens.salt"
 _DPAPI_KEY_FILE_NAME = "mcp_oauth_tokens.dpapi"
@@ -221,9 +217,38 @@ def fallback_key_source() -> str:
     return KEY_SOURCE_FILESYSTEM
 
 
+def _oauth_key_source_policy() -> str | None:
+    """Return the authoritative key-source policy, rejecting unsafe ambiguity.
+
+    Without an override every platform keeps its default order: keyring first,
+    then DPAPI on Windows or the restricted per-store key file elsewhere. The
+    Alysis Code desktop app sets ``ALYSIS_OAUTH_KEY_SOURCE=filesystem-random``
+    for its bundled runtime, whose ad-hoc signing identity can change between
+    builds, so its vault never depends on a replaceable executable's keychain
+    access.
+
+    Treat every present value other than the one supported policy as a
+    configuration error: a typo must not silently fall back to probing or
+    writing the OS keyring. Values are intentionally not normalized so the
+    contract stays exact.
+    """
+
+    configured = env_get(OAUTH_KEY_SOURCE_ENV)
+    if configured is not None:
+        if configured == KEY_SOURCE_FILESYSTEM:
+            return KEY_SOURCE_FILESYSTEM
+        raise McpTokenStoreUnavailableError(
+            f"Unsupported {OAUTH_KEY_SOURCE_ENV} policy; the only supported value is "
+            f"{KEY_SOURCE_FILESYSTEM!r}."
+        )
+    return None
+
+
 def planned_key_source() -> str:
     """Return the key source a write would choose, creating no key material."""
 
+    if _oauth_key_source_policy() == KEY_SOURCE_FILESYSTEM:
+        return KEY_SOURCE_FILESYSTEM
     if keyring_availability().available:
         return KEY_SOURCE_KEYRING
     return fallback_key_source()
@@ -249,6 +274,9 @@ def load_token_payload(path: Path) -> dict[str, Any]:
 
 
 def load_token_payload_result(path: Path) -> TokenPayloadLoadResult:
+    # Validate a present policy before any envelope-specific key access.  This
+    # keeps an invalid override fail-closed even when the store uses keyring.
+    _oauth_key_source_policy()
     if not path.exists():
         return TokenPayloadLoadResult({})
     raw_payload = _read_json_file(path)
@@ -370,13 +398,7 @@ def _decrypt_envelope(path: Path, envelope: dict[str, Any]) -> dict[str, Any]:
     version, stored_source, nonce, ciphertext = _validate_envelope(envelope, path=path)
     key_material = _key_material_for_source(stored_source, path=path)
     try:
-        try:
-            plaintext = AESGCM(key_material.key).decrypt(nonce, ciphertext, TOKEN_STORE_AAD)
-        except InvalidTag:
-            # Pre-rebrand envelope: same key, old AAD. Any other failure mode
-            # (wrong key, real corruption) still surfaces as InvalidTag below.
-            plaintext = AESGCM(key_material.key).decrypt(nonce, ciphertext, LEGACY_TOKEN_STORE_AAD)
-            logger.info("mcp_token_store_legacy_aad path=%s", path)
+        plaintext = AESGCM(key_material.key).decrypt(nonce, ciphertext, TOKEN_STORE_AAD)
     except InvalidTag as exc:
         raise McpTokenStoreCorruptError(f"OAuth token store authentication failed: {path}") from exc
     except ValueError as exc:
@@ -405,7 +427,12 @@ def _maybe_rewrite_envelope_after_read(
     version: int,
     stored_source: str,
 ) -> None:
-    if version >= CURRENT_ENVELOPE_VERSION and stored_source == KEY_SOURCE_KEYRING:
+    policy = _oauth_key_source_policy()
+    if (
+        policy is None
+        and version >= CURRENT_ENVELOPE_VERSION
+        and stored_source == KEY_SOURCE_KEYRING
+    ):
         return
     try:
         preferred = _preferred_key_material(path)
@@ -441,7 +468,13 @@ def _write_encrypted_payload(
     *,
     key_material: _KeyMaterial | None = None,
 ) -> None:
-    key_material = key_material or _preferred_key_material(path)
+    policy = _oauth_key_source_policy()
+    if policy == KEY_SOURCE_FILESYSTEM:
+        # The policy is authoritative even for an internal rewrite that passed
+        # previously selected material.  Do not probe or write the keyring.
+        key_material = _filesystem_key_material(path)
+    else:
+        key_material = key_material or _preferred_key_material(path)
     if key_material.source not in _allowed_key_sources(CURRENT_ENVELOPE_VERSION):
         raise McpTokenStoreUnavailableError(
             "Refusing to write an OAuth credential envelope with a legacy key source."
@@ -472,6 +505,8 @@ def _write_encrypted_payload(
 
 
 def _preferred_key_material(path: Path) -> _KeyMaterial:
+    if _oauth_key_source_policy() == KEY_SOURCE_FILESYSTEM:
+        return _filesystem_key_material(path)
     keyring_material = _try_keyring_material(required=False)
     if keyring_material is not None:
         return keyring_material
@@ -509,35 +544,8 @@ def _key_material_for_source(source: str, *, path: Path) -> _KeyMaterial:
 
 
 def _read_keyring_master_key() -> str | None:
-    """Read the master key, adopting a pre-rebrand entry if that is all there is.
-
-    The entry is looked up by service name, so the rename would otherwise
-    orphan it and every stored MCP OAuth token with it — silently, since a
-    missing entry is indistinguishable from a first run. When the legacy entry
-    is found it is copied to the new service name; the old one is left in place
-    so an older install on the same machine keeps working.
-    """
-    encoded = _get_keyring_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-    if encoded:
-        return encoded
-
-    legacy = _get_keyring_password(_LEGACY_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-    if not legacy:
-        return None
-
-    logger.info(
-        "mcp_token_store_keyring_migrated legacy=%s current=%s",
-        _LEGACY_KEYRING_SERVICE,
-        _KEYRING_SERVICE,
-    )
-    try:
-        _set_keyring_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, legacy)
-    except Exception as exc:  # noqa: BLE001
-        # Copy failed (locked keychain, read-only backend). The legacy value is
-        # still usable for this process, so degrade to using it directly rather
-        # than locking the user out of their own tokens.
-        logger.warning("mcp_token_store_keyring_migration_failed error=%s", exc.__class__.__name__)
-    return legacy
+    """Read the master key from the canonical keyring service."""
+    return _get_keyring_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
 
 
 def _try_keyring_material(*, required: bool) -> _KeyMaterial | None:

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "vscode-remote-acceptance.yml"
 DRIVER = (
@@ -16,6 +18,14 @@ DRIVER = (
 
 def test_real_remote_workflow_is_valid_yaml_and_uses_dedicated_protected_runners() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
+    steps = yaml.safe_load(text)["jobs"]["remote-acceptance"]["steps"]
+    python_ready = False
+    for step in steps:
+        if step.get("uses", "").startswith("actions/setup-python@"):
+            assert step["with"]["python-version"] == "3.12"
+            python_ready = True
+        if "python " in step.get("run", ""):
+            assert python_ready, f"Python is needed before {step['name']} on a fresh runner"
     for label in (
         "      - self-hosted",
         "      - windows",

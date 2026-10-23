@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from importlib import resources
-
 import httpx
 import pytest
 
@@ -20,7 +17,7 @@ def _subscription_cfg() -> AppConfig:
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="gpt-5.6-sol",
         reasoning_effort="low",
@@ -37,21 +34,18 @@ def test_astra_subscription_selection_uses_current_catalog_and_saves_reasoning(m
         openai_codex,
         "load_provider_token",
         lambda _provider_id: ProviderTokenRecord(
+            client_id="test-client",
+            subject="test-subject",
+            scopes=("chatgpt.tokens.use.direct",),
             access_token="test-access",
             refresh_token="test-refresh",
             expires_at=9_999_999_999,
         ),
     )
-    snapshot = json.loads(
-        resources.files("alysis_code.model_catalog")
-        .joinpath("chatgpt_codex_subscription_snapshot.json")
-        .read_text(encoding="utf-8")
-    )
-    assert snapshot["client_version"] == openai_codex._codex_compat_version()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.params["client_version"] == snapshot["client_version"]
-        assert request.headers["User-Agent"] == f"codex_cli_rs/{snapshot['client_version']}"
+        assert str(request.url) == "https://api.openai.com/v1/models"
+        assert request.headers["User-Agent"] == "Alysis-Code"
         return httpx.Response(
             200,
             json={
@@ -70,7 +64,16 @@ def test_astra_subscription_selection_uses_current_catalog_and_saves_reasoning(m
     cfg = _subscription_cfg()
     flow = ConfigFlow(cfg=cfg)
     flow.choose("default")
-    assert [row.value for row in flow.screen().rows] == ["gpt-5.6-sol", "gpt-6-astra"]
+    assert [row.value for row in flow.screen().rows] == [
+        "gpt-6.1-sol",
+        "gpt-5.6-sol",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    ]
     flow.choose("gpt-6-astra")
     assert flow.stage == "model_thinking"
     assert [row.value for row in flow.screen().rows] == [
@@ -95,9 +98,15 @@ def test_astra_subscription_selection_uses_current_catalog_and_saves_reasoning(m
 
 def test_astra_snapshot_does_not_grant_subscription_access(monkeypatch):
     monkeypatch.setattr(
-        OpenAICodexSubscriptionAuth,
-        "authorization_headers",
-        lambda *args, **kwargs: {},
+        openai_codex,
+        "load_provider_token",
+        lambda _provider_id: ProviderTokenRecord(
+            access_token="fixture-access",
+            expires_at=9_999_999_999,
+            client_id="test-client",
+            subject="test-subject",
+            scopes=("chatgpt.tokens.use.direct",),
+        ),
     )
     adapter = OpenAICodexSubscriptionAuth(
         transport=httpx.MockTransport(
@@ -110,25 +119,31 @@ def test_astra_snapshot_does_not_grant_subscription_access(monkeypatch):
     assert [row.value for row in flow.screen().rows] == ["gpt-5.6-sol"]
 
 
-def test_codex_catalog_version_override_keeps_request_headers_in_sync(monkeypatch):
+def test_legacy_codex_version_override_cannot_impersonate_codex(monkeypatch):
     monkeypatch.setenv("ALYSIS_OPENAI_CODEX_COMPAT_VERSION", "0.155.0")
     monkeypatch.setattr(
         openai_codex,
         "load_provider_token",
         lambda _id: ProviderTokenRecord(
-            access_token="test-access", refresh_token="test-refresh", expires_at=9_999_999_999
+            client_id="test-client",
+            subject="test-subject",
+            scopes=("chatgpt.tokens.use.direct",),
+            access_token="test-access",
+            refresh_token="test-refresh",
+            expires_at=9_999_999_999,
         ),
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.params["client_version"] == "0.155.0"
-        assert request.headers["User-Agent"] == "codex_cli_rs/0.155.0"
+        assert str(request.url) == "https://api.openai.com/v1/models"
+        assert request.headers["User-Agent"] == "Alysis-Code"
         return httpx.Response(200, json={"models": [{"slug": "gpt-6-astra"}]})
 
     adapter = OpenAICodexSubscriptionAuth(transport=httpx.MockTransport(handler))
-    assert adapter.list_models(refresh=True)[0].id == "gpt-6-astra"
+    models = adapter.list_models(refresh=True)
+    assert [model.id for model in models if model.is_default] == ["gpt-6-astra"]
     assert adapter.authorization_headers(f"{adapter.base_url}/responses")["User-Agent"] == (
-        "codex_cli_rs/0.155.0"
+        "Alysis-Code"
     )
 
 

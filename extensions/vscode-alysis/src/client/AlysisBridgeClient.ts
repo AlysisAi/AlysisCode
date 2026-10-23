@@ -193,6 +193,10 @@ import {
   ProfileShowResult,
   PromptQueueItem,
   PromptQueueListResult,
+  ChatSteerResult,
+  ChatSteerTakeResult,
+  FeedbackPrepareResult,
+  FeedbackSendResult,
   PermissionEvaluation,
   PermissionRule,
   TrustedProfileNameParams,
@@ -930,6 +934,59 @@ export class AlysisBridgeClient extends EventEmitter {
     return promptQueueItemFromRecord(
       await this.request("chat.queue.delete", { session_id: sessionId, prompt_id: promptId })
     );
+  }
+
+  public async chatSteer(sessionId: string, message: string): Promise<ChatSteerResult> {
+    const result = await this.request("chat.steer", { session_id: sessionId, message });
+    return {
+      session_id: requireString(result, "session_id"),
+      job_id: requireString(result, "job_id"),
+      accepted: result.accepted === true,
+      pending: requireNumber(result, "pending"),
+      dropped: requireNumber(result, "dropped"),
+      truncated: result.truncated === true
+    };
+  }
+
+  public async chatSteerTake(sessionId: string): Promise<ChatSteerTakeResult> {
+    const result = await this.request("chat.steer.take", { session_id: sessionId });
+    return {
+      session_id: requireString(result, "session_id"),
+      messages: Array.isArray(result.messages)
+        ? result.messages.filter((value): value is string => typeof value === "string")
+        : []
+    };
+  }
+
+  public async feedbackPrepare(params: {
+    feedback: string;
+    sessionId?: string;
+    workspace?: string;
+    sessionDir?: string;
+    includeDiagnostics?: boolean;
+  }): Promise<FeedbackPrepareResult> {
+    const result = await this.request("feedback.prepare", {
+      feedback: params.feedback,
+      ...(params.sessionId ? { session_id: params.sessionId } : {}),
+      ...(params.workspace ? { workspace: params.workspace } : {}),
+      ...(params.sessionDir ? { session_dir: params.sessionDir } : {}),
+      include_diagnostics: params.includeDiagnostics === true
+    });
+    return {
+      report_id: requireString(result, "report_id"),
+      report: isRecord(result.report) ? result.report : {},
+      include_diagnostics: result.include_diagnostics === true,
+      signed_in: result.signed_in === true
+    };
+  }
+
+  public async feedbackSend(reportId: string): Promise<FeedbackSendResult> {
+    const result = await this.request("feedback.send", { report_id: reportId });
+    return {
+      report_id: requireString(result, "report_id"),
+      created_at: requireString(result, "created_at"),
+      anonymous: result.anonymous === true
+    };
   }
 
   public async checkpointList(
@@ -2456,6 +2513,22 @@ export class AlysisBridgeClient extends EventEmitter {
 
   public async toolUntrust(params: ToolTrustParams): Promise<ToolTrustResult> {
     return this.managementRequest("tool.untrust", params);
+  }
+
+  public async commandsList(mode: "chat" | "forge" = "chat"): Promise<ManagementResult & {
+    commands: Array<{ name: string; usage: string; description: string }>;
+  }> {
+    return this.managementRequest("commands.list", { mode });
+  }
+
+  /** Subagents and role models with the model each would run on; read-only. */
+  public async agentsList(params: { workspace?: string; path?: string } = {}): Promise<ManagementResult & {
+    subagents_enabled: boolean;
+    user_agents_dir: string;
+    agents: Array<Record<string, unknown>>;
+    roles: Array<Record<string, unknown>>;
+  }> {
+    return this.managementRequest("agents.list", params);
   }
 
   public async skillList(params: WorkspaceScopedParams): Promise<SkillListResult> {
@@ -4765,10 +4838,14 @@ function bridgeEnvironment(config: AlysisConfig, options: BridgeStartOptions): N
   for (const credential of options.providerCredentials ?? []) {
     const envVar = credential.envVar.trim().toUpperCase();
     const value = credential.value.trim();
-    if (value.length === 0 || !/^[A-Z_][A-Z0-9_]{0,63}$/.test(envVar)) {
+    if (value.length === 0) {
       continue;
     }
-    env[envVar] = value;
+    if (/^[A-Z_][A-Z0-9_]{0,63}$/.test(envVar)) {
+      env[envVar] = value;
+    }
+    // Custom and authenticated local endpoints need not declare a vendor env alias.
+    // Their key still belongs exclusively to the selected profile, never the global key.
     const profileEnv = ideProfileKeyEnvironmentName(credential.profile);
     if (profileEnv) {
       env[profileEnv] = value;

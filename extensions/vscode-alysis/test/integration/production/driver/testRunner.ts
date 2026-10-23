@@ -20,6 +20,7 @@ interface RuntimeEvidence {
   cliPathOverride?: unknown;
   health?: {
     status?: unknown;
+    reason?: unknown;
     protocolVersion?: unknown;
     alysisVersion?: unknown;
   };
@@ -60,7 +61,7 @@ export async function run(): Promise<void> {
   );
   assert.ok(evidence && typeof evidence === "object", "Runtime evidence command returned no object.");
   assert.equal(evidence.extensionMode, "production");
-  assert.equal(evidence.origin, "managed");
+  assert.equal(evidence.origin, "managed", String(evidence.health?.reason ?? "Managed runtime unavailable."));
   assert.equal(evidence.production, true);
   assert.equal(evidence.target, expectedTarget);
   assert.equal(evidence.cliPathOverride, "");
@@ -69,7 +70,7 @@ export async function run(): Promise<void> {
   assert.match(String(evidence.protocolVersion ?? ""), /\S/);
   assert.match(String(evidence.sha256 ?? ""), /^[0-9a-f]{64}$/);
   assert.match(String(evidence.releaseTag ?? ""), /^v\d+\.\d+\.\d+$/);
-  assert.equal(evidence.sourceRepository, "https://github.com/AlysisAi/alysis-code");
+  assert.equal(evidence.sourceRepository, "https://github.com/AlysisAi/AlysisCode");
   assert.match(String(evidence.sourceCommit ?? ""), /^[0-9a-f]{40}$/);
   assert.equal(evidence.releaseSignatureVerified, true);
   assert.equal(evidence.health?.status, "passed");

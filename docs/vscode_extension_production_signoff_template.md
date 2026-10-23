@@ -140,7 +140,8 @@ Confirm release notes and Marketplace copy do not overclaim these IDE v1 limits:
 - [ ] Security review confirms no inline secrets, raw provider headers, or unredacted reports.
 - [ ] Marketplace copy avoids stable/production availability claims unless stable release approval is complete.
 - [ ] Windows managed runtimes are Authenticode-signed and verified; ECDSA manifest attestation alone is not accepted as an OS code signature.
-- [ ] macOS managed runtimes are Developer ID signed, notarized, and pass `codesign` plus `spctl`.
+- [ ] macOS managed runtimes and embedded libraries are Developer ID signed, notarized, and pass
+      strict `codesign` plus `-R="notarized" --check-notarization` verification.
       Standalone Mach-O executables use Apple's online notarization ticket and are not claimed to
       support direct stapling; unsigned/unnotarized Darwin bundles block promotion.
 
@@ -154,7 +155,7 @@ six-candidate directory. The protected evidence workflow retains and attests tha
       three roles; otherwise the approvers are distinct.
 - [ ] Trigger conditions are a sorted subset of the validator's reviewed incident classes.
 - [ ] Communication action is `github_release_and_security_advisory`.
-- [ ] Remediation issue is an immutable `github.com/AlysisAi/alysis-code/issues/<id>` URL.
+- [ ] Remediation issue is an immutable `github.com/AlysisAi/AlysisCode/issues/<id>` URL.
 - [ ] Marketplace action is `unpublish_affected_version`.
 - [ ] CLI action is `restore_last_known_good_compatible_runtime`.
 - [ ] Post-action verification contains all four required install/runtime/Marketplace/notice checks.

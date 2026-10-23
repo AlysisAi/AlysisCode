@@ -18,7 +18,7 @@ from alysis_code.agent.turn.exploration import (
     _is_action_progress_tool,
     _is_exploration_only_tool,
 )
-from alysis_code.agent.turn_contract import TurnOutcome, TurnRelation, TurnSemantics
+from alysis_code.agent.turn_contract import TurnOutcome, TurnSemantics
 from alysis_code.agent_loop import (
     ToolDef,
     TurnExecutionState,
@@ -2834,7 +2834,7 @@ def test_one_shot_non_final_progress_accepts_second_final_after_single_nudge(
     # Turn-contract v2: a zero-edit execute turn now finalizes with a visible
     # advisory-completion suffix (apply-don't-advise). The model text is preserved.
     assert surface.final_messages[-1].startswith(repeated_progress_text)
-    assert "No changes made:" in surface.final_messages[-1]
+    assert "No files were changed" in surface.final_messages[-1]
 
 
 def test_non_final_progress_tool_markup_is_retried_then_stops_without_execution(
@@ -3060,7 +3060,7 @@ def test_one_shot_non_final_progress_accepts_after_single_nudge_without_forced_s
     # Turn-contract v2: a zero-edit execute turn now finalizes with a visible
     # advisory-completion suffix (apply-don't-advise). The model text is preserved.
     assert surface.final_messages[-1].startswith(latest_progress_text)
-    assert "No changes made:" in surface.final_messages[-1]
+    assert "No files were changed" in surface.final_messages[-1]
 
 
 def test_one_shot_completion_gate_rejects_empty_final_response(tmp_path: Path) -> None:
@@ -5060,7 +5060,7 @@ def test_one_shot_completion_gate_no_material_edits_accepts_after_checklist(
     # edits, so the gate appends a visible advisory-completion suffix (the P-A
     # protection) and records an advisory_completion event. The model text is kept.
     assert surface.final_messages[-1].startswith(latest_final_text)
-    assert "No changes made:" in surface.final_messages[-1]
+    assert "No files were changed" in surface.final_messages[-1]
     assert any(event.get("type") == "advisory_completion" for event in events)
 
 
@@ -5865,9 +5865,7 @@ def test_one_shot_completion_gate_failed_verification_accepts_after_checklist(
     assert verify_results[-1].get("all_passed") is False
     assert not surface.errors
     assert not any(event.get("type") == "forced_final_summary_requested" for event in events)
-    assert surface.final_messages[-1].startswith(
-        latest_final_text + "\n\nVerification status: unverified."
-    )
+    assert surface.final_messages[-1].startswith(latest_final_text + "\n\nNot verified:")
     assert session.last_turn_outcome["verified_success"] is False
 
 
@@ -9915,400 +9913,6 @@ def test_one_shot_session_context_includes_follow_through_guidance(tmp_path: Pat
         session.close()
 
 
-def test_one_shot_repo_turn_includes_pinned_task_brief(tmp_path: Path) -> None:
-    # Router-free path: the task-brief message rides along in every one-shot
-    # prompt, and the observed-facts rule pins the instruction only once the
-    # turn demonstrably produced material edits.
-    repo = tmp_path / "repo"
-    _init_git_repo_with_commit(repo)
-    _write_repo_text(repo, "src/app.py", "def main() -> None:\n    pass\n")
-
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=repo,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-        one_shot_execution=True,
-        verification_enabled=False,
-    )
-    client = _ScriptedClient(
-        [
-            LLMResponse(
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="tc1",
-                        name="fs_write",
-                        arguments={
-                            "path": "src/app.py",
-                            "content": "def main() -> None:\n    return None\n",
-                        },
-                    )
-                ],
-                raw={},
-            ),
-            LLMResponse(
-                content="Refactored src/app.py while keeping the public API unchanged.",
-                tool_calls=[],
-                raw={},
-            ),
-        ]
-    )
-    session.client = client  # type: ignore[assignment]
-
-    try:
-        startup_task_brief = next(
-            (
-                str(message.get("content") or "")
-                for message in session.messages
-                if str(message.get("content") or "").startswith("<task_brief>")
-            ),
-            "",
-        )
-        exit_code = session.run_turn("Refactor src/app.py without changing the public API.")
-        post_turn_task_brief = next(
-            (
-                str(message.get("content") or "")
-                for message in session.messages
-                if str(message.get("content") or "").startswith("<task_brief>")
-            ),
-            "",
-        )
-    finally:
-        session.close()
-
-    prompt_task_brief = next(
-        (
-            str(message.get("content") or "")
-            for message in client.call_records[0]["messages"]
-            if str(message.get("role") or "") == "user"
-            and "<task_brief>" in str(message.get("content") or "")
-        ),
-        "",
-    )
-
-    assert exit_code == 0
-    assert "status: awaiting_substantive_repo_request" in startup_task_brief
-    assert prompt_task_brief.startswith("<task_brief>")
-    assert "Refactor src/app.py without changing the public API." in prompt_task_brief
-    assert "Refactor src/app.py without changing the public API." in post_turn_task_brief
-
-
-def test_one_shot_repo_session_preserves_anchored_focus_over_unanchored_follow_up(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _init_git_repo_with_commit(repo)
-    _write_repo_text(repo, "src/parser.py", "def parse() -> str:\n    return 'ok'\n")
-
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=repo,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-        one_shot_execution=True,
-    )
-    try:
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Fix src/parser.py without changing the CSV shape.",
-            }
-        )
-        initialized = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Fix src/parser.py without changing the CSV shape.",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.NEW,
-            ),
-            route="repo",
-        )
-        refreshed = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Also preserve unknown values like pending.",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.REFINE,
-            ),
-            route="repo",
-        )
-    finally:
-        session.close()
-
-    task_brief = next(
-        (
-            str(message.get("content") or "")
-            for message in session.messages
-            if str(message.get("content") or "").startswith("<task_brief>")
-        ),
-        "",
-    )
-
-    assert initialized is True
-    assert refreshed is True
-    assert "current_focus:" in task_brief
-    assert "- Fix src/parser.py without changing the CSV shape." in task_brief
-    assert "recent_user_constraints:" in task_brief
-    assert "- Also preserve unknown values like pending." in task_brief
-
-
-def test_one_shot_repo_session_ignores_generic_long_follow_up(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_git_repo_with_commit(repo)
-    _write_repo_text(repo, "src/parser.py", "def parse() -> str:\n    return 'ok'\n")
-
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=repo,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-        one_shot_execution=True,
-    )
-    try:
-        initialized = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Fix src/parser.py without changing the CSV shape.",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.NEW,
-            ),
-            route="repo",
-        )
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Fix src/parser.py without changing the CSV shape.",
-            }
-        )
-        refreshed = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="please keep going and explain a bit more first",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.INSPECT,
-                relation=TurnRelation.CONTINUE,
-            ),
-            route="repo",
-        )
-    finally:
-        session.close()
-
-    task_brief = next(
-        (
-            str(message.get("content") or "")
-            for message in session.messages
-            if str(message.get("content") or "").startswith("<task_brief>")
-        ),
-        "",
-    )
-
-    assert initialized is True
-    assert refreshed is False
-    assert "current_focus:" in task_brief
-    assert "- Fix src/parser.py without changing the CSV shape." in task_brief
-    assert "please keep going and explain a bit more first" not in task_brief
-
-
-def test_one_shot_repo_session_keeps_concise_real_constraint(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_git_repo_with_commit(repo)
-    _write_repo_text(repo, "src/parser.py", "def parse() -> str:\n    return 'ok'\n")
-
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=repo,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-        one_shot_execution=True,
-    )
-    try:
-        agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Fix src/parser.py without changing the CSV shape.",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.NEW,
-            ),
-            route="repo",
-        )
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Fix src/parser.py without changing the CSV shape.",
-            }
-        )
-        refreshed = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Handle empty lines too.",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.REFINE,
-            ),
-            route="repo",
-        )
-    finally:
-        session.close()
-
-    task_brief = next(
-        (
-            str(message.get("content") or "")
-            for message in session.messages
-            if str(message.get("content") or "").startswith("<task_brief>")
-        ),
-        "",
-    )
-
-    assert refreshed is True
-    assert "- Fix src/parser.py without changing the CSV shape." in task_brief
-    assert "- Handle empty lines too." in task_brief
-
-
-def test_one_shot_repo_session_records_router_classified_refinement(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_git_repo_with_commit(repo)
-    _write_repo_text(repo, "src/parser.py", "def parse() -> str:\n    return 'ok'\n")
-
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=repo,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-        one_shot_execution=True,
-    )
-    try:
-        session.messages.append(
-            {
-                "role": "user",
-                "content": "Fix src/parser.py without changing the CSV shape.",
-            }
-        )
-        initialized = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Fix src/parser.py without changing the CSV shape.",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.NEW,
-            ),
-            route="repo",
-        )
-        refreshed = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Actually add a regression test and keep API stable.",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.REFINE,
-            ),
-            route="repo",
-        )
-    finally:
-        session.close()
-
-    task_brief = next(
-        (
-            str(message.get("content") or "")
-            for message in session.messages
-            if str(message.get("content") or "").startswith("<task_brief>")
-        ),
-        "",
-    )
-
-    assert initialized is True
-    assert refreshed is True
-    assert "current_focus:" in task_brief
-    assert "- Fix src/parser.py without changing the CSV shape." in task_brief
-    assert "recent_user_constraints:" in task_brief
-    assert "- Actually add a regression test and keep API stable." in task_brief
-
-
-def test_one_shot_repo_task_brief_keeps_existing_focus_for_anchored_explanatory_follow_up(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _init_git_repo_with_commit(repo)
-    _write_repo_text(repo, "src/parser.py", "def parse() -> str:\n    return 'ok'\n")
-
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=repo,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-        one_shot_execution=True,
-    )
-    try:
-        session.messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Fix src/parser.py without changing the CSV shape. Keep the public API stable."
-                ),
-            }
-        )
-        initialized = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction=(
-                "Fix src/parser.py without changing the CSV shape. Keep the public API stable."
-            ),
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.CHANGE,
-                relation=TurnRelation.NEW,
-            ),
-            route="repo",
-        )
-        refreshed = agent_loop_mod.refresh_session_task_brief_message(
-            session,
-            pending_instruction="Can you explain more about src/parser.py?",
-            turn_semantics=TurnSemantics(
-                outcome=TurnOutcome.INSPECT,
-                relation=TurnRelation.EXPLAIN_PRIOR,
-            ),
-            route="repo",
-        )
-    finally:
-        session.close()
-
-    task_brief = next(
-        (
-            str(message.get("content") or "")
-            for message in session.messages
-            if str(message.get("content") or "").startswith("<task_brief>")
-        ),
-        "",
-    )
-
-    assert initialized is True
-    assert refreshed is False
-    assert "current_focus:" in task_brief
-    assert (
-        "- Fix src/parser.py without changing the CSV shape. Keep the public API stable."
-        in task_brief
-    )
-    assert "- Can you explain more about src/parser.py?" not in task_brief
-
-
 def _write_test_files(root: Path, names: list[str]) -> None:
     for name in names:
         file_path = root / name
@@ -10912,7 +10516,7 @@ def test_one_shot_failed_edit_then_explorer_uses_bounded_ordinary_stagnation_gua
     assert len([event for event in events if event.get("type") == "exploration_nudge"]) == 1
     assert not any(event.get("type") == "forced_final_summary_requested" for event in events)
     assert surface.errors == []
-    assert "No changes made:" in surface.final_messages[-1]
+    assert "No files were changed" in surface.final_messages[-1]
 
 
 def test_one_shot_failed_edit_then_explorer_preserves_findings_for_scoped_recovery(

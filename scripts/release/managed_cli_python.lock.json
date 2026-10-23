@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "version": "3.12.15",
+  "distribution": "astral-sh/python-build-standalone",
+  "release": "20261003",
+  "targets": {
+    "win32-x64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+      "sha256": "6fba7f2ae506facf41d457ea8293c7497910a675c69a4e954875169410a50402",
+      "size": 22011023
+    },
+    "win32-arm64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
+      "sha256": "b39c6c3aac8a88ae42fd4f2ca5a832d1e78b55506f33f0498de4dd6fc38b5162",
+      "size": 21048802
+    },
+    "darwin-x64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "562c30864ece2cb1d3e0ad66a1acd498611a47e5a10ce81b99158bef1ccbd355",
+      "size": 24733148
+    },
+    "darwin-arm64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "ad8d0c637c0a36b967b310e2c07254f4d2ca8cabaa7699e55ed6290aceb481a2",
+      "size": 25013243
+    },
+    "linux-x64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+      "sha256": "731af898886c5f821890dc901eca3c651cca8e51fa7308c159d12a1194aeac91",
+      "size": 34285590
+    },
+    "linux-arm64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
+      "sha256": "6541297dd1798dec8b98c3ad7492808a5b9d1c126801ceb2011e7754cd20d1ce",
+      "size": 29215308
+    }
+  }
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from uuid import RFC_4122, UUID
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -36,6 +37,9 @@ def test_vsix_sbom_binds_final_package_to_verified_managed_runtime(tmp_path: Pat
     managed = next(item for item in sbom["components"] if item["name"] == "alysis-code")
     assert sbom["bomFormat"] == "CycloneDX"
     assert sbom["specVersion"] == "1.5"
+    document_id = UUID(sbom["serialNumber"])
+    assert document_id.urn == sbom["serialNumber"]
+    assert document_id.variant == RFC_4122
     assert sbom == repeated
     assert extension["hashes"] == [
         {"alg": "SHA-256", "content": hashlib.sha256(vsix.read_bytes()).hexdigest()}
@@ -59,6 +63,28 @@ def test_vsix_sbom_binds_final_package_to_verified_managed_runtime(tmp_path: Pat
     assert dependency_graph[managed["bom-ref"]]["dependsOn"] == ["pkg:pypi/alpha@1.0.0"]
     assert dependency_graph["pkg:pypi/alpha@1.0.0"]["dependsOn"] == ["pkg:pypi/bravo@2.0.0"]
     assert dependency_graph["pkg:pypi/bravo@2.0.0"] == {"ref": "pkg:pypi/bravo@2.0.0"}
+
+
+def test_vsix_sbom_document_id_changes_with_final_package_bytes(tmp_path: Path) -> None:
+    vsix, manifest_path, public_key_path, dependency_sbom_path = _candidate(tmp_path)
+    inputs = {
+        "vsix_path": vsix,
+        "target": "linux-x64",
+        "manifest_path": manifest_path,
+        "public_key_path": public_key_path,
+        "dependency_sbom_path": dependency_sbom_path,
+    }
+    original = build_vsix_sbom(**inputs)
+    with ZipFile(vsix) as archive:
+        package = json.loads(archive.read("extension/package.json"))
+    package["description"] = "Updated extension listing"
+    _replace_zip_entry(vsix, "extension/package.json", json.dumps(package).encode())
+
+    changed = build_vsix_sbom(**inputs)
+
+    assert changed["serialNumber"] != original["serialNumber"]
+    assert changed["components"] == original["components"]
+    assert changed["dependencies"] == original["dependencies"]
 
 
 @pytest.mark.parametrize("mutation", ["runtime", "manifest", "signature", "dependency-sbom"])
@@ -310,7 +336,7 @@ def _candidate(
                 target=target,
                 path=path,
                 url=(
-                    "https://github.com/AlysisAi/alysis-code/releases/download/"
+                    "https://github.com/AlysisAi/AlysisCode/releases/download/"
                     f"{RELEASE_TAG}/{executable}"
                 ),
                 sbom_path=dependency_sbom,
@@ -322,12 +348,12 @@ def _candidate(
         signing_key_path=private_key_path,
         artifacts=artifacts,
         release_tag=RELEASE_TAG,
-        source_repository="https://github.com/AlysisAi/alysis-code",
+        source_repository="https://github.com/AlysisAi/AlysisCode",
         source_commit="a" * 40,
         signing_key_id="test-release-key",
         provenance_issuer="https://token.actions.githubusercontent.com",
         provenance_builder_id=(
-            "https://github.com/AlysisAi/alysis-code/.github/workflows/"
+            "https://github.com/AlysisAi/AlysisCode/.github/workflows/"
             f"managed-cli-vsix-release.yml@refs/tags/{RELEASE_TAG}"
         ),
     )

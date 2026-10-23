@@ -110,7 +110,7 @@ def _runtime_read_session(
     return create_session(
         cfg=cfg,
         root=tmp_path,
-        mode="fullaccess",
+        mode="review",
         yes=True,
         max_steps=3,
         no_log=False,
@@ -474,13 +474,13 @@ def test_git_apply_rejects_change_during_approval(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("line_options", [{}, {"start_line": 1, "end_line": 1}])
-def test_sensitive_read_requires_one_time_approval_even_in_fullaccess(
+def test_sensitive_read_requires_one_time_approval_in_review(
     tmp_path: Path, line_options: dict[str, int]
 ) -> None:
     secret = "token=do-not-render"
     (tmp_path / ".env").write_text(secret, encoding="utf-8")
     surface = _RecordingSurface()
-    tools = _tools(tmp_path, surface=surface, mode="fullaccess", yes=True)
+    tools = _tools(tmp_path, surface=surface, mode="review", yes=True)
 
     result = tools["fs_read"].run({"path": ".env", **line_options})  # type: ignore[attr-defined]
 
@@ -572,7 +572,7 @@ def test_credential_locations_require_explicit_read_approval(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("credential-canary", encoding="utf-8")
     surface = _RecordingSurface(decision=ApprovalDecision(allow=False))
-    tools = _tools(tmp_path, surface=surface, mode="fullaccess", yes=True)
+    tools = _tools(tmp_path, surface=surface, mode="review", yes=True)
 
     with pytest.raises(AgentRuntimeError):
         tools["fs_read"].run({"path": path})  # type: ignore[attr-defined]
@@ -586,7 +586,7 @@ def test_sensitive_read_rejects_auto_or_session_decision_without_reading(tmp_pat
     secret = "token=never-returned"
     (tmp_path / ".env.local").write_text(secret, encoding="utf-8")
     surface = _RecordingSurface(decision=ApprovalDecision(allow=True, allow_for_session=True))
-    tools = _tools(tmp_path, surface=surface, mode="fullaccess", yes=True)
+    tools = _tools(tmp_path, surface=surface, mode="review", yes=True)
 
     with pytest.raises(AgentRuntimeError) as raised:
         tools["fs_read"].run({"path": ".env.local"})  # type: ignore[attr-defined]
@@ -633,7 +633,7 @@ def test_every_sensitive_mutation_rejects_human_edit_during_explicit_approval(
     surface = _RecordingSurface(
         before_decision=lambda: target.write_text("human\n", encoding="utf-8", newline="\n")
     )
-    tools = _tools(tmp_path, surface=surface, mode="fullaccess", yes=True)
+    tools = _tools(tmp_path, surface=surface, mode="review", yes=True)
     args_by_tool: dict[str, dict[str, object]] = {
         "fs_edit": {
             "path": ".env",
@@ -669,7 +669,7 @@ def test_sensitive_create_rejects_file_created_during_explicit_approval(tmp_path
     surface = _RecordingSurface(
         before_decision=lambda: target.write_text("human\n", encoding="utf-8")
     )
-    tools = _tools(tmp_path, surface=surface, mode="fullaccess", yes=True)
+    tools = _tools(tmp_path, surface=surface, mode="review", yes=True)
 
     result = tools["fs_write"].run(  # type: ignore[attr-defined]
         {"path": ".env.local", "content": "agent\n"}
@@ -690,7 +690,7 @@ def test_sensitive_destination_edit_during_approval_is_preserved(
     surface = _RecordingSurface(
         before_decision=lambda: destination.write_text("human\n", encoding="utf-8")
     )
-    tools = _tools(tmp_path, surface=surface, mode="fullaccess", yes=True)
+    tools = _tools(tmp_path, surface=surface, mode="review", yes=True)
 
     result = tools[tool_name].run(  # type: ignore[attr-defined]
         {

@@ -50,7 +50,7 @@ def _valid_production_summary() -> dict[str, Any]:
         "managed_artifact_version": "runtime-1",
         "managed_cli_sha256": "b" * 64,
         "release_tag": RELEASE_TAG,
-        "source_repository": "https://github.com/AlysisAi/alysis-code",
+        "source_repository": "https://github.com/AlysisAi/AlysisCode",
         "source_sha": "1" * 40,
         "platform_target": "win32-x64",
         "vscode_version": "1.109.0",
@@ -114,7 +114,7 @@ def _completed_manual_provider_report() -> dict[str, Any]:
         "vsix_sha256": "a" * 64,
         "candidate_run_id": 123456,
         "release_tag": RELEASE_TAG,
-        "source_repository": "https://github.com/AlysisAi/alysis-code",
+        "source_repository": "https://github.com/AlysisAi/AlysisCode",
         "source_sha": "1" * 40,
         "production_dogfood_sha256": "c" * 64,
         "platform_target": "win32-x64",
@@ -160,7 +160,7 @@ def _signed_candidate_vsix(
     private_key = ec.generate_private_key(ec.SECP256R1())
     release = {
         "sourceCommit": "1" * 40,
-        "sourceRepository": "https://github.com/AlysisAi/alysis-code",
+        "sourceRepository": "https://github.com/AlysisAi/AlysisCode",
         "tag": RELEASE_TAG,
     }
     compatibility = {
@@ -173,7 +173,7 @@ def _signed_candidate_vsix(
     }
     provenance = {
         "builderId": (
-            "https://github.com/AlysisAi/alysis-code/.github/workflows/"
+            "https://github.com/AlysisAi/AlysisCode/.github/workflows/"
             f"managed-cli-vsix-release.yml@refs/tags/{RELEASE_TAG}"
         ),
         "issuer": "https://token.actions.githubusercontent.com",
@@ -190,7 +190,7 @@ def _signed_candidate_vsix(
         "size": len(runtime),
         "target": target,
         "url": (
-            f"https://github.com/AlysisAi/alysis-code/releases/download/{RELEASE_TAG}/{executable}"
+            f"https://github.com/AlysisAi/AlysisCode/releases/download/{RELEASE_TAG}/{executable}"
         ),
     }
     artifact_version = ARTIFACT_VERSION
@@ -1130,7 +1130,7 @@ def test_manual_real_provider_report_has_stable_required_checks(tmp_path: Path) 
     assert template["cli_path_override"] == ""
     assert template["candidate_run_id"] is None
     assert template["release_tag"] == ""
-    assert template["source_repository"] == "https://github.com/AlysisAi/alysis-code"
+    assert template["source_repository"] == "https://github.com/AlysisAi/AlysisCode"
     assert template["source_sha"] == ""
     assert template["production_dogfood_sha256"] == ""
     assert template["workspace_trusted"] is None

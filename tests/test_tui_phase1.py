@@ -35,9 +35,9 @@ def test_tui_enabled_by_default(monkeypatch):
     assert is_tui_enabled() is True
 
 
-def test_legacy_tui_flag_still_disables_tui(monkeypatch):
+def test_canonical_tui_flag_disables_tui(monkeypatch):
     monkeypatch.delenv("ALYSIS_TUI", raising=False)
-    monkeypatch.setenv("SYLLIPTOR_TUI", "0")
+    monkeypatch.setenv("ALYSIS_TUI", "0")
     assert is_tui_enabled() is False
 
 
@@ -58,9 +58,9 @@ def test_static_text_matches_target():
     # The heading is the Alysis Code wordmark (the prompt question lives in the box).
     assert HEADING_TEXT == "Alysis Code"
     assert CREDIT_TEXT == "crafted by AlysisAI"
-    # Hint leads with Alysis Code's signature command; @ file-mentions aren't wired.
+    # Signature command and workspace path-reference discovery remain visible.
     assert "/forge" in HINT_TEXT
-    assert "@" not in HINT_TEXT
+    assert "@ for file paths" in HINT_TEXT
 
 
 def test_input_placeholder_is_alysis_greeting():
@@ -121,7 +121,7 @@ def test_footer_core_fields():
     assert "0 processed" in text and "$0.0000" in text
     assert "perdikis" in text
     assert "shift+tab" not in text
-    # Distinct from Cline: no "(0)", no "▶▶", no Plan/Act toggle.
+    # Omit "(0)", "▶▶", and the Plan/Act toggle from the footer.
     assert "(0)" not in text
     assert "▶▶" not in text
     assert "Plan" not in text and "Act" not in text and "(Tab)" not in text

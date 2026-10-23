@@ -17,7 +17,7 @@ def test_session_create_applies_sandbox_profile_without_mutating_shared_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
     monkeypatch.delenv("ALYSIS_SHELL_SANDBOX_MODE", raising=False)
-    monkeypatch.delenv("SYLLIPTOR_SHELL_SANDBOX_MODE", raising=False)
+    monkeypatch.delenv("ALYSIS_SHELL_SANDBOX_MODE", raising=False)
     source = AppConfig(model="test-model")
     monkeypatch.setattr(stdio_bridge, "load_config", lambda: source)
     configs = []

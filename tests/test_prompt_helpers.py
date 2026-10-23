@@ -18,7 +18,7 @@ def test_chat_prompt_completion_menu_height_uses_dynamic_completion_count(
     monkeypatch.setattr(
         prompt_helpers_mod.shutil,
         "get_terminal_size",
-        lambda _fallback: os.terminal_size((80, 80)),
+        lambda fallback=(80, 24): os.terminal_size((80, 80)),
     )
 
     height = prompt_helpers_mod._chat_prompt_completion_menu_height("chat")
@@ -32,7 +32,7 @@ def test_chat_prompt_completion_menu_height_handles_tiny_terminal(monkeypatch) -
     monkeypatch.setattr(
         prompt_helpers_mod.shutil,
         "get_terminal_size",
-        lambda _fallback: os.terminal_size((80, 10)),
+        lambda fallback=(80, 24): os.terminal_size((80, 10)),
     )
 
     height = prompt_helpers_mod._chat_prompt_completion_menu_height("chat")
@@ -63,7 +63,7 @@ def test_chat_prompt_session_passes_dynamic_reserve_space_for_menu(
     monkeypatch.setattr(
         prompt_helpers_mod.shutil,
         "get_terminal_size",
-        lambda _fallback: os.terminal_size((80, 10)),
+        lambda fallback=(80, 24): os.terminal_size((80, 10)),
     )
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path))
 

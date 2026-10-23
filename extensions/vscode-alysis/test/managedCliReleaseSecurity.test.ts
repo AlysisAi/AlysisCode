@@ -133,7 +133,7 @@ function record(signingKeyId: string): ManagedCliSignedRecord {
     schemaVersion: 3,
     release: {
       tag: "v1.2.3",
-      sourceRepository: "https://github.com/AlysisAi/alysis-code",
+      sourceRepository: "https://github.com/AlysisAi/AlysisCode",
       sourceCommit: "a".repeat(40)
     },
     artifactVersion: "cli-1.2.3",
@@ -146,11 +146,11 @@ function record(signingKeyId: string): ManagedCliSignedRecord {
     signingKeyId,
     provenance: {
       issuer: "https://token.actions.githubusercontent.com",
-      builderId: "https://github.com/AlysisAi/alysis-code/.github/workflows/managed-cli-vsix-release.yml@refs/tags/v1.2.3"
+      builderId: "https://github.com/AlysisAi/AlysisCode/.github/workflows/managed-cli-vsix-release.yml@refs/tags/v1.2.3"
     },
     artifact: {
       target: "linux-x64",
-      url: "https://github.com/AlysisAi/alysis-code/releases/download/v1.2.3/alysis-linux-x64",
+      url: "https://github.com/AlysisAi/AlysisCode/releases/download/v1.2.3/alysis-linux-x64",
       sha256: "a".repeat(64),
       size: 123,
       executable: "alysis-linux-x64",

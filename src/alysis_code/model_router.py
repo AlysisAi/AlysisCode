@@ -13,6 +13,8 @@ ROLE_PLANNER = "planner"
 ROLE_COMPREHENSION = "comprehension"
 ROLE_COMPACTOR = "compactor"
 ROLE_ROUTER = "router"
+# Answers approvals in "Approve for me" (auto) mode; defaults to the chat's own model.
+ROLE_APPROVAL_REVIEW = "approval_review"
 PREFER_CONTEXT_FORGE = "forge"
 
 ROLE_ENV_VARS: dict[str, str] = {
@@ -24,6 +26,7 @@ ROLE_ENV_VARS: dict[str, str] = {
     ROLE_COMPREHENSION: "ALYSIS_COMPREHENSION_MODEL",
     ROLE_COMPACTOR: "ALYSIS_MODEL_COMPACTOR",
     ROLE_ROUTER: "ALYSIS_MODEL_ROUTER",
+    ROLE_APPROVAL_REVIEW: "ALYSIS_MODEL_APPROVAL_REVIEW",
 }
 
 

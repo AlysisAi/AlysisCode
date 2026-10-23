@@ -97,7 +97,7 @@ def test_clean_eof_attempt_evidence_survives_retry_without_inventing_usage(first
     summary = _summary()
     assert len(calls) == summary["attempt_count"] == 2
     first, second = summary["attempts"]
-    assert first["terminal_reason"] == "eof_before_done"
+    assert first["terminal_reason"] == "stream_truncated"
     assert first["body_bytes_received"] == len(first_body)
     assert first["event_count"] == 0
     assert not first["done_received"] and not first["usage_observed"]
@@ -218,7 +218,7 @@ def test_local_http_sse_eof_and_retry_have_separate_numeric_diagnostics():
         assert len(requests) == len(attempts) == 2
         assert attempts[0]["event_count"] == 0
         assert attempts[0]["body_bytes_received"] == len(b": keepalive\n\n")
-        assert attempts[0]["terminal_reason"] == "eof_before_done"
+        assert attempts[0]["terminal_reason"] == "stream_truncated"
         assert attempts[1]["terminal_reason"] == "done"
     finally:
         server.shutdown()

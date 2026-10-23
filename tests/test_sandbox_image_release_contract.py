@@ -173,23 +173,26 @@ def test_candidate_records_bind_registry_coordinates_source_run_and_evidence() -
 def test_docker_toolchains_and_external_images_are_immutable_inputs() -> None:
     dockerfile = _dockerfile()
 
-    assert "snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" in dockerfile
-    assert "ARG DEBIAN_SNAPSHOT=" in dockerfile
-    assert re.search(r"ARG PYTHON_IMAGE=[^\s]+@sha256:[0-9a-f]{64}", dockerfile)
+    assert re.search(r"ARG WOLFI_IMAGE=[^\s]+@sha256:[0-9a-f]{64}", dockerfile)
+    assert re.search(r"# syntax=docker/dockerfile:1.7@sha256:[0-9a-f]{64}", dockerfile)
+    assert "apk verify APKINDEX.tar.gz" in dockerfile
+    assert "xargs apk add --no-network --no-cache" in dockerfile
+    assert "diff -u /tmp/expected-apks.lock /tmp/installed-apks.lock" in dockerfile
     assert re.search(r"ARG NODE_VERSION=\d+\.\d+\.\d+", dockerfile)
     assert re.search(r"ARG NODE_LINUX_AMD64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG NODE_LINUX_ARM64_SHA256=[0-9a-f]{64}", dockerfile)
-    assert re.search(r"ARG NPM_VERSION=\d+\.\d+\.\d+", dockerfile)
-    assert re.search(r"ARG NPM_SHA256=[0-9a-f]{64}", dockerfile)
-    npm_install = dockerfile.split("RUN curl --proto", 1)[1].split("RUN case", 1)[0]
-    assert npm_install.index("sha256sum -c -") < npm_install.index("tar -xzf")
-    assert 'test "$(npm --version)" = "${NPM_VERSION}"' in npm_install
-    assert 'test "$(npx --version)" = "${NPM_VERSION}"' in npm_install
+    assert "python /opt/npm-rebuild-source/build.py" in dockerfile
+    npm_install = dockerfile.split("FROM dev-tools AS dev", 1)[1].split("FROM dev AS server", 1)[0]
+    assert npm_install.index('e["archive_sha256"]') < npm_install.index("tar -xzf")
+    assert 'test "$(npm --version)" = "11.20.0-alysis.1"' in npm_install
+    assert 'test "$(npx --version)" = "11.20.0-alysis.1"' in npm_install
     assert re.search(r"ARG GO_LINUX_AMD64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG GO_LINUX_ARM64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG RUSTUP_LINUX_AMD64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG RUSTUP_LINUX_ARM64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG RUST_VERSION=\d+\.\d+\.\d+", dockerfile)
+    assert "--network=none --mount=type=bind,from=rust-inputs" in dockerfile
+    assert "RUSTUP_DIST_SERVER=file:///opt/rust-inputs" in dockerfile
     assert re.search(r"COPY --from=[^\s]+@sha256:[0-9a-f]{64} /uv", dockerfile)
     assert dockerfile.count("sha256sum -c -") >= 3
 
@@ -197,6 +200,24 @@ def test_docker_toolchains_and_external_images_are_immutable_inputs() -> None:
     assert "https://sh.rustup.rs" not in dockerfile
     assert "--default-toolchain stable" not in dockerfile
     assert "npm install -g" not in dockerfile
+
+
+def test_native_acl_and_filesystem_qualification_are_required_before_promotion() -> None:
+    workflow = _workflow()
+    verification = workflow.split("  verify-candidates:", 1)[1].split("    steps:", 1)[0]
+    assert "- qualify-runtime-boundaries" in verification
+    qualification = workflow.split("  qualify-runtime-boundaries:", 1)[1].split(
+        "  verify-candidates:", 1
+    )[0]
+    assert "variant: [base, dev, server]" in qualification
+    assert "arch: amd64, runner: ubuntu-latest" in qualification
+    assert "arch: arm64, runner: ubuntu-24.04-arm" in qualification
+    assert "scripts/sandbox/check_acl_boundary.py" in qualification
+    assert "scripts/sandbox/review_image_files.py" in qualification
+    assert 'inventory["legacy_acl_callers"] == ["usr/bin/coreutils"]' in qualification
+    assert ".run_id == ($run | tonumber)" in qualification
+    assert ".source_sha == $sha" in qualification
+    assert "continue-on-error" not in qualification
 
 
 def test_server_image_installs_the_exact_python_lock() -> None:

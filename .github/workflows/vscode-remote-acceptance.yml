@@ -36,7 +36,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
@@ -132,6 +132,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set up Python before policy and provenance validation
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
       - name: Revalidate remote acceptance policy after approval
         shell: pwsh
         env:
@@ -158,7 +163,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:GITHUB_REPOSITORY -ne 'AlysisAi/alysis-code') { throw 'Unexpected repository.' }
+          if ($env:GITHUB_REPOSITORY -ne 'AlysisAi/AlysisCode') { throw 'Unexpected repository.' }
           if ($env:GITHUB_REF -ne "refs/tags/$env:RELEASE_TAG") { throw 'Workflow must run from the exact release tag.' }
           if ($env:GITHUB_REF_TYPE -ne 'tag') { throw 'Workflow ref must be a tag.' }
           if ($env:CANDIDATE_RUN_ID -notmatch '^[1-9][0-9]*$') { throw 'candidate_run_id must be positive.' }
@@ -239,15 +244,10 @@ jobs:
             --expected-predicate $sbom
           if ($LASTEXITCODE -ne 0) { throw 'Candidate SBOM receipt is invalid.' }
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.12"
-
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: extensions/vscode-alysis/package-lock.json
 

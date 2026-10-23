@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "rust_version": "1.91.1",
+  "rustup_version": "1.28.2",
+  "architectures": {
+    "amd64": {
+      "target": "x86_64-unknown-linux-gnu",
+      "inputs": [
+        {
+          "url": "https://static.rust-lang.org/dist/channel-rust-1.91.1.toml",
+          "sha256": "483bb8b271168ee654e3be4f111beefa23b9d0c8b7f4a563a8278978dbe982e5"
+        },
+        {
+          "url": "https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init",
+          "sha256": "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c"
+        },
+        {
+          "url": "https://static.rust-lang.org/dist/2025-11-10/rustc-1.91.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "4b4c596fc5268435c310a79c2e231a5a3567572c930ac0740ef9e147e83baf4e"
+        },
+        {
+          "url": "https://static.rust-lang.org/dist/2025-11-10/cargo-1.91.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "8d17d5a4734e684228adee4ea4a75da94eb7f71993804adf29f344709e65fe09"
+        },
+        {
+          "url": "https://static.rust-lang.org/dist/2025-11-10/rust-std-1.91.1-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "2023ed689529516d7bd5533738ca6d205b2561f8d51947dabeeb39dd51a024c9"
+        }
+      ]
+    },
+    "arm64": {
+      "target": "aarch64-unknown-linux-gnu",
+      "inputs": [
+        {
+          "url": "https://static.rust-lang.org/dist/channel-rust-1.91.1.toml",
+          "sha256": "483bb8b271168ee654e3be4f111beefa23b9d0c8b7f4a563a8278978dbe982e5"
+        },
+        {
+          "url": "https://static.rust-lang.org/rustup/archive/1.28.2/aarch64-unknown-linux-gnu/rustup-init",
+          "sha256": "e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c"
+        },
+        {
+          "url": "https://static.rust-lang.org/dist/2025-11-10/rustc-1.91.1-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "b9040293bc84d8b48cb859dcd0e95955c13ea29e3e637c7556bf7f0c12972217"
+        },
+        {
+          "url": "https://static.rust-lang.org/dist/2025-11-10/cargo-1.91.1-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "827692e153382eadc39b6f1262e20ed9671e1c0abf2fb14b5095816d2b295a15"
+        },
+        {
+          "url": "https://static.rust-lang.org/dist/2025-11-10/rust-std-1.91.1-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "6aed0726a0fe50cbd488f6c5dd7a053c17ff57b8b361d14bcd216ea9939fb531"
+        }
+      ]
+    }
+  }
+}

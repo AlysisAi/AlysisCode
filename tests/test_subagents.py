@@ -618,6 +618,7 @@ def test_subagent_stop_after_verified_return_cannot_publish_verified_success(
                     "completion_certificate": {"status": "SUFFICIENT"},
                     "accepted_verification_evidence": [{}],
                     "verification_relevant_edit_generation": 5,
+                    "material_edit_count": 1,
                 },
             )
             if stop == "cancelled":

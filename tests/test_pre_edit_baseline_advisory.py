@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,10 @@ from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
 from alysis_code.surface.noop_surface import NoopSurface
 
-_EXECUTED_COMMAND = f"{shlex.quote(sys.executable)} -m unittest discover -s tests -v"
+_EXECUTED_ARGV = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
+_EXECUTED_COMMAND = (
+    subprocess.list2cmdline(_EXECUTED_ARGV) if os.name == "nt" else shlex.join(_EXECUTED_ARGV)
+)
 _KNOWN_COMMAND = _EXECUTED_COMMAND
 _INITIAL_SOURCE = "def add(a, b):\n    return a - b\n"
 _INTERMEDIATE_SOURCE = "def add(a, b):\n    return b - a\n"
@@ -76,9 +81,9 @@ def test_first_edit_advisory_uses_pre_edit_test_facts(
     # The only model is scripted; tools execute the tiny local fixture normally.
     for name in (
         "ALYSIS_VERIFY_SANDBOX_MODE",
-        "SYLLIPTOR_VERIFY_SANDBOX_MODE",
+        "ALYSIS_VERIFY_SANDBOX_MODE",
         "ALYSIS_SHELL_SANDBOX_MODE",
-        "SYLLIPTOR_SHELL_SANDBOX_MODE",
+        "ALYSIS_SHELL_SANDBOX_MODE",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ALYSIS_REGRESSION_BASELINE", "on")

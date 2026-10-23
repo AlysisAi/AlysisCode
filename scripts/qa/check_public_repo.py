@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import re
 import subprocess
 import sys
@@ -19,7 +21,17 @@ _CACHE_DIRS = {
     "__pycache__",
     "node_modules",
 }
-_LOCAL_ROOTS = {".alysis", ".sylliptor", "artifacts", "build", "dist", "runs"}
+_LOCAL_ROOTS = {
+    ".alysis",
+    ".sylliptor",
+    "artifacts",
+    "build",
+    "dist",
+    "runs",
+    "outputs",
+    ".qa-results",
+    "private-attestation",
+}
 _BLOCKED_NAMES = {
     ".coverage",
     ".DS_Store",
@@ -44,9 +56,55 @@ _BLOCKED_SUFFIXES = {
     ".tmp",
     ".trace",
 }
+_PUBLIC_EDITOR_PACKAGES = {"vscode-alysis", "jetbrains-alysis", "shared-ui"}
+_PUBLIC_VERIFICATION_KEY = "extensions/vscode-alysis/resources/managed-cli-release-public.pem"
 _ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 _MAX_TRACKED_FILE_BYTES = 5 * 1024 * 1024
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
+_DEPLOYMENT_HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.)+supabase\.(?:co|net|com)\b", re.IGNORECASE)
+_DEPLOYMENT_KEY_RE = re.compile(r"\bsb_(?:publishable|secret)_[A-Za-z0-9_-]{12,}\b")
+_JSON_TOKEN_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\b")
+
+# Only this public client endpoint is approved for distribution. Keep the
+# exception scoped to its exact declaration; other hosts and all keys still fail.
+_PUBLIC_CLOUD_DEFAULT_DECLARATION = (
+    'DEFAULT_CLOUD_API_URL = "https://'
+    + ".".join(("vzigujbcjjmpntxhmyvr", "supabase", "co"))
+    + '/functions/v1"'
+)
+
+
+def deployment_content_violations(path_text: str, content: bytes) -> list[str]:
+    """Reject deployment hosts and project-bound keys without printing their values.
+
+    Inspect JWT payload segments separately: Python can split a token across
+    adjacent string literals. Public anon/publishable keys are excluded too.
+    """
+    text = content.decode("utf-8", errors="replace")
+    violations: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        reasons: set[str] = set()
+        approved_default = (
+            path_text == "src/alysis_code/alysis_cloud.py"
+            and line.strip() == _PUBLIC_CLOUD_DEFAULT_DECLARATION
+        )
+        if _DEPLOYMENT_HOST_RE.search(line) and not approved_default:
+            reasons.add("deployment-specific backend host")
+        if _DEPLOYMENT_KEY_RE.search(line):
+            reasons.add("deployment-specific backend key")
+        for match in _JSON_TOKEN_RE.finditer(line):
+            token = match.group()
+            try:
+                payload = json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(payload, dict) and (
+                payload.get("iss") == "supabase"
+                or (payload.get("ref") and payload.get("role") in ("anon", "service_role"))
+            ):
+                reasons.add("deployment-specific backend JWT")
+        violations.extend(f"{path_text}:{line_number}: {reason}" for reason in sorted(reasons))
+    return violations
 
 
 def path_violation(path_text: str) -> str | None:
@@ -59,8 +117,14 @@ def path_violation(path_text: str) -> str | None:
         return "internal documentation directory"
     if lower_parts and lower_parts[0] in {"prompts", "claude outputs", ".claude", ".codex"}:
         return "local assistant working files"
-    if lower_parts and lower_parts[0] in {"extensions", "supabase"}:
-        return "unreleased editor or hosted-service package"
+    if lower_parts and lower_parts[0] == "supabase":
+        return "hosted-service implementation"
+    if (
+        lower_parts
+        and lower_parts[0] == "extensions"
+        and (len(lower_parts) < 2 or lower_parts[1] not in _PUBLIC_EDITOR_PACKAGES)
+    ):
+        return "unreleased editor package"
     if "power_mode" in lower_parts:
         return "unreleased Power mode package"
     if parts & _CACHE_DIRS:
@@ -71,7 +135,7 @@ def path_violation(path_text: str) -> str | None:
         return "local generated file"
     if path.name.startswith(".env") and path.name not in _ENV_EXAMPLES:
         return "environment file"
-    if path.suffix.lower() in _BLOCKED_SUFFIXES:
+    if path.suffix.lower() in _BLOCKED_SUFFIXES and path_text != _PUBLIC_VERIFICATION_KEY:
         return "credential-bearing or generated file type"
     return None
 
@@ -86,8 +150,17 @@ def collect_violations(paths: Iterable[str], root: Path) -> list[str]:
             continue
 
         local_path = root / path_text
+        if path_text == _PUBLIC_VERIFICATION_KEY and local_path.is_file():
+            from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+            try:
+                load_pem_public_key(local_path.read_bytes())
+            except (ValueError, TypeError):
+                violations.append(f"{path_text}: expected a public verification key")
         if local_path.is_file() and local_path.stat().st_size > _MAX_TRACKED_FILE_BYTES:
             violations.append(f"{path_text}: tracked file exceeds 5 MiB")
+        elif local_path.is_file():
+            violations.extend(deployment_content_violations(path_text, local_path.read_bytes()))
     return sorted(violations)
 
 

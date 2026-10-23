@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -10,9 +9,7 @@ from alysis_code.agent import tools_assembly
 from alysis_code.agent.llm_calls import _request_messages_with_volatile_suffix
 from alysis_code.agent.prompt_context import (
     _subagent_context_message,
-    _task_brief_content_is_placeholder,
     prepare_session_prompt_context,
-    refresh_session_task_brief_message,
 )
 from alysis_code.agent.prompt_guidance import render_guidance
 from alysis_code.agent_loop import create_session
@@ -186,7 +183,7 @@ def test_builtin_subagent_descriptions_include_when_not_guidance() -> None:
     assert "Not for initial repository mapping" in registry["code-reviewer"].description
 
 
-def test_top_level_prompt_context_keeps_empty_task_placeholder(tmp_path: Path) -> None:
+def test_top_level_prompt_context_has_no_objective_placeholder(tmp_path: Path) -> None:
     _fake_git_repo(tmp_path)
 
     prompt_context = prepare_session_prompt_context(
@@ -204,40 +201,7 @@ def test_top_level_prompt_context_keeps_empty_task_placeholder(tmp_path: Path) -
         subagent_depth=0,
     )
 
-    assert "awaiting_substantive_repo_request" in str(prompt_context.messages)
-
-
-@pytest.mark.parametrize(
-    "instruction", ["Explain cancellation without edits.", "Διόρθωσε το σφάλμα."]
-)
-def test_saved_empty_brief_cannot_claim_the_current_request_is_missing(instruction: str) -> None:
-    legacy = "<task_brief>status: awaiting_substantive_repo_request</task_brief>"
-    actual_user_message = {"role": "user", "content": instruction}
-    session = SimpleNamespace(
-        messages=[{"role": "user", "content": legacy}, actual_user_message],
-        store=SimpleNamespace(workspace_kind="git_repo"),
-        pinned_prefix_len=1,
-        subagent_depth=0,
-    )
-    from alysis_code.agent.task_state import SessionTaskState
-
-    session.task_state = SessionTaskState(
-        task_id="session:1", objective=instruction, session_id="session", sequence=1
-    )
-    assert refresh_session_task_brief_message(session)
-    assert instruction in session.messages[0]["content"]
-    assert "awaiting_substantive_repo_request" not in session.messages[0]["content"]
-    assert session.messages[1] is actual_user_message
-    assert session.pinned_prefix_len == 1
-    assert not refresh_session_task_brief_message(session)
-
-
-def test_substantive_brief_quoting_old_status_is_not_an_empty_record() -> None:
-    content = (
-        "<task_brief>\nsource: direct_user_repo_turns\ncurrent_focus:\n"
-        "- Explain status: awaiting_substantive_repo_request\n</task_brief>"
-    )
-    assert not _task_brief_content_is_placeholder(content)
+    assert "awaiting_substantive_repo_request" not in str(prompt_context.messages)
 
 
 def _ready_web_search_status() -> WebSearchRuntimeStatus:
@@ -434,23 +398,23 @@ def test_create_session_respects_explicit_skills_auto_invoke_false_for_discovery
         session.close()
 
 
-# Fixed ceilings for the complete serialized bootstrap, including the fresh
-# consumer verification schema, artifact handles, capability tools and paginated
-# diff contract inherited from main. Provider-free measurements are approximately
-# 12,420 compact, 12,995 balanced and 14,000 expanded tokens. Family normal and
-# expanded profiles are approximately 12,640 and 13,500 respectively. Keep a
-# small allowance for workspace paths; one-shot adds a separate fixed 450 below.
+# Fixed ceilings for the complete serialized bootstrap. Version 0.15 adds
+# structured-question guidance and the bundled Alysis docs skill; measured
+# profiles are about 12,850 compact, 13,425 balanced, and 14,430 expanded tokens.
+# Keep a small allowance for workspace paths; one-shot adds a fixed 450 below.
 _BOOTSTRAP_PROFILE_LIMITS = [
-    pytest.param(None, 14_200, id="unknown-expanded-default"),
-    pytest.param("compact", 12_700, id="compact"),
-    pytest.param("balanced", 13_150, id="balanced"),
-    pytest.param("expanded", 14_200, id="expanded"),
+    pytest.param(None, 14_500, id="unknown-expanded-default"),
+    pytest.param("compact", 13_000, id="compact"),
+    # balanced had about 10 tokens to spare; the environment rule in the system prompt
+    # (answer os/shell/date/mode questions from <environment_context>) adds about 22.
+    pytest.param("balanced", 13_500, id="balanced"),
+    pytest.param("expanded", 14_500, id="expanded"),
     *[
-        pytest.param(profile, 12_850, id=profile)
+        pytest.param(profile, 13_150, id=profile)
         for profile in ("gpt-astra", "gpt-sol", "gpt-terra")
     ],
     *[
-        pytest.param(profile, 13_700, id=profile)
+        pytest.param(profile, 14_000, id=profile)
         for profile in (
             "gpt-luna",
             "gpt-5.5",
@@ -463,12 +427,12 @@ _BOOTSTRAP_PROFILE_LIMITS = [
         )
     ],
     *[
-        pytest.param(profile, 12_850, id=profile)
+        pytest.param(profile, 13_150, id=profile)
         for profile in GUIDANCE_PROFILES
         if profile.endswith("-normal")
     ],
     *[
-        pytest.param(profile, 13_700, id=profile)
+        pytest.param(profile, 14_000, id=profile)
         for profile in GUIDANCE_PROFILES
         if profile.endswith("-expanded")
     ],

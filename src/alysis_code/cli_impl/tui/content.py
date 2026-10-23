@@ -17,7 +17,12 @@ CREDIT_TEXT = "crafted by AlysisAI"
 # The landing's separator: rows reflow at these seams on a narrow pane.
 WELCOME_SEPARATOR = "  ·  "
 HINT_TEXT = WELCOME_SEPARATOR.join(
-    ("/forge for an autonomous run", "tab to switch persona", "/help for everything")
+    (
+        "/forge for an autonomous run",
+        "@ for file paths",
+        "tab to switch persona",
+        "/help for everything",
+    )
 )
 # Welcome screen: full greeting. Once the conversation is underway the input
 # switches to the shorter follow-up placeholder below.

@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePath
 
 from ..atomic_io import atomic_write_json
 from ..branding import canonical_user_config_dir, env_get
@@ -24,7 +24,20 @@ class ProjectHooksTrustState:
     trusted_configs: tuple[ProjectHooksTrustKey, ...] = ()
 
     def contains(self, key: ProjectHooksTrustKey) -> bool:
-        return key in set(self.trusted_configs)
+        identity = _trust_identity(key)
+        return any(_trust_identity(item) == identity for item in self.trusted_configs)
+
+
+def _canonical_relative_config_path(value: str) -> str:
+    """Normalize path separators in trust identities without rebasing locations."""
+    return os.fspath(PurePath(value))
+
+
+def _trust_identity(key: ProjectHooksTrustKey) -> ProjectHooksTrustKey:
+    canonical = _canonical_relative_config_path(key.relative_config_path)
+    if canonical == key.relative_config_path:
+        return key
+    return replace(key, relative_config_path=canonical)
 
 
 def _config_dir() -> Path:
@@ -159,12 +172,13 @@ def untrust_project_hooks_config(
             f"Project hooks config must live under the workspace root: {resolved_path}"
         ) from exc
     current = load_trust_state(user_config_dir=user_config_dir)
+    canonical_relative = _canonical_relative_config_path(relative_config_path)
     remaining = tuple(
         key
         for key in current.trusted_configs
         if not (
             key.workspace_root == os.fspath(resolved_workspace)
-            and key.relative_config_path == relative_config_path
+            and _canonical_relative_config_path(key.relative_config_path) == canonical_relative
         )
     )
     updated = ProjectHooksTrustState(trusted_configs=remaining)
@@ -183,10 +197,12 @@ def is_project_hooks_config_trusted(
     if not resolved_path.is_file():
         return False
     active_state = state if state is not None else load_trust_state(user_config_dir=user_config_dir)
-    return project_hooks_trust_key(
-        workspace_root=workspace_root,
-        config_path=config_path,
-    ) in set(active_state.trusted_configs)
+    return active_state.contains(
+        project_hooks_trust_key(
+            workspace_root=workspace_root,
+            config_path=config_path,
+        )
+    )
 
 
 __all__ = [

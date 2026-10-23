@@ -194,7 +194,7 @@ def test_perplexity_profile_is_not_classified_as_first_party_openai() -> None:
 def test_each_non_custom_preset_has_valid_base_url_and_suggested_models() -> None:
     url_pattern = re.compile(r"^https?://[^/].*$")
     for preset in PROFILE_PRESETS:
-        if preset.key == "custom":
+        if preset.key in {"custom", "alysis"}:
             continue
         assert url_pattern.match(preset.base_url), preset.key
         assert preset.suggested_models, preset.key
@@ -207,6 +207,7 @@ def test_openai_preset_uses_working_chat_completion_models() -> None:
     assert preset.base_url == "https://api.openai.com/v1"
     assert preset.suggested_models == (
         "gpt-6-astra",
+        "gpt-6.1-sol",
         "gpt-6-sol",
         "gpt-6-luna",
         "gpt-5.6-terra",
@@ -227,7 +228,12 @@ def test_openai_presets_lead_with_gpt_6_astra() -> None:
         preset = get_preset(key)
 
         assert preset is not None
-        assert preset.suggested_models[:3] == ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna")
+        assert preset.suggested_models[:4] == (
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        )
         assert preset.suggested_model_descriptions["gpt-6-astra"].startswith("default")
         assert make_profile_from_preset(preset).default_model == "gpt-6-astra"
         assert canonical_model_alias_for_preset(preset, "gpt-6") == "gpt-6-astra"
@@ -272,7 +278,7 @@ def test_moonshot_presets_alias_retired_kimi_k2_to_current_model() -> None:
 def test_provider_presets_use_current_openai_compatible_base_urls() -> None:
     expected_base_urls = {
         # The Alysis Code hosted proxy (llm Edge Function, DeepSeek upstream).
-        "alysis": "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1",
+        "alysis": "",
         "openai": "https://api.openai.com/v1",
         "openai-responses": "https://api.openai.com/v1",
         "anthropic": "https://api.anthropic.com/v1",
@@ -324,6 +330,7 @@ def test_anthropic_preset_uses_native_messages_endpoint_and_current_models() -> 
     assert preset.extra_headers == {}
     assert preset.suggested_models == (
         "claude-sonnet-5",
+        "claude-haiku-5-5",
         "claude-opus-5-5",
         "claude-opus-5",
         "claude-fable-5-1",

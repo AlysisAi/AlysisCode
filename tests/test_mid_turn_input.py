@@ -494,27 +494,30 @@ def _run_live_tui(
                 feed(pipe)
             except BaseException as exc:  # noqa: BLE001 - surface feeder failures in the test
                 feed_errors.append(exc)
-                pipe.send_text("\x03")
-                time.sleep(0.05)
-                pipe.send_text("\x03")
+                pipe.close()
 
         feeder = threading.Thread(target=run_feed, daemon=True)
         feeder.start()
-        result, transcript = run_tui(
-            TuiState(model_name="test-model", username="tester"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-            session_builder=session_builder,
-            command_runner=command_runner,
-            persona_cycle=persona_cycle,
-            persona_stage_target=persona_stage_target,
-            step_operation_resolver=step_operation_resolver,
-            step_operation_apply=step_operation_apply,
-            panel_providers=panel_providers,
-            before_turn=before_turn,
-            background_turns=True,
-        )
+        try:
+            result, transcript = run_tui(
+                TuiState(model_name="test-model", username="tester"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+                session_builder=session_builder,
+                command_runner=command_runner,
+                persona_cycle=persona_cycle,
+                persona_stage_target=persona_stage_target,
+                step_operation_resolver=step_operation_resolver,
+                step_operation_apply=step_operation_apply,
+                panel_providers=panel_providers,
+                before_turn=before_turn,
+                background_turns=True,
+            )
+        except EOFError:
+            if feed_errors:
+                raise feed_errors[0] from None
+            raise
         feeder.join(timeout=2)
 
     assert not feeder.is_alive()
@@ -603,7 +606,7 @@ def test_pending_steer_moves_from_area_to_transcript_only_when_delivered(
         pending_text = _pending_messages_area_text(captured["application"])
         assert (
             "message to be submitted after the next tool call - "
-            "esc interrupts and sends it immediately"
+            "ctrl+c interrupts and sends it immediately"
         ) in pending_text
         drain_at_boundary.set()
         assert delivered.wait(timeout=2)
@@ -651,7 +654,7 @@ def test_two_pending_steers_render_and_deliver_in_fifo_order(
         pending_text = _pending_messages_area_text(captured["application"])
         assert (
             "messages to be submitted after the next tool call - "
-            "esc interrupts and sends them immediately"
+            "ctrl+c interrupts and sends them immediately"
         ) in pending_text
         assert pending_text.index("  > first correction") < pending_text.index(
             "  > second correction"
@@ -1906,6 +1909,7 @@ def test_interrupt_rescues_messages_and_applies_both_operation_tiers() -> None:
 def test_full_step_inbox_falls_back_to_turn_end_without_dropping_command() -> None:
     started = threading.Event()
     release = threading.Event()
+    all_commands_resolved = threading.Event()
     applied: list[int] = []
     fallback_commands: list[str] = []
 
@@ -1916,7 +1920,7 @@ def test_full_step_inbox_falls_back_to_turn_end_without_dropping_command() -> No
         def run_turn(self, text: str, *, cancellation_token: Any = None) -> int:
             _ = text, cancellation_token
             started.set()
-            assert release.wait(timeout=3)
+            assert release.wait(timeout=10)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1932,6 +1936,8 @@ def test_full_step_inbox_falls_back_to_turn_end_without_dropping_command() -> No
         if not text.startswith("/step "):
             return None
         value = int(text.split(maxsplit=1)[1])
+        if value == MAX_PENDING_OPS:
+            all_commands_resolved.set()
         return ResolvedOperation("test", value, f"step: {value}")
 
     def apply_step(_session: Any, operation: ResolvedOperation) -> None:
@@ -1942,11 +1948,13 @@ def test_full_step_inbox_falls_back_to_turn_end_without_dropping_command() -> No
         assert started.wait(timeout=2)
         for index in range(MAX_PENDING_OPS + 1):
             pipe.send_text(f"/step {index}\r")
-        time.sleep(0.15)
-        release.set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and not fallback_commands:
-            time.sleep(0.01)
+        # Keep the turn running until the UI has received the overflowing command.
+        # A fixed sleep lets a loaded runner finish the turn with a partial inbox.
+        try:
+            assert all_commands_resolved.wait(timeout=5)
+        finally:
+            release.set()
+        assert _wait_until(lambda: bool(fallback_commands))
         pipe.send_text("/exit\r")
 
     _result, transcript = _run_live_tui(

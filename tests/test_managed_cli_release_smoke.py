@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
+import yaml
 
 from scripts.release.smoke_managed_cli import smoke
 
@@ -18,21 +21,21 @@ def test_frozen_smoke_arguments_reach_the_real_stdio_cli(
     """A mocked executable must not hide drift between the smoke harness and CLI."""
     import importlib
 
-    from typer.testing import CliRunner
-
-    from alysis_code.cli import app
-
     smoke_module = importlib.import_module("scripts.release.smoke_managed_cli")
     executable = tmp_path / "runtime"
     executable.write_bytes(b"cli-contract-fixture")
-    runner = CliRunner()
+    run_command = smoke_module._run
 
     def invoke_cli(
         command: list[str], *, env: dict[str, str], input_text: str | None = None
     ) -> str:
-        result = runner.invoke(app, command[1:], input=input_text, env=env)
-        assert result.exit_code == 0, result.output
-        return result.stdout
+        # The bridge claims private OS descriptors, so exercise real pipes rather
+        # than CliRunner's in-memory streams (which do not have file descriptors).
+        return run_command(
+            [sys.executable, "-m", "alysis_code", *command[1:]],
+            env=env,
+            input_text=input_text,
+        )
 
     monkeypatch.setattr(smoke_module, "_run", invoke_cli)
     smoke(executable)
@@ -52,6 +55,40 @@ def test_managed_cli_workflow_cannot_publish_unsigned_platform_binaries() -> Non
     assert "must not publish release assets" in workflow
 
 
+def test_signed_upload_keeps_raw_interpreter_receipts_out_of_promotion_inventory(
+    tmp_path: Path,
+) -> None:
+    from scripts.release.build_managed_cli_manifest import TARGETS
+
+    root = tmp_path / "managed-cli-artifacts"
+    root.mkdir()
+    expected = {"manifest.json"}
+    for target in TARGETS:
+        executable = f"alysis-{target}" + (".exe" if target.startswith("win32-") else "")
+        expected.update({executable, f"{target}.cdx.json", f"{target}.native-signature.json"})
+        (root / f"{target}.python-runtime.json").write_text("{}", encoding="utf-8")
+    for name in expected:
+        (root / name).write_bytes(b"candidate fixture")
+    repository_root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load(
+        (repository_root / ".github/workflows/managed-cli-vsix-release.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    upload = next(
+        step
+        for step in workflow["jobs"]["sign-and-assemble"]["steps"]
+        if step.get("with", {}).get("name") == "signed-managed-cli-release"
+    )
+    selected = {
+        path.name
+        for pattern in upload["with"]["path"].splitlines()
+        for path in tmp_path.glob(pattern)
+    }
+    assert selected == expected
+    assert len(selected) == 19
+
+
 def test_protected_signing_jobs_require_unprivileged_exact_source_validation() -> None:
     repository_root = Path(__file__).resolve().parents[1]
     workflow = (
@@ -67,7 +104,7 @@ def test_protected_signing_jobs_require_unprivileged_exact_source_validation() -
     ]
 
     assert "environment:" not in validation_job
-    assert "EXPECTED_REPOSITORY: AlysisAi/alysis-code" in validation_job
+    assert "EXPECTED_REPOSITORY: AlysisAi/AlysisCode" in validation_job
     assert 'test "$REPOSITORY_PRIVATE" = "false"' in validation_job
     assert 'test "$REPOSITORY_VISIBILITY" = "public"' in validation_job
     assert 'test "$GITHUB_REF" = "refs/tags/$REQUESTED_TAG"' in validation_job
@@ -217,6 +254,14 @@ def test_each_target_vsix_is_clean_installed_in_production_mode() -> None:
     assert "VSCODE_TEST_VERSION: stable" in workflow
     assert 'combined["vscode_compatibility"]' in workflow
     assert "require_vscode_compatibility=True" in workflow
+    package_steps = yaml.safe_load(workflow)["jobs"]["package-platform-vsix"]["steps"]
+    binding_step = next(
+        step
+        for step in package_steps
+        if step.get("name") == "Validate and bind minimum/current-Stable production evidence"
+    )
+    # Candidate binding imports cryptography from the frozen verification environment.
+    assert binding_step["run"].startswith("uv run --frozen --no-sync python - ")
 
 
 def test_managed_cli_build_is_locked_attested_and_environment_fenced() -> None:
@@ -325,10 +370,30 @@ def test_final_target_vsix_has_verified_sbom_provenance_before_dogfood() -> None
     )
     install_index = workflow.index("Clean-install production VSIX on minimum VS Code (Linux)")
     assert build_index < provenance_index < sbom_index < verify_index < install_index
-    assert "scripts/release/build_vscode_vsix_sbom.py" in workflow
+    assert "python -m scripts.release.build_vscode_vsix_sbom" in workflow
     assert '--dependency-sbom "managed-cli-release/${TARGET}.cdx.json"' in workflow
     assert "ALYSIS_RELEASE_SIGNATURE_CHECK: passed" in workflow
     assert "vscode-alysis-${{ matrix.target }}.cdx.json" in workflow
+
+    # Execute the workflow's entry point without relying on pytest's import path.
+    steps = yaml.safe_load(workflow)["jobs"]["package-platform-vsix"]["steps"]
+    command = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Generate final target VSIX SBOM from verified package bytes"
+    )
+    arguments = shlex.split(command.splitlines()[0].removesuffix("\\").strip())
+    entry_point = arguments[arguments.index("python") + 1 :]
+    result = subprocess.run(
+        [sys.executable, "-E", *entry_point, "--help"],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--dependency-sbom" in result.stdout
 
 
 def test_only_validated_release_workflow_can_publish_python_distribution() -> None:
@@ -346,7 +411,7 @@ def test_only_validated_release_workflow_can_publish_python_distribution() -> No
 
     assert 'tags:\n      - "v*"' in release
     assert "Validate tag matches package version" in release
-    assert "EXPECTED_REPOSITORY: AlysisAi/alysis-code" in release
+    assert "EXPECTED_REPOSITORY: AlysisAi/AlysisCode" in release
     assert 'test "$REPOSITORY_PRIVATE" = "false"' in release
     assert 'test "$REPOSITORY_VISIBILITY" = "public"' in release
     assert 'test "$source_commit" = "$GITHUB_SHA"' in release
@@ -435,9 +500,22 @@ def test_container_release_uses_job_scoped_github_token_instead_of_a_pat() -> No
     )
 
     assert "secrets.GHCR_PAT" not in workflow
-    assert workflow.count("secrets.GITHUB_TOKEN") == 2
-    assert "packages: write" in workflow
-    assert "packages: read" in workflow
+    jobs = yaml.safe_load(workflow)["jobs"]
+    expected_permissions = {
+        "build-verify-candidate": "write",
+        "qualify-runtime-boundaries": "read",
+        "promote": "write",
+    }
+    login_jobs = set()
+    for job_id, job in jobs.items():
+        for step in job["steps"]:
+            if not step.get("uses", "").startswith("docker/login-action@"):
+                continue
+            login_jobs.add(job_id)
+            assert step["with"]["password"] == "${{ secrets.GITHUB_TOKEN }}"
+            assert step["with"]["username"] == "${{ github.actor }}"
+            assert job["permissions"]["packages"] == expected_permissions[job_id]
+    assert login_jobs == set(expected_permissions)
 
 
 def test_managed_release_verifies_exact_runtime_and_vsix_sbom_predicates() -> None:

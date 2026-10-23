@@ -62,8 +62,8 @@ def test_actual_manual_compaction_retires_only_successful_history_boundaries(
     )
     session = _session(tmp_path, monkeypatch, client)
     original = "Precise archived source evidence.\n" * 100
-    (session.root / "archived.txt").write_text(original)
-    (session.root / "retained.txt").write_text("Recent source evidence.\n")
+    (session.root / "archived.txt").write_bytes(original.encode("utf-8"))
+    (session.root / "retained.txt").write_bytes(b"Recent source evidence.\n")
     summary_client = _Client(
         [
             LLMResponse(
@@ -139,7 +139,7 @@ def test_real_turn_compaction_boundary_preserves_or_retires_read_reuse(
     client = _RecordingClient([_response(_read("old", {"path": "source.txt"})), _final()])
     session = _session(tmp_path, monkeypatch, client)
     original = "Exact prior file data.\n" * 160
-    (session.root / "source.txt").write_text(original)
+    (session.root / "source.txt").write_bytes(original.encode("utf-8"))
     summary_client = _Client(
         [
             LLMResponse(
@@ -210,7 +210,7 @@ def test_empty_response_recovery_resets_only_when_tool_text_is_elided(
         ]
     )
     session = _session(tmp_path, monkeypatch, client)
-    (session.root / "source.txt").write_text(original)
+    (session.root / "source.txt").write_bytes(original.encode("utf-8"))
     session.empty_response_stall_tracker = empty_response_stall.EmptyResponseStallTracker(
         policy=empty_response_stall.EmptyResponseStallPolicy(consecutive_threshold=1)
     )
@@ -239,7 +239,7 @@ def test_ordinary_child_resume_retains_actual_read_text_and_checks_freshness(
     children = []
     clients = []
     original = "Original child source evidence.\n"
-    (tmp_path / "source.txt").write_text(original)
+    (tmp_path / "source.txt").write_bytes(original.encode("utf-8"))
 
     def client_factory(**kwargs):
         client = _RecordingClient(
@@ -278,7 +278,7 @@ def test_ordinary_child_resume_retains_actual_read_text_and_checks_freshness(
         first = tools["subagent_run"].run({"name": "reader", "task": "Inspect source."})
         assert first["status"] == "success"
         if changed:
-            (tmp_path / "source.txt").write_text("Changed source evidence.\n")
+            (tmp_path / "source.txt").write_bytes(b"Changed source evidence.\n")
         resumed = tools["subagent_resume"].run(
             {"run_id": first["run_id"], "task": "Inspect current source."}
         )

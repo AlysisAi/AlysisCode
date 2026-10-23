@@ -19,7 +19,7 @@ function fixture(target: string) {
   const bytes = Buffer.from("signed-runtime-fixture");
   const key = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const record = JSON.parse(readFileSync(path.resolve(__dirname, "../../test/fixtures/managedCliAttestationV3.json"), "utf8")).record;
-  const source = "https://github.com/AlysisAi/alysis-code";
+  const source = "https://github.com/AlysisAi/AlysisCode";
   record.release.sourceRepository = source;
   record.provenance.builderId = `${source}/.github/workflows/managed-cli-vsix-release.yml@refs/tags/v1.2.3`;
   record.artifact.target = target;

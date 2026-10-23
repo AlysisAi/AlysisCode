@@ -34,7 +34,7 @@ def _write_dogfood(path: Path) -> None:
                 "managed_protocol_version": "1",
                 "managed_cli_sha256": "b" * 64,
                 "release_tag": "v1.2.3",
-                "source_repository": "https://github.com/AlysisAi/alysis-code",
+                "source_repository": "https://github.com/AlysisAi/AlysisCode",
                 "source_sha": "a" * 40,
                 "platform_target": "linux-x64",
             }
@@ -72,7 +72,7 @@ def _report(candidate: Path, dogfood: Path) -> dict[str, object]:
         "managed_cli_version": "1.2.3",
         "managed_protocol_version": "1",
         "managed_cli_sha256": "b" * 64,
-        "source_repository": "https://github.com/AlysisAi/alysis-code",
+        "source_repository": "https://github.com/AlysisAi/AlysisCode",
         "provider": "openai-responses",
         "model": "provider-model",
         "provider_origin": "https://api.openai.com",
@@ -323,7 +323,7 @@ def test_installed_live_provider_workflow_is_manual_protected_and_six_target() -
     assert "pull_request:" not in workflow
     assert "schedule:" not in workflow
     assert "environment: vscode-installed-live-provider-qa" in workflow
-    assert "timeout-minutes: 45" in workflow
+    assert "timeout-minutes: 90" in workflow
     assert "needs: validate-release-source" in workflow
     assert "validate_github_environment_policy.py" in workflow
     assert 'GH_API_VERSION: "2026-03-10"' in workflow

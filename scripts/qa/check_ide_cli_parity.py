@@ -77,6 +77,19 @@ VALID_EXTENSION_COMMAND_ROUTE_TYPES = {
     "tree_refresh",
 }
 
+# These responses are negotiated with the desktop's trusted host controller.
+# VS Code does not advertise that host capability or own these approval/media
+# boundaries; its typed client must not pretend to implement them.
+DESKTOP_HOST_ONLY_METHODS = {
+    "browser_start.respond",
+    "computer.respond",
+    "task_budget.respond",
+    "host.action.dispatched",
+    "session.userQuestions.get",
+    "session.userQuestions.answer",
+    "session.userQuestions.touch",
+}
+
 TS_CLIENT_COVERAGE_EXEMPT_METHODS = {
     "health",
     "getCapabilities",
@@ -1469,7 +1482,8 @@ def validate_parity_matrix() -> list[str]:
         )
 
     ts_protocol_methods = extract_ts_protocol_method_features()
-    missing_ts_protocol_methods = health_methods - ts_protocol_methods
+    extension_methods = {ref for ref in health_methods if ref.name not in DESKTOP_HOST_ONLY_METHODS}
+    missing_ts_protocol_methods = extension_methods - ts_protocol_methods
     if missing_ts_protocol_methods:
         errors.append(
             "AlysisProtocol.ts is missing advertised IDE bridge methods:\n"
@@ -1478,7 +1492,7 @@ def validate_parity_matrix() -> list[str]:
 
     ts_client_methods = extract_ts_bridge_client_method_features()
     client_required_methods = {
-        ref for ref in health_methods if ref.name not in TS_CLIENT_COVERAGE_EXEMPT_METHODS
+        ref for ref in extension_methods if ref.name not in TS_CLIENT_COVERAGE_EXEMPT_METHODS
     }
     missing_ts_client_methods = client_required_methods - ts_client_methods
     if missing_ts_client_methods:

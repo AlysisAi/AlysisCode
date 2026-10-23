@@ -18,13 +18,14 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse
 from alysis_code.session_store import read_session_events
 
-# The instruction shape from findings-session-10: an out-of-workspace request
-# that the model refuses without attempting any tool call. It yields a hard
-# UNVERIFIED acceptance criterion, so the pre-fix gate fails the turn.
-INSTRUCTION = "just run ls -la /home/nowhere and paste the output"
+# An explicit out-of-workspace output that the model refuses without tools.
+# The earlier "ls ... and paste the output" fixture only created a hard artifact
+# obligation because a later output noun incorrectly captured the earlier path.
+# Keep exercising the disposition gate with a real missing-output obligation.
+INSTRUCTION = "write a report to /home/nowhere/report.txt and paste the output"
 
 ANSWER = (
-    "I can't run ls on /home/nowhere: it is outside this workspace. "
+    "I can't write /home/nowhere/report.txt: it is outside this workspace. "
     "Bind it as a workspace first and I'll inspect it."
 )
 RESTATEMENT = (

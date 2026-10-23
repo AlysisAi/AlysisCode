@@ -77,11 +77,29 @@ def _disabled_filter_config(
     returned command, so unused drivers do not prevent ordinary repositories from
     working. Re-read for every command: a child can introduce filter configuration.
     """
+    drivers = configured_git_filter_drivers(root, extra_config=config, env=env)
+    overrides: dict[str, str] = {}
+    for driver in drivers:
+        # Empty all three commands, including the long-running process protocol.
+        # required=true makes an attempted conversion fail instead of passing
+        # through bytes that might differ from the real filter's representation.
+        overrides.update({f"filter.{driver}.{kind}": "" for kind in ("clean", "smudge", "process")})
+        overrides[f"filter.{driver}.required"] = "true"
+    return overrides
+
+
+def configured_git_filter_drivers(
+    root: Path,
+    *,
+    extra_config: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Read effective nonempty filter commands without invoking any driver."""
     result = subprocess.run(
         build_git_cmd(
             root,
             ["config", "--null", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
-            extra_config=config,
+            extra_config=extra_config,
             env=env,
         ),
         env=build_git_process_env(env),
@@ -90,7 +108,7 @@ def _disabled_filter_config(
         timeout=5,
     )
     if result.returncode == 1:  # No configured filter commands.
-        return {}
+        return ()
     if result.returncode != 0:
         raise OSError("Could not inspect Git filter configuration")
     values: dict[str, str] = {}
@@ -100,12 +118,6 @@ def _disabled_filter_config(
             if not separator:
                 raise OSError("Could not read Git filter configuration")
             values[key] = value
-    drivers = {key.rsplit(".", 1)[0] for key, value in values.items() if value}
-    overrides: dict[str, str] = {}
-    for driver in sorted(drivers):
-        # Empty all three commands, including the long-running process protocol.
-        # required=true makes an attempted conversion fail instead of passing
-        # through bytes that might differ from the real filter's representation.
-        overrides.update({f"{driver}.{kind}": "" for kind in ("clean", "smudge", "process")})
-        overrides[f"{driver}.required"] = "true"
-    return overrides
+    return tuple(
+        sorted({key[len("filter.") :].rsplit(".", 1)[0] for key, value in values.items() if value})
+    )

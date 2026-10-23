@@ -34,13 +34,13 @@ def test_load_remote_settings_defaults_off() -> None:
     assert settings.enabled is False
 
 
-def test_load_remote_settings_honors_legacy_environment_names() -> None:
+def test_load_remote_settings_honors_canonical_environment_names() -> None:
     settings = load_remote_settings_from_env(
         {
-            "SYLLIPTOR_REMOTE_SYNC": "strict",
-            "SYLLIPTOR_REMOTE_NAME": "upstream",
-            "SYLLIPTOR_REMOTE_CREATE_PR": "1",
-            "SYLLIPTOR_REMOTE_PROVIDER": "github",
+            "ALYSIS_REMOTE_SYNC": "strict",
+            "ALYSIS_REMOTE_NAME": "upstream",
+            "ALYSIS_REMOTE_CREATE_PR": "1",
+            "ALYSIS_REMOTE_PROVIDER": "github",
         }
     )
 

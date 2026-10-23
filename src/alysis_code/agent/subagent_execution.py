@@ -17,6 +17,7 @@ from time import perf_counter
 from typing import Any, Literal
 
 from ..atomic_io import atomic_write_text
+from ..budget_policy import is_budget_stop, is_clean_stop
 from ..cancellation import CooperativeCancellationError
 from ..capabilities import get_capability_definition
 from ..config import AppConfig, ConfigError, resolve_role_temperature
@@ -85,7 +86,6 @@ from .turn.snapshot import (
 )
 
 _AUTHORITATIVE_SUBAGENT_FINAL_TEXT_SOURCES = frozenset({"store_final", "surface_assistant_done"})
-_COMPLETION_NOTIFICATION_REPORT_MAX_CHARS = 4000
 _FORCED_FINAL_TERMINATION_EVENT_TYPES = frozenset(
     {"forced_final_summary_completed", "forced_final_summary_fallback"}
 )
@@ -98,6 +98,9 @@ _SUBAGENT_REPORT_EXPECTATIONS = """Child result expectations:
   remaining work, and blockers honestly; do not invent evidence or claim checks you did not run.
 - A final child report is evidence for the parent to assess and integrate, not independent proof
   that the user's whole request is complete. Keep the report focused on your assignment."""
+
+
+_COMPLETION_NOTIFICATION_REPORT_MAX_CHARS = 4000
 
 
 def _latest_subagent_store_final_text(sub_session: Any) -> tuple[str, bool, dict[str, Any]]:
@@ -186,6 +189,13 @@ def _subagent_termination_kind(sub_session: Any) -> str:
 
 def _subagent_stop_reason(sub_session: Any, *, deadline_exhausted: bool) -> str:
     """Return the host-recorded reason that actually prevented the next step."""
+    stop_reason = str(getattr(sub_session, "stop_reason", "") or "").strip()
+    if is_clean_stop(stop_reason) and not is_budget_stop(stop_reason):
+        # Model-response limits produce a local final report directly, without
+        # forced-summary events. Preserve their cause instead of mislabeling
+        # them as an exhausted step budget. Deadline stops still use the finer
+        # blocked-operation diagnostics below.
+        return stop_reason
     child_store = getattr(sub_session, "store", None)
     events_snapshot = getattr(child_store, "events_snapshot", None)
     if not callable(events_snapshot):
@@ -1016,12 +1026,8 @@ class _ChildResumeContext:
     workspace_run_id: str | None = None
     patch_artifact: str = ""
     read_ledger_snapshot: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Task identity replayed from the source child's own log (see
-    # ``agent.task_state.recover_task_state_from_events``). The resumed child
-    # keeps that task unless the caller supplied a replacement task.
-    task_state: Any | None = None
+    evidence_events: tuple[dict[str, Any], ...] = ()
     source_session_id: str | None = None
-    task_overridden: bool = False
 
 
 class SubagentLauncher:
@@ -1067,6 +1073,7 @@ class SubagentLauncher:
         managed_browser_service: Any | None = None,
         managed_browser_owner_id: str | None = None,
         managed_browser_cancel_check: Callable[[], bool] | None = None,
+        approval_reviewer: Any | None = None,
     ) -> None:
         self.root = root
         self.surface = surface
@@ -1113,6 +1120,9 @@ class SubagentLauncher:
         self.managed_browser_service = managed_browser_service
         self.managed_browser_owner_id = managed_browser_owner_id
         self.managed_browser_cancel_check = managed_browser_cancel_check
+        # Children share the parent's approval reviewer: the same user messages decide, and
+        # denials count against the same limits.
+        self.approval_reviewer = approval_reviewer
         self._helper_run_lock = RLock()
         self._helper_runs_count = 0
         self._helper_run_names: list[str] = []
@@ -2432,22 +2442,24 @@ class SubagentLauncher:
                 managed_browser_owner_id=managed_browser_owner_id,
                 managed_browser_cancel_check=managed_browser_cancel_check,
                 child_managed_browser_tool_names=child_managed_browser_tool_names,
+                **(
+                    {"approval_reviewer": self.approval_reviewer}
+                    if self.approval_reviewer is not None
+                    else {}
+                ),
             )
             subagent_session_id = str(
                 getattr(getattr(sub_session, "store", None), "session_id", "") or ""
             )
             parent_session_id = str(getattr(self.store, "session_id", "") or "").strip() or None
             try:
-                # Stamped on the child's task state so its saved identity can
-                # only ever be restored under the parent that delegated it.
-                sub_session.task_parent_session_id = parent_session_id
+                sub_session.evidence_parent_session_id = parent_session_id
             except Exception:  # noqa: BLE001 - lightweight child doubles may be read-only
                 pass
             if parent_message_provider is not None:
                 sub_session.step_system_message_provider = parent_message_provider
             if parent_message_delivery_observer is not None:
                 sub_session.step_system_message_delivery_observer = parent_message_delivery_observer
-            resumed_task_state: Any | None = None
             if resume_context is not None:
                 target_ledger = getattr(sub_session, "read_ledger", None)
                 seed_ledger = getattr(target_ledger, "seed_from_snapshot", None)
@@ -2456,20 +2468,13 @@ class SubagentLauncher:
                         resume_context.read_ledger_snapshot,
                         retained_messages=list(resume_context.history_messages),
                     )
-                if resume_context.task_state is not None:
-                    from .task_state import restore_session_task_state
+                from .task_evidence import restore_conversation_evidence
 
-                    # The child's task identity comes from its own saved log and
-                    # is attached only when that log belongs to the source child
-                    # and to this parent; anything else is refused and the
-                    # resumed child starts from the delegated task instead.
-                    resumed_task_state = restore_session_task_state(
-                        sub_session,
-                        resume_context.task_state,
-                        source_session_id=resume_context.source_session_id,
-                        expected_session_id=resume_context.source_session_id,
-                        expected_parent_session_id=parent_session_id,
-                    )
+                restore_conversation_evidence(
+                    sub_session,
+                    resume_context.evidence_events,
+                    source_session_id=resume_context.source_session_id,
+                )
             if not subagent_session_id:
                 try:
                     sub_session.close()
@@ -2983,33 +2988,13 @@ class SubagentLauncher:
                 accepts_cancellation_token = (
                     "cancellation_token" in run_turn_signature.parameters or accepts_var_keyword
                 )
-                accepts_task_relation = (
-                    "task_relation" in run_turn_signature.parameters or accepts_var_keyword
-                )
             except (TypeError, ValueError):
                 # Runtime session methods support cancellation; opaque wrappers
                 # that cannot be inspected get the capable path as well.
                 accepts_cancellation_token = True
-                accepts_task_relation = True
             child_turn_kwargs: dict[str, Any] = {}
             if cancellation_token is not None and accepts_cancellation_token:
                 child_turn_kwargs["cancellation_token"] = cancellation_token
-            if accepts_task_relation:
-                # The delegated task is the child's own objective. It is
-                # installed on the child session only; the parent's task
-                # identity is never touched by delegation or by the result. A
-                # resumed child that restored its saved task continues it; a
-                # resume with a replacement task, or without restorable state,
-                # starts a new task on the child.
-                child_turn_kwargs["task_relation"] = (
-                    "continuation"
-                    if (
-                        resume_context is not None
-                        and resumed_task_state is not None
-                        and not resume_context.task_overridden
-                    )
-                    else "new_task"
-                )
             exit_code = sub_session.run_turn(task, **child_turn_kwargs)
             if _cancellation_requested():
                 raise RuntimeError("cancelled_by_user")
@@ -4996,29 +4981,6 @@ class SubagentCoordinator:
         live = str(getattr(getattr(child.sub_session, "store", None), "session_id", "") or "")
         return live.strip() or None
 
-    def _resume_task_state(
-        self,
-        child: _ScheduledChild,
-        events: list[dict[str, Any]],
-        *,
-        source_session_id: str | None,
-    ) -> Any | None:
-        """Replay the source child's own log for its task identity.
-
-        Returns ``None`` when the log never recorded a task (lightweight child
-        doubles, or logs written before task state existed and holding no
-        user turn), so the resumed child simply accepts the delegated task.
-        """
-
-        if not events:
-            return None
-        from .task_state import recover_task_state_from_events
-
-        recovered = recover_task_state_from_events(events, session_id=source_session_id)
-        if recovered.state is None and recovered.recovery != "unrecoverable":
-            return None
-        return recovered
-
     def _resume_history(
         self,
         child: _ScheduledChild,
@@ -5225,11 +5187,8 @@ class SubagentCoordinator:
             ),
             workspace_run_id=workspace_run_id,
             patch_artifact=patch_artifact,
-            task_state=self._resume_task_state(
-                source, source_events, source_session_id=source_session_id
-            ),
+            evidence_events=tuple(source_events),
             source_session_id=source_session_id,
-            task_overridden=bool(task_override),
             read_ledger_snapshot=(
                 source.sub_session.read_ledger.snapshot()
                 if callable(

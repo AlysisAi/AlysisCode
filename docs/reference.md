@@ -50,6 +50,19 @@ alysis run --api-key-stdin "Hello"
 alysis run --api-key-env OTHER_API_KEY --base-url "https://example.com/v1" --model "your-model" "Hello"
 ```
 
+Official builds include the public hosted API URL, so `alysis login`, billing
+status, and online feedback work without cloud environment variables. No project
+or server keys are bundled. For a custom deployment, set
+`ALYSIS_CLOUD_API_URL` to its API base
+to which `/device-code`, `/device-token`, `/account-status`, and `/feedback` are
+appended. The gateway defaults to that base plus `/llm/v1`; set
+`ALYSIS_GATEWAY_URL` when it uses a separate OpenAI-compatible base URL.
+Deployments that require a public routing key can supply
+`ALYSIS_CLOUD_PUBLIC_KEY` at runtime. Never use a server or service-role key in
+the client. These values belong in the local environment, outside the repository.
+The legacy `ALYSIS_SUPABASE_URL` override remains supported when
+`ALYSIS_CLOUD_API_URL` is unset. Blank overrides use the hosted default.
+
 Auth state for a supervising application (one JSON object on stdout; exit code 0
 means the command ran, and the payload carries `authenticated`):
 
@@ -65,7 +78,7 @@ See [Account Runtimes](account-runtimes.md) for the payload contract.
 Forge:
 
 ```bash
-alysis forge plan --path .
+alysis forge plan --path . --goal "Build the scoped feature" --intent build
 alysis forge show --path .
 alysis forge status --path .
 alysis forge run --path . --mode auto --verify strict
@@ -74,6 +87,11 @@ alysis forge swarm --path . --parallel 3 --mode auto --verify warn
 alysis forge resume --path .
 alysis forge unlock --path .
 ```
+
+`forge plan` accepts `build`, `fix`, `refactor`, `audit`, `test`, or `document`
+as its intent. It prompts for a missing goal; machine callers should pass both
+`--goal` and `--intent`. Use `--planning-profile deep` for a fuller impact review.
+`forge run` reviews the saved plan and requests approval before execution.
 
 ## Execution Modes
 
@@ -137,7 +155,6 @@ Common interactive commands:
 - `/pwd`: show workspace and active workdir
 - `/permissions`: inspect or select execution permissions for the next message
 - `/persona`: select Code, Architect, Ask, Debug, or a custom persona
-- `/objective`: inspect the current task, or use `new` and `amend` to change it
 - `/config`: open the configuration menu
 - `/usage`: show token and cost usage
 - `/stream`: open the live-output picker (On by default)
@@ -150,6 +167,59 @@ Common interactive commands:
 - `/forge [resume]`: enter or resume Forge for the workspace
 - `/report [text]`: create a local feedback bundle
 - `/exit`: quit chat
+
+Trace controls presentation, independently of reasoning effort. In normal turns and
+`/chat`, `compact` and `full` show reasoning text or summaries returned by the selected
+provider/model. The TUI labels both as **thinking**: compact collapses completed
+blocks to a preview; full keeps their text expanded. Buffered requests show reasoning
+when the response arrives. `off` hides reasoning and does not request optional
+summaries; it does not change reasoning effort or discard required continuation data.
+
+| Provider / connection | Trace source |
+| --- | --- |
+| OpenAI Responses, including ChatGPT subscription | Reasoning summaries when returned |
+| Anthropic native, Gemini native | Returned thinking / thought summaries |
+| DeepSeek, Qwen/DashScope, Kimi/Moonshot, GLM/Z.ai, NVIDIA NIM | `reasoning_content` on models that return it |
+| Mistral | Text inside structured `thinking` content chunks |
+| OpenRouter | Structured summaries/reasoning text, or a supported reasoning string field |
+
+Provider-specific adapters normalize these formats into the same trace events.
+Encrypted state, signatures, and redacted blocks are never displayed. Required
+continuation data is preserved separately in its provider format. When no supported
+text is returned, the trace shows tool progress without inventing a thinking block.
+Text embedded in an ordinary answer (for example `<think>` tags) is not guessed to
+be a separate reasoning channel.
+
+Custom OpenAI-compatible profiles can choose a known `reasoning_trace_adapter`, such
+as `deepseek_reasoning`, `openrouter_reasoning`, `mistral_thinking`, or `glm_reasoning`.
+Unknown endpoints stay passive by default. A profile's `reasoning_trace_adapter =
+"none"` disables reasoning trace requests and callbacks across all provider protocols.
+Use `/trace off` to hide trace while retaining the selected adapter's replay behavior.
+
+In the full-screen TUI, `/trace full` also displays commands, bounded tool output,
+and line-numbered diffs with addition/deletion counts for `fs_edit`, `fs_write`,
+and `git_apply_patch`. Applied-change cards appear after a successful write;
+denied approvals and stale-file failures do not count as applied changes.
+Trace colors mark active steps in blue, success and additions in green, commands
+in cyan, warnings and previews in amber, and failures and deletions in red.
+File reads are labeled **view only** and their output says **VIEWING ONLY — no
+file changes**. Saved edits show counts in words and mark each code row **ADDED**,
+**REMOVED**, or **UNCHANGED** (context). Unsaved previews say **PROPOSED CHANGES**
+and use **ADD**/**REMOVE** labels. A replacement appears as the old code removed
+and the new code added; reading a file does not produce change rows.
+Output is grouped under a vertical rail, with quieter timestamps and line numbers.
+The palette adapts to light and dark terminals; icons and labels retain the meaning
+when colors are unavailable.
+`compact` keeps the change summary and hides the diff body and tool output;
+`off` suppresses new trace details. Nested-agent diffs in full trace identify the
+agent and whether its workspace is shared or isolated. Text is redacted and
+long output is marked as truncated. This display uses shared tool events across
+providers, independently of model reasoning support. `/diff` or `Ctrl+P` opens the
+current Git working-tree changes in a collapsed view, including while the agent
+is working. These include edits made through shell commands and may include
+changes made before the current turn. Press Enter to expand a file, `r` to refresh,
+or Esc to return to your draft without interrupting the agent. `Alt+p` edits pasted
+text in the composer. The diff viewer is read-only and does not submit a model turn.
 
 While an agent turn is running, press Enter to send the current text as a
 mid-turn message. Already-issued tool calls finish normally; Alysis Code then
@@ -166,15 +236,17 @@ Read-only commands remain available during a running turn: `/help` (and `/`),
 `/toolbar`, `/images`, `/image`, `/paste-image`, `/clear-images`, `/terminals`,
 and bare `/skill`.
 
-`/stream` changes apply on the worker at the next step. `/permissions` selects the
-base permissions for the next user message; repeated selections replace the pending
-choice without rebuilding the running turn's tools. Shift+Tab uses the same selection.
-`/persona`, `/model`, typed `/config`, and `/cd` changes wait until the active turn
-finishes. A model change therefore never switches the model handling the current turn.
-The status display distinguishes changes waiting for the next step from those waiting
-for the next message.
+State-changing commands use two staged tiers. `/stream` is resolved when submitted and applies
+on the worker at the agent's next step, before steering messages reach the model.
+`/permissions`, `/model`, `/persona`, typed `/config`, `/cd`, and chat `/plan`
+apply after the active turn and before the next message starts. Repeated Permissions selections
+are latest-wins, and Shift+Tab uses the same pending selection; intermediate choices never rebuild
+the current turn's tool surface.
+A staged model change therefore never switches the model handling the current
+turn. The status row distinguishes operations "applying next step" from those
+waiting "at next message", and `/status` lists their labels in application order.
 
-Bare `/config` opens its overlay immediately so settings
+Bare `/config` open their overlays immediately so settings
 can be browsed and saved while output continues. A save reaches disk at once,
 but the live session reload waits until the running turn finishes. Other
 commands that replace history or start another session remain blocked while a
@@ -356,20 +428,14 @@ to it; when empty, the model answers in the user's language naturally.
 
 `/ask <question>` runs one
 read-only turn: the session switches to the readonly execution mode for
-exactly that turn and the previous mode is restored afterwards, even on errors.
+exactly that turn and the previous mode is restored afterwards, even on
+errors. `/chat <message>` produces one bounded conversational reply from the
+main model with a minimal prompt, no tools, and no workspace context.
 
-Alysis Code keeps the current task across chat turns and session resume. The first
-accepted request becomes the objective; ordinary follow-ups keep it while still
-being delivered as instructions. Use `/objective` to inspect the task,
-`/objective new <request>` to start another task without clearing conversation
-history, or `/objective amend <constraint>` to add a constraint. `/clear` clears
-history and retires the task. These commands do not change permissions or mark
-a task complete.
-
-The host preserves the accepted request and amendments through compaction and
-resume. If saved task state cannot be recovered, start a new task with
-`/objective new`. If a long request cannot be carried forward without losing
-requirements, Alysis Code stops and asks you to restate the missing text.
+Each turn uses the current request and conversation history. Compaction and
+resume retain normal conversation context; there is no separately managed objective
+or amendment state. `/clear` resets the conversation and its workspace verification
+baseline.
 
 Useful environment overrides:
 
@@ -472,6 +538,7 @@ Useful commands:
 alysis profile presets
 alysis profile preset <provider-preset>
 alysis profile set-key <profile> --stdin
+alysis profile check <profile> --json
 alysis profile use <profile>
 alysis profile list
 ```
@@ -1095,3 +1162,25 @@ running it.
 - [Plugins](plugins.md): trusted extension bundles.
 - [Custom tools](custom_tools.md): trusted Python tool authoring.
 - [Lifecycle hooks](hooks.md): command-based policy and automation.
+
+
+## Optional document tools
+
+Install `alysis-code[documents]` to enable PDF, Word (`.docx`), spreadsheet
+(`.xlsx`), and presentation (`.pptx`) tools. With uv, use
+`uv tool install --upgrade 'alysis-code[documents]'`. Existing source documents
+and requested output paths have separate acceptance roles, so reading an input
+is not treated as producing the requested deliverable.
+
+## Release 0.15 compatibility
+
+Use `alysis` or `alysis-code` and canonical `ALYSIS_` environment variables.
+The legacy `sylliptor` command, environment aliases, and manifest names are
+retired. Existing `.alysis` history remains supported. Back up legacy data and
+move it to the canonical locations before upgrading; migration is explicit.
+`/objective` is removed. State the task in the conversation and use steering to
+update a running turn.
+
+For a corporate certificate authority, set `ALYSIS_EXTRA_CA_CERTS` to a PEM
+certificate bundle before starting the CLI. Provider setup and network clients
+then use the additional trust configuration.

@@ -7,6 +7,7 @@ from alysis_code.reasoning_contracts import (
     _CONTRACTS,
     ALWAYS_ON,
     NONE,
+    OFF_BETWEEN_TOOLS,
     OFF_EXPLICIT,
     OFF_IMPOSSIBLE,
     OFF_OMIT,
@@ -23,7 +24,14 @@ from alysis_code.reasoning_contracts import (
 )
 
 _VALID_MODES = {ALWAYS_ON, OPTIONAL, NONE, UNKNOWN}
-_VALID_OFF = {OFF_OMIT, OFF_EXPLICIT, OFF_IMPOSSIBLE, OFF_SWAPS_MODEL, OFF_UNKNOWN}
+_VALID_OFF = {
+    OFF_OMIT,
+    OFF_EXPLICIT,
+    OFF_BETWEEN_TOOLS,
+    OFF_IMPOSSIBLE,
+    OFF_SWAPS_MODEL,
+    OFF_UNKNOWN,
+}
 
 
 def test_table_integrity() -> None:
@@ -110,6 +118,16 @@ def test_anthropic_fable_5_1_forbids_forced_tool_choice() -> None:
     assert fable51.default == "high"
     assert fable51.accepts_tool_choice_while_reasoning is False
     assert fable5.accepts_tool_choice_while_reasoning is True
+
+
+def test_sonnet_55_reduced_thinking_is_not_literal_off() -> None:
+    for provider in ("anthropic", "alysis"):
+        contract = reasoning_contract_for(provider, "claude-sonnet-5-5")
+        assert contract.off == OFF_BETWEEN_TOOLS
+        assert not contract.toggleable
+        assert not contract.accepts_tool_choice_while_reasoning
+        assert not reasoning_off_is_safe(provider, "claude-sonnet-5-5")
+        assert "up-front" in reasoning_off_hazard(provider, "claude-sonnet-5-5")
 
 
 def test_gemini_3_8_flash_matches_3_7_contract() -> None:
@@ -275,7 +293,7 @@ def test_flat_reasoning_effort_emission_requires_explicit_transport_verification
     assert reasoning_contract_for(
         "cohere", "command-a-reasoning-08-2025"
     ).emits_flat_reasoning_effort
-    assert not reasoning_contract_for("xai", "grok-4.6").emits_flat_reasoning_effort
+    assert reasoning_contract_for("xai", "grok-4.6").emits_flat_reasoning_effort
     assert not reasoning_contract_for(
         "fireworks", "accounts/fireworks/models/minimax-m3"
     ).emits_flat_reasoning_effort

@@ -7,7 +7,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AlysisAi/alysis-code.git",
+    "url": "https://github.com/AlysisAi/AlysisCode.git",
     "directory": "extensions/vscode-alysis"
   },
   "icon": "resources/icon.png",
@@ -57,7 +57,7 @@
     "package:pre-release": "npm run compile && npm run bundle:production && node ./scripts/package-release.js --pre-release",
     "prepublish:check": "npm run compile && npm run lint && npm test && npm audit --audit-level=high && npm run package:vsix",
     "publish:dry-run": "npm run prepublish:check && vsce ls --tree --no-dependencies",
-    "package:dev-vsix": "npm run compile && npm run bundle:production && vsce package --no-dependencies --baseImagesUrl https://raw.githubusercontent.com/AlysisAi/alysis-code/main/extensions/vscode-alysis",
+    "package:dev-vsix": "npm run compile && npm run bundle:production && vsce package --no-dependencies --baseImagesUrl https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/extensions/vscode-alysis",
     "sync:ui": "node scripts/sync-shared-ui.js"
   },
   "contributes": {
@@ -670,17 +670,18 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.30",
     "@types/vscode": "1.90.0",
-    "@vscode/test-electron": "^2.5.2",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
     "esbuild": "^0.25.0",
     "eslint": "^9.13.0",
+    "glob": "13.0.6",
     "jsdom": "^29.1.1",
     "mocha": "^11.7.6",
     "typescript": "^5.4.5",
     "typescript-eslint": "^8.10.0"
   },
   "overrides": {
-    "brace-expansion": "5.0.9",
+    "brace-expansion": "5.0.12",
     "mocha": {
       "diff": "8.0.4",
       "serialize-javascript": "7.0.5"
@@ -691,9 +692,9 @@
   ],
   "preview": false,
   "pricing": "Free",
-  "homepage": "https://github.com/AlysisAi/alysis-code",
+  "homepage": "https://github.com/AlysisAi/AlysisCode",
   "bugs": {
-    "url": "https://github.com/AlysisAi/alysis-code/issues"
+    "url": "https://github.com/AlysisAi/AlysisCode/issues"
   },
-  "qna": "https://github.com/AlysisAi/alysis-code/issues"
+  "qna": "https://github.com/AlysisAi/AlysisCode/issues"
 }

@@ -1,0 +1,25 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.github"
+name = "GitHub"
+version = "1.0.0"
+description = "GitHub's official remote MCP tools, connected through your selected desktop account."
+author = "Alysis AI (integration); GitHub (MCP server)"
+license = "MIT"
+homepage = "https://github.com/github/github-mcp-server"
+repository = "https://github.com/github/github-mcp-server"
+keywords = ["github", "mcp", "repositories", "pull-requests", "issues"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+[[components.mcp_server]]
+id = "github"
+transport = "http"
+url = "https://api.githubcopilot.com/mcp/"
+host_managed = true
+scopes = ["repos", "pull_requests", "issues"]
+
+[security]
+contact = "https://github.com/github/github-mcp-server/security"

@@ -50,6 +50,11 @@ from ..custom_tools import (
     trust_project_tool,
     untrust_project_tool,
 )
+from ..extensions.activation import resolve_active_plugins
+from ..extensions.component_activation import (
+    build_plugin_activation_index,
+    filter_discovered_skills_for_plugins,
+)
 from ..extensions.install import (
     PluginInstallError,
     disable_plugin,
@@ -62,7 +67,6 @@ from ..extensions.paths import project_extensions_path
 from ..extensions.registry import find_by_id, load_registry
 from ..extensions.registry import search as search_extensions
 from ..extensions.state import (
-    compute_effective_enabled,
     load_global_state,
     load_project_overrides,
     load_project_state,
@@ -203,6 +207,8 @@ MANAGEMENT_METHODS = (
     "tool.info",
     "tool.trust",
     "tool.untrust",
+    "commands.list",
+    "agents.list",
     "skill.list",
     "skill.info",
     "skill.init",
@@ -449,6 +455,7 @@ MANAGEMENT_FEATURES: dict[str, Any] = {
     "sessions": _feature_group("session"),
     "tools": _feature_group("tools", "tool"),
     "skills": _feature_group("skill"),
+    "agents": _feature_group("agents"),
     "doctor": _feature_group("doctor"),
     "sandbox": _feature_group("sandbox"),
     "update": _feature_group("update"),
@@ -1084,24 +1091,59 @@ def _tool_untrust(params: dict[str, Any], request_id: RequestId) -> dict[str, An
     }
 
 
+def _commands_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    # Reuse the terminal catalog; hosts decide which commands have native handlers.
+    from ..cli_impl.chat_slash_completer import get_chat_specs, get_forge_specs
+
+    mode = params.get("mode", "chat")
+    if not isinstance(mode, str) or mode not in {"chat", "forge"}:
+        raise ProtocolError("invalid_field", "mode must be chat or forge", request_id=request_id)
+    specs = get_chat_specs() + (get_forge_specs() if mode == "forge" else ())
+    return {
+        "commands": [
+            {"name": spec.name, "usage": spec.usage, "description": spec.description}
+            for spec in specs
+        ]
+    }
+
+
+def _agents_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    """Every subagent with the model and provider it would run on (subagent_settings.py).
+
+    Without workspace or path, the project's .alysis_agents/ is not included.
+    """
+    from ..subagent_settings import subagent_catalog
+
+    root = (
+        _workspace_root_from_params(params, request_id=request_id, required=True)
+        if params.get("workspace") is not None or params.get("path") is not None
+        else None
+    )
+    return {**subagent_catalog(load_config(), root=root), "secret_values_included": False}
+
+
 def _skill_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    workspace_root, catalog = _skill_catalog(params, request_id=request_id)
+    workspace_root, catalog, available = _available_skill_catalog(params, request_id=request_id)
     return {
         "workspace_root": str(workspace_root),
-        "skills": [_skill_entry_payload(entry) for entry in catalog.entries],
+        "skills_enabled": bool(load_config().skills_enabled),
+        "skills": [
+            {**_skill_entry_payload(entry), "available": entry.skill.name in available}
+            for entry in catalog.entries
+        ],
         "issues": _skill_issues_payload(catalog),
     }
 
 
 def _skill_info(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     name = _required_str(params, "name", request_id=request_id)
-    workspace_root, catalog = _skill_catalog(params, request_id=request_id)
+    workspace_root, catalog, available = _available_skill_catalog(params, request_id=request_id)
     entry = resolve_skill_catalog_entry(entries=catalog.entries, raw_name=name)
     if entry is None:
         raise ProtocolError("skill_not_found", f"Skill not found: {name}", request_id=request_id)
     return {
         "workspace_root": str(workspace_root),
-        "skill": _skill_entry_payload(entry),
+        "skill": {**_skill_entry_payload(entry), "available": entry.skill.name in available},
         "info_text": render_skill_info_text(entry.skill, catalog_entry=entry),
         "issues": _skill_issues_payload(catalog),
     }
@@ -1904,7 +1946,9 @@ def _conventions_render(params: dict[str, Any], request_id: RequestId) -> dict[s
 
 
 def _ext_search(params: dict[str, Any], _request_id: RequestId) -> dict[str, Any]:
-    query = _required_str(params, "query", request_id=_request_id)
+    query = params.get("query", "")
+    if not isinstance(query, str):
+        raise ProtocolError("invalid_param", "query must be a string.", request_id=_request_id)
     registry = load_registry()
     matches = search_extensions(registry, query)
     return {
@@ -1918,7 +1962,9 @@ def _ext_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     global_state = load_global_state()
     project_overrides = load_project_overrides(repo_root)
     project_state = load_project_state(repo_root)
-    effective_enabled = compute_effective_enabled(global_state, project_overrides)
+    effective_enabled = set(
+        resolve_active_plugins(repo_root=repo_root, workspace_trust_prompt=None).enabled_plugin_ids
+    )
     installed: list[dict[str, Any]] = []
     for ext_id in sorted(set(global_state.installed) | set(project_state.installed)):
         record = global_state.installed.get(ext_id) or project_state.installed.get(ext_id)
@@ -1933,6 +1979,7 @@ def _ext_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
             "enabled": sorted(project_overrides.enabled),
             "disabled": sorted(project_overrides.disabled),
         },
+        "workspace_trust": _extension_workspace_trust_payload(repo_root),
         "secret_values_included": False,
     }
 
@@ -1953,7 +2000,9 @@ def _ext_info(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
         raise ProtocolError(
             "extension_not_found", f"Extension not found: {ext_id}", request_id=request_id
         )
-    effective_enabled = compute_effective_enabled(global_state, project_overrides)
+    effective_enabled = set(
+        resolve_active_plugins(repo_root=repo_root, workspace_trust_prompt=None).enabled_plugin_ids
+    )
     return {
         "workspace_root": str(repo_root),
         "extension": _registry_entry_payload(entry) if entry is not None else {"id": ext_id},
@@ -2268,6 +2317,9 @@ def _registry_entry_payload(entry: Any) -> dict[str, Any]:
         "version": entry.version,
         "tags": list(entry.tags),
         "permissions": list(entry.permissions),
+        "source_kind": getattr(entry, "source_kind", "git"),
+        "package_sha256": getattr(entry, "package_sha256", None),
+        "upstream_commit": getattr(entry, "upstream_commit", None),
     }
 
 
@@ -2294,6 +2346,11 @@ def _installed_plugin_payload(
         "scope": getattr(record, "scope", "") or "",
         "installed_at": getattr(record, "installed_at", "") or "",
         "component_ids": _redact_payload(getattr(record, "component_ids", {}) or {}),
+        "source_kind": getattr(record, "source_kind", "git"),
+        "source_url": getattr(record, "source_url", None),
+        "manifest_sha256": getattr(record, "manifest_sha256", None),
+        "package_sha256": getattr(record, "package_sha256", None),
+        "upstream_commit": getattr(record, "upstream_commit", None),
     }
 
 
@@ -2378,6 +2435,27 @@ def _select_project_tool_entry(
         "Trust commands only apply to valid project custom tools.",
         request_id=request_id,
     )
+
+
+def _available_skill_catalog(
+    params: dict[str, Any], *, request_id: RequestId
+) -> tuple[Path, Any, frozenset[str]]:
+    workspace_root, catalog = _skill_catalog(params, request_id=request_id)
+    # Management requests do not grant workspace trust. Use exactly the same
+    # plugin activation and ownership filter as noninteractive agent sessions.
+    effective, _ = filter_discovered_skills_for_plugins(
+        discovered=catalog.effective,
+        activation_decision=resolve_active_plugins(
+            repo_root=workspace_root, workspace_trust_prompt=None
+        ),
+        index=build_plugin_activation_index(workspace_root),
+    )
+    available = (
+        frozenset(skill.name for skill in effective.ordered)
+        if load_config().skills_enabled
+        else frozenset()
+    )
+    return workspace_root, catalog, available
 
 
 def _skill_catalog(params: dict[str, Any], *, request_id: RequestId) -> tuple[Path, Any]:
@@ -2551,6 +2629,10 @@ def _validate_ext_install_source(source: str, *, request_id: RequestId) -> None:
 
 
 def _is_remote_skill_source(source: str) -> bool:
+    # A native Windows drive or UNC share is a filesystem source, not a URL
+    # scheme. It must pass the workspace boundary checks below like other paths.
+    if Path(source).drive:
+        return False
     parsed = urlparse(source)
     return (
         bool(parsed.scheme)
@@ -3371,6 +3453,8 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
     "tool.info": _tool_info,
     "tool.trust": _tool_trust,
     "tool.untrust": _tool_untrust,
+    "commands.list": _commands_list,
+    "agents.list": _agents_list,
     "skill.list": _skill_list,
     "skill.info": _skill_info,
     "skill.init": _skill_init,

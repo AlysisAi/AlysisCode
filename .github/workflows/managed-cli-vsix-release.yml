@@ -43,7 +43,7 @@ jobs:
       - name: Verify official repository, exact tag, source SHA, and version
         shell: bash
         env:
-          EXPECTED_REPOSITORY: AlysisAi/alysis-code
+          EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
@@ -87,12 +87,12 @@ jobs:
             gh api \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-              "/repos/${GITHUB_REPOSITORY}/environments/${environment}" \
+              "repos/${GITHUB_REPOSITORY}/environments/${environment}" \
               > "${environment}.json"
             gh api \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-              "/repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
+              "repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
               > "${environment}-branch-policies.json"
             python scripts/release/validate_github_environment_policy.py \
               "${environment}.json" "${environment}-branch-policies.json" \
@@ -111,7 +111,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: extensions/vscode-alysis/package-lock.json
       - name: Install frozen extension dependencies
@@ -174,10 +174,45 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+      - name: Install pinned patched native Python
+        id: runtime-python
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python scripts/release/install_managed_cli_python.py \
+            --target "${{ matrix.target }}" --destination "$RUNNER_TEMP/alysis-python" \
+            --github-output "$GITHUB_OUTPUT" \
+            --receipt "managed-cli-out/${{ matrix.target }}.python-runtime.json"
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.23"
       - name: Install frozen-build dependencies from the committed lock
+        if: matrix.target != 'win32-arm64' && matrix.target != 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable || '3.11' }}
+        run: uv sync --frozen --no-editable --extra managed-build
+      - name: Build pinned native OpenSSL for Windows ARM64
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        run: ./scripts/release/build_windows_arm64_openssl.ps1
+      - name: Install frozen Windows ARM64 build dependencies
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-arm64
+          OPENSSL_STATIC: "1"
+        run: uv sync --frozen --no-editable --extra managed-build
+      - name: Build pinned static OpenSSL for Intel macOS
+        if: matrix.target == 'darwin-x64'
+        shell: bash
+        run: bash scripts/release/build_macos_x64_openssl.sh
+      - name: Install frozen Intel macOS build dependencies
+        if: matrix.target == 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-x64
+          OPENSSL_STATIC: "1"
         run: uv sync --frozen --no-editable --extra managed-build
       - name: Revalidate native-signing policy after approval
         shell: bash
@@ -188,9 +223,9 @@ jobs:
           set -euo pipefail
           environment=managed-cli-native-signing
           gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-            "/repos/${GITHUB_REPOSITORY}/environments/${environment}" > "${environment}.json"
+            "repos/${GITHUB_REPOSITORY}/environments/${environment}" > "${environment}.json"
           gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-            "/repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
             > "${environment}-branch-policies.json"
           python scripts/release/validate_github_environment_policy.py \
             "${environment}.json" "${environment}-branch-policies.json" \
@@ -198,7 +233,7 @@ jobs:
       - name: Reject vulnerabilities and unapproved adverse dependency statuses
         run: uv run --frozen --no-sync python scripts/release/audit_locked_dependencies.py
       - name: Build one-file CLI on native host
-        if: runner.os != 'Linux'
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           uv run --frozen --no-sync python -m PyInstaller \
@@ -221,32 +256,7 @@ jobs:
           MANYLINUX_IMAGE: ${{ matrix.manylinux_image }}
           OUTPUT_NAME: ${{ matrix.executable }}
         run: |
-          set -euo pipefail
-          uv_executable="$(command -v uv)"
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            --env HOME=/tmp \
-            --env UV_CACHE_DIR=/tmp/uv-cache \
-            --env UV_PROJECT_ENVIRONMENT=/tmp/alysis-venv \
-            --env UV_PYTHON=/opt/python/cp311-cp311/bin/python \
-            --env UV_PYTHON_DOWNLOADS=never \
-            --env OUTPUT_NAME="$OUTPUT_NAME" \
-            --volume "$PWD:/workspace" \
-            --volume "$uv_executable:/usr/local/bin/uv:ro" \
-            --workdir /workspace \
-            "$MANYLINUX_IMAGE" \
-            bash -euxo pipefail -c '
-              uv sync --frozen --no-editable --extra managed-build
-              uv run --frozen --no-sync python -m PyInstaller \
-                --noconfirm \
-                --clean \
-                --onefile \
-                --name alysis \
-                --collect-all alysis_code \
-                scripts/release/managed_cli_entry.py
-              mkdir -p managed-cli-out
-              mv dist/alysis "managed-cli-out/${OUTPUT_NAME}"
-            '
+          bash scripts/release/build_linux_managed_cli.sh
       - name: Export locked managed CLI dependency SBOM
         shell: bash
         run: |
@@ -257,6 +267,18 @@ jobs:
             --extra managed-build \
             --format cyclonedx1.5 \
             --output-file "managed-cli-out/${{ matrix.target }}.cdx.json"
+      - name: Record source-built static OpenSSL in the SBOM
+        if: matrix.target == 'win32-arm64' || matrix.target == 'darwin-x64'
+        shell: bash
+        run: |
+          uv run --frozen --no-sync python scripts/release/add_native_openssl_sbom.py \
+            managed-cli-out/${{ matrix.target }}.cdx.json
+      - name: Record the pinned Python runtime and native libraries in the SBOM
+        shell: bash
+        run: |
+          uv run --frozen --no-sync python -m scripts.release.add_managed_python_sbom \
+            "managed-cli-out/${{ matrix.target }}.cdx.json" \
+            "managed-cli-out/${{ matrix.target }}.python-runtime.json"
       - name: Validate protected Azure signing configuration
         if: runner.os == 'Windows'
         shell: pwsh
@@ -379,8 +401,15 @@ jobs:
           security import "$p12" -k "$keychain" -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain"
+          # PyInstaller must sign embedded libraries before sealing its one-file
+          # archive; signing only the outer executable fails library validation.
+          uv run --frozen --no-sync python -m PyInstaller \
+            --noconfirm --clean --onefile --name alysis \
+            --collect-all alysis_code \
+            --codesign-identity "$APPLE_DEVELOPER_IDENTITY" \
+            scripts/release/managed_cli_entry.py
           executable="managed-cli-out/${{ matrix.executable }}"
-          codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_IDENTITY" "$executable"
+          mv dist/alysis "$executable"
           codesign --verify --strict --verbose=2 "$executable"
           actual_authority="$(codesign -dvv "$executable" 2>&1 | sed -n 's/^Authority=//p' | head -n 1)"
           test "$actual_authority" = "$APPLE_DEVELOPER_IDENTITY"
@@ -407,6 +436,7 @@ jobs:
               submission_id,
           ) is None:
               raise SystemExit("Apple notarization response has an invalid submission ID")
+          print(f"Apple notarization Accepted: {submission_id}")
           evidence = {
               "schemaVersion": 2,
               "target": "${{ matrix.target }}",
@@ -423,9 +453,9 @@ jobs:
               json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8"
           )
           PY
-          # Apple issues online tickets for standalone Mach-O executables but does not support
-          # stapling them directly. `spctl` verifies the accepted ticket through Gatekeeper.
-          spctl --assess --type execute --verbose=4 "$executable"
+          # Apple's check for non-app code requires the online notarization ticket.
+          # https://developer.apple.com/forums/thread/130560
+          codesign --verify --strict --verbose=4 -R="notarized" --check-notarization "$executable"
       - name: Record Linux native policy evidence
         if: runner.os == 'Linux'
         shell: bash
@@ -505,9 +535,9 @@ jobs:
           set -euo pipefail
           environment=managed-cli-signing
           gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-            "/repos/${GITHUB_REPOSITORY}/environments/${environment}" > "${environment}.json"
+            "repos/${GITHUB_REPOSITORY}/environments/${environment}" > "${environment}.json"
           gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-            "/repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" \
             > "${environment}-branch-policies.json"
           python scripts/release/validate_github_environment_policy.py \
             "${environment}.json" "${environment}-branch-policies.json" \
@@ -685,12 +715,12 @@ jobs:
             --release-tag "$RELEASE_TAG" \
             --source-commit "$GITHUB_SHA" \
             --provenance-builder-id "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/managed-cli-vsix-release.yml@refs/tags/${RELEASE_TAG}" \
-            --artifact "win32-x64=managed-cli-artifacts/alysis-win32-x64.exe=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-win32-x64.exe" \
-            --artifact "win32-arm64=managed-cli-artifacts/alysis-win32-arm64.exe=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-win32-arm64.exe" \
-            --artifact "darwin-x64=managed-cli-artifacts/alysis-darwin-x64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-darwin-x64" \
-            --artifact "darwin-arm64=managed-cli-artifacts/alysis-darwin-arm64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-darwin-arm64" \
-            --artifact "linux-x64=managed-cli-artifacts/alysis-linux-x64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-linux-x64" \
-            --artifact "linux-arm64=managed-cli-artifacts/alysis-linux-arm64=https://github.com/AlysisAi/alysis-code/releases/download/${RELEASE_TAG}/alysis-linux-arm64" \
+            --artifact "win32-x64=managed-cli-artifacts/alysis-win32-x64.exe=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-win32-x64.exe" \
+            --artifact "win32-arm64=managed-cli-artifacts/alysis-win32-arm64.exe=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-win32-arm64.exe" \
+            --artifact "darwin-x64=managed-cli-artifacts/alysis-darwin-x64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-darwin-x64" \
+            --artifact "darwin-arm64=managed-cli-artifacts/alysis-darwin-arm64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-darwin-arm64" \
+            --artifact "linux-x64=managed-cli-artifacts/alysis-linux-x64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-linux-x64" \
+            --artifact "linux-arm64=managed-cli-artifacts/alysis-linux-arm64=https://github.com/AlysisAi/AlysisCode/releases/download/${RELEASE_TAG}/alysis-linux-arm64" \
             --sbom "win32-x64=managed-cli-artifacts/win32-x64.cdx.json" \
             --sbom "win32-arm64=managed-cli-artifacts/win32-arm64.cdx.json" \
             --sbom "darwin-x64=managed-cli-artifacts/darwin-x64.cdx.json" \
@@ -710,13 +740,21 @@ jobs:
       - name: Validate manifest without exposing signing material
         run: |
           uv run --frozen --no-sync python -m json.tool managed-cli-artifacts/manifest.json >/dev/null
-          test "$(find managed-cli-artifacts -maxdepth 1 -type f | wc -l)" -eq 19
+          test "$(find managed-cli-artifacts -maxdepth 1 -type f | wc -l)" -eq 25
           test "$(find managed-cli-artifacts -maxdepth 1 -name '*.cdx.json' -type f | wc -l)" -eq 6
           test "$(find managed-cli-artifacts -maxdepth 1 -name '*.native-signature.json' -type f | wc -l)" -eq 6
+          test "$(find managed-cli-artifacts -maxdepth 1 -name '*.python-runtime.json' -type f | wc -l)" -eq 6
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-managed-cli-release
-          path: managed-cli-artifacts/*
+          # Raw interpreter receipts remain in the per-target build artifacts;
+          # their source hashes are bound by the attested dependency SBOMs.
+          # Keep the promotion contract's exact 19-file release inventory.
+          path: |
+            managed-cli-artifacts/manifest.json
+            managed-cli-artifacts/alysis-*
+            managed-cli-artifacts/*.cdx.json
+            managed-cli-artifacts/*.native-signature.json
           if-no-files-found: error
           retention-days: 30
 
@@ -754,16 +792,50 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: extensions/vscode-alysis/package-lock.json
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+      - name: Install pinned patched native Python
+        id: runtime-python
+        shell: bash
+        run: |
+          python scripts/release/install_managed_cli_python.py \
+            --target "${{ matrix.target }}" --destination "$RUNNER_TEMP/alysis-python" \
+            --github-output "$GITHUB_OUTPUT" \
+            --receipt "managed-cli-out/${{ matrix.target }}.python-runtime.json"
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.23"
       - name: Install frozen release-verification dependencies
+        if: matrix.target != 'win32-arm64' && matrix.target != 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+        run: uv sync --frozen --no-editable
+      - name: Build pinned native OpenSSL for Windows ARM64
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        run: ./scripts/release/build_windows_arm64_openssl.ps1
+      - name: Install frozen Windows ARM64 release-verification dependencies
+        if: matrix.target == 'win32-arm64'
+        shell: pwsh
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-arm64
+          OPENSSL_STATIC: "1"
+        run: uv sync --frozen --no-editable
+      - name: Build pinned static OpenSSL for Intel macOS
+        if: matrix.target == 'darwin-x64'
+        shell: bash
+        run: bash scripts/release/build_macos_x64_openssl.sh
+      - name: Install frozen Intel macOS release-verification dependencies
+        if: matrix.target == 'darwin-x64'
+        env:
+          UV_PYTHON: ${{ steps.runtime-python.outputs.executable }}
+          OPENSSL_DIR: ${{ runner.temp }}/alysis-openssl-x64
+          OPENSSL_STATIC: "1"
         run: uv sync --frozen --no-editable
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -797,7 +869,7 @@ jobs:
           set -euo pipefail
           executable="managed-cli-release/alysis-${{ matrix.target }}"
           codesign --verify --strict --verbose=2 "$executable"
-          spctl --assess --type execute --verbose=4 "$executable"
+          codesign --verify --strict --verbose=4 -R="notarized" --check-notarization "$executable"
       - name: Install extension dependencies and run release unit gates
         working-directory: extensions/vscode-alysis
         run: npm ci && npm run compile && npm run lint && npm test && npm audit --audit-level=high
@@ -877,7 +949,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          uv run --frozen --no-sync python scripts/release/build_vscode_vsix_sbom.py \
+          uv run --frozen --no-sync python -m scripts.release.build_vscode_vsix_sbom \
             --vsix "extensions/vscode-alysis/vscode-alysis-${TARGET}.vsix" \
             --target "$TARGET" \
             --manifest managed-cli-release/manifest.json \
@@ -978,7 +1050,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          python - <<'PY'
+          uv run --frozen --no-sync python - <<'PY'
           import json
           import os
           from pathlib import Path

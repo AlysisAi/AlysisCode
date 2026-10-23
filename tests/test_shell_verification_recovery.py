@@ -289,8 +289,7 @@ def test_shell_completion_replays_accepted_python3_then_unavailable_python(
     finals = [e["payload"]["content"] for e in events if e["type"] == "final"]
     assert len(finals) == 1
     assert finals[0].split("\n\n---", 1)[0] == (
-        report
-        + "\n\nVerification status: unverified. Required checks remain failed or unconfirmed."
+        report + "\n\nNot verified: required checks failed or could not be confirmed."
         if one_shot
         else report
     )

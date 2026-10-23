@@ -50,7 +50,7 @@ _ALLOWED_ALWAYS = frozenset(
     }
 )
 
-_ALLOWED_BARE_ONLY = frozenset({"/skill", "/objective"})
+_ALLOWED_BARE_ONLY = frozenset({"/skill"})
 
 _DEFERRED_STEP = frozenset({"/stream"})
 _DEFERRED_TURN_END = frozenset({"/cd", "/config", "/model", "/permissions", "/persona", "/plan"})
@@ -60,7 +60,6 @@ _BLOCK_REASONS = {
     "/resume": "resuming replaces the session this turn is using",
     "/compact": "compaction rewrites the history this turn is appending to",
     "/ask": "that starts a new turn",
-    "/objective": "changing the task starts a new turn",
     "/forge": "Forge takes over the session",
     ":forge": "Forge takes over the session",
     "/login": "signing in replaces the active session",

@@ -43,6 +43,7 @@ WIRE_NONE = "none"  # no reasoning knob exists on this surface
 # Off-path semantics.
 OFF_OMIT = "omit-param"  # leaving the param out means no thinking
 OFF_EXPLICIT = "explicit-disable"  # a documented disable value exists
+OFF_BETWEEN_TOOLS = "between-tools"  # disables up-front thinking, not thinking between tools
 OFF_IMPOSSIBLE = "impossible"  # reasoning cannot be turned off (disable = error)
 OFF_SWAPS_MODEL = "swaps-model"  # "off" silently substitutes a different model
 OFF_UNKNOWN = "unknown"
@@ -123,6 +124,17 @@ def reasoning_labels_allowed_by_contract(
 _C = ReasoningContract
 _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     "openai": (
+        (
+            "gpt-6.1-sol",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "medium", "high", "xhigh", "max"),
+                default="medium",
+                off=OFF_IMPOSSIBLE,
+                notes="GPT-6.1 Sol always reasons; function tools require Responses",
+            ),
+        ),
         # tools + reasoning_effort != "none" on /v1/chat/completions is a 400
         # on the 5.6/5.4 families (report hazard #1) — the *value* allowlist is
         # identical on both endpoints; routing is the client's decision.
@@ -134,6 +146,7 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 mode=ALWAYS_ON,
                 wire=WIRE_REASONING_EFFORT,
                 values=("low", "medium", "high", "xhigh", "max"),
+                default="medium",
                 off=OFF_IMPOSSIBLE,
                 notes="GPT-6 Astra always reasons; Chat Completions and Responses both "
                 "supported; 'none' is not a documented effort",
@@ -200,6 +213,18 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ),
     ),
     "anthropic": (
+        # https://platform.claude.com/docs/en/build-with-claude/effort
+        (
+            "claude-haiku-5-5",
+            _C(
+                mode=OPTIONAL,
+                wire=WIRE_THINKING_ADAPTIVE,
+                values=("low", "medium", "high", "xhigh", "max"),
+                default="medium",
+                off=OFF_EXPLICIT,
+                notes="adaptive by default; disabled only at high or below; forced tools skip thinking",
+            ),
+        ),
         # Source: https://platform.claude.com/docs/en/models/fable-5-1/overview
         (
             "claude-fable-5-1",
@@ -231,6 +256,20 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 wire=WIRE_BUDGET_TOKENS,
                 off=OFF_EXPLICIT,
                 notes="extended thinking only (budget_tokens >= 1024); no effort param",
+            ),
+        ),
+        # https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+        (
+            "claude-sonnet-5-5",
+            _C(
+                mode=OPTIONAL,
+                wire=WIRE_THINKING_ADAPTIVE,
+                values=("low", "medium", "high", "xhigh", "max"),
+                default="high",
+                off=OFF_BETWEEN_TOOLS,
+                accepts_tool_choice_while_reasoning=False,
+                notes="adaptive by default; between_tools disables only up-front thinking "
+                "and requires high effort or below; forced tools unsupported",
             ),
         ),
         (
@@ -357,15 +396,37 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     # Hosted models retain their upstream reasoning and replay contracts.
     "alysis": (
         (
-            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
             _C(
                 mode=OPTIONAL,
                 wire=WIRE_THINKING_ADAPTIVE,
                 values=("low", "medium", "high", "xhigh", "max"),
                 default="medium",
                 off=OFF_EXPLICIT,
+                notes="native Messages; disabled only at high or below; shared Free credits",
+            ),
+        ),
+        (
+            "gpt-6.1-sol",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_OBJECT,
+                values=("low", "medium", "high", "xhigh", "max"),
+                default="medium",
+                off=OFF_IMPOSSIBLE,
+                notes="paid hosted Responses with stateless reasoning and function-tool replay",
+            ),
+        ),
+        (
+            "claude-sonnet-5-5",
+            _C(
+                mode=OPTIONAL,
+                wire=WIRE_THINKING_ADAPTIVE,
+                values=("low", "medium", "high", "xhigh", "max"),
+                default="medium",
+                off=OFF_BETWEEN_TOOLS,
                 accepts_tool_choice_while_reasoning=False,
-                notes="native Messages; off means between_tools at high effort; forced tools unsupported",
+                notes="native Messages; reduced thinking means between_tools at high effort; forced tools unsupported",
             ),
         ),
         (
@@ -502,6 +563,20 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 notes="effort is flat; enable_thinking is the separate on/off toggle",
             ),
         ),
+        # Same documented effort enum on the Flash route.
+        # https://docs.modelstudio.console.alibabacloud.com/en/model-studio/qwen-api-via-openai-chat-completions
+        (
+            "qwen3.8-flash",
+            _C(
+                mode=OPTIONAL,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "medium", "xhigh"),
+                default="xhigh",
+                off=OFF_EXPLICIT,
+                replay_reasoning_content=True,
+                notes="effort is flat; enable_thinking is the separate on/off toggle",
+            ),
+        ),
         (
             "qwen3-coder",
             _C(mode=NONE, wire=WIRE_NONE, off=OFF_OMIT, notes="coder line has no thinking"),
@@ -536,11 +611,13 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
             "glm-5.2",
             _C(
                 mode=OPTIONAL,
-                wire=WIRE_THINKING_TYPE,
-                values=("high",),
+                wire=WIRE_REASONING_EFFORT,
+                values=("none", "high", "max"),
+                default="max",
                 off=OFF_EXPLICIT,
-                notes="reasoning_effort low/medium coerce to high; OpenRouter-style "
-                "reasoning:{} object is silently ignored",
+                emits_flat_reasoning_effort=True,
+                notes="canonical levels from https://docs.z.ai/guides/capabilities/thinking; "
+                "none disables thinking, aliases are not separate depth levels",
             ),
         ),
         (
@@ -665,15 +742,27 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ),
     ),
     "minimax": (
+        # https://platform.minimax.io/docs/api-reference/text-openai-api
+        (
+            "MiniMax-M3.1-Flash-Preview",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "medium", "high", "xhigh", "max"),
+                default="max",
+                off=OFF_IMPOSSIBLE,
+                emits_flat_reasoning_effort=True,
+            ),
+        ),
         (
             "MiniMax-M3",
             _C(
                 mode=OPTIONAL,
                 wire=WIRE_THINKING_TYPE,
-                values=("enabled", "adaptive", "disabled"),
+                values=("adaptive", "disabled"),
+                default="adaptive",
                 off=OFF_EXPLICIT,
-                notes="api-reference enum lists only disabled|adaptive (conflict recorded); "
-                "anthropic surface defaults thinking DISABLED",
+                notes="Chat Completions defaults on; https://platform.minimax.io/docs/api-reference/text-openai-api",
             ),
         ),
         (
@@ -782,6 +871,7 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 values=("none", "low", "medium", "high"),
                 default="none",
                 off=OFF_EXPLICIT,
+                emits_flat_reasoning_effort=True,
             ),
         ),
     ),
@@ -809,9 +899,19 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ("mistral-large-", _C(mode=NONE, wire=WIRE_NONE, off=OFF_OMIT)),
         ("codestral-", _C(mode=NONE, wire=WIRE_NONE, off=OFF_OMIT)),
         ("ministral-", _C(mode=NONE, wire=WIRE_NONE, off=OFF_OMIT)),
-        # Sources: https://docs.mistral.ai/models/zai-glm-5-2 and
-        # https://docs.mistral.ai/models/zai-glm-5-3 — neither page documents
-        # a reasoning control for these hosted GLM routes.
+        # https://docs.mistral.ai/studio/conversations/reasoning
+        (
+            "zai-glm-5-3",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "high", "max"),
+                off=OFF_IMPOSSIBLE,
+                emits_flat_reasoning_effort=True,
+            ),
+        ),
+        # Other hosted GLM routes still require their own documented values.
+        # https://docs.mistral.ai/models/zai-glm-5-2
         (
             "zai-glm-",
             _C(
@@ -826,7 +926,7 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     "xai": (
         # Grok 4.7 launch verification (2026-09-21): ChatRequest in xAI's
         # OpenAPI schema explicitly accepts the flat reasoning_effort field.
-        # Keep older model emission policies unchanged until revalidated.
+        # 4.5 and 4.6 revalidated against the same reasoning guide, 2026-10-06.
         # Sources: https://docs.x.ai/developers/model-capabilities/text/reasoning
         # https://api.x.ai/api-docs/openapi.json (ChatRequest.reasoning_effort)
         (
@@ -849,7 +949,8 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 values=("low", "medium", "high", "xhigh"),
                 default="high",
                 off=OFF_IMPOSSIBLE,
-                notes="effort + stop/presence_penalty/frequency_penalty = documented error",
+                emits_flat_reasoning_effort=True,
+                notes="stop/presence_penalty/frequency_penalty = documented error",
             ),
         ),
         (
@@ -860,7 +961,8 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 values=("low", "medium", "high"),
                 default="high",
                 off=OFF_IMPOSSIBLE,
-                notes="effort + stop/presence_penalty/frequency_penalty = documented error",
+                emits_flat_reasoning_effort=True,
+                notes="stop/presence_penalty/frequency_penalty = documented error",
             ),
         ),
         (
@@ -1113,6 +1215,8 @@ def reasoning_off_hazard(provider_key: str | None, model: str | None) -> str:
         return f"disabling reasoning on {model} silently substitutes a different model"
     if contract.off == OFF_IMPOSSIBLE:
         return f"{model} cannot disable reasoning; lowest effort is the floor"
+    if contract.off == OFF_BETWEEN_TOOLS:
+        return f"{model} can disable up-front thinking only; thinking between tools remains active"
     if contract.mode == NONE:
         return f"{model} has no reasoning control; nothing to disable"
     return f"reasoning contract for {model} is unknown; emitting a disable flag is unsafe"
@@ -1124,6 +1228,7 @@ __all__ = [
     "OPTIONAL",
     "UNKNOWN",
     "UNKNOWN_CONTRACT",
+    "OFF_BETWEEN_TOOLS",
     "OFF_EXPLICIT",
     "OFF_IMPOSSIBLE",
     "OFF_OMIT",

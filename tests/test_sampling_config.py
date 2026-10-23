@@ -111,13 +111,13 @@ class SamplingParsingTests(unittest.TestCase):
         self.assertEqual(settings.temperature, 0.1)
         self.assertEqual(settings.sources["temperature"], f"env:{rp.SAMPLING_TEMPERATURE_ENV}")
 
-    def test_legacy_env_name_is_used(self) -> None:
+    def test_canonical_env_name_is_used(self) -> None:
         settings = rp.resolve_sampling_settings(
             config_values={},
-            environ={"SYLLIPTOR_SAMPLING_TEMPERATURE": "0.1"},
+            environ={"ALYSIS_SAMPLING_TEMPERATURE": "0.1"},
         )
         self.assertEqual(settings.temperature, 0.1)
-        self.assertEqual(settings.sources["temperature"], "env:SYLLIPTOR_SAMPLING_TEMPERATURE")
+        self.assertEqual(settings.sources["temperature"], "env:ALYSIS_SAMPLING_TEMPERATURE")
 
     def test_config_used_when_env_absent(self) -> None:
         settings = rp.resolve_sampling_settings(

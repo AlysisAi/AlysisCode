@@ -1,0 +1,1064 @@
+{
+  "review_date": "2026-10-04",
+  "scope": "Authenticated linux-headers-7.2.9-r0 APK contents on amd64 and arm64 only; not a final-image filesystem audit or host-kernel security assessment.",
+  "original_scan_run": 36562492600,
+  "verified_trial_run": 37193916646,
+  "cvelist_commit": "808914b893dc0f57b5c2014da863e9e476381eed",
+  "archives": {
+    "amd64": {
+      "archive": "linux-headers-7.2.9-r0.apk",
+      "sha256": "cf2bdbf0fdc0e19e989b1d9c57e301d4d3446991f37e616bffc893b3e2b45856",
+      "other_files": [
+        ".PKGINFO",
+        ".melange.yaml",
+        "usr/include/headers_check.pl",
+        "var/lib/db/sbom/linux-headers-7.2.9-r0.spdx.json"
+      ],
+      "elf_files": [],
+      "header_file_count": 1025
+    },
+    "arm64": {
+      "archive": "linux-headers-7.2.9-r0.apk",
+      "sha256": "65cbe3036560442b540836ea5622ff5acf8d7879cbdc8d17bb11f5dfa68801f3",
+      "other_files": [
+        ".PKGINFO",
+        ".melange.yaml",
+        "usr/include/headers_check.pl",
+        "var/lib/db/sbom/linux-headers-7.2.9-r0.spdx.json"
+      ],
+      "elf_files": [],
+      "header_file_count": 996
+    }
+  },
+  "vdpa_fix": "https://github.com/torvalds/linux/commit/85bb534ff12aab6916058897b39c748940a7a4c6",
+  "vdpa_exported_header_source": "https://github.com/gregkh/linux/blob/v7.2.9/include/uapi/linux/vdpa.h",
+  "vdpa_exported_header_sha256_both_architectures": "70299eb4b1292c34b338a2256e9664ecfa7160d157bd2e2ee47b26d6df46525f",
+  "rows": [
+    {
+      "cve": "CVE-2013-7445",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2013/7xxx/CVE-2013-7445.json",
+      "record_sha256": "fab83444f88cad8d2387ad47b98704d2e27f0c17ae40919594eec575592d6ea2",
+      "declared_affected_files": [],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Runtime DRM/GEM memory accounting in the kernel; no kernel implementation ships in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2019-19449",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2019/19xxx/CVE-2019-19449.json",
+      "record_sha256": "67093bc6a17d89dd8f219485fe5ca0d0c700d08ed16f23de5491db1dd651fb39",
+      "declared_affected_files": [],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Runtime F2FS segment management in fs/f2fs/segment.c, not an exported userspace header.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2019-19814",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2019/19xxx/CVE-2019-19814.json",
+      "record_sha256": "d127d393bbe1979182422143f8807cca79e285c8bcbe4421ee925e0a7eb5c7cc",
+      "declared_affected_files": [],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Runtime F2FS dirty-segment handling, not an exported userspace header.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2021-3847",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2021/3xxx/CVE-2021-3847.json",
+      "record_sha256": "fd849a8ec1abaf5078c5ef5c37bb7e4e2fe746f1d70e02f0f0ee6c6f11dabfbc",
+      "declared_affected_files": [],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Runtime OverlayFS privilege/capability handling, not an exported userspace header.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2021-3864",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2021/3xxx/CVE-2021-3864.json",
+      "record_sha256": "31f166d9908a73adb5e7288f6a2b6aab5de018feb2e511d87c9e5fd0ec4bcf26",
+      "declared_affected_files": [],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Runtime process dumpability and core-dump ownership, not an exported userspace header.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2024-21803",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2024/21xxx/CVE-2024-21803.json",
+      "record_sha256": "594a6597d25dd7c5cb769914afdd2080ee9262297be1980cb6418cb809a99451",
+      "declared_affected_files": [
+        "https://gitee.com/anolis/cloud-kernel/blob/devel-5.10/net/bluetooth/af_bluetooth.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2024-58015",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2024/58xxx/CVE-2024-58015.json",
+      "record_sha256": "dbd4d2d5b3a28b83c7e60cc5890dc4ea1b53fcbdd1336ef61212c128ec7371f3",
+      "declared_affected_files": [
+        "drivers/net/wireless/ath/ath12k/debugfs_htt_stats.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-22104",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/22xxx/CVE-2025-22104.json",
+      "record_sha256": "2f2b60387c512ab385d891521c2377db75a0aa3ab38709038713335b9b814344",
+      "declared_affected_files": [
+        "drivers/net/ethernet/ibm/ibmvnic.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-38137",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/38xxx/CVE-2025-38137.json",
+      "record_sha256": "6a4511d1b07fa7717df0b0e1a77cd248361b2b999bf4ed041aefc8695a2db928",
+      "declared_affected_files": [
+        "drivers/pci/pwrctrl/core.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-38187",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/38xxx/CVE-2025-38187.json",
+      "record_sha256": "f273993399cecf9ca7895b02c4a081a131b961a9e9e1d727210efc2d151fd9b8",
+      "declared_affected_files": [
+        "drivers/gpu/drm/nouveau/nvkm/subdev/gsp/rm/r535/rpc.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-38204",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/38xxx/CVE-2025-38204.json",
+      "record_sha256": "bec3c42b044250db1421f63430a7ae6b35b8f499b218a3bbe867794fd0e0c4ca",
+      "declared_affected_files": [
+        "fs/jfs/jfs_dtree.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-38206",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/38xxx/CVE-2025-38206.json",
+      "record_sha256": "6a4602c9689f30f977c85cf626f924ac9b0b0368b2aeb426d4771fbbaeae7509",
+      "declared_affected_files": [
+        "fs/exfat/nls.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-38421",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/38xxx/CVE-2025-38421.json",
+      "record_sha256": "e4965074b9595bcbfdab77b7838c07afc63a027f78d952c15084d7ffc48013b8",
+      "declared_affected_files": [
+        "drivers/platform/x86/amd/pmf/core.c",
+        "drivers/platform/x86/amd/pmf/tee-if.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-38636",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/38xxx/CVE-2025-38636.json",
+      "record_sha256": "b24d4b155e6e68bcf026ef9ec60c052919f826ee6c126ec243df0a90fc48f213",
+      "declared_affected_files": [
+        "kernel/trace/rv/rv_trace.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-39859",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/39xxx/CVE-2025-39859.json",
+      "record_sha256": "1d1c401fd07eabaf1bffc35a75a5d1330b79c81400199c170d60efc1a2e4b2b2",
+      "declared_affected_files": [
+        "drivers/ptp/ptp_ocp.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-39862",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/39xxx/CVE-2025-39862.json",
+      "record_sha256": "69ad801658ab161f36d54ef119922286b5e76da384de9aed44b90927a30b9259",
+      "declared_affected_files": [
+        "drivers/net/wireless/mediatek/mt76/mac80211.c",
+        "drivers/net/wireless/mediatek/mt76/mt76.h",
+        "drivers/net/wireless/mediatek/mt76/mt7915/mac.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-39958",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/39xxx/CVE-2025-39958.json",
+      "record_sha256": "879546eb0ced50e546bee4d4009ae1e03b6bf07bc06f0ce5ebd92dd570576d10",
+      "declared_affected_files": [
+        "arch/s390/include/asm/pci_insn.h",
+        "drivers/iommu/s390-iommu.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-40025",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/40xxx/CVE-2025-40025.json",
+      "record_sha256": "e69fce88be9e7364d7f5d35a67bc633ab9fcafe06d8244f00175a32fcab79c99",
+      "declared_affected_files": [
+        "fs/f2fs/f2fs.h",
+        "fs/f2fs/gc.c",
+        "fs/f2fs/node.c",
+        "fs/f2fs/node.h",
+        "fs/f2fs/recovery.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-68174",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/68xxx/CVE-2025-68174.json",
+      "record_sha256": "e02401056ab2ac1793c8dc2c61960bd5c71c6e7f7ac0095d79b223597d2f8e30",
+      "declared_affected_files": [
+        "drivers/gpu/drm/amd/amdkfd/kfd_device.c",
+        "drivers/gpu/drm/amd/amdkfd/kfd_priv.h",
+        "drivers/gpu/drm/amd/amdkfd/kfd_process.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2025-68735",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2025/68xxx/CVE-2025-68735.json",
+      "record_sha256": "3497c473559e3615c8399a40d9aa8113fa7d195fcf057a68b82d3124f4c6d7ed",
+      "declared_affected_files": [
+        "drivers/gpu/drm/panthor/panthor_sched.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-23102",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/23xxx/CVE-2026-23102.json",
+      "record_sha256": "ee6d61e4ba24d83e1005a9955654beec2863cf4f917f415aafa1344309343099",
+      "declared_affected_files": [
+        "arch/arm64/kernel/signal.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-23208",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/23xxx/CVE-2026-23208.json",
+      "record_sha256": "df532d7fbda332e7736e7103e8ab000804d693888321bae1d1ee28b011de8489",
+      "declared_affected_files": [
+        "sound/usb/pcm.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-23327",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/23xxx/CVE-2026-23327.json",
+      "record_sha256": "b128aa42f07255e30a654ae575ec6598dd7a95e77ee12295a34bcd52afb61766",
+      "declared_affected_files": [
+        "drivers/cxl/core/mbox.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-31493",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/31xxx/CVE-2026-31493.json",
+      "record_sha256": "14428fba97e832b86f11a938d94adc5f7dffcc8d43a2c33d230953aa9c529334",
+      "declared_affected_files": [
+        "drivers/infiniband/hw/efa/efa_com.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-31536",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/31xxx/CVE-2026-31536.json",
+      "record_sha256": "68b637da3bdca9fa511635c186fa8e95ab9d69a155d960acf862344f9655bf96",
+      "declared_affected_files": [
+        "fs/smb/server/transport_rdma.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-31568",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/31xxx/CVE-2026-31568.json",
+      "record_sha256": "19975888dff02049261a12a81d263bad2513de4daf7f1504b5595e9f1d6b745e",
+      "declared_affected_files": [
+        "arch/s390/mm/fault.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-43185",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/43xxx/CVE-2026-43185.json",
+      "record_sha256": "9c8c52f01acd788443d407683be34893a20957f81a244fa2a0fd02959656ab61",
+      "declared_affected_files": [
+        "fs/smb/server/transport_rdma.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-43198",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/43xxx/CVE-2026-43198.json",
+      "record_sha256": "9c7c129a5649ebf3f48f880b4055ec822f28f08c1c4c167af7d689d101366da2",
+      "declared_affected_files": [
+        "include/net/inet_connection_sock.h",
+        "include/net/tcp.h",
+        "net/ipv4/syncookies.c",
+        "net/ipv4/tcp_fastopen.c",
+        "net/ipv4/tcp_ipv4.c",
+        "net/ipv4/tcp_minisocks.c",
+        "net/ipv6/tcp_ipv6.c",
+        "net/mptcp/subflow.c",
+        "net/smc/af_smc.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-43263",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/43xxx/CVE-2026-43263.json",
+      "record_sha256": "b77e512b12cd80754acc28598d0dee34b8cc53a3922adcbdc279130e25c13d24",
+      "declared_affected_files": [
+        "drivers/media/platform/chips-media/wave5/wave5-helper.c",
+        "drivers/media/platform/chips-media/wave5/wave5-helper.h",
+        "drivers/media/platform/chips-media/wave5/wave5-vpu-dec.c",
+        "drivers/media/platform/chips-media/wave5/wave5-vpu-enc.c",
+        "drivers/media/platform/chips-media/wave5/wave5-vpu.c",
+        "drivers/media/platform/chips-media/wave5/wave5-vpuapi.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-46130",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/46xxx/CVE-2026-46130.json",
+      "record_sha256": "af3155838a1e55ecd60c929e0fa9eb3210cf68092793b6fed2ab9cb6dd831ef5",
+      "declared_affected_files": [
+        "drivers/md/dm-verity-fec.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-46181",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/46xxx/CVE-2026-46181.json",
+      "record_sha256": "e0808b07d3bf972dc0a939e3d90cc6c38d49d1d33198661388483d958fa028cd",
+      "declared_affected_files": [
+        "drivers/net/ethernet/mellanox/mlx4/srq.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-46279",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/46xxx/CVE-2026-46279.json",
+      "record_sha256": "1abf302d13cafdc24b8fd429f6c7fa8b0b838f2791a5e7b313afac7403612ed8",
+      "declared_affected_files": [
+        "include/linux/alloc_tag.h",
+        "include/linux/pgalloc_tag.h",
+        "lib/alloc_tag.c",
+        "mm/page_alloc.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-52991",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/52xxx/CVE-2026-52991.json",
+      "record_sha256": "e90faa69018c5471e9bd7a981ccd8ae8fc9dfddaeb44f3d1031dd731d6f53d3e",
+      "declared_affected_files": [
+        "kernel/cgroup/cgroup.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53000",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53000.json",
+      "record_sha256": "3cfb4b1e7ed705c112441c81782f5215651c90576a9d91540bd9613da2a41230",
+      "declared_affected_files": [
+        "net/ipv4/netfilter/iptable_nat.c",
+        "net/ipv6/netfilter/ip6table_nat.c",
+        "net/netfilter/nf_nat_core.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53010",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53010.json",
+      "record_sha256": "f1d5c23bada7a9dfc98f7c7fd3e3fe78a8f2e9474aaf30b1ab6733b2dd084e9a",
+      "declared_affected_files": [
+        "fs/smb/server/smb2pdu.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53089",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53089.json",
+      "record_sha256": "8abb62bc21515f71987ea55dd7b8a3b6a028b2450a4de0873d4bc11350b3e551",
+      "declared_affected_files": [
+        "kernel/bpf/offload.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53091",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53091.json",
+      "record_sha256": "0daf20e1aa95439d424bedd964688ab35fc29b128f10c5f663408047bb726156",
+      "declared_affected_files": [
+        "include/net/dropreason-core.h",
+        "net/core/dev.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53109",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53109.json",
+      "record_sha256": "3796ce72c344a7de41cf25ee1c2cbf7283196c36d1cf15982add9f14007743b0",
+      "declared_affected_files": [
+        "arch/powerpc/mm/pgtable-frag.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53118",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53118.json",
+      "record_sha256": "9998e347374c8a0f8008c589ed115837da383f4f0141f4692156e1a81ece8853",
+      "declared_affected_files": [
+        "drivers/vdpa/vdpa.c",
+        "include/linux/vdpa.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "The exported usr/include/linux/vdpa.h is the UAPI header, not the affected internal include/linux/vdpa.h. Both retained architecture copies match upstream include/uapi/linux/vdpa.h except the exported include guard. They contain neither struct vdpa_device nor driver_override; the fix changes the kernel driver's locking and internal device structure.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53277",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53277.json",
+      "record_sha256": "afe2af6dc7c3827dd6b7fe6f85a8c4f102bb70fe8d941097670624bc1980d861",
+      "declared_affected_files": [
+        "arch/arm64/kvm/at.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-53330",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/53xxx/CVE-2026-53330.json",
+      "record_sha256": "4f09a4c84a131aa5fce91cd5d87eef7bb9ae4c5ff5f1c9fc57ecbd448159caa9",
+      "declared_affected_files": [
+        "drivers/gpu/drm/amd/display/dc/dc_dp_types.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-63879",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/63xxx/CVE-2026-63879.json",
+      "record_sha256": "fbdfcafae57e5b02d9f1a2b352db6d95c7fdcc1f101d2050a81067f90ac65444",
+      "declared_affected_files": [
+        "drivers/gpu/drm/amd/amdgpu/amdgpu_hmm.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-64283",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/64xxx/CVE-2026-64283.json",
+      "record_sha256": "6e344b31d5bc7b082ef9aaea1dcd36f5b4084916f605113cd1339f1a5c7c8b8f",
+      "declared_affected_files": [
+        "virt/kvm/guest_memfd.c",
+        "virt/kvm/kvm_mm.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-68409",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/68xxx/CVE-2026-68409.json",
+      "record_sha256": "3423f21f8b2da53979d4cef137ed74a3bcced7738351eded85c4817a4032817c",
+      "declared_affected_files": [
+        "net/mac80211/sta_info.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-68426",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/68xxx/CVE-2026-68426.json",
+      "record_sha256": "304edddf1956efb16449c89c4875ac9b5615f68fccf3b20aa1b678056ccf1278",
+      "declared_affected_files": [
+        "net/xfrm/xfrm_device.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-68470",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/68xxx/CVE-2026-68470.json",
+      "record_sha256": "485ddb63088a5d52d285d29d31429b48be8d8441d9a09b148d03f9c5c343cb05",
+      "declared_affected_files": [
+        "net/mac80211/rx.c",
+        "net/mac80211/util.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-72042",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/72xxx/CVE-2026-72042.json",
+      "record_sha256": "1dc1eead976115b5aceb305c4ba240f3fe8603eaab0c3543ac8a6306ebe32859",
+      "declared_affected_files": [
+        "drivers/char/ipmi/ipmi_msghandler.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-72098",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/72xxx/CVE-2026-72098.json",
+      "record_sha256": "3d7dc4c47ef0b0a01de1ae0f6283bc885c4ad937ea2c6343e25e0bd1c8e2a967",
+      "declared_affected_files": [
+        "drivers/md/dm-verity-fec.c",
+        "drivers/md/dm-verity-fec.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-72463",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/72xxx/CVE-2026-72463.json",
+      "record_sha256": "f7d758819a2929f236345a9a57296a88189e992bca14af863e39a1634e78af8e",
+      "declared_affected_files": [
+        "net/ipv4/xfrm4_input.c",
+        "net/ipv6/xfrm6_input.c",
+        "net/xfrm/xfrm_input.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-74268",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/74xxx/CVE-2026-74268.json",
+      "record_sha256": "78110dc29f04be3550eba30de3136d1e507abf02ddd09459ed2dfb36f6a509f8",
+      "declared_affected_files": [
+        "include/net/tcp.h",
+        "net/ipv4/inet_connection_sock.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-74269",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/74xxx/CVE-2026-74269.json",
+      "record_sha256": "c1f38e14ee2527a7a05093889a81451e4912233bec2cdd705eb18c58050c3f30",
+      "declared_affected_files": [
+        "drivers/net/ethernet/broadcom/bnxt/bnxt.c",
+        "drivers/net/ethernet/broadcom/bnxt/bnxt.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-74520",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/74xxx/CVE-2026-74520.json",
+      "record_sha256": "40cfc1c3e0455218828b840a639c69a4bf739a5d2da0452ab5931681b6457f72",
+      "declared_affected_files": [
+        "drivers/iommu/io-pgfault.c",
+        "drivers/iommu/iommufd/eventq.c",
+        "include/linux/iommu.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-74611",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/74xxx/CVE-2026-74611.json",
+      "record_sha256": "477b88efa3d9f009681d40a5ba4c0a7b825c24fc082d16d0bf52821dd098c797",
+      "declared_affected_files": [
+        "net/tls/tls_sw.c",
+        "tools/testing/selftests/net/tls.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-74752",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/74xxx/CVE-2026-74752.json",
+      "record_sha256": "3a56485a5e1e85e646643e574955c9be9227ac21152d428cc7a4ee39bbb414bb",
+      "declared_affected_files": [
+        "include/net/sctp/auth.h",
+        "net/sctp/auth.c",
+        "net/sctp/sm_make_chunk.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-74753",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/74xxx/CVE-2026-74753.json",
+      "record_sha256": "3a7fb8d5842dbfec68e41560a2f0a296d402255a219ee8ec8474f90f1b602d3f",
+      "declared_affected_files": [
+        "kernel/events/core.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-80521",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/80xxx/CVE-2026-80521.json",
+      "record_sha256": "0495a4d3b833eddded9277910a1e7a085d15c38f8460179679ca38f0b4faf1fa",
+      "declared_affected_files": [
+        "net/unix/garbage.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-80844",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/80xxx/CVE-2026-80844.json",
+      "record_sha256": "7b62929f8a9ed0108350ee87df7be4f633075f43ba72c250770518e95ab47b5a",
+      "declared_affected_files": [
+        "net/ipv6/ah6.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-80951",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/80xxx/CVE-2026-80951.json",
+      "record_sha256": "7705a31c70046191b5350bb35e02f53990764e3d3674d8d202fb4ae35515f32c",
+      "declared_affected_files": [
+        "drivers/i3c/master/svc-i3c-master.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-81000",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/81xxx/CVE-2026-81000.json",
+      "record_sha256": "413065f5d3014c17f1b86ad132fd1a6146a9363b05d5856af0f9b03223579b37",
+      "declared_affected_files": [
+        "drivers/net/tun.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89479",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89479.json",
+      "record_sha256": "6525eba5c9fb90f13ce5f87b27ca822cecec6f520e6e092eccd922050109b041",
+      "declared_affected_files": [
+        "net/sctp/sm_sideeffect.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89480",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89480.json",
+      "record_sha256": "6776723a57c585cb2e400c8538a34b4094e25c495da25f26458c964133da0323",
+      "declared_affected_files": [
+        "drivers/nvme/host/tcp.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89481",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89481.json",
+      "record_sha256": "98101815c2bc06d4f7a3067b912f4cd83cb1c45890a9a9754b3e19a18d6ceec2",
+      "declared_affected_files": [
+        "drivers/nvme/host/tcp.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89487",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89487.json",
+      "record_sha256": "be90c95cd1d5b9b1c724f151442823504bc9c58fe138a42dfd89f604f86baf27",
+      "declared_affected_files": [
+        "net/openvswitch/datapath.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89488",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89488.json",
+      "record_sha256": "47740b266e052066dedf13214f7ad576c2142e3caeb6694f6e7f4dd2af67c232",
+      "declared_affected_files": [
+        "net/openvswitch/conntrack.c",
+        "net/openvswitch/conntrack.h",
+        "net/openvswitch/datapath.c",
+        "net/openvswitch/datapath.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89526",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89526.json",
+      "record_sha256": "2599bdc699029c268a02fcdaf0ac673a1eda55ffa7ee67af3db9dd37ba40b95f",
+      "declared_affected_files": [
+        "net/sunrpc/xprtrdma/svc_rdma_rw.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89530",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89530.json",
+      "record_sha256": "72e37dde56fa620fb7d53084a0177a7587e7c4fa39c4a9869562639deaa9388e",
+      "declared_affected_files": [
+        "net/sunrpc/xprtrdma/svc_rdma_sendto.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89536",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89536.json",
+      "record_sha256": "d21ffc03bbd718017c6c41ccb6842b55450e2fa30ef12c1d2e9f91c78d5dfa6e",
+      "declared_affected_files": [
+        "net/sunrpc/xprtsock.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89545",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89545.json",
+      "record_sha256": "8a8fef21fdb1fd0653ea1786f1188055b503ed686bb482bbcefe4c53677c7732",
+      "declared_affected_files": [
+        "net/sunrpc/svc.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89563",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89563.json",
+      "record_sha256": "dd4e7eec5a8479770e44dc610c7bb9e0d39b136a3d0db473bacf8c4d1d115c1d",
+      "declared_affected_files": [
+        "net/ipv6/ip6_tunnel.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89564",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89564.json",
+      "record_sha256": "1326561d4f590eaa0076f8789b52aa07e9d0ad1ee3428752466a3ef8537206ac",
+      "declared_affected_files": [
+        "net/ipv4/ipmr.c",
+        "net/ipv6/ip6_input.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89569",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89569.json",
+      "record_sha256": "fe8f7b5f9bfcc748f036c5aeb46636d911cca56081e6fc13b198e113d5d0479d",
+      "declared_affected_files": [
+        "net/bluetooth/rfcomm/core.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89603",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89603.json",
+      "record_sha256": "cc2f1553325b0584c197adff6b67208bd168824c4fcac9b84adf283b0af04250",
+      "declared_affected_files": [
+        "include/linux/entry-common.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89607",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89607.json",
+      "record_sha256": "b4329a9ccb86e7f5005b7595c27f47675df59d3e77f3536e39eced017ab459f6",
+      "declared_affected_files": [
+        "fs/ecryptfs/keystore.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89631",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89631.json",
+      "record_sha256": "c92344fe685ba3e2b260cb5299ad08f8331fc024547e9f36a109bee9c34cc7b4",
+      "declared_affected_files": [
+        "fs/smb/client/cifssmb.c",
+        "fs/smb/client/trace.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89633",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89633.json",
+      "record_sha256": "92285ea1eb8d28e06b1e148625c868254c8fe56a414f03ec00d3e9789af65d89",
+      "declared_affected_files": [
+        "fs/smb/client/smb1transport.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89638",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89638.json",
+      "record_sha256": "ae8382d4b7ccc933d70822bacfe0f50e019d81dbeaf6a213cfc5939da8dd319e",
+      "declared_affected_files": [
+        "fs/smb/client/inode.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89652",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89652.json",
+      "record_sha256": "c8f1cda803ce950bbaaf82d025b0c8d0f7324fd70a55d605e4292bbafe12fa6e",
+      "declared_affected_files": [
+        "fs/ceph/export.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89653",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89653.json",
+      "record_sha256": "ebf4779dc5aaa103a6dd85bb61012ee061bf723ddb1ee66b2867fc5511538751",
+      "declared_affected_files": [
+        "fs/ceph/mdsmap.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89656",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89656.json",
+      "record_sha256": "d7d8dadb7c9119d60a113d81e10d50b9e07b68b8160773798c6190c383ada9d4",
+      "declared_affected_files": [
+        "net/ceph/osdmap.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89659",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89659.json",
+      "record_sha256": "6f8578e4d885d13660f86a0ddd05b53a81517635baebe33e79390bd410d250a6",
+      "declared_affected_files": [
+        "fs/nfsd/netns.h",
+        "fs/nfsd/nfs4state.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89663",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89663.json",
+      "record_sha256": "7b048522bb6f795cf6ff383e80c547c96760c58c6b87bc52335bebfdffd37ea6",
+      "declared_affected_files": [
+        "fs/nfsd/nfs4state.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89669",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89669.json",
+      "record_sha256": "cdc6e657b5c59fa2111ee2703f317b99a48228c86fd74a432a68de40c9ff2c98",
+      "declared_affected_files": [
+        "fs/nfsd/nfs4proc.c",
+        "fs/nfsd/nfs4state.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89675",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89675.json",
+      "record_sha256": "fce6ec149676c3c61438d9797adcd1a5360622965149317ce33c42a8e30181dd",
+      "declared_affected_files": [
+        "fs/nfsd/nfs4proc.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89676",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89676.json",
+      "record_sha256": "48cb41775d6ff58150eba2a551df0d861ef0ec5f98582b994f16eff5cc093f23",
+      "declared_affected_files": [
+        "fs/nfsd/nfs4proc.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89690",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89690.json",
+      "record_sha256": "78c728b8ae88d3762a705bf0af7882286bd5024835372ddeaa5f1bedc9a9e9d4",
+      "declared_affected_files": [
+        "fs/nfsd/nfs4xdr.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89708",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89708.json",
+      "record_sha256": "dab62fe5234d0f18512fb22548b4d01bdfd6c0e622a1b5a39d56d0ea9f08f204",
+      "declared_affected_files": [
+        "fs/nfsd/nfs4callback.c",
+        "fs/nfsd/nfs4state.c",
+        "fs/nfsd/state.h",
+        "fs/nfsd/trace.h"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89713",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89713.json",
+      "record_sha256": "1a7edef31bca4fbe9d8efb93415c68c372854dfaf0cbe14c76edef2512b1c93f",
+      "declared_affected_files": [
+        "fs/nfsd/vfs.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-89846",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/89xxx/CVE-2026-89846.json",
+      "record_sha256": "27fbf7ee991741bbbd500b6d6a37f9dc8c06cd0a89a3d03d6fbcb73cf23be2b3",
+      "declared_affected_files": [
+        "drivers/scsi/qla2xxx/qla_isr.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    },
+    {
+      "cve": "CVE-2026-97417",
+      "source": "https://raw.githubusercontent.com/CVEProject/cvelistV5/808914b893dc0f57b5c2014da863e9e476381eed/cves/2026/97xxx/CVE-2026-97417.json",
+      "record_sha256": "02a8f1b53edb22b5b01f54e48019903dbadb4532223a594f862690b88b64d715",
+      "declared_affected_files": [
+        "net/netfilter/nf_conntrack_proto_tcp.c"
+      ],
+      "header_package_disposition": "affected_implementation_not_present",
+      "reason": "Declared affected files are internal kernel implementation files, not exported UAPI code in the inspected header archives.",
+      "host_kernel_disposition": "not_assessed"
+    }
+  ],
+  "remaining_requirements": [
+    "Check the complete final image for kernel images/modules and unexpected copied vulnerable implementations.",
+    "Assess the actual Docker host kernel against applicable vendor fixes; a header package version does not describe that kernel.",
+    "Keep no-new-privileges, capability restrictions, namespace isolation, and ordinary release scanning; no scanner exception was added."
+  ]
+}

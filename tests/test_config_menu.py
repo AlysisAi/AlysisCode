@@ -100,7 +100,7 @@ def test_subscription_execution_uses_native_profile_and_preserves_api_profile(
     assert target.execution.backend == "native"
     assert target.execution.runtime is None
     assert target.model == ""
-    assert target.base_url == "https://chatgpt.com/backend-api/codex"
+    assert target.base_url == "https://api.openai.com/v1"
     assert target.extra_fields["active_profile"] == "chatgpt-codex"
     assert target.extra_fields["subscription_model_selection_required"] == "openai-codex"
 
@@ -116,7 +116,7 @@ def test_reselecting_subscription_preserves_config_selected_model_and_effort() -
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="kept-model",
         reasoning_effort="high",
@@ -142,7 +142,7 @@ def test_subscription_profile_edit_rejects_provider_managed_model_and_endpoint()
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="kept-model",
         reasoning_effort="high",
@@ -185,7 +185,7 @@ def test_subscription_profile_cannot_be_replaced_by_generic_config_add() -> None
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="kept-model",
         reasoning_effort="high",
@@ -263,7 +263,7 @@ def test_classic_execution_section_uses_registry_runtime(
     runtime_rows = picker_calls[1]["rows"]
     assert isinstance(runtime_rows, list)
     assert "openai-codex" in [row[0] for row in runtime_rows]
-    assert "AI subscription via ChatGPT Codex subscription" in output[-1]
+    assert "AI subscription via ChatGPT subscription" in output[-1]
     assert managed_accounts == ["openai-codex"]
 
 
@@ -293,6 +293,7 @@ def test_classic_subscription_back_returns_to_model_access(
 def hosted_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppConfig:
     from alysis_code.alysis_cloud import gateway_base_url
 
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
     profile = ProfileSpec(name="alysis", base_url=gateway_base_url(), default_model="hosted-model")
     cfg = AppConfig()
@@ -556,7 +557,7 @@ def test_commit_does_not_rewrite_unchanged_subscription_model() -> None:
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="gpt-5.6-luna",
         reasoning_effort="high",
@@ -988,6 +989,7 @@ def test_alysis_model_picker_only_offers_named_v41_flash_despite_stale_gateway(
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
 
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
     calls = []
@@ -1017,7 +1019,7 @@ def test_alysis_model_picker_only_offers_named_v41_flash_despite_stale_gateway(
         ("deepseek-flash", "DeepSeek V4.1 Flash"),
         ("glm-5.3-flash", "GLM 5.3 Flash"),
         ("gpt-6-luna", "GPT-6 Luna"),
-        ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+        ("claude-haiku-5-5", "Claude Haiku 5.5"),
     ]
     assert calls == []
     assert config_menu_mod._preset_model_option_rows(preset) == rows
@@ -1028,6 +1030,7 @@ def test_default_model_rows_survive_alysis_discovery_failure(
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
 
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
 
@@ -1045,7 +1048,7 @@ def test_default_model_rows_survive_alysis_discovery_failure(
     model_values = [
         value for value, _label, _description in config_menu_mod._default_model_rows(state)
     ]
-    assert model_values == ["deepseek-flash", "glm-5.3-flash", "gpt-6-luna", "claude-sonnet-5-5"]
+    assert model_values == ["deepseek-flash", "glm-5.3-flash", "gpt-6-luna", "claude-haiku-5-5"]
 
 
 def test_default_model_rows_fallback_to_base_url_provider() -> None:

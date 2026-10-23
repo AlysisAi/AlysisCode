@@ -20,7 +20,7 @@ from alysis_code.llm.cache_capabilities import (
 from alysis_code.llm.cache_policy import resolve_prompt_cache_policy
 from alysis_code.llm.factory import make_llm_client
 from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
-from alysis_code.provider_auth import openai_codex
+from alysis_code.provider_auth import ProviderRequestAuthorization, openai_codex
 from alysis_code.provider_diagnostics import build_provider_diagnostics
 from alysis_code.provider_telemetry import last_provider_call_summary
 from alysis_code.request_estimation import RequestTokenBreakdown
@@ -55,7 +55,7 @@ def _subscription_profile(*, override: CacheCapabilitySpec | None = None) -> Pro
     return ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="gpt-5.6-luna",
         reasoning_effort="high",
@@ -289,8 +289,15 @@ def test_subscription_prepared_request_emits_no_cache_fields_and_keeps_reported_
     monkeypatch.setattr(httpx.Client, "send", fake_send)
     monkeypatch.setattr(
         openai_codex.OpenAICodexSubscriptionAuth,
-        "authorization_headers",
-        lambda *args, **kwargs: {},
+        "route_credential_scope",
+        lambda self: "offline-account-scope",
+    )
+    monkeypatch.setattr(
+        openai_codex.OpenAICodexSubscriptionAuth,
+        "authorize_request",
+        lambda self, url, *, expected_credential_scope, **kwargs: ProviderRequestAuthorization(
+            credential_scope=expected_credential_scope, headers={}
+        ),
     )
     cfg = _config(_subscription_profile())
     client = make_llm_client(

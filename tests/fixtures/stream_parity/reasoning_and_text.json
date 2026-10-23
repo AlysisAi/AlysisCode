@@ -1,0 +1,17 @@
+{
+  "id": "chatcmpl-parity-2",
+  "object": "chat.completion",
+  "created": 1790000000,
+  "model": "mimo-v2.5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hi there!",
+        "reasoning_content": "The user wants a greeting, so a greeting."
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}

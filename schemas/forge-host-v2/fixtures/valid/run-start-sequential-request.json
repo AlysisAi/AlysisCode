@@ -1,0 +1,41 @@
+{
+  "protocol": "alysis.forge-host",
+  "protocolVersion": "2.0",
+  "messageId": "msg_runstartseq1",
+  "operationId": "operation_run00001",
+  "sentAt": "2026-08-21T09:00:00Z",
+  "kind": "request",
+  "requestId": "req_runstartseq1",
+  "idempotencyKey": "idem_runstartseq1",
+  "payload": {
+    "type": "run.start",
+    "identity": {
+      "sessionId": "ses_abcdefgh",
+      "generationId": "gen_abcdefgh",
+      "runId": null,
+      "revision": 1
+    },
+    "expectedRevision": 1,
+    "hostPlanFingerprint": "b1b7341b391c8459de5041a6734e471ac2f23c511862e7d265780cdc7227eaf7",
+    "nativeApprovalFingerprint": "7d86273ea1f7d27c4e509d5950dde659dca91e693103078250111fa7b0d6beda",
+    "verificationContractFingerprint": "cf1db8e3edfb032e6775897c162a6b0335da1c096775f76c92c84039e128106e",
+    "executionAdmission": {
+      "schema": "alysis.forge-host.execution-admission/v2",
+      "workspaceRef": "workspace_abcdefgh",
+      "providerBindingRef": "provider_abcdefgh",
+      "workspacePathPolicy": {
+        "comparison": "case_insensitive",
+        "unicodeNormalization": "NFC",
+        "symlinkPolicy": "resolve_beneath_workspace"
+      },
+      "executionStrategy": {
+        "mode": "sequential",
+        "maxParallelWorkers": 1,
+        "integrationPolicy": "fail_fast"
+      },
+      "perManagedTaskMaxSteps": 64,
+      "runTimeoutMs": 600000,
+      "fingerprint": "20a77d88222eb005b1063dff4258982c08be13c6fbc4ef4d51d2b10bc6e55658"
+    }
+  }
+}

@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from alysis_code import cli as cli_mod
 from alysis_code import updates as updates_mod
-from alysis_code.branding import LEGACY_PYTHON_PACKAGE_NAME, PYTHON_PACKAGE_NAME
+from alysis_code.branding import PYTHON_PACKAGE_NAME
 from alysis_code.cli import app as alysis_app
 from alysis_code.config import (
     AppConfig,
@@ -32,6 +32,8 @@ from alysis_code.updates import (
     update_cache_path,
     write_update_cache,
 )
+
+RETIRED_PACKAGE_NAME = "retired-agent"
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
@@ -229,6 +231,56 @@ def test_background_refresh_updates_cache_when_stale(tmp_path: Path, monkeypatch
     assert started is True
     assert calls and calls[0]["force"] is True
     assert read_update_cache(cache_path).latest_version == "0.1.5"
+
+
+@pytest.mark.parametrize("fetch_fails", [False, True])
+def test_update_check_keeps_cache_destination_during_fetch(
+    tmp_path: Path, monkeypatch, fetch_fails: bool
+) -> None:
+    original = tmp_path / "original" / "update_check.json"
+    changed = tmp_path / "changed" / "update_check.json"
+    monkeypatch.setenv("ALYSIS_UPDATE_CACHE_PATH", str(original))
+
+    def fetch(**_kwargs):
+        monkeypatch.setenv("ALYSIS_UPDATE_CACHE_PATH", str(changed))
+        if fetch_fails:
+            raise updates_mod.UpdateCheckError("offline")
+        return "0.1.5", "https://pypi.org/project/alysis-code/"
+
+    monkeypatch.setattr(updates_mod, "fetch_latest_pypi_version", fetch)
+    status = check_for_updates(current_version="0.1.4", cfg=AppConfig(), force=True)
+
+    record = read_update_cache(original)
+    assert record is not None
+    assert record.error == status.error == ("offline" if fetch_fails else None)
+    assert record.latest_version == (None if fetch_fails else "0.1.5")
+    assert not changed.exists()
+
+
+def test_background_refresh_keeps_the_scheduling_data_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original = tmp_path / "original"
+    changed = tmp_path / "changed"
+    monkeypatch.delenv("ALYSIS_UPDATE_CACHE_PATH", raising=False)
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(original))
+    monkeypatch.setattr(updates_mod, "_update_refresh_started", False)
+    monkeypatch.setattr(
+        updates_mod,
+        "fetch_latest_pypi_version",
+        lambda **_kwargs: ("0.1.5", "https://pypi.org/project/alysis-code/"),
+    )
+
+    class DelayedThread(_InlineThread):
+        def start(self) -> None:
+            monkeypatch.setenv("ALYSIS_DATA_DIR", str(changed))
+            super().start()
+
+    assert updates_mod.maybe_refresh_update_cache_in_background(
+        current_version="0.1.4", cfg=AppConfig(), thread_factory=DelayedThread
+    )
+    assert read_update_cache(original / "update_check.json").latest_version == "0.1.5"
+    assert not changed.exists()
 
 
 def test_background_refresh_skips_when_disabled_or_cache_fresh(
@@ -507,7 +559,7 @@ def test_installer_plan_directs_pipx_users_to_reinstall_under_the_new_name(monke
     monkeypatch.setattr(
         updates_mod,
         "installed_distribution_name",
-        lambda preferred=None: LEGACY_PYTHON_PACKAGE_NAME,
+        lambda preferred=None: RETIRED_PACKAGE_NAME,
     )
     monkeypatch.setattr(updates_mod, "_editable_install_reason", lambda _package_name: None)
     monkeypatch.setattr(
@@ -515,23 +567,23 @@ def test_installer_plan_directs_pipx_users_to_reinstall_under_the_new_name(monke
     )
 
     plan = detect_installer_plan(
-        executable=f"/home/me/.local/share/pipx/venvs/{LEGACY_PYTHON_PACKAGE_NAME}/bin/python",
-        prefix=f"/home/me/.local/share/pipx/venvs/{LEGACY_PYTHON_PACKAGE_NAME}",
+        executable=f"/home/me/.local/share/pipx/venvs/{RETIRED_PACKAGE_NAME}/bin/python",
+        prefix=f"/home/me/.local/share/pipx/venvs/{RETIRED_PACKAGE_NAME}",
         base_prefix="/usr",
         env={},
     )
 
     assert plan.supported is False
-    assert LEGACY_PYTHON_PACKAGE_NAME in plan.reason
+    assert RETIRED_PACKAGE_NAME in plan.reason
     assert PYTHON_PACKAGE_NAME in plan.reason
-    assert plan.command == ("pipx", "uninstall", LEGACY_PYTHON_PACKAGE_NAME)
+    assert plan.command == ("pipx", "uninstall", RETIRED_PACKAGE_NAME)
 
 
 def test_installer_plan_upgrades_pip_users_to_the_new_package(monkeypatch) -> None:
     monkeypatch.setattr(
         updates_mod,
         "installed_distribution_name",
-        lambda preferred=None: LEGACY_PYTHON_PACKAGE_NAME,
+        lambda preferred=None: RETIRED_PACKAGE_NAME,
     )
     monkeypatch.setattr(updates_mod, "_editable_install_reason", lambda _package_name: None)
     monkeypatch.setattr(updates_mod.shutil, "which", lambda _name: None)
@@ -545,11 +597,11 @@ def test_installer_plan_upgrades_pip_users_to_the_new_package(monkeypatch) -> No
 
     # The upgrade must target the new package, never the retired one.
     assert PYTHON_PACKAGE_NAME in plan.command
-    assert LEGACY_PYTHON_PACKAGE_NAME not in plan.command
-    assert f"pip uninstall {LEGACY_PYTHON_PACKAGE_NAME}" in plan.reason
+    assert RETIRED_PACKAGE_NAME not in plan.command
+    assert f"pip uninstall {RETIRED_PACKAGE_NAME}" in plan.reason
 
 
 def test_update_check_polls_the_current_package(monkeypatch) -> None:
     """A stale endpoint would report 'up to date' forever."""
     assert updates_mod.PYPI_JSON_URL.endswith(f"/{PYTHON_PACKAGE_NAME}/json")
-    assert LEGACY_PYTHON_PACKAGE_NAME not in updates_mod.PYPI_JSON_URL
+    assert RETIRED_PACKAGE_NAME not in updates_mod.PYPI_JSON_URL

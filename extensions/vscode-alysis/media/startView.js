@@ -100,6 +100,12 @@
   let taskAckTimer = 0;
   let taskRunning = false;
   let forgeRunning = false;
+  let modeControlSignature = "";
+  let settingsFilterSignature = "";
+  let readyGateSignature = "";
+  // These capability controls belong to the static sidebar shell. Querying the
+  // entire growing transcript for them on every token wastes rendering time.
+  const forgeControls = document.querySelectorAll('[data-surface="forge"], [data-forge-starter], [data-forge-draft]');
   let currentState = null;
   /** @type {Map<string, { signature: string, node: HTMLElement }>} */
   const renderedItems = new Map();
@@ -767,7 +773,7 @@
     }
     currentState = state;
     renderWorkspaceBar(state.gitWorkspace);
-    for (const control of document.querySelectorAll('[data-surface="forge"], [data-forge-starter], [data-forge-draft]')) {
+    for (const control of forgeControls) {
       if (control instanceof HTMLElement) control.hidden = state.forgeEnabled === false;
     }
     if (state.forgeEnabled === false && surface === "forge") showSurface("task");
@@ -1143,6 +1149,12 @@
       return;
     }
     taskMode.value = permissionMode;
+    persistDraft();
+    // Conversation, Forge, and readiness all synchronize these controls. Repainting
+    // identical permissions on every token dominates the sidebar's rendering cost.
+    const signature = JSON.stringify([permissionMode, taskRunning, forgeRunning, taskPending, workflow]);
+    if (signature === modeControlSignature) return;
+    modeControlSignature = signature;
     taskMode.disabled = taskRunning || forgeRunning || taskPending;
     if (permissionStrip) {
       // This picker controls chat permissions. Forge owns a separate review-only execution gate.
@@ -1176,7 +1188,6 @@
             ? "Alysis Code can proceed independently within its safety limits."
             : "You review important changes before they happen.";
     }
-    persistDraft();
   }
 
   function renderConversation(state) {
@@ -4554,7 +4565,13 @@
     setTone("providerSettings", state.provider?.tone);
     setTone("workspaceSettings", state.workspace?.tone);
     setTone("engineSettings", state.engine?.tone);
-    filterSettings();
+    // Command gates above still apply to newly rendered buttons. Only the static
+    // settings rows can reuse filtering; search input also filters them directly.
+    const signature = JSON.stringify([state.commands, state.provider, state.workspace, state.engine, state.forgeEnabled]);
+    if (signature !== settingsFilterSignature) {
+      settingsFilterSignature = signature;
+      filterSettings();
+    }
   }
 
   function filterSettings() {
@@ -4655,10 +4672,17 @@
    */
   function renderReadyGate(state) {
     composerReady = state.ready === true;
+    const blocker = Array.isArray(state.readiness?.blockers) ? state.readiness.blockers[0] : null;
+    const signature = JSON.stringify([composerReady, blocker, state.readyReason]);
+    if (signature === readyGateSignature) {
+      syncWorkflowContext();
+      updateSubmitState();
+      return;
+    }
+    readyGateSignature = signature;
     if (connectFirst) {
       connectFirst.hidden = composerReady;
     }
-    const blocker = Array.isArray(state.readiness?.blockers) ? state.readiness.blockers[0] : null;
     const progress = blocker?.progress === true;
     readyGateProgress = progress;
     connectFirst?.classList.toggle("progress", progress);

@@ -5,7 +5,6 @@ import json
 import httpx
 import pytest
 
-from alysis_code.alysis_cloud import DEFAULT_PROXY_BASE_URL
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_responses import (
     WebSearchCitation,
@@ -153,7 +152,7 @@ def test_subscription_auth_makes_native_responses_web_search_ready() -> None:
     profile = ProfileSpec(
         name="chatgpt-codex",
         protocol="openai_responses",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url="https://api.openai.com/v1",
         auth_provider="openai-codex",
         default_model="gpt-5.4",
         reasoning_effort="high",
@@ -396,14 +395,11 @@ def test_is_openrouter_base_url_no_longer_matches_alysis_proxy() -> None:
     # The Alysis Code hosted proxy forwarded to OpenRouter only during the retired
     # MiMo (Xiaomi) trial; it now forwards to DeepSeek, which has no native web
     # search — so the proxy must NOT classify as an OpenRouter base_url anymore.
-    assert (
-        _is_openrouter_base_url("https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1")
-        is False
-    )
-    assert _is_openrouter_base_url(DEFAULT_PROXY_BASE_URL) is False
+    assert _is_openrouter_base_url("https://api.alysiscode.com/v1") is False
+    assert _is_openrouter_base_url("https://api.alysiscode.com/v1") is False
     assert _is_openrouter_base_url("https://openrouter.ai/api/v1") is True
-    assert _is_openrouter_base_url("https://example.supabase.co/rest/v1") is False
-    assert _is_openrouter_base_url("https://example.supabase.co/") is False
+    assert _is_openrouter_base_url("https://example.invalid/rest/v1") is False
+    assert _is_openrouter_base_url("https://example.invalid/") is False
     assert _is_openrouter_base_url("https://api.openai.com/v1") is False
     assert _is_openrouter_base_url(None) is False
 
@@ -421,7 +417,7 @@ def test_web_search_no_longer_treats_alysis_proxy_as_openrouter(
 
     cfg = AppConfig(
         model="deepseek-v4-flash",
-        base_url=DEFAULT_PROXY_BASE_URL,
+        base_url="https://api.alysiscode.com/v1",
         web_search_mode="auto",
     )
     status = resolve_web_search_runtime_status(cfg=cfg, api_key="slk_test-key")
@@ -482,7 +478,7 @@ def test_web_search_auto_status_never_selects_openrouter_for_alysis_proxy(
 
     cfg = AppConfig(
         model="deepseek-v4-flash",
-        base_url=DEFAULT_PROXY_BASE_URL,
+        base_url="https://api.alysiscode.com/v1",
         web_search_mode="auto",
     )
     status = resolve_web_search_runtime_status(cfg=cfg, api_key="slk_test-key")

@@ -44,7 +44,7 @@ from alysis_code.provider_telemetry import (
 from alysis_code.request_estimation import estimate_provider_payload_tokens
 from alysis_code.session_store import SessionStore
 
-_ALYSIS_TRIAL_BASE_URL = "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1/llm/v1"
+_ALYSIS_TRIAL_BASE_URL = "https://api.alysiscode.com/v1"
 
 
 def test_openai_compat_reexports_shared_llm_types() -> None:
@@ -815,7 +815,7 @@ def test_stream_retries_with_default_temperature_when_provider_accepts_only_defa
             headers={"content-type": "text/event-stream"},
             content=(
                 b'data: {"choices":[{"delta":{"content":"o"}}]}\n\n'
-                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                b'data: {"choices":[{"delta":{"content":"k"}}]}\n\n'
                 b"data: [DONE]\n\n"
             ),
         )
@@ -1513,7 +1513,7 @@ def test_deepseek_reasoning_content_round_trips_for_tool_calls() -> None:
         on_reasoning_delta=reasoning_deltas.append,
     )
     assert first.content == ""
-    assert reasoning_deltas == []
+    assert reasoning_deltas == ["hidden reasoning state"]
     assert first.provider_metadata is not None
     assert first.provider_metadata["deepseek"] == {"reasoning_content": "hidden reasoning state"}
     assert first.provider_metadata["openai_compat"]["request_plan"]["input_mode"] == "full"
@@ -2140,7 +2140,7 @@ def test_qwen_streamed_reasoning_round_trips_opaquely_for_tool_calls() -> None:
         on_reasoning_delta=reasoning_deltas.append,
     )
     assert first.content == ""
-    assert reasoning_deltas == []
+    assert reasoning_deltas == ["private ", "qwen state"]
     assert first.provider_metadata is not None
     assert first.provider_metadata["qwen"] == {"reasoning_content": "private qwen state"}
     assistant_message = attach_provider_metadata_to_assistant_message(
@@ -2462,8 +2462,8 @@ def test_mistral_thinking_chunks_round_trip_opaquely_on_text_turns() -> None:
         on_reasoning_delta=reasoning_deltas.append,
     )
     assert first.content == "Public answer."
-    assert reasoning_deltas == []
-    assert first.reasoning == ()
+    assert reasoning_deltas == ["private mistral reasoning"]
+    assert [item.text for item in first.reasoning] == ["private mistral reasoning"]
     assert first.provider_metadata is not None
     assert first.provider_metadata["mistral"] == {"content_chunks": content_chunks}
 
@@ -2560,7 +2560,7 @@ def test_mistral_stream_reconstructs_signed_thinking_chunks_for_opaque_replay() 
         on_reasoning_delta=reasoning_deltas.append,
     )
     assert first.content == "Public answer."
-    assert reasoning_deltas == []
+    assert reasoning_deltas == ["private ", "state"]
     assert first.provider_metadata is not None
     assistant_message = attach_provider_metadata_to_assistant_message(
         {"role": "assistant", "content": first.content},
@@ -2782,8 +2782,8 @@ def test_explicit_custom_reasoning_adapter_controls_stream_parse_replay_and_rout
     assert first.provider_metadata is not None
     assert metadata_namespace in first.provider_metadata
     assert sentinel in json.dumps(first.provider_metadata[metadata_namespace], sort_keys=True)
-    assert first.reasoning == ()
-    assert reasoning_deltas == []
+    assert [item.text for item in first.reasoning] == [sentinel]
+    assert reasoning_deltas == [sentinel]
     assistant_message = attach_provider_metadata_to_assistant_message(
         {
             "role": "assistant",
@@ -2970,7 +2970,7 @@ def test_openrouter_reasoning_round_trips_for_tool_calls() -> None:
         tools=[],
         on_reasoning_delta=reasoning_deltas.append,
     )
-    assert reasoning_deltas == []
+    assert reasoning_deltas == ["hidden openrouter reasoning"]
     assert first.provider_metadata is not None
     assert first.provider_metadata["openrouter"] == {
         "reasoning": "hidden openrouter reasoning",
@@ -4180,8 +4180,6 @@ def test_contract_opted_in_providers_emit_documented_explicit_off(
     ("base_url", "provider_key", "model", "effort"),
     [
         ("https://api.cerebras.ai/v1", "cerebras", "zai-glm-4.7", "high"),
-        ("https://api.cerebras.ai/v1", "cerebras", "gemma-4-31b", "high"),
-        ("https://api.x.ai/v1", "xai", "grok-4.6", "xhigh"),
         (
             "https://api.fireworks.ai/inference/v1",
             "fireworks",
@@ -4435,7 +4433,30 @@ def test_stream_normalizes_content_arrays_and_ignores_non_text_parts() -> None:
     assert chunks == ["Hel", "lo"]
 
 
-def test_stream_dedupes_cumulative_content_and_tool_argument_deltas() -> None:
+@pytest.fixture
+def cumulative_stream_client():
+    """Build a client opted in to cumulative stream assembly.
+
+    The de-duplication these tests pin is for a provider that re-sends the
+    text already streamed; it is off by default because it corrupts ordinary
+    incremental streams, so each test opts in the way such a provider must.
+    """
+
+    def build(transport: httpx.BaseTransport) -> OpenAICompatClient:
+        return OpenAICompatClient(
+            base_url="https://example.com/v1",
+            api_key="test",
+            model="test-model",
+            transport=transport,
+            stream_assembly="cumulative",
+        )
+
+    return build
+
+
+def test_stream_dedupes_cumulative_content_and_tool_argument_deltas(
+    cumulative_stream_client,
+) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         events = [
             {"choices": [{"delta": {"content": "I'll help you build an AI news website."}}]},
@@ -4491,12 +4512,7 @@ def test_stream_dedupes_cumulative_content_and_tool_argument_deltas() -> None:
         return httpx.Response(200, content=body_sse.encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="test-model",
-        transport=transport,
-    )
+    client = cumulative_stream_client(transport)
 
     chunks: list[str] = []
     resp = client.chat(
@@ -4516,7 +4532,9 @@ def test_stream_dedupes_cumulative_content_and_tool_argument_deltas() -> None:
     assert resp.tool_calls[0].arguments == {"path": "README.md", "max_bytes": 10}
 
 
-def test_stream_dedupes_cumulative_content_with_trailing_whitespace_drift() -> None:
+def test_stream_dedupes_cumulative_content_with_trailing_whitespace_drift(
+    cumulative_stream_client,
+) -> None:
     first = (
         "Now I understand the repository structure. It's a simple content repository "
         "with Markdown files. Let me "
@@ -4535,12 +4553,7 @@ def test_stream_dedupes_cumulative_content_with_trailing_whitespace_drift() -> N
         return httpx.Response(200, content=body_sse.encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="test-model",
-        transport=transport,
-    )
+    client = cumulative_stream_client(transport)
 
     chunks: list[str] = []
     resp = client.chat(
@@ -4559,7 +4572,9 @@ def test_stream_dedupes_cumulative_content_with_trailing_whitespace_drift() -> N
     ]
 
 
-def test_stream_dedupes_cumulative_content_restarted_after_leading_newline() -> None:
+def test_stream_dedupes_cumulative_content_restarted_after_leading_newline(
+    cumulative_stream_client,
+) -> None:
     first = "Let me verify the website renders correctly by checking the generated HTML export:"
     second = (
         "\nLet me verify the website renders correctly by checking the generated HTML export:\n"
@@ -4575,12 +4590,7 @@ def test_stream_dedupes_cumulative_content_restarted_after_leading_newline() -> 
         return httpx.Response(200, content=body_sse.encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="test-model",
-        transport=transport,
-    )
+    client = cumulative_stream_client(transport)
 
     chunks: list[str] = []
     resp = client.chat(
@@ -4593,7 +4603,7 @@ def test_stream_dedupes_cumulative_content_restarted_after_leading_newline() -> 
     assert chunks == [first, "\nStep 11: Read File"]
 
 
-def test_stream_dedupes_tail_overlap_followed_by_restart() -> None:
+def test_stream_dedupes_tail_overlap_followed_by_restart(cumulative_stream_client) -> None:
     first = (
         "Now I understand the repository structure. It's a simple content repository "
         "with Markdown files. Let me"
@@ -4612,12 +4622,7 @@ def test_stream_dedupes_tail_overlap_followed_by_restart() -> None:
         return httpx.Response(200, content=body_sse.encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="test-model",
-        transport=transport,
-    )
+    client = cumulative_stream_client(transport)
 
     chunks: list[str] = []
     resp = client.chat(
@@ -4636,7 +4641,9 @@ def test_stream_dedupes_tail_overlap_followed_by_restart() -> None:
     ]
 
 
-def test_stream_dedupes_duplicate_full_sentence_inside_cumulative_chunk() -> None:
+def test_stream_dedupes_duplicate_full_sentence_inside_cumulative_chunk(
+    cumulative_stream_client,
+) -> None:
     first = (
         "Both directories are empty. Now I'll create the AI news website structure. Let me create:"
     )
@@ -4656,12 +4663,7 @@ def test_stream_dedupes_duplicate_full_sentence_inside_cumulative_chunk() -> Non
         return httpx.Response(200, content=body_sse.encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="test-model",
-        transport=transport,
-    )
+    client = cumulative_stream_client(transport)
 
     chunks: list[str] = []
     resp = client.chat(
@@ -4679,7 +4681,9 @@ def test_stream_dedupes_duplicate_full_sentence_inside_cumulative_chunk() -> Non
     ]
 
 
-def test_stream_dedupes_exact_duplicate_progress_sentence_from_cumulative_chunk() -> None:
+def test_stream_dedupes_exact_duplicate_progress_sentence_from_cumulative_chunk(
+    cumulative_stream_client,
+) -> None:
     first = "I found the issues! Let me fix both:"
     second = first + "\n" + first
 
@@ -4692,12 +4696,7 @@ def test_stream_dedupes_exact_duplicate_progress_sentence_from_cumulative_chunk(
         return httpx.Response(200, content=body_sse.encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="test-model",
-        transport=transport,
-    )
+    client = cumulative_stream_client(transport)
 
     chunks: list[str] = []
     resp = client.chat(
@@ -4710,7 +4709,7 @@ def test_stream_dedupes_exact_duplicate_progress_sentence_from_cumulative_chunk(
     assert chunks == [first]
 
 
-def test_stream_suppresses_alternate_full_answer_restart() -> None:
+def test_stream_suppresses_alternate_full_answer_restart(cumulative_stream_client) -> None:
     first = (
         "Yes, I can see the image. It shows the **Recycle Bin** icon with a blue "
         'recycling symbol and the label "Recycle Bin" below it.\n\n'
@@ -4732,12 +4731,7 @@ def test_stream_suppresses_alternate_full_answer_restart() -> None:
         return httpx.Response(200, content=body_sse.encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="test-model",
-        transport=transport,
-    )
+    client = cumulative_stream_client(transport)
 
     chunks: list[str] = []
     resp = client.chat(
@@ -4910,9 +4904,9 @@ def test_stream_parser_clears_abort_callback_when_parsing_fails() -> None:
 
 
 @pytest.mark.parametrize(
-    ("chunks", "timeout"),
+    ("chunks", "timeout", "stream_assembly"),
     [
-        pytest.param([b"x"] * 20, 2.0, id="newline-free-trickle"),
+        pytest.param([b"x"] * 20, 2.0, "auto", id="newline-free-trickle"),
         pytest.param(
             [
                 b": keepalive\n\n",
@@ -4930,6 +4924,7 @@ def test_stream_parser_clears_abort_callback_when_parsing_fails() -> None:
             ]
             * 10,
             10.0,
+            "auto",
             id="comments-malformed-and-empty-events",
         ),
         pytest.param(
@@ -4959,6 +4954,9 @@ def test_stream_parser_clears_abort_callback_when_parsing_fails() -> None:
             ]
             * 50,
             10.0,
+            # Re-sent state adds nothing only under cumulative assembly; on an
+            # incremental stream each repeat is new text and counts as progress.
+            "cumulative",
             id="duplicate-content-and-tool-state",
         ),
     ],
@@ -4966,6 +4964,7 @@ def test_stream_parser_clears_abort_callback_when_parsing_fails() -> None:
 def test_stream_watchdog_rejects_nonprogress_traffic(
     chunks: list[bytes],
     timeout: float,
+    stream_assembly: str,
 ) -> None:
     clock = _StepClock()
     stream = _TrackedCompatSseStream(chunks, fail_on_exhaustion=True)
@@ -4976,6 +4975,7 @@ def test_stream_watchdog_rejects_nonprogress_traffic(
         provider_retry_settings=ProviderRetrySettings(max_retries=0),
         stream_no_progress_timeout_s=timeout,
         stream_progress_clock=clock,
+        stream_assembly=stream_assembly,
     )
 
     with pytest.raises(LLMStreamNoProgressError, match="meaningful payload"):
@@ -5127,7 +5127,8 @@ def test_stream_watchdog_resets_for_reasoning_and_tool_progress() -> None:
     assert parsed.tool_calls[0].arguments == {"q": "skills"}
     assert parsed.provider_metadata is not None
     assert parsed.provider_metadata["deepseek"]["reasoning_content"] == "inspectinspect"
-    assert [output.text for output in parsed.reasoning] == ["checked"]
+    # Native reasoning retains legitimate repeated chunks just like answer text.
+    assert [output.text for output in parsed.reasoning] == ["inspectinspect"]
     assert clock.now > client.stream_no_progress_timeout_s
 
 
@@ -5396,7 +5397,7 @@ def test_alysis_hosted_proxy_resolves_to_deepseek_provider_key() -> None:
     # now forwards to DeepSeek.
     assert _provider_key_from_base_url(_ALYSIS_TRIAL_BASE_URL) == "deepseek"
     # A plain supabase host without the LLM proxy path must NOT be captured.
-    assert _provider_key_from_base_url("https://other.supabase.co/rest/v1") != "deepseek"
+    assert _provider_key_from_base_url("https://other.example.invalid/rest/v1") != "deepseek"
 
 
 def test_nvidia_hosted_nim_endpoint_resolves_exactly() -> None:
