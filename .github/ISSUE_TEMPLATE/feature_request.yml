@@ -1,34 +1,61 @@
 name: Feature request
-description: Suggest a new capability or improvement for Alysis Code.
+description: Suggest an improvement to the Alysis Code CLI.
 title: "feat: "
-labels: ["enhancement"]
+labels: ["enhancement", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting an improvement. Please describe the problem
-        first, then your proposed solution.
+        Please [search existing requests](https://github.com/AlysisAi/AlysisCode/issues?q=is%3Aissue%20label%3Aenhancement) first. If someone has suggested the same idea, add your use case to that issue.
   - type: textarea
     id: problem
     attributes:
-      label: Problem
-      description: What problem does this feature solve? Who feels the pain today?
+      label: What would you like to improve?
+      description: Describe the problem, who it affects, and what you are trying to achieve.
+      placeholder: When I work on ..., I need ... because ...
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Terminal UI / chat
+        - One-shot runs (alysis run)
+        - Forge / subagents
+        - Providers and models
+        - Sandbox and permissions
+        - MCP, skills, plugins, hooks, custom tools
+        - VS Code / JetBrains integration
+        - Install and updates
+        - Docs
+        - Other / not sure
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        ### Your ideas
+        These details are optional. Describing the problem is enough to start the conversation.
   - type: textarea
     id: proposal
     attributes:
       label: Proposed solution
-      description: Describe what you would like to see, ideally with usage examples.
-    validations:
-      required: true
+      description: If you have an approach in mind, describe how it would work.
+      placeholder: Ideally, I would be able to ...
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives considered
-      description: Workarounds or other designs you thought about.
+      label: Alternatives or workarounds
+      placeholder: Have you tried another way to solve this?
   - type: textarea
     id: extra
     attributes:
       label: Additional context
-      description: Links, screenshots, prior art in other tools, etc.
+      description: Examples, screenshots, or links that help explain the idea.
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be interested in contributing a pull request.

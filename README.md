@@ -1,23 +1,20 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-    <img src="docs/assets/banner.svg" alt="Alysis Code — Everyone's Coding Agent" width="720">
+    <img src="docs/assets/banner.svg" alt="Alysis Code — Everyone's Coding Agent" width="640">
   </picture>
 </p>
 
 <p align="center">
-  Local CLI coding agent that turns plans into reviewed, PR-ready code.<br>
-  Bring your own model. Sandboxed by default.
+  An open-source coding agent for your terminal.<br>
+  Bring your own model. Turn plans into reviewed, PR-ready code.
 </p>
 
 <p align="center">
   <a href="https://alysiscode.com/">Website</a> ·
-  <a href="https://github.com/AlysisAi/AlysisCode/tree/main/docs">Docs</a> ·
-  <a href="https://github.com/AlysisAi/AlysisCode/blob/main/docs/CHANGELOG.md">Changelog</a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/sponsors/AlysisAi"><img src="https://img.shields.io/github/sponsors/AlysisAi?label=Sponsor&logo=GitHub" alt="GitHub Sponsors"></a>
+  <a href="https://alysiscode.com/docs">Documentation</a> ·
+  <a href="docs/quickstart.md">Quickstart</a> ·
+  <a href="docs/CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
@@ -27,7 +24,16 @@
   <a href="https://github.com/AlysisAi/AlysisCode/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/alysis-code.svg" alt="License"></a>
 </p>
 
+<p align="center">
+  <a href="https://x.com/alysiscode">Follow on X</a> ·
+  <a href="https://github.com/sponsors/AlysisAi">Sponsor the project</a>
+</p>
+
 ---
+
+### Alysis Code App
+
+Alysis Code App is a desktop agent for coding and broader everyday work. It is a separate, closed-source product. This repository contains the Apache-2.0 CLI; the desktop application's source is not included here.
 
 ## Get Started
 
@@ -51,37 +57,52 @@ The installers provision uv and Python 3.12 when needed. No existing Python or p
 PowerShell can use `alysis` immediately; after the shell installer, follow its PATH instructions
 or open a new terminal. If you already use pipx, `pipx install alysis-code` also works;
 run `pipx ensurepath` and restart your terminal if the command is missing.
+Already installed? Run `alysis update` to get the latest release.
 
-**2 — Connect your account**
+**2 — Choose how to connect to a model**
 
-```sh
-alysis login
-```
+Pick one path. You can switch later with `/config` or by re-running `alysis-code setup`.
 
-Approve the code in your browser to use your Alysis credits. No cloud environment variables
-are needed. Existing 0.15.1 users should upgrade first with `alysis update`.
-
-**3 — Launch in your project**
+*Path A — Your own API key or a local model (no Alysis account needed)*
 
 ```bash
 cd your-project
 alysis-code
 ```
 
-The first run opens a guided setup wizard: choose **Use an API key** or **Use an AI subscription**,
-connect a provider, and pick your default model. Re-run it anytime with `alysis-code setup`.
-(`alysis` works too, as a short alias.)
-
-**Start building**
+The first run opens a guided setup wizard. Choose **Use an API key**, connect a provider
+(OpenAI, Anthropic, DeepSeek, Gemini, OpenRouter, and more), and pick your default model.
+To run fully offline, point Alysis Code at a local endpoint (Ollama, LM Studio, vLLM) from the
+`/config` picker, which lists every preset. Prefer to configure it by hand?
 
 ```bash
+export ALYSIS_API_KEY="YOUR_KEY"
+alysis config set base_url "https://api.openai.com/v1"
+alysis config set model "gpt-4.1-mini"
+```
+
+Have a ChatGPT subscription instead? Choose **Use an AI subscription** in the wizard, or run
+`alysis auth login openai-codex`.
+
+*Path B — Alysis account*
+
+```sh
+alysis login
+```
+
+Approve the code in your browser to use your Alysis credits. No provider key and no cloud
+environment variables are needed.
+
+**3 — Start building**
+
+```bash
+cd your-project
 alysis-code chat                            # interactive coding session
 alysis-code run "Fix the failing tests"     # one-shot task
 ```
 
-Bring your own key from any supported provider — or point Alysis Code at a local endpoint (Ollama,
-LM Studio, vLLM) and run fully offline. The `/config` picker lists every preset. Full walkthrough:
-[Quickstart guide](docs/quickstart.md).
+(`alysis` works too, as a short alias.) The `/config` picker lists every provider preset.
+Full walkthrough: [Quickstart guide](docs/quickstart.md).
 
 ---
 
@@ -110,6 +131,28 @@ LM Studio, vLLM) and run fully offline. The `/config` picker lists every preset.
 Shell and verification commands default to strict sandboxing. Verification can run outside that
 sandbox only when explicitly configured with `verify_sandbox.mode="off"` or
 `ALYSIS_VERIFY_SANDBOX_MODE=off`.
+
+## How it compares
+
+<details>
+<summary>Compare models, integrations, and sandboxing</summary>
+
+A quick, good-faith snapshot based on each project's public README and docs (October 2026).
+"—" means we couldn't confirm it from their docs; corrections welcome via an issue.
+
+| | Alysis Code | [Claude Code](https://github.com/anthropics/claude-code) | [Aider](https://github.com/Aider-AI/aider) | [Codex CLI](https://github.com/openai/codex) | [Gemini CLI](https://github.com/google-gemini/gemini-cli) |
+| --- | --- | --- | --- | --- | --- |
+| License | Apache-2.0 | Proprietary | Apache-2.0 | Apache-2.0 | Apache-2.0 |
+| Models | Any supported provider | Claude | Almost any LLM | OpenAI (ChatGPT sign-in or API key), plus local models | Gemini |
+| Local models | Yes (Ollama, LM Studio, vLLM) | — | Yes | Yes (Ollama, LM Studio) | — |
+| MCP servers | Yes | Yes | — | Yes | Yes |
+| Sandboxed shell | Yes, on by default (Docker / Bubblewrap) | Yes (sandboxed Bash tool) | — | Yes | Yes |
+| Editor integration | VS Code (pre-release), JetBrains (preview) | Yes | Yes | Yes (VS Code, Cursor, Windsurf) | Yes (VS Code companion, ACP integrations) |
+
+References: [Codex CLI local-provider options](https://learn.chatgpt.com/docs/developer-commands?surface=cli) ·
+[Gemini CLI editor integrations](https://github.com/google-gemini/gemini-cli/blob/main/docs/ide-integration/index.md).
+
+</details>
 
 ## Permissions & Personas
 

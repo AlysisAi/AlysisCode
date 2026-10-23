@@ -5,23 +5,32 @@ build-backend = "hatchling.build"
 [project]
 name = "alysis-code"
 version = "0.15.2"
-description = "Local CLI coding agent powered by any API."
+description = "Open-source AI coding agent for your terminal. Bring any model, sandboxed by default."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 keywords = [
   "agent",
+  "ai",
+  "ai-agent",
+  "ai-coding-agent",
   "cli",
   "coding-agent",
   "developer-tools",
   "llm",
-  "api",
+  "local-llm",
+  "mcp",
+  "ollama",
+  "sandbox",
+  "terminal",
+  "tui",
 ]
 classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -29,6 +38,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development",
+  "Topic :: Software Development :: Code Generators",
   "Topic :: Utilities",
 ]
 dependencies = [
@@ -55,8 +65,9 @@ dependencies = [
 ]
 
 [project.urls]
+Homepage = "https://alysiscode.com/"
+Documentation = "https://alysiscode.com/docs"
 Changelog = "https://github.com/AlysisAi/AlysisCode/blob/main/docs/CHANGELOG.md"
-Documentation = "https://github.com/AlysisAi/AlysisCode/tree/main/docs"
 Funding = "https://github.com/sponsors/AlysisAi"
 Issues = "https://github.com/AlysisAi/AlysisCode/issues"
 Security = "https://github.com/AlysisAi/AlysisCode/blob/main/.github/SECURITY.md"

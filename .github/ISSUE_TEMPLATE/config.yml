@@ -1,8 +1,21 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Question or discussion
-    url: https://github.com/AlysisAi/AlysisCode/discussions
-    about: Use Discussions for questions, ideas, and general help.
+  # No Discord server exists for the project yet. Add one here if you create it:
+  # - name: Discord
+  #   url: https://discord.gg/<invite>
+  #   about: Chat with the community and the Alysis team.
+  #
+  # Discussions are currently disabled on this repo. If you enable them
+  # (Settings → General → Features → Discussions), uncomment this link:
+  # - name: Question or discussion
+  #   url: https://github.com/AlysisAi/AlysisCode/discussions
+  #   about: Use Discussions for questions, ideas, and general help.
+  - name: Documentation and FAQ
+    url: https://alysiscode.com/docs/faq
+    about: Check the docs and FAQ for setup and usage questions.
+  - name: Alysis Code on X
+    url: https://x.com/alysiscode
+    about: Follow for release news, or reach out to the team.
   - name: Security vulnerability
     url: https://github.com/AlysisAi/AlysisCode/security/advisories/new
     about: Please report security issues privately, not as public issues.

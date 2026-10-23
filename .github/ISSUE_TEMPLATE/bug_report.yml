@@ -1,58 +1,50 @@
 name: Bug report
-description: Report a reproducible bug in Alysis Code.
+description: Help us reproduce and fix a problem with the Alysis Code CLI.
 title: "bug: "
-labels: ["bug"]
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to file a bug report. Please fill in
-        the sections below so we can reproduce and fix the issue.
+        Please [search existing issues](https://github.com/AlysisAi/AlysisCode/issues) and try the latest version with `alysis update` before reporting a bug.
+
+        For vulnerabilities, use the [private security report](https://github.com/AlysisAi/AlysisCode/security/advisories/new).
   - type: textarea
-    id: summary
+    id: actual
     attributes:
-      label: Summary
-      description: A short, clear description of the bug.
-      placeholder: e.g. `alysis chat` exits after the provider returns an empty response.
+      label: What happened?
+      description: Describe the problem and include the error message, if there is one.
+      placeholder: When I run a task, the session exits after the provider returns an empty response.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
       label: Steps to reproduce
-      description: Minimal, exact commands or actions that trigger the bug.
+      description: Include the commands or actions needed to reproduce the problem.
       placeholder: |
-        1. Configure the provider/profile you are using.
-        2. Run the exact command or chat action that fails.
-        3. Paste the error or describe the incorrect behavior.
+        1. Configure the provider and model.
+        2. Run the command or chat action.
+        3. Describe when the problem appears.
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
+      label: What did you expect?
+      placeholder: Describe what should have happened instead.
     validations:
       required: true
-  - type: textarea
-    id: actual
+  - type: markdown
     attributes:
-      label: Actual behavior
-      description: Include the full error message and stack trace if possible.
-    validations:
-      required: true
+      value: |
+        ### Your environment
   - type: input
     id: version
     attributes:
       label: Alysis Code version
-      description: Output of `alysis --version` (or commit SHA if running from source).
-      placeholder: alysis 0.x.y
-    validations:
-      required: true
-  - type: input
-    id: python
-    attributes:
-      label: Python version
-      placeholder: 3.11.x
+      description: Run `alysis --version`, or provide the commit if you installed from source.
+      placeholder: e.g. 0.15.2
     validations:
       required: true
   - type: dropdown
@@ -63,11 +55,59 @@ body:
         - macOS
         - Linux
         - Windows
+        - Windows (WSL)
         - Other
     validations:
       required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Install script (install.sh / install.ps1)
+        - pipx
+        - uv tool
+        - pip / virtualenv
+        - From source
+        - Other / not sure
+  - type: dropdown
+    id: access
+    attributes:
+      label: Model access
+      options:
+        - Alysis account (alysis login)
+        - Own API key
+        - AI subscription (e.g. ChatGPT Codex sign-in)
+        - Local endpoint (Ollama, LM Studio, vLLM)
+        - Other / not sure
+  - type: input
+    id: model
+    attributes:
+      label: Provider and model
+      placeholder: e.g. OpenRouter / deepseek-chat
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Permission mode
+      options:
+        - readonly
+        - review
+        - auto
+        - fullaccess
+        - Not sure
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Optional. Leave this blank if the installer manages Python for you.
+      placeholder: e.g. 3.12
+  - type: markdown
+    attributes:
+      value: |
+        ### Additional context
   - type: textarea
     id: extra
     attributes:
-      label: Additional context
-      description: Relevant logs, sanitized configuration, or screenshots. Remove credentials and personal data.
+      label: Logs, screenshots, or other details
+      description: Remove credentials and personal data. Review any support bundle before attaching it.
+      placeholder: Add anything else that would help us investigate.
