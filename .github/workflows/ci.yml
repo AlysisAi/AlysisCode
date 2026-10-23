@@ -45,6 +45,7 @@ jobs:
         include:
           - {"python-version":"3.11"}
           - {"python-version":"3.12"}
+          - {"python-version":"3.13"}
           # Fresh WSL installs Ubuntu 26.04, whose system Python is 3.14.
           - {"python-version":"3.14"}
 
