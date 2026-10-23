@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "aarch64",
   "repository": "https://apk.cgr.dev/chainguard",
-  "inventory_sha256": "596b4d192fda6d3a11d72b44f618445540862950aff4c1323d586fe8e14e7f56",
+  "inventory_sha256": "37be62e0dd5abfed1cd525c732c63aa22387f6c37e1370300a7ce3a9d0d52118",
   "packages": [
     {
       "name": "apk-tools",
@@ -66,23 +66,23 @@
     },
     {
       "name": "ca-certificates",
-      "version": "20260909-r1",
+      "version": "20260909-r3",
       "architecture": "aarch64",
-      "installed_checksum": "Q1erYcgjuMqMe8/BqcgYt+WaWd6J4=",
-      "filename": "ca-certificates-20260909-r1.apk",
-      "url": "https://apk.cgr.dev/chainguard/aarch64/ca-certificates-20260909-r1.apk",
-      "size": 150734,
-      "sha256": "70b5f229432b187a40ac5a959ebf170e4e94c89be6d9a02377d1f81081e17a73"
+      "installed_checksum": "Q1j7mIXPzCeapNE4yGkC+1i0P7II4=",
+      "filename": "ca-certificates-20260909-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ca-certificates-20260909-r3.apk",
+      "size": 152002,
+      "sha256": "7c1006265f616d259de5c099cdb8bdcdffeed2f42b534deba005d74832850f2a"
     },
     {
       "name": "ca-certificates-bundle",
-      "version": "20260909-r1",
+      "version": "20260909-r3",
       "architecture": "aarch64",
-      "installed_checksum": "Q1VRejqJ4mpISZYu/Z6OxC6eXQfFA=",
-      "filename": "ca-certificates-bundle-20260909-r1.apk",
-      "url": "https://apk.cgr.dev/chainguard/aarch64/ca-certificates-bundle-20260909-r1.apk",
-      "size": 117668,
-      "sha256": "dab5979e550aef0ec07a97baf36360105c6b4650a4d100bb6d8de19976af754d"
+      "installed_checksum": "Q12NXUp1YSrgDFsj3YmYoLOz7Pngg=",
+      "filename": "ca-certificates-bundle-20260909-r3.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/ca-certificates-bundle-20260909-r3.apk",
+      "size": 119164,
+      "sha256": "4f57ebd7dc21d78ecce228f397d0a4ee46b5cfc777ac5f292821d41a97bfd896"
     },
     {
       "name": "coreutils",
@@ -96,13 +96,13 @@
     },
     {
       "name": "curl",
-      "version": "8.22.0-r3",
+      "version": "8.23.0-r0",
       "architecture": "aarch64",
-      "installed_checksum": "Q1C4KFM5zT6xeVJgXaYgYdYXt5f3U=",
-      "filename": "curl-8.22.0-r3.apk",
-      "url": "https://apk.cgr.dev/chainguard/aarch64/curl-8.22.0-r3.apk",
-      "size": 231937,
-      "sha256": "3ae4eaaa9701cd0934c0c50d4d1c4fb29fe2535e5f51eca20e59c9d8d7d2b66c"
+      "installed_checksum": "Q1EWFDwpKxAiF9bU5bja5imuzAHHs=",
+      "filename": "curl-8.23.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/curl-8.23.0-r0.apk",
+      "size": 233785,
+      "sha256": "9fcfceca318fd77713dafde0381c0d1ce148e15a5ae4e8a91fbb8210ed20ccf5"
     },
     {
       "name": "cyrus-sasl-heimdal-libs",
@@ -426,13 +426,13 @@
     },
     {
       "name": "libcurl-openssl4",
-      "version": "8.22.0-r4",
+      "version": "8.23.0-r0",
       "architecture": "aarch64",
-      "installed_checksum": "Q155Re6v1aXK3i4tqR8EMQbjvrfs8=",
-      "filename": "libcurl-openssl4-8.22.0-r4.apk",
-      "url": "https://apk.cgr.dev/chainguard/aarch64/libcurl-openssl4-8.22.0-r4.apk",
-      "size": 563231,
-      "sha256": "c1881e780c363f8ca42f3f3447d58a5424755d9fd8012593c3ad58294817e8c9"
+      "installed_checksum": "Q1V/mGJ5UF65T6HECavkg2ngfEuv0=",
+      "filename": "libcurl-openssl4-8.23.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/aarch64/libcurl-openssl4-8.23.0-r0.apk",
+      "size": 572525,
+      "sha256": "5c6bd8be94a251457d7eb532e7e6eac1169da296db01f22ffbf828bd3b0b8221"
     },
     {
       "name": "libexpat1",

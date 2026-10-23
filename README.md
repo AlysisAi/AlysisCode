@@ -35,18 +35,33 @@ Alysis Code requires **Python 3.11+** and runs on macOS, Linux, and Windows.
 
 **1 — Install**
 
-```bash
-pipx install alysis-code
+On Windows, paste this into **PowerShell**:
+
+```powershell
+irm https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.ps1 | iex
 ```
 
-On Linux, macOS, or Windows through WSL, the installer can also provision an
-isolated Python runtime and install the CLI:
+On Linux, macOS, or inside a **WSL/Ubuntu terminal**:
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.sh | sh
 ```
 
-**2 — Launch in your project**
+The installers provision uv and Python 3.12 when needed. No existing Python or pipx is required.
+PowerShell can use `alysis` immediately; after the shell installer, follow its PATH instructions
+or open a new terminal. If you already use pipx, `pipx install alysis-code` also works;
+run `pipx ensurepath` and restart your terminal if the command is missing.
+
+**2 — Connect your account**
+
+```sh
+alysis login
+```
+
+Approve the code in your browser to use your Alysis credits. No cloud environment variables
+are needed. Existing 0.15.1 users should upgrade first with `alysis update`.
+
+**3 — Launch in your project**
 
 ```bash
 cd your-project
@@ -57,7 +72,7 @@ The first run opens a guided setup wizard: choose **Use an API key** or **Use an
 connect a provider, and pick your default model. Re-run it anytime with `alysis-code setup`.
 (`alysis` works too, as a short alias.)
 
-**3 — Start building**
+**Start building**
 
 ```bash
 alysis-code chat                            # interactive coding session

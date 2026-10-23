@@ -285,6 +285,18 @@ def _smoke_wheel(wheel: Path, *, name: str, version: str) -> None:
                 raise DistributionValidationError(
                     f"Installed {name} wheel reported the wrong version."
                 )
+        subprocess.run(
+            [
+                sys.executable,
+                os.fspath(Path(__file__).with_name("smoke_hosted_login.py")),
+                "--expected-root",
+                os.fspath(target),
+            ],
+            cwd=directory,
+            env=environment,
+            check=True,
+            timeout=60,
+        )
 
 
 def main() -> int:

@@ -6,7 +6,6 @@ from alysis_code import account_login
 from alysis_code import alysis_cloud as cloud
 from alysis_code.config import AppConfig
 from alysis_code.feedback_delivery import prepare_feedback
-from alysis_code.feedback_report import FeedbackReportError
 
 
 @pytest.fixture(autouse=True)
@@ -21,17 +20,52 @@ def isolated_cloud_configuration(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_public_build_has_no_deployment_defaults_and_login_sends_nothing(monkeypatch):
-    def unexpected_request(*args, **kwargs):
-        pytest.fail("Unconfigured hosted login must not make a network request")
-
-    monkeypatch.setattr(account_login.urllib.request, "urlopen", unexpected_request)
-    assert cloud.cloud_api_url() == ""
-    assert cloud.gateway_base_url() == ""
+def test_public_build_defaults_to_hosted_services_without_a_client_key():
+    base = cloud.DEFAULT_CLOUD_API_URL
+    assert base.startswith("https://")
+    assert cloud.cloud_api_url() == base
+    assert cloud.device_code_url() == f"{base}/device-code"
+    assert cloud.device_token_url() == f"{base}/device-token"
+    assert cloud.account_status_url() == f"{base}/account-status"
+    assert cloud.feedback_url() == f"{base}/feedback"
+    assert cloud.gateway_base_url() == f"{base}/llm/v1"
+    assert cloud.models_url() == f"{base}/llm/v1/models"
     assert cloud.public_client_key() == ""
     assert account_login._function_headers() == {"Content-Type": "application/json"}
-    with pytest.raises(account_login.AlysisLoginError, match="ALYSIS_CLOUD_API_URL"):
-        account_login.login(AppConfig())
+
+
+@pytest.mark.parametrize("value", ["", " ", "\t"])
+def test_blank_deployment_overrides_keep_the_hosted_default(monkeypatch, value):
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", value)
+    monkeypatch.setenv("ALYSIS_SUPABASE_URL", value)
+    assert cloud.cloud_api_url() == cloud.DEFAULT_CLOUD_API_URL
+
+
+def test_default_login_reaches_the_device_flow(monkeypatch, tmp_path):
+    from alysis_code.config import load_config, load_persisted_profile_keys
+
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
+    calls = []
+    opened = []
+
+    def post(url, payload):
+        calls.append(url)
+        if url == cloud.device_code_url():
+            assert payload["installation_id"]
+            return {"device_code": "synthetic-device", "user_code": "TEST-CODE", "interval": 0}
+        assert url == cloud.device_token_url()
+        assert payload == {"device_code": "synthetic-device"}
+        return {"status": "approved", "key": "slk_synthetic-onboarding"}
+
+    monkeypatch.setattr(account_login, "_post_json", post)
+    result = account_login.login(AppConfig(), browser_opener=lambda url: opened.append(url) or True)
+    assert calls == [cloud.device_code_url(), cloud.device_token_url()]
+    assert opened == [f"{cloud.activate_url()}?code=TEST-CODE"]
+    assert result.base_url == cloud.gateway_base_url()
+    assert load_persisted_profile_keys()["alysis"] == "slk_synthetic-onboarding"
+    assert account_login.login_status(load_config()).logged_in
 
 
 def test_configured_api_supplies_all_hosted_endpoints(monkeypatch):
@@ -60,8 +94,7 @@ def test_explicit_legacy_configuration_remains_supported(monkeypatch):
 def test_gateway_override_is_independent_of_account_api(monkeypatch):
     monkeypatch.setenv("ALYSIS_GATEWAY_URL", "https://gateway.example.invalid/v1")
     assert cloud.models_url() == "https://gateway.example.invalid/v1/models"
-    with pytest.raises(cloud.AlysisCloudConfigError, match="not configured"):
-        cloud.device_code_url()
+    assert cloud.device_code_url() == f"{cloud.DEFAULT_CLOUD_API_URL}/device-code"
 
 
 def test_optional_public_routing_key_is_read_at_request_time(monkeypatch):
@@ -75,11 +108,11 @@ def test_optional_public_routing_key_is_read_at_request_time(monkeypatch):
     assert "Authorization" not in account_login._function_headers()
 
 
-def test_missing_feedback_configuration_returns_actionable_error(tmp_path):
-    with pytest.raises(FeedbackReportError, match="ALYSIS_CLOUD_API_URL"):
-        prepare_feedback(
-            workspace_root=tmp_path, feedback_text="Synthetic report", include_diagnostics=False
-        )
+def test_feedback_uses_hosted_endpoint_without_configuration(tmp_path):
+    report = prepare_feedback(
+        workspace_root=tmp_path, feedback_text="Synthetic report", include_diagnostics=False
+    )
+    assert report.endpoint == cloud.feedback_url()
 
 
 def test_remote_cleartext_api_is_rejected(monkeypatch):

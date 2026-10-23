@@ -5,6 +5,22 @@
 - Recognize Alibaba Model Studio endpoints by owned hostname boundaries rather
   than applying Qwen provider behavior to unrelated custom hosts.
 
+## 0.15.2 - 2026-10-21
+
+- Restore the default hosted API URL so a fresh installation can run
+  `alysis login`, read account status, and prepare online feedback without
+  environment configuration. Custom deployment overrides remain supported;
+  project keys and server credentials are not bundled.
+- Add a Windows PowerShell installer that provisions uv and Python, detects
+  conflicting installations, and updates PATH for the current and future terminals.
+- Clarify PowerShell, WSL, pipx prerequisites, and the account sign-in steps.
+- Require a complete simulated device login from the installed release wheel,
+  with no cloud environment variables, before publishing Python packages.
+- Refresh the sandbox's pinned certificate, curl, and Go security updates on
+  both supported architectures, with native image scans and smoke checks.
+- Require patched Certifi and Pillow releases and refresh their locked versions
+  so new and upgraded installations receive the current security fixes.
+
 ## 0.15.1 - 2026-10-15
 
 - Keep the release qualification's simulated stalled provider connected until

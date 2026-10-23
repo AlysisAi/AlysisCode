@@ -80,6 +80,8 @@ jobs:
           version: "0.11.23"
       - name: Sync locked qualification dependencies
         run: uv sync --frozen --python "3.12" --extra dev --extra documents
+      - name: Test hosted onboarding and installer failure handling
+        run: uv run --frozen --no-sync pytest -q tests/test_alysis_cloud.py tests/test_windows_installer.py
       - name: Qualify source and installed wheel
         run: >-
           uv run --frozen --no-sync python scripts/qa/qualify_production_reliability.py

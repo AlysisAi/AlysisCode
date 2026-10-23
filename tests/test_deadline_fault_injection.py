@@ -128,7 +128,9 @@ def test_repeated_transient_responses_and_backoff_share_the_deadline() -> None:
 
         def call() -> None:
             attempts.append(time.monotonic())
-            with httpx.Client(timeout=10, trust_env=False) as client:
+            # This fixture is plain loopback HTTP. Loading the Windows TLS trust
+            # store can consume the entire budget before any retry is attempted.
+            with httpx.Client(timeout=10, verify=False, trust_env=False) as client:
                 with cancellable_httpx_request(
                     client=client, cancellation_token=token, method="GET", url=url, stream=False
                 ) as response:

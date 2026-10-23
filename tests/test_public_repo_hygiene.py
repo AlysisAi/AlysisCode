@@ -208,3 +208,19 @@ def test_allows_generic_backend_support_and_reserved_example_urls(tmp_path: Path
         'VENDOR_DOMAIN = "supabase.co"\n'
     )
     assert collect_violations(["client.py"], tmp_path) == []
+
+
+def test_only_exact_public_cloud_default_is_allowed() -> None:
+    declaration = check_public_repo._PUBLIC_CLOUD_DEFAULT_DECLARATION
+    check = check_public_repo.deployment_content_violations
+    path = "src/alysis_code/alysis_cloud.py"
+    assert check(path, declaration.encode()) == []
+    assert check("other.py", declaration.encode()) == [
+        "other.py:1: deployment-specific backend host"
+    ]
+    assert check(path, declaration.replace("/functions/v1", "/rest/v1").encode())
+    assert check(path, (declaration + " # another declaration").encode())
+    key = "_".join(("sb", "secret", "synthetic-test-value"))
+    assert check(path, (declaration + "\nKEY = " + repr(key)).encode()) == [
+        f"{path}:2: deployment-specific backend key"
+    ]

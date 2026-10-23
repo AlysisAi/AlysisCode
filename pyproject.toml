@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "alysis-code"
-version = "0.15.1"
+version = "0.15.2"
 description = "Local CLI coding agent powered by any API."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,7 @@ classifiers = [
 ]
 dependencies = [
   "anyio>=4.14.2",
+  "certifi>=2026.10.19",
   "click>=8.0.0",
   "cryptography>=50.0.0",
   "ddgs>=9.0.0",
@@ -41,7 +42,7 @@ dependencies = [
   "keyring>=25.0.0",
   "markdown-it-py>=4.2.0,<5.0.0",
   "packaging>=23.0",
-  "pillow>=12.3.0",
+  "pillow>=13.0.0",
   "platformdirs>=4.2.0",
   "pydantic>=2.6.0",
   "prompt-toolkit>=3.0.43",
