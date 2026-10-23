@@ -38,11 +38,17 @@ Forge execution can apply task-level MCP scope on top of the session catalog. A 
 
 ## Config Files
 
-User configuration lives at:
+User configuration uses the platform's configuration directory:
 
-```text
-~/.config/alysis/mcp.json
-```
+| Platform | Default user MCP file |
+|---|---|
+| Windows | `%LOCALAPPDATA%\alysis\alysis\mcp.json` |
+| macOS | `~/Library/Application Support/alysis/mcp.json` |
+| Linux | `~/.config/alysis/mcp.json` |
+
+On Linux, `XDG_CONFIG_HOME` replaces `~/.config` when set. For CLI sessions,
+`ALYSIS_CONFIG_DIR` overrides the configuration directory on any platform;
+the MCP file is `<ALYSIS_CONFIG_DIR>/mcp.json`.
 
 Project configuration lives at:
 
@@ -106,8 +112,9 @@ free for exploration and light use, with rate limits.
 
 Merge the `parallel` server from
 [`examples/parallel-search-mcp.json`](examples/parallel-search-mcp.json) into the
-`servers` object in your **user** `~/.config/alysis/mcp.json`, retaining your other
-servers. If you have no MCP config yet, you can use the example as the whole file:
+`servers` object in your **user MCP file** (see [Config Files](#config-files)
+for your platform's location), retaining your other servers. If you have no MCP
+config yet, you can use the example as the whole file:
 
 ```json
 {
