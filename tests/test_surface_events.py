@@ -216,3 +216,59 @@ def test_rich_surface_accepts_all_structured_event_methods() -> None:
 def test_noop_and_hidden_surfaces_accept_all_structured_event_methods() -> None:
     _call_all_emit_methods(NoopSurface())
     _call_all_emit_methods(HiddenApprovalSurface(None))
+
+
+def _rich_surface_with_buffer() -> tuple[RichSurface, io.StringIO]:
+    buffer = io.StringIO()
+    return RichSurface(console=Console(file=buffer, force_terminal=False)), buffer
+
+
+def test_rich_surface_status_update_renders_dedicated_trace_line() -> None:
+    surface, buffer = _rich_surface_with_buffer()
+
+    surface.emit_status_update(
+        tokens_in=10,
+        tokens_out=5,
+        cached_tokens=2,
+        cost_usd=0.001,
+        mode="review",
+        model="test-model",
+        step=1,
+        step_budget=4,
+    )
+
+    rendered = buffer.getvalue()
+    assert "Status: " in rendered
+    assert "model=test-model" in rendered
+    assert "mode=review" in rendered
+    assert "step=1/4" in rendered
+    assert "in=10" in rendered
+    assert "out=5" in rendered
+    assert "cached=2" in rendered
+    assert "cost=$0.001000" in rendered
+
+
+def test_rich_surface_status_update_without_fields_renders_updated() -> None:
+    surface, buffer = _rich_surface_with_buffer()
+
+    surface.emit_status_update()
+
+    assert "Status: updated" in buffer.getvalue()
+
+
+def test_rich_surface_mode_changed_renders_dedicated_trace_line() -> None:
+    surface, buffer = _rich_surface_with_buffer()
+
+    surface.emit_mode_changed("auto")
+
+    assert "Permissions: auto" in buffer.getvalue()
+
+
+def test_rich_surface_status_and_mode_suppressed_when_trace_off() -> None:
+    surface, buffer = _rich_surface_with_buffer()
+    surface.set_trace_level("off")
+
+    surface.emit_status_update(model="test-model")
+    surface.emit_mode_changed("auto")
+
+    assert buffer.getvalue() == ""

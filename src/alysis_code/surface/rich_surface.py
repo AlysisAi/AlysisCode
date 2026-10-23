@@ -1029,7 +1029,8 @@ class RichSurface:
         step: int | None = None,
         step_budget: int | None = None,
     ) -> None:
-        # TODO: dedicated rendering for status_update.
+        if self._trace_level == "off":
+            return
         parts: list[str] = []
         if model:
             parts.append(f"model={model}")
@@ -1048,11 +1049,22 @@ class RichSurface:
             parts.append(f"cached={cached_tokens}")
         if cost_usd is not None:
             parts.append(f"cost=${cost_usd:.6f}")
-        self._emit_event_info("Status: " + (" · ".join(parts) if parts else "updated"))
+        self._emit_trace_line(
+            " · ".join(parts) if parts else "updated",
+            style=_STYLE_META,
+            prefix="Status: ",
+            prefix_style=_STYLE_META,
+        )
 
     def emit_mode_changed(self, mode: str) -> None:
-        # TODO: dedicated rendering for mode_changed.
-        self._emit_event_info(f"Permissions: {mode}")
+        if self._trace_level == "off":
+            return
+        self._emit_trace_line(
+            mode,
+            style=_STYLE_META,
+            prefix="Permissions: ",
+            prefix_style=_STYLE_META,
+        )
 
     def reset_streamed_assistant(self) -> None:
         # Classic terminal output cannot be unprinted; mark the restart so the
