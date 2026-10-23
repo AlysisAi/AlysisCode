@@ -408,6 +408,68 @@ def test_review_merge_conflict_retry_exhaustion_stays_skipped(tmp_path: Path, mo
     )
 
 
+def test_review_merge_conflict_retry_exhaustion_carries_provider_category(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    paths = create_plan_run(repo)
+
+    class FakeClient:
+        def __init__(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def chat(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise LLMError("LLM request failed: ReadTimeout")
+
+    monkeypatch.setattr(
+        "alysis_code.merge_conflict_reviewer.OpenAICompatClient",
+        FakeClient,
+    )
+
+    outcome = review_merge_conflict(
+        paths=paths,
+        task={"id": "T01", "title": "Resolve merge conflict"},
+        cfg=AppConfig(model="test-model"),
+        api_key_override="k",
+        context={"unmerged_files": ["src/x.py"]},
+    )
+
+    assert outcome.review_json is None
+    assert outcome.failure_category == "provider_unavailable"
+
+
+def test_review_merge_conflict_auth_failure_carries_provider_error_category(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    paths = create_plan_run(repo)
+
+    class FakeClient:
+        def __init__(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def chat(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise LLMError("LLM error 401: invalid_api_key")
+
+    monkeypatch.setattr(
+        "alysis_code.merge_conflict_reviewer.OpenAICompatClient",
+        FakeClient,
+    )
+
+    outcome = review_merge_conflict(
+        paths=paths,
+        task={"id": "T01", "title": "Resolve merge conflict"},
+        cfg=AppConfig(model="test-model"),
+        api_key_override="k",
+        context={"unmerged_files": ["src/x.py"]},
+    )
+
+    assert outcome.review_json is None
+    assert outcome.failure_category == "provider_error"
+
+
 def test_review_merge_conflict_does_not_retry_nontransient_request_error(
     tmp_path: Path, monkeypatch
 ) -> None:
