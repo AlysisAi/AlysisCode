@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve Git rename and copy paths containing ` b/` directory components
+  when diff headers require adjacent metadata to disambiguate the paths.
 - Recognize Alibaba Model Studio endpoints by owned hostname boundaries rather
   than applying Qwen provider behavior to unrelated custom hosts.
 
