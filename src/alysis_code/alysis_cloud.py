@@ -33,6 +33,10 @@ from .branding import env_get
 PRODUCT_SITE_URL = "https://alysiscode.com"
 _DEFAULT_SITE_URL = PRODUCT_SITE_URL
 
+# Public device-login and gateway API. This address is not a credential; the
+# service authenticates device keys server-side. No project keys are bundled.
+DEFAULT_CLOUD_API_URL = "https://vzigujbcjjmpntxhmyvr.supabase.co/functions/v1"
+
 # The profile/preset key used for the hosted Pro provider.
 PROFILE_KEY = "alysis"
 
@@ -73,15 +77,15 @@ def _checked(url: str) -> str:
 
 
 def cloud_api_url() -> str:
-    """Deployment API base, supplied at runtime; no project identifiers are shipped."""
-    override = env_get("ALYSIS_CLOUD_API_URL")
+    """Hosted API by default, with explicit overrides for custom deployments."""
+    override = _clean(env_get("ALYSIS_CLOUD_API_URL"))
     if override:
         return _checked(override)
-    # Preserve existing explicitly configured installations without bundling a host.
-    legacy = env_get("ALYSIS_SUPABASE_URL")
+    # Preserve existing explicitly configured installations.
+    legacy = _clean(env_get("ALYSIS_SUPABASE_URL"))
     if legacy:
         return f"{_checked(legacy)}/functions/v1"
-    return ""
+    return _checked(DEFAULT_CLOUD_API_URL)
 
 
 def public_client_key() -> str:
@@ -123,8 +127,7 @@ def gateway_base_url() -> str:
     """OpenAI-compatible base URL; the LLM client appends ``/chat/completions``.
 
     The hosted service holds upstream provider credentials and meters account credits.
-    An unconfigured public build returns an empty value for offline status displays;
-    device login validates the API configuration before sending any requests.
+    Device login validates the API configuration before sending any requests.
     """
     override = env_get("ALYSIS_GATEWAY_URL")
     if override:

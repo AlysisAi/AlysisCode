@@ -50,16 +50,18 @@ alysis run --api-key-stdin "Hello"
 alysis run --api-key-env OTHER_API_KEY --base-url "https://example.com/v1" --model "your-model" "Hello"
 ```
 
-Public source builds do not bundle hosted-service deployment URLs or project
-keys. Hosted login, billing status, and online feedback require
-`ALYSIS_CLOUD_API_URL`, supplied by the deployment operator. It is the API base
+Official builds include the public hosted API URL, so `alysis login`, billing
+status, and online feedback work without cloud environment variables. No project
+or server keys are bundled. For a custom deployment, set
+`ALYSIS_CLOUD_API_URL` to its API base
 to which `/device-code`, `/device-token`, `/account-status`, and `/feedback` are
 appended. The gateway defaults to that base plus `/llm/v1`; set
 `ALYSIS_GATEWAY_URL` when it uses a separate OpenAI-compatible base URL.
 Deployments that require a public routing key can supply
 `ALYSIS_CLOUD_PUBLIC_KEY` at runtime. Never use a server or service-role key in
 the client. These values belong in the local environment, outside the repository.
-Without hosted configuration, other configured providers remain available.
+The legacy `ALYSIS_SUPABASE_URL` override remains supported when
+`ALYSIS_CLOUD_API_URL` is unset. Blank overrides use the hosted default.
 
 Auth state for a supervising application (one JSON object on stdout; exit code 0
 means the command ran, and the payload carries `authenticated`):

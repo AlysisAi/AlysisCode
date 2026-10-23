@@ -94,6 +94,12 @@ def test_documented_install_command_points_at_the_installer_script() -> None:
     assert command in _read("docs/quickstart.md")
     # `curl … | sh` runs it under dash on Ubuntu, so it must stay POSIX sh.
     assert _read("scripts/install.sh").startswith("#!/bin/sh\n")
+    windows_command = (
+        "irm https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.ps1 | iex"
+    )
+    assert windows_command in _read("README.md")
+    assert windows_command in _read("docs/quickstart.md")
+    assert windows_command in _read("scripts/install.ps1")
 
 
 def test_readme_keeps_public_launch_surface() -> None:

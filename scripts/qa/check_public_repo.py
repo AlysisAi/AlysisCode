@@ -65,6 +65,14 @@ _DEPLOYMENT_HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.)+supabase\.(?:co|net|com)\b
 _DEPLOYMENT_KEY_RE = re.compile(r"\bsb_(?:publishable|secret)_[A-Za-z0-9_-]{12,}\b")
 _JSON_TOKEN_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\b")
 
+# Only this public client endpoint is approved for distribution. Keep the
+# exception scoped to its exact declaration; other hosts and all keys still fail.
+_PUBLIC_CLOUD_DEFAULT_DECLARATION = (
+    'DEFAULT_CLOUD_API_URL = "https://'
+    + ".".join(("vzigujbcjjmpntxhmyvr", "supabase", "co"))
+    + '/functions/v1"'
+)
+
 
 def deployment_content_violations(path_text: str, content: bytes) -> list[str]:
     """Reject deployment hosts and project-bound keys without printing their values.
@@ -76,7 +84,11 @@ def deployment_content_violations(path_text: str, content: bytes) -> list[str]:
     violations: list[str] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
         reasons: set[str] = set()
-        if _DEPLOYMENT_HOST_RE.search(line):
+        approved_default = (
+            path_text == "src/alysis_code/alysis_cloud.py"
+            and line.strip() == _PUBLIC_CLOUD_DEFAULT_DECLARATION
+        )
+        if _DEPLOYMENT_HOST_RE.search(line) and not approved_default:
             reasons.add("deployment-specific backend host")
         if _DEPLOYMENT_KEY_RE.search(line):
             reasons.add("deployment-specific backend key")

@@ -4,32 +4,92 @@ This guide gets Alysis Code installed, configured, and running against a local w
 
 ## Install
 
-Alysis Code requires Python 3.11 or newer. The recommended install path is `pipx`:
+### Windows PowerShell
 
-```bash
-python -m pip install --user pipx
-python -m pipx ensurepath
-pipx install alysis-code
+Paste into Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+irm https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.ps1 | iex
 ```
 
-Alternatively, the installer provisions an isolated Python runtime on Linux,
-macOS, or Windows through WSL:
+The installer provisions uv and Python 3.12 if needed, installs the CLI in an isolated
+environment, and makes `alysis` available in the current terminal. Other open terminals
+may need a restart. It needs no administrator access or existing Python/pipx.
+Read [install.ps1](../scripts/install.ps1) before running it if you prefer.
+
+Native Windows needs a running Docker Desktop backend for sandboxed commands.
+WSL can use Linux Bubblewrap or Docker integration. Keep their installations separate.
+
+### Linux, macOS, and WSL
+
+For WSL, first run `wsl --install` in PowerShell, restart if requested, then open
+Ubuntu and create your Linux user. Run this command **inside Ubuntu**, not PowerShell:
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/scripts/install.sh | sh
 ```
 
-If your default Python is older than 3.11, point `pipx` at a newer interpreter:
+This installer also provisions uv and Python. Follow its PATH instructions or open a
+new terminal before running `alysis`. On WSL, keep projects under `~/projects`;
+accessing projects under `/mnt/c` is slower.
+
+Run either installer again to upgrade. Optional environment variables:
+
+- `ALYSIS_VERSION=0.15.2` pins a release.
+- `ALYSIS_PYTHON=3.12` selects the Python version.
+- `ALYSIS_NO_MODIFY_PATH=1` skips persistent PATH changes. The PowerShell installer
+  still updates the current process so you can use the CLI immediately.
+
+### Existing pipx users and manual installation
+
+Python 3.11 or newer is required for manual installation. If pipx already manages
+Alysis Code, use `pipx upgrade alysis-code` or `alysis update`. The installers
+report conflicting executables instead of overwriting a different installation.
+
+On native Windows with Python installed:
+
+```powershell
+py -m pip install --user pipx
+py -m pipx ensurepath
+py -m pipx install alysis-code
+```
+
+Use `python` instead of `py` if that is how your Python installation is launched.
+On Ubuntu/Debian/WSL:
+
+```sh
+sudo apt update && sudo apt install -y pipx
+pipx ensurepath
+pipx install alysis-code
+```
+
+On macOS, install pipx with `brew install pipx`, then run `pipx ensurepath`
+and `pipx install alysis-code`. Open a new terminal after `ensurepath`.
+If your default Python is older than 3.11, select a newer interpreter:
 
 ```bash
 pipx install --python python3.12 alysis-code
 ```
 
-Virtual-environment installs also work:
+Virtual-environment installs also work. Activate the environment before running:
 
 ```bash
 python -m pip install alysis-code
 ```
+
+## Connect your Alysis account
+
+```sh
+alysis --version
+alysis login
+```
+
+Approve the short code in your browser to link this machine to your account and credits.
+Version 0.15.2 restores hosted login without any cloud environment variables.
+If 0.15.1 reports that hosted services are not configured, upgrade with `alysis update`
+(or `pipx upgrade alysis-code`), then retry.
+
+You can instead configure your own provider in setup; an Alysis account is optional for that path.
 
 ## First Run
 
