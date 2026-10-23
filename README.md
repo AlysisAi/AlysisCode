@@ -18,8 +18,10 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/AlysisAi/AlysisCode/stargazers"><img src="https://img.shields.io/github/stars/AlysisAi/AlysisCode?style=flat&logo=github" alt="GitHub stars"></a>
   <a href="https://github.com/AlysisAi/AlysisCode/actions/workflows/ci.yml"><img src="https://github.com/AlysisAi/AlysisCode/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/alysis-code/"><img src="https://img.shields.io/pypi/v/alysis-code.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/alysis-code/"><img src="https://img.shields.io/pypi/dm/alysis-code.svg" alt="PyPI downloads"></a>
   <a href="https://pypi.org/project/alysis-code/"><img src="https://img.shields.io/pypi/pyversions/alysis-code.svg" alt="Python versions"></a>
   <a href="https://github.com/AlysisAi/AlysisCode/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/alysis-code.svg" alt="License"></a>
 </p>
@@ -29,11 +31,13 @@
   <a href="https://github.com/sponsors/AlysisAi">Sponsor the project</a>
 </p>
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Alysis Code fixes a free-shipping bug and verifies the tests" width="960">
+  <br>
+  <sub>A real CLI session fixing a failing test. Playback condensed.</sub>
+</p>
+
 ---
-
-### Alysis Code App
-
-Alysis Code App is a desktop agent for coding and broader everyday work. It is a separate, closed-source product. This repository contains the Apache-2.0 CLI; the desktop application's source is not included here.
 
 ## Get Started
 
@@ -104,6 +108,10 @@ alysis-code run "Fix the failing tests"     # one-shot task
 (`alysis` works too, as a short alias.) The `/config` picker lists every provider preset.
 Full walkthrough: [Quickstart guide](docs/quickstart.md).
 
+## Alysis Code App
+
+Alysis Code App is powered by the open-source Alysis Code engine, bringing an agentic desktop experience to coding and broader everyday work.
+
 ---
 
 ## Why Alysis Code
@@ -134,9 +142,6 @@ sandbox only when explicitly configured with `verify_sandbox.mode="off"` or
 
 ## How it compares
 
-<details>
-<summary>Compare models, integrations, and sandboxing</summary>
-
 A quick, good-faith snapshot based on each project's public README and docs (October 2026).
 "—" means we couldn't confirm it from their docs; corrections welcome via an issue.
 
@@ -151,8 +156,6 @@ A quick, good-faith snapshot based on each project's public README and docs (Oct
 
 References: [Codex CLI local-provider options](https://learn.chatgpt.com/docs/developer-commands?surface=cli) ·
 [Gemini CLI editor integrations](https://github.com/google-gemini/gemini-cli/blob/main/docs/ide-integration/index.md).
-
-</details>
 
 ## Permissions & Personas
 
