@@ -98,6 +98,55 @@ For HTTP servers:
 
 The only supported `trust` value is `explicit`.
 
+## Parallel Search MCP example
+
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) provides
+web search and page extraction without a Parallel API key. Its anonymous tier is
+free for exploration and light use, with rate limits.
+
+Merge the `parallel` server from
+[`examples/parallel-search-mcp.json`](examples/parallel-search-mcp.json) into the
+`servers` object in your **user** `~/.config/alysis/mcp.json`, retaining your other
+servers. If you have no MCP config yet, you can use the example as the whole file:
+
+```json
+{
+  "schema_version": 1,
+  "servers": {
+    "parallel": {
+      "transport": "http",
+      "url": "https://search.parallel.ai/mcp",
+      "trust": "explicit",
+      "enabled_in": ["interactive_chat", "one_shot"],
+      "allowed_tools": ["web_search", "web_fetch"]
+    }
+  }
+}
+```
+
+No `Authorization` header, OAuth login, or additional MCP package is needed.
+Connection details belong in user config; project config cannot add this server.
+This opt-in server leaves the built-in `web_search` and your model settings unchanged.
+
+Check the connection from your workspace, then start a new session:
+
+```bash
+alysis-code mcp status
+alysis-code chat
+```
+
+Status should show `parallel` with `loaded:2` tools. In a write-capable session,
+ask: "Use `mcp__parallel__web_search` to find the official Python venv documentation,
+then use `mcp__parallel__web_fetch` to read it and explain how to create a virtual
+environment." These aliases distinguish the MCP tools from the built-in web tools.
+The same server is available to `alysis-code run`; it is not exposed in readonly
+sessions or subagents.
+
+If status reports a startup warning, check network access to the endpoint and any
+project overrides. Free-tier rate limits can also prevent calls; wait before
+retrying according to the server response. Remove the `parallel` entry or set
+`"enabled": false` to disable it.
+
 ## Project Overrides
 
 Project config can narrow an existing user server:
