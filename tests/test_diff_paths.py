@@ -174,9 +174,23 @@ def test_ambiguous_second_patch_fails_instead_of_silently_skipping() -> None:
 
 @pytest.mark.parametrize("name", [" space.txt", "space.txt ", " space.txt ", "root b/ folder "])
 @pytest.mark.parametrize("quoted", [False, True])
+def test_patch_paths_preserve_leading_and_trailing_spaces(name: str, quoted: bool) -> None:
+    old, new = f"a/{name}", f"b/{name}"
+    if quoted:
+        old, new = f'"{old}"', f'"{new}"'
+    patch = f"diff --git {old} {new}\n"
+    assert parse_diff_git_line(patch.rstrip("\n")) == (name, name)
+    assert iter_patch_paths(patch) == [name]
+    assert parse_patch_changed_files(patch) == [name]
+
+
+@pytest.mark.parametrize("name", [" space.txt", "space.txt ", " space.txt ", "root b/ folder "])
+@pytest.mark.parametrize("quoted", [False, True])
 def test_real_git_paths_preserve_leading_and_trailing_spaces(
     tmp_path: Path, name: str, quoted: bool
 ) -> None:
+    if os.name == "nt" and name.endswith(" "):
+        pytest.skip("Windows normalizes trailing spaces in filesystem paths")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     path = tmp_path / name
     path.parent.mkdir(parents=True, exist_ok=True)
