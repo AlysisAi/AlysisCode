@@ -16,11 +16,14 @@ const files = [
   return names.map((name) => path.join(directory, name));
 });
 
-// Keep the time-budgeted DOM test off the CPU pool used by the other suites.
-// Its existing wall-clock budget must measure rendering, not parallel test load.
-const timed = files.filter((file) => path.basename(file) === "startViewRender.test.js");
-if (timed.length !== 1) throw new Error("The rendering budget suite is missing or ambiguous");
-const suites = [files.filter((file) => !timed.includes(file)), timed];
+// Keep rendering and real Python startup off the CPU pool used by the other
+// suites. Their existing wall-clock budgets must not measure parallel test load.
+const isolated = ["startViewRender.test.js", "realBridgeSmoke.test.js"].map((name) => {
+  const matches = files.filter((file) => path.basename(file) === name);
+  if (matches.length !== 1) throw new Error(`The ${name} suite is missing or ambiguous`);
+  return matches[0];
+});
+const suites = [files.filter((file) => !isolated.includes(file)), ...isolated.map((file) => [file])];
 for (const suite of suites) {
   const result = spawnSync(process.execPath, ["--test", ...suite], {
     cwd: root,
