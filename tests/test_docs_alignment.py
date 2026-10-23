@@ -113,17 +113,17 @@ def test_readme_keeps_public_launch_surface() -> None:
     from alysis_code.alysis_cloud import site_url
 
     assert f"{site_url()}/" in readme
-    assert 'href="https://github.com/AlysisAi/AlysisCode/tree/main/docs">Docs</a>' in readme
-    assert (
-        'href="https://github.com/AlysisAi/AlysisCode/blob/main/docs/CHANGELOG.md">Changelog</a>'
-        in readme
-    )
+    assert f'href="{site_url()}/docs">Documentation</a>' in readme
+    assert 'href="docs/CHANGELOG.md">Changelog</a>' in readme
+    assert (_repo_root() / "docs/CHANGELOG.md").is_file()
     assert 'href="https://github.com/sponsors/AlysisAi"' in readme
     assert "pipx install alysis-code" in readme
     assert "Apache-2.0" in readme
 
 
 def test_governance_and_packaging_metadata_are_public_ready() -> None:
+    from alysis_code.alysis_cloud import site_url
+
     repo_root = _repo_root()
     pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = set(pyproject["project"]["dependencies"])
@@ -138,7 +138,7 @@ def test_governance_and_packaging_metadata_are_public_ready() -> None:
     assert "Copyright 2026 AlysisAi" in _read("NOTICE")
     assert "alysis-contributor-pack" not in _read(".github/CONTRIBUTING.md")
     assert "products@alysisai.com" in _read(".github/SECURITY.md")
-    assert pyproject["project"]["urls"]["Documentation"].endswith("/tree/main/docs")
+    assert pyproject["project"]["urls"]["Documentation"] == f"{site_url()}/docs"
 
 
 def test_vscode_changelog_uses_current_product_identity() -> None:
