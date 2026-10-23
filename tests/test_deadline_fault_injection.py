@@ -124,17 +124,19 @@ def test_repeated_transient_responses_and_backoff_share_the_deadline() -> None:
     watchdog = BudgetWatchdog(budget_seconds=0.3, grace_seconds=0)
     token = BudgetCancellationToken(watchdog.event, error_class=CooperativeCancellationError)
     attempts: list[float] = []
-    with _fault_server("transient") as (url, _):
+    # Construct the client before the deadline: this test measures requests and
+    # retry backoff, not cold HTTP transport imports on a loaded runner.
+    with (
+        _fault_server("transient") as (url, _),
+        httpx.Client(timeout=10, verify=False, trust_env=False) as client,
+    ):
 
         def call() -> None:
             attempts.append(time.monotonic())
-            # This fixture is plain loopback HTTP. Loading the Windows TLS trust
-            # store can consume the entire budget before any retry is attempted.
-            with httpx.Client(timeout=10, verify=False, trust_env=False) as client:
-                with cancellable_httpx_request(
-                    client=client, cancellation_token=token, method="GET", url=url, stream=False
-                ) as response:
-                    response.raise_for_status()
+            with cancellable_httpx_request(
+                client=client, cancellation_token=token, method="GET", url=url, stream=False
+            ) as response:
+                response.raise_for_status()
 
         started = time.monotonic()
         with watchdog, pytest.raises(CooperativeCancellationError, match="run_budget_exhausted"):

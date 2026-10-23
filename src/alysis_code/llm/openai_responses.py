@@ -132,6 +132,8 @@ _RESPONSES_CALL_ID_HASH_LENGTH = _RESPONSES_CALL_ID_MAX_LENGTH - len(_RESPONSES_
 _RESPONSES_CALL_ID_NORMALIZATION_SCHEME = "sha256-ascii-v1"
 _RESPONSES_HOSTED_WEB_SEARCH_TYPES = frozenset({"web_search", "web_search_preview"})
 _MIN_RESPONSES_OUTPUT_TOKENS = 16
+_PERPLEXITY_API_HOST = "api.perplexity.ai"
+_PERPLEXITY_INTEGRATION = "alysis-code"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -2117,6 +2119,8 @@ class OpenAIResponsesClient:
             "Content-Type": "application/json",
             "User-Agent": "alysis-code/0.1.0",
         }
+        if httpx.URL(url).host == _PERPLEXITY_API_HOST:
+            headers["X-Pplx-Integration"] = _PERPLEXITY_INTEGRATION
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         headers = merge_canonical_headers(headers, self.extra_headers)

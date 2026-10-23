@@ -1685,6 +1685,7 @@ def test_web_search_dispatches_to_perplexity_sonar_backend(
     def handler(request: httpx.Request) -> httpx.Response:
         # Agent API endpoint; the preset base URL already carries /v1.
         assert str(request.url) == "https://api.perplexity.ai/v1/agent"
+        assert request.headers["x-pplx-integration"] == "alysis-code"
         body = json.loads(request.content.decode("utf-8"))
         assert body["model"] == "perplexity/sonar"
         assert body["input"] == "perplexity search"
