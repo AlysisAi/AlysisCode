@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Recognize Alibaba Model Studio endpoints by owned hostname boundaries rather
+  than applying Qwen provider behavior to unrelated custom hosts.
+
 ## 0.15.2 - 2026-10-21
 
 - Restore the default hosted API URL so a fresh installation can run

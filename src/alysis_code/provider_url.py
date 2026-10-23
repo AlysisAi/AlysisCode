@@ -11,6 +11,17 @@ _ALYSIS_GATEWAY_HOSTS = frozenset({"api.alysiscode.com"})
 _ZAI_CODING_PLAN_PATH = "/api/coding/paas/v4"
 _CHATGPT_CODEX_PATH = "/backend-api/codex"
 
+# Identify only Alibaba-owned Model Studio domains; substring checks can
+# misclassify unrelated custom proxies containing the word "dashscope".
+_DASHSCOPE_BASE_HOSTS = frozenset(
+    {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+    }
+)
+_ALIBABA_MODEL_STUDIO_SUFFIXES = (".dashscope.aliyuncs.com", ".maas.aliyuncs.com")
+
 # What the UI calls the hosted gateway in place of its host. The gateway runs as
 # a Supabase Edge Function, so its host is the Supabase project ref — an
 # infrastructure id that reads like a leaked credential and changes whenever the
@@ -108,7 +119,7 @@ def known_provider_key_from_base_url(base_url: str | None) -> str | None:
     # service no longer exists.)
     if is_alysis_gateway_url(raw):
         return "deepseek"
-    if "dashscope" in host:
+    if host in _DASHSCOPE_BASE_HOSTS or host.endswith(_ALIBABA_MODEL_STUDIO_SUFFIXES):
         return "qwen"
     if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
         return "openrouter"
