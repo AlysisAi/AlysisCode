@@ -32,9 +32,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="Alysis Code fixes a free-shipping bug and verifies the tests" width="960">
+  <img src="docs/assets/demo.gif" alt="Alysis Code CLI welcome screen followed by a short conversation" width="960">
   <br>
-  <sub>A real CLI session fixing a failing test. Playback condensed.</sub>
+  <sub>From the welcome screen to your first conversation. Real CLI recording; pauses shortened.</sub>
 </p>
 
 ---
