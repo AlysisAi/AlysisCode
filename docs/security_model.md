@@ -43,8 +43,10 @@ untrusted repositories, unknown prompts, or commands you would not run directly.
 
 ## Shell And Verification Sandboxing
 
-Shell and verification commands can run through Docker or Bubblewrap. Production-style usage should
-keep sandbox mode strict, network disabled unless needed, and Docker images pinned by digest.
+Shell and verification commands can run through Docker, Linux Bubblewrap, or macOS Seatbelt.
+Production-style usage should keep sandbox mode strict, network disabled unless needed, and Docker
+images pinned by digest. The Seatbelt profile restricts writes and outbound network access while
+allowing host file reads and localhost connections; see the backend differences in the sandbox guide.
 
 The sandbox reduces the blast radius of local command execution. It does not make arbitrary code
 safe, and it does not replace source review, dependency review, or operating-system permissions.

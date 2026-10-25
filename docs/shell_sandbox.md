@@ -36,12 +36,24 @@ Useful commands:
 
 ## Backends
 
-Alysis Code supports two sandbox backends:
+Alysis Code supports three shell sandbox backends:
 
 - `bwrap`: Bubblewrap-based isolation, recommended on Linux when available.
 - `docker`: cross-platform container isolation, recommended on macOS and Windows.
+- `seatbelt`: native macOS isolation using `/usr/bin/sandbox-exec`, without a container image.
 
-Backend selection defaults to `auto`.
+Backend selection defaults to `auto`: it prefers Bubblewrap on Linux, then Docker when its
+executable is available, then Seatbelt on macOS. Docker still needs a working daemon and image.
+
+### macOS Seatbelt
+
+Select this backend explicitly with `alysis config set shell_sandbox.backend seatbelt`, or let
+`auto` select it on macOS when Docker is not installed. It limits writes to the workspace and
+temporary directories and protects repository metadata for arbitrary commands. With `network=off`,
+outbound connections to other machines are blocked, while localhost remains reachable.
+Host file reads are not broadly restricted by this profile; it is not a container boundary.
+The setup and doctor commands currently check Docker and Bubblewrap, so they may still report a
+missing backend on a Mac that uses only Seatbelt.
 
 ### Bubblewrap
 
@@ -79,6 +91,7 @@ Current defaults:
 | `shell_sandbox.bwrap_profile` | `hardened` |
 | `shell_sandbox.clear_env` | `true` |
 | `shell_sandbox.protect_repo_meta` | `true` |
+| `shell_sandbox.unavailable_fallback` | `refuse` |
 
 In environment shorthand, the production default is:
 
@@ -87,10 +100,16 @@ In environment shorthand, the production default is:
 Mode behavior:
 
 - `strict`: require a usable sandbox backend.
-- `warn`: attempt sandbox execution and warn on setup problems; it does not fall back to host shell.
+- `warn`: attempt sandbox execution and warn on setup problems; with the default fallback, it does
+  not run on the host when a backend is unavailable.
 - `off`: run on the host shell. This is an explicit unsafe opt-in.
 
-Host shell execution requires:
+The CLI defaults to refusing commands when no backend is available. A host that can display
+per-command approvals may explicitly set `shell_sandbox.unavailable_fallback="ask"` (or
+`ALYSIS_SHELL_SANDBOX_FALLBACK=ask`); each fallback command then needs approval to run on the host.
+This fallback does not provide sandbox isolation.
+
+To explicitly disable shell sandboxing:
 
 ```bash
 export ALYSIS_SHELL_SANDBOX_MODE=off
@@ -177,7 +196,8 @@ export ALYSIS_SHELL_SANDBOX_CLEAR_ENV=1
 Supported shell sandbox variables:
 
 - `ALYSIS_SHELL_SANDBOX_MODE=off|warn|strict`
-- `ALYSIS_SHELL_SANDBOX_BACKEND=auto|bwrap|docker`
+- `ALYSIS_SHELL_SANDBOX_BACKEND=auto|bwrap|docker|seatbelt`
+- `ALYSIS_SHELL_SANDBOX_FALLBACK=refuse|ask`
 - `ALYSIS_SHELL_SANDBOX_NETWORK=off|on`
 - `ALYSIS_SHELL_SANDBOX_PREVIEW_ACCESS=auto|local|lan`
 - `ALYSIS_SHELL_SANDBOX_BWRAP_PROFILE=compat|hardened`

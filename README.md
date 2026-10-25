@@ -116,46 +116,69 @@ Alysis Code App is powered by the open-source Alysis Code engine, bringing an ag
 
 ## Why Alysis Code
 
-- **Easy to use** — a full coding agent behind a clean, convenient terminal interface that anyone can
-  pick up and play with in minutes: slash commands, interactive pickers, and live status built in.
-- **Built for every developer** — from solo scripts to team servers and CI, the same agent fits every
-  workflow.
-- **[Forge Mode](https://alysiscode.com/docs/concepts/tasks)** — plan-driven execution for larger work:
-  plan, dispatch parallel workers, verify each task, ship PR-ready code.
-- **[Orchestrated subagents](https://alysiscode.com/docs/concepts/agents)** — isolated workers run in
-  parallel, verification is pinned to their exact candidates, and changes apply only after host-side
-  conflict checks.
-- **Free built-in web search** — model-independent `web_search` that works with any provider, at no
-  extra cost.
-- **[Bring your own model](https://alysiscode.com/docs/config/models)** — OpenAI, Anthropic, DeepSeek,
-  Qwen, Gemini, Mistral, Xiaomi MiMo, OpenRouter, xAI, and more — plus local endpoints (Ollama,
-  LM Studio, vLLM) for fully offline use.
-- **[Deeply extensible](https://alysiscode.com/docs/concepts/plugins)** — skills, custom tools, MCP
-  servers, hooks, subagents, and plugins, bundled in one declarative manifest.
-- **[Sandboxed by default](https://alysiscode.com/docs/safety/sandbox-modes)** — Docker or Bubblewrap
-  isolation with an always-on denylist that refuses `rm -rf /`, `curl | sh`, and `sudo` — even in
-  `fullaccess`.
+Alysis Code brings model choice, coordinated execution, and verification into one open-source
+workflow — from your first question to a change you can review and ship.
 
-Shell and verification commands default to strict sandboxing. Verification can run outside that
-sandbox only when explicitly configured with `verify_sandbox.mode="off"` or
-`ALYSIS_VERIFY_SANDBOX_MODE=off`.
+- **[Your model, your workflow](https://alysiscode.com/docs/config/models)** — use OpenAI, Anthropic,
+  Gemini, DeepSeek, Qwen, Mistral, OpenRouter, xAI, and more. Connect your own key without an Alysis
+  account, or use Ollama, LM Studio, or vLLM for local inference.
+- **[Forge: turn a plan into verified changes](docs/forge.md)** — execute tasks in dependency order,
+  retain verification and review evidence, and resume interrupted runs. Strict verification blocks
+  integration when checks fail; independent tasks can run in parallel with `forge swarm`.
+- **[Parallel work you can inspect before applying](docs/subagents.md#parallel-writers-and-pinned-verification)**
+  — isolated workers prepare changes in separate Git worktrees. A verifier can check the exact
+  candidate while your working tree stays unchanged; applying it runs host-side conflict checks.
+- **[Our own sandbox layer](#alysis-sandbox)** — Alysis Sandbox combines strict command execution,
+  native OS backends, and Alysis-maintained container images for development and server workers.
+- **Free built-in web search** — research documentation and current information with any supported
+  model, without a separate search API key. Model usage still follows your provider's pricing.
+- **[Extend the whole workflow](https://alysiscode.com/docs/concepts/plugins)** — package skills,
+  custom tools, MCP servers, hooks, and specialist subagents together in a declarative plugin manifest.
+- **A terminal that stays easy to use** — guided setup, interactive pickers, slash commands, and live
+  status, with the same engine available for one-shot tasks, scripts, and CI.
+
+## Alysis Sandbox
+
+**Alysis Sandbox is our own open-source execution layer**, backed by Docker, Linux Bubblewrap,
+or macOS Seatbelt. Shell and verification commands default to strict sandboxing.
+
+- **Controlled execution.** Networking defaults to `off`; the macOS backend still permits localhost.
+  Docker commands drop Linux capabilities and do not inherit the host environment by default.
+  The CLI refuses execution when no backend is available unless you explicitly configure a fallback.
+- **Our own development images.** `ghcr.io/alysisai/alysis-sandbox` provides `base`, `dev`, and
+  `server` variants. The image build uses pinned, verified inputs for both AMD64 and ARM64;
+  deployments can pin an image digest for repeatable environments.
+- **Protection beyond approval prompts.** Repository metadata protection and the command denylist
+  remain separate from permission modes, including `fullaccess`.
+
+Set up and check your sandbox:
+
+```bash
+alysis sandbox setup
+alysis sandbox doctor --smoke
+```
+
+The sandbox covers shell and verification execution; the workspace remains writable for the task.
+See the [sandbox guide](docs/shell_sandbox.md) for backend differences and setup, and the
+[image build](scripts/sandbox/README.md) for the supply-chain details.
 
 ## How it compares
 
-A quick, good-faith snapshot based on each project's public README and docs (October 2026).
-"—" means we couldn't confirm it from their docs; corrections welcome via an issue.
+Comparing current terminal agents: **Claude Code, Codex CLI, OpenCode, and Gemini CLI**.
+Alysis Code's strength is the combination: broad model choice, Forge orchestration, verification
+before applying isolated work, and an integrated sandbox — all in an Apache-2.0 CLI.
 
-| | Alysis Code | [Claude Code](https://github.com/anthropics/claude-code) | [Aider](https://github.com/Aider-AI/aider) | [Codex CLI](https://github.com/openai/codex) | [Gemini CLI](https://github.com/google-gemini/gemini-cli) |
-| --- | --- | --- | --- | --- | --- |
-| License | Apache-2.0 | Proprietary | Apache-2.0 | Apache-2.0 | Apache-2.0 |
-| Models | Any supported provider | Claude | Almost any LLM | OpenAI (ChatGPT sign-in or API key), plus local models | Gemini |
-| Local models | Yes (Ollama, LM Studio, vLLM) | — | Yes | Yes (Ollama, LM Studio) | — |
-| MCP servers | Yes | Yes | — | Yes | Yes |
-| Sandboxed shell | Yes, on by default (Docker / Bubblewrap) | Yes (sandboxed Bash tool) | — | Yes | Yes |
-| Editor integration | VS Code (pre-release), JetBrains (preview) | Yes | Yes | Yes (VS Code, Cursor, Windsurf) | Yes (VS Code companion, ACP integrations) |
+| Agent | Model choice | Coordinating larger tasks | Shell isolation |
+| --- | --- | --- | --- |
+| **Alysis Code** | **Multiple providers + local models** | **Forge plans, parallel worktrees, verify-before-apply, conflict checks** | **Alysis Sandbox: strict by default, own images + native backends** |
+| Claude Code | [Claude models](https://code.claude.com/docs/en/model-config) | [Subagents and experimental agent teams](https://code.claude.com/docs/en/agent-teams) | [Sandboxed Bash with filesystem and network controls](https://code.claude.com/docs/en/sandboxing) |
+| Codex CLI | [OpenAI + local models](https://learn.chatgpt.com/docs/developer-commands?surface=cli); [custom providers](https://learn.chatgpt.com/docs/model-catalogs) | [Parallel subagents with configurable roles](https://learn.chatgpt.com/docs/agent-configuration/subagents) | [Sandbox and approval policies](https://learn.chatgpt.com/docs/developer-commands?surface=cli) |
+| OpenCode | [Multiple providers + local models](https://opencode.ai/docs/providers/) | [Build/Plan agents and parallel subagents](https://opencode.ai/docs/agents/) | [Permissions; use an external container or VM for isolation](https://github.com/anomalyco/opencode/blob/dev/SECURITY.md) |
+| Gemini CLI | [Gemini models](https://geminicli.com/docs/cli/model/) | [Specialist subagents and remote A2A agents](https://geminicli.com/docs/core/subagents/) | [Container and native OS sandbox options](https://geminicli.com/docs/cli/sandbox/) |
 
-References: [Codex CLI local-provider options](https://learn.chatgpt.com/docs/developer-commands?surface=cli) ·
-[Gemini CLI editor integrations](https://github.com/google-gemini/gemini-cli/blob/main/docs/ide-integration/index.md).
+Based on the linked official documentation, checked **October 25, 2026**. This compares the CLI
+workflows, not every desktop or cloud feature. Capabilities and defaults vary by platform and
+configuration; the table is not a performance benchmark.
 
 ## Permissions & Personas
 
