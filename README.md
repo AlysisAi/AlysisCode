@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  An open-source coding agent for your terminal.<br>
-  Bring your own model. Turn plans into reviewed, PR-ready code.
+  An open-source agent for coding, research, and everyday workflows.<br>
+  <strong>Multiple models. Our own sandbox. One independently built engine.</strong>
 </p>
 
 <p align="center">
@@ -97,12 +97,13 @@ alysis login
 Approve the code in your browser to use your Alysis credits. No provider key and no cloud
 environment variables are needed.
 
-**3 — Start building**
+**3 — Start working**
 
 ```bash
 cd your-project
-alysis-code chat                            # interactive coding session
-alysis-code run "Fix the failing tests"     # one-shot task
+alysis-code chat                            # interactive agent session
+alysis-code run "Fix the failing tests"     # coding task
+alysis-code run "Summarize the notes in this folder into a project brief"
 ```
 
 (`alysis` works too, as a short alias.) The `/config` picker lists every provider preset.
@@ -116,31 +117,38 @@ Alysis Code App is powered by the open-source Alysis Code engine, bringing an ag
 
 ## Why Alysis Code
 
-Alysis Code brings model choice, coordinated execution, and verification into one open-source
-workflow — from your first question to a change you can review and ship.
+Alysis Code combines **our own sandbox**, **multiple model providers**, and **general-purpose
+workflows** in an independently built, Apache-2.0 agent. Build software, research a question,
+prepare documents, or automate work from the same terminal.
 
-- **[Your model, your workflow](https://alysiscode.com/docs/config/models)** — use OpenAI, Anthropic,
+- **[Our own Alysis Sandbox](#alysis-sandbox)** — command execution is sandboxed by default, with
+  Alysis-maintained container images and native OS backends. Permissions, network restrictions,
+  and repository protection give you concrete controls over what the agent can do.
+- **[Multi-model by design](https://alysiscode.com/docs/config/models)** — use OpenAI, Anthropic,
   Gemini, DeepSeek, Qwen, Mistral, OpenRouter, xAI, and more. Connect your own key without an Alysis
-  account, or use Ollama, LM Studio, or vLLM for local inference.
+  account, or use Ollama, LM Studio, or vLLM for local inference. Choose the model that fits the task.
+- **General workflows, too** — research with [built-in web search](docs/web-search.md), turn notes
+  into briefs, and automate tasks across your files. Optional [document tools](docs/reference.md#optional-document-tools)
+  add PDF, Word, spreadsheet, and presentation workflows. Web search needs no separate API key;
+  model usage follows your provider's pricing.
+- **An independently built agent engine** — our runtime, Forge orchestration, subagent system,
+  terminal interface, and sandbox layer are developed by Alysis AI. The open-source CLI lets you
+  inspect, extend, and run the engine yourself.
 - **[Forge: turn a plan into verified changes](docs/forge.md)** — execute tasks in dependency order,
   retain verification and review evidence, and resume interrupted runs. Strict verification blocks
   integration when checks fail; independent tasks can run in parallel with `forge swarm`.
 - **[Parallel work you can inspect before applying](docs/subagents.md#parallel-writers-and-pinned-verification)**
   — isolated workers prepare changes in separate Git worktrees. A verifier can check the exact
   candidate while your working tree stays unchanged; applying it runs host-side conflict checks.
-- **[Our own sandbox layer](#alysis-sandbox)** — Alysis Sandbox combines strict command execution,
-  native OS backends, and Alysis-maintained container images for development and server workers.
-- **Free built-in web search** — research documentation and current information with any supported
-  model, without a separate search API key. Model usage still follows your provider's pricing.
 - **[Extend the whole workflow](https://alysiscode.com/docs/concepts/plugins)** — package skills,
   custom tools, MCP servers, hooks, and specialist subagents together in a declarative plugin manifest.
-- **A terminal that stays easy to use** — guided setup, interactive pickers, slash commands, and live
-  status, with the same engine available for one-shot tasks, scripts, and CI.
 
 ## Alysis Sandbox
 
-**Alysis Sandbox is our own open-source execution layer**, backed by Docker, Linux Bubblewrap,
-or macOS Seatbelt. Shell and verification commands default to strict sandboxing.
+**Our agent. Our sandbox. Your control.** Alysis Sandbox is our own open-source execution layer,
+with Alysis-maintained container images and Docker, Linux Bubblewrap, or macOS Seatbelt backends.
+Shell and verification commands default to strict sandboxing. The runtime enforces these boundaries
+outside the model, so command protection does not depend on the model following a safety prompt.
 
 - **Controlled execution.** Networking defaults to `off`; the macOS backend still permits localhost.
   Docker commands drop Linux capabilities and do not inherit the host environment by default.
@@ -164,17 +172,20 @@ See the [sandbox guide](docs/shell_sandbox.md) for backend differences and setup
 
 ## How it compares
 
-Comparing current terminal agents: **Claude Code, Codex CLI, OpenCode, and Gemini CLI**.
-Alysis Code's strength is the combination: broad model choice, Forge orchestration, verification
-before applying isolated work, and an integrated sandbox — all in an Apache-2.0 CLI.
+Comparing current terminal agents: **Claude Code, Codex CLI, OpenCode, Command Code, and Kilo Code**.
+Alysis Code brings together **our own sandbox with strict defaults**, **multiple providers and local
+models**, and **coding and general workflows**. For larger coding tasks, Forge adds coordinated
+execution, isolated worktrees, and verification before integration — in an independently built,
+Apache-2.0 engine.
 
-| Agent | Model choice | Coordinating larger tasks | Shell isolation |
+| Agent | Model choice | Coordinating larger tasks | Execution controls |
 | --- | --- | --- | --- |
 | **Alysis Code** | **Multiple providers + local models** | **Forge plans, parallel worktrees, verify-before-apply, conflict checks** | **Alysis Sandbox: strict by default, own images + native backends** |
 | Claude Code | [Claude models](https://code.claude.com/docs/en/model-config) | [Subagents and experimental agent teams](https://code.claude.com/docs/en/agent-teams) | [Sandboxed Bash with filesystem and network controls](https://code.claude.com/docs/en/sandboxing) |
 | Codex CLI | [OpenAI + local models](https://learn.chatgpt.com/docs/developer-commands?surface=cli); [custom providers](https://learn.chatgpt.com/docs/model-catalogs) | [Parallel subagents with configurable roles](https://learn.chatgpt.com/docs/agent-configuration/subagents) | [Sandbox and approval policies](https://learn.chatgpt.com/docs/developer-commands?surface=cli) |
 | OpenCode | [Multiple providers + local models](https://opencode.ai/docs/providers/) | [Build/Plan agents and parallel subagents](https://opencode.ai/docs/agents/) | [Permissions; use an external container or VM for isolation](https://github.com/anomalyco/opencode/blob/dev/SECURITY.md) |
-| Gemini CLI | [Gemini models](https://geminicli.com/docs/cli/model/) | [Specialist subagents and remote A2A agents](https://geminicli.com/docs/core/subagents/) | [Container and native OS sandbox options](https://geminicli.com/docs/cli/sandbox/) |
+| Command Code | [Multiple providers + local models (BYOK beta)](https://commandcode.ai/docs/byok) | [Parallel custom subagents, including General, Explore, and Plan](https://commandcode.ai/docs/agents) | [Local permission rules](https://commandcode.ai/docs/permissions); separate [cloud execution (beta)](https://commandcode.ai/docs/cloud) |
+| Kilo Code | [Multiple providers + local models](https://kilo.ai/docs/ai-providers) | [Parallel agents and specialist modes](https://kilo.ai/cli) | [Opt-in OS sandbox on macOS/Linux; unavailable on Windows](https://kilo.ai/docs/getting-started/settings/sandboxing) |
 
 Based on the linked official documentation, checked **October 25, 2026**. This compares the CLI
 workflows, not every desktop or cloud feature. Capabilities and defaults vary by platform and
@@ -234,8 +245,11 @@ The shared editor sidebar includes MIT-licensed adaptations from Kilo Code/OpenC
 <details>
 <summary><b>Where did Alysis Code come from?</b></summary>
 
-Alysis Code is not a fork. The agent runtime, Forge orchestration, subagent system, terminal
-interface, and sandbox layer were designed and built from zero by the Alysis AI team.
+Alysis Code's agent engine is independently built by the Alysis AI team, not forked from another
+coding agent. This includes the runtime, Forge orchestration, subagent system, terminal interface,
+and sandbox layer. The project uses third-party libraries, and the shared editor sidebar includes
+the adaptations credited in [our third-party notices](extensions/shared-ui/THIRD_PARTY_NOTICES.txt).
+Safety comes from enforced permissions, sandbox boundaries, and verification controls.
 </details>
 
 <details>
