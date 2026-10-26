@@ -1775,38 +1775,87 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         api_key_env=None,
         # Free models are available offline; paid models require the authenticated
         # gateway catalog before the managed account picker offers them.
+        # Open models run on Together AI and Mistral Large 4 on Mistral AI
+        # (Oct 23, 2026); DeepSeek is paid-only, under a new id.
         model_choices=(
-            ReviewedModel("deepseek-flash", "deepseek-expanded"),
             ReviewedModel("glm-5.3-flash", "glm-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
             ReviewedModel("claude-haiku-5-5", "claude-normal"),
             ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("deepseek-v4.1-flash", "deepseek-expanded"),
+            ReviewedModel("deepseek-v4-pro", "deepseek-normal"),
+            ReviewedModel("mistral-large-4", "mistral-normal"),
+            ReviewedModel("minimax-m3.1-flash", "minimax-expanded"),
+            ReviewedModel("qwen3.8-flash", "qwen-expanded"),
+            ReviewedModel("gpt-oss-120b", "gpt-oss-expanded"),
+            ReviewedModel("reflection-beam", "general-expanded"),
+            ReviewedModel("nemotron-3.5-super-vl", "general-expanded"),
+            ReviewedModel("mistral-small-4", "mistral-normal"),
+            ReviewedModel("glm-5.3", "glm-normal"),
+            ReviewedModel("qwen3.8-2.4t", "qwen-normal"),
+            ReviewedModel("kimi-k3", "kimi-normal"),
+            ReviewedModel("muse-spark-open", "general-expanded"),
         ),
         suggested_model_descriptions={
             "claude-haiku-5-5": "Claude Haiku 5.5 - fast coding, 1M context, Free credits; 5x rates above 100K input",
             "gpt-6-luna": "GPT-6 Luna - efficient coding and reasoning, included with free credits",
             "gpt-6.1-sol": "GPT-6.1 Sol - coding and reasoning, paid plans only",
-            "deepseek-flash": (
-                "DeepSeek V4.1 Flash - vision and reasoning, 1M context, included with free credits"
+            "deepseek-v4.1-flash": (
+                "DeepSeek V4.1 Flash - reasoning and coding, 1M context, Plan 1 and Plan 5"
             ),
+            "deepseek-v4-pro": "DeepSeek V4 Pro - deep reasoning and coding, 1M context, Plan 5",
+            "mistral-large-4": "Mistral Large 4 (Preview) - coding, 1M context, Plan 5",
+            "minimax-m3.1-flash": "MiniMax M3.1 Flash - Plan 1 and Plan 5, text and code",
+            "qwen3.8-flash": "Qwen3.8 Flash - Plan 1 and Plan 5, text and code",
+            "gpt-oss-120b": "GPT-OSS 120B - Plan 1 and Plan 5, text and code",
+            "reflection-beam": "Reflection Beam - Plan 1 and Plan 5, text and code",
+            "nemotron-3.5-super-vl": "NVIDIA Nemotron 3.5 Super VL - Plan 1 and Plan 5, text and code",
+            "mistral-small-4": "Mistral Small 4 - Plan 1 and Plan 5, text and code",
+            "glm-5.3": "GLM 5.3 - Plan 5, text and code",
+            "qwen3.8-2.4t": "Qwen3.8 2.4T - Plan 5, text and code",
+            "kimi-k3": "Kimi K3 - Plan 5, text and code",
+            "muse-spark-open": "Muse Spark Open - Plan 5, text and code",
             "glm-5.3-flash": (
                 "GLM 5.3 Flash - coding and reasoning, 1M context, included with free credits"
             ),
         },
-        validation_model="deepseek-flash",
-        paid_models=("gpt-6.1-sol",),
-        cache_capability=CacheCapabilitySpec(
-            model_family_overrides=(("claude-haiku-5-5", _cache_minimum(512)),), source="preset"
+        validation_model="glm-5.3-flash",
+        paid_models=(
+            # Available only when the authenticated gateway confirms this route.
+            "minimax-m3.1-flash",
+            "qwen3.8-flash",
+            "gpt-oss-120b",
+            "reflection-beam",
+            "nemotron-3.5-super-vl",
+            "mistral-small-4",
+            "glm-5.3",
+            "qwen3.8-2.4t",
+            "kimi-k3",
+            "muse-spark-open",
+            "gpt-6.1-sol",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "mistral-large-4",
         ),
-        # Migrate retired Flash/beta ids to the free default. Do not silently
-        # redirect models from the retired Xiaomi trial to another provider.
+        cache_capability=CacheCapabilitySpec(
+            model_family_overrides=(("claude-haiku-5-5", _cache_minimum(512)),),
+            source="preset",
+        ),
+        # Older releases defaulted to DeepSeek on Free credits. DeepSeek is now
+        # paid-only (as deepseek-v4.1-flash), so saved legacy ids move to GLM 5.3
+        # Flash, the other free chat model, instead of failing; paid users pick
+        # DeepSeek again from the account catalog.
         model_aliases={
-            "deepseek-v4-flash": "deepseek-flash",
-            "deepseek-v4-flash-vision-exp": "deepseek-flash",
-            "deepseek-v4.1-flash-expires-on-0910": "deepseek-flash",
+            "deepseek-flash": "glm-5.3-flash",
+            "deepseek-v4-flash": "glm-5.3-flash",
+            "deepseek-v4-flash-vision-exp": "glm-5.3-flash",
+            "deepseek-v4.1-flash-expires-on-0910": "glm-5.3-flash",
         },
         setup_warning="Run `alysis login` to connect your Alysis account and use free credits.",
-        notes="DeepSeek V4.1 Flash, GLM 5.3 Flash, GPT-6 Luna, and Claude Haiku 5.5 with free credits. Authenticate with `alysis login`.",
+        notes=(
+            "GLM 5.3 Flash, GPT-6 Luna, and Claude Haiku 5.5 with free credits; paid plans add "
+            "DeepSeek, MiniMax, Mistral and other models from your account catalog. Authenticate with `alysis login`."
+        ),
     ),
     ProfilePreset(
         key="ollama",
@@ -1859,6 +1908,20 @@ def model_display_name(model: str) -> str:
     """Display a release name while retaining the routing ID in configuration."""
     return {
         "deepseek-flash": "DeepSeek V4.1 Flash",
+        "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+        "deepseek-v4-pro": "DeepSeek V4 Pro",
+        "minimax-m3": "MiniMax M3",
+        "mistral-large-4": "Mistral Large 4 (Preview)",
+        "minimax-m3.1-flash": "MiniMax M3.1 Flash",
+        "qwen3.8-flash": "Qwen3.8 Flash",
+        "gpt-oss-120b": "GPT-OSS 120B",
+        "reflection-beam": "Reflection Beam",
+        "nemotron-3.5-super-vl": "NVIDIA Nemotron 3.5 Super VL",
+        "mistral-small-4": "Mistral Small 4",
+        "glm-5.3": "GLM 5.3",
+        "qwen3.8-2.4t": "Qwen3.8 2.4T",
+        "kimi-k3": "Kimi K3",
+        "muse-spark-open": "Muse Spark Open",
         "glm-5.3-flash": "GLM 5.3 Flash",
         "gpt-6-luna": "GPT-6 Luna",
         "gpt-6.1-sol": "GPT-6.1 Sol",
@@ -1877,6 +1940,12 @@ def model_options_for_preset(
     for model in preset.suggested_models:
         model_id = str(model or "").strip()
         if not model_id or model_id in seen:
+            continue
+        if (
+            preset.key == "alysis"
+            and available_models is not None
+            and model_id not in available_models
+        ):
             continue
         if model_id in preset.paid_models and model_id not in (available_models or set()):
             continue

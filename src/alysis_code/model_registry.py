@@ -1591,6 +1591,177 @@ _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["glm-5.3-flash"] = {
     "output_cost_per_token": 0.0000005,
 }
 
+# Paid hosted chat models (Oct 23, 2026): open models on Together AI, Mistral Large 4
+# on Mistral AI. Capacity is the gateway's (CHAT_LIMITS in supabase/functions/llm);
+# prices are the rate-card base (alysis_private.model_list_prices, checked 2026-10-23).
+# Hosted vision stays off until each host's image tokens are measured.
+for _hosted_id, _sources, _meta in (
+    (
+        "minimax-m3.1-flash",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-8,
+            "output_cost_per_token": 6e-7,
+        },
+    ),
+    (
+        "qwen3.8-flash",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-7,
+            "output_cost_per_token": 4.6999999999999995e-7,
+        },
+    ),
+    (
+        "gpt-oss-120b",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 131072,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-7,
+            "output_cost_per_token": 6e-7,
+        },
+    ),
+    (
+        "reflection-beam",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 4.0000000000000003e-7,
+            "cache_read_input_cost_per_token": 4e-8,
+            "output_cost_per_token": 0.0000012,
+        },
+    ),
+    (
+        "nemotron-3.5-super-vl",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 262144,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 2e-8,
+            "output_cost_per_token": 5e-7,
+        },
+    ),
+    (
+        "mistral-small-4",
+        ("https://docs.mistral.ai/models/mistral-small-4-0-26-03",),
+        {
+            "context_window_tokens": 256000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-8,
+            "output_cost_per_token": 6e-7,
+        },
+    ),
+    (
+        "glm-5.3",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.0000014,
+            "cache_read_input_cost_per_token": 2.6e-7,
+            "output_cost_per_token": 0.0000044,
+        },
+    ),
+    (
+        "qwen3.8-2.4t",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.000002,
+            "cache_read_input_cost_per_token": 2.5e-7,
+            "output_cost_per_token": 0.000006,
+        },
+    ),
+    (
+        "kimi-k3",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.000003,
+            "cache_read_input_cost_per_token": 3e-7,
+            "output_cost_per_token": 0.000015,
+        },
+    ),
+    (
+        "muse-spark-open",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.00000125,
+            "cache_read_input_cost_per_token": 1.5e-7,
+            "output_cost_per_token": 0.00000425,
+        },
+    ),
+    (
+        "deepseek-v4.1-flash",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 384_000,
+            "input_cost_per_token": 0.0000003,
+            "cache_read_input_cost_per_token": 0.000000006,
+            "output_cost_per_token": 0.0000012,
+        },
+    ),
+    (
+        "deepseek-v4-pro",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1_048_576,
+            "max_output_tokens": 384_000,
+            "input_cost_per_token": 0.00000132,
+            "cache_read_input_cost_per_token": 0.00000013,
+            "output_cost_per_token": 0.00000396,
+        },
+    ),
+    (
+        "minimax-m3",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 524_288,
+            "max_output_tokens": 131_072,
+            "input_cost_per_token": 0.0000003,
+            "cache_read_input_cost_per_token": 0.00000006,
+            "output_cost_per_token": 0.0000012,
+        },
+    ),
+    (
+        "mistral-large-4",
+        (
+            "https://docs.mistral.ai/models/mistral-large-4",
+            "https://docs.mistral.ai/inference/pricing",
+        ),
+        {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 131_072,
+            "input_cost_per_token": 0.00000136,
+            "cache_read_input_cost_per_token": 0.00000014,
+            "output_cost_per_token": 0.00000418,
+        },
+    ),
+):
+    _PROVIDER_CANONICAL_MODEL_IDS["alysis"][_hosted_id] = _hosted_id
+    _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"][_hosted_id] = _sources
+    _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"][_hosted_id] = {
+        **_meta,
+        "supports_vision": False,
+        "supports_reasoning": True,
+    }
+
 _PROVIDER_CANONICAL_MODEL_IDS["alysis"]["gpt-6-luna"] = "gpt-6-luna"
 _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6-luna"] = (
     "https://developers.openai.com/api/docs/models/gpt-6-luna",

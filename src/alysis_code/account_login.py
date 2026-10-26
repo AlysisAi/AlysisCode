@@ -51,7 +51,7 @@ _DEFAULT_POLL_INTERVAL_S = 5.0
 # model picker, so an offline/slow gateway must not stall the menu for long.
 _MODELS_TIMEOUT_S = 6.0
 
-_FRESH_LOGIN_DEFAULT_MODEL = "deepseek-flash"
+_FRESH_LOGIN_DEFAULT_MODEL = "gpt-6-luna"
 
 
 class AlysisLoginError(Exception):
@@ -192,6 +192,84 @@ def _account_text(value: object) -> str | None:
     return value.strip()[:200] if isinstance(value, str) and value.strip() else None
 
 
+def _account_int(value: object, *, allow_none: bool = False) -> int | None | bool:
+    """A finite whole number within JSON-safe range; False means invalid."""
+    if value is None and allow_none:
+        return None
+    if type(value) not in (int, float) or not math.isfinite(value):  # type: ignore[arg-type]
+        return False
+    if value != int(value) or abs(value) > 2**53 - 1:  # type: ignore[arg-type]
+        return False
+    return int(value)  # type: ignore[arg-type]
+
+
+def _account_paid(value: object) -> dict[str, Any] | None:
+    """Validate the optional paid-plan section (Plan 1 / Plan 5).
+
+    An invalid section is dropped rather than failing the whole account status,
+    so older and newer servers never make `whoami` lose the balance line.
+    """
+    if not isinstance(value, dict):
+        return None
+    plan = _account_text(value.get("plan"))
+    name = _account_text(value.get("plan_name"))
+    if plan is None or name is None:
+        return None
+    result: dict[str, Any] = {"plan": plan, "plan_name": name}
+    for field in (
+        "monthly_credits_microusd",
+        "cap_5h_microusd",
+        "burn_5h_microusd",
+        "cap_day_microusd",
+        "burn_day_microusd",
+        "max_output_tokens",
+    ):
+        number = _account_int(value.get(field))
+        if number is False or number is None or number < 0:
+            return None
+        result[field] = number
+    for field in (
+        "premium_month_limit_microusd",
+        "premium_month_used_microusd",
+        "premium_day_limit_microusd",
+        "premium_day_used_microusd",
+    ):
+        number = _account_int(value.get(field), allow_none=True)
+        if number is False or (number is not None and number < 0):
+            return None
+        result[field] = number
+    for field in ("credits_reset_at", "period_start", "upgrade_to"):
+        result[field] = _account_text(value.get(field))
+    models = value.get("models")
+    if not isinstance(models, list) or len(models) > 50:
+        return None
+    result["models"] = []
+    for row in models:
+        if not isinstance(row, dict) or not _account_text(row.get("model")):
+            return None
+        rates = row.get("microusd_per_million")
+        if not isinstance(rates, dict):
+            return None
+        parsed: dict[str, int] = {}
+        for key in ("input", "cached_input", "cache_write", "output"):
+            number = _account_int(rates.get(key))
+            if number is False or number is None or number < 0:
+                return None
+            parsed[key] = number
+        cap = _account_int(row.get("max_input_tokens"), allow_none=True)
+        if cap is False:
+            return None
+        result["models"].append(
+            {
+                "model": _account_text(row["model"]),
+                "price_tier": _account_text(row.get("price_tier")),
+                "max_input_tokens": cap,
+                "microusd_per_million": parsed,
+            }
+        )
+    return result
+
+
 def _account_billing(value: object) -> dict[str, Any] | None:
     """Validate the website's numerical contract without inventing missing balances."""
     if not isinstance(value, dict):
@@ -237,6 +315,13 @@ def _account_billing(value: object) -> dict[str, Any] | None:
         return None
     for field in ("free_next_refill_at", "current_period_end"):
         result[field] = _account_text(value.get(field))
+    # Paid plans (server 2026-10-21+): keys appear only when the server sends them,
+    # so the Free contract stays byte-for-byte what older clients and tests expect.
+    if "credits_reset_at" in value:
+        result["credits_reset_at"] = _account_text(value.get("credits_reset_at"))
+    paid = _account_paid(value.get("paid"))
+    if paid is not None:
+        result["paid"] = paid
     promotions = value.get("model_promotions")
     if not isinstance(promotions, list) or len(promotions) > 100:
         return None
@@ -351,6 +436,11 @@ def format_trial_status_line(status: TrialStatus) -> str | None:
     """A one-line account summary for `whoami`, or None if there's nothing to show."""
     if status.billing is not None:
         billing = status.billing
+        paid = billing.get("paid")
+        if paid is not None and not billing["unlimited_credits"]:
+            line = f"{paid['plan_name']}: {max(0, billing['balance_microusd']) / 10_000:,.1f} credits left"
+            reset = _format_date(paid.get("credits_reset_at"))
+            return line + (f" · resets {reset}" if reset else "")
         if billing["unlimited_credits"]:
             return f"{status.plan or 'Account'}: unlimited credits"
         balance = billing["balance_microusd"]
@@ -371,6 +461,50 @@ def format_trial_status_line(status: TrialStatus) -> str | None:
         return None
     label = (status.plan or "Account").capitalize()
     return f"{label}: " + " · ".join(parts)
+
+
+def format_paid_plan_details(status: TrialStatus) -> list[str]:
+    """Extra `whoami` lines for a paid plan: windows, Premium use and model rates."""
+    billing = status.billing or {}
+    paid = billing.get("paid")
+    if not paid:
+        return []
+
+    def credits(microusd: int | None) -> str:
+        return f"{(microusd or 0) / 10_000:,.0f}"
+
+    lines = [
+        f"Last 5 hours: {credits(paid['burn_5h_microusd'])} of {credits(paid['cap_5h_microusd'])} credits"
+        f" · last 24 hours: {credits(paid['burn_day_microusd'])} of {credits(paid['cap_day_microusd'])}",
+    ]
+    if paid.get("premium_month_limit_microusd"):
+        lines.append(
+            f"Premium models this month: {credits(paid.get('premium_month_used_microusd'))}"
+            f" of {credits(paid['premium_month_limit_microusd'])} credits"
+            + (
+                f" · last 24 hours: {credits(paid.get('premium_day_used_microusd'))}"
+                f" of {credits(paid['premium_day_limit_microusd'])}"
+                if paid.get("premium_day_limit_microusd")
+                else ""
+            )
+        )
+    lines.append("Rates, credits per 1M tokens (input / cached / output):")
+    for row in paid["models"]:
+        rates = row["microusd_per_million"]
+        lines.append(
+            f"  {row['model']}: {rates['input'] / 10_000:g} / {rates['cached_input'] / 10_000:g}"
+            f" / {rates['output'] / 10_000:g}"
+            + (
+                f" · up to {row['max_input_tokens']:,} input tokens"
+                if row.get("max_input_tokens")
+                else ""
+            )
+        )
+    if paid.get("upgrade_to"):
+        lines.append(
+            f"Need more? Run `alysis upgrade` to move to {paid['upgrade_to'].replace('_', ' ').title()}."
+        )
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -579,11 +713,12 @@ def _format_token_usage(used: int | None, total: int | None) -> str | None:
 def _activate_alysis_profile(cfg: AppConfig, *, email: str | None) -> LoginResult:
     """Create + activate the `alysis` profile, keeping any model the user chose.
 
-    Fresh logins default to V4.1 Flash (``deepseek-flash``) so
+    Fresh logins default to GPT-6 Luna (``gpt-6-luna``, free credits) so
     connect → login → chat works with zero extra steps. Re-logins preserve
     whatever model the user selected since, so logging in again never undoes
-    supported choices. Retired Flash/beta ids are remapped to the current
-    default via the preset's model_aliases, including on re-login.
+    supported choices. Legacy hosted DeepSeek ids (the Free default before Oct 22,
+    2026) are remapped to `glm-5.3-flash` via the preset's model_aliases, including
+    on re-login; paid plans offer DeepSeek as `deepseek-v4.1-flash`.
     """
     preset = get_preset(cloud.PROFILE_KEY)
     if preset is not None:

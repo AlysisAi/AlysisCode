@@ -525,9 +525,19 @@ def _transport_provider_key(
     model: str | None,
 ) -> str:
     from_url = _provider_key_from_base_url(base_url)
-    # The hosted gateway now serves multiple vendors. GLM uses the Alysis
-    # contract so DeepSeek's thinking toggle and replay dialect cannot leak in.
-    if str(model or "").casefold() == "glm-5.3-flash":
+    # These hosted routes use their Alysis contracts so DeepSeek's thinking
+    # toggle and replay dialect cannot leak into other vendors' requests.
+    if str(model or "").casefold() in {
+        "glm-5.3-flash",
+        "minimax-m3.1-flash",
+        "gpt-oss-120b",
+        "reflection-beam",
+        "nemotron-3.5-super-vl",
+        "glm-5.3",
+        "qwen3.8-2.4t",
+        "kimi-k3",
+        "muse-spark-open",
+    }:
         from ..provider_url import is_alysis_gateway_url
 
         if (
@@ -1172,7 +1182,7 @@ def _messages_for_transport(
     reasoning_provider_key: str | None = None,
     model: str | None = None,
 ) -> list[dict[str, Any]]:
-    return [
+    result = [
         _message_for_transport(
             message,
             provider_key=provider_key,
@@ -1182,6 +1192,21 @@ def _messages_for_transport(
         for message in messages
         if isinstance(message, dict)
     ]
+    if provider_key == "alysis" and model in {"qwen3.8-2.4t", "reflection-beam"}:
+        # These templates accept instructions only at the beginning (Beam can
+        # silently ignore later instructions). Preserve all host instructions
+        # in order, including completion checks, without changing user/tool roles.
+        instructions = [m for m in result if m.get("role") in {"system", "developer"}]
+        if instructions:
+            result = [
+                {
+                    "role": "system",
+                    "content": "\n\n".join(
+                        _normalize_assistant_content_to_text(m.get("content")) for m in instructions
+                    ),
+                }
+            ] + [m for m in result if m.get("role") not in {"system", "developer"}]
+    return result
 
 
 def _normalize_assistant_content_to_text(raw: Any) -> str:
@@ -1440,6 +1465,28 @@ def alysis_trial_error_message(err: LLMError) -> str | None:
         code == "hosted_capacity_exceeded"
         and isinstance(message, str)
         and message.startswith("Hosted model capacity is busy. Retry in ")
+    ):
+        return message[:2048]
+    # Paid-plan answers (Plan 1 / Plan 5) are written for people and carry the
+    # reset date or upgrade link, so show them as sent. A paused model names
+    # itself and how long the pause lasts.
+    if code in (
+        "plan_credits_exhausted",
+        "plan_limit_reached",
+        "plan_unavailable",
+        "hosted_model_paused",
+    ) and isinstance(message, str):
+        return message[:2048]
+    if (
+        code == "model_not_allowed"
+        and isinstance(message, str)
+        and message.startswith(
+            (
+                "This model is not included in ",
+                # Hosted DeepSeek ended Oct 22, 2026; the gateway names replacements.
+                "DeepSeek models are no longer offered on Alysis hosted plans.",
+            )
+        )
     ):
         return message[:2048]
     if (
@@ -1884,8 +1931,16 @@ def _response_with_stream_restart_metadata(
 
 class OpenAICompatClient:
     supports_forced_tool_choice = True
-    # Later system/developer messages stay in the ordered message stream.
-    preserves_late_system_message_position = True
+
+    @property
+    def preserves_late_system_message_position(self) -> bool:
+        return not (
+            _transport_provider_key(
+                base_url=self.base_url, provider_key=self.provider_key, model=self.model
+            )
+            == "alysis"
+            and self.model in {"qwen3.8-2.4t", "reflection-beam"}
+        )
 
     def __init__(
         self,

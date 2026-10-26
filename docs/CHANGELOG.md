@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Show Plan 1 and Plan 5 balances, reset dates and shared usage limits in
+  account status, and open account upgrades from `alysis upgrade`.
+- Offer the reviewed paid models only when the signed-in account's model
+  catalog permits them. An unavailable catalog stays empty and the terminal
+  picker explains how to reconnect instead of crashing.
+- Preserve each hosted model's reasoning and tool-message format when switching
+  models, including instruction placement for Qwen3.8 2.4T and Reflection Beam.
+- Use GPT-6 Luna for fresh hosted sign-ins and migrate retired Free DeepSeek
+  aliases to GLM 5.3 Flash while preserving supported paid model selections.
+
 - Preserve Git rename and copy paths containing ` b/` directory components
   when diff headers require adjacent metadata to disambiguate the paths.
 - Recognize Alibaba Model Studio endpoints by owned hostname boundaries rather

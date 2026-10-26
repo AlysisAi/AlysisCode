@@ -28,9 +28,17 @@ def config(provider="alysis"):
     return cfg
 
 
-def test_free_picker_metadata_and_efforts():
+def test_free_picker_metadata_and_efforts(monkeypatch):
+    from alysis_code.cli_impl import config_menu
+
+    monkeypatch.setattr(
+        config_menu,
+        "discover_provider_models",
+        lambda **kwargs: (config_menu.ProviderModelOption(id=MODEL, label=MODEL),),
+    )
     cfg = config()
     flow = ConfigFlow(cfg=cfg)
+    flow.state.set_field("new_api_key", "slk_synthetic_free_catalog")
     flow.choose("default")
     assert MODEL in [r.value for r in flow.screen().rows]
     assert "claude-sonnet-5-5" not in [r.value for r in flow.screen().rows]

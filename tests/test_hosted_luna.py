@@ -27,9 +27,57 @@ def hosted_config():
     return cfg
 
 
-def test_luna_free_picker_and_metadata():
+@pytest.mark.parametrize(
+    "gateway",
+    [
+        "https://sandbox-project.supabase.co/functions/v1/llm/v1",
+        "https://api.alysiscode.com/v1",
+    ],
+)
+@pytest.mark.parametrize(
+    "model,protocol",
+    [
+        ("gpt-6-luna", "openai_responses"),
+        ("gpt-6.1-sol", "openai_responses"),
+        ("deepseek-v4.1-flash", "openai_compat"),
+    ],
+)
+def test_hosted_gateway_override_keeps_model_transport_and_metadata(gateway, model, protocol):
+    from alysis_code.llm.types import BillingMode
+
+    profile = replace(
+        make_profile_from_preset(get_preset("alysis")), base_url=gateway, default_model=model
+    )
+    cfg = AppConfig(model=model, base_url=gateway)
+    add_profile(cfg, profile)
+    set_active_profile(cfg, profile.name)
+    client = make_llm_client(
+        cfg=cfg,
+        api_key="slk_test",
+        model=model,
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+    )
+    assert client.provider_key == "alysis"
+    assert client.route_identity.protocol == protocol
+    assert client.base_url.rstrip("/") == gateway
+    assert client.usage_contract.billing_mode == BillingMode.INCLUDED
+    metadata = ModelRegistry(cfg=cfg).get(model)
+    assert metadata.supports_reasoning is True
+    assert metadata.context_window_tokens >= 1_000_000
+    assert metadata.field_sources["context_window_tokens"] != "fallback"
+
+
+def test_luna_free_picker_and_metadata(monkeypatch):
+    from alysis_code.cli_impl import config_menu
+
+    monkeypatch.setattr(
+        config_menu,
+        "discover_provider_models",
+        lambda **kwargs: (config_menu.ProviderModelOption(id="gpt-6-luna", label="GPT-6 Luna"),),
+    )
     cfg = hosted_config()
     flow = ConfigFlow(cfg=cfg)
+    flow.state.set_field("new_api_key", "slk_synthetic_catalog")
     flow.choose("default")
     assert "gpt-6-luna" in [r.value for r in flow.screen().rows]
     flow.choose("gpt-6-luna")
