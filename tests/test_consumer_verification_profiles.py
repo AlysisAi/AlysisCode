@@ -553,7 +553,10 @@ while True:
     request = queue / 'request'
     if request.exists():
         data = request.read_text()
-        (queue / 'response').write_text(data.upper())
+        # Publish only complete files; existence alone does not imply a write finished.
+        response = queue / 'response.tmp'
+        response.write_text(data.upper())
+        response.replace(queue / 'response')
         request.unlink()
     time.sleep(0.02)
 """,
@@ -568,7 +571,9 @@ while True:
             f"""import time
 from pathlib import Path
 queue = Path({str(queue)!r})
-(queue / 'request').write_text('public operation')
+request = queue / 'request.tmp'
+request.write_text('public operation')
+request.replace(queue / 'request')
 deadline = time.monotonic() + 2
 while not (queue / 'response').exists():
     assert time.monotonic() < deadline
