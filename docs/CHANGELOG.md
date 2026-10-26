@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require patched Brotli decoders and Windows packaging dependencies for the
+  October 2026 security advisories, including installations without the lockfile.
 - Show Plan 1 and Plan 5 balances, reset dates and shared usage limits in
   account status, and open account upgrades from `alysis upgrade`.
 - Offer the reviewed paid models only when the signed-in account's model
