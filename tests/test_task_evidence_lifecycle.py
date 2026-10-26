@@ -198,6 +198,20 @@ def test_explicit_clear_resets_verification_baseline(tmp_path, monkeypatch):
 def test_task_wide_generations_and_amended_requirements_scope_checkpoints(
     tmp_path, monkeypatch, resume
 ):
+    from alysis_code.agent.anytime_checkpoint import AnytimeCheckpointManager
+
+    # This case verifies task/revision identity and acknowledged recovery. An
+    # optional cold worker can legitimately exhaust its two-second allowance;
+    # exercise the real snapshot/recovery methods without that scheduling race.
+    # Owned-process publication and hard deadlines have separate integration
+    # coverage in test_checkpoint_deadline_boundaries; expiry is tested below.
+    def inline_operation(self, action, arguments, remaining_seconds):
+        if action == "consider":
+            return self._consider_inline(**arguments)
+        assert action == "select_task"
+        return self._select_task_inline(**arguments)
+
+    monkeypatch.setattr(AnytimeCheckpointManager, "_bounded_operation", inline_operation)
     (tmp_path / "check.py").write_text(
         'import json\nfrom pathlib import Path\nprint(json.dumps({"score": int(Path("score.txt").read_text())}))\n'
     )
@@ -231,6 +245,39 @@ def test_task_wide_generations_and_amended_requirements_scope_checkpoints(
         assert session._anytime_checkpoints.best is None
         assert not session._anytime_checkpoints.experiments_exhausted
         assert "best_verified_checkpoint" not in session.last_turn_outcome
+    finally:
+        session.close()
+
+
+def test_optional_checkpoint_timeout_keeps_task_verification_without_claiming_saved_bytes(
+    tmp_path, monkeypatch
+):
+    from alysis_code.agent import checkpoint_worker
+
+    def expired_worker(*args, **kwargs):
+        raise checkpoint_worker.CheckpointWorkerExpired()
+
+    monkeypatch.setattr(checkpoint_worker, "run_checkpoint_worker", expired_worker)
+    (tmp_path / "check.py").write_text(
+        'from pathlib import Path\nassert Path("score.txt").read_text() == "7"\n'
+        "print('{\"score\": 7}')\n",
+        encoding="utf-8",
+    )
+    session, command = _session(tmp_path, monkeypatch, checkpoint=True)
+    try:
+        session.client = _ScriptedClient(
+            ("fs_write", {"path": "score.txt", "content": "7"}),
+            ("shell_run", {"cmd": command}),
+        )
+        session.run_turn(f"Write score.txt and run `{command}`.")
+        assert session.last_turn_outcome["verified_success"]
+        assert session._anytime_checkpoints.best is None
+        assert "best_verified_checkpoint" not in session.last_turn_outcome
+        events = session.store.events_snapshot()
+        checkpoint = [event["payload"] for event in events if event["type"] == "anytime_checkpoint"]
+        assert checkpoint
+        assert checkpoint[-1]["status"] == "checkpoint_time_budget_exhausted"
+        assert checkpoint[-1]["best"] is None
     finally:
         session.close()
 
