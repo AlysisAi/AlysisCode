@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "servers": {
+    "deed-page": {
+      "transport": "http",
+      "url": "https://deed.page/mcp",
+      "trust": "explicit",
+      "enabled_in": ["interactive_chat", "one_shot"],
+      "allowed_tools": ["publish_site", "get_site", "delete_site"]
+    }
+  }
+}
