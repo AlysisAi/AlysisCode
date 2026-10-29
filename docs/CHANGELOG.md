@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.15.3 - 2026-10-29
 
 - Require patched Brotli decoders and Windows packaging dependencies for the
   October 2026 security advisories, including installations without the lockfile.
-- Show Plan 1 and Plan 5 balances, reset dates and shared usage limits in
+- Show Beta and Alpha base-credit balances, reset dates and shared usage limits in
   account status, and open account upgrades from `alysis upgrade`.
+- Refresh model availability from the authenticated hosted catalog and preserve
+  account balances when optional paid metadata is malformed.
 - Offer the reviewed paid models only when the signed-in account's model
   catalog permits them. An unavailable catalog stays empty and the terminal
   picker explains how to reconnect instead of crashing.

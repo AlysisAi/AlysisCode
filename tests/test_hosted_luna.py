@@ -30,7 +30,7 @@ def hosted_config():
 @pytest.mark.parametrize(
     "gateway",
     [
-        "https://sandbox-project.supabase.co/functions/v1/llm/v1",
+        "https://backend.example.invalid/functions/v1/llm/v1",
         "https://api.alysiscode.com/v1",
     ],
 )
@@ -42,9 +42,12 @@ def hosted_config():
         ("deepseek-v4.1-flash", "openai_compat"),
     ],
 )
-def test_hosted_gateway_override_keeps_model_transport_and_metadata(gateway, model, protocol):
+def test_hosted_gateway_override_keeps_model_transport_and_metadata(
+    gateway, model, protocol, monkeypatch
+):
     from alysis_code.llm.types import BillingMode
 
+    monkeypatch.setenv("ALYSIS_GATEWAY_URL", gateway)
     profile = replace(
         make_profile_from_preset(get_preset("alysis")), base_url=gateway, default_model=model
     )

@@ -8,7 +8,14 @@ from alysis_code.llm.openai_compat import (
     _transport_provider_key,
 )
 
-BASE = "https://sandbox.supabase.co/functions/v1/llm/v1"
+BASE = "https://backend.example.invalid/functions/v1/llm/v1"
+
+
+@pytest.fixture(autouse=True)
+def configured_gateway(monkeypatch):
+    monkeypatch.setenv("ALYSIS_GATEWAY_URL", BASE)
+
+
 MODELS = [
     "minimax-m3.1-flash",
     "gpt-oss-120b",
