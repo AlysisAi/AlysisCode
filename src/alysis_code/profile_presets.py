@@ -1795,6 +1795,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("qwen3.8-2.4t", "qwen-normal"),
             ReviewedModel("kimi-k3", "kimi-normal"),
             ReviewedModel("muse-spark-open", "general-expanded"),
+            ReviewedModel("claude-sonnet-5-5", "claude-normal"),
         ),
         suggested_model_descriptions={
             "claude-haiku-5-5": "Claude Haiku 5.5 - fast coding, 1M context, Free credits; 5x rates above 100K input",
@@ -1820,23 +1821,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ),
         },
         validation_model="glm-5.3-flash",
-        paid_models=(
-            # Available only when the authenticated gateway confirms this route.
-            "minimax-m3.1-flash",
-            "qwen3.8-flash",
-            "gpt-oss-120b",
-            "reflection-beam",
-            "nemotron-3.5-super-vl",
-            "mistral-small-4",
-            "glm-5.3",
-            "qwen3.8-2.4t",
-            "kimi-k3",
-            "muse-spark-open",
-            "gpt-6.1-sol",
-            "deepseek-v4.1-flash",
-            "deepseek-v4-pro",
-            "mistral-large-4",
-        ),
+        paid_models=('minimax-m3.1-flash', 'qwen3.8-flash', 'gpt-oss-120b', 'reflection-beam', 'nemotron-3.5-super-vl', 'mistral-small-4', 'glm-5.3', 'qwen3.8-2.4t', 'kimi-k3', 'muse-spark-open', 'gpt-6.1-sol', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'mistral-large-4', 'claude-sonnet-5-5'),
         cache_capability=CacheCapabilitySpec(
             model_family_overrides=(("claude-haiku-5-5", _cache_minimum(512)),),
             source="preset",

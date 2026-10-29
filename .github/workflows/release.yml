@@ -89,6 +89,7 @@ jobs:
           tests/test_account_login.py tests/test_account_status.py
           tests/test_hosted_account_error_display.py tests/test_reasoning_contracts.py
           tests/test_model_reasoning_catalog.py
+          tests/test_hosted_model_transport.py tests/test_hosted_availability.py
 
       - name: Qualify source and installed wheel
         run: >-

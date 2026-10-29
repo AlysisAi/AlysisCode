@@ -255,3 +255,20 @@ def test_nonnegative_optional_model_input_caps_match_the_app(cap):
     raw = json.loads((FIXTURES / "account-status-paid.json").read_text(encoding="utf-8"))["billing"]
     raw["paid"]["models"][0]["max_input_tokens"] = cap
     assert account_login._account_billing(raw)["paid"]["models"][0]["max_input_tokens"] == cap
+
+
+def test_current_paid_catalog_reaches_every_terminal_picker_without_adding_missing_routes():
+    from alysis_code.profile_presets import get_preset, model_options_for_preset
+
+    catalog = json.loads(
+        (FIXTURES / "paid-current-catalog-20261029.json").read_text(encoding="utf-8")
+    )
+    preset = get_preset("alysis")
+    for plan in catalog["plans"]:
+        included = {row["model"] for row in plan["models"]}
+        rows = model_options_for_preset(preset, available_models=included)
+        assert {row[0] for row in rows} == included
+        available = included - {"qwen3.8-flash"}
+        rows = model_options_for_preset(preset, available_models=available)
+        assert {row[0] for row in rows} == available
+    assert model_options_for_preset(preset, available_models=set()) == ()
