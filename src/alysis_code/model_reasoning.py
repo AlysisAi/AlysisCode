@@ -76,6 +76,21 @@ def _contract_efforts(contract: ReasoningContract) -> tuple[ProviderReasoningEff
     return efforts
 
 
+def hosted_model_capabilities(model: str) -> dict[str, Any]:
+    """The hosted route's verified choices, shared by account JSON and terminal views."""
+    contract = reasoning_contract_for("alysis", model)
+    efforts = _contract_efforts(contract)
+    return {
+        "reasoning_efforts": [
+            {"id": item.id, "label": item.label, "description": item.description or ""}
+            for item in efforts
+        ],
+        "default_reasoning_effort": (
+            contract.default if any(item.id == contract.default for item in efforts) else ""
+        ),
+    }
+
+
 def _api_contract(
     cfg: Any, profile: Any, model: str, transport: httpx.BaseTransport | None
 ) -> ReasoningContract:

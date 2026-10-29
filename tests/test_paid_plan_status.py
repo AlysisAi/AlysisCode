@@ -96,7 +96,7 @@ def test_plan_1_offers_the_upgrade():
         premium_day_limit_microusd=None,
     )
     details = account_login.format_paid_plan_details(_status(billing))
-    assert details[-1] == "Need more? Run `alysis upgrade` to move to Plan 5."
+    assert details[-1] == "Need more? Run `alysis upgrade` to review available plans."
     assert not any(line.startswith("Premium") for line in details)
 
 

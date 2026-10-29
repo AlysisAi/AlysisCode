@@ -1166,7 +1166,11 @@ def _whoami_payload(cfg: AppConfig) -> dict[str, Any]:
         profile_active=bool(status.active),
         plan=(trial.plan if trial is not None else None),
         display_name=(trial.display_name if trial is not None else None),
-        billing=(trial.billing if trial is not None else None),
+        billing=(
+            account_login.billing_with_model_availability(cfg, trial.billing)
+            if trial is not None
+            else None
+        ),
         billing_status=(
             "available"
             if trial is not None and trial.billing is not None

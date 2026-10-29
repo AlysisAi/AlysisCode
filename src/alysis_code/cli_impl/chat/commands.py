@@ -172,10 +172,10 @@ def _merge_forge_execution_usage_into_session(*, session: Any, paths: Any) -> in
 
 
 def _print_alysis_trial_models(console: Console, session: Any, *, current: str) -> None:
-    """List the models the hosted Alysis Code trial serves, when on that profile.
+    """List the models the hosted Alysis account serves, when on that profile.
 
     Best-effort and silent otherwise: only runs when the active profile is the
-    hosted `alysis` trial, discovers the live allowlist via the proxy, and
+    hosted `alysis` account, discovers the live allowlist via the proxy, and
     never raises into the chat loop.
     """
     cfg = getattr(session, "cfg", None)
@@ -194,10 +194,15 @@ def _print_alysis_trial_models(console: Console, session: Any, *, current: str) 
         return
     if not models:
         return
-    console.print("Models on your Alysis Code trial:")
+    from ...model_reasoning import hosted_model_capabilities
+
+    console.print("Models on your Alysis account:")
     for model_id in models:
         marker = "  (current)" if model_id == current else ""
-        console.print(f"  • {model_id}{marker}")
+        capabilities = hosted_model_capabilities(model_id)
+        efforts = ", ".join(item["label"] for item in capabilities["reasoning_efforts"])
+        detail = f"Auto, {efforts}" if efforts else "Auto (provider default)"
+        console.print(f"  • {model_id}{marker} · effort: {detail}", markup=False)
     console.print("[dim]Switch with: /model <name>[/dim]")
 
 

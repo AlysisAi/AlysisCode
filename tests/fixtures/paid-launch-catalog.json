@@ -1,0 +1,374 @@
+{
+  "plans": [
+    {
+      "plan": "plan_1",
+      "models": [
+        {
+          "model": "glm-5.3-flash",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 5,
+          "microusd_per_million": {
+            "input": 150000,
+            "output": 500000,
+            "cache_write": 0,
+            "cached_input": 30000
+          },
+          "usage_allowance_microusd": 5000000,
+          "credit_conversion_multiplier": 1
+        },
+        {
+          "model": "gpt-6-luna",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": {
+            "input_factor": 2,
+            "output_factor": 1.5,
+            "above_input_tokens": 272000
+          },
+          "max_input_tokens": 272000,
+          "shared_allowance": true,
+          "value_multiplier": 5,
+          "microusd_per_million": {
+            "input": 100000,
+            "output": 500000,
+            "cache_write": 125000,
+            "cached_input": 10000
+          },
+          "usage_allowance_microusd": 5000000,
+          "credit_conversion_multiplier": 1
+        },
+        {
+          "model": "deepseek-v4.1-flash",
+          "multiplier": 1.25,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 4,
+          "microusd_per_million": {
+            "input": 375000,
+            "output": 1500000,
+            "cache_write": 0,
+            "cached_input": 7500
+          },
+          "usage_allowance_microusd": 4000000,
+          "credit_conversion_multiplier": 1.25
+        },
+        {
+          "model": "minimax-m3.1-flash",
+          "multiplier": 1.6666666666666667,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 3,
+          "microusd_per_million": {
+            "input": 250000,
+            "output": 1000000,
+            "cache_write": 0,
+            "cached_input": 25000
+          },
+          "usage_allowance_microusd": 3000000,
+          "credit_conversion_multiplier": 1.6666666666666667
+        },
+        {
+          "model": "reflection-beam",
+          "multiplier": 1.25,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 4,
+          "microusd_per_million": {
+            "input": 500000,
+            "output": 1500000,
+            "cache_write": 0,
+            "cached_input": 50000
+          },
+          "usage_allowance_microusd": 4000000,
+          "credit_conversion_multiplier": 1.25
+        },
+        {
+          "model": "nemotron-3.5-super-vl",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 5,
+          "microusd_per_million": {
+            "input": 150000,
+            "output": 500000,
+            "cache_write": 0,
+            "cached_input": 20000
+          },
+          "usage_allowance_microusd": 5000000,
+          "credit_conversion_multiplier": 1
+        }
+      ],
+      "plan_name": "Plan 1",
+      "upgrade_to": "plan_5",
+      "cap_5h_microusd": 1000000,
+      "price_eur_cents": 100,
+      "price_usd_cents": 100,
+      "pricing_version": "value_v1",
+      "cap_day_microusd": 1500000,
+      "max_output_tokens": 16000,
+      "max_usage_value_microusd": 5000000,
+      "monthly_credits_microusd": 5000000,
+      "premium_day_limit_microusd": null,
+      "premium_month_limit_microusd": null
+    },
+    {
+      "plan": "plan_5",
+      "models": [
+        {
+          "model": "glm-5.3-flash",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 4,
+          "microusd_per_million": {
+            "input": 150000,
+            "output": 500000,
+            "cache_write": 0,
+            "cached_input": 30000
+          },
+          "usage_allowance_microusd": 20000000,
+          "credit_conversion_multiplier": 1
+        },
+        {
+          "model": "gpt-6-luna",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": {
+            "input_factor": 2,
+            "output_factor": 1.5,
+            "above_input_tokens": 272000
+          },
+          "max_input_tokens": 272000,
+          "shared_allowance": true,
+          "value_multiplier": 4,
+          "microusd_per_million": {
+            "input": 100000,
+            "output": 500000,
+            "cache_write": 125000,
+            "cached_input": 10000
+          },
+          "usage_allowance_microusd": 20000000,
+          "credit_conversion_multiplier": 1
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "multiplier": 4,
+          "price_tier": "premium",
+          "long_context": {
+            "input_factor": 2,
+            "output_factor": 1.5,
+            "above_input_tokens": 272000
+          },
+          "max_input_tokens": 272000,
+          "shared_allowance": true,
+          "value_multiplier": 1,
+          "microusd_per_million": {
+            "input": 8000000,
+            "output": 40000000,
+            "cache_write": 10000000,
+            "cached_input": 400000
+          },
+          "usage_allowance_microusd": 5000000,
+          "credit_conversion_multiplier": 4
+        },
+        {
+          "model": "deepseek-v4.1-flash",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 4,
+          "microusd_per_million": {
+            "input": 300000,
+            "output": 1200000,
+            "cache_write": 0,
+            "cached_input": 6000
+          },
+          "usage_allowance_microusd": 20000000,
+          "credit_conversion_multiplier": 1
+        },
+        {
+          "model": "minimax-m3.1-flash",
+          "multiplier": 1.3333333333333333,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 3,
+          "microusd_per_million": {
+            "input": 200000,
+            "output": 800000,
+            "cache_write": 0,
+            "cached_input": 20000
+          },
+          "usage_allowance_microusd": 15000000,
+          "credit_conversion_multiplier": 1.3333333333333333
+        },
+        {
+          "model": "deepseek-v4-pro",
+          "multiplier": 2,
+          "price_tier": "standard",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 2,
+          "microusd_per_million": {
+            "input": 2640000,
+            "output": 7920000,
+            "cache_write": 0,
+            "cached_input": 260000
+          },
+          "usage_allowance_microusd": 10000000,
+          "credit_conversion_multiplier": 2
+        },
+        {
+          "model": "mistral-large-4",
+          "multiplier": 2,
+          "price_tier": "standard",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 2,
+          "microusd_per_million": {
+            "input": 2720000,
+            "output": 8360000,
+            "cache_write": 0,
+            "cached_input": 280000
+          },
+          "usage_allowance_microusd": 10000000,
+          "credit_conversion_multiplier": 2
+        },
+        {
+          "model": "reflection-beam",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 4,
+          "microusd_per_million": {
+            "input": 400000,
+            "output": 1200000,
+            "cache_write": 0,
+            "cached_input": 40000
+          },
+          "usage_allowance_microusd": 20000000,
+          "credit_conversion_multiplier": 1
+        },
+        {
+          "model": "nemotron-3.5-super-vl",
+          "multiplier": 1,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 4,
+          "microusd_per_million": {
+            "input": 150000,
+            "output": 500000,
+            "cache_write": 0,
+            "cached_input": 20000
+          },
+          "usage_allowance_microusd": 20000000,
+          "credit_conversion_multiplier": 1
+        },
+        {
+          "model": "glm-5.3",
+          "multiplier": 2,
+          "price_tier": "standard",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 2,
+          "microusd_per_million": {
+            "input": 2800000,
+            "output": 8800000,
+            "cache_write": 0,
+            "cached_input": 520000
+          },
+          "usage_allowance_microusd": 10000000,
+          "credit_conversion_multiplier": 2
+        },
+        {
+          "model": "qwen3.8-2.4t",
+          "multiplier": 2,
+          "price_tier": "standard",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 2,
+          "microusd_per_million": {
+            "input": 4000000,
+            "output": 12000000,
+            "cache_write": 0,
+            "cached_input": 500000
+          },
+          "usage_allowance_microusd": 10000000,
+          "credit_conversion_multiplier": 2
+        },
+        {
+          "model": "kimi-k3",
+          "multiplier": 4,
+          "price_tier": "premium",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 1,
+          "microusd_per_million": {
+            "input": 12000000,
+            "output": 60000000,
+            "cache_write": 0,
+            "cached_input": 1200000
+          },
+          "usage_allowance_microusd": 5000000,
+          "credit_conversion_multiplier": 4
+        },
+        {
+          "model": "muse-spark-open",
+          "multiplier": 2,
+          "price_tier": "standard",
+          "long_context": null,
+          "max_input_tokens": null,
+          "shared_allowance": true,
+          "value_multiplier": 2,
+          "microusd_per_million": {
+            "input": 2500000,
+            "output": 8500000,
+            "cache_write": 0,
+            "cached_input": 300000
+          },
+          "usage_allowance_microusd": 10000000,
+          "credit_conversion_multiplier": 2
+        }
+      ],
+      "plan_name": "Plan 5",
+      "upgrade_to": null,
+      "cap_5h_microusd": 3500000,
+      "price_eur_cents": 500,
+      "price_usd_cents": 500,
+      "pricing_version": "value_v1",
+      "cap_day_microusd": 6000000,
+      "max_output_tokens": 32000,
+      "max_usage_value_microusd": 20000000,
+      "monthly_credits_microusd": 20000000,
+      "premium_day_limit_microusd": null,
+      "premium_month_limit_microusd": null
+    }
+  ],
+  "credit_microusd": 10000
+}

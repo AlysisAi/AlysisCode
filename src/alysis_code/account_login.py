@@ -215,7 +215,30 @@ def _account_paid(value: object) -> dict[str, Any] | None:
     name = _account_text(value.get("plan_name"))
     if plan is None or name is None:
         return None
+    from .model_reasoning import hosted_model_capabilities
+
     result: dict[str, Any] = {"plan": plan, "plan_name": name}
+    base = _account_int(value.get("base_monthly_credits_microusd"), allow_none=True)
+    unit = _account_int(value.get("ledger_microusd_per_base_credit"), allow_none=True)
+    monthly = _account_int(value.get("monthly_credits_microusd"))
+    if (
+        value.get("credit_unit_version") == "paid-base-display-v1"
+        and type(base) is int
+        and base > 0
+        and type(unit) is int
+        and unit > 0
+        and type(monthly) is int
+        and base <= monthly
+        and monthly * 10000 == base * unit
+    ):
+        result.update(
+            credit_unit_version="paid-base-display-v1",
+            base_monthly_credits_microusd=base,
+            ledger_microusd_per_base_credit=unit,
+        )
+    maximum = _account_int(value.get("max_usage_value_microusd"), allow_none=True)
+    if maximum is not False and maximum is not None and maximum >= 0:
+        result["max_usage_value_microusd"] = maximum
     for field in (
         "monthly_credits_microusd",
         "cap_5h_microusd",
@@ -265,8 +288,35 @@ def _account_paid(value: object) -> dict[str, Any] | None:
                 "price_tier": _account_text(row.get("price_tier")),
                 "max_input_tokens": cap,
                 "microusd_per_million": parsed,
+                **hosted_model_capabilities(str(row["model"])),
             }
         )
+        # Older servers omit conversion metadata. Preserve that distinction:
+        # rates must never silently claim a 1x conversion for a premium model.
+        multiplier = row.get("credit_conversion_multiplier", row.get("multiplier"))
+        if type(row.get("available")) is bool:
+            result["models"][-1]["available"] = row["available"]
+            result["models"][-1]["availability_reason"] = _account_text(
+                row.get("availability_reason")
+            )
+        if type(multiplier) in (int, float) and math.isfinite(multiplier) and multiplier > 0:
+            result["models"][-1]["credit_conversion_multiplier"] = multiplier
+        value_multiplier = row.get("value_multiplier")
+        allowance = _account_int(row.get("usage_allowance_microusd"), allow_none=True)
+        if (
+            row.get("shared_allowance") is True
+            and type(value_multiplier) in (int, float)
+            and math.isfinite(value_multiplier)
+            and value_multiplier > 0
+            and allowance is not False
+            and allowance is not None
+            and allowance >= 0
+        ):
+            result["models"][-1].update(
+                value_multiplier=value_multiplier,
+                usage_allowance_microusd=allowance,
+                shared_allowance=True,
+            )
     return result
 
 
@@ -432,13 +482,76 @@ def list_trial_models(cfg: AppConfig) -> list[str]:
     return models
 
 
+def billing_with_model_availability(
+    cfg: AppConfig, billing: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Intersect a new paid account catalog with the authenticated gateway catalog.
+
+    Membership, balances and rates remain unchanged. A failed availability read
+    closes model selection until retry rather than advertising an unverified route.
+    """
+    if not billing or not isinstance(billing.get("paid"), dict):
+        return billing
+    paid = billing["paid"]
+    if paid.get("credit_unit_version") != "paid-base-display-v1":
+        return billing
+    ids: set[str] | None = None
+    try:
+        key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+        if key:
+            request = urllib.request.Request(
+                cloud.models_url(),
+                method="GET",
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            )
+            with urllib.request.build_opener(_AccountNoRedirect()).open(
+                request, timeout=_MODELS_TIMEOUT_S
+            ) as response:
+                raw = response.read(65_537)
+            if len(raw) <= 65_536:
+                body = json.loads(raw)
+                rows = body.get("data") if isinstance(body, dict) else None
+                if (
+                    isinstance(rows, list)
+                    and len(rows) <= 100
+                    and all(isinstance(row, dict) and _account_text(row.get("id")) for row in rows)
+                ):
+                    ids = {str(row["id"]).strip() for row in rows}
+    except (
+        cloud.AlysisCloudConfigError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        UnicodeDecodeError,
+    ):
+        pass
+    models = []
+    for model in paid["models"]:
+        current = dict(model)
+        if current.get("available") is not False:
+            current["available"] = ids is not None and current["model"] in ids
+            current["availability_reason"] = (
+                None
+                if current["available"]
+                else (
+                    "Model availability could not be checked. Retry shortly."
+                    if ids is None
+                    else "Hosted access is not available yet."
+                )
+            )
+        models.append(current)
+    return {**billing, "paid": {**paid, "models": models}}
+
+
 def format_trial_status_line(status: TrialStatus) -> str | None:
     """A one-line account summary for `whoami`, or None if there's nothing to show."""
     if status.billing is not None:
         billing = status.billing
         paid = billing.get("paid")
         if paid is not None and not billing["unlimited_credits"]:
-            line = f"{paid['plan_name']}: {max(0, billing['balance_microusd']) / 10_000:,.1f} credits left"
+            unit = paid.get("ledger_microusd_per_base_credit", 10_000)
+            line = f"{paid['plan_name']}: {max(0, billing['balance_microusd']) / unit:,.1f} credits left"
             reset = _format_date(paid.get("credits_reset_at"))
             return line + (f" · resets {reset}" if reset else "")
         if billing["unlimited_credits"]:
@@ -465,13 +578,21 @@ def format_trial_status_line(status: TrialStatus) -> str | None:
 
 def format_paid_plan_details(status: TrialStatus) -> list[str]:
     """Extra `whoami` lines for a paid plan: windows, Premium use and model rates."""
+    from .model_reasoning import hosted_model_capabilities
+
     billing = status.billing or {}
     paid = billing.get("paid")
     if not paid:
         return []
 
+    credit_unit = paid.get("ledger_microusd_per_base_credit", 10_000)
+
     def credits(microusd: int | None) -> str:
-        return f"{(microusd or 0) / 10_000:,.0f}"
+        value = (microusd or 0) / credit_unit
+        return f"{value:,.1f}".removesuffix(".0") if credit_unit != 10_000 else f"{value:,.0f}"
+
+    def usage_credits(microusd: int) -> str:
+        return f"{microusd / 10_000:,.0f}"
 
     lines = [
         f"Last 5 hours: {credits(paid['burn_5h_microusd'])} of {credits(paid['cap_5h_microusd'])} credits"
@@ -488,22 +609,58 @@ def format_paid_plan_details(status: TrialStatus) -> list[str]:
                 else ""
             )
         )
+    lines.extend(
+        [
+            f"{credits(paid['monthly_credits_microusd'])} monthly shared credits"
+            f" · {len(paid['models'])} included models",
+            "Switching models uses the same credit balance.",
+        ]
+    )
+    if (
+        paid.get("max_usage_value_microusd", 0) / 10_000
+        > paid["monthly_credits_microusd"] / credit_unit
+    ):
+        lines.append(
+            f"Up to {usage_credits(paid['max_usage_value_microusd'])} usage credits, depending on the model."
+        )
     lines.append("Rates, credits per 1M tokens (input / cached / output):")
     for row in paid["models"]:
         rates = row["microusd_per_million"]
         lines.append(
-            f"  {row['model']}: {rates['input'] / 10_000:g} / {rates['cached_input'] / 10_000:g}"
-            f" / {rates['output'] / 10_000:g}"
+            f"  {row['model']}: {rates['input'] / credit_unit:g} / {rates['cached_input'] / credit_unit:g}"
+            f" / {rates['output'] / credit_unit:g}"
             + (
                 f" · up to {row['max_input_tokens']:,} input tokens"
                 if row.get("max_input_tokens")
                 else ""
             )
         )
+        capabilities = hosted_model_capabilities(row["model"])
+        efforts = capabilities["reasoning_efforts"]
+        choices = ", ".join(item["label"] for item in efforts)
+        lines.append(f"    Effort: Auto{', ' + choices if choices else ' (provider default)'}")
+        default = capabilities["default_reasoning_effort"]
+        metadata = []
+        if row.get("available") is False:
+            metadata.append(
+                "Unavailable"
+                + (f": {row['availability_reason']}" if row.get("availability_reason") else "")
+            )
+        if default:
+            label = next(item["label"] for item in efforts if item["id"] == default)
+            metadata.append(f"Default: {label}")
+        multiplier = row.get("credit_conversion_multiplier")
+        if multiplier is not None:
+            metadata.append(f"Credit rate: {multiplier:.3g}×")
+        if row.get("shared_allowance") is True:
+            metadata.append(
+                f"Model value: {row['value_multiplier']:.3g}×"
+                f" · up to {usage_credits(row['usage_allowance_microusd'])} usage credits"
+            )
+        if metadata:
+            lines.append("    " + " · ".join(metadata))
     if paid.get("upgrade_to"):
-        lines.append(
-            f"Need more? Run `alysis upgrade` to move to {paid['upgrade_to'].replace('_', ' ').title()}."
-        )
+        lines.append("Need more? Run `alysis upgrade` to review available plans.")
     return lines
 
 
