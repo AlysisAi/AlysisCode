@@ -57,13 +57,13 @@ def test_model_metadata_rename_updates_picker_and_parent_and_child_guidance(
     assert resolve_prompt_guidance_profile(AppConfig(model=model.id)) == "expanded"
 
 
-def test_hosted_default_selects_reviewed_deepseek_parent_and_child_guidance() -> None:
+def test_hosted_default_selects_reviewed_glm_parent_and_child_guidance() -> None:
     preset = get_preset("alysis")
     assert preset is not None
-    assert preset.suggested_models[0] == "deepseek-flash"
+    assert preset.suggested_models[0] == "glm-5.3-flash"
     cfg = AppConfig(model=preset.suggested_models[0])
-    assert resolve_prompt_guidance_profile(cfg) == "deepseek-expanded"
-    assert resolve_prompt_guidance_profile(cfg, subagent=True) == "deepseek-subagent"
+    assert resolve_prompt_guidance_profile(cfg) == "glm-normal"
+    assert resolve_prompt_guidance_profile(cfg, subagent=True) == "glm-subagent"
 
 
 def test_shared_model_identity_requires_consistent_prompt_assignment() -> None:

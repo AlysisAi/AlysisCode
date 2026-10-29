@@ -3207,6 +3207,11 @@ def _prompt_default_model(console: Console, state: ConfigMenuState) -> str:
     rows = _default_model_rows(state)
     if state._provider_model_catalog_warning:
         console.print(f"[yellow]{state._provider_model_catalog_warning}[/yellow]")
+    if not rows:
+        console.print(
+            "No models are currently available for this account. Reconnect and try again."
+        )
+        raise Abort()
     current_model = str(state.fields.get("model") or "").strip()
     row_values = {value for value, _label, _description in rows}
     current_value = current_model if current_model in row_values else rows[0][0]
@@ -3287,7 +3292,7 @@ def _provider_models_for_state(
         )
         if preset is not None and preset.key == "alysis":
             state._provider_model_catalog_warning = (
-                "The hosted catalog is unavailable; only free models can be selected."
+                "The hosted catalog is unavailable; reconnect and reopen the model picker."
             )
     else:
         state._provider_model_catalog_warning = ""

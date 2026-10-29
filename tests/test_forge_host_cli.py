@@ -92,7 +92,7 @@ def test_resume_manifest_rejects_noncanonical_or_widened_records(
         load_resume_manifest(paths)
 
 
-def test_resume_manifest_rejects_symlink(tmp_path: Path) -> None:
+def test_resume_manifest_rejects_symlink(tmp_path: Path, require_symlinks: None) -> None:
     paths = _paths(tmp_path)
     foreign = tmp_path / "foreign.json"
     foreign.write_text("{}", encoding="utf-8")

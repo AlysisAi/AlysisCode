@@ -278,7 +278,22 @@ def test_create_session_adds_write_guidance_only_for_writable_modes(tmp_path: Pa
 
 def test_create_session_splits_skill_lifecycle_and_discovery_guidance(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This test compares an empty catalog with one project skill. A developer's
+    # installed user skills (or a previous lifecycle test) are not that fixture.
+    from alysis_code.agent import prompt_context
+
+    discover = prompt_context.discover_skills
+    monkeypatch.setattr(
+        prompt_context,
+        "discover_skills",
+        lambda **kwargs: discover(
+            **kwargs,
+            user_config_dir=tmp_path / "isolated-user-config",
+            home_dir=tmp_path / "isolated-user-home",
+        ),
+    )
     cfg = AppConfig(
         model="test-model",
         web_search_mode="off",

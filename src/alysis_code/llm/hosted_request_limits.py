@@ -1,6 +1,6 @@
 """Local preflight for the hosted Chat Completions envelope.
 
-Keep these bounds in sync with the hosted API admission contract. They measure
+Keep these bounds in sync with supabase/functions/llm/index.ts. They measure
 gateway admission pressure, not actual token usage or billable tokens.
 """
 
@@ -95,8 +95,28 @@ def hosted_chat_input_bound(payload: dict[str, Any]) -> int:
     )
 
 
+# The gateway's per-model input limits (CHAT_LIMITS in supabase/functions/llm/index.ts).
+_INPUT_LIMITS = {
+    "glm-5.3-flash": 1_000_000,
+    "deepseek-v4.1-flash": 1_000_000,
+    "deepseek-v4-pro": 1_048_576,
+    "minimax-m3": 524_288,
+    "mistral-large-4": 1_000_000,
+    "minimax-m3.1-flash": 1000000,
+    "qwen3.8-flash": 1000000,
+    "gpt-oss-120b": 131072,
+    "reflection-beam": 1000000,
+    "nemotron-3.5-super-vl": 262144,
+    "mistral-small-4": 256000,
+    "glm-5.3": 1000000,
+    "qwen3.8-2.4t": 1000000,
+    "kimi-k3": 1000000,
+    "muse-spark-open": 1000000,
+}
+
+
 def _input_limit(payload: dict[str, Any]) -> int:
-    return 1_000_000 if payload.get("model") == "glm-5.3-flash" else 1_048_576
+    return _INPUT_LIMITS.get(str(payload.get("model") or ""), 1_048_576)
 
 
 def hosted_chat_capacity_ratio(payload: dict[str, Any], *, headroom: int = 0) -> float:

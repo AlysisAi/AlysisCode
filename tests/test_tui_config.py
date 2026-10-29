@@ -489,7 +489,7 @@ def test_alysis_login_replaces_previous_provider_state_and_preserves_gateway(
     assert flow.stage == "subscription_account"
     assert flow.state.active_profile == "alysis"
     assert flow.state.fields["base_url"] == alysis_cloud.gateway_base_url()
-    assert flow.state.fields["model"] == "deepseek-flash"
+    assert flow.state.fields["model"] == "gpt-6-luna"
     assert flow.state.execution_backend == "native"
     assert flow.state.profiles["openai"] == previous_profile
     if finish == "save":
@@ -643,18 +643,28 @@ def test_alysis_model_flow_shows_free_models_and_keeps_managed_endpoint(
     _config_env(tmp_path, monkeypatch)
     if gateway_override:
         monkeypatch.setenv("ALYSIS_GATEWAY_URL", gateway_override)
+    from alysis_code.cli_impl import config_menu
+
+    monkeypatch.setattr(
+        config_menu,
+        "discover_provider_models",
+        lambda **kwargs: tuple(
+            config_menu.ProviderModelOption(id=model, label=model)
+            for model in ("glm-5.3-flash", "gpt-6-luna", "claude-haiku-5-5")
+        ),
+    )
     flow = ConfigFlow(cfg=_cfg_with_alysis_profile())
+    flow.state.set_field("new_api_key", "slk_synthetic_free_catalog")
     gateway = flow.state.fields["base_url"]
     flow.choose("default")
     assert [(row.value, row.label) for row in flow.screen().rows] == [
-        ("deepseek-flash", "DeepSeek V4.1 Flash"),
         ("glm-5.3-flash", "GLM 5.3 Flash"),
         ("gpt-6-luna", "GPT-6 Luna"),
         ("claude-haiku-5-5", "Claude Haiku 5.5"),
     ]
     flow.choose_current()
     assert flow.stage == "model_thinking"
-    assert flow.state.fields["model"] == "deepseek-flash"
+    assert flow.state.fields["model"] == "glm-5.3-flash"
     flow.back()
     assert flow.stage == "model"
     assert flow.screen().rows[0].current is True
@@ -665,7 +675,7 @@ def test_alysis_model_flow_shows_free_models_and_keeps_managed_endpoint(
     assert flow.state.fields["llm_timeout_s"] == timeout
     assert (
         next(row for row in flow.screen().rows if row.value == "default").description
-        == "DeepSeek V4.1 Flash"
+        == "GLM 5.3 Flash"
     )
     assert flow.state.fields["base_url"] == gateway
 
@@ -1088,7 +1098,9 @@ def test_provider_switch_rows_hide_gateway_host_and_url_credentials(monkeypatch)
     flow.choose("switch")
     rows = {row.value: row for row in flow.screen().rows}
 
-    assert rows["alysis"].description == "active · deepseek-flash · Alysis Code gateway"
+    assert rows["alysis"].description == (
+        "active · deepseek-flash · Alysis Code gateway · retired → glm-5.3-flash"
+    )
     assert rows["proxy"].description == "my-model · proxy.example.com:8443"
     shown = " ".join(row.description for row in rows.values())
     assert "supabase" not in shown

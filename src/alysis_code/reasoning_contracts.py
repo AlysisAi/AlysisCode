@@ -396,6 +396,97 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     # Hosted models retain their upstream reasoning and replay contracts.
     "alysis": (
         (
+            "minimax-m3.1-flash",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "gpt-oss-120b",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "reflection-beam",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "nemotron-3.5-super-vl",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "qwen3.8-2.4t",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "kimi-k3",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "muse-spark-open",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
             "claude-haiku-5-5",
             _C(
                 mode=OPTIONAL,
@@ -450,8 +541,8 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 off=OFF_EXPLICIT,
                 replay_reasoning_content=True,
                 accepts_tool_choice_while_reasoning=False,
-                notes="hosted proxy passes reasoning fields through to DeepSeek unchanged; "
-                "mirrors the deepseek provider contract",
+                notes="hosted proxy passes reasoning fields through to Together AI's DeepSeek "
+                "unchanged (route drop/extra adapt them); mirrors the deepseek provider contract",
             ),
         ),
         (
@@ -465,6 +556,19 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 emits_flat_reasoning_effort=True,
                 replay_reasoning_content=True,
                 notes="Z.ai hosted pay-as-you-go; preserved thinking requires complete reasoning replay",
+            ),
+        ),
+        (
+            "glm-5.3",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
             ),
         ),
     ),

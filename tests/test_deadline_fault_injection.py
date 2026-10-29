@@ -88,20 +88,24 @@ def test_hard_deadline_interrupts_real_network_fault(phase: str, stream: bool) -
     token = BudgetCancellationToken(watchdog.event, error_class=CooperativeCancellationError)
     errors: list[BaseException] = []
 
-    with _fault_server(phase) as (url, connected):
+    # The deadline covers the request/response fault, not a cold transport import
+    # or client setup on a loaded full-suite runner.
+    with (
+        _fault_server(phase) as (url, connected),
+        httpx.Client(timeout=10, verify=False, trust_env=False) as client,
+    ):
 
         def request() -> None:
             try:
-                with httpx.Client(timeout=10, verify=False, trust_env=False) as client:
-                    with cancellable_httpx_request(
-                        client=client,
-                        cancellation_token=token,
-                        method="GET",
-                        url=url,
-                        stream=stream,
-                    ) as response:
-                        if stream:
-                            list(response.iter_raw())
+                with cancellable_httpx_request(
+                    client=client,
+                    cancellation_token=token,
+                    method="GET",
+                    url=url,
+                    stream=stream,
+                ) as response:
+                    if stream:
+                        list(response.iter_raw())
             except BaseException as exc:
                 errors.append(exc)
 
@@ -246,6 +250,10 @@ def test_blocked_tool_timeout_reaps_stubborn_child_and_retains_artifact(tmp_path
     argv = [sys.executable, str(parent_path)]
     command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     registry = ProcessGroupRegistry()
+    # Windows must start cmd.exe and two Python processes before this fixture
+    # exercises a stubborn child. A one-second bootstrap can expire before any
+    # child exists on a loaded runner, which tests no process-tree cleanup.
+    timeout_s = 5 if os.name == "nt" else 1
     started = time.monotonic()
     try:
         with pytest.raises(subprocess.TimeoutExpired):
@@ -253,7 +261,7 @@ def test_blocked_tool_timeout_reaps_stubborn_child_and_retains_artifact(tmp_path
                 root=tmp_path,
                 cwd=tmp_path,
                 cmd=command,
-                timeout_s=1,
+                timeout_s=timeout_s,
             )
     finally:
         reap_tracked_groups(registry, grace_seconds=0.2)
@@ -270,5 +278,5 @@ def test_blocked_tool_timeout_reaps_stubborn_child_and_retains_artifact(tmp_path
                 process.wait(3)
             assert not alive, "owned stubborn subprocess survived deadline cleanup"
     assert pid > 0, "test must actually start the stubborn child"
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < timeout_s + 4
     assert (tmp_path / "retained.txt").read_text() == "finished portion"

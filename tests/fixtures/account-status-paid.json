@@ -1,0 +1,152 @@
+{
+  "email": "pat@example.test",
+  "billing": {
+    "paid": {
+      "plan": "plan_5",
+      "models": [
+        {
+          "model": "glm-5.3-flash",
+          "multiplier": 2.75,
+          "price_tier": "economy",
+          "long_context": null,
+          "max_input_tokens": null,
+          "microusd_per_million": {
+            "input": 412500,
+            "output": 1375000,
+            "cache_write": 0,
+            "cached_input": 82500
+          }
+        },
+        {
+          "model": "gpt-6-luna",
+          "multiplier": 2.75,
+          "price_tier": "economy",
+          "long_context": {
+            "input_factor": 2,
+            "output_factor": 1.5,
+            "above_input_tokens": 272000
+          },
+          "max_input_tokens": 272000,
+          "microusd_per_million": {
+            "input": 275000,
+            "output": 1375000,
+            "cache_write": 343750,
+            "cached_input": 27500
+          }
+        },
+        {
+          "model": "claude-haiku-5-5",
+          "multiplier": 2.75,
+          "price_tier": "economy",
+          "long_context": {
+            "input_factor": 5,
+            "output_factor": 5,
+            "above_input_tokens": 100000
+          },
+          "max_input_tokens": 100000,
+          "microusd_per_million": {
+            "input": 275000,
+            "output": 1375000,
+            "cache_write": 343750,
+            "cached_input": 27500
+          }
+        },
+        {
+          "model": "claude-sonnet-5-5",
+          "multiplier": 3.25,
+          "price_tier": "premium",
+          "long_context": null,
+          "max_input_tokens": null,
+          "microusd_per_million": {
+            "input": 6500000,
+            "output": 32500000,
+            "cache_write": 8125000,
+            "cached_input": 325000
+          }
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "multiplier": 3.25,
+          "price_tier": "premium",
+          "long_context": {
+            "input_factor": 2,
+            "output_factor": 1.5,
+            "above_input_tokens": 272000
+          },
+          "max_input_tokens": 272000,
+          "microusd_per_million": {
+            "input": 6500000,
+            "output": 32500000,
+            "cache_write": 8125000,
+            "cached_input": 325000
+          }
+        }
+      ],
+      "plan_name": "Plan 5",
+      "upgrade_to": null,
+      "period_start": "2026-10-21T09:00:00+00:00",
+      "cap_5h_microusd": 3500000,
+      "price_eur_cents": 500,
+      "price_usd_cents": 500,
+      "burn_5h_microusd": 1234000,
+      "cap_day_microusd": 6000000,
+      "credits_reset_at": "2026-11-21T09:00:00+00:00",
+      "burn_day_microusd": 1234000,
+      "max_output_tokens": 32000,
+      "monthly_credits_microusd": 20000000,
+      "premium_day_used_microusd": 0,
+      "premium_day_limit_microusd": 2000000,
+      "premium_month_used_microusd": 0,
+      "premium_month_limit_microusd": 10000000
+    },
+    "tier": "plan_5",
+    "status": "active",
+    "plan_name": "Plan 5",
+    "is_peak_now": true,
+    "cap_5h_microusd": null,
+    "cap_7d_microusd": null,
+    "balance_microusd": 18766000,
+    "burn_5h_microusd": 1234000,
+    "burn_7d_microusd": 1234000,
+    "credits_reset_at": "2026-11-21T09:00:00+00:00",
+    "model_promotions": [
+      {
+        "label": "DeepSeek V4.1 Flash",
+        "model": "deepseek-flash",
+        "multiplier": 1
+      },
+      {
+        "label": "GLM 5.3 Flash",
+        "model": "glm-5.3-flash",
+        "multiplier": 1
+      },
+      {
+        "label": "GPT-6 Luna",
+        "model": "gpt-6-luna",
+        "multiplier": 2
+      },
+      {
+        "label": "Claude Sonnet",
+        "model": "claude-sonnet-5-5",
+        "multiplier": 4
+      },
+      {
+        "label": "Claude Haiku 5.5 (5x rates above 100K prompt tokens)",
+        "model": "claude-haiku-5-5",
+        "multiplier": 1
+      }
+    ],
+    "unlimited_credits": false,
+    "current_period_end": "2026-11-21T09:00:00+00:00",
+    "free_last_grant_at": null,
+    "cycle_burn_microusd": 1234000,
+    "free_granted_period": false,
+    "free_next_refill_at": null,
+    "month_burn_microusd": 1234000,
+    "cancel_at_period_end": false,
+    "free_allowance_microusd": 500000,
+    "base_free_allowance_microusd": 500000
+  },
+  "display_name": "Pat",
+  "schema_version": 1
+}

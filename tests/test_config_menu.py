@@ -982,47 +982,42 @@ def test_zai_coding_plan_drops_stale_effort_and_never_offers_reasoning_off() -> 
         "custom-hosted-model",
     ],
 )
-def test_alysis_model_picker_only_offers_named_v41_flash_despite_stale_gateway(
+def test_alysis_model_picker_respects_live_availability_despite_stale_saved_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     saved_model: str,
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
 
-    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
     calls = []
 
-    def stale_catalog(_cfg):
+    def available_catalog(**_kwargs):
         calls.append(True)
         return [
-            "deepseek/deepseek-flash",
-            "deepseek-v4-flash",
-            "deepseek-v4-flash-vision-exp",
-            "deepseek-v4-pro",
-            "deepseek-v4.1-flash-expires-on-0910",
-            "deepseek-v5-preview",
+            config_menu_mod.ProviderModelOption(id=id, label=id)
+            for id in ["gpt-6-luna", "deepseek-v4.1-flash", "unknown-preview"]
         ]
 
-    monkeypatch.setattr("alysis_code.account_login.list_trial_models", stale_catalog)
+    monkeypatch.setattr(config_menu_mod, "discover_provider_models", available_catalog)
     cfg = AppConfig(model=saved_model)
     preset = get_preset("alysis")
     add_profile(cfg, make_profile_from_preset(preset, name="alysis"))
     set_active_profile(cfg, "alysis")
     state = ConfigMenuState.from_cfg(cfg)
+    state.set_field("new_api_key", "slk_synthetic_catalog")
     # Exercise an existing session even before saved configuration is migrated.
     state.fields["model"] = saved_model
 
     rows = config_menu_mod._default_model_rows(state)
+    # Only reviewed models actually offered by this account's live catalog appear.
     assert [(value, label) for value, label, _ in rows] == [
-        ("deepseek-flash", "DeepSeek V4.1 Flash"),
-        ("glm-5.3-flash", "GLM 5.3 Flash"),
         ("gpt-6-luna", "GPT-6 Luna"),
-        ("claude-haiku-5-5", "Claude Haiku 5.5"),
+        ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
     ]
-    assert calls == []
-    assert config_menu_mod._preset_model_option_rows(preset) == rows
+    assert calls == [True]
+    assert config_menu_mod._preset_model_option_rows(preset, state=state) == rows
 
 
 def test_default_model_rows_survive_alysis_discovery_failure(
@@ -1030,25 +1025,26 @@ def test_default_model_rows_survive_alysis_discovery_failure(
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
 
-    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", "https://cloud.example.invalid/api")
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
 
-    def _boom(_cfg: object) -> list[str]:
-        raise RuntimeError("proxy down")
+    def _boom(**_kwargs):
+        raise config_menu_mod.ProviderModelCatalogError("proxy down")
 
-    monkeypatch.setattr("alysis_code.account_login.list_trial_models", _boom)
+    monkeypatch.setattr(config_menu_mod, "discover_provider_models", _boom)
 
-    cfg = AppConfig(model="deepseek-flash")
+    cfg = AppConfig(model="glm-5.3-flash")
     add_profile(cfg, make_profile_from_preset(get_preset("alysis"), name="alysis"))
     set_active_profile(cfg, "alysis")
     state = ConfigMenuState.from_cfg(cfg)
+    state.set_field("new_api_key", "slk_synthetic_catalog")
 
-    # Discovery blew up, but the static preset rows must still render the menu.
+    # An unavailable catalog must not advertise models that may be disabled.
     model_values = [
         value for value, _label, _description in config_menu_mod._default_model_rows(state)
     ]
-    assert model_values == ["deepseek-flash", "glm-5.3-flash", "gpt-6-luna", "claude-haiku-5-5"]
+    assert model_values == []
+    assert "reconnect" in state._provider_model_catalog_warning
 
 
 def test_default_model_rows_fallback_to_base_url_provider() -> None:

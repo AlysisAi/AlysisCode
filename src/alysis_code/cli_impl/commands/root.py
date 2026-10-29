@@ -1166,7 +1166,11 @@ def _whoami_payload(cfg: AppConfig) -> dict[str, Any]:
         profile_active=bool(status.active),
         plan=(trial.plan if trial is not None else None),
         display_name=(trial.display_name if trial is not None else None),
-        billing=(trial.billing if trial is not None else None),
+        billing=(
+            account_login.billing_with_model_availability(cfg, trial.billing)
+            if trial is not None
+            else None
+        ),
         billing_status=(
             "available"
             if trial is not None and trial.billing is not None
@@ -1205,5 +1209,30 @@ def whoami(
         line = account_login.format_trial_status_line(trial)
         if line:
             console.print(line)
+        for detail_line in account_login.format_paid_plan_details(trial):
+            console.print(detail_line, markup=False, highlight=False)
     else:
         console.print("[dim](Live account usage is unavailable. Check your account website.)[/dim]")
+
+
+@app.command()
+def upgrade(
+    plan: str = typer.Argument("plan_5", help="Plan to move to (plan_5 or plan_1)."),
+) -> None:
+    """Open your Alysis account page to subscribe or change plan."""
+    import webbrowser
+
+    from ... import account_login
+
+    if plan not in ("plan_1", "plan_5"):
+        raise typer.BadParameter("Choose plan_1 or plan_5.")
+    url = f"{account_login.cloud.account_url()}?upgrade={plan}"
+    console = _console()
+    opened = False
+    try:
+        opened = bool(webbrowser.open(url))
+    except webbrowser.Error:
+        opened = False
+    console.print(
+        f"{'Opened' if opened else 'Open'} {url} to choose your plan. Payment happens on the website."
+    )

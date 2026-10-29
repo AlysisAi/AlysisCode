@@ -108,31 +108,26 @@ def _noop_browser(opened: list[str]):
     return _open
 
 
-def test_alysis_preset_offers_flash_and_luna_models_for_free_credits() -> None:
+def test_alysis_preset_requires_the_account_catalog_for_paid_models() -> None:
+    from alysis_code.profile_presets import model_options_for_preset
+
     preset = get_preset("alysis")
     assert preset is not None
     assert preset.api_key_env is None
-    assert preset.suggested_models[0] == "deepseek-flash"
-    # Catalog includes paid Sol, but offline picker rows remain the Free offering.
-    assert preset.suggested_models == (
-        "deepseek-flash",
-        "glm-5.3-flash",
-        "gpt-6-luna",
-        "claude-haiku-5-5",
-        "gpt-6.1-sol",
-    )
-    from alysis_code.profile_presets import model_options_for_preset
-
+    assert preset.validation_model == "glm-5.3-flash"
     assert [row[0] for row in model_options_for_preset(preset)] == [
-        "deepseek-flash",
         "glm-5.3-flash",
         "gpt-6-luna",
         "claude-haiku-5-5",
     ]
+    assert [
+        row[0]
+        for row in model_options_for_preset(
+            preset, available_models={"minimax-m3.1-flash", "mistral-large-4", "unknown-model"}
+        )
+    ] == ["mistral-large-4", "minimax-m3.1-flash"]
     assert set(preset.suggested_model_descriptions) == set(preset.suggested_models)
-    profile = make_profile_from_preset(preset, name="alysis")
-    assert profile.default_model == "deepseek-flash"
-    # The retired Xiaomi campaign does not silently redirect to another model.
+    assert make_profile_from_preset(preset).default_model == "glm-5.3-flash"
     from alysis_code.profile_presets import canonical_model_alias_for_preset
 
     for model in ("mimo", "mimo-v2.5-pro", "mimo-v2-flash", "mimo-v2.5"):
@@ -159,8 +154,8 @@ def test_login_migrates_retired_hosted_models(tmp_path: Path, monkeypatch, legac
         ),
     )
     result = account_login._activate_alysis_profile(cfg, email="me@example.com")
-    assert result.model == "deepseek-flash"
-    assert load_config().model == "deepseek-flash"
+    assert result.model == "glm-5.3-flash"
+    assert load_config().model == "glm-5.3-flash"
 
 
 def test_login_status_defaults_to_logged_out(tmp_path: Path, monkeypatch) -> None:
@@ -234,7 +229,7 @@ def test_login_full_flow_wires_gateway_key_as_bearer(tmp_path: Path, monkeypatch
 
         # Result reflects an active alysis profile with the Pro default model.
         assert result.profile_name == "alysis"
-        assert result.model == "deepseek-flash"
+        assert result.model == "gpt-6-luna"
         assert result.base_url.rstrip("/").endswith("/v1")
 
         # The gateway key is persisted as the alysis profile key.
@@ -243,7 +238,7 @@ def test_login_full_flow_wires_gateway_key_as_bearer(tmp_path: Path, monkeypatch
         # Reloaded config has alysis active with the default model.
         reloaded = load_config()
         assert reloaded.extra_fields["active_profile"] == "alysis"
-        assert reloaded.model == "deepseek-flash"
+        assert reloaded.model == "gpt-6-luna"
 
         # The crucial wiring: resolve_api_key returns the gateway key as the
         # Bearer for the alysis profile (so requests hit the gateway authed).
@@ -310,7 +305,7 @@ def test_login_preserves_user_chosen_model_across_relogin(tmp_path: Path, monkey
     try:
         # Fresh connect defaults to the Pro flagship-for-volume model.
         first = account_login.login(load_config(), browser_opener=_noop_browser([]), timeout_s=10)
-        assert first.model == "deepseek-flash"
+        assert first.model == "gpt-6-luna"
 
         # Simulate the user picking another model in `/config`.
         cfg = load_config()
@@ -375,9 +370,7 @@ def test_login_activates_native_execution_after_delegated_runtime(
         assert reloaded.execution.runtime is None
         assert reloaded.extra_fields["active_profile"] == "alysis"
         assert reloaded.base_url == gateway_url
-        assert reloaded.model == (
-            "deepseek-v4-pro" if existing_hosted_profile else "deepseek-flash"
-        )
+        assert reloaded.model == ("deepseek-v4-pro" if existing_hosted_profile else "gpt-6-luna")
         assert result.model == reloaded.model
         assert result.base_url == gateway_url
         assert get_profile(reloaded, byok.name) == byok

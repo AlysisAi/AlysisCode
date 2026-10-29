@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _fs_link_helpers import directory_link
 from typer.testing import CliRunner
 
 from alysis_code.cli import app as alysis_app
@@ -31,7 +32,7 @@ def _attempt_directory_swap(directory: Path, detached: Path, foreign: Path) -> b
             raise
         assert directory.is_dir() and not detached.exists()
         return False
-    directory.symlink_to(foreign, target_is_directory=True)
+    directory_link(directory, foreign)
     return True
 
 
@@ -114,7 +115,7 @@ def test_symlinked_session_directory_fails_before_subscription_setup(
     real_dir = tmp_path / "real-sessions"
     real_dir.mkdir()
     alias = tmp_path / "session-alias"
-    alias.symlink_to(real_dir, target_is_directory=True)
+    directory_link(alias, real_dir)
 
     result, reached = _invoke_managed_run(
         tmp_path=tmp_path,
@@ -131,6 +132,7 @@ def test_symlinked_session_directory_fails_before_subscription_setup(
 def test_session_file_symlink_fails_before_subscription_and_does_not_touch_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    require_symlinks: None,
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -446,6 +448,7 @@ def test_existing_log_permission_restriction_failure_stops_before_provider_setup
 def test_final_writer_seal_rejects_leaf_swap_before_provider_setup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    require_symlinks: None,
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -509,6 +512,7 @@ def test_final_writer_creation_failure_stops_before_provider_setup(
 def test_path_swap_after_preprovider_seal_uses_only_the_retained_writer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    require_symlinks: None,
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -676,7 +680,9 @@ def test_read_and_append_share_the_same_admitted_file_descriptor(tmp_path: Path)
     ]
 
 
-def test_session_leaf_swap_after_validation_fails_closed(tmp_path: Path) -> None:
+def test_session_leaf_swap_after_validation_fails_closed(
+    tmp_path: Path, require_symlinks: None
+) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     session_path = sessions_dir / "safe-session.jsonl"
