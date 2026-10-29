@@ -51,6 +51,7 @@ def _write_skill_bundle(
 
 
 def _patch_user_config_dir(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: path.parent / "isolated-home"))
     monkeypatch.setattr(
         "alysis_code.skills.paths.canonical_user_config_dir",
         lambda: path,
@@ -222,7 +223,10 @@ def test_cli_skill_install_rejects_zip_traversal(
     assert "escapes extraction root" in result.output
 
 
-def test_cli_skill_list_warns_on_invalid_project_state(tmp_path: Path) -> None:
+def test_cli_skill_list_warns_on_invalid_project_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_user_config_dir(monkeypatch, tmp_path / "usercfg")
     runner = CliRunner()
     _write_skill_bundle(
         tmp_path / ".alysis_skills" / "docs-consistency",

@@ -232,13 +232,17 @@ def test_code_exchange_verifies_signature_before_activating(signed_identity):
         {"aud": "another-client"},
         {"exp": 1},
         {"sub": ""},
-        {"nbf": time.time() + 3600},
+        {"nbf": "future"},
         {"exp": float("nan")},
         {"aud": ["oaiapp_fixture", "other"], "azp": "other"},
     ],
 )
 def test_wrong_identity_claims_are_rejected(signed_identity, patch):
     sign, key = signed_identity
+    # Full-suite execution can begin hours after collection. Construct this
+    # future claim when the test runs, so it cannot become valid while queued.
+    if patch.get("nbf") == "future":
+        patch = {**patch, "nbf": time.time() + 3600}
     with pytest.raises(ProviderAuthError, match="identity could not be verified"):
         exchange(exchange_adapter(sign(**patch), key, []))
 

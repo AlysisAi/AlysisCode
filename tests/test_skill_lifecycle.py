@@ -42,6 +42,7 @@ def _write_skill_bundle(
 
 
 def _patch_user_config_dir(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: path.parent / "isolated-home"))
     monkeypatch.setattr(
         "alysis_code.skills.paths.canonical_user_config_dir",
         lambda: path,

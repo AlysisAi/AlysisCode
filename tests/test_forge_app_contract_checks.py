@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _fs_link_helpers import directory_link
 from typer.testing import CliRunner
 
 from alysis_code import forge_host_cli as host_cli
@@ -210,7 +211,7 @@ def test_workspace_check_canonicalizes_git_scope_and_matches_app_schema(
     repo.mkdir()
     _git(repo, "init", "-q")
     alias = tmp_path / "repo-alias"
-    alias.symlink_to(repo, target_is_directory=True)
+    directory_link(alias, repo)
 
     payload, _output = _invoke_json(
         [
@@ -509,14 +510,20 @@ def test_preflight_execution_deterministically_binds_exact_contract(tmp_path: Pa
     assert payload["surfaces"][0]["network_enforced"] is False
 
 
+@pytest.mark.parametrize("case", [0, 1, 2])
 def test_preflight_blocks_missing_contract_read_only_and_contract_symlink(
     tmp_path: Path,
+    request: pytest.FixtureRequest,
+    case: int,
 ) -> None:
+    if case == 2:
+        request.getfixturevalue("require_symlinks")
     repo = _repo_with_plan(tmp_path)
     contract_path = tmp_path / "verification-contract.json"
     contract = _contract_for_current_plan(repo, contract_path)
     contract_alias = tmp_path / "contract-alias.json"
-    contract_alias.symlink_to(contract_path)
+    if case == 2:
+        contract_alias.symlink_to(contract_path)
 
     cases = [
         [
@@ -570,17 +577,19 @@ def test_preflight_blocks_missing_contract_read_only_and_contract_symlink(
         ],
     ]
 
-    results = [CliRunner().invoke(app, args, env=_env(tmp_path)) for args in cases]
-
-    assert [result.exit_code for result in results] == [2, 2, 2]
-    payloads = [json.loads(result.stdout) for result in results]
-    assert all(set(payload) == PREFLIGHT_ASSESSMENT_KEYS for payload in payloads)
-    assert all(payload["ok"] is False for payload in payloads)
-    assert all(payload["reason_code"] == "preflight_blocked" for payload in payloads)
-    assert all(payload["preflight_fingerprint"] is None for payload in payloads)
-    assert "requires --verification-contract" in payloads[0]["message"]
-    assert "requires workspace-write or full-access" in payloads[1]["message"]
-    assert "non-symlink" in payloads[2]["message"]
+    result = CliRunner().invoke(app, cases[case], env=_env(tmp_path))
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert set(payload) == PREFLIGHT_ASSESSMENT_KEYS
+    assert payload["ok"] is False
+    assert payload["reason_code"] == "preflight_blocked"
+    assert payload["preflight_fingerprint"] is None
+    expected = [
+        "requires --verification-contract",
+        "requires workspace-write or full-access",
+        "non-symlink",
+    ]
+    assert expected[case] in payload["message"]
 
 
 def test_app_contract_verifier_executes_the_exact_typed_command_and_retains_evidence(
@@ -588,9 +597,15 @@ def test_app_contract_verifier_executes_the_exact_typed_command_and_retains_evid
 ) -> None:
     repo = _repo_with_plan(tmp_path)
     contract_path = tmp_path / "verification-contract.json"
+    command = "python check_greeting.py"
+    (repo / "check_greeting.py").write_text(
+        "from pathlib import Path\nassert Path('hello.txt').stat().st_size > 0\n",
+        encoding="utf-8",
+    )
     contract = _contract_for_current_plan(
         repo,
         contract_path,
+        command_text=command,
         include_integration=True,
     )
     (repo / "hello.txt").write_text("hello\n", encoding="utf-8")
@@ -613,7 +628,7 @@ def test_app_contract_verifier_executes_the_exact_typed_command_and_retains_evid
     assert task_result.all_passed is True
     assert integration_result.all_passed is True
     assert task_result.command_evidence[0].result is not None
-    assert task_result.command_evidence[0].result.commands == ["test -s hello.txt"]
+    assert task_result.command_evidence[0].result.commands == [command]
     assert task_result.artifact_path.is_file()
     assert integration_result.artifact_path.is_file()
 
