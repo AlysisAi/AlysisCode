@@ -196,9 +196,13 @@ def _account_int(value: object, *, allow_none: bool = False) -> int | None | boo
     """A finite whole number within JSON-safe range; False means invalid."""
     if value is None and allow_none:
         return None
-    if type(value) not in (int, float) or not math.isfinite(value):  # type: ignore[arg-type]
+    if type(value) not in (int, float):
         return False
-    if value != int(value) or abs(value) > 2**53 - 1:  # type: ignore[arg-type]
+    # Bound integers before float conversion: JSON can contain arbitrarily large
+    # ints, and math.isfinite(10**400) raises rather than rejecting the section.
+    if not -(2**53 - 1) <= value <= 2**53 - 1:  # type: ignore[operator]
+        return False
+    if not math.isfinite(value) or value != int(value):  # type: ignore[arg-type]
         return False
     return int(value)  # type: ignore[arg-type]
 
@@ -280,7 +284,7 @@ def _account_paid(value: object) -> dict[str, Any] | None:
                 return None
             parsed[key] = number
         cap = _account_int(row.get("max_input_tokens"), allow_none=True)
-        if cap is False:
+        if cap is False or (cap is not None and cap < 0):
             return None
         result["models"].append(
             {

@@ -218,3 +218,40 @@ def test_app_catalog_intersects_authenticated_routes_and_fails_closed_without_lo
             if old.get("available") is False
             else "Retry" in model["availability_reason"]
         )
+
+
+@pytest.mark.parametrize(
+    "value", [10**400, -(10**400), True, False, float("nan"), float("inf"), -float("inf"), 1.5]
+)
+def test_invalid_paid_numbers_preserve_the_base_billing_balance(value):
+    raw = json.loads((FIXTURES / "account-status-paid.json").read_text(encoding="utf-8"))["billing"]
+    balance = raw["balance_microusd"]
+    raw["paid"]["monthly_credits_microusd"] = value
+    parsed = account_login._account_billing(raw)
+    assert parsed is not None
+    assert parsed["balance_microusd"] == balance
+    assert "paid" not in parsed
+    assert account_login._account_int(value) is False
+
+
+@pytest.mark.parametrize("value", [0, 2**53 - 1, -(2**53 - 1), 42.0])
+def test_json_safe_whole_numbers_stay_valid(value):
+    result = account_login._account_int(value)
+    assert type(result) is int
+    assert result == value
+
+
+@pytest.mark.parametrize("cap", [-1, -(10**400), True, 1.5])
+def test_invalid_model_input_cap_drops_paid_details_without_hiding_balance(cap):
+    raw = json.loads((FIXTURES / "account-status-paid.json").read_text(encoding="utf-8"))["billing"]
+    raw["paid"]["models"][0]["max_input_tokens"] = cap
+    parsed = account_login._account_billing(raw)
+    assert parsed["balance_microusd"] == raw["balance_microusd"]
+    assert "paid" not in parsed
+
+
+@pytest.mark.parametrize("cap", [None, 0, 100000])
+def test_nonnegative_optional_model_input_caps_match_the_app(cap):
+    raw = json.loads((FIXTURES / "account-status-paid.json").read_text(encoding="utf-8"))["billing"]
+    raw["paid"]["models"][0]["max_input_tokens"] = cap
+    assert account_login._account_billing(raw)["paid"]["models"][0]["max_input_tokens"] == cap
