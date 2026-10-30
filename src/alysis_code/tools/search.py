@@ -13,11 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from ..command_text import command_text
-
-
-class SearchError(RuntimeError):
-    pass
-
+from ..project_folders import containing_root
+from .errors import SearchError
 
 _RG_NO_CONFIG_SUPPORTED: bool | None = None
 _SEARCH_RG_MAX_MATCHES_PER_FILE = 8
@@ -166,7 +163,7 @@ def _read_context_lines(
 ) -> list[str] | None:
     try:
         resolved = path.resolve()
-        resolved.relative_to(root)
+        containing_root(root, resolved)
     except (OSError, ValueError):
         return None
     key = os.fspath(resolved)
@@ -275,7 +272,7 @@ def search_rg(
     root_abs = root.resolve()
     base = (root_abs / root_path).resolve()
     try:
-        base.relative_to(root_abs)
+        containing_root(root_abs, base)
     except ValueError as e:
         raise SearchError(f"root_path escapes root: {root_path}") from e
     if pattern == "":
@@ -362,7 +359,9 @@ def search_rg(
         return "appended"
 
     if _rg_available():
-        cmd = ["rg"]
+        # A bounded search must not open ignore/Git files above its search scope.
+        # Those parents may be outside the OS sandbox's approved workspace.
+        cmd = ["rg", "--no-ignore-parent", "--no-require-git"]
         if _rg_supports_no_config():
             cmd.append("--no-config")
         if literal:

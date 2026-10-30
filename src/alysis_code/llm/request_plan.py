@@ -34,6 +34,85 @@ def _wire_fingerprint(value: Any) -> tuple[str, int]:
     return hashlib.sha256(encoded).hexdigest(), len(encoded)
 
 
+def _wire_request_shape(payload: Mapping[str, Any], history: Any) -> dict[str, Any]:
+    """Describe the adapted request without retaining content, names or URLs."""
+    images = 0
+    media = 0
+    text = 0
+    # Walk only provider content containers, never JSON embedded inside tool text.
+    pending = list(history) if isinstance(history, list) else []
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type") if isinstance(item.get("type"), str) else None
+        if kind in {"input_image", "image_url", "image"}:
+            images += 1
+            media += 1
+        elif kind in {"input_audio", "audio", "input_file", "file", "document", "video"}:
+            media += 1
+        elif kind in {"text", "input_text", "output_text"}:
+            text += 1
+        for key in ("content", "output"):
+            content = item.get(key)
+            if isinstance(content, list):
+                pending.extend(content)
+            elif isinstance(content, str) and kind not in {"text", "input_text", "output_text"}:
+                text += 1
+    tool_count = 0
+    pending = list(payload.get("tools") or [])
+    while pending:
+        tool = pending.pop()
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "namespace" and isinstance(tool.get("tools"), list):
+            pending.extend(tool["tools"])
+        else:
+            tool_count += 1
+    choice = payload.get("tool_choice")
+    if isinstance(choice, dict):
+        choice = choice.get("type")
+    if choice is None:
+        choice = "omitted"
+    if not isinstance(choice, str) or choice not in {
+        "auto",
+        "required",
+        "none",
+        "function",
+        "custom",
+        "tool",
+        "any",
+        "omitted",
+    }:
+        choice = "other"
+    reasoning = payload.get("reasoning")
+    effort = (
+        reasoning.get("effort") if isinstance(reasoning, dict) else payload.get("reasoning_effort")
+    )
+    if effort is None:
+        effort = "omitted"
+    if not isinstance(effort, str) or effort not in {
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+        "omitted",
+    }:
+        effort = "other"
+    return {
+        "wire_image_parts": images,
+        "wire_media_parts": media,
+        "wire_text_parts": text,
+        "wire_tool_count": tool_count,
+        "wire_tool_choice": choice,
+        "wire_reasoning_effort": effort,
+    }
+
+
 class WireRequestDiagnostics:
     """Content-free comparison of consecutive prepared requests on one client.
 
@@ -75,6 +154,7 @@ class WireRequestDiagnostics:
                 "wire_instructions_bytes": instructions[1],
                 "wire_tools_sha256": tools[0],
                 "wire_tools_bytes": tools[1],
+                **_wire_request_shape(payload, history),
             }
             if previous is not None:
                 old_items, old_instructions, old_tools = previous

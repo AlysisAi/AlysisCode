@@ -232,6 +232,52 @@ def test_concurrent_same_process_trust_updates_do_not_lose_entries(
     assert expected_keys.issubset(set(final_state.trusted_tools))
 
 
+def test_trust_discovery_does_not_import_provider_configuration(tmp_path: Path) -> None:
+    code = """
+import importlib.abc
+import sys
+
+class RejectProviderImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {'alysis_code.config', 'httpx', 'httpcore', 'pydantic'}:
+            raise AssertionError(f'trust discovery imported unrelated backend: {fullname}')
+
+guard = RejectProviderImports()
+sys.meta_path.insert(0, guard)
+from alysis_code.custom_tools import discovery, trust
+from alysis_code.tools.registry import iter_builtin_tool_metadata
+from alysis_code.runtime_kind import ConfigError, normalize_runtime_kind
+assert tuple(iter_builtin_tool_metadata())
+try:
+    normalize_runtime_kind('invalid-runtime')
+except ConfigError as exc:
+    assert 'Invalid runtime kind' in str(exc)
+else:
+    raise AssertionError('invalid runtime accepted')
+sys.meta_path.remove(guard)
+
+# Existing import paths and exception handlers must retain the same class.
+from alysis_code.config import ConfigError as PublicConfigError
+import pickle
+assert PublicConfigError is ConfigError
+assert type(pickle.loads(pickle.dumps(ConfigError('synthetic')))) is PublicConfigError
+"""
+    repo_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.fspath(repo_root / "src"),
+            "ALYSIS_CONFIG_DIR": os.fspath(tmp_path / "config"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_concurrent_cross_process_trust_updates_do_not_lose_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

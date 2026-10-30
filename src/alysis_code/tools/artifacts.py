@@ -85,11 +85,9 @@ def session_artifact_read(
             "available_handles": references,
             "next_handle": references[-1]["handle"] if len(references) == 100 else None,
         }
-    if handle and locator:
-        raise SessionArtifactReadError("Supply either handle or locator, not both.")
     if handle:
         try:
-            locator = artifact_layout.resolve_handle(handle)
+            handle_locator = artifact_layout.resolve_handle(handle)
         except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
             raise SessionArtifactReadError(
                 "Artifact handle is not available in the current session.",
@@ -97,6 +95,13 @@ def session_artifact_read(
                 guidance="Select an exact available handle, or use list_handles=true to discover references.",
                 available_handles=artifact_layout.available_handles(),
             ) from exc
+        if locator and locator != handle_locator:
+            raise SessionArtifactReadError(
+                "Artifact handle and locator identify different results.",
+                error_code="session_artifact_reference_mismatch",
+                guidance="Use the matching reference returned by the producing tool.",
+            )
+        locator = handle_locator
     try:
         artifact_path = artifact_layout.resolve_locator(locator)
     except (OSError, RuntimeError, ValueError) as exc:

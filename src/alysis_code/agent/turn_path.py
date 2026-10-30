@@ -111,12 +111,14 @@ def zero_coverage_advisory_enabled(cfg: Any | None) -> bool:
 
     Appended as a visible advisory at finalization (append-only, never
     blocking). ``ALYSIS_ZERO_COVERAGE_ADVISORY`` (on/off) wins over config;
-    default on.
+    default off. This name-reference heuristic is not executed coverage and can
+    mislabel temporary work-product scripts. Required checks remain independent.
     """
     return _flag_enabled(
         "ALYSIS_ZERO_COVERAGE_ADVISORY",
         cfg,
         "zero_coverage_advisory_enabled",
+        default=False,
     )
 
 

@@ -401,7 +401,7 @@ class AlysisHarborAgent(BaseInstalledAgent):
 
 def _copy_source_snapshot(snapshot: Path) -> None:
     snapshot.mkdir(parents=True, exist_ok=True)
-    for filename in ("pyproject.toml", "README.md", "LICENSE", "NOTICE"):
+    for filename in ("pyproject.toml", "README.md", "LICENSE", "NOTICE", "hatch_build.py"):
         source = _REPO_ROOT / filename
         if source.exists():
             shutil.copy2(source, snapshot / filename)

@@ -815,6 +815,9 @@ def test_production_factory_runs_real_executor_pytest_git_and_sealed_host_lifecy
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Legacy CLI tests copy their doubles into this module. Restore the
+    # canonical execution primitives before exercising the real host factory.
+    forge_impl._sync_cli_globals(cli_mod)
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
     monkeypatch.setenv("ALYSIS_REMOTE_SYNC", "off")
@@ -898,6 +901,8 @@ def test_production_factory_runs_real_executor_pytest_git_and_sealed_host_lifecy
     # The wrapper delegates to the real loop; it observes, but never fabricates,
     # provider calls, tool effects, usage, verification, or terminal facts.
     monkeypatch.setattr(forge_impl, "run_agent", observed_agent)
+    # Lazy executor setup copies the entrypoint from the canonical CLI module.
+    monkeypatch.setattr(cli_mod, "run_agent", observed_agent)
     dependency_errors: list[str] = []
 
     def dependency_factory(request, bindings):  # type: ignore[no-untyped-def]

@@ -1,0 +1,766 @@
+{
+ "source": "Operation 8af1961a-4e09-4f6c-9aa7-00274e6c53a0, chat_20261012t191256z_7b5b3e18 (12 Oct 2026). Inventory is the computer_discover tool content delivered to the model (107 targets: 7 running, 100 installed; TextEdit absent), with exact target IDs, order and availability. Third-party app names are replaced with neutral labels; Apple app names are unchanged. computer_start_calls are the three captured model arguments, verbatim.",
+ "inventory": {
+  "version": 1,
+  "targets": [
+   {
+    "target_id": "b76e039d-4a0f-4be9-bf10-c76407f97372",
+    "name": "Alysis Code",
+    "route": "native"
+   },
+   {
+    "target_id": "4833b0a6-d1c7-4193-bb2d-f74edddc4c64",
+    "name": "Calculator",
+    "route": "native"
+   },
+   {
+    "target_id": "d5b3b7aa-4c96-45c8-86a3-a578744a8683",
+    "name": "Running App 1",
+    "route": "native"
+   },
+   {
+    "target_id": "22671d10-179b-4315-97d0-333ca8b69c48",
+    "name": "Running App 2",
+    "route": "native"
+   },
+   {
+    "target_id": "b29132c2-573e-496a-84eb-adf56a0005cf",
+    "name": "Finder",
+    "route": "native"
+   },
+   {
+    "target_id": "199ea371-e9d1-4b13-abba-3d0848f251c2",
+    "name": "Messages",
+    "route": "native"
+   },
+   {
+    "target_id": "a1a180e4-d5bf-4641-a3df-28fa09b7f2bc",
+    "name": "Terminal",
+    "route": "native"
+   },
+   {
+    "target_id": "ae02a277-e3c3-4d7a-aaa2-741555f7b2dd",
+    "name": "Installed App 1",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "2b0378a1-e8b8-485a-8e7a-abd214e00126",
+    "name": "Installed App 2",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "54ed8dcb-53e7-4819-8d22-36efad36c67b",
+    "name": "Installed App 3",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "21adddef-b977-4603-8129-49d7c8be9f9c",
+    "name": "Installed App 4",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "dd7df7dd-3fc8-4c43-a550-9dcd3498da0a",
+    "name": "Installed App 5",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "0fb8e297-cac5-4bc6-a6f5-8c3f74ab4a6b",
+    "name": "Installed App 6",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "d934a857-7cc9-4b23-b67f-f73d51d0ff0f",
+    "name": "Installed App 7",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "2ba74fc8-cb3e-4c56-aef0-57a92408338f",
+    "name": "Installed App 8",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "b15b7cac-5de3-4755-9d8d-4c2acaa24e6a",
+    "name": "Xcode",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "b1b0b3ae-5962-404d-88c1-7213326923a3",
+    "name": "App Store",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "525b16f6-0ed2-41d5-951b-cc2c5b7be0a6",
+    "name": "Automator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "44f07a6a-562c-4315-9f34-a91e77064a74",
+    "name": "Books",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "b0e79917-ef8c-4f27-919f-02a728110ba6",
+    "name": "Calendar",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "f7d455fb-15b0-4c00-842a-bc5980d76e94",
+    "name": "Chess",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "a4ee7f13-b611-486c-8699-6588c1b6ee93",
+    "name": "Clock",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00ec8387-bb30-4fa4-8496-fa3fc96439ec",
+    "name": "Contacts",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "c0a1dda4-230b-4cdc-a103-67c3107c8bc6",
+    "name": "Dictionary",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "f25e0794-c4a0-475a-b8e4-eaaa1f7e5bdb",
+    "name": "FaceTime",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "4ae329e1-1420-41d5-8efd-09c04117a07f",
+    "name": "Find My",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "5ea39548-8148-4467-b55f-a70bf9cc0971",
+    "name": "Font Book",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "fe195fae-300f-46ec-ae90-963cb774938c",
+    "name": "Freeform",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "b4256dbd-4762-4a0a-942b-1a6339286d3a",
+    "name": "Games",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "10f80cec-ef29-437f-8fd6-11679933cf99",
+    "name": "Home",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "0751ce37-d229-4589-890a-383e0abe7cc1",
+    "name": "Image Playground",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "0373f6fb-ec6f-44b3-83e1-4ad939b76ffa",
+    "name": "Journal",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "e48cd104-ba50-4e2e-8271-1bbaf598499c",
+    "name": "Mail",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "5d2dd204-0c3a-425a-927f-aa14d537d697",
+    "name": "Maps",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "56b2f53c-b986-4248-a1d0-9fd35d1bcda6",
+    "name": "Mission Control",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "a7bd5407-a170-4a8c-860d-4c7357619395",
+    "name": "Music",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "abfe3a08-573b-431b-a9f2-49f1de918a29",
+    "name": "Notes",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "4c798562-5ae0-4a87-a912-592fbe742616",
+    "name": "Phone",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "1a65d822-f28b-4761-a2fa-a954b262e519",
+    "name": "Photo Booth",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "1ca0305f-729c-441a-9dd2-387b2cfe073d",
+    "name": "Photos",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "98c8bba6-7a47-42e6-9325-64af819ab9f6",
+    "name": "Podcasts",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "d9ef6d05-d608-46e5-a57c-046922a89bfb",
+    "name": "QuickTime Player",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "369baa8a-97c7-4f15-8049-03b697b613ed",
+    "name": "Reminders",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "496655b3-f49c-43d7-b064-73eb8254f7ea",
+    "name": "Shortcuts",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "7903f93d-7930-4360-ac42-1402ca83fc5a",
+    "name": "Stickies",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "5dd70172-5e58-4923-82ad-d4811de6daeb",
+    "name": "Stocks",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "3a623df0-fe15-4422-878a-6c893493503e",
+    "name": "TV",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "0a592586-8338-4163-ac10-dec5b3d4635e",
+    "name": "Time Machine",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "2f1e89af-6a25-49a8-97e4-ac182d606c9b",
+    "name": "Tips",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "62342ca2-b2a2-42bd-adfa-93f3722de56e",
+    "name": "Activity Monitor",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "9e8af59a-7c25-4e98-9331-92484b776c37",
+    "name": "AirPort Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "d1e41e0d-13fc-4d06-af61-22bbc471c3f0",
+    "name": "Audio MIDI Setup",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "2866be29-d2ae-4c3d-ac0c-e15edaccd5b3",
+    "name": "Bluetooth File Exchange",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "95ace55a-6621-4594-a8f0-0554111bf53e",
+    "name": "ColorSync Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "aa9afee6-c95e-4c73-9e3c-7b614fbbc0bf",
+    "name": "Console",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "34132f6a-efb8-4d84-80b1-32671ea524de",
+    "name": "Digital Color Meter",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "a153241f-78f0-4cb6-930c-6e96771e5273",
+    "name": "Disk Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "bd6937af-4d81-41eb-a8b0-d87c7a4365e8",
+    "name": "Grapher",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "22446d6b-40e8-4bc3-8d35-742adf59315d",
+    "name": "Magnifier",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "39667314-b67f-46f8-810f-a38a6c035dcd",
+    "name": "Migration Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "fad825c7-c140-4545-b0fe-b11a7bc11914",
+    "name": "Print Center",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "9b9bc41f-88ba-48a7-bec9-02dcfb4664d3",
+    "name": "Screen Sharing",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "8bc5c069-ade9-4ddb-ad29-8b77eb1187db",
+    "name": "Script Editor",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "19a7fcb2-cccd-409c-8483-ccc6498614c5",
+    "name": "VoiceOver Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "9aeb2bf9-65fb-40df-9dc9-ee687ab70306",
+    "name": "Voice Memos",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "f9c9486d-1c11-48ea-b134-a0c4e2eddbcc",
+    "name": "Weather",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "c16523bb-320f-48fe-96a3-62d60efce47f",
+    "name": "iPhone Mirroring",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "4b6547ce-c12b-4c9d-80b3-9f71ae6124c9",
+    "name": "Display Calibrator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "50318e92-5565-45b6-804d-5c5bc41b5a92",
+    "name": "AVB Configuration",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "df15fbd0-154e-4916-bd2e-e227701a5e96",
+    "name": "Accessibility Reader",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "7d793edd-5177-479a-8b52-7de6196f53bc",
+    "name": "Add Printer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "cebac46a-1b95-46da-86ff-cf00ae198908",
+    "name": "Apple Diagnostics",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "607934e2-3847-445c-909f-06a79ee6d0d6",
+    "name": "Archive Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "2fbcfc73-53d0-42b6-a9ec-d8ffe559b1da",
+    "name": "DVD Player",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "8ef14069-d3aa-4796-ad6c-a35bb0898ec9",
+    "name": "Desk View",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "8ca70f29-3a51-42a6-9973-d51f72f1f00f",
+    "name": "Directory Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "a8028d06-d695-462c-9058-a1f80dd604ac",
+    "name": "Expansion Slot Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "7823891d-e931-4a3e-b276-ff8b7922c69f",
+    "name": "Feedback Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "3422fb7a-1c07-4e33-b142-832ae0133f79",
+    "name": "Folder Actions Setup",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "0155dc44-848d-40c5-acc2-1cb0ed2b3c91",
+    "name": "Ticket Viewer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "fc51b3de-aede-427a-be56-47e61b48d0ad",
+    "name": "Wireless Diagnostics",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "f6400216-a600-42cd-b793-199d5c057827",
+    "name": "AuthorizationPromptService",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "1837998f-16bf-4824-b2e4-c00df970e8d7",
+    "name": "Batteries",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "b0466d62-5ad3-4f43-8405-b344a4501ffe",
+    "name": "Bluetooth Setup Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "4dcdf21c-b417-4abb-a1ee-ab6e7687626d",
+    "name": "BluetoothUIServer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "866709cb-a1af-4416-8080-2afa0324fd74",
+    "name": "Captive Network Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "7ad3da98-b146-4919-a08c-f4c1f829b081",
+    "name": "Certificate Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "915961ed-3829-4ed3-9390-cd4eb4cb94ad",
+    "name": "Database Events",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "e68e6d5d-50ea-41ee-8607-2254f6f31c1f",
+    "name": "Enhanced Logging",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "98eb539b-d973-43bd-b8d3-436398adabd7",
+    "name": "Erase Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "35ac8161-9667-4909-8fa8-cb806f00bca2",
+    "name": "FamilyExtensionHost",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "3c9a04e1-98b8-4f1f-b22c-3f49a1e0d6a1",
+    "name": "Image Events",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "117bb209-0d7a-43d3-91e4-47ceddacc18d",
+    "name": "Installer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "a296acb4-9eba-4235-bd0f-cde23e61b9dd",
+    "name": "Language Chooser",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "9b8361d9-dd4e-45ee-8269-7f899ebd36bf",
+    "name": "Medical Imaging Calibrator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "c71cb1be-f3a6-4bae-b753-a917fb818f29",
+    "name": "NetAuthAgent",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "85f973be-a0d1-48f2-8d5f-0fc4c19ff557",
+    "name": "OBEXAgent",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "1eadc623-4071-4dfd-bb84-6ed727bf2c5a",
+    "name": "Picture in Picture",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "f6995738-41f3-4189-9b3f-10b7a44ab041",
+    "name": "Paired Devices",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "b927f4c9-16fb-4f90-9d76-333310c225f5",
+    "name": "PassViewer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "df68e2ed-0c4c-4591-a4f4-780aa310b392",
+    "name": "Family Request",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "85288195-ff8c-48e9-9371-9c4ff66e233f",
+    "name": "Pro Display Calibrator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "7bc280a4-859a-45ff-b8a0-414515948adb",
+    "name": "ARDAgent",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "56b85019-127d-4af4-981f-6c6a0c58f32e",
+    "name": "Remote Desktop Message",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "9643568c-663f-4b58-b113-2da2961509ba",
+    "name": "Rosetta 2 Updater",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "b4ed7c42-277e-4898-bf71-5182cd8e1a50",
+    "name": "Screen Time",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "9bee96a8-d4f3-440f-8a31-b9d1c90343d2",
+    "name": "SettingsPlaceholder",
+    "route": "native",
+    "availability": "installed"
+   }
+  ]
+ },
+ "computer_start_calls": [
+  {
+   "target_ids": [
+    "4833b0a6-d1c7-4193-bb2d-f74edddc4c64"
+   ],
+   "allowed_actions": [
+    "activate_application"
+   ],
+   "goal": "Open Calculator and calculate 12345 × 6789; then open TextEdit, create a new document with the calculation and result, save it as Calculation.txt in a newly created Desktop folder named Alysis Test October 12, close and reopen the document, and confirm its saved contents.",
+   "constraints": [
+    "Use Calculator for the requested calculation.",
+    "Do not overwrite or alter any existing files; if the destination folder or file already exists, stop before replacing it.",
+    "Use TextEdit and save as a plain text .txt file.",
+    "Close and reopen the saved document and verify its displayed contents."
+   ],
+   "operates_apps": true,
+   "app_steps": [
+    {
+     "target_id": "4833b0a6-d1c7-4193-bb2d-f74edddc4c64",
+     "actions": [
+      "activate_application"
+     ]
+    }
+   ]
+  },
+  {
+   "target_ids": [
+    "4833b0a6-d1c7-4193-bbb2-df43f0c4c64"
+   ],
+   "allowed_actions": [
+    "activate_application",
+    "key",
+    "press",
+    "type"
+   ],
+   "goal": "Open Calculator and calculate 12345 × 6789. Then open TextEdit, create a new document containing the calculation and result, save it as Calculation.txt inside a newly created Desktop folder named Alysis Test October 12, close and reopen the document, and confirm the saved contents.",
+   "constraints": [
+    "Do not overwrite or alter any existing files. If the destination folder or file already exists, stop without replacing it.",
+    "Use Calculator for the calculation and TextEdit for the document.",
+    "Create the requested Desktop folder and save a plain-text .txt document there.",
+    "Close and reopen the saved document before confirming its contents."
+   ],
+   "operates_apps": true,
+   "app_steps": [
+    {
+     "target_id": "4833b0a6-d1c7-4193-bb2d-df43f0c4c64",
+     "actions": [
+      "activate_application",
+      "key"
+     ]
+    },
+    {
+     "target_id": "199ea371-e9d1-4b13-abba-3d0848f251c2",
+     "actions": [
+      "activate_application",
+      "press",
+      "key",
+      "type"
+     ]
+    },
+    {
+     "target_id": "b29132c2-573e-496a-84eb-adf56a0005cf",
+     "actions": [
+      "activate_application",
+      "press",
+      "key",
+      "type"
+     ]
+    }
+   ]
+  },
+  {
+   "target_ids": [
+    "4833b0a6-d1c7-4193-bb2d-f74edddc4c64",
+    "199ea371-e9d1-4b13-abba-3d0848f251c2",
+    "b29132c2-573e-496a-84eb-adf56a0005cf"
+   ],
+   "allowed_actions": [
+    "activate_application",
+    "press",
+    "focus",
+    "set_value",
+    "click",
+    "type",
+    "key"
+   ],
+   "goal": "Open Calculator and calculate 12345 × 6789. Then open TextEdit, create a new document containing the calculation and result, save it as Calculation.txt inside a newly created Desktop folder named Alysis Test October 12, close and reopen the document, and confirm the saved contents.",
+   "constraints": [
+    "Do not overwrite or alter any existing files. If the destination folder or file already exists, stop without replacing it.",
+    "Use Calculator for the calculation and TextEdit for the document.",
+    "Create the requested Desktop folder and save a plain-text .txt document there.",
+    "Close and reopen the saved document before confirming its contents."
+   ],
+   "operates_apps": true,
+   "app_steps": [
+    {
+     "target_id": "4833b0a6-d1c7-4193-bb2d-f74edddc4c64",
+     "actions": [
+      "activate_application",
+      "key"
+     ]
+    },
+    {
+     "target_id": "199ea371-e9d1-4b13-abba-3d0848f251c2",
+     "actions": [
+      "activate_application",
+      "press",
+      "key",
+      "type"
+     ]
+    },
+    {
+     "target_id": "b29132c2-573e-496a-84eb-adf56a0005cf",
+     "actions": [
+      "activate_application",
+      "press",
+      "key",
+      "type"
+     ]
+    }
+   ]
+  }
+ ]
+}

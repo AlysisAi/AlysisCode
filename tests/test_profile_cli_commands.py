@@ -216,9 +216,20 @@ def test_profile_select_model_rejects_hosted_profile_without_key_before_mutation
     assert cfg.model_dump() == original.model_dump()
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://localhost:11434/v1",
+        "http://127.42.0.9:9137/v1",
+        "http://[::1]:8123/v1",
+        "http://[::ffff:127.42.0.9]:8123/v1",
+        "https://model.localhost.:9443/v1",
+    ],
+)
 def test_profile_select_model_allows_keyless_local_profile_and_resets_subscription_route(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    endpoint: str,
 ) -> None:
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
     monkeypatch.setenv("ALYSIS_API_KEY", "")
@@ -241,7 +252,7 @@ def test_profile_select_model_allows_keyless_local_profile_and_resets_subscripti
         cfg,
         ProfileSpec(
             name="ollama",
-            base_url="http://localhost:11434/v1",
+            base_url=endpoint,
             default_model="old-local-model",
         ),
     )
@@ -494,12 +505,32 @@ def test_profile_presets_json_matches_desktop_contract_without_secrets(tmp_path:
         "requires_api_key",
         "models",
         "default_model",
+        "connection_description",
+        "setup_warning",
     }
     assert openai["protocol"] == "openai_responses"
     assert openai["kind"] == "native"
     assert openai["requires_api_key"] is True
+    assert isinstance(openai["connection_description"], str)
+    assert openai["setup_warning"] is None or isinstance(openai["setup_warning"], str)
     assert openai["default_model"] == openai["models"][0]["id"]
-    assert all(set(model) == {"id", "description"} for model in openai["models"])
+    assert all(
+        set(model)
+        == {
+            "id",
+            "label",
+            "description",
+            "protocol",
+            "context_window_tokens",
+            "max_output_tokens",
+            "supports_vision",
+            "supports_reasoning",
+            "input_modalities",
+            "reasoning_efforts",
+            "default_reasoning_effort",
+        }
+        for model in openai["models"]
+    )
     assert "sk-" not in result.stdout
 
 
@@ -620,6 +651,19 @@ def test_profile_convert_to_compatibility_updates_gemini_native_profile(
     assert profile["web_search_adapter"] == "gemini_grounding"
 
 
+def _record_key_checks(monkeypatch: pytest.MonkeyPatch, status: str, message: str) -> list[dict]:
+    from alysis_code.cli_impl import setup_wizard
+
+    calls: list[dict] = []
+
+    def fake_validate(**kwargs):
+        calls.append(kwargs)
+        return setup_wizard._ApiKeyValidationResult(status=status, message=message)
+
+    monkeypatch.setattr(setup_wizard, "_validate_api_key", fake_validate)
+    return calls
+
+
 def test_profile_check_rejects_a_key_the_provider_refuses_and_saves_nothing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -712,16 +756,3 @@ def test_profile_check_refuses_an_unknown_name(
     assert json.loads(result.output) == {"error": "Unknown profile or preset: nope", "ok": False}
     assert calls == []
     assert build_capabilities_payload()["features"]["profile.check-json"] is True
-
-
-def _record_key_checks(monkeypatch: pytest.MonkeyPatch, status: str, message: str) -> list[dict]:
-    from alysis_code.cli_impl import setup_wizard
-
-    calls: list[dict] = []
-
-    def fake_validate(**kwargs):
-        calls.append(kwargs)
-        return setup_wizard._ApiKeyValidationResult(status=status, message=message)
-
-    monkeypatch.setattr(setup_wizard, "_validate_api_key", fake_validate)
-    return calls

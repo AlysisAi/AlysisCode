@@ -13,20 +13,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from alysis_code.agent.turn import core
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse
 from alysis_code.session_store import read_session_events
 
-# An explicit out-of-workspace output that the model refuses without tools.
-# The earlier "ls ... and paste the output" fixture only created a hard artifact
-# obligation because a later output noun incorrectly captured the earlier path.
-# Keep exercising the disposition gate with a real missing-output obligation.
-INSTRUCTION = "write a report to /home/nowhere/report.txt and paste the output"
+# A repository edit needs input that the scripted assistant cannot access.
+# The missing edit gives the completion gate something concrete to check.
+INSTRUCTION = "Change checkUrl.js to use the timeout from /home/nowhere/timeout.txt."
 
 ANSWER = (
-    "I can't write /home/nowhere/report.txt: it is outside this workspace. "
-    "Bind it as a workspace first and I'll inspect it."
+    "I can't read /home/nowhere/timeout.txt: it is outside this workspace. "
+    "Share the timeout here so I can update checkUrl.js."
 )
 RESTATEMENT = (
     "Workspace unchanged. Current implementation checks URLs sequentially. npm test passes."
@@ -34,6 +35,21 @@ RESTATEMENT = (
 
 # Must match the system prompt of the zero-activity disposition check.
 DISPOSITION_MARKER = "classify one assistant reply"
+
+
+@pytest.fixture(autouse=True)
+def unresolved_change_requirement(monkeypatch):
+    # Isolate reply disposition from acceptance inference, which has its own
+    # tests. Start with an unresolved edit; a read-only downgrade clears it.
+    original = core._completion_gate_problems
+
+    def problems(**kwargs):
+        result = original(**kwargs)
+        if kwargs.get("turn_intent") == "execute" and "no_material_edits" not in result:
+            result.append("no_material_edits")
+        return result
+
+    monkeypatch.setattr(core, "_completion_gate_problems", problems)
 
 
 class _ZeroActivityClient:

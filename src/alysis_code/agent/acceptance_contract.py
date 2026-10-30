@@ -20,6 +20,7 @@ from ..verification_command_analysis import (
     analyze_verification_command,
 )
 from ..verify_gate import assess_verification_command_execution
+from .artifact_output_observation import ArtifactOutputObserver
 from .turn_contract import (
     MAX_EXPECTATIONS,
     MIN_EXPECTED_OUTPUT_LITERAL_LEN,
@@ -83,6 +84,7 @@ class AcceptancePathRole(StrEnum):
     PRESERVATION_TARGET = "preservation_target"
     VERIFICATION_CHECKER = "verification_checker"
     UNKNOWN_REFERENCE = "unknown_reference"
+    LOCATION_CONTEXT = "location_context"
 
 
 class AcceptanceCriterionConfidence(StrEnum):
@@ -260,6 +262,9 @@ class AcceptanceContract:
     snapshot: AcceptanceWorkspaceSnapshot = field(default_factory=AcceptanceWorkspaceSnapshot)
     allowed_output_paths: set[str] = field(default_factory=set)
     path_refs: list[AcceptancePathRef] = field(default_factory=list)
+    # Current-host file-tool observations only; never serialized as authority or
+    # restored from transcripts. Values bind a requested spelling to its target.
+    external_path_observations: dict[str, str] = field(default_factory=dict, repr=False)
     # Turn-contract v2 (step 4): concrete, checkable expectations extracted from the
     # task text (expected-output literals, named loci, named behaviors). Empty is
     # valid; the completion gate demands a disposition per expectation.
@@ -268,6 +273,7 @@ class AcceptanceContract:
     generation: int = 0
     acceptance_revision: str = ""
     baseline_available: bool = True
+    artifact_output_observer: ArtifactOutputObserver | None = field(default=None, repr=False)
 
     def next_evidence_id(self) -> str:
         return f"ev{len(self.evidence) + 1:03d}"
@@ -388,17 +394,27 @@ _QUOTED_PATH = "|".join(
     rf"[^\x00-\x1f{re.escape(quote)}<>|?:]+?\.(?:{_PATH_EXTENSIONS})(?={re.escape(quote)})"
     for quote in ('"', "'", "`")
 )
+# Resource-locator syntax is not a local path, regardless of host, scheme,
+# language, or filename suffix. Include scp-style user@host:path Git remotes.
+_RESOURCE_LOCATOR_RE = re.compile(
+    r"(?<![\w./\\])(?:[A-Za-z][A-Za-z0-9+.-]*://|[^\s/@:`\"'<>]+@[^\s/:`\"'<>]+:)"
+    r"[^\s`\"'<>]+"
+)
 _PATH_RE = re.compile(
     r"(?<![\w.-])("
-    # Native file names commonly contain spaces. A quoted document path must be
-    # captured whole, not as an invented relative path beginning after the space.
     rf"{_QUOTED_PATH}|"
+    # Explicit quoted paths retain spaces and Unicode as literal filename data.
+    # A path prefix must occur immediately after the quote. Relative directory
+    # prefixes retain U1R filenames with spaces without swallowing quoted commands.
+    r'"(?:[A-Za-z]:[\\/]|[\\/]{1,2}|[\w.-]+[\\/])[^"\n]+"|'
+    r"'(?:[A-Za-z]:[\\/]|[\\/]{1,2}|[\w.-]+[\\/])[^'\n]+'|"
+    r"`(?:[A-Za-z]:[\\/]|[\\/]{1,2}|[\w.-]+[\\/])[^`\n]+`|"
+    r"(?:[A-Za-z]:[\\/]|\\\\)"
+    r"(?:(?:[\w-]+ )*[\w.-]+[\\/])+[\w.-]+|"
     r"(?:[A-Za-z]:[\\/]|[\\/]{1,2}|\.{1,2}[\\/])?"
-    r"(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_.-]+)?|"
-    r"(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+\."
-    rf"(?:{_PATH_EXTENSIONS})"
-    r")(?=$|[`\"'\s,;:!?\]\)}]|[.](?:\s|$))",
-    re.I,
+    r"(?:[\w.-]+[\\/])+[\w.-]+|"
+    r"(?:\.{1,2}[\\/])?[\w.-]+\.[\w-]+"
+    r")(?=$|[`\"'\s,;:!?\]\)}]|[.](?:\s|$))"
 )
 _PORT_RE = re.compile(r"\bport\s+([1-9][0-9]{1,4})\b", re.I)
 _THRESHOLD_RE = re.compile(
@@ -432,8 +448,15 @@ _OUTPUT_ROLE_RE = re.compile(
     r"\b(?:save|write|create|produce|output|generate|emit|export|move\s+to|put\s+in|store)\b",
     re.I,
 )
+_ATTEMPTED_IO_RE = re.compile(
+    r"\b(?:attempt|try)\s+to\s+(?:read|write|create|open|delete|remove)\b", re.I
+)
+_NEGATED_OUTPUT_RE = re.compile(
+    r"\b(?:do\s+not|don't|dont|never)\s+(?:write|create|produce|generate|emit|export)\b",
+    re.I,
+)
 _INPUT_ROLE_RE = re.compile(
-    r"\b(?:read\s+from|input|initial|reference|source|given\s+at|provided\s+at|load\s+from|using)\b",
+    r"\b(?:read(?:\s+from)?|input|initial|reference|source|existing|given\s+at|provided\s+at|load\s+from|using)\b",
     re.I,
 )
 # A source connector can switch from an output to its inputs inside one clause.
@@ -495,6 +518,7 @@ def build_acceptance_contract(
     generation: int = 0,
     workspace_snapshot: AcceptanceWorkspaceSnapshot | None = None,
     baseline_available: bool = True,
+    interpreted_path_refs: list[AcceptancePathRef] | None = None,
 ) -> AcceptanceContract:
     snapshot = (
         workspace_snapshot
@@ -515,11 +539,59 @@ def build_acceptance_contract(
     texts = [instruction] if instruction else []
     criteria: list[AcceptanceCriterion] = []
     allowed_output_paths: set[str] = set()
-    path_refs = _extract_path_refs(root=root, texts=texts)
+    path_refs = (
+        list(interpreted_path_refs)
+        if interpreted_path_refs is not None
+        else _extract_path_refs(root=root, texts=texts)
+    )
+    ambiguous_external_clauses = {
+        ref.clause
+        for ref in path_refs
+        if ref.path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL
+        and not ref.raw_text.startswith(('"', "'", "`"))
+    }
+    has_external_context = any(
+        ref.path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL for ref in path_refs
+    )
+    bound_path_refs: list[AcceptancePathRef] = []
 
     for path_ref in path_refs:
+        # Unquoted external paths can be only a prefix of a filename containing
+        # spaces. Keep the prose hint, but never turn that guess into a hard
+        # completion requirement. Actual effects are bound to host tool paths.
+        # A validated interpretation has already resolved complete components
+        # and containing directories. Prefix/cwd ambiguity applies only to the
+        # heuristic detector; it must not weaken an exact declared requirement.
+        exact_scope = interpreted_path_refs is not None or (
+            (
+                path_ref.clause not in ambiguous_external_clauses
+                or path_ref.raw_text.startswith(('"', "'", "`"))
+            )
+            and not (
+                has_external_context
+                and path_ref.path_kind
+                in {
+                    AcceptancePathKind.WORKSPACE_RELATIVE,
+                    AcceptancePathKind.UNRESOLVED,
+                }
+            )
+        )
+        if exact_scope:
+            bound_path_refs.append(path_ref)
+        # A filename mentioned elsewhere in an external-folder task has no
+        # explicit cwd. Do not invent a requirement to create it in the project.
+        path_confidence = (
+            AcceptanceCriterionConfidence.EXPLICIT
+            if exact_scope
+            else AcceptanceCriterionConfidence.HEURISTIC
+        )
+        path_enforcement = (
+            AcceptanceCriterionEnforcement.HARD
+            if exact_scope
+            else AcceptanceCriterionEnforcement.ADVISORY
+        )
         if path_ref.role == AcceptancePathRole.REQUIRED_OUTPUT:
-            if path_ref.workspace_relative_path:
+            if exact_scope and path_ref.workspace_relative_path:
                 allowed_output_paths.add(path_ref.workspace_relative_path)
             criteria.append(
                 _criterion(
@@ -529,8 +601,8 @@ def build_acceptance_contract(
                     description=f"Required output path: {path_ref.display_path}",
                     paths=_legacy_paths_from_refs((path_ref,)),
                     path_refs=(path_ref,),
-                    confidence=AcceptanceCriterionConfidence.EXPLICIT,
-                    enforcement=AcceptanceCriterionEnforcement.HARD,
+                    confidence=path_confidence,
+                    enforcement=path_enforcement,
                 )
             )
         elif path_ref.role == AcceptancePathRole.PRESERVATION_TARGET:
@@ -542,14 +614,15 @@ def build_acceptance_contract(
                     description=f"Preserve unchanged: {path_ref.display_path}",
                     paths=_legacy_paths_from_refs((path_ref,)),
                     path_refs=(path_ref,),
-                    confidence=AcceptanceCriterionConfidence.EXPLICIT,
-                    enforcement=AcceptanceCriterionEnforcement.HARD,
+                    confidence=path_confidence,
+                    enforcement=path_enforcement,
                 )
             )
         elif path_ref.role in {
             AcceptancePathRole.EXISTING_INPUT,
             AcceptancePathRole.VERIFICATION_CHECKER,
             AcceptancePathRole.UNKNOWN_REFERENCE,
+            AcceptancePathRole.LOCATION_CONTEXT,
         }:
             criteria.append(
                 _criterion(
@@ -572,7 +645,13 @@ def build_acceptance_contract(
         )
         enforcement = (
             AcceptanceCriterionEnforcement.HARD
-            if explicit and path_ref.role == AcceptancePathRole.REQUIRED_OUTPUT
+            if explicit
+            and path_ref.role == AcceptancePathRole.REQUIRED_OUTPUT
+            and any(
+                path_ref in item.path_refs
+                and item.enforcement == AcceptanceCriterionEnforcement.HARD
+                for item in criteria
+            )
             else AcceptanceCriterionEnforcement.ADVISORY
         )
         criteria.append(
@@ -597,7 +676,14 @@ def build_acceptance_contract(
                 description=f"Explicit command must pass: {command}",
                 commands=(command,),
                 confidence=AcceptanceCriterionConfidence.EXPLICIT,
-                enforcement=AcceptanceCriterionEnforcement.HARD,
+                # Prose supplies no structured cwd for this command. In a task
+                # spanning folders it cannot become a selected-project check.
+                # Actual runs and failures are still recorded with their cwd.
+                enforcement=(
+                    AcceptanceCriterionEnforcement.ADVISORY
+                    if has_external_context
+                    else AcceptanceCriterionEnforcement.HARD
+                ),
             )
         )
 
@@ -731,7 +817,7 @@ def build_acceptance_contract(
         baseline_available=baseline_available,
         allowed_output_paths=allowed_output_paths,
         path_refs=path_refs,
-        expectations=extract_task_expectations(texts=texts, path_refs=path_refs),
+        expectations=extract_task_expectations(texts=texts, path_refs=bound_path_refs),
     )
 
 
@@ -806,6 +892,7 @@ def record_acceptance_tool_effect(
     status: str,
     result: dict[str, Any],
     touched_paths: set[str],
+    external_edits: dict[str, str] | None = None,
     known_verification_commands: list[str] | None = None,
     verification_authoritative: bool = False,
     evidence_category: str = "",
@@ -922,13 +1009,17 @@ def record_acceptance_tool_effect(
         host_covered_commands = tuple(
             item for item in covered_payload if isinstance(item, str) and item in known
         )
-    origin = classify_evidence_origin(
-        contract=contract,
-        root=root,
-        command=command,
-        touched_paths=touched_paths,
-        known_verification_commands=known_verification_commands,
-        verification_authoritative=verification_authoritative,
+    origin = (
+        classify_evidence_origin(
+            contract=contract,
+            root=root,
+            command=command,
+            touched_paths=touched_paths,
+            known_verification_commands=known_verification_commands,
+            verification_authoritative=verification_authoritative,
+        )
+        if same_workspace
+        else EvidenceOrigin.AD_HOC_OBSERVATION
     )
     if host_covered_commands and origin != EvidenceOrigin.SELF_AUTHORED:
         # The host may expand a glob before executing a required command. Its
@@ -943,7 +1034,7 @@ def record_acceptance_tool_effect(
             verification_authoritative=verification_authoritative,
         )
     criterion_ids: list[str] = []
-    if command and current:
+    if command and current and same_workspace:
         criterion_ids.extend(
             _update_command_and_threshold_criteria(
                 contract=contract,
@@ -957,12 +1048,26 @@ def record_acceptance_tool_effect(
             )
         )
     if current:
+        if status != "failed" and not result.get("error"):
+            contract.external_path_observations.update(external_edits or {})
+            # A user may name an alias while the tool uses its canonical path.
+            # Bind that exact reference now; later alias retargeting invalidates it.
+            targets = set((external_edits or {}).values())
+            for ref in contract.path_refs:
+                if (
+                    ref.path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL
+                    and Path(ref.absolute_path).is_absolute()
+                ):
+                    target = str(Path(ref.absolute_path).resolve())
+                    if target in targets:
+                        contract.external_path_observations[ref.absolute_path] = target
         criterion_ids.extend(
             _update_path_criteria(
                 contract=contract,
                 root=root,
                 touched_paths=touched_paths,
                 status=status,
+                external_path_observations=contract.external_path_observations,
             )
         )
     if current and normalized_tool in {
@@ -990,7 +1095,7 @@ def record_acceptance_tool_effect(
             if durable_criterion_ids
             else _block_session_owned_service_criteria(contract=contract)
         )
-    if current and normalized_tool in {"verify_run", "shell_run"}:
+    if current and same_workspace and normalized_tool in {"verify_run", "shell_run"}:
         criterion_ids.extend(
             _update_repo_surface_criteria(
                 contract=contract,
@@ -1002,13 +1107,14 @@ def record_acceptance_tool_effect(
                 host_covered_commands=host_covered_commands,
             )
         )
-    if command or touched_paths or criterion_ids:
+    observed_paths = touched_paths | set((external_edits or {}).values())
+    if command or observed_paths or criterion_ids:
         evidence = contract.add_evidence(
             origin=origin,
-            summary=_evidence_summary(command=command, touched_paths=touched_paths),
+            summary=_evidence_summary(command=command, touched_paths=observed_paths),
             passed=command_passed,
             command=command,
-            paths=tuple(sorted(touched_paths)),
+            paths=tuple(sorted(observed_paths)),
             criterion_ids=tuple(sorted(set(criterion_ids))),
             category=evidence_category,
             task_id=observed_task,
@@ -1093,14 +1199,23 @@ def finalize_acceptance_contract(
 ) -> None:
     if contract is None:
         return
+    observer = contract.artifact_output_observer
+    if observer is not None:
+        observer.refresh(contract)
     for criterion in contract.criteria:
         if criterion.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH:
-            missing = _missing_required_output_paths(criterion=criterion, root=root)
+            missing = _missing_required_output_paths(
+                criterion=criterion,
+                root=root,
+                external_path_observations=contract.external_path_observations,
+                observer=observer,
+            )
             if missing:
                 criterion.status = AcceptanceCriterionStatus.UNVERIFIED
                 criterion.failure_summary = "Required output path is missing: " + ", ".join(missing)
             elif criterion.status == AcceptanceCriterionStatus.UNVERIFIED:
                 criterion.status = AcceptanceCriterionStatus.PASSED
+                criterion.failure_summary = ""
         elif criterion.kind == AcceptanceCriterionKind.PRESERVATION_UNCHANGED_PATH:
             if not contract.baseline_available:
                 criterion.status = AcceptanceCriterionStatus.BLOCKED
@@ -1296,32 +1411,47 @@ def _mask_path_tokens(text: str) -> str:
     return _PATH_RE.sub(masked, text)
 
 
-def _iter_clauses(texts: list[str]) -> list[str]:
+def _iter_clauses(
+    texts: list[str], *, split_actions: bool = True, protected_literals: tuple[str, ...] = ()
+) -> list[str]:
     clauses: list[str] = []
     boundary = re.compile(
-        r"\n+|;|,(?=\s*(?:and\s+)?(?:save|write|create|produce|output|generate|emit|move|"
+        r"\n+|;|,(?=\s*(?:(?:and|then)\s+)?(?:save|write|create|produce|output|generate|emit|move|"
         r"read|input|initial|reference|source|given|do\s+not|don't|dont|without|never|"
         r"leave|keep|preserve|run|verify|check)\b)|"
-        r"\band\s+(?=(?:save|write|create|produce|output|generate|emit|move|read|"
+        r"\b(?:and|then)\s+(?=(?:save|write|create|produce|output|generate|emit|move|read|"
         r"input|initial|reference|source|given|do\s+not|don't|dont|without|never|"
         r"leave|keep|preserve|run|verify|check)\b)|"
         r"(?<=[.!?])\s+(?=[A-Z])",
         re.I,
     )
+    if not split_actions:
+        boundary = re.compile(r"\n+|;|(?<=[.!?])\s+(?=[A-Z])", re.I)
     for text in texts:
-        text = str(text or "")
+        raw = str(text or "")
+        # Quoted filenames may contain spaces, semicolons, or words such as
+        # "and save". Those bytes belong to the path, not the task grammar.
+        protected = list(_mask_path_tokens(raw))
+        for match in _RESOURCE_LOCATOR_RE.finditer(raw):
+            protected[match.start() : match.end()] = "x" * (match.end() - match.start())
+        for literal in protected_literals:
+            if literal:
+                for match in re.finditer(re.escape(literal), raw):
+                    protected[match.start() : match.end()] = "x" * (match.end() - match.start())
+        protected_view = "".join(protected)
         start = 0
-        spans = []
-        for match in boundary.finditer(_mask_path_tokens(text)):
-            spans.append((start, match.start()))
+        for match in boundary.finditer(protected_view):
+            # Attempted operations do not create an unconditional output. Only
+            # unprotected words may supply that predicate; filenames are data.
+            if match.group(0).lower().startswith("and ") and _ATTEMPTED_IO_RE.search(
+                protected_view[start : match.start()]
+            ):
+                continue
+            if clause := raw[start : match.start()].strip():
+                clauses.append(clause)
             start = match.end()
-        spans.append((start, len(text)))
-        for start, end in spans:
-            clause = text[start:end]
-            # Whitespace inside a quoted native filename is significant.
-            normalized = clause.strip()
-            if normalized:
-                clauses.append(normalized)
+        if clause := raw[start:].strip():
+            clauses.append(clause)
     return clauses
 
 
@@ -1339,12 +1469,34 @@ def _prefix_path_role(prefix: str) -> AcceptancePathRole:
     return AcceptancePathRole.UNKNOWN_REFERENCE
 
 
+def _clause_path_role(clause: str) -> AcceptancePathRole:
+    # Classify the surrounding instruction, not words inside a path candidate.
+    # "input/output example table" and "inspect src/create.py" do not ask us
+    # to create files; an explicit "create input/output" still does.
+    clause = _PATH_RE.sub(lambda match: " " * len(match.group(0)), clause)
+    if _PRESERVATION_ROLE_RE.search(clause):
+        return AcceptancePathRole.PRESERVATION_TARGET
+    if _OUTPUT_ROLE_RE.search(clause):
+        return AcceptancePathRole.REQUIRED_OUTPUT
+    if _INPUT_ROLE_RE.search(clause):
+        return AcceptancePathRole.EXISTING_INPUT
+    if _CHECKER_ROLE_RE.search(clause):
+        return AcceptancePathRole.VERIFICATION_CHECKER
+    return AcceptancePathRole.UNKNOWN_REFERENCE
+
+
 def _path_role(
     clause: str,
     path_match: re.Match[str],
 ) -> AcceptancePathRole:
     path_start = path_match.start(1)
     masked = _mask_path_tokens(clause)
+    prefix = masked[:path_start]
+    if _ATTEMPTED_IO_RE.search(prefix) or _NEGATED_OUTPUT_RE.search(prefix):
+        # An attempt (including an expected denial) does not promise that the
+        # target will exist. Keep the reference without inventing an output
+        # obligation; execution/check evidence must still establish the result.
+        return AcceptancePathRole.UNKNOWN_REFERENCE
     preservation = None
     for candidate in _PRESERVATION_ROLE_RE.finditer(masked):
         if candidate.start() >= path_start:
@@ -1367,9 +1519,15 @@ def _path_role(
     return _prefix_path_role(masked[boundary + 1 : path_start])
 
 
+def _path_source_literal(path: str) -> str:
+    """Remove prose delimiters without rewriting the literal's source spelling."""
+    token = str(path or "").strip()
+    quoted = len(token) > 1 and token[0] in "`'\"" and token[-1] == token[0]
+    return token[1:-1] if quoted else token.rstrip(".,;:!?)]}")
+
+
 def _clean_path_token(path: str) -> str:
-    cleaned = str(path or "").strip().strip("`'\"").replace("\\", "/")
-    cleaned = cleaned.rstrip(".,;:!?)]}")
+    cleaned = _path_source_literal(path).replace("\\", "/")
     while cleaned.startswith("./"):
         cleaned = cleaned[2:]
     return cleaned
@@ -1379,7 +1537,26 @@ def _extract_path_refs(*, root: Path, texts: list[str]) -> list[AcceptancePathRe
     refs: list[AcceptancePathRef] = []
     seen: set[tuple[str, str, str]] = set()
     for clause in _iter_clauses(texts):
+        resource_spans = [match.span() for match in _RESOURCE_LOCATOR_RE.finditer(clause)]
+        commands = set(_extract_explicit_commands([clause]))
+        command_spans = [
+            token.span()
+            for token in _BACKTICK_COMMAND_RE.finditer(clause)
+            if _normalize_command(token.group(1)) in commands
+        ]
         for match in _PATH_RE.finditer(clause):
+            if any(start <= match.start(1) < end for start, end in resource_spans):
+                continue
+            # An interpreter's absolute installation path is part of a command,
+            # not an instruction to work on files in that installation folder.
+            if any(start <= match.start() < end for start, end in command_spans):
+                continue
+            # A Git ref may contain slashes without naming a filesystem output.
+            # Match the immediate noun, so "on branch x create src/a.py" still
+            # requires the real file while "create branch test/x" does not.
+            before = clause[: match.start(1)].rstrip(" `\"'")
+            if re.search(r"\b(?:branch|tag|ref)(?:\s+(?:named|called))?\s*$", before, re.I):
+                continue
             role = _path_role(clause, match)
             if _context_is_suggestion(clause):
                 role = AcceptancePathRole.UNKNOWN_REFERENCE
@@ -1452,7 +1629,12 @@ def _resolve_acceptance_path(
     normalized = _normalize_rel_path(cleaned)
     if not normalized:
         return None
-    candidate = Path(root).expanduser().resolve(strict=False) / normalized
+    windows_root = PureWindowsPath(str(root))
+    candidate = (
+        windows_root / normalized
+        if windows_root.is_absolute()
+        else Path(root).expanduser().resolve(strict=False) / normalized
+    )
     return AcceptancePathRef(
         raw_text=raw_text,
         display_path=normalized,
@@ -2384,20 +2566,96 @@ def _workspace_paths_for_criterion(criterion: AcceptanceCriterion) -> tuple[str,
     return tuple(path for path in criterion.paths if path and not path.startswith("/"))
 
 
-def _missing_required_output_paths(*, criterion: AcceptanceCriterion, root: Path) -> list[str]:
+def _required_output_paths(
+    criterion: AcceptanceCriterion,
+    root: Path,
+    external_path_observations: dict[str, str] | None = None,
+    observer: ArtifactOutputObserver | None = None,
+) -> tuple[str, ...]:
+    """Admit attached or observed exact outputs for metadata checks, never reads."""
+    from ..host_file_policy import HostFilePolicy, HostFilePolicyError
+    from ..project_folders import allowed_roots
+
+    paths = list(_workspace_paths_for_criterion(criterion))
+    folders = allowed_roots(root)[1:]
+    if folders or external_path_observations:
+        policy = HostFilePolicy.capture()
+        for ref in criterion.path_refs:
+            if ref.path_kind != AcceptancePathKind.ABSOLUTE_EXTERNAL:
+                continue
+            if observer is not None and ref.absolute_path in observer.current:
+                paths.append(ref.absolute_path)
+                continue
+            target = Path(ref.absolute_path)
+            if not target.is_absolute():
+                continue
+            observed = (external_path_observations or {}).get(ref.absolute_path)
+            if not (
+                any(target.resolve().is_relative_to(folder) for folder in folders)
+                or (observed is not None and str(target.resolve()) == observed)
+            ):
+                continue
+            try:
+                policy.guard_read(root, str(target))
+            except (HostFilePolicyError, OSError):
+                continue
+            # Keep the reference's normalized spelling for the membership checks
+            # below. str(Path(...)) changes '/' to '\\' on Windows, making an
+            # admitted, observed output look like a different untrusted path.
+            paths.append(ref.absolute_path)
+    return tuple(dict.fromkeys(paths))
+
+
+def _missing_required_output_paths(
+    *,
+    criterion: AcceptanceCriterion,
+    root: Path,
+    external_path_observations: dict[str, str] | None = None,
+    observer: ArtifactOutputObserver | None = None,
+) -> list[str]:
     missing: list[str] = []
-    workspace_paths = _workspace_paths_for_criterion(criterion)
+    workspace_paths = _required_output_paths(criterion, root, external_path_observations, observer)
     for path in workspace_paths:
-        if not (root / path).exists():
+        # An enrolled output has a bounded host observation. Do not fall back
+        # to synchronous I/O after that observation timed out or was cancelled.
+        bound_ref = next(
+            (
+                ref
+                for ref in criterion.path_refs
+                if ref.workspace_relative_path == path or ref.absolute_path == path
+            ),
+            None,
+        )
+        observed = (
+            observer.current.get(bound_ref.absolute_path)
+            if observer is not None and bound_ref is not None
+            else None
+        )
+        if observed is not None:
+            allowed_states = (
+                {"file"}
+                if bound_ref.path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL
+                else {"file", "directory"}
+            )
+            if observed.state not in allowed_states:
+                missing.append(path)
+        elif not (root / path).exists():
             missing.append(path)
     external_refs = [
         path_ref
         for path_ref in criterion.path_refs
         if path_ref.path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL
         and path_ref.role == AcceptancePathRole.REQUIRED_OUTPUT
+        and path_ref.absolute_path not in workspace_paths
     ]
     for path_ref in external_refs:
-        if criterion.status != AcceptanceCriterionStatus.PASSED:
+        observed = observer.current.get(path_ref.absolute_path) if observer is not None else None
+        if observed is not None:
+            if observed.state != "file":
+                missing.append(f"{path_ref.display_path} ({observed.state})")
+        elif criterion.status != AcceptanceCriterionStatus.PASSED or path_ref.absolute_path in (
+            external_path_observations or {}
+        ):
             missing.append(f"{path_ref.display_path} (external output requires trusted evidence)")
     unresolved_refs = [
         path_ref
@@ -2419,13 +2677,19 @@ def _update_path_criteria(
     root: Path,
     touched_paths: set[str],
     status: str,
+    external_path_observations: dict[str, str] | None = None,
 ) -> list[str]:
     matched: list[str] = []
     for criterion in contract.criteria:
         if criterion.kind != AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH:
             continue
-        paths = _workspace_paths_for_criterion(criterion)
+        paths = _required_output_paths(criterion, root, external_path_observations)
         if not paths:
+            continue
+        if any(
+            ref.path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL and ref.absolute_path not in paths
+            for ref in criterion.path_refs
+        ):
             continue
         if all((root / path).exists() for path in paths):
             criterion.status = AcceptanceCriterionStatus.PASSED

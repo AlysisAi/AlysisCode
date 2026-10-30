@@ -982,7 +982,7 @@ def test_zai_coding_plan_drops_stale_effort_and_never_offers_reasoning_off() -> 
         "custom-hosted-model",
     ],
 )
-def test_alysis_model_picker_only_offers_named_v41_flash_despite_stale_gateway(
+def test_alysis_model_picker_does_not_infer_access_from_saved_models(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     saved_model: str,
@@ -1015,17 +1015,12 @@ def test_alysis_model_picker_only_offers_named_v41_flash_despite_stale_gateway(
     state.fields["model"] = saved_model
 
     rows = config_menu_mod._default_model_rows(state)
-    assert [(value, label) for value, label, _ in rows] == [
-        ("deepseek-flash", "DeepSeek V4.1 Flash"),
-        ("glm-5.3-flash", "GLM 5.3 Flash"),
-        ("gpt-6-luna", "GPT-6 Luna"),
-        ("claude-haiku-5-5", "Claude Haiku 5.5"),
-    ]
+    assert rows == []
     assert calls == []
     assert config_menu_mod._preset_model_option_rows(preset) == rows
 
 
-def test_default_model_rows_survive_alysis_discovery_failure(
+def test_hosted_catalog_failure_does_not_offer_unconfirmed_models(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
@@ -1034,21 +1029,32 @@ def test_default_model_rows_survive_alysis_discovery_failure(
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
 
-    def _boom(_cfg: object) -> list[str]:
-        raise RuntimeError("proxy down")
+    calls = []
 
-    monkeypatch.setattr("alysis_code.account_login.list_trial_models", _boom)
+    def _boom(**kwargs):
+        assert kwargs["api_key"] == "test-key"
+        calls.append(True)
+        raise config_menu_mod.ProviderModelCatalogError("proxy down")
+
+    monkeypatch.setattr(config_menu_mod, "discover_provider_models", _boom)
+    monkeypatch.setattr(
+        config_menu_mod,
+        "resolve_api_key",
+        lambda _: SimpleNamespace(key="test-key", source="fixture"),
+    )
 
     cfg = AppConfig(model="deepseek-flash")
     add_profile(cfg, make_profile_from_preset(get_preset("alysis"), name="alysis"))
     set_active_profile(cfg, "alysis")
     state = ConfigMenuState.from_cfg(cfg)
 
-    # Discovery blew up, but the static preset rows must still render the menu.
+    # Discovery cannot establish account access when the catalog is unavailable.
     model_values = [
         value for value, _label, _description in config_menu_mod._default_model_rows(state)
     ]
-    assert model_values == ["deepseek-flash", "glm-5.3-flash", "gpt-6-luna", "claude-haiku-5-5"]
+    assert model_values == []
+    assert calls == [True]
+    assert "unavailable" in state._provider_model_catalog_warning
 
 
 def test_default_model_rows_fallback_to_base_url_provider() -> None:

@@ -72,19 +72,16 @@ def test_non_interactive_auto_blocks_sensitive_shell_confirmation(tmp_path: Path
         yes=False,
         non_interactive=True,
     )
-    with pytest.raises(AgentRuntimeError, match="Confirmation required for sensitive command"):
+    with pytest.raises(
+        AgentRuntimeError, match="Git remote writes require a separate person approval"
+    ):
         tools["shell_run"].run({"cmd": "git push origin main"})
 
 
-def test_fullaccess_mode_bypasses_shell_policy_guards(tmp_path: Path) -> None:
+def test_fullaccess_still_requires_person_for_unresolved_shell_effects(tmp_path: Path) -> None:
     class _Runner:
         def run(self, *, root: Path, cwd: Path, cmd: str, timeout_s: int):
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="ok\n",
-                stderr="",
-            )
+            pytest.fail("An unresolved command must not dispatch without person approval")
 
     tools = build_tools(
         root=tmp_path,
@@ -96,9 +93,10 @@ def test_fullaccess_mode_bypasses_shell_policy_guards(tmp_path: Path) -> None:
         shell_runner=_Runner(),
     )
 
-    result = tools["shell_run"].run({"cmd": "rm -rf /definitely-not-a-real-path-for-tests"})
-    assert result["exit_code"] == 0
-    assert result["stdout"] == "ok\n"
+    with pytest.raises(
+        AgentRuntimeError, match="Unresolved command effects require a separate person"
+    ):
+        tools["shell_run"].run({"cmd": "rm -rf /definitely-not-a-real-path-for-tests"})
 
 
 def test_git_apply_patch_strict_scope_blocks_out_of_scope_patch(tmp_path: Path) -> None:
@@ -153,7 +151,7 @@ def test_fs_write_scope_allows_globstar_direct_child_path(tmp_path: Path) -> Non
         {"path": "tests/test_coupon.py", "content": "def test_ok():\n    pass\n"}
     )
 
-    assert result["path"] == "tests/test_coupon.py"
+    assert Path(result["path"]).as_posix() == "tests/test_coupon.py"
     assert (tmp_path / "tests" / "test_coupon.py").is_file()
 
 
@@ -173,7 +171,7 @@ def test_fs_write_scope_allows_existing_directory_scope_descendant(tmp_path: Pat
         {"path": "tests/test_settings.py", "content": "SETTING = True\n"}
     )
 
-    assert result["path"] == "tests/test_settings.py"
+    assert Path(result["path"]).as_posix() == "tests/test_settings.py"
     assert (tmp_path / "tests" / "test_settings.py").read_text(encoding="utf-8") == (
         "SETTING = True\n"
     )
@@ -213,7 +211,7 @@ def test_fs_mkdir_allows_ancestor_directory_for_explicit_file_scope(tmp_path: Pa
     result_pkg = tools["fs_mkdir"].run({"path": "src/pkg"})
 
     assert result_root["path"] == "src"
-    assert result_pkg["path"] == "src/pkg"
+    assert Path(result_pkg["path"]).as_posix() == "src/pkg"
     assert (tmp_path / "src").is_dir()
     assert (tmp_path / "src" / "pkg").is_dir()
 

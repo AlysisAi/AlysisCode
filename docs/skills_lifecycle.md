@@ -11,6 +11,14 @@ It is intentionally local-first and conservative:
 - enable/disable skills without mutating foreign interop roots
 - remove only managed native installs
 
+Git sources require HTTPS in both the CLI and desktop. Local directories and zip archives
+remain supported; `file://`, SSH and other Git transports are refused. Installer Git children
+use an empty temporary home, no inherited Git configuration or credential helpers, no
+interactive stdin, and a 120-second timeout per command. Explicit CA/proxy environment
+settings remain available. Configuration-only CA/proxy settings, URL rewrites and Git LFS
+filters are not loaded; LFS content therefore remains pointers. Git for Windows system TLS
+settings are also excluded; native Windows TLS compatibility has not been measured.
+
 It does **not** add marketplace browsing, publishing, trust-tier redesign, matcher redesign, or
 automatic skill execution.
 

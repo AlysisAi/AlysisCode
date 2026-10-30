@@ -408,11 +408,14 @@ def resolve_origin_main(runner: GitRunner, *, fetch: bool = True) -> str:
     What they cost is the ability to *claim* to be main, which is the honest
     outcome and is what the latest-main guard enforces.
     """
-    if fetch:
-        # Best effort by design. A failed or timed-out fetch leaves the
-        # remote-tracking ref where it was; the rev-parse below still answers,
-        # and the guard compares against whatever could actually be resolved.
-        runner(["fetch", "--quiet", "origin"])
+    if not fetch:
+        # A cached remote ref does not establish the current remote tip. This
+        # hermetic mode deliberately makes no latest-main provenance claim.
+        return UNAVAILABLE
+    # Best effort by design. A failed or timed-out fetch leaves the
+    # remote-tracking ref where it was; the rev-parse below still answers,
+    # and the guard compares against whatever could actually be resolved.
+    runner(["fetch", "--quiet", "origin"])
     code, out = runner(["rev-parse", "origin/main"])
     if code != 0 or not out.strip():
         return UNAVAILABLE

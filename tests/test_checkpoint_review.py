@@ -10,9 +10,15 @@ from alysis_code import cli as cli_mod
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMError, LLMResponse, ToolCall
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 
 
 def _session(root: Path, command: str, session_id: str, *, one_shot: bool = True):
+    class CheckpointSurface(NoopSurface):
+        def request_approval(self, request):
+            return ApprovalDecision(request.kind == "shell_run")
+
     return create_session(
         cfg=AppConfig(model="test-model", routing_mode="code_only", verify_commands=[command]),
         root=root,
@@ -24,6 +30,7 @@ def _session(root: Path, command: str, session_id: str, *, one_shot: bool = True
         one_shot_execution=one_shot,
         session_log_dir_override=root / "logs",
         session_id_override=session_id,
+        surface=CheckpointSurface(),
     )
 
 

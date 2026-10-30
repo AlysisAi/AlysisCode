@@ -115,6 +115,12 @@ class ToolSchemaBudgetReport:
         )
 
 
+def tool_schema_token_total(tool_list: list[dict[str, Any]] | None) -> int:
+    """Count the complete request array without constructing a diagnostic ranking."""
+    tools = [tool for tool in (tool_list or []) if isinstance(tool, dict)]
+    return estimate_tokens(_stable_json(tools)) if tools else 0
+
+
 def analyze_tool_schema_budget(
     tool_list: list[dict[str, Any]] | None,
     *,
@@ -132,7 +138,7 @@ def analyze_tool_schema_budget(
                 family=_tool_family(name, None),
             )
         )
-    total = estimate_tokens(_stable_json(tools)) if tools else 0
+    total = tool_schema_token_total(tools)
     budget = max(0, int(budget_tokens or 0))
     largest_n = max(0, int(largest_count or 0))
     largest_tools = tuple(
@@ -172,9 +178,13 @@ def compact_custom_mcp_tool_parameters(
                     # enum/const/default hold constraint data, not subschemas.
                     compacted[key] = copy.deepcopy(item)
                     continue
+            # Only a schema keyword opens a name map. Every entry of a name map is a
+            # schema again, even one named "properties" or "$defs", so its annotations
+            # are dropped and its enum/const literals are copied unchanged.
             compacted[key] = compact_custom_mcp_tool_parameters(
                 item,
-                _inside_named_schema_map=normalized_key in JSON_SCHEMA_NAMED_SCHEMA_MAP_KEYS,
+                _inside_named_schema_map=not _inside_named_schema_map
+                and normalized_key in JSON_SCHEMA_NAMED_SCHEMA_MAP_KEYS,
             )
         return compacted
     if isinstance(value, list):

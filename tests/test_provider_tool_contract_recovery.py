@@ -25,6 +25,8 @@ NAME = "mcp__private_contract__inspect"
 WRITE = "mcp__private_contract__change"
 SECRET = "REJECTED_PROVIDER_PAYLOAD_8f19f0"
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 def response(calls, *, mismatch=False):
     return LLMResponse(

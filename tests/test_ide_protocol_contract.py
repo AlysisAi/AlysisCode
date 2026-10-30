@@ -267,7 +267,9 @@ def test_workspace_required_management_methods_fail_closed_before_handler_params
 
 # Host responses match their pending request binding before checking credential fields,
 # so an unbound request is refused with a binding error instead.
-_BINDING_FIRST_RESPONSE_METHODS = frozenset({"computer.respond", "task_budget.respond"})
+_BINDING_FIRST_RESPONSE_METHODS = frozenset(
+    {"computer.respond", "task_budget.respond", "computer_start_resolved.respond"}
+)
 
 
 def test_stdio_bridge_rejects_inline_secret_params_recursively_for_every_method() -> None:
@@ -289,3 +291,12 @@ def test_stdio_bridge_rejects_inline_secret_params_recursively_for_every_method(
         if method not in _BINDING_FIRST_RESPONSE_METHODS:
             assert payload["error"]["code"] == "inline_secret_rejected", method
         assert "must-not-leak" not in out.getvalue(), method
+
+
+def test_general_evidence_is_optional_and_does_not_change_protocol_version(
+    mac_computer_use_protocol,
+):
+    capabilities = capabilities_payload()
+    assert capabilities["features"]["computer_use_evidence"] == {"version": 1}
+    assert "computer_use_evidence" in capabilities["events"]
+    assert capabilities["protocol_version"] == "1"

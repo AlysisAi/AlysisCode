@@ -61,6 +61,10 @@ def test_private_stdio_calls_cross_the_real_agent_boundary(
                             "name": "unfamiliar_surface",
                             "description": "A private surface.",
                             "inputSchema": {"type": "object", "properties": {}},
+                            # This fixture only returns synthetic data. Declare its
+                            # actual access so approval does not prevent the call
+                            # whose retention boundaries this test exercises.
+                            "annotations": {"readOnlyHint": True},
                             "_meta": POLICY,
                         }
                     ]
@@ -107,6 +111,7 @@ def test_private_stdio_calls_cross_the_real_agent_boundary(
         enable_compaction=False,
         session_log_dir_override=tmp_path / "logs",
     )
+    session.tools["tool_search"].run({"names": [NAME]})
     assert session.tools[NAME].metadata["ephemeral_io"] is True
     surface, hooks = _RecordingSurface(), _RecordingHooks()
     session.surface, session.hook_dispatcher = surface, hooks

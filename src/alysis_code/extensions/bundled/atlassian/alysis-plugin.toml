@@ -1,0 +1,323 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.atlassian"
+name = "Jira + Confluence"
+version = "1.0.0"
+description = "Atlassian's official remote MCP tools for one Jira and Confluence site you pick: search and read issues and pages; every change asks you first."
+author = "Alysis AI (integration); Atlassian (Rovo MCP server)"
+license = "MIT"
+homepage = "https://support.atlassian.com/atlassian-rovo-mcp-server/"
+keywords = ["jira", "confluence", "atlassian", "mcp", "issues", "wiki"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Atlassian's official remote MCP server (Rovo MCP, flat tool list). The app keeps the sign-in;
+# only the reviewed tools below are offered, and every tool not marked reads_only asks a person
+# before each call.
+[[components.verified_connector]]
+id = "atlassian"
+url = "https://mcp.atlassian.com/v2/mcp?tools=all"
+resource = "https://mcp.atlassian.com/v2/mcp"
+oauth_issuer = "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3"
+oauth_sign_in_origins = ["https://auth.atlassian.com"]
+oauth_client = "dynamic"
+oauth_scopes = ["read:me", "offline_access", "read:jira:agent-interface", "write:jira:agent-interface", "search:jira:agent-interface", "read:confluence:agent-interface", "write:confluence:agent-interface", "search:confluence:agent-interface"]
+max_argument_bytes = 32768
+
+# Filled in by the app after approval with the site the person picked; the AI never sets it.
+[[components.verified_connector.host_arguments]]
+name = "cloudId"
+source = "atlassian_site"
+
+[[components.verified_connector.tools]]
+name = "atlassianUserInfo"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getContentFormatGuide"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraIssue"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraIssueComments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "searchJiraIssuesUsingJql"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraProjects"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraProjectIssueTypesMetadata"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraIssueTypeMetaWithFields"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraIssueTransitions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraIssueLinkTypes"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraIssueRemoteIssueLinks"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraIssueWorklogs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "lookupJiraAccountId"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraIssueAssignableUsers"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraIssueChangelogs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraCurrentUser"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraUser"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraStatuses"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraProjectComponents"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraProjectVersions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraProjectVersionRelatedWork"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraBoards"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraBoardConfig"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraBoardIssueData"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraBoardSprintData"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraBoardSprints"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraFilters"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listJiraDashboards"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getJiraEntityProperty"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceContent"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "searchConfluence"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listConfluenceContent"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listConfluenceSpaces"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceSpace"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceSpaceInstructions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluencePersonalSpace"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listConfluenceComments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceComment"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listConfluenceContentVersions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceContentVersion"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "diffConfluenceContentVersions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listConfluenceAttachments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceAttachment"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "exportConfluenceContent"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceContentPermissions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceContentRestrictionState"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluencePublicLinkStatus"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceReactions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceTask"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listConfluenceTasks"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "listConfluenceTemplates"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceTemplate"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "resolveConfluenceContentMacros"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "getConfluenceContentSuggestions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "createJiraIssue"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "editJiraIssue"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "transitionJiraIssue"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "addOrEditJiraIssueComment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "addOrEditJiraIssueWorklog"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "createJiraIssueLink"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "watchJiraIssue"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "createConfluenceContent"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "updateConfluenceContent"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "createConfluenceComment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "updateConfluenceComment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "updateConfluenceCommentResolution"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "addLabelsToConfluenceContent"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "completeConfluenceTask"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "reopenConfluenceTask"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "moveConfluenceContent"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "archiveConfluenceContent"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "unarchiveConfluenceContent"
+reads_only = false
+
+[security]
+contact = "https://www.atlassian.com/trust/security/report-a-vulnerability"

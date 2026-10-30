@@ -101,6 +101,13 @@ skill_read(name, path)
 
 Skills do not run scripts automatically. If a task calls for a bundled helper script, it must be run through the normal tool surface and execution-mode guardrails.
 
+Bundled work guidance includes `documents`, `spreadsheets`, `presentations`, `pdf`
+and `research`. These cover source inspection, preservation, real calculation,
+rendered-page review and evidence-backed delivery. Their bodies load on demand
+through the same skill mechanism as coding skills. The catalog is not a fixed
+workflow or a claim that every optional runtime is installed; inspect capabilities
+and follow the [document runtime guide](document-runtime.md) for local operations.
+
 ## Chat Commands
 
 In chat:
@@ -133,7 +140,7 @@ not interpreted as an invocation.
 
 ## Bundled Skill Pack
 
-Alysis Code ships nine starter skills:
+Alysis Code ships reusable workflow skills:
 
 | Skill | Purpose |
 | --- | --- |

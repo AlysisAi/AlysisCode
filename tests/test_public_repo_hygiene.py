@@ -46,6 +46,36 @@ def test_rejects_local_and_credential_bearing_paths() -> None:
     assert path_violation("certificates/release.pem") == "credential-bearing or generated file type"
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "docs/power_mode.md",
+        "tests/test_power_gate.py",
+        "scripts/qa/run_power_battery.py",
+    ],
+)
+def test_rejects_power_mode_outside_its_package(name: str) -> None:
+    assert path_violation(name) == "unreleased Power mode package"
+
+
+def test_runtime_asset_exception_rejects_modified_bytes(tmp_path: Path) -> None:
+    name = "src/alysis_code/assets/windows-git/ucrt64/bin/libSkiaSharp.dll"
+    target = tmp_path / name
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"unreviewed replacement")
+    assert collect_violations([name], tmp_path) == [f"{name}: pinned runtime asset digest mismatch"]
+
+
+def test_public_ca_bundle_exception_rejects_private_material(tmp_path: Path) -> None:
+    name = check_public_repo._PUBLIC_GIT_CA_BUNDLE
+    target = tmp_path / name
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"-----BEGIN PRIVATE KEY-----\nsynthetic-sentinel\n")
+    violations = collect_violations([name], tmp_path)
+    assert any("expected only public CA certificates" in item for item in violations)
+    assert any("digest mismatch" in item for item in violations)
+
+
 def test_allows_source_documentation_and_environment_examples() -> None:
     assert path_violation("src/alysis_code/cli.py") is None
     assert path_violation("docs/security_model.md") is None
@@ -224,3 +254,17 @@ def test_only_exact_public_cloud_default_is_allowed() -> None:
     assert check(path, (declaration + "\nKEY = " + repr(key)).encode()) == [
         f"{path}:2: deployment-specific backend key"
     ]
+
+
+@pytest.mark.parametrize("path", check_public_repo._PUBLIC_CONNECTOR_DECLARATIONS)
+def test_connector_endpoint_exceptions_are_exact_and_do_not_allow_project_secrets(path):
+    check = check_public_repo.deployment_content_violations
+    for declaration in check_public_repo._PUBLIC_CONNECTOR_DECLARATIONS[path]:
+        assert check(path, declaration.encode()) == []
+        assert check("other.py", declaration.encode())
+        assert check(path, (declaration + " # changed").encode())
+        assert check(path, declaration.replace("https://", "https://project.").encode())
+        key = "_".join(("sb", "secret", "synthetic-test-value"))
+        assert check(path, (declaration + "\nKEY = " + repr(key)).encode()) == [
+            f"{path}:2: deployment-specific backend key"
+        ]

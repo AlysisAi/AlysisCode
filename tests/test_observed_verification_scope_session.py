@@ -17,6 +17,7 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 
 _INFERRED_COMMAND = "python -m unittest discover"
@@ -29,6 +30,11 @@ _FIXED_SOURCE = "def add(a, b):\n    return a + b\n"
 def _local_python_launcher(monkeypatch):
     monkeypatch.setenv(
         "PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
+    )
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
     )
 
 

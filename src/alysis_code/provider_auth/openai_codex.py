@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import html
 import json
+import re
 import secrets
 import threading
 import time
@@ -74,6 +75,27 @@ _LOGIN_LOCK = threading.Lock()
 _CANCELLATION_POLL_SECONDS = 0.05
 
 
+_PROMPT_CACHE_KEY_PREFIX = "alysis:codex:"
+_PROMPT_CACHE_KEY_RE = re.compile(r"alysis:codex:[0-9a-f]{32}")
+
+
+def _subscription_prompt_cache_key(value: Any) -> str | None:
+    """Return the only cache-affinity key form this route sends: a digest.
+
+    The engine passes a session-scoped stream key. Hashing it here means no raw
+    session id, configured key or other local identifier reaches the account's
+    provider; the same session always maps to the same key.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if _PROMPT_CACHE_KEY_RE.fullmatch(raw):
+        return raw
+    digest = hashlib.blake2s(raw.encode("utf-8"), digest_size=16).hexdigest()
+    return f"{_PROMPT_CACHE_KEY_PREFIX}{digest}"
+
+
 def _throw_if_cancelled(cancellation_token: Any | None) -> None:
     if cancellation_token is None:
         return
@@ -107,12 +129,17 @@ class OpenAICodexSubscriptionAuth:
     cache_capability = CacheCapabilitySpec(
         strategy=CACHE_STRATEGY_IMPLICIT_PROVIDER,
         enabled=True,
+        supports_prompt_cache_key=True,
         reports_cache_read_tokens=True,
         reports_cache_write_tokens=False,
         usage_schema=CACHE_USAGE_SCHEMA_OPENAI,
-        emits_request_fields=False,
+        # Without a key, every session's requests route on the shared Alysis
+        # preamble, so only that preamble ever hits. A per-session key keeps one
+        # session's growing prefix on the same cache. Retention is not sent.
+        emits_request_fields=True,
         notes=(
-            "Subscription responses report cached input without explicit cache request fields.",
+            "Subscription responses cache implicitly; a hashed per-session prompt_cache_key keeps "
+            "one session's growing prefix on the same cache.",
         ),
         source="auth_adapter",
     )
@@ -373,6 +400,12 @@ class OpenAICodexSubscriptionAuth:
         adapted.pop("temperature", None)
         adapted.pop("max_output_tokens", None)
         adapted.pop("prompt_cache_retention", None)
+        if "prompt_cache_key" in adapted:
+            cache_key = _subscription_prompt_cache_key(adapted.get("prompt_cache_key"))
+            if cache_key is None:
+                adapted.pop("prompt_cache_key", None)
+            else:
+                adapted["prompt_cache_key"] = cache_key
         adapted.pop("previous_response_id", None)
         for key in (
             "background",

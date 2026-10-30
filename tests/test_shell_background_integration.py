@@ -129,6 +129,8 @@ class FakeShellRunner:
 
 
 class RecordingSurface(NoopSurface):
+    host_managed_approvals = True
+
     def __init__(self, *, allow: bool = True, order: list[str] | None = None) -> None:
         self.allow = allow
         self.order = order
@@ -193,7 +195,7 @@ def _session_with_runner(
         no_log=True,
         api_key_override="override-key",
         non_interactive=non_interactive,
-        surface=surface,
+        surface=surface if surface is not None else RecordingSurface(allow=True),
         execution_deadline=execution_deadline,
     )
 

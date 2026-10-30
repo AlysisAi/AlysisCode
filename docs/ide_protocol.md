@@ -13,6 +13,13 @@ responses and events.
 
 ## Health
 
+`provider.auth.status` is an optional read method for native subscription connections. It takes
+`provider_id` and returns a fresh provider-owned connection status, including `authenticated`,
+`verified`, and the non-secret `route_scope` fingerprint from that same validated snapshot.
+The bridge returns no tokens or account label. Each request reads the credential store again;
+there is no cached successful identity. A host can reuse its settings engine for these reads
+and fall back to `auth status <provider_id> --json` when an older engine lacks the method.
+
 ```bash
 alysis ide-bridge health
 ```
@@ -308,6 +315,14 @@ echoes the effective value as `reasoning_trace`, and `session.trace.status` repo
 
 ### chat.send
 
+Optional `task_relation: "new_task"` binds this queued prompt's current canonical user
+instruction as the turn objective. Only unpinned, nondelegated ordinary interactive
+chat supports it; present null or any other value is invalid. Absence retains legacy
+behavior. The intent is durable with its original prompt and participates in payload
+idempotency; it does not restore an old objective or reset workspace evidence.
+Sensitive sessions, `run.start`, and runtimes without an explicit consumer refuse it.
+
+
 Durably enqueues a user turn in an existing session and returns its stable prompt/job id
 immediately. Runtime output is sent as structured events. A client-supplied `idempotency_key`
 prevents duplicate submission after retries or reconnects. `context_blocks` accepts bounded,
@@ -481,19 +496,43 @@ a later `chat.send` without copying an unbounded session log into the prompt.
 
 ### session.context
 
-Returns current live-session context metadata. When provider-reported context accounting is not
-available, the bridge returns a tokenizer estimate with `source: "tokenizer_estimate"` and
-`approximate: true`; clients must not treat a missing value as real zero-token usage. The result
-includes `token_breakdown` when estimation succeeds and `null` for unavailable budget fields. If
-the live context-left object has no usable token counts, the method reports `source:
-"unavailable"` and `token_usage_available: false` rather than fabricating zero usage.
-Health advertises
-`features.run_chat_options.session_method_capabilities["session.context"].token_accounting` as
-`"tokenizer_estimate"`.
+Returns the last provider-reported request input and output usage, including cache and reasoning
+fields when reported. Missing usage stays unavailable rather than becoming zero. Interaction-wide
+usage is labeled separately and is not presented as the size of one context window. Cached input
+remains part of input, not an additional charge against context. Output reserve is capacity held
+for generation, not tokens already used.
+
+The detailed context inspection categories are tokenizer estimates of the current locally assembled
+request, separate from the last measured provider request. `provider_usage.input_breakdown` is optional:
+when the provider supplies a complete consistent partition, it contains measured `instructions`,
+`tools`, and `conversation` counts. It is omitted otherwise; local estimates never fill missing
+provider counts. The ChatGPT subscription route has supplied this attribution in live tests, but it
+is not a guarantee for every provider or response.
 
 ```json
 {"protocol_version":"1","id":"context-1","method":"session.context","params":{"session_id":"20260519T100000Z_abcd1234"}}
 ```
+
+### session.artifactChecks
+
+Returns `{session_id, reports}` for checks already observed by the active session's `artifact_check`
+tool. Each report identifies the workspace-relative path, exact `documentSha256`, check results and
+bounded preview metadata. The call is read-only and does not execute a checker. An empty list means
+no checks have been recorded, not that files passed. Clients must match the artifact hash and validate
+preview paths before showing results. Structure, formula and render checks do not prove business
+requirements or visual quality; `visualReview` remains `not_performed` by the checker.
+
+```json
+{"protocol_version":"1","id":"checks-1","method":"session.artifactChecks","params":{"session_id":"20260519T100000Z_abcd1234"}}
+```
+
+### session.outputArtifacts
+
+Returns `{session_id, job_id, task_id, paths}` for the exact completed file turn. Both
+`session_id` and `job_id` are required. Paths are relative to the requested workspace
+and come from the turn's declared changed outputs. The read-only query does not check
+file contents or prove task success. Sensitive-media sessions, unfinished or failed jobs,
+and mismatched task identities return `output_artifacts_unavailable`.
 
 ### session.modelInfo
 
@@ -649,6 +688,12 @@ pretending compaction occurred. Provider/model failures are returned as structur
 ```
 
 ### session.resume
+
+A successful retained-log replay returns `task_state_recovery: "not_restored"` and
+`task_id: null`: workspace verification evidence may be retained, but no conversation
+objective is restored. Its workspace baseline identity must not be used as an
+objective ID. Failures do not publish this successful result; old peers may omit it.
+
 
 The optional `emit_history: true` replays bounded user/assistant dialogue as `message_end` events for a cold IDE window. Resumed history is persisted in the destination log, so subsequent restarts keep the same conversation.
 
@@ -970,6 +1015,7 @@ Alysis Code extension package management:
 - `ext.list`
 - `ext.info`
 - `ext.install`
+- `ext.custom.save`
 - `ext.uninstall`
 - `ext.enable`
 - `ext.disable`
@@ -982,6 +1028,14 @@ containing plugin/source/commit/manifest/components/permissions metadata, and an
 `action.required_approval` object. The client must present that review to the user and call
 `ext.install` again with `yes: true` and the unchanged `trust_approval` object. `yes: true` alone
 does not approve package code, hooks, tools, skills, or MCP components.
+`ext.custom.save` saves the user's own online plugin (Plugins M2d): `plugin_id` is
+`custom.<name>` and `descriptor` is the exact descriptor text the desktop app built (one HTTPS
+`[[components.custom_connector]]`, the person's tools and "only reads" marks, optional plugin
+skills; nothing that runs). It uses the same two-step review as `ext.install`: the first call
+returns `action.method: "ext.custom.save"` and `required_approval`; the second carries `yes: true`
+and the unchanged `trust_approval`. The engine pins the exact bytes (SHA-256), so any edit needs a
+new review. Custom plugins are user scope only, and `custom.*` ids can't come from the registry
+or git.
 Install sources are limited to registry ids or pinned HTTPS git sources
 (`git+https://...@<40-char-commit>` or `https://...#<40-char-commit>`). URL userinfo, local paths,
 path traversal, unsupported schemes, and unpinned remote sources fail closed before package
@@ -1187,6 +1241,97 @@ The default approval timeout is 300 seconds. Timeout is fail-closed: the agent r
 The bridge remains terminal-non-interactive. It does not call Rich/Typer prompt APIs for IDE
 approvals.
 
+### Desktop host responses: computer.respond, task_budget.respond, browser_start.respond
+
+These methods answer host requests that the bridge emits only to the Alysis Code desktop
+app, and only for sessions created with the matching negotiated `host_capabilities`
+(`sensitive-host-context-v1` / `computer-use-host-v1`, task budgets, and the browser start
+handoff; see the `computer_use_host`, `task_budget` and `browser_start_v1` capability
+features). Editor integrations that do not negotiate these capabilities never receive the
+corresponding `computer_use_request`, `task_budget_request` or `browser_start_request`
+events.
+
+- `computer.respond` resolves one pending Computer Use request. The response must repeat the
+  request's exact binding: `session_id`, `request_id`, `response_nonce`, `operation_id`,
+  `job_id`, `tool_call_id`, `tool_name`, `arguments_fingerprint` and `expires_at`, plus `ok`
+  and either `result` or `error` (`code`, `message`).
+- `task_budget.respond` acknowledges or refuses one private task-budget request with
+  `session_id`, `operation_id`, `job_id`, `request_id`, `response_nonce`, `lease_id`, `ok`,
+  and a refusal `code` or a renewed `task_budget` lease.
+- `browser_start.respond` answers the owner-bound browser start handoff with `session_id`,
+  `job_id`, `tool_call_id`, `operation_id`, `host_nonce`, `request_id`, `allow`, and an
+  optional refusal `code`.
+
+Each response is single use: a mismatched binding, an expired request or a second answer
+fails closed (`duplicate_response`, `unknown_computer_request`, `task_budget_refused`), and no
+response value is echoed into errors. Because the host response binding is checked first,
+these three methods apply their credential-field guard after the binding match instead of
+before dispatch; they still refuse a request that carries credential fields.
+
+Prepared Computer Use actions carry `approval_preflight.expires_at`, a UTC deadline
+at most 30 seconds ahead. Transport and review time count toward that deadline.
+The engine checks wall-clock and monotonic time before execution; expiry or
+cancellation does not replay an action or create a replacement approval.
+
+Hosts can negotiate `computer_use_host.upload_objective_evidence_version: 1` and
+supply an `upload_objective` binding with `version: 1`, `objective_digest` and
+`task_scope_digest`. This requires the upload and verification tool families.
+Only a matching `computer_verify` evaluation for an upload initiated in this
+session can satisfy that objective. Upload status, model text and restored
+history cannot supply completion evidence or recreate that binding.
+
+### Turn-scoped user questions
+
+`session.userQuestions.get` requires `session_id` and `job_id` and returns the matching
+broker's `{session_id, job_id, questions}` snapshots. It can inspect an active job or
+that session's last job. `session.userQuestions.answer` additionally requires
+`request_id` and `answers` (one `{id, selected: string[], text}` object for each question).
+`session.userQuestions.touch` requires the same identifiers and renews the pending
+question's interaction lease. Neither answer nor touch accepts a finished, cancelled,
+mismatched or expired turn. A preselected option is not an answer. The desktop presents
+these questions; the VS Code client exposes typed methods but has no presenter yet.
+
+`host.action.dispatched` is a host-only acknowledgement for negotiated
+`approval_protocol: 1`. It requires exactly `session_id`, `host_action_id`,
+`workspace_fence` and `capability_fingerprint`. A current, unresolved execute-phase
+request with matching active job and fences is required. It marks the dispatch boundary
+once and returns `{status: "dispatched", host_action_id}`. Duplicate or stale receipts
+fail; the receipt grants no new execution authority. The existing VS Code host does not
+yet negotiate this protocol; its typed client method alone does not enable it.
+### Resolved Computer Use entry (withdrawn)
+
+The global rollback keeps `computer_use_start_resolved_v1` unadvertised and rejects
+production descriptors. The following describes the dormant contract for retained
+fixtures; W11 lifecycle negotiation does not re-release it. In that contract,
+`features.computer_use_start_resolved_v1 = {"supported":true,"version":1}` would advertise
+an optional request-owned route. An eligible ordinary `session.create` would carry
+`computer_start_resolved_host`; its immutable descriptor is echoed exactly only in the
+owning private reply. The model receives `computer_start_resolved_v1`, with no initial
+inventory and no requirement to discover first. Legacy entry remains unchanged.
+
+The private `computer_start_resolved_request` event carries the full plan, derived
+selection, and exact capture/request binding. `computer_start_resolved.respond` repeats
+`version`, `session_id`, `job_id`, `tool_call_id`, `operation_id`, `host_nonce`,
+`generation_nonce`, `inventory_nonce`, `request_id` and Boolean `allow`. A denial adds
+its closed `code`; only `computer_use_target_unverified` also requires
+`unverified_target_ids`. Success acknowledges `status: "accepted"` and `request_id`.
+
+V lexical bounds and duplicate/integer-token checks precede generic frame decoding.
+Responses match the pending binding before content validation. Foreign or late replies
+cannot consume it; a malformed owned reply poisons it. Stop, retirement and the original
+bounded exchange deadline cannot be extended by a response. Descriptor, plan, selectors
+and transport values remain private and excluded from durable/display diagnostics.
+This route does not change protected consent, authority or observation controls.
+
+### W11 shared-engine integration status
+
+This U1 source composition is unqualified. The existing `session.close` method and
+its legacy receipt do not prove worker settlement or permit shared-engine CU.
+`computer_use_session_isolation_v1` is not advertised until the complete W11-F1 N
+wire/state/owner contract is implemented and qualified together with O provenance.
+Sensitive session creation is refused in this intermediate composition. Ordinary
+chat remains independent; no legacy separate protected-engine fallback qualifies CU.
+
 ### Capability-negotiated VS Code host actions
 
 `session.create` and session-creating `run.start` requests may include:
@@ -1308,7 +1453,54 @@ Supported action arguments and bounded results:
 Task/debug lists are capped at 100 items, opaque ids at 256 characters, and display fields at 512
 characters. Breakpoint and arbitrary Debug Adapter Protocol requests are outside this contract.
 
+### session.close
+
+Optionally advertised idle-session retirement for clients that keep an engine process
+running between operations. Accepts `session_id`. Active jobs are refused with
+`session_busy`; cancel them and wait for their terminal result first. The method fences
+new work, cancels queued follow-ups and waits for terminal workers under the existing shutdown grace, including
+cleanup that runs after a terminal event. It then closes session resources and removes
+the session's volatile authority, events and job ids. Successful response:
+`{"session_id":"chat-one","status":"closed","worker_settled":true}`.
+
+Clients must verify that exact session and both completion fields before pooling the
+process. A timeout, cleanup failure or ambiguous response requires process retirement.
+Sensitive computer-use sessions support this method, but remain single-operation
+sessions: a subsequent operation must create a new session and obtain fresh host
+authority. Runtimes without the method retain the process-per-operation fallback.
+
 ### session.cancel
+
+An optional `job_id` qualifies cancellation to that exact job in this session. Only
+**absence** selects the legacy session-wide behavior described below. A present
+non-string/empty/invalid identifier is `invalid_field` (maximum 256 characters;
+`[A-Za-z0-9][A-Za-z0-9._:@/-]*`). Unknown, pruned, foreign, non-current or absent-active
+jobs return `job_not_found` / `Job was not found.` before any effect. A retained
+terminal job returns its existing summary read-only, including when another job is
+active or `close_when_idle` is supplied; it neither closes the session nor cancels
+queued work. Qualified responses identify the requested `session_id` and `job_id`.
+
+The session/job pair is resolved under the same lock as cancellation admission.
+A private transition reservation prevents replacement admission/draining while
+session-scoped cancellation callbacks and queue/close effects settle outside that
+lock. Callback uncertainty retains the fence; it is not permission to operate on
+a newer job. Existing sensitive-media redaction and approval behavior apply.
+`session_busy` may refuse a concurrent reset/close/uncertain transition. A retained
+terminal result is history, not proof of worker/resource cleanup or readiness.
+Legacy cancellation of a terminal job whose original worker is still retiring
+returns `session_busy`, with either close flag, before cleanup. An already admitted
+close intent is serviced after original retirement or a positively known no-start
+failure; an ambiguous start retains the fence. Close-observer retirement transfers
+pending responsibility under the state lock. Failed cleanup is retained and does
+not trigger an automatic observer retry loop. A clear/resume validation or retained-
+path lookup refusal before any mutation releases deferred ordinary queue progress.
+An error after checkpoint/queue/history effects begin retains the mutation fence;
+it neither reports successful restoration nor admits the next queued turn.
+
+Clients must qualify the actual launched implementation before sending `job_id`:
+older peers can ignore it and cancel their current job. Version strings and method
+presence alone are not semantic qualification. This adds no public capability or
+new protocol version, and does not authorize a session-wide retry after uncertainty.
 
 Closes an idle session. When an active job is cancellable, `session.cancel` requests cooperative
 checkpoint cancellation and returns `status: "cancellation_requested"` with a job summary. The job
@@ -2203,3 +2395,84 @@ presence does not mean that every editor exposes a control for them.
 The VS Code typed client supports subagent settings queries and feedback calls.
 Computer Use, browser-start consent, task budgets, dispatch receipts, and the
 structured user-question UI require a host that implements those interfaces.
+
+
+### Active-turn questions and host dispatch receipts
+
+`session.userQuestions.get` reads question snapshots for the bound `session_id` and
+`job_id` (the active or most recently finished job). `session.userQuestions.touch`
+and `session.userQuestions.answer` additionally require `request_id` and a live,
+uncancelled matching job. The answer method accepts `answers`; invalid, expired,
+or already-finished requests are refused by the question broker. These methods
+return the current question snapshots and do not create a workspace trust grant.
+
+`host.action.dispatched` acknowledges the execution phase of an approved host
+action. It accepts exactly `session_id`, `host_action_id`, `workspace_fence`, and
+`capability_fingerprint`. The pending action must use approval protocol 1, belong
+to the current live job, be in its execution phase and be within its deadline.
+Stale, duplicate or incorrectly fenced receipts are rejected. This receipt records
+dispatch only; the result still arrives through `host.action.respond`.
+
+
+### feedback.prepare, feedback.send
+
+The private "Send to Alysis" report of the TUI's `/report`, for hosts. `feedback.prepare`
+(`feedback`, optional `session_id`, `workspace`, `include_diagnostics`) builds the report and sends
+nothing: the redacted description (1 to 8,000 characters), the engine version and, only when
+`include_diagnostics` is true, OS, Python version and the last 20 messages of the live session
+(text and tool calls; images, provider state and secrets removed; at most 180 KB). A session that
+is not open in this bridge is read from its retained log, the way `session.resume` rebuilds it, and
+nothing is written to it; that needs `workspace` and, when the host keeps logs elsewhere,
+`session_dir` (as in `session.create`). Without `session_id` it needs `workspace` and includes no
+conversation. The result has `report_id`,
+`report` (the payload as an object for the user to review, after the bridge's redaction; the bytes
+`feedback.send` sends are redacted the same way), `include_diagnostics` and `signed_in`. Sensitive (Computer Use) sessions refuse it.
+Invalid text fails with `feedback_invalid` and the engine's message.
+
+`feedback.send` (`report_id`) sends exactly the reviewed bytes. Signed in to Alysis
+(`alysis login`), the report is tied to the account; otherwise it is sent without credentials and
+the server admits it anonymously, rate-limited. Another provider's key is never sent. The result
+has `report_id`, `created_at` and `anonymous`. A refusal has its own code: `feedback_rate_limited`
+(429), `feedback_sign_in_required` (401 without a sign-in), `feedback_sign_in_expired` (401 with
+one), `feedback_conflict` (409), `feedback_too_large` (413), `feedback_unavailable` (404); anything
+else is `feedback_delivery_failed`. Messages never contain server text. Retrying the same
+`report_id` is safe and never stores the report twice. The bridge keeps the 16 most recent prepared
+reports; an older or unknown ID fails with `feedback_not_prepared`. The call runs on the request
+loop; each network step waits at most 15 seconds. Advertised as `features.feedback_delivery`.
+
+
+### Desktop customization workbench
+
+`skill.import.preview` accepts an explicitly chosen folder, ZIP, or HTTPS Git repository,
+with optional `ref` and `subdir`, `workspace_trusted: true`, and `yes: true`. It returns an
+opaque `draft_id`, source commit, file inventories, full entrypoints, validation issues,
+and package compatibility information. Source acquisition does not execute package code.
+Drafts are process-local, bound to the workspace, expire after 30 minutes, and are bounded
+in count and bytes. A management-process restart requires a new preview.
+
+`skill.import.describe` rereads a draft for host-owned confirmation.
+`skill.import.install` accepts that draft, `selected` candidate IDs, `project`, and
+`accept_partial` for explicitly importing skills separately from a package or retaining
+unsupported metadata. It installs the snapshot bytes, not a fresh source download.
+Unsupported behavioral metadata starts disabled. Per-skill results report partial failure;
+a consumed draft cannot be replayed. `skill.import.discard` abandons a preview.
+
+`skill.import.package` installs a validated native Alysis package from the same reviewed
+snapshot, for the personal scope, through the existing plugin installer. Imported packages
+retain an unverified `snapshot` source kind and cannot claim bundled/custom namespaces.
+Replacing an existing native package is currently refused to preserve component edits.
+Portable Agent Plugins, Codex and Cursor manifests expose skill imports and MCP configuration;
+foreign rules, agents, commands and hooks are shown as requiring separate setup.
+
+`skill.document.read` returns raw SKILL.md, an entire-bundle revision, supporting file names,
+provenance, and edit/update availability. Protected-value redaction makes a document read-only.
+`skill.document.save` validates a complete entrypoint and accepts either a new skill, a managed
+`name` with matching `revision`, or `copy_from` with matching source revision. Supporting
+files survive edits and copies. `skill.update.preview` accepts `expected_source` from the document provenance revision,
+so a host can bind explicit source review before fetching. It checks the recorded source only when
+the installed bundle matches its baseline; installation rechecks the baseline after review.
+
+`hooks.document.read` and `hooks.document.save` use `layer: user | project | local`, with
+revision checks and the engine's hook schema. Saving project hooks does not grant trust.
+`hooks.trust` and `tool.trust` accept `expected_hash` to bind host review to exact content.
+`hooks.test` continues to check matches without executing commands.

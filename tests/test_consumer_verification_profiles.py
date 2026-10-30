@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -34,6 +35,107 @@ def run_profile(tmp_path: Path, spec: dict, timeout: float = 8):
         artifact_path=tmp_path / "receipts" / "result.json",
         timeout_s=timeout,
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows live cwd and pipe cleanup")
+def test_pending_consumer_cleanup_preserves_receipt_and_owns_stage(tmp_path, monkeypatch):
+    from alysis_code import consumer_verification as consumer
+    from alysis_code import process_reaping as reaping
+
+    release = threading.Event()
+    deleted = threading.Event()
+    stages = []
+    processes = []
+    original_mkdtemp = consumer.tempfile.mkdtemp
+    original_rmtree = consumer.shutil.rmtree
+    stop_tree = reaping._stop_windows_process_tree
+
+    def mkdtemp(*args, **kwargs):
+        stage = original_mkdtemp(*args, **kwargs)
+        stages.append(Path(stage))
+        return stage
+
+    def rmtree(path, *args, **kwargs):
+        result = original_rmtree(path, *args, **kwargs)
+        if Path(path) in stages:
+            deleted.set()
+        return result
+
+    def delayed_stop(process):
+        processes.append(process)
+        assert release.wait(8), "test did not release its owned consumer"
+        return stop_tree(process)
+
+    monkeypatch.setattr(consumer.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(consumer.shutil, "rmtree", rmtree)
+    monkeypatch.setattr(reaping, "_stop_windows_process_tree", delayed_stop)
+    (tmp_path / "product.py").write_text(
+        "import time; marker = open('worker-ready', 'w'); marker.write('ready'); marker.close(); time.sleep(30)",
+        encoding="utf-8",
+    )
+    # This fault needs a live child holding its staged cwd, not site or pathlib startup.
+    command = subprocess.list2cmdline(
+        [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "product.py"]
+    )
+    started = time.monotonic()
+    try:
+        result = run_profile(
+            tmp_path,
+            {
+                "profile": "cli",
+                "artifacts": ["product.py"],
+                "checks": [{"command": command}],
+            },
+            timeout=0.4,
+        )
+        assert time.monotonic() - started < 4
+        assert result["status"] == "failed" and not result["profile_passed"]
+        receipt = json.loads((tmp_path / "receipts/result.json").read_text())
+        assert "process cleanup pending" in receipt["checks"][0]["output"]
+        assert receipt["checks"][0]["exit_code"] == 124
+        assert len(stages) == 1 and (stages[0] / "worker-ready").exists()
+        assert processes and processes[0].poll() is None
+        assert not deleted.is_set()
+    finally:
+        release.set()
+        try:
+            assert deleted.wait(3), "the owned stage was not removed after process exit"
+            assert not stages[0].exists()
+            assert all(process.poll() is not None for process in processes)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    stop_tree(process)
+                process.wait(timeout=2)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only staged file deletion")
+def test_readonly_consumer_artifact_preserves_success_and_stage_cleanup(tmp_path, monkeypatch):
+    from alysis_code import consumer_verification as consumer
+
+    stages = []
+    original = consumer.tempfile.mkdtemp
+
+    def mkdtemp(*args, **kwargs):
+        directory = original(*args, **kwargs)
+        stages.append(Path(directory))
+        return directory
+
+    monkeypatch.setattr(consumer.tempfile, "mkdtemp", mkdtemp)
+    product = tmp_path / "product.py"
+    product.write_text("VALUE = 1", encoding="utf-8")
+    product.chmod(0o444)
+    try:
+        result = run_profile(
+            tmp_path,
+            {"profile": "library", "artifacts": ["product.py"], "python_module": "product"},
+        )
+        assert result["profile_passed"], result
+        assert json.loads((tmp_path / "receipts/result.json").read_text())["passed"]
+        assert stages and all(not stage.exists() for stage in stages)
+        assert product.read_text() == "VALUE = 1"
+    finally:
+        product.chmod(0o666)
 
 
 @pytest.mark.parametrize("artifact", [".env", "bundle/.aws/credentials"])
@@ -512,6 +614,8 @@ def test_consumer_observation_never_promotes_or_overwrites_required_check_author
 
 
 def test_real_verify_run_profile_tool_keeps_mandatory_commands_separate(tmp_path):
+    from test_approval_review import _Surface
+
     from alysis_code.agent_loop import create_session
     from alysis_code.verify_gate import VerifyError
 
@@ -527,6 +631,7 @@ def test_real_verify_run_profile_tool_keeps_mandatory_commands_separate(tmp_path
         no_log=True,
         api_key_override="test",
         non_interactive=True,
+        surface=_Surface(allow=True),
         session_log_dir_override=tmp_path / "sessions",
     )
     profile = {"profile": "library", "artifacts": ["product.py"], "python_module": "product"}
@@ -542,7 +647,19 @@ def test_real_verify_run_profile_tool_keeps_mandatory_commands_separate(tmp_path
         session.close()
 
 
-def test_non_network_daemon_checks_real_operation_without_claiming_endpoint_readiness(tmp_path):
+@pytest.mark.parametrize(
+    "publication_lock",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(os.name != "nt", reason="Windows file sharing denial"),
+        ),
+    ],
+)
+def test_non_network_daemon_checks_real_operation_without_claiming_endpoint_readiness(
+    tmp_path, publication_lock
+):
     queue = tmp_path / "queue"
     queue.mkdir()
     (tmp_path / "worker.py").write_text(
@@ -551,9 +668,17 @@ from pathlib import Path
 queue = Path({str(queue)!r})
 while True:
     request = queue / 'request'
-    if request.exists():
+    try:
         data = request.read_text()
-        (queue / 'response').write_text(data.upper())
+    except FileNotFoundError:
+        pass
+    except PermissionError:
+        # Publication can be visible before its Windows sharing handle closes.
+        (queue / 'request-blocked').write_text('read denied')
+    else:
+        pending = queue / 'response.pending'
+        pending.write_text(data.upper())
+        pending.replace(queue / 'response')
         request.unlink()
     time.sleep(0.02)
 """,
@@ -568,12 +693,43 @@ while True:
             f"""import time
 from pathlib import Path
 queue = Path({str(queue)!r})
-(queue / 'request').write_text('public operation')
-deadline = time.monotonic() + 2
-while not (queue / 'response').exists():
+pending = queue / 'request.pending'
+pending.write_text('public operation')
+handle = None
+if {publication_lock!r}:
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                      wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel32.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    # Permit rename but deny readers until the service observes the sharing violation.
+    handle = create(str(pending), 0x80000000, 0x4, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+try:
+    pending.replace(queue / 'request')
+    deadline = time.monotonic() + 2
+    if handle is not None:
+        while not (queue / 'request-blocked').exists():
+            assert time.monotonic() < deadline, 'service never observed sharing denial'
+            time.sleep(0.02)
+finally:
+    if handle is not None:
+        assert close(handle), 'owned publication handle did not close'
+while True:
     assert time.monotonic() < deadline
-    time.sleep(0.02)
-assert (queue / 'response').read_text() == 'PUBLIC OPERATION'
+    try:
+        response = (queue / 'response').read_text()
+    except (FileNotFoundError, PermissionError):
+        time.sleep(0.02)
+    else:
+        break
+assert response == 'PUBLIC OPERATION'
 """,
             encoding="utf-8",
         )

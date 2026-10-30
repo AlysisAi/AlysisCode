@@ -76,7 +76,7 @@ class _BudgetExhaustionClient:
                 ToolCall(
                     id=f"call-{tool_enabled_calls}",
                     name="fs_list",
-                    arguments={"path": "."},
+                    arguments={"root_path": "."},
                 )
             ],
             raw={},
@@ -223,7 +223,7 @@ def test_matching_tool_bridge_text_and_final_emit_once(tmp_path: Path) -> None:
         [
             LLMResponse(
                 content="Done.",
-                tool_calls=[ToolCall(id="tc1", name="fs_list", arguments={"path": "."})],
+                tool_calls=[ToolCall(id="tc1", name="fs_list", arguments={"root_path": "."})],
                 raw={},
             ),
             LLMResponse(content="Done.", tool_calls=[], raw={}),
@@ -265,7 +265,7 @@ def test_distinct_tool_bridge_text_and_final_both_emit(tmp_path: Path) -> None:
         [
             LLMResponse(
                 content="Inspecting files.",
-                tool_calls=[ToolCall(id="tc1", name="fs_list", arguments={"path": "."})],
+                tool_calls=[ToolCall(id="tc1", name="fs_list", arguments={"root_path": "."})],
                 raw={},
             ),
             LLMResponse(content="Done.", tool_calls=[], raw={}),

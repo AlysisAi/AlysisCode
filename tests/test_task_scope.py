@@ -776,7 +776,7 @@ def test_list_changed_files_including_untracked_parses_porcelain(
             )
         raise AssertionError(f"unexpected git command: {args}")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("alysis_code.task_scope.run_capture", fake_run)
     assert list_changed_files_including_untracked(tmp_path) == [
         "src/a.py",
         "new.py",
@@ -811,7 +811,7 @@ def test_list_changed_files_including_untracked_uses_leaf_untracked_files_and_fi
             )
         raise AssertionError(f"unexpected git command: {args}")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("alysis_code.task_scope.run_capture", fake_run)
 
     assert list_changed_files_including_untracked(tmp_path) == [
         "pyproject.toml",
@@ -840,7 +840,7 @@ def test_list_untracked_packaging_metadata_paths_returns_exact_leaf_files(
             )
         raise AssertionError(f"unexpected git command: {args}")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("alysis_code.task_scope.run_capture", fake_run)
 
     assert list_untracked_packaging_metadata_paths(tmp_path) == [
         "src/calcbox.egg-info/PKG-INFO",
@@ -860,7 +860,7 @@ def test_list_changed_files_including_untracked_returns_empty_on_git_timeout(
         seen_timeouts.append(float(kwargs["timeout"]))
         raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs["timeout"])
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("alysis_code.task_scope.run_capture", fake_run)
 
     assert list_changed_files_including_untracked(tmp_path) == []
     assert seen_timeouts

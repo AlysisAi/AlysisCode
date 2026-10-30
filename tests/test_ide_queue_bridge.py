@@ -61,13 +61,14 @@ def configured_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
 
 
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled"])
-def test_checkpoint_failure_blocks_edits_and_recovery_preserves_turn_outcome(
+def test_checkpoint_failure_lets_edits_go_ahead_with_a_warning_and_next_turn_recovers(
     configured_workspace: Path, tmp_path: Path, outcome: str
 ) -> None:
     output = io.StringIO()
     events: list[dict[str, Any]] = []
     captures: list[str] = []
     messages: list[str] = []
+    guard_failures: list[dict[str, Any]] = []
 
     class MemoryStore:
         session_artifact_root = tmp_path / "artifacts"
@@ -85,7 +86,13 @@ def test_checkpoint_failure_blocks_edits_and_recovery_preserves_turn_outcome(
             self.guard = guard
 
         def run_turn(self, message: str) -> int:
-            self.guard.check_tool_call("file_edit", {})
+            from alysis_code.agent.errors import AgentRuntimeError
+
+            try:
+                self.guard.check_tool_call("file_edit", {})
+            except AgentRuntimeError as exc:
+                guard_failures.append(exc.result_payload)
+                raise
             (configured_workspace / "value.txt").write_text(message, encoding="utf-8")
             self.workspace_touched_paths.add("value.txt")
             messages.append(message)
@@ -147,13 +154,18 @@ def test_checkpoint_failure_blocks_edits_and_recovery_preserves_turn_outcome(
         assert job.thread is not None
         job.thread.join(timeout=5)
         assert not job.thread.is_alive()
-        assert job.status == "failed"
-        assert messages == []
-        assert not (configured_workspace / "value.txt").exists()
+        # Restore points failed (for example Git is missing): the edit still happens, with no
+        # checkpoint and a warning that this turn's changes can't be undone.
+        assert job.status == outcome
+        assert messages == ["blocked edit"]
+        assert (configured_workspace / "value.txt").read_text(encoding="utf-8") == "blocked edit"
         assert captures == []
         assert session.change_ledger is None
         assert any(event["type"] == "ide_prompt_started" for event in events)
-        assert "checkpoint_unavailable" in output.getvalue()
+        assert "checkpoint_unavailable" not in output.getvalue()
+        assert "Restore points are unavailable in this chat" in output.getvalue()
+        assert "Reason: storage unavailable" in output.getvalue()
+        assert guard_failures == []
         session.change_ledger = ChangeLedger(configured_workspace)
         bridge.process_line(
             _request(
@@ -171,8 +183,8 @@ def test_checkpoint_failure_blocks_edits_and_recovery_preserves_turn_outcome(
         recovered.thread.join(timeout=10)
         assert not recovered.thread.is_alive()
         assert recovered.status == outcome
-        assert messages == ["retry with checkpoints"]
-        assert (configured_workspace / "value.txt").read_text(encoding="utf-8") == messages[0]
+        assert messages == ["blocked edit", "retry with checkpoints"]
+        assert (configured_workspace / "value.txt").read_text(encoding="utf-8") == messages[-1]
         assert session.change_ledger is not None
     finally:
         bridge.close()
@@ -1033,6 +1045,89 @@ def test_explicit_skill_is_per_turn_and_part_of_queue_identity(configured_worksp
     )
     assert captured == [("history plus user task", captured[0][1]), ("ordinary follow-up", [])]
     bridge.close()
+
+
+def test_memory_scope_belongs_to_queued_turn_and_idempotency(configured_workspace, tmp_path):
+    import uuid
+
+    output = io.StringIO()
+    started, release = threading.Event(), threading.Event()
+    captured = []
+    project_id = str(uuid.uuid4())
+
+    class FakeSession:
+        def run_turn(self, message):
+            captured.append((message, dict(self.memory_scope)))
+            if message == "first":
+                started.set()
+                assert release.wait(5)
+                assert self.memory_scope["project_id"] == project_id
+            return 0
+
+        def close(self):
+            pass
+
+    bridge = StdioBridge(
+        stdout=output,
+        create_session_fn=lambda **kw: FakeSession(),
+        prompt_queue=DurablePromptQueue(tmp_path / "memory-queue.sqlite3"),
+    )
+    try:
+        bridge.process_line(
+            _request(
+                "session.create",
+                {"workspace": str(configured_workspace), "mode": "readonly"},
+                "create",
+            )
+        )
+        session_id = _response(output, "create")["result"]["session_id"]
+        first = {
+            "session_id": session_id,
+            "message": "first",
+            "idempotency_key": "same",
+            "memory_scope": {"project_id": project_id},
+        }
+        bridge.process_line(_request("chat.send", first, "first"))
+        assert started.wait(5)
+        bridge.process_line(
+            _request("chat.send", {**first, "memory_scope": {"enabled": False}}, "conflict")
+        )
+        assert not _response(output, "conflict")["ok"]
+        bridge.process_line(
+            _request(
+                "chat.send",
+                {"session_id": session_id, "message": "second", "memory_scope": {"enabled": False}},
+                "second",
+            )
+        )
+        second = _response(output, "second")["result"]
+        assert second["status"] == "queued"
+        release.set()
+        _wait(
+            output,
+            lambda event: (
+                f"job_completed {second['job_id']}" in str(event.get("payload", {}).get("message"))
+            ),
+        )
+        assert captured == [
+            ("first", {"project_id": project_id, "enabled": True}),
+            ("second", {"project_id": None, "enabled": False}),
+        ]
+        bridge.process_line(
+            _request(
+                "chat.send",
+                {
+                    "session_id": session_id,
+                    "message": "bad",
+                    "memory_scope": {"project_id": "../../escape"},
+                },
+                "bad",
+            )
+        )
+        assert _response(output, "bad")["error"]["code"] == "invalid_field"
+    finally:
+        release.set()
+        bridge.close()
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,7 @@ from alysis_code.llm.types import LLMResponse
 from alysis_code.prompt_guidance_catalog import (
     ALL_GUIDANCE_PROFILES,
     GUIDANCE_PROFILES,
+    PROMPT_FAMILIES,
     subagent_profile,
 )
 from alysis_code.runtime_kind import RuntimeKind
@@ -175,7 +176,9 @@ def test_parent_turn_delivers_workflow_without_rewriting_role_or_history(
         session.close()
 
 
-@pytest.mark.parametrize("profile", GUIDANCE_PROFILES)
+# Each family has one child profile regardless of parent density. The family
+# integration matrix covers both parent variants; keep every child request here.
+@pytest.mark.parametrize("profile", [f"{family}-expanded" for family in PROMPT_FAMILIES])
 def test_fresh_and_resumed_child_deliver_workflow_and_preserve_ownership(
     tmp_path: Path, recording_clients: list[_RecordingClient], profile: str
 ) -> None:

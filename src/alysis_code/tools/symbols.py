@@ -10,11 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from ..file_classification import CODE_SCAN_SKIP_DIR_NAMES, symbol_search_backend_for_path
-
-
-class SymbolSearchError(RuntimeError):
-    pass
-
+from ..project_folders import containing_root, relative_path
+from .errors import SymbolSearchError
 
 _SUPPORTED_KINDS = {"function", "class", "method", "constant"}
 _DEFAULT_MAX_RESULTS = 100
@@ -175,7 +172,7 @@ def _resolve_under_root(root: Path, user_path: str) -> Path:
     root_abs = root.resolve()
     target = (root_abs / user_path).resolve()
     try:
-        target.relative_to(root_abs)
+        containing_root(root_abs, target)
     except ValueError as e:
         raise SymbolSearchError(f"root_path escapes root: {user_path}") from e
     return target
@@ -1402,7 +1399,7 @@ def symbol_search(
     root_abs = root.resolve()
     scope_display = "."
     try:
-        rel_base = base.resolve().relative_to(root_abs)
+        rel_base = Path(relative_path(root_abs, base))
     except ValueError:
         scope_display = root_path
     else:

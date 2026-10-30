@@ -196,7 +196,11 @@ def test_each_non_custom_preset_has_valid_base_url_and_suggested_models() -> Non
     for preset in PROFILE_PRESETS:
         if preset.key in {"custom", "alysis"}:
             continue
-        assert url_pattern.match(preset.base_url), preset.key
+        if preset.key == "alysis":
+            assert preset.base_url == ""
+            assert url_pattern.match(make_profile_from_preset(preset).base_url)
+        else:
+            assert url_pattern.match(preset.base_url), preset.key
         assert preset.suggested_models, preset.key
 
 
@@ -208,6 +212,7 @@ def test_openai_preset_uses_working_chat_completion_models() -> None:
     assert preset.suggested_models == (
         "gpt-6-astra",
         "gpt-6.1-sol",
+        "gpt-6.1-terra",
         "gpt-6-sol",
         "gpt-6-luna",
         "gpt-5.6-terra",
@@ -228,9 +233,10 @@ def test_openai_presets_lead_with_gpt_6_astra() -> None:
         preset = get_preset(key)
 
         assert preset is not None
-        assert preset.suggested_models[:4] == (
+        assert preset.suggested_models[:5] == (
             "gpt-6-astra",
             "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-sol",
             "gpt-6-luna",
         )
@@ -277,7 +283,7 @@ def test_moonshot_presets_alias_retired_kimi_k2_to_current_model() -> None:
 
 def test_provider_presets_use_current_openai_compatible_base_urls() -> None:
     expected_base_urls = {
-        # The Alysis Code hosted proxy (llm Edge Function, DeepSeek upstream).
+        # The hosted gateway resolves from cloud configuration when materializing a profile.
         "alysis": "",
         "openai": "https://api.openai.com/v1",
         "openai-responses": "https://api.openai.com/v1",
@@ -293,6 +299,7 @@ def test_provider_presets_use_current_openai_compatible_base_urls() -> None:
         "qwen-us": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
         "qwen-cn": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "zhipu": "https://open.bigmodel.cn/api/paas/v4/",
+        "zai": "https://api.z.ai/api/paas/v4",
         "zai-coding-plan": "https://api.z.ai/api/coding/paas/v4",
         "moonshot": "https://api.moonshot.ai/v1",
         "kimi-code": "https://api.kimi.com/coding/v1",
@@ -416,6 +423,7 @@ def test_launch_provider_presets_use_supported_chat_models() -> None:
         ),
         "mistral": (
             "mistral-medium-3-5",
+            "mistral-large-4",
             "mistral-large-2512",
             "mistral-small-2603",
             "zai-glm-5-3",
@@ -504,6 +512,9 @@ def test_launch_provider_presets_use_supported_chat_models() -> None:
             "deepseek-ai/DeepSeek-V4-Flash-0731",
             "zai-org/GLM-5.3-Flash",
             "MiniMaxAI/MiniMax-M3",
+            "MiniMaxAI/MiniMax-M3.1-Flash",
+            "reflection/Beam-1.0-501B-A23B",
+            "nvidia/NVIDIA-Nemotron-3.5-Super-VL",
             "openai/gpt-oss-120b",
             "Qwen/Qwen3.5-9B",
         ),
@@ -590,7 +601,26 @@ def test_zai_coding_plan_preset_is_separate_from_general_zhipu_api() -> None:
     assert canonical_model_alias_for_preset(preset, "glm-4.7") == "glm-5.3-flash"
     assert canonical_model_alias_for_preset(preset, "glm-5-turbo") == "glm-5.3-flash"
     assert "glm-5.2" not in preset.suggested_models
-    assert "supported coding tools" in preset.setup_warning
+    assert "supported agent tools" in preset.setup_warning
+
+
+def test_zai_general_api_is_distinct_from_plan_and_china_without_model_remapping() -> None:
+    from alysis_code.provider_url import known_provider_key_from_base_url
+    from alysis_code.reasoning_contracts import reasoning_contract_for
+
+    general, plan, china = (get_preset(key) for key in ("zai", "zai-coding-plan", "zhipu"))
+    assert general is not None and plan is not None and china is not None
+    assert len({p.base_url for p in (general, plan, china)}) == 3
+    assert general.provider_key == "zai" and general.api_key_env == "ZAI_API_KEY"
+    assert general.model_aliases == {}
+    assert "billed separately" in general.connection_description
+    assert known_provider_key_from_base_url(general.base_url) == "zai"
+    assert known_provider_key_from_base_url(plan.base_url) == "zai_coding_plan"
+    assert known_provider_key_from_base_url("https://api.z.ai.example.org/api/paas/v4") is None
+    assert find_preset_for_base_url(general.base_url) is general
+    assert reasoning_contract_for("zai", "glm-5.3-flash") == reasoning_contract_for(
+        "zhipu", "glm-5.3-flash"
+    )
 
 
 def test_zhipu_general_api_keeps_optional_thinking_fallback_and_free_tier() -> None:

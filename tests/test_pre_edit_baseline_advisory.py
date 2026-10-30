@@ -17,6 +17,7 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 
 _EXECUTED_ARGV = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
@@ -88,6 +89,11 @@ def test_first_edit_advisory_uses_pre_edit_test_facts(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ALYSIS_REGRESSION_BASELINE", "on")
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
+    )
     root = tmp_path / "repo"
     root.mkdir()
     (root / "logic.py").write_text(_INITIAL_SOURCE)

@@ -13,6 +13,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .. import __version__
+from ..atomic_io import atomic_write_text
+from ..cli_impl.commands.auth import native_provider_status_payload
 from ..cli_impl.commands.hooks import (
     _HOOK_SESSION_SOURCES,
     _HOOKS_INIT_TEMPLATE,
@@ -30,6 +32,7 @@ from ..cli_impl.commands.mcp import (
     _require_http_oauth_server_for_auth,
     _resolve_mcp_server_by_id,
 )
+from ..computer_use_attribution import phase
 from ..config import (
     AppConfig,
     ConfigError,
@@ -51,6 +54,7 @@ from ..custom_tools import (
     untrust_project_tool,
 )
 from ..extensions.activation import resolve_active_plugins
+from ..extensions.bundled import bundled_manifest, parse_bundled_manifest, same_bundled_access
 from ..extensions.component_activation import (
     build_plugin_activation_index,
     filter_discovered_skills_for_plugins,
@@ -62,8 +66,9 @@ from ..extensions.install import (
     install_plugin,
     uninstall_plugin,
 )
+from ..extensions.manifest import PluginManifestError, load_manifest
 from ..extensions.models import normalize_extension_id
-from ..extensions.paths import project_extensions_path
+from ..extensions.paths import installed_plugin_root, project_extensions_path
 from ..extensions.registry import find_by_id, load_registry
 from ..extensions.registry import search as search_extensions
 from ..extensions.state import (
@@ -157,9 +162,10 @@ from ..skills import (
     set_project_skill_override,
     validate_skill_bundle,
 )
+from ..skills.workbench import SkillWorkbench, provenance_revision, read_bundle
 from ..tools.availability import get_tool_availability
 from ..tools.registry import iter_builtin_tool_metadata
-from ..tools.web_search import resolve_web_search_runtime_status
+from ..tools.web_search_runtime import resolve_web_search_runtime_status
 from ..updates import check_for_updates, status_from_cache
 from ..usage_tracker import aggregate_usage_from_session_logs
 from ..workspace_binding import WorkspaceAction, WorkspaceBindingError
@@ -183,9 +189,19 @@ _URL_USERINFO_PATTERN = re.compile(
     r"(?i)\b((?:git\+)?https?://)([^/@\s]+)@([A-Za-z0-9.-]+(?::\d+)?)"
 )
 _EXTENSION_REGISTRY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_-]*$")
-_SHA40_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 MANAGEMENT_METHODS = (
+    "skill.import.describe",
+    "skill.import.package",
+    "skill.import.preview",
+    "skill.import.install",
+    "skill.import.discard",
+    "skill.document.read",
+    "skill.document.save",
+    "skill.update.preview",
+    "hooks.document.read",
+    "hooks.document.save",
+    "provider.auth.status",
     "config.get",
     "config.set",
     "config.schema",
@@ -250,6 +266,7 @@ MANAGEMENT_METHODS = (
     "ext.list",
     "ext.info",
     "ext.install",
+    "ext.custom.save",
     "ext.uninstall",
     "ext.enable",
     "ext.disable",
@@ -257,6 +274,13 @@ MANAGEMENT_METHODS = (
 
 MUTATING_MANAGEMENT_METHODS = frozenset(
     {
+        "skill.import.package",
+        "skill.import.preview",
+        "skill.import.install",
+        "skill.import.discard",
+        "skill.document.save",
+        "skill.update.preview",
+        "hooks.document.save",
         "config.set",
         "profile.add",
         "profile.remove",
@@ -283,6 +307,7 @@ MUTATING_MANAGEMENT_METHODS = frozenset(
         "hooks.enable",
         "hooks.disable",
         "ext.install",
+        "ext.custom.save",
         "ext.uninstall",
         "ext.enable",
         "ext.disable",
@@ -291,6 +316,16 @@ MUTATING_MANAGEMENT_METHODS = frozenset(
 
 WORKSPACE_REQUIRED_MANAGEMENT_METHODS = frozenset(
     {
+        "skill.import.describe",
+        "skill.import.package",
+        "skill.import.preview",
+        "skill.import.install",
+        "skill.import.discard",
+        "skill.document.read",
+        "skill.document.save",
+        "skill.update.preview",
+        "hooks.document.read",
+        "hooks.document.save",
         "tool.list",
         "tool.info",
         "tool.trust",
@@ -326,6 +361,7 @@ WORKSPACE_REQUIRED_MANAGEMENT_METHODS = frozenset(
         "ext.info",
         "ext.list",
         "ext.install",
+        "ext.custom.save",
         "ext.uninstall",
         "ext.enable",
         "ext.disable",
@@ -370,7 +406,7 @@ MANAGEMENT_METHOD_CAPABILITIES["ext.install"].update(
         "trust_review_required": True,
         "approval_payload": "extension_install_trust_approval_v1",
         "yes_alone_auto_trusts_package": False,
-        "source_policy": "registry_id_or_pinned_https_git_source",
+        "source_policy": "registry_id_only",
         "url_userinfo_rejected": True,
     }
 )
@@ -572,16 +608,40 @@ def retained_session_usage(
     return _session_usage(params, request_id)
 
 
-def _config_get(_params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    cfg = load_config()
+def _provider_auth_status(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    provider_id = _required_str(params, "provider_id", request_id=request_id)
+    status = native_provider_status_payload(provider_id)
+    # Only the validated route fingerprint crosses the bridge, never credential material.
+    # Its wire name avoids weakening the general credential-field redactor.
     return {
-        "config": _safe_config_payload(cfg),
-        "active_profile": str((cfg.extra_fields or {}).get("active_profile") or ""),
-        "api_key": _api_key_status(resolve_api_key(cfg)),
-        "config_path": str(config_path()),
-        "credentials_path": str(credentials_path()),
+        **{
+            key: status.get(key)
+            for key in (
+                "connection",
+                "authenticated",
+                "verified",
+                "detail",
+                "transport",
+                "display_name",
+                "error",
+            )
+        },
+        "route_scope": status.get("credential_scope"),
         "secret_values_included": False,
     }
+
+
+def _config_get(_params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    with phase("config"):
+        cfg = load_config()
+        return {
+            "config": _safe_config_payload(cfg),
+            "active_profile": str((cfg.extra_fields or {}).get("active_profile") or ""),
+            "api_key": _api_key_status(resolve_api_key(cfg)),
+            "config_path": str(config_path()),
+            "credentials_path": str(credentials_path()),
+            "secret_values_included": False,
+        }
 
 
 def _config_schema(_params: dict[str, Any], _request_id: RequestId) -> dict[str, Any]:
@@ -1059,7 +1119,15 @@ def _tool_info(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
         )
     return {
         "workspace_root": str(workspace_root),
-        "tools": [_custom_tool_payload(entry, workspace_root=workspace_root) for entry in matches],
+        "tools": [
+            {
+                **_custom_tool_payload(entry, workspace_root=workspace_root),
+                "code": entry.source_path.read_text(encoding="utf-8")
+                if entry.spec is not None and entry.source_path.stat().st_size <= 1024 * 1024
+                else "",
+            }
+            for entry in matches
+        ],
     }
 
 
@@ -1068,6 +1136,10 @@ def _tool_trust(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]
     workspace_root, entries = _custom_tool_entries(params, request_id=request_id)
     entry = _select_project_tool_entry(entries, name=name, request_id=request_id)
     assert entry.spec is not None
+    if params.get("expected_hash") is not None and params["expected_hash"] != entry.spec.file_hash:
+        raise SkillLifecycleError(
+            "The tool changed after review. Review it again before trusting it."
+        )
     trust_project_tool(entry.spec)
     return {
         "workspace_root": str(workspace_root),
@@ -1120,6 +1192,186 @@ def _agents_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any
         else None
     )
     return {**subagent_catalog(load_config(), root=root), "secret_values_included": False}
+
+
+_skill_workbench = SkillWorkbench()
+
+
+def _skill_import_describe(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    root = _workspace_root_from_params(params, request_id=request_id, required=True)
+    token = _required_str(params, "draft_id", request_id=request_id)
+    return _skill_workbench._payload(token, _skill_workbench._draft(root, token))
+
+
+def _skill_import_package(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    if not _confirmed(params):
+        return _confirmation_required("skill.import.package", "install the reviewed native package")
+    return _skill_workbench.install_package(
+        _workspace_root_from_params(params, request_id=request_id, required=True),
+        _required_str(params, "draft_id", request_id=request_id),
+    )
+
+
+def _skill_import_preview(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    if not _confirmed(params):
+        return _confirmation_required("skill.import.preview", "read the explicitly selected source")
+    return _skill_workbench.preview(
+        workspace=_workspace_root_from_params(params, request_id=request_id, required=True),
+        source=_required_str(params, "source", request_id=request_id),
+        subdir=_optional_str(params, "subdir", default=""),
+        ref=_optional_str(params, "ref", default=""),
+    )
+
+
+def _skill_import_install(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    if not _confirmed(params):
+        return _confirmation_required(
+            "skill.import.install", "install the reviewed skill snapshots"
+        )
+    selected = params.get("selected")
+    if not isinstance(selected, list) or any(not isinstance(item, str) for item in selected):
+        raise SkillLifecycleError("Select skills from the import preview.")
+    return _skill_workbench.install(
+        _workspace_root_from_params(params, request_id=request_id, required=True),
+        _required_str(params, "draft_id", request_id=request_id),
+        selected,
+        project=_optional_bool(params, "project", default=False),
+        accept_partial=_optional_bool(params, "accept_partial", default=False),
+    )
+
+
+def _skill_import_discard(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    return _skill_workbench.discard(
+        _workspace_root_from_params(params, request_id=request_id, required=True),
+        _required_str(params, "draft_id", request_id=request_id),
+    )
+
+
+def _skill_document_entry(params: dict[str, Any], request_id: RequestId) -> tuple[Any, Any]:
+    root, catalog = _skill_catalog(params, request_id=request_id)
+    entry = resolve_skill_catalog_entry(
+        entries=catalog.entries, raw_name=_required_str(params, "name", request_id=request_id)
+    )
+    if entry is None:
+        raise SkillLifecycleError("This skill is no longer available.")
+    return root, entry
+
+
+def _skill_document_read(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    from ..extensions.component_activation import skill_plugin_id
+    from ..skills.workbench import DESCRIPTIVE_FIELDS
+
+    root, entry = _skill_document_entry(params, request_id)
+    owner_plugin = skill_plugin_id(entry.skill, build_plugin_activation_index(root))
+    files = read_bundle(entry.skill.bundle_path)
+    content = files.files["SKILL.md"][0].decode("utf-8")
+    editable = False
+    if entry.managed:
+        _, managed_path = _skill_workbench.managed(
+            root, entry.skill.name, project=entry.skill.source_scope == "project"
+        )
+        editable = managed_path.resolve() == entry.skill.bundle_path.resolve()
+    redacted = _redact_payload(content) != content
+    return {
+        "name": entry.skill.name,
+        "content": content,
+        "revision": files.digest,
+        "editable": editable and not redacted and not owner_plugin,
+        "owner_plugin": owner_plugin,
+        "enabled": entry.enabled,
+        "unsupported_metadata": sorted(
+            set(validate_skill_bundle(entry.skill.bundle_path).metadata) - DESCRIPTIVE_FIELDS
+        ),
+        "redacted": redacted,
+        "scope": entry.skill.source_scope,
+        "files": sorted(files.files),
+        "source": _dataclass_payload(entry.install_record),
+        "provenance_revision": provenance_revision(entry.install_record)
+        if entry.install_record
+        else None,
+        "can_update": bool(entry.install_record and entry.install_record.source_digest),
+    }
+
+
+def _skill_document_save(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    if not _confirmed(params):
+        return _confirmation_required("skill.document.save", "save skill instructions")
+    root = _workspace_root_from_params(params, request_id=request_id, required=True)
+    template = None
+    if params.get("copy_from"):
+        _, entry = _skill_document_entry({**params, "name": params["copy_from"]}, request_id)
+        template = read_bundle(entry.skill.bundle_path)
+        if template.digest != _required_str(params, "revision", request_id=request_id):
+            raise SkillLifecycleError("The source skill changed. Open it again before copying.")
+    return _skill_workbench.save(
+        root,
+        _required_str(params, "content", request_id=request_id),
+        project=_optional_bool(params, "project", default=False),
+        name=_optional_str(params, "name", default=""),
+        revision=_optional_str(params, "revision", default=""),
+        template=template,
+    )
+
+
+def _skill_update_preview(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    if not _confirmed(params):
+        return _confirmation_required(
+            "skill.update.preview", "check the skill's recorded source for updates"
+        )
+    return _skill_workbench.update_preview(
+        _workspace_root_from_params(params, request_id=request_id, required=True),
+        _required_str(params, "name", request_id=request_id),
+        project=_optional_bool(params, "project", default=False),
+        expected_source=_optional_str_or_none(params, "expected_source"),
+    )
+
+
+def _hooks_document_path(params: dict[str, Any], request_id: RequestId) -> Path:
+    root = _workspace_root_from_params(params, request_id=request_id, required=True)
+    layer = _optional_str(params, "layer", default="project")
+    if layer not in {"user", "project", "local"}:
+        raise SkillLifecycleError("Choose personal, project or local project hooks.")
+    path = _hooks_config_path_for_layer(workspace_root=root, layer=layer)
+    if path.is_symlink() or path.parent.is_symlink():
+        raise SkillLifecycleError("Hooks configuration must not be a symbolic link.")
+    return path
+
+
+def _hooks_document_read(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    path = _hooks_document_path(params, request_id)
+    if path.exists() and path.stat().st_size > 1024 * 1024:
+        raise SkillLifecycleError("Hooks configuration exceeds 1 MiB.")
+    content = path.read_bytes().decode("utf-8") if path.exists() else ""
+    return {
+        "content": content or json.dumps(_HOOKS_INIT_TEMPLATE, indent=2),
+        "revision": hashlib.sha256(content.encode()).hexdigest(),
+        "path": str(path),
+        "editable": _redact_payload(content) == content,
+    }
+
+
+def _hooks_document_save(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    from pydantic import ValidationError
+
+    from ..hooks.models import HookConfigFile
+
+    if not _confirmed(params):
+        return _confirmation_required("hooks.document.save", "save hook commands and options")
+    path = _hooks_document_path(params, request_id)
+    content = _required_str(params, "content", request_id=request_id)
+    if len(content.encode()) > 1024 * 1024:
+        raise SkillLifecycleError("Hooks configuration exceeds 1 MiB.")
+    current = _hooks_document_read(params, request_id)
+    if not current["editable"] or current["revision"] != params.get("revision"):
+        raise SkillLifecycleError(
+            "Hooks changed or contain protected values. Reload before editing."
+        )
+    try:
+        HookConfigFile.model_validate_json(content)
+    except ValidationError as exc:
+        raise SkillLifecycleError("Invalid hooks configuration: " + str(exc)) from exc
+    atomic_write_text(path, content)
+    return {"changed": True, "path": str(path)}
 
 
 def _skill_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
@@ -1227,6 +1479,10 @@ def _skill_disable(params: dict[str, Any], request_id: RequestId) -> dict[str, A
 
 def _skill_remove(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     workspace_root = _workspace_root_from_params(params, request_id=request_id, required=True)
+    _skill_workbench._root(workspace_root, _optional_bool(params, "project", default=False))
+    name = _required_str(params, "name", request_id=request_id)
+    if name.casefold() in build_plugin_activation_index(workspace_root).skill_lookup_to_plugin_id:
+        raise SkillLifecycleError("Remove this skill through its owning plugin.")
     result = remove_managed_skill(
         name=_required_str(params, "name", request_id=request_id),
         workspace_root=workspace_root,
@@ -1752,7 +2008,11 @@ def _hooks_trust(params: dict[str, Any], request_id: RequestId) -> dict[str, Any
     workspace_root, config_path = _project_hooks_config(
         params, request_id=request_id, validate=True
     )
-    trust_project_hooks_config(workspace_root=workspace_root, config_path=config_path)
+    trust_project_hooks_config(
+        workspace_root=workspace_root,
+        config_path=config_path,
+        expected_hash=_optional_str_or_none(params, "expected_hash"),
+    )
     return {
         "target": target,
         "workspace_root": str(workspace_root),
@@ -2003,9 +2263,53 @@ def _ext_info(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     effective_enabled = set(
         resolve_active_plugins(repo_root=repo_root, workspace_trust_prompt=None).enabled_plugin_ids
     )
+    # A bundled install whose pin differs from the descriptor this engine ships.
+    update_available = (
+        entry is not None
+        and installed_record is not None
+        and getattr(installed_record, "source_kind", "git") == "bundled"
+        and getattr(entry, "source_kind", "git") == "bundled"
+        and getattr(installed_record, "package_sha256", None) != entry.package_sha256
+    )
+    custom = (
+        _custom_extension_payload(normalized, repo_root)
+        if entry is None and getattr(installed_record, "source_kind", "git") == "custom"
+        else None
+    )
+    imported = None
+    if (
+        entry is None
+        and installed_record is not None
+        and installed_record.source_kind == "snapshot"
+    ):
+        package_path = installed_plugin_root(
+            normalized, project=global_record is None, repo_root=repo_root
+        )
+        try:
+            manifest = load_manifest(package_path)
+            imported = {
+                "id": normalized,
+                "name": manifest.plugin.name,
+                "description": manifest.plugin.description,
+                "publisher": manifest.plugin.author,
+                "version": manifest.plugin.version,
+                "catalog_source": "Imported package",
+                "components": installed_record.component_ids,
+                "manifest_review": manifest.model_dump(mode="json"),
+                "permissions": [
+                    key for key, values in installed_record.component_ids.items() if values
+                ],
+            }
+        except PluginManifestError:
+            imported = {
+                "id": normalized,
+                "description": "Installed manifest is invalid. Re-import to repair this plugin.",
+            }
     return {
         "workspace_root": str(repo_root),
-        "extension": _registry_entry_payload(entry) if entry is not None else {"id": ext_id},
+        "extension": _registry_entry_payload(entry)
+        if entry is not None
+        else custom or imported or {"id": ext_id},
         "installed": _dataclass_payload(installed_record),
         "installed_scopes": [
             scope
@@ -2013,6 +2317,13 @@ def _ext_info(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
             if record is not None
         ],
         "enabled_effective": normalized in effective_enabled,
+        "update_available": update_available,
+        # The shipped copy grants different access, so the installed one stays off until the
+        # person reviews and installs the update.
+        "needs_review": update_available
+        and not _installed_grants_bundled_access(
+            normalized, entry, project=global_record is None, repo_root=repo_root
+        ),
         "project_override_state": _project_extension_override_state(project_overrides, normalized),
         "workspace_trust": _extension_workspace_trust_payload(repo_root),
         "secret_values_included": False,
@@ -2072,6 +2383,125 @@ def _ext_install(params: dict[str, Any], request_id: RequestId) -> dict[str, Any
     }
 
 
+_CUSTOM_PLUGIN_ID_RE = re.compile(r"^custom\.[a-z][a-z0-9_]{0,19}$")
+
+
+def _ext_custom_save(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    """Save the user's own online plugin (Plugins M2d), after the same two-step trust review.
+
+    The desktop app supplies the descriptor; the engine accepts only the restricted custom
+    form (one HTTPS endpoint, the person's tools and marks, optional skills). Every edit is a
+    new descriptor hash, so it needs the person's consent again.
+    """
+    plugin_id = _required_str(params, "plugin_id", request_id=request_id)
+    # The exact text: the app pins the same bytes' hash, so nothing here may trim or rewrite it.
+    descriptor = params.get("descriptor")
+    if not isinstance(descriptor, str) or not descriptor.strip():
+        raise ProtocolError(
+            "missing_param", "ext.custom.save requires descriptor.", request_id=request_id
+        )
+    if not _CUSTOM_PLUGIN_ID_RE.fullmatch(plugin_id):
+        raise ProtocolError(
+            "invalid_extension_source",
+            "A custom plugin id is custom.<lowercase name>.",
+            request_id=request_id,
+        )
+    content = descriptor.encode("utf-8")
+    if len(content) > 64 * 1024:
+        raise ProtocolError(
+            "invalid_extension_source", "The custom descriptor is too large.", request_id=request_id
+        )
+    source = f"custom:{plugin_id}"
+    repo_root = _workspace_root_from_params(params, request_id=request_id, required=False)
+    approval = _ext_install_trust_approval_param(params, request_id=request_id)
+    if approval is not None and not _confirmed(params):
+        return _confirmation_required(
+            "ext.custom.save", "save the custom plugin after explicit review of its descriptor"
+        )
+    trust_request: Any | None = None
+
+    def _trust_prompt(request: Any) -> bool:
+        nonlocal trust_request
+        trust_request = request
+        if approval is None:
+            return False
+        _validate_ext_install_trust_approval(
+            request, approval, source=source, project=False, request_id=request_id
+        )
+        return True
+
+    try:
+        result = install_plugin(
+            source=source,
+            repo_root=repo_root,
+            project=False,
+            trust_prompt=_trust_prompt,
+            custom_descriptor=content,
+        )
+    except PluginInstallError as exc:
+        if (
+            trust_request is not None
+            and approval is None
+            and str(exc) == "install rejected by user"
+        ):
+            review = _ext_install_trust_review_result(trust_request, source=source, project=False)
+            review["action"]["method"] = "ext.custom.save"
+            return review
+        raise ProtocolError("invalid_custom_plugin", str(exc), request_id=request_id) from exc
+    return {
+        "result": _dataclass_payload(result),
+        "changed": bool(getattr(result, "trust_was_prompted", True)),
+        "secret_values_included": False,
+    }
+
+
+def _custom_extension_payload(ext_id: str, repo_root: Path) -> dict[str, Any] | None:
+    """A custom plugin's page and consent details, from its installed descriptor."""
+    try:
+        manifest = load_manifest(installed_plugin_root(ext_id, project=False, repo_root=repo_root))
+    except (OSError, ValueError, PluginManifestError):
+        return None
+    if not manifest.components.custom_connector:
+        return None
+    connector = manifest.components.custom_connector[0]
+    short = manifest.plugin.id.split(".", 1)[1]
+    return {
+        "id": manifest.plugin.id,
+        "name": manifest.plugin.name,
+        "description": manifest.plugin.description,
+        "version": manifest.plugin.version,
+        "source_kind": "custom",
+        "catalog_source": "custom",
+        "publisher": "You",
+        "tier": "custom",
+        "categories": [],
+        "permissions": [],
+        "connects_to": [str(connector.url)],
+        "custom_connector": {
+            "url": str(connector.url),
+            "auth": connector.auth,
+            "auth_header": connector.auth_header,
+            "auth_bearer": connector.auth_bearer,
+            "oauth_issuer": str(connector.oauth_issuer) if connector.oauth_issuer else None,
+            "oauth_client": connector.oauth_client,
+            "oauth_scopes": list(connector.oauth_scopes),
+            "tools": [
+                {"name": tool.name, "reads_only": tool.reads_only} for tool in connector.tools
+            ],
+        },
+        "skills": [
+            {
+                "name": f"{short}:{skill.name}",
+                "title": skill.title,
+                "description": skill.description,
+                "uses_tools": list(skill.uses_tools),
+                "text": skill.text,
+            }
+            for skill in manifest.components.plugin_skill
+        ],
+    }
+
+
 def _ext_uninstall(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     if not _confirmed(params):
         return _confirmation_required("ext.uninstall", "uninstall extension package")
@@ -2100,6 +2530,7 @@ def _set_skill_enabled(
     name = _required_str(params, "name", request_id=request_id)
     project = _optional_bool(params, "project", default=False)
     workspace_root, catalog = _skill_catalog(params, request_id=request_id)
+    _skill_workbench._root(workspace_root, project)
     key = name.strip().casefold()
     if project:
         project_state = load_project_skill_state(workspace_root)
@@ -2320,7 +2751,94 @@ def _registry_entry_payload(entry: Any) -> dict[str, Any]:
         "source_kind": getattr(entry, "source_kind", "git"),
         "package_sha256": getattr(entry, "package_sha256", None),
         "upstream_commit": getattr(entry, "upstream_commit", None),
+        "categories": list(getattr(entry, "categories", None) or []),
+        "publisher": getattr(entry, "publisher", None),
+        "tier": getattr(entry, "tier", None),
+        "catalog_source": "built-in",
+        "connects_to": _bundled_endpoints(entry),
+        "skills": _bundled_skills(entry),
+        **_bundled_verified_connector(entry),
     }
+
+
+def _pinned_bundled_manifest(entry: Any) -> Any | None:
+    if getattr(entry, "source_kind", "git") != "bundled":
+        return None
+    try:
+        return parse_bundled_manifest(bundled_manifest(entry))
+    except (OSError, RuntimeError):
+        return None
+
+
+def _bundled_endpoints(entry: Any) -> list[str]:
+    """Where a built-in plugin connects, read from its pinned descriptor (not from display text)."""
+    manifest = _pinned_bundled_manifest(entry)
+    if manifest is None:
+        return []
+    return [str(server.url) for server in manifest.components.mcp_server if server.url] + [
+        origin
+        for connector in manifest.components.verified_connector
+        for origin in (connector.url, *connector.oauth_sign_in_origins)
+    ]
+
+
+def _bundled_verified_connector(entry: Any) -> dict[str, Any]:
+    """A verified plugin's server, sign-in and reviewed tools, from its pinned descriptor.
+
+    The app compares the identity fields with its own pins before it signs in or sends a token.
+    """
+    manifest = _pinned_bundled_manifest(entry)
+    if manifest is None or not manifest.components.verified_connector:
+        return {}
+    connector = manifest.components.verified_connector[0]
+    return {
+        "verified_connector": {
+            "id": connector.id,
+            "url": connector.url,
+            "resource": connector.effective_resource,
+            "oauth_issuer": connector.oauth_issuer,
+            "oauth_sign_in_origins": list(connector.oauth_sign_in_origins),
+            "oauth_scopes": list(connector.oauth_scopes),
+            "max_argument_bytes": connector.max_argument_bytes,
+            "host_arguments": [
+                {"name": argument.name, "source": argument.source}
+                for argument in connector.host_arguments
+            ],
+            "tools": [
+                {"name": tool.name, "reads_only": tool.reads_only} for tool in connector.tools
+            ],
+        }
+    }
+
+
+def _bundled_skills(entry: Any) -> list[dict[str, Any]]:
+    """The plugin's skills in full, from its pinned descriptor, for its page and the consent."""
+    manifest = _pinned_bundled_manifest(entry)
+    if manifest is None:
+        return []
+    short = manifest.plugin.id.split(".", 1)[1]
+    return [
+        {
+            "name": f"{short}:{skill.name}",
+            "title": skill.title,
+            "description": skill.description,
+            "uses_tools": list(skill.uses_tools),
+            "text": skill.text,
+        }
+        for skill in manifest.components.plugin_skill
+    ]
+
+
+def _installed_grants_bundled_access(
+    ext_id: str, entry: Any, *, project: bool, repo_root: Path
+) -> bool:
+    try:
+        installed = load_manifest(
+            installed_plugin_root(ext_id, project=project, repo_root=repo_root)
+        )
+        return same_bundled_access(installed, bundled_manifest(entry))
+    except (OSError, RuntimeError, ValueError, PluginManifestError):
+        return False
 
 
 def _installed_record(state: Any, ext_id: str) -> Any | None:
@@ -2538,7 +3056,7 @@ def _validate_skill_install_source(
         if _unsupported_remote_source(raw):
             raise ProtocolError(
                 "unsupported_remote_source",
-                "IDE skill.install only allows HTTPS remote sources; use the CLI for other remote transports.",
+                "Git skill installs require HTTPS; local directories and zip archives are also supported.",
                 request_id=request_id,
             )
         if not (_optional_bool(params, "allow_remote", default=False) and _confirmed(params)):
@@ -2597,33 +3115,9 @@ def _validate_ext_install_source(source: str, *, request_id: RequestId) -> None:
     _reject_url_userinfo_value(raw, field="ext.install.source", request_id=request_id)
     if _EXTENSION_REGISTRY_ID_RE.fullmatch(raw):
         return
-    if raw.startswith("git+https://"):
-        base, marker, commit = raw.rpartition("@")
-        if marker and base and _SHA40_RE.fullmatch(commit):
-            return
-        raise ProtocolError(
-            "invalid_extension_source",
-            "ext.install git+https sources must be pinned with @<40-char-commit>.",
-            request_id=request_id,
-        )
-    parsed = urlparse(raw)
-    if parsed.scheme == "https" and parsed.netloc:
-        if parsed.fragment and _SHA40_RE.fullmatch(parsed.fragment):
-            return
-        raise ProtocolError(
-            "invalid_extension_source",
-            "ext.install HTTPS sources must be pinned with #<40-char-commit>.",
-            request_id=request_id,
-        )
-    if _looks_like_local_path(raw) or parsed.scheme or "://" in raw:
-        raise ProtocolError(
-            "invalid_extension_source",
-            "ext.install source must be a registry id or pinned HTTPS git source.",
-            request_id=request_id,
-        )
     raise ProtocolError(
         "invalid_extension_source",
-        "ext.install source must be a registry id or pinned HTTPS git source.",
+        "ext.install source must be a registry id. Developer git sources are CLI-only.",
         request_id=request_id,
     )
 
@@ -2945,6 +3439,7 @@ def _custom_tool_payload(
         payload.update(
             {
                 "description": entry.spec.description,
+                "file_hash": entry.spec.file_hash,
                 "relative_tool_path": entry.spec.relative_tool_path,
                 "capabilities": entry.spec.capabilities.to_dict(),
                 "timeout_s": entry.spec.timeout_s,
@@ -3432,6 +3927,17 @@ def _confirmation_required(method: str, reason: str) -> dict[str, Any]:
 
 
 _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
+    "skill.import.describe": _skill_import_describe,
+    "skill.import.package": _skill_import_package,
+    "skill.import.preview": _skill_import_preview,
+    "skill.import.install": _skill_import_install,
+    "skill.import.discard": _skill_import_discard,
+    "skill.document.read": _skill_document_read,
+    "skill.document.save": _skill_document_save,
+    "skill.update.preview": _skill_update_preview,
+    "hooks.document.read": _hooks_document_read,
+    "hooks.document.save": _hooks_document_save,
+    "provider.auth.status": _provider_auth_status,
     "config.get": _config_get,
     "config.set": _config_set,
     "config.schema": _config_schema,
@@ -3496,6 +4002,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
     "ext.list": _ext_list,
     "ext.info": _ext_info,
     "ext.install": _ext_install,
+    "ext.custom.save": _ext_custom_save,
     "ext.uninstall": _ext_uninstall,
     "ext.enable": _ext_enable,
     "ext.disable": _ext_disable,

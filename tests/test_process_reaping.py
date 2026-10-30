@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -380,6 +381,125 @@ def test_run_in_tracked_process_group_works_without_a_registry(tmp_path: Path) -
     assert completed.stdout.strip() == "ok"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows pipe-reader teardown")
+@pytest.mark.parametrize("failure", ["timeout", "cancel", "interrupt"])
+def test_windows_incomplete_pipe_cleanup_preserves_failure_and_returns(monkeypatch, failure):
+    from alysis_code import process_reaping as reaping
+    from alysis_code import terminal_manager
+
+    release = threading.Event()
+    closing = threading.Event()
+    closed = threading.Event()
+    error = {
+        "timeout": subprocess.TimeoutExpired("owned command", 0.1),
+        "cancel": reaping.CommandCancelledError("owned command"),
+        "interrupt": KeyboardInterrupt(),
+    }[failure]
+
+    class Process:
+        pid = 0  # No real process may be signalled by this teardown fixture.
+
+        def __init__(self):
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            closing.set()
+            release.wait(3)
+            closed.set()
+
+        def communicate(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise error
+            return "partial output", ""
+
+    process = Process()
+    monkeypatch.setattr(reaping, "_stop_windows_process_tree", lambda _process: [])
+    monkeypatch.setattr(terminal_manager, "_kill_windows_process_tree", lambda _process: None)
+    started = time.monotonic()
+    try:
+        with pytest.raises(type(error)) as caught:
+            run_in_tracked_process_group(
+                "owned command",
+                registry=ProcessGroupRegistry(),
+                timeout=0.1,
+                popen_factory=lambda *_args, **_kwargs: process,
+            )
+        assert caught.value is error
+        assert time.monotonic() - started < 1.5
+        assert error.cleanup_pending is True
+        assert closing.is_set()
+        assert not closed.is_set()
+    finally:
+        release.set()
+        assert closed.wait(1)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows owned cleanup lifetime")
+def test_windows_pending_cleanup_retains_real_process_until_it_can_be_stopped(
+    tmp_path, monkeypatch
+):
+    from alysis_code import process_reaping as reaping
+
+    release = threading.Event()
+    closed = threading.Event()
+    marker = tmp_path / "owned-worker-ready"
+    processes = []
+    stop_tree = reaping._stop_windows_process_tree
+
+    class ObservedProcess(subprocess.Popen):
+        def __exit__(self, *args):
+            try:
+                return super().__exit__(*args)
+            finally:
+                closed.set()
+
+    def spawn(*args, **kwargs):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        process = ObservedProcess(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def delayed_stop(process):
+        assert release.wait(5), "test did not release its owned cleanup task"
+        return stop_tree(process)
+
+    monkeypatch.setattr(reaping, "_stop_windows_process_tree", delayed_stop)
+    command = [
+        getattr(sys, "_base_executable", None) or sys.executable,
+        "-I",
+        "-S",
+        "-c",
+        "import time\n"
+        f"with open({str(marker)!r}, 'w') as marker:\n"
+        "    marker.write('ready')\n"
+        "time.sleep(30)",
+    ]
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            run_in_tracked_process_group(
+                command, timeout=0.1, registry=ProcessGroupRegistry(), popen_factory=spawn
+            )
+        assert time.monotonic() - started < 2
+        assert caught.value.cleanup_pending is True
+        assert marker.exists(), "the real worker must have reached its operation"
+        assert len(processes) == 1 and processes[0].poll() is None
+    finally:
+        release.set()
+        for process in processes:
+            try:
+                assert closed.wait(2), "owned cleanup did not close and reap its process"
+                assert process.poll() is not None
+            finally:
+                if process.poll() is None:
+                    subprocess.Popen.kill(process)
+                process.wait(timeout=2)
+
+
 # ---------------------------------------------------------------------------
 # Test 6: payloads and kill-switch plumbing
 # ---------------------------------------------------------------------------
@@ -421,6 +541,96 @@ def test_kill_switch_env_and_config(monkeypatch) -> None:
     assert _process_reaping_enabled(AppConfig(model="x", process_reaping_enabled=True)) is False
     monkeypatch.setenv("ALYSIS_PROCESS_REAPING", "on")
     assert _process_reaping_enabled(AppConfig(model="x", process_reaping_enabled=False)) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cleanup ownership")
+def test_windows_cleanup_thread_start_failure_preserves_original_and_resources(monkeypatch):
+    from alysis_code import process_reaping as reaping
+
+    error = subprocess.TimeoutExpired("owned command", 0.1)
+    closed = []
+    killed = []
+    released = []
+    registry = ProcessGroupRegistry()
+
+    class Process:
+        pid = 0
+
+        def communicate(self, **kwargs):
+            if "timeout" in kwargs:
+                raise error
+            return "", ""
+
+        def kill(self):
+            killed.append(True)
+
+        def __exit__(self, *_args):
+            closed.append(True)
+
+    def cannot_start(_self):
+        raise RuntimeError("cannot allocate cleanup thread")
+
+    monkeypatch.setattr(threading.Thread, "start", cannot_start)
+    monkeypatch.setattr(reaping, "_stop_windows_process_tree", lambda _process: [])
+    process = Process()
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            run_in_tracked_process_group(
+                "owned command",
+                registry=registry,
+                timeout=0.1,
+                popen_factory=lambda *_args, **_kwargs: process,
+            )
+        assert caught.value is error
+        assert time.monotonic() - started < 0.5
+        assert killed == [True] and not closed
+        assert error.cleanup_pending is True
+        assert len(registry._command_cleanups) == 1
+        cleanup = next(iter(registry._command_cleanups))
+        assert cleanup.process is process
+        assert cleanup in reaping._windows_command_cleanups
+        assert isinstance(cleanup.error, RuntimeError)
+        assert registry.defer_cleanup(lambda: released.append(True)) is True
+        assert not released
+    finally:
+        for cleanup in tuple(registry._command_cleanups):
+            cleanup.run()
+    assert closed == [True] and released == [True]
+    assert not registry._command_cleanups
+
+
+def test_incomplete_windows_cleanup_retains_observed_child_identities(monkeypatch):
+    from alysis_code import process_reaping as reaping
+
+    children = [object()]
+    registry = ProcessGroupRegistry()
+    error = OSError("pipe cleanup denied")
+
+    class Process:
+        calls = 0
+
+        def communicate(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise error
+            return "", ""
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(reaping, "_stop_windows_process_tree", lambda _process: children)
+    cleanup = reaping._WindowsCommandCleanup(Process(), registry)
+    try:
+        cleanup.run()
+        assert cleanup.children is children
+        assert cleanup.error is error
+        assert not cleanup.clean
+        assert cleanup in registry._command_cleanups
+        assert cleanup in reaping._windows_command_cleanups
+    finally:
+        monkeypatch.setattr(reaping, "_stop_windows_process_tree", lambda _process: [])
+        cleanup.run()
 
 
 def test_kill_switch_config_key_roundtrip() -> None:

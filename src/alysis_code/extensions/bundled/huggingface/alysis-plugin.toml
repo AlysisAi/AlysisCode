@@ -1,0 +1,49 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.huggingface"
+name = "Hugging Face"
+version = "1.0.0"
+description = "Hugging Face's official remote MCP tools: search and read models, datasets, Spaces, papers and docs. Read only: jobs, sandboxes, uploads and Space calls are left out."
+author = "Alysis AI (integration); Hugging Face (MCP server)"
+license = "MIT"
+homepage = "https://huggingface.co/docs/hub/hf-mcp-server"
+keywords = ["huggingface", "mcp", "models", "datasets", "ai"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Hugging Face's official remote MCP server, read only. Scopes: profile and repo reads (no
+# contribute-repos, jobs or inference-api). Dynamic registration issues a client secret, kept by the app.
+# Left out: create_repo and hf_fs_write (uploads and deletes), hf_jobs and the sandbox tools (paid
+# compute, and commands that run code), dynamic_space and the per-Space Gradio tools (they call other
+# people's Spaces with the person's sign-in, and their names change with the person's settings).
+[[components.verified_connector]]
+id = "huggingface"
+url = "https://huggingface.co/mcp"
+resource = "https://huggingface.co/mcp"
+oauth_issuer = "https://huggingface.co"
+oauth_sign_in_origins = []
+oauth_client = "dynamic"
+oauth_scopes = ["openid", "profile", "read-mcp", "read-repos"]
+max_argument_bytes = 8192
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "hf_whoami"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "hf_fs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "hub_repo_search"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "hub_repo_details"
+reads_only = true
+
+[security]
+contact = "https://huggingface.co/.well-known/security.txt"

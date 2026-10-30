@@ -7,6 +7,7 @@ export const REQUIRED_BRIDGE_METHODS = [
 ] as const;
 
 export const MANAGEMENT_BRIDGE_METHODS = [
+  "provider.auth.status",
   "config.get",
   "config.set",
   "config.schema",
@@ -77,6 +78,10 @@ export const MANAGEMENT_BRIDGE_METHODS = [
 ] as const;
 
 export const OPTIONAL_BRIDGE_METHODS = [
+  "session.artifactChecks",
+  "session.userQuestions.get",
+  "session.userQuestions.answer",
+  "session.userQuestions.touch",
   "bridge.shutdown",
   "session.create",
   "chat.send",
@@ -140,8 +145,10 @@ export const OPTIONAL_BRIDGE_METHODS = [
   "session.terminals.clear",
   "session.clear",
   "session.cancel",
+  "session.close",
   "approval.respond",
   "host.action.respond",
+  "host.action.dispatched",
   "job.status",
   "session.list",
   "session.getEvents",
@@ -337,6 +344,26 @@ export interface HostActionRespondParams {
   ok: boolean;
   result?: Record<string, unknown>;
   error?: HostActionResponseError;
+}
+
+export type HostActionDispatchedParams = Pick<HostActionRespondParams,
+  "session_id" | "host_action_id" | "workspace_fence" | "capability_fingerprint">;
+
+export interface HostActionDispatchedResult {
+  status: "dispatched";
+  host_action_id: string;
+}
+
+export interface SessionUserQuestionsResult {
+  session_id: string;
+  job_id: string;
+  questions: Array<Record<string, unknown>>;
+}
+
+export interface SessionUserQuestionAnswer {
+  id: string;
+  selected: string[];
+  text: string;
 }
 
 export interface HostActionRespondResult {
@@ -1425,6 +1452,11 @@ export interface SessionContextResult {
   message_count: number;
   pinned_prefix_len: number;
   [key: string]: unknown;
+}
+
+export interface SessionArtifactChecksResult {
+  session_id: string;
+  reports: Array<Record<string, unknown>>;
 }
 
 export interface SessionCompactResult {

@@ -636,14 +636,14 @@
         "mcp auth",
         "mcp prompts",
         "profile",
-        "power",
         "report",
         "sandbox",
         "sessions",
         "skill",
         "tool",
         "update",
-        "agents"
+        "agents",
+        "memory"
       ],
       "status": "not_applicable_to_ide",
       "rationale": "Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision."
@@ -808,6 +808,7 @@
         "config clear-api-key",
         "config menu",
         "config set-api-key",
+        "profile check",
         "profile clear-key",
         "profile set-key",
         "power gate",
@@ -1183,7 +1184,7 @@
       "surface": "ide_bridge_method",
       "name": "forge.swarm.reconcile",
       "status": "implemented_in_bridge_only",
-      "rationale": "Post-crash/reload reconciliation: a read-only per-task report (merged / interrupted with diff-available / unstarted) over run artifacts and preserved worktrees, plus explicit idempotent harvest/discard actions. Typed-client covered (forgeSwarmReconcile) but not yet surfaced as a cockpit recovery flow \u03b2\u20ac\u201d it backs harvest/discard and crash recovery beneath the Run Swarm console.",
+      "rationale": "Post-crash/reload reconciliation: a read-only per-task report (merged / interrupted with diff-available / unstarted) over run artifacts and preserved worktrees, plus explicit idempotent harvest/discard actions. Typed-client covered (forgeSwarmReconcile) but not yet surfaced as a cockpit recovery flow β€” it backs harvest/discard and crash recovery beneath the Run Swarm console.",
       "bridge_only_rationale": "The crash-recovery reconcile UX (a post-reload harvest/discard surface) lands as a follow-up; the method is typed-client covered and exercised by the swarm console's apply/discard paths but has no standalone user route yet."
     },
     {
@@ -1215,6 +1216,14 @@
       "status": "implemented_in_bridge_only",
       "rationale": "The backend and typed VS Code bridge client cover exact-session MCP server status, enable, disable, and restart. Status is bounded and redacted; mutations require Workspace Trust and an idle owning session, while enable/restart atomically reject catalog drift instead of replacing a live server with incompatible tools, resources, or prompts.",
       "bridge_only_rationale": "No standalone user-facing VS Code control is exposed yet. The typed, capability-negotiated client contract is ready for a separately reviewed native MCP lifecycle UX."
+    },
+    {
+      "id": "ide.method.session_close",
+      "surface": "ide_bridge_method",
+      "name": "session.close",
+      "status": "implemented_in_bridge_only",
+      "rationale": "Optional typed idle-session retirement confirms worker settlement, queued-prompt cancellation and resource cleanup before an engine process is reused.",
+      "bridge_only_rationale": "The desktop chat engine pool consumes this lifecycle receipt. VS Code has the typed client method but no session-retirement UI route."
     },
     {
       "id": "ide.method.bridge_shutdown",
@@ -1574,24 +1583,108 @@
       "bridge_only_rationale": "Consumed by the desktop Settings. The VS Code typed client supports this query but has no subagent settings page."
     },
     {
-      "id": "ide.methods.host_question_dispatch",
+      "id": "ide.methods.artifact_checks",
       "surface": "ide_bridge_method",
       "names": [
-        "host.action.dispatched",
+        "session.artifactChecks"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Returns engine-observed checks for exact artifact hashes without running new checks or accepting model-supplied receipts.",
+      "bridge_only_rationale": "The desktop Results panel consumes these receipts; VS Code has a typed client but no artifact-check presenter yet."
+    },
+    {
+      "id": "ide.methods.host_dispatch_receipt",
+      "surface": "ide_bridge_method",
+      "name": "host.action.dispatched",
+      "status": "implemented_in_bridge_only",
+      "rationale": "Single-use dispatch receipt for engine-owned host approval protocol 1 with exact session, active job and capability fences.",
+      "bridge_only_rationale": "Desktop host uses the negotiated acknowledgement; the VS Code host does not yet negotiate approval protocol 1."
+    },
+    {
+      "id": "ide.methods.turn_user_questions",
+      "surface": "ide_bridge_method",
+      "names": [
         "session.userQuestions.get",
         "session.userQuestions.answer",
         "session.userQuestions.touch"
       ],
       "status": "implemented_in_bridge_only",
-      "rationale": "Host dispatch receipts and structured user questions are scoped to the active session and job.",
-      "bridge_only_rationale": "These negotiated host interfaces are available to desktop clients. The VS Code frontend does not yet implement the question or dispatch UI."
+      "rationale": "Read, answer or renew live turn-scoped clarification questions without terminal scraping.",
+      "bridge_only_rationale": "Desktop question UI consumes these methods; no equivalent VS Code question presenter is wired."
     },
     {
-      "id": "cli.commands.profile_check",
+      "id": "ide.methods.native_subscription_status",
+      "surface": "ide_bridge_method",
+      "names": [
+        "provider.auth.status"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Fresh native-provider status follows the engine secret-projection rules.",
+      "bridge_only_rationale": "Desktop connection settings consume this optional method. VS Code has typed transport coverage but has not adopted native subscription status in its UI."
+    },
+    {
+      "id": "cli.profile.check",
       "surface": "cli_command",
       "name": "profile check",
       "status": "intentionally_cli_only",
-      "rationale": "Validate a saved profile or a key read from stdin without changing stored credentials."
+      "rationale": "Explicit CLI provider-profile request probe. VS Code retains its typed provider diagnostics instead of executing this terminal command."
+    },
+    {
+      "id": "cli.commands.local_memory",
+      "surface": "cli_command",
+      "names": [
+        "memory add",
+        "memory delete",
+        "memory disable",
+        "memory edit",
+        "memory enable",
+        "memory export",
+        "memory list",
+        "memory request"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "Local memory inspection and editing stay in the CLI; VS Code has no corresponding memory-management view."
+    },
+    {
+      "id": "cli.commands.native_sandbox_diagnostics",
+      "surface": "cli_command",
+      "names": [
+        "sandbox mxc-capabilities",
+        "sandbox native-capabilities",
+        "sandbox native-status",
+        "sandbox recover-native"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "Native Windows sandbox setup, recovery and diagnostics run locally and are not exposed as extension actions."
+    },
+    {
+      "id": "cli.command.upgrade",
+      "surface": "cli_command",
+      "name": "upgrade",
+      "status": "intentionally_cli_only",
+      "rationale": "This command changes the host CLI installation through its terminal installer flow."
+    },
+    {
+      "id": "ide.methods.desktop_workbench",
+      "surface": "ide_bridge_method",
+      "names": [
+        "computer_start_resolved.respond",
+        "ext.custom.save",
+        "hooks.document.read",
+        "hooks.document.save",
+        "session.outputArtifacts",
+        "skill.document.read",
+        "skill.document.save",
+        "skill.import.describe",
+        "skill.import.discard",
+        "skill.import.install",
+        "skill.import.package",
+        "skill.import.preview",
+        "skill.update.preview"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "These methods serve the desktop customization workbench, exact session-output handoff and native Computer Use controller.",
+      "bridge_only_rationale": "VS Code has no matching draft-review, document-revision or native host controller. Their current support is in the engine and desktop client."
     }
   ]
 }

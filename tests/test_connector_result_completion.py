@@ -101,7 +101,7 @@ def test_unchecked_link_notice_preserves_other_verification_failures():
         }
     )
     assert "Link availability has not been verified" in notice
-    assert "Required checks also failed" in notice
+    assert "required or observed checks failed" in notice
 
 
 @pytest.mark.parametrize(
@@ -134,7 +134,10 @@ def test_real_agent_loop_continues_once_then_retains_honest_outcome(
         }
     )
     writes = []
-    prefix = [ToolCall(id="create", name="mcp__github__create_resource", arguments={})]
+    prefix = [
+        ToolCall(id="load", name="tool_search", arguments={"query": "resource"}),
+        ToolCall(id="create", name="mcp__github__create_resource", arguments={}),
+    ]
     capabilities = (GITHUB_MCP_ACTION,)
     discovered_tool = {
         "name": "create_resource",

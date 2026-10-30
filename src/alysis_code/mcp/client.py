@@ -9,6 +9,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .. import __version__
 from ..runtime_kind import RuntimeKind
+from .catalog import McpListedTool as McpListedTool
 from .errors import McpError, McpProtocolError, McpRemoteError
 from .jsonrpc import JsonRpcErrorObject, JsonRpcNotification, JsonRpcResponse
 from .models import ResolvedMcpServer
@@ -212,14 +213,6 @@ def _require_string(
 
 
 @dataclass(frozen=True)
-class McpListedTool:
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    raw_payload: dict[str, Any] = field(repr=False)
-
-
-@dataclass(frozen=True)
 class McpToolCallResult:
     is_error: bool
     structured_content: Any | None
@@ -260,6 +253,7 @@ class _BaseMcpClient:
         self._supports_prompts = False
         self._server_info: dict[str, Any] = {}
         self._server_capabilities: dict[str, Any] = {}
+        self._server_instructions: str | None = None
         self._tools_list_changed = False
         self._resources_list_changed = False
         self._prompts_list_changed = False
@@ -288,6 +282,10 @@ class _BaseMcpClient:
     @property
     def server_capabilities(self) -> dict[str, Any]:
         return copy.deepcopy(self._server_capabilities)
+
+    @property
+    def server_instructions(self) -> str | None:
+        return self._server_instructions
 
     @property
     def negotiated_protocol_version(self) -> str | None:
@@ -364,6 +362,7 @@ class _BaseMcpClient:
         self._supports_prompts = False
         self._server_info = {}
         self._server_capabilities = {}
+        self._server_instructions = None
         self._negotiated_protocol_version = None
 
     def _apply_negotiated_protocol_version(self, protocol_version: str) -> None:
@@ -426,6 +425,15 @@ class _BaseMcpClient:
                 stderr_tail=self._diagnostic_tail(),
                 error_type=McpClientProtocolError,
             )
+        instructions = result.get("instructions")
+        if instructions is not None and not isinstance(instructions, str):
+            raise _build_client_error(
+                server=self.server,
+                message="initialize.instructions must be a string when present.",
+                stderr_tail=self._diagnostic_tail(),
+                error_type=McpClientProtocolError,
+            )
+        self._server_instructions = instructions
         self._server_info = copy.deepcopy(server_info)
         self._server_capabilities = copy.deepcopy(capabilities)
         self._supports_tools = "tools" in capabilities

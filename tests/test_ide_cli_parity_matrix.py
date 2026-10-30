@@ -40,6 +40,24 @@ def test_parity_extraction_finds_current_command_surfaces() -> None:
     assert parity.FeatureRef("ide_bridge_method", "forge.executePreview") in features
 
 
+def test_cli_extraction_follows_nested_imports_and_scopes_app_names(tmp_path, monkeypatch):
+    root = tmp_path / "root.py"
+    root.write_text(
+        'import typer\nfrom .child import app as child_app\napp = typer.Typer()\napp.add_typer(child_app, name="first")\n'
+    )
+    (tmp_path / "child.py").write_text(
+        'import typer\nfrom .leaf import app as leaf_app\napp = typer.Typer()\napp.add_typer(leaf_app, name="second")\n'
+    )
+    (tmp_path / "leaf.py").write_text(
+        "import typer\napp = typer.Typer()\n@app.command()\ndef execute(): pass\n"
+    )
+    monkeypatch.setattr(parity, "CLI_ROOT_PATH", root)
+    assert (
+        parity.FeatureRef("cli_command", "first second execute")
+        in parity.extract_cli_command_features()
+    )
+
+
 def test_parity_validation_script_passes_for_current_repo() -> None:
     assert parity.validate_parity_matrix() == []
 

@@ -180,7 +180,8 @@ def test_real_orphaned_child_is_retained_and_stopped_by_fresh_manager(tmp_path, 
     child_pid_path = tmp_path / "child.pid"
     child_code = (
         "import os,time; from pathlib import Path; "
-        f"Path({str(child_pid_path)!r}).write_text(str(os.getpid())); time.sleep(15)"
+        f"ready=Path({str(child_pid_path)!r}); pending=ready.with_suffix('.pending'); "
+        "pending.write_text(str(os.getpid())); pending.replace(ready); time.sleep(15)"
     )
     code = (
         "import subprocess,sys,time; "
@@ -194,6 +195,7 @@ def test_real_orphaned_child_is_retained_and_stopped_by_fresh_manager(tmp_path, 
     child = None
     try:
         until = time.monotonic() + 4
+        # Publish only the complete PID; file creation alone races write_text.
         while not child_pid_path.exists() and time.monotonic() < until:
             time.sleep(0.02)
         child = psutil.Process(int(child_pid_path.read_text()))

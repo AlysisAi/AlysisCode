@@ -226,6 +226,19 @@ def test_deny_safety_override_is_stronger_than_ask() -> None:
     assert result.reason == "sensitive_resource_requires_approval"
 
 
+@pytest.mark.parametrize("sensitive,external", [(True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("platform", ["posix", "windows"])
+def test_safety_question_cannot_turn_a_winning_deny_rule_into_an_approval(
+    sensitive, external, platform
+):
+    policy = PermissionPolicy()
+    rule = policy.grant("deny", tool_pattern="fs_read")
+    result = policy.evaluate(_request(sensitive=sensitive, external=external, platform=platform))
+    assert result.decision is PolicyEffect.DENY
+    assert result.matched_rule_id == rule.id
+    assert result.reason == "matched_rule"
+
+
 def test_command_normalization_is_whitespace_stable_and_windows_casefolded() -> None:
     policy = PermissionPolicy()
     policy.grant("allow", tool_pattern="shell_run", command_pattern="GIT   STATUS *")

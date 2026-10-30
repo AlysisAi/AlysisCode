@@ -166,7 +166,8 @@ def test_foreign_task_cannot_advance_generation_or_satisfy_requirement(tmp_path)
 def test_check_from_different_cwd_does_not_satisfy_requirement(tmp_path):
     contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
     _record(contract, tmp_path, result={"cwd": str(tmp_path.parent)})
-    assert _commands(contract)[0].status == AcceptanceCriterionStatus.BLOCKED
+    assert _commands(contract)[0].status == AcceptanceCriterionStatus.UNVERIFIED
+    assert not contract.evidence[-1].criterion_ids
 
 
 def test_multi_command_results_keep_independent_authority_and_outcomes(tmp_path):

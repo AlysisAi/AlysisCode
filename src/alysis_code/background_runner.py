@@ -5,20 +5,24 @@ import subprocess
 import threading
 import uuid
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
 from .branding import default_sandbox_docker_image
 from .config import AppConfig, ConfigError
+from .macos_process_tree import MacProcessTree
+from .macos_sandbox_owner import MacSandboxOwner
 from .sandbox_runner import (
     _SENSITIVE_ENV_KEYS,
     _build_bwrap_argv,
     _build_docker_argv,
     _docker_cleanup_container,
+    _docker_policy_env,
     _emit_warning,
     _supports_bwrap_unshare_cgroup,
-    seatbelt_command,
+    seatbelt_execution,
     select_shell_sandbox_backend,
 )
 from .sandbox_settings import ShellSandboxSettings, resolve_shell_sandbox_settings
@@ -35,6 +39,7 @@ class BackgroundProcessSpawn:
     termination_mode: BackgroundTerminationMode = "process_group"
     orphan_cleanup_kind: str | None = None
     orphan_cleanup_id: str | None = None
+    process_tree: MacProcessTree | MacSandboxOwner | None = None
 
 
 class BackgroundShellRunner(Protocol):
@@ -76,6 +81,8 @@ def _noop_cleanup() -> None:
 
 @dataclass(frozen=True)
 class HostBackgroundRunner:
+    additional_workspace_roots: tuple[str, ...] = ()
+
     def start(
         self,
         *,
@@ -111,6 +118,18 @@ class HostBackgroundRunner:
 class SeatbeltBackgroundRunner:
     """Background processes in the same macOS Seatbelt profile as SeatbeltShellRunner."""
 
+    filesystem_access: str = "workspace-write"
+    additional_workspace_roots: tuple[str, ...] = ()
+    additional_read_roots: tuple[str, ...] = ()
+    network_domains: tuple[str, ...] | None = None
+    private_network_endpoints: tuple[str, ...] = ()
+    unix_sockets: tuple[str, ...] = ()
+    additional_read_files: tuple[str, ...] = ()
+    forward_env: tuple[str, ...] = ()
+    ssh_agent_socket: str | None = None
+    git_metadata_access: bool = False
+    preview_access: str = "auto"
+    clear_env: bool = True
     network: str = "off"
     protect_repo_meta: bool = True
     safe_git_writes: bool = True
@@ -123,17 +142,80 @@ class SeatbeltBackgroundRunner:
         cmd: str,
         env_overrides: dict[str, str] | None = None,
     ) -> BackgroundProcessSpawn:
-        wrapped = seatbelt_command(
-            cmd,
-            root=root,
-            network=self.network,
-            protect_repo_meta=self.protect_repo_meta,
-            safe_git_writes=self.safe_git_writes,
+        scope = ExitStack()
+        try:
+            wrapped, env, owner = scope.enter_context(
+                seatbelt_execution(
+                    root=root,
+                    cwd=cwd,
+                    cmd=cmd,
+                    filesystem_access=self.filesystem_access,
+                    additional_workspace_roots=self.additional_workspace_roots,
+                    additional_read_roots=self.additional_read_roots,
+                    preview_access=self.preview_access,
+                    clear_env=self.clear_env,
+                    network=self.network,
+                    protect_repo_meta=self.protect_repo_meta,
+                    safe_git_writes=self.safe_git_writes,
+                    network_domains=self.network_domains,
+                    private_network_endpoints=self.private_network_endpoints,
+                    unix_sockets=self.unix_sockets,
+                    additional_read_files=self.additional_read_files,
+                    forward_env=self.forward_env,
+                    ssh_agent_socket=self.ssh_agent_socket,
+                    git_metadata_access=self.git_metadata_access,
+                )
+            )
+            merged = _apply_env_overrides(env, env_overrides)
+            for key in (
+                "HOME",
+                "PATH",
+                "TMPDIR",
+                "TMP",
+                "TEMP",
+                *self.forward_env,
+                *(("SSH_AUTH_SOCK",) if self.ssh_agent_socket else ()),
+            ):
+                merged[key] = env[key]
+            if self.network_domains is not None or self.private_network_endpoints:
+                from .macos_network import proxy_environment
+
+                for key in proxy_environment(env["http_proxy"]):
+                    merged[key] = env[key]
+            from .terminal_ownership import seatbelt_scratch_cleanup_id
+
+            scratch_id = seatbelt_scratch_cleanup_id(Path(env["TMPDIR"]))
+            popen = owner.spawn(
+                wrapped,
+                shell=True,
+                cwd=str(cwd),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=merged,
+                bufsize=0,
+                start_new_session=True,
+            )
+        except BaseException:
+            scope.close()
+            raise
+        tree = owner
+
+        def cleanup() -> None:
+            try:
+                if tree is not None and not tree.terminate():
+                    raise RuntimeError("Sandbox child cleanup could not be confirmed.")
+            finally:
+                scope.close()
+
+        return BackgroundProcessSpawn(
+            popen=popen,
+            cleanup=cleanup,
+            started_argv=(cmd,),
+            process_tree=tree,
+            orphan_cleanup_kind="seatbelt-scratch",
+            orphan_cleanup_id=scratch_id,
         )
-        spawn = HostBackgroundRunner().start(
-            root=root, cwd=cwd, cmd=wrapped, env_overrides=env_overrides
-        )
-        return BackgroundProcessSpawn(popen=spawn.popen, cleanup=spawn.cleanup, started_argv=(cmd,))
 
 
 @dataclass(frozen=True)
@@ -197,6 +279,8 @@ class BwrapBackgroundRunner:
     network: str = "off"
     clear_env: bool = True
     profile: str = "hardened"
+    filesystem_access: str = "workspace-write"
+    additional_workspace_roots: tuple[str, ...] = ()
 
     def start(
         self,
@@ -215,6 +299,8 @@ class BwrapBackgroundRunner:
             clear_env=self.clear_env,
             profile=self.profile,
             unshare_cgroup=_supports_bwrap_unshare_cgroup(),
+            filesystem_access=self.filesystem_access,
+            additional_workspace_roots=self.additional_workspace_roots,
         )
         popen = subprocess.Popen(
             argv,
@@ -245,6 +331,7 @@ class DockerBackgroundRunner:
     protect_repo_meta: bool = True
     env_allowlist: tuple[str, ...] = ()
     warning_callback: Callable[[str], None] | None = None
+    filesystem_access: str = "workspace-write"
 
     def start(
         self,
@@ -270,8 +357,11 @@ class DockerBackgroundRunner:
             read_only_rootfs=self.read_only_rootfs,
             protect_repo_meta=self.protect_repo_meta,
             env_allowlist=self.env_allowlist,
+            filesystem_access=self.filesystem_access,
         )
-        run_env = _apply_env_overrides(run_env, env_overrides)
+        run_env = _docker_policy_env(
+            _apply_env_overrides(run_env, env_overrides), self.filesystem_access
+        )
 
         def cleanup() -> None:
             _docker_cleanup_container(
@@ -312,9 +402,21 @@ def build_background_shell_runner_from_settings(
     choice = select_shell_sandbox_backend(settings)
     if choice.backend == "host":
         # With requires_command_approval the shell guards ask before each start.
-        return HostBackgroundRunner()
+        return HostBackgroundRunner(additional_workspace_roots=settings.additional_workspace_roots)
+    if choice.backend == "windows-mxc":
+        from .windows_mxc import WindowsMxcRunner, resolve_helper
+
+        resolve_helper()
+        return WindowsMxcRunner(settings)
+    if choice.backend == "windows-native":
+        from .windows_sandbox import WindowsNativeRunner, resolve_helper
+
+        resolve_helper()
+        return WindowsNativeRunner(settings)
     if choice.backend == "bwrap":
         return BwrapBackgroundRunner(
+            additional_workspace_roots=settings.additional_workspace_roots,
+            filesystem_access=settings.filesystem_access,
             network=settings.network,
             clear_env=settings.clear_env,
             profile=settings.bwrap_profile,
@@ -326,6 +428,18 @@ def build_background_shell_runner_from_settings(
         )
     if choice.backend == "seatbelt":
         return SeatbeltBackgroundRunner(
+            network_domains=settings.network_domains,
+            private_network_endpoints=settings.private_network_endpoints,
+            unix_sockets=settings.unix_sockets,
+            additional_read_files=settings.additional_read_files,
+            forward_env=settings.forward_env,
+            ssh_agent_socket=settings.ssh_agent_socket,
+            git_metadata_access=settings.git_metadata_access,
+            additional_read_roots=settings.additional_read_roots,
+            preview_access=settings.preview_access,
+            filesystem_access=settings.filesystem_access,
+            additional_workspace_roots=settings.additional_workspace_roots,
+            clear_env=settings.clear_env,
             network=settings.network,
             protect_repo_meta=settings.protect_repo_meta,
             safe_git_writes=settings.safe_git_writes,
@@ -351,6 +465,7 @@ def _docker_background_runner_from_settings(
     warning_callback: Callable[[str], None] | None,
 ) -> DockerBackgroundRunner:
     return DockerBackgroundRunner(
+        filesystem_access=settings.filesystem_access,
         network=settings.network,
         docker_image=settings.docker_image,
         clear_env=settings.clear_env,

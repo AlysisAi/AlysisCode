@@ -143,13 +143,12 @@ def test_git_apply_patch_blocks_git_dir_case_insensitive(tmp_path: Path) -> None
         tools["git_apply_patch"].run({"patch": patch})
 
 
-def test_fs_write_fullaccess_authorizes_sensitive_path_without_another_prompt(
-    tmp_path: Path,
-) -> None:
+def test_fs_write_fullaccess_retains_sensitive_redaction_without_a_prompt(tmp_path: Path) -> None:
     tools = _tools(tmp_path, mode="fullaccess")
-    content = "#!/bin/sh\necho authorized\n"
-    tools["fs_write"].run({"path": ".git/hooks/pre-commit", "content": content})
-    assert (tmp_path / ".git" / "hooks" / "pre-commit").read_text() == content
+    content = "#!/bin/sh\necho fullaccess\n"
+    result = tools["fs_write"].run({"path": ".git/hooks/pre-commit", "content": content})
+    assert (tmp_path / ".git/hooks/pre-commit").read_text() == content
+    assert result["_alysis_output_policy"]["persist"] == "redact"
 
 
 def test_fs_write_allows_gitignore(tmp_path: Path) -> None:

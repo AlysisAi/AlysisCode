@@ -87,6 +87,20 @@ _FALLBACK_WARNING = (
 OFFICIAL_PROVIDER_MODEL_CATALOG_SOURCE = "official_provider_model_catalog"
 CANONICAL_MODEL_CATALOG_SOURCE = "canonical_model_catalog"
 _CANONICAL_MODEL_SOURCES: dict[str, tuple[str, ...]] = {
+    "gpt-6.1-terra": ("https://developers.openai.com/api/docs/models/gpt-6.1-terra",),
+    "mistral-large-4": ("https://docs.mistral.ai/models/mistral-large-4",),
+    "minimax-m3.1-flash": (
+        "https://platform.minimax.io/docs/api-reference/text-openai-api",
+        "https://www.together.ai/models/minimax-m3-1-flash",
+    ),
+    "reflection-beam": (
+        "https://developers.reflection.ai/models",
+        "https://developers.reflection.ai/reasoning",
+    ),
+    "nemotron-3.5-super-vl": (
+        "https://docs.nvidia.com/nim/large-language-models/2.0.13/get-started/advanced/get-started-nemotron-3.5-super-vl.html",
+        "https://www.together.ai/models/nemotron-3-5-super-vl",
+    ),
     "qwen3.8-max": ("https://help.aliyun.com/en/model-studio/qwen3-8-max",),
     "qwen3.7-plus": ("https://www.alibabacloud.com/help/en/model-studio/qwen3-7-plus",),
     "qwen3.8-flash": ("https://www.alibabacloud.com/help/en/model-studio/qwen3-8-flash",),
@@ -112,6 +126,40 @@ _CANONICAL_MODEL_SOURCES: dict[str, tuple[str, ...]] = {
     ),
 }
 _CANONICAL_MODEL_METADATA: dict[str, dict[str, Any]] = {
+    "gpt-6.1-terra": {
+        "context_window_tokens": 1_050_000,
+        "max_output_tokens": 128_000,
+        "supports_vision": True,
+        "supports_reasoning": True,
+    },
+    "mistral-large-4": {
+        "context_window_tokens": 1_000_000,
+        # A conservative local output reserve; the ceiling is unpublished.
+        "max_output_tokens": 32_768,
+        "supports_vision": True,
+        "supports_reasoning": True,
+    },
+    "minimax-m3.1-flash": {
+        "context_window_tokens": 1_000_000,
+        # Conservative local output reserve; the cited API guide does not
+        # publish a separate generation ceiling. Hosted routes pin their cap.
+        "max_output_tokens": 32_000,
+        "supports_vision": True,
+        "supports_reasoning": True,
+    },
+    "reflection-beam": {
+        "context_window_tokens": 1_048_576,
+        "max_output_tokens": 131_072,
+        "supports_vision": False,
+        "supports_reasoning": True,
+    },
+    "nemotron-3.5-super-vl": {
+        "context_window_tokens": 1_048_576,
+        # Conservative local reserve; deployed routes may impose tighter caps.
+        "max_output_tokens": 32_000,
+        "supports_vision": True,
+        "supports_reasoning": True,
+    },
     "qwen3.8-max": {
         "context_window_tokens": 1_000_000,
         "max_output_tokens": 131_072,
@@ -191,6 +239,15 @@ _CANONICAL_MODEL_METADATA: dict[str, dict[str, Any]] = {
 # declarative alias table lets each route inherit the canonical model's limits
 # while retaining provider-specific pricing, availability, and stricter caps.
 _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
+    "openai": {"gpt-6.1-terra": "gpt-6.1-terra"},
+    "minimax": {
+        "MiniMax-M3.1-Flash": "minimax-m3.1-flash",
+        "MiniMax-M3.1-Flash-Preview": "minimax-m3.1-flash",
+    },
+    "mistral": {
+        "mistral-large-4": "mistral-large-4",
+        "mistral-large-4-0": "mistral-large-4",
+    },
     "qwen": {
         "qwen3.8-max": "qwen3.8-max",
         "qwen3.7-plus": "qwen3.7-plus",
@@ -212,6 +269,7 @@ _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
         "glm-5.3": "glm-5.3",
         "glm-5.3-flash": "glm-5.3-flash",
     },
+    "zai": {"glm-5.3": "glm-5.3", "glm-5.3-flash": "glm-5.3-flash"},
     "moonshot": {
         "kimi-k3": "kimi-k3",
     },
@@ -226,6 +284,9 @@ _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
         "moonshotai/kimi-k3": "kimi-k3",
     },
     "together": {
+        "MiniMaxAI/MiniMax-M3.1-Flash": "minimax-m3.1-flash",
+        "reflection/Beam-1.0-501B-A23B": "reflection-beam",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL": "nemotron-3.5-super-vl",
         "deepseek-ai/DeepSeek-V4-Pro-0813": "deepseek-v4-pro",
         "deepseek-ai/DeepSeek-V4-Flash-0731": "deepseek-v4-flash",
         "zai-org/GLM-5.3": "glm-5.3",
@@ -261,6 +322,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         )
         for model in (
             "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -272,6 +334,16 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
             "gpt-5.4-nano",
             "gpt-5.3-codex",
         )
+    },
+    "zai": {
+        "glm-5.3": (
+            "https://docs.z.ai/guides/llm/glm-5.3",
+            "https://docs.z.ai/guides/overview/quick-start",
+        ),
+        "glm-5.3-flash": (
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+            "https://docs.z.ai/guides/overview/quick-start",
+        ),
     },
     "zai_coding_plan": {
         "glm-5.3": ("https://docs.z.ai/guides/llm/glm-5.3", "https://docs.z.ai/devpack/overview"),
@@ -370,16 +442,23 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         )
     },
     "together": {
-        model: ("https://docs.together.ai/docs/serverless-models",)
-        for model in (
-            "zai-org/GLM-5.3",
-            "zai-org/GLM-5.3-Flash",
-            "moonshotai/Kimi-K3",
-            "deepseek-ai/DeepSeek-V4-Pro-0813",
-            "deepseek-ai/DeepSeek-V4-Flash-0731",
-            "Qwen/Qwen3.5-9B",
-            "MiniMaxAI/MiniMax-M3",
-        )
+        "MiniMaxAI/MiniMax-M3.1-Flash": ("https://www.together.ai/models/minimax-m3-1-flash",),
+        "reflection/Beam-1.0-501B-A23B": ("https://www.together.ai/models/reflection-beam",),
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL": (
+            "https://www.together.ai/models/nemotron-3-5-super-vl",
+        ),
+        **{
+            model: ("https://docs.together.ai/docs/serverless-models",)
+            for model in (
+                "zai-org/GLM-5.3",
+                "zai-org/GLM-5.3-Flash",
+                "moonshotai/Kimi-K3",
+                "deepseek-ai/DeepSeek-V4-Pro-0813",
+                "deepseek-ai/DeepSeek-V4-Flash-0731",
+                "Qwen/Qwen3.5-9B",
+                "MiniMaxAI/MiniMax-M3",
+            )
+        },
     },
     "fireworks": {
         model: (f"https://fireworks.ai/models/fireworks/{slug}",)
@@ -433,8 +512,11 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         )
     },
     "minimax": {
-        model: ("https://platform.minimax.io/docs/guides/pricing-paygo",)
-        for model in ("MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed")
+        "MiniMax-M3.1-Flash": ("https://platform.minimax.io/docs/api-reference/text-openai-api",),
+        **{
+            model: ("https://platform.minimax.io/docs/guides/pricing-paygo",)
+            for model in ("MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed")
+        },
     },
     "bytedance": {
         model: (
@@ -457,6 +539,10 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         "gemma-4-31b": ("https://inference-docs.cerebras.ai/models/gemma-4-31b",),
     },
     "mistral": {
+        "mistral-large-4": (
+            "https://docs.mistral.ai/models/mistral-large-4",
+            "https://docs.mistral.ai/studio/conversations/reasoning",
+        ),
         "zai-glm-5-3": (
             "https://docs.mistral.ai/models/zai-glm-5-3",
             "https://docs.mistral.ai/inference/pricing",
@@ -501,6 +587,19 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
 }
 _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
     "openai": {
+        # GPT-6.1 Terra: Standard rates at <=272K input, 30-minute cache writes.
+        # https://developers.openai.com/api/docs/pricing (2026-10-30).
+        "gpt-6.1-terra": {
+            "context_window_tokens": 1_050_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.000001,
+            "output_cost_per_token": 0.000005,
+            "cache_read_input_cost_per_token": 0.00000005,
+            "cache_creation_input_cost_per_token": 0.00000125,
+            "reasoning_output_cost_per_token": 0.000005,
+        },
         # GPT-6.1 Sol: Standard rates at <=272K input. Longer prompts cost
         # 2x input/cache and 1.5x output; this flat schema records base rates.
         "gpt-6.1-sol": {
@@ -630,6 +729,20 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
             "output_cost_per_token": 0.000014,
             "cache_read_input_cost_per_token": 0.000000175,
             "reasoning_output_cost_per_token": 0.000014,
+        },
+    },
+    "zai": {
+        "glm-5.3": {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 131_072,
+            "supports_vision": False,
+            "supports_reasoning": True,
+        },
+        "glm-5.3-flash": {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 131_072,
+            "supports_vision": True,
+            "supports_reasoning": True,
         },
     },
     "zai_coding_plan": {
@@ -1129,6 +1242,29 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "together": {
+        # Together release pages, 2026-10-30. Retain conservative hosted
+        # output caps and provider prices rather than inheriting native limits.
+        "MiniMaxAI/MiniMax-M3.1-Flash": {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 16_384,
+            "input_cost_per_token": 0.00000015,
+            "cache_read_input_cost_per_token": 0.000000015,
+            "output_cost_per_token": 0.0000006,
+        },
+        "reflection/Beam-1.0-501B-A23B": {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 16_384,
+            "input_cost_per_token": 0.0000004,
+            "cache_read_input_cost_per_token": 0.00000004,
+            "output_cost_per_token": 0.0000012,
+        },
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL": {
+            "context_window_tokens": 262_144,
+            "max_output_tokens": 16_384,
+            "input_cost_per_token": 0.00000015,
+            "cache_read_input_cost_per_token": 0.00000002,
+            "output_cost_per_token": 0.0000005,
+        },
         # docs.together.ai/docs/serverless-models, 2026-09-02.
         "zai-org/GLM-5.3": {
             "input_cost_per_token": 0.0000014,
@@ -1281,6 +1417,11 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "minimax": {
+        "MiniMax-M3.1-Flash": {
+            "context_window_tokens": 1_000_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+        },
         # platform.minimax.io/docs/guides/pricing-paygo (2026-09-02). M3 is
         # listed at "permanent 50% off" ($0.30/$1.20); input above 512K bills
         # 2x, which this flat schema cannot express — base rates recorded.
@@ -1385,6 +1526,18 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "mistral": {
+        # Official model card (2026-10-30): 1M context and multimodal input.
+        # The output ceiling is unpublished; reserve a conservative 32K.
+        "mistral-large-4": {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 32_768,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.0000007,
+            "cache_read_input_cost_per_token": 0.00000007,
+            "output_cost_per_token": 0.0000021,
+            "reasoning_output_cost_per_token": 0.0000021,
+        },
         # docs.mistral.ai/models/mistral-small-4-0-26-03: 256K context; the
         # output ceiling is unpublished, so a conservative reserve is used.
         "mistral-small-2603": {
@@ -1591,6 +1744,174 @@ _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["glm-5.3-flash"] = {
     "output_cost_per_token": 0.0000005,
 }
 
+# Reviewed hosted gateway capacities and rate-card metadata; membership remains account-gated.
+for _hosted_id, _sources, _meta in (
+    (
+        "minimax-m3.1-flash",
+        ("https://www.together.ai/models/minimax-m3-1-flash",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-8,
+            "output_cost_per_token": 6e-7,
+        },
+    ),
+    (
+        "qwen3.8-flash",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-7,
+            "output_cost_per_token": 4.6999999999999995e-7,
+        },
+    ),
+    (
+        "gpt-oss-120b",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 131072,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-7,
+            "output_cost_per_token": 6e-7,
+        },
+    ),
+    (
+        "reflection-beam",
+        ("https://www.together.ai/models/reflection-beam",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 4.0000000000000003e-7,
+            "cache_read_input_cost_per_token": 4e-8,
+            "output_cost_per_token": 0.0000012,
+        },
+    ),
+    (
+        "nemotron-3.5-super-vl",
+        ("https://www.together.ai/models/nemotron-3-5-super-vl",),
+        {
+            "context_window_tokens": 262144,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 2e-8,
+            "output_cost_per_token": 5e-7,
+        },
+    ),
+    (
+        "mistral-small-4",
+        ("https://docs.mistral.ai/models/mistral-small-4-0-26-03",),
+        {
+            "context_window_tokens": 256000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 1.5e-7,
+            "cache_read_input_cost_per_token": 1.5e-8,
+            "output_cost_per_token": 6e-7,
+        },
+    ),
+    (
+        "glm-5.3",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.0000014,
+            "cache_read_input_cost_per_token": 2.6e-7,
+            "output_cost_per_token": 0.0000044,
+        },
+    ),
+    (
+        "qwen3.8-2.4t",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.000002,
+            "cache_read_input_cost_per_token": 2.5e-7,
+            "output_cost_per_token": 0.000006,
+        },
+    ),
+    (
+        "kimi-k3",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.000003,
+            "cache_read_input_cost_per_token": 3e-7,
+            "output_cost_per_token": 0.000015,
+        },
+    ),
+    (
+        "muse-spark-open",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.00000125,
+            "cache_read_input_cost_per_token": 1.5e-7,
+            "output_cost_per_token": 0.00000425,
+        },
+    ),
+    (
+        "deepseek-v4.1-flash",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 384_000,
+            "input_cost_per_token": 0.0000003,
+            "cache_read_input_cost_per_token": 0.000000006,
+            "output_cost_per_token": 0.0000012,
+        },
+    ),
+    (
+        "deepseek-v4-pro",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1_048_576,
+            "max_output_tokens": 384_000,
+            "input_cost_per_token": 0.00000132,
+            "cache_read_input_cost_per_token": 0.00000013,
+            "output_cost_per_token": 0.00000396,
+        },
+    ),
+    (
+        "minimax-m3",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 524_288,
+            "max_output_tokens": 131_072,
+            "input_cost_per_token": 0.0000003,
+            "cache_read_input_cost_per_token": 0.00000006,
+            "output_cost_per_token": 0.0000012,
+        },
+    ),
+    (
+        "mistral-large-4",
+        (
+            "https://docs.mistral.ai/models/mistral-large-4",
+            "https://docs.mistral.ai/inference/pricing",
+        ),
+        {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 131_072,
+            "input_cost_per_token": 0.00000136,
+            "cache_read_input_cost_per_token": 0.00000014,
+            "output_cost_per_token": 0.00000418,
+        },
+    ),
+):
+    _PROVIDER_CANONICAL_MODEL_IDS["alysis"][_hosted_id] = _hosted_id
+    _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"][_hosted_id] = _sources
+    _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"][_hosted_id] = {
+        **_meta,
+        "supports_vision": False,
+        "supports_reasoning": True,
+    }
+
 _PROVIDER_CANONICAL_MODEL_IDS["alysis"]["gpt-6-luna"] = "gpt-6-luna"
 _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6-luna"] = (
     "https://developers.openai.com/api/docs/models/gpt-6-luna",
@@ -1605,6 +1926,23 @@ _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6-luna"] = {
     "cache_read_input_cost_per_token": 0.00000001,
     "cache_creation_input_cost_per_token": 0.000000125,
     "output_cost_per_token": 0.0000005,
+}
+
+# Hosted Terra follows the deployed text/tool gateway and the verified API model.
+# https://developers.openai.com/api/docs/models/gpt-6.1-terra (2026-10-30).
+_PROVIDER_CANONICAL_MODEL_IDS["alysis"]["gpt-6.1-terra"] = "gpt-6.1-terra"
+_OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6.1-terra"] = (
+    "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+)
+_OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6.1-terra"] = {
+    "context_window_tokens": 1_050_000,
+    "max_output_tokens": 128_000,
+    "supports_vision": False,
+    "supports_reasoning": True,
+    "input_cost_per_token": 0.000001,
+    "cache_read_input_cost_per_token": 0.00000005,
+    "cache_creation_input_cost_per_token": 0.00000125,
+    "output_cost_per_token": 0.000005,
 }
 
 # Paid hosted Sol shares API pricing, with the hosted modality restriction.
@@ -1861,6 +2199,58 @@ def _build_model_alias_index(mapping: dict[str, Any]) -> dict[str, str]:
         for variant in model_name_variants(key):
             index.setdefault(variant.casefold(), key)
     return index
+
+
+def canonical_model_id(model: str, provider_key: str | None = None) -> str | None:
+    """Resolve portable model identity using the catalog's existing aliases."""
+    mappings = [_PROVIDER_CANONICAL_MODEL_IDS.get(str(provider_key or ""), {})]
+    mappings.extend(_PROVIDER_CANONICAL_MODEL_IDS.values())
+    for mapping in mappings:
+        index = _build_model_alias_index(mapping)
+        for variant in model_name_variants(model):
+            key = index.get(variant.casefold())
+            if key is not None:
+                return mapping[key]
+    index = _build_model_alias_index(_CANONICAL_MODEL_METADATA)
+    return next(
+        (index[v.casefold()] for v in model_name_variants(model) if v.casefold() in index),
+        None,
+    )
+
+
+def catalog_model_for_provider(model: str, provider_key: str) -> str | None:
+    """Find a catalog model on its originating provider, without network access."""
+    mapping = _OFFICIAL_PROVIDER_MODEL_METADATA.get(provider_key, {})
+    index = _build_model_alias_index(mapping)
+    for candidate in (canonical_model_id(model) or model, model):
+        for variant in model_name_variants(candidate):
+            key = index.get(variant.casefold())
+            if key is not None:
+                return key
+    return None
+
+
+def catalog_model_capabilities(model: str, provider_key: str | None) -> dict[str, Any]:
+    """Offline catalog capacities, with route caps ahead of portable model facts.
+
+    Catalog exports must not pick up a user's environment overrides or contact
+    authenticated model endpoints. Unknown fields stay null instead of claiming
+    that the generic runtime fallback is a documented model limit.
+    """
+    canonical = canonical_model_id(model, provider_key)
+    metadata = dict(_CANONICAL_MODEL_METADATA.get(canonical or "", {}))
+    provider = str(provider_key or "").strip().lower()
+    model_id = catalog_model_for_provider(model, provider)
+    if model_id is not None:
+        metadata.update(_OFFICIAL_PROVIDER_MODEL_METADATA[provider][model_id])
+    vision = parse_bool(metadata.get("supports_vision"))
+    return {
+        "context_window_tokens": parse_positive_int(metadata.get("context_window_tokens")),
+        "max_output_tokens": parse_positive_int(metadata.get("max_output_tokens")),
+        "supports_vision": vision,
+        "supports_reasoning": parse_bool(metadata.get("supports_reasoning")),
+        "input_modalities": ["text", "image"] if vision else ["text"],
+    }
 
 
 def _lookup_model_override(
@@ -2296,21 +2686,7 @@ class ModelRegistry:
         provider_key, _route_base_url = self._provider_route_identity()
         normalized_provider = str(provider_key or "").strip().lower()
 
-        canonical_id: str | None = None
-        provider_aliases = _PROVIDER_CANONICAL_MODEL_IDS.get(normalized_provider, {})
-        provider_alias_index = _build_model_alias_index(provider_aliases)
-        for variant in model_name_variants(requested_model):
-            route_id = provider_alias_index.get(variant.casefold())
-            if route_id is not None:
-                canonical_id = provider_aliases.get(route_id)
-                break
-
-        if canonical_id is None:
-            canonical_alias_index = _build_model_alias_index(_CANONICAL_MODEL_METADATA)
-            for variant in model_name_variants(requested_model):
-                canonical_id = canonical_alias_index.get(variant.casefold())
-                if canonical_id is not None:
-                    break
+        canonical_id = canonical_model_id(requested_model, normalized_provider)
         if canonical_id is None:
             return layer
 

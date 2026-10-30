@@ -59,9 +59,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Match CI's macOS runner while Python loopback listeners fail on
-        # newer images: https://github.com/actions/runner-images/issues/14409
-        os: [ubuntu-latest, windows-latest, macos-14]
+        # Match CI's supported Mac runner.
+        os: [ubuntu-latest, windows-latest, macos-15]
     env:
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
     steps:
@@ -79,7 +78,7 @@ jobs:
         with:
           version: "0.11.23"
       - name: Sync locked qualification dependencies
-        run: uv sync --frozen --python "3.12" --extra dev --extra documents
+        run: uv sync --frozen --no-editable --managed-python --python "3.12" --extra dev --extra documents
       - name: Test hosted onboarding and installer failure handling
         run: uv run --frozen --no-sync pytest -q tests/test_alysis_cloud.py tests/test_windows_installer.py
       - name: Qualify source and installed wheel
@@ -144,14 +143,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export SOURCE_DATE_EPOCH
+          # Only mutate the generated stamp after proving the checkout is clean.
+          # Restore on build failure and ordinary interruption as well as success.
+          trap 'git restore --source=HEAD --worktree -- src/alysis_code/_build_info.py' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          uv run --frozen --no-sync python scripts/generate_build_info.py --require-clean --no-fetch
           uv build --clear --no-create-gitignore --no-build-isolation --no-sources --out-dir dist/python
 
       - name: Validate archive identity, inventory, and clean installation
         run: >-
           uv run --frozen --no-sync python
           scripts/release/validate_python_distributions.py dist/python
+          --expected-commit "${{ github.sha }}"
 
       - name: Export the locked runtime dependency SBOM
         run: >-

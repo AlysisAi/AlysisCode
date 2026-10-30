@@ -22,7 +22,6 @@ from alysis_code.usage_tracker import (
     RequestContextMeasurement,
     UsageRecord,
     UsageSummary,
-    _looks_like_character_count,
     aggregate_usage_from_session_logs,
     build_usage_record,
     compute_context_left,
@@ -74,7 +73,7 @@ def test_build_usage_record_computes_cost_from_registry_rates() -> None:
     assert record.cost_usd == 2.0
 
 
-def test_build_usage_record_replaces_character_like_api_usage_with_token_estimates() -> None:
+def test_build_usage_record_preserves_reported_counts_even_when_similar_to_text_length() -> None:
     registry = _FakeRegistry(
         {
             "qwen3.5-plus": ModelMeta(
@@ -117,20 +116,16 @@ def test_build_usage_record_replaces_character_like_api_usage_with_token_estimat
         registry=registry,  # type: ignore[arg-type]
     )
 
-    assert record.usage_source == "estimate"
-    assert record.prompt_tokens == estimate_prompt_tokens(messages)
-    assert record.completion_tokens == estimate_completion_tokens(response_content, [])
-    assert record.total_tokens == record.prompt_tokens + record.completion_tokens
-    assert record.prompt_tokens < api_prompt_char_count
-    assert record.completion_tokens < api_completion_char_count
-    assert record.cached_prompt_tokens is None
-    assert record.uncached_prompt_tokens is None
+    assert record.usage_source == "api"
+    assert record.prompt_tokens == api_prompt_char_count
+    assert record.completion_tokens == api_completion_char_count
+    assert record.total_tokens == api_prompt_char_count + api_completion_char_count
+    assert record.cached_prompt_tokens == api_prompt_char_count // 2
+    assert record.uncached_prompt_tokens == api_prompt_char_count - api_prompt_char_count // 2
     assert record.raw_api_prompt_tokens == api_prompt_char_count
     assert record.raw_api_completion_tokens == api_completion_char_count
     assert record.raw_api_total_tokens == api_prompt_char_count + api_completion_char_count
-    assert record.usage_correction_reason == (
-        "api_usage_looked_like_character_counts:prompt_tokens,completion_tokens"
-    )
+    assert record.usage_correction_reason is None
 
     payload = record.to_payload()
     assert payload["raw_api_prompt_tokens"] == api_prompt_char_count
@@ -139,8 +134,8 @@ def test_build_usage_record_replaces_character_like_api_usage_with_token_estimat
     summary = UsageSummary()
     summary.add_event_payload(payload)
     assert summary.records()[0].raw_api_prompt_tokens == api_prompt_char_count
-    assert summary.totals()["corrected_usage_calls"] == 1
-    assert summary.totals()["estimate_usage_calls"] == 1
+    assert summary.totals()["corrected_usage_calls"] == 0
+    assert summary.totals()["estimate_usage_calls"] == 0
 
 
 def test_build_usage_record_prefers_transformed_provider_payload_estimate_for_fallback() -> None:
@@ -241,13 +236,6 @@ def test_build_usage_record_keeps_api_completion_for_reasoning_models() -> None:
     # visible text -- exactly the shape the char-count heuristic flags as bogus.
     api_completion_tokens = visible_completion_chars
     api_reasoning_tokens = visible_completion_chars
-
-    # Sanity: on these numbers the heuristic WOULD fire without the reasoning guard.
-    assert _looks_like_character_count(
-        api_count=api_completion_tokens,
-        estimated_tokens=estimate_completion_tokens(response_content, []),
-        character_count=visible_completion_chars,
-    )
 
     record = build_usage_record(
         role="main",
@@ -398,7 +386,7 @@ def test_usage_normalization_supports_provider_output_that_excludes_reasoning() 
     assert record.output_includes_reasoning is True
 
 
-def test_build_usage_record_replaces_inconsistent_total_with_component_sum() -> None:
+def test_build_usage_record_preserves_reported_total_when_components_disagree() -> None:
     registry = _FakeRegistry(
         {
             "gpt-5-nano": ModelMeta(
@@ -429,17 +417,17 @@ def test_build_usage_record_replaces_inconsistent_total_with_component_sum() -> 
     assert record.usage_source == "api"
     assert record.prompt_tokens == 10
     assert record.completion_tokens == 5
-    assert record.total_tokens == 15
+    assert record.total_tokens == 8
     assert record.raw_api_total_tokens == 8
-    assert record.usage_correction_reason == "api_usage_total_below_component_sum"
+    assert record.usage_correction_reason is None
 
     summary = UsageSummary()
     summary.add_event_payload(record.to_payload())
-    assert summary.totals()["corrected_usage_calls"] == 1
-    assert summary.totals()["total_tokens"] == 15
+    assert summary.totals()["corrected_usage_calls"] == 0
+    assert summary.totals()["total_tokens"] == 8
 
 
-def test_build_usage_record_replaces_character_like_total_with_component_sum() -> None:
+def test_build_usage_record_preserves_large_reported_total() -> None:
     registry = _FakeRegistry(
         {
             "qwen3.5-plus": ModelMeta(
@@ -476,22 +464,9 @@ def test_build_usage_record_replaces_character_like_total_with_component_sum() -
     )
 
     assert record.usage_source == "api"
-    assert record.total_tokens == record.prompt_tokens + record.completion_tokens
+    assert record.total_tokens == api_total_char_count
     assert record.raw_api_total_tokens == api_total_char_count
-    assert record.usage_correction_reason == "api_usage_looked_like_character_counts:total_tokens"
-
-
-def test_character_count_detection_does_not_replace_plausible_api_token_counts() -> None:
-    assert not _looks_like_character_count(
-        api_count=156,
-        estimated_tokens=148,
-        character_count=160,
-    )
-    assert _looks_like_character_count(
-        api_count=5000,
-        estimated_tokens=1200,
-        character_count=5080,
-    )
+    assert record.usage_correction_reason is None
 
 
 def test_build_usage_record_captures_cached_prompt_and_request_breakdown() -> None:
@@ -616,7 +591,7 @@ def test_build_usage_record_separates_cache_read_write_and_marks_cost_unknown() 
     assert record.cache_cost_pricing_missing is True
 
     payload = record.to_payload()
-    assert payload["usage_schema_version"] == 6
+    assert payload["usage_schema_version"] == 7
     assert payload["usage_source_detail"] == "provider_response"
     assert payload["usage_confidence"] == "reported"
     assert payload["output_includes_reasoning"] is True
@@ -2061,23 +2036,28 @@ def test_conversation_gauge_preserves_provider_measured_headroom(
         request_measurement=measurement,
     )
 
-    # Regression: the local estimate left about 32% while the provider count
-    # left only 400 tokens. Both gauges must agree on available tokens even
-    # though the conversation percentage excludes startup from its denominator.
+    # Budgeting projects the next request, while the visible gauge keeps the
+    # last provider input against the full window (including startup and cache).
     assert ctx.local_request_estimate_tokens < budget
     assert ctx.used_input_tokens >= measured_tokens
     assert ctx.dynamic_context_remaining_tokens == max(0, budget - ctx.used_input_tokens)
     assert ctx.dynamic_context_remaining_tokens == ctx.effective_remaining_tokens
     assert ctx.startup_baseline_tokens == math.ceil(baseline * measured_tokens / estimate)
     assert ctx.dynamic_context_used_tokens + ctx.startup_baseline_tokens == ctx.used_input_tokens
-    percent = _chat_context_percent_value(SimpleNamespace(_hud_context_cache=ctx))
-    assert percent is not None and 0 <= percent < 10
+    from alysis_code.provider_usage import capture_provider_usage
+
+    client = SimpleNamespace(model=meta.model_name)
+    session = SimpleNamespace(
+        client=client,
+        _hud_context_cache=ctx,
+        last_provider_usage=capture_provider_usage(
+            LLMUsage(measured_tokens, 10, measured_tokens + 10), client=client
+        ),
+    )
+    percent = _chat_context_percent_value(session)
+    assert percent == max(0, (8000 - measured_tokens) / 8000 * 100)
     footer = "".join(text for _, text in footer_fragments(TuiState(context_pct=percent), width=100))
-    if capacity_delta >= 0:
-        assert percent == 0
-        assert "context: 0% left" in footer
-    elif not append_reply:
-        assert "context: 5% left" in footer
+    assert "context:" in footer
 
 
 @pytest.mark.parametrize("scale", [0.65, 1.0, 1.8])
@@ -2301,3 +2281,108 @@ def test_build_usage_record_marks_host_derived_uncached_tokens() -> None:
     assert record.input_tokens_uncached == 60
     assert record.input_tokens_uncached_derived is True
     assert record.to_payload()["input_tokens_uncached_derived"] is True
+
+
+@pytest.mark.parametrize("prompt,completion", [(None, 5), (10, None), (None, None), (0, None)])
+def test_partial_usage_preserves_reported_total_and_missing_cache_denominator(prompt, completion):
+    record = build_usage_record(
+        role="main",
+        requested_model="test",
+        response_model=None,
+        messages=[{"role": "user", "content": "some unmeasured input"}],
+        response_content="some output",
+        response_tool_calls=[],
+        api_prompt_tokens=prompt,
+        api_completion_tokens=completion,
+        api_total_tokens=123,
+        api_cached_prompt_tokens=8,
+        registry=_FakeRegistry(
+            {
+                "test": ModelMeta(
+                    model_name="test",
+                    context_window_tokens=10000,
+                    max_output_tokens=1000,
+                    input_cost_per_token=None,
+                    output_cost_per_token=None,
+                    raw_metadata={},
+                    source="test",
+                )
+            }
+        ),
+    )
+    assert record.total_tokens == 123
+    assert record.usage_source_detail == "mixed"
+    assert record.usage_confidence == "estimated"
+    assert record.raw_api_prompt_tokens == prompt
+    assert record.raw_api_completion_tokens == completion
+    if prompt is None or prompt < 8:
+        assert record.input_tokens_uncached is None
+        assert record.uncached_prompt_tokens is None
+    if prompt is not None:
+        assert record.prompt_tokens == prompt
+    if completion is not None:
+        assert record.completion_tokens == completion
+    summary = UsageSummary()
+    summary.add_event_payload(record.to_payload())
+    assert summary.totals()["total_tokens"] == 123
+    assert summary.records()[0].raw_api_prompt_tokens == prompt
+
+
+@pytest.mark.parametrize("duration", ["5m", "1h"])
+def test_zero_cache_write_price_is_not_replaced_by_default(duration):
+    meta = ModelMeta(
+        model_name="test",
+        context_window_tokens=10000,
+        max_output_tokens=1000,
+        input_cost_per_token=1.0,
+        output_cost_per_token=1.0,
+        cache_creation_input_cost_per_token=2.0,
+        **{f"cache_creation_{duration}_input_cost_per_token": 0.0},
+        raw_metadata={},
+        source="test",
+    )
+    record = build_usage_record(
+        role="main",
+        requested_model="test",
+        response_model=None,
+        messages=[],
+        response_content="",
+        response_tool_calls=[],
+        api_prompt_tokens=100,
+        api_completion_tokens=0,
+        api_total_tokens=100,
+        api_input_tokens_uncached=0,
+        api_cache_creation_input_tokens=100,
+        **{f"api_cache_creation_{duration}_input_tokens": 100},
+        registry=_FakeRegistry({"test": meta}),
+    )
+    assert record.cost_usd == 0
+
+
+@pytest.mark.parametrize(
+    "protocol,raw",
+    [
+        ("gemini_interactions", {}),
+        ("gemini_generate_content", {"toolUsePromptTokenCount": 2000}),
+    ],
+)
+def test_legacy_aggregate_records_cannot_calibrate_a_request(protocol, raw):
+    summary = UsageSummary()
+    for _ in range(3):
+        summary.add_event_payload(
+            {
+                "event_type": "llm_usage",
+                "usage_schema_version": 6,
+                "requested_model": "gemini",
+                "protocol": protocol,
+                "prompt_tokens": 90000,
+                "completion_tokens": 10,
+                "total_tokens": 90010,
+                "prompt_estimate_error_ratio": 20,
+                "raw_provider_usage": raw,
+            }
+        )
+    snapshot = summary._calibration_snapshot_from_records(summary.records())
+    assert snapshot["calibration_usable_calls"] == 0
+    assert snapshot["calibration_excluded_aggregate_calls"] == 3
+    assert summary.totals()["prompt_tokens"] == 270000

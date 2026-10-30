@@ -366,12 +366,6 @@ class TestRunBudgetParsing(unittest.TestCase):
             900.5,
         )
 
-    def test_canonical_env_override_is_used(self) -> None:
-        self.assertEqual(
-            bp.resolve_run_budget_seconds({"ALYSIS_RUN_BUDGET_SECONDS": "10800"}),
-            10800.0,
-        )
-
     def test_invalid_values_fall_back_to_the_default(self) -> None:
         # A misconfigured budget must never abort a run, and must never
         # silently become unlimited.

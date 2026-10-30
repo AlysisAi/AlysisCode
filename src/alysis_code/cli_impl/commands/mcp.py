@@ -24,6 +24,7 @@ from ...mcp.oauth_store import (
     delete_oauth_token_record,
     load_oauth_token_record,
 )
+from ...mcp.person_approval import exempt_from_rule, marked_read_tools, tool_server_approval
 from ...runtime_kind import RuntimeKind, normalize_runtime_kind
 from ._shared import _console, _resolve_tool_workspace_root, _Table
 
@@ -34,6 +35,8 @@ if TYPE_CHECKING:
 mcp_app = typer.Typer(add_completion=False, help="Manual MCP inspection commands.")
 mcp_prompts_app = typer.Typer(add_completion=False, help="Manual MCP prompt commands.")
 mcp_auth_app = typer.Typer(add_completion=False, help="Manual MCP OAuth commands.")
+mcp_app.add_typer(mcp_prompts_app, name="prompts")
+mcp_app.add_typer(mcp_auth_app, name="auth")
 
 
 _MANUAL_MCP_PROMPT_RUNTIME_KINDS = (
@@ -246,6 +249,18 @@ def _mcp_status_surface_label(*, loaded: bool, count: int | None, stale: bool) -
     return label
 
 
+def _mcp_status_tools(bindings: list[Any], *, marked: frozenset[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": binding.tool_name,
+            "server_says_read_only": getattr(binding, "read_only_hint", False) is True,
+            "server_says_destructive": getattr(binding, "destructive_hint", False) is True,
+            "marked_read_by_you": binding.tool_name in marked,
+        }
+        for binding in sorted(bindings, key=lambda item: item.tool_name)
+    ]
+
+
 def _mcp_status_payload(
     *,
     manager: McpManager,
@@ -274,6 +289,13 @@ def _mcp_status_payload(
         str(server_id) for server_id in metadata.get("prompt_stale_server_ids") or []
     }
     startup_errors = manager.server_startup_errors()
+    # What a chat engine with the same environment will do for each call (desktop rule).
+    approval = tool_server_approval()
+    bindings_by_server: dict[str, list[Any]] = {}
+    for binding in getattr(manager, "tool_bindings", ()):
+        server_id = getattr(binding, "server_id", None)
+        if isinstance(server_id, str):
+            bindings_by_server.setdefault(server_id, []).append(binding)
     rows: list[dict[str, str]] = []
     json_rows: list[dict[str, Any]] = []
     for server in manager.active_servers:
@@ -364,11 +386,21 @@ def _mcp_status_payload(
                 "operator_action": actions,
                 "prompt_error": prompt_errors.get(server.id),
                 "startup_error": startup_error,
+                "call_approval": (
+                    "every_call"
+                    if approval is not None and not exempt_from_rule(approval, server)
+                    else "permission_mode"
+                ),
+                "tools": _mcp_status_tools(
+                    bindings_by_server.get(server.id, []),
+                    marked=marked_read_tools(approval, server),
+                ),
             }
         )
     return {
         "rows": json_rows,
         "table_rows": rows,
+        "tool_server_approval": {"version": 1, "active": approval is not None},
         "bootstrap_errors": bootstrap_errors,
         "prompt_errors": prompt_errors,
         "metadata": metadata,

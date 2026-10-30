@@ -445,12 +445,17 @@ def surviving_repro_artifacts(root: Path, paths: Iterable[str]) -> tuple[str, ..
 
 
 _REPRODUCTION_FIRST_DIRECTIVE_BODY = (
-    "- BEFORE editing product code, write a minimal reproduction of the EXACT symptom "
-    "the task describes - the same inputs, and an assertion on the expected result "
+    "- BEFORE editing product code, reproduce the EXACT symptom with the smallest "
+    "relevant existing test or an inline assertion when possible. Use "
+    "the same inputs the task describes, and an assertion on the expected result "
     "versus what the report says actually happens. Prefer any concrete code block the "
     "report quotes; do not generalize it.\n"
-    "- Put it in a new throwaway file (for example `repro_<short-name>.py`) and run it. "
-    "It MUST fail on the current, unpatched tree. If the task also asked for a test, "
+    "- Run the check on the current, unpatched tree and confirm the reported failure. "
+    "Respect the user's file and execution scope throughout: a request to change only "
+    "named files also excludes temporary reproduction files elsewhere. Do not create "
+    "a separate reproduction when an existing test already demonstrates the symptom. "
+    "Create a temporary check file only when needed and permitted by the request. "
+    "If the task also asked for a test, "
     "writing it as a real test under the project's test directory counts - that one you "
     "keep.\n"
     "- If it passes before you change anything, your reading of the symptom is wrong: "
@@ -460,10 +465,12 @@ _REPRODUCTION_FIRST_DIRECTIVE_BODY = (
     "not, keep iterating on the fix. Never weaken, narrow, or delete the reproduction "
     "to make it pass, and do not edit it after the fix unless its expectation is "
     "demonstrably wrong - if you must, say so explicitly in your final answer.\n"
-    "- Delete the reproduction file before you finish. The delivered diff must contain "
+    "- Remove only temporary check files you created within the authorized scope; "
+    "never remove an existing test. The delivered diff must contain "
     "only the real fix (plus any tests the task actually asked for).\n"
-    "- State the reproduction's status in your final answer: that it failed before the "
-    "fix and passes after it, or that you could not get it to reproduce."
+    "- Explain the observed behavior and check results in plain language: whether the "
+    "same check failed before the fix and passed after it, or could not demonstrate "
+    "the problem. Keep internal protocol names out of user-facing updates."
 )
 
 REPRODUCTION_FIRST_TURN_DIRECTIVE = (
@@ -477,7 +484,8 @@ REPRODUCTION_FIRST_TURN_DIRECTIVE = (
 REPRODUCTION_FIRST_CONDITIONAL_DIRECTIVE = (
     "Reproduction-first protocol — apply it whenever the task reports defective "
     "behavior (an error, a crash, wrong output, a failing command); skip it for "
-    "tasks that report no symptom:\n" + _REPRODUCTION_FIRST_DIRECTIVE_BODY
+    "tasks that report no symptom. The user's scope limits still apply:\n"
+    + _REPRODUCTION_FIRST_DIRECTIVE_BODY
 )
 
 REPRO_PRE_EDIT_ADVISORY = (
@@ -485,7 +493,9 @@ REPRO_PRE_EDIT_ADVISORY = (
     "reported symptom has been observed failing on the unpatched tree. Without that, a "
     "passing test after your change only confirms your interpretation of the report, "
     "not the report itself. If you can still do it, revert nothing - just write the "
-    "minimal reproduction now, run it, and confirm what it shows. Advisory only - this "
+    "smallest permitted check now, preferring existing tests or inline assertions, "
+    "run it, and confirm what it shows. Do not create extra files outside the user's "
+    "requested scope. Advisory only - this "
     "does not block your edit."
 )
 
@@ -518,8 +528,9 @@ def build_repro_pre_edit_advisory(*, status: ReproStatus) -> str:
 
 _REPRO_NUDGE_LINES = {
     ReproStatus.NOT_ATTEMPTED: (
-        "- No reproduction of the reported symptom was run. Write a minimal reproduction "
-        "of the exact symptom, run it, and confirm it now passes with your fix in place. "
+        "- No reproduction of the reported symptom was run. Use the smallest permitted "
+        "existing test or inline check of the exact symptom, run it, and confirm it now "
+        "passes with your fix in place. Respect the user's file and execution limits. "
         "If you cannot make it reproduce at all, say so explicitly instead of implying "
         "the symptom is fixed."
     ),

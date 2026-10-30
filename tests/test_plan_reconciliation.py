@@ -1,10 +1,78 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
+
+from alysis_code import plan_reconciliation
 from alysis_code.plan_reconciliation import reconcile_plan_with_workspace
 from alysis_code.repo_scan import scan_workspace
 from alysis_code.workspace_context import resolve_workspace_context
+
+
+@pytest.mark.parametrize("excluded_name", [".alysis", "node_modules", "BUILD", ".git"])
+def test_symbol_scan_never_enters_excluded_directories(tmp_path, monkeypatch, excluded_name):
+    excluded = tmp_path / excluded_name
+    (excluded / "deep").mkdir(parents=True)
+    (excluded / "deep" / "decoy.py").write_text("def decoy(): pass")
+    source = tmp_path / "src" / "service.py"
+    source.parent.mkdir()
+    source.write_text("def service(): pass")
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):
+        assert not Path(path).is_relative_to(excluded), "excluded content was traversed"
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    assert plan_reconciliation._iter_symbol_scan_files(tmp_path) == [source]
+
+
+def test_symbol_scan_prunes_directories_resolving_outside_workspace(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    redirected = root / "redirected"
+    redirected.mkdir()
+    (redirected / "foreign.py").write_text("def foreign(): pass")
+    source = root / "local.py"
+    source.write_text("def local(): pass")
+    original_resolve = Path.resolve
+    original_scandir = os.scandir
+
+    def resolve(path, *args, **kwargs):
+        if path.is_relative_to(redirected):
+            return tmp_path / "outside" / path.relative_to(redirected)
+        return original_resolve(path, *args, **kwargs)
+
+    def guarded_scandir(path):
+        assert not Path(path).is_relative_to(redirected), "outside target was traversed"
+        return original_scandir(path)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    assert plan_reconciliation._iter_symbol_scan_files(root) == [source]
+
+
+def test_symbol_scan_preserves_file_bound_and_resolved_exclusions(tmp_path, monkeypatch):
+    for name in ("first.py", "second.py", "third.py", "alias.py", "notes.txt"):
+        (tmp_path / name).write_text("synthetic content")
+    alias = tmp_path / "alias.py"
+    original_resolve = Path.resolve
+
+    def resolve(path, *args, **kwargs):
+        if path == alias:
+            return tmp_path / ".alysis" / "private.py"
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    unbounded = plan_reconciliation._iter_symbol_scan_files(tmp_path)
+    assert len(unbounded) == 3 and alias not in unbounded
+    monkeypatch.setattr(plan_reconciliation, "_MAX_SYMBOL_SCAN_FILES", 2)
+    result = plan_reconciliation._iter_symbol_scan_files(tmp_path)
+    assert len(result) == 2
+    assert alias not in result
+    assert all(path.suffix == ".py" and path.parent == tmp_path for path in result)
 
 
 def _workspace_context_payload(root: Path) -> dict[str, object]:

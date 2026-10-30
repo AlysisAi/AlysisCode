@@ -146,9 +146,6 @@ class ThresholdEdgeTests(unittest.TestCase):
         self.assertEqual(assessment.changed_percent, 79)
         self.assertFalse(assessment.should_warn)
 
-    def test_threshold_constant_is_eighty_percent(self) -> None:
-        self.assertEqual(ed.REWRITE_LINE_FRACTION_THRESHOLD, 0.80)
-
     def test_a_rewrite_that_changes_nothing_never_warns(self) -> None:
         assessment = ed.assess_full_file_rewrite(path="a.txt", original=self.old, updated=self.old)
         self.assertFalse(assessment.should_warn)
@@ -338,10 +335,6 @@ class ThrashCounterTests(unittest.TestCase):
             if notice is not None:
                 notices.append(notice)
         return notices
-
-    def test_threshold_is_eight(self) -> None:
-        self.assertEqual(ed.THRASH_REPETITION_THRESHOLD, 8)
-        self.assertEqual(ed.MAX_THRASH_NOTICES_PER_RUN, 2)
 
     def test_seven_failures_are_silent(self) -> None:
         self.assertEqual(self._fail("analyze_final.py", 7), [])

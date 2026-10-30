@@ -93,6 +93,7 @@ class VerificationEvidence:
     reason: str = ""
     covered_verification_commands: tuple[str, ...] = ()
     supplemental_only: bool = False
+    working_directory: str = ""
 
     @property
     def evidence_verdict(self) -> str:
@@ -123,6 +124,7 @@ class VerificationEvidence:
             "reason": self.reason,
             "covered_verification_commands": list(self.covered_verification_commands),
             "supplemental_only": self.supplemental_only,
+            "working_directory": self.working_directory,
         }
 
 

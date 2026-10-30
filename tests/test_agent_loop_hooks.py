@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ from alysis_code.config import AppConfig
 from alysis_code.hooks import (
     HOOK_AUDIT_ARTIFACT_PARTS,
     HookDispatcher,
+    HookDispatchResult,
     load_resolved_hooks_config,
     project_hooks_config_path,
     read_hook_audit_events,
@@ -398,6 +400,314 @@ def test_close_fires_session_end_hook(
     assert payload["reason"] == "manual_shutdown"
     assert payload["session_source"] == "startup"
     assert payload["active_workdir_relpath"] == "."
+
+
+def _session_end_retry_fixture(tmp_path, monkeypatch, effect):
+    """Real close/dispatch path with inert external cleanup and hook effects."""
+    surface = _RecordingSurface()
+    session = _make_session(root=tmp_path, client=_ScriptedClient([]), surface=surface)
+    calls = []
+    cleanup = []
+
+    def dispatch(**kwargs):
+        calls.append(kwargs["payload"])
+        effect(session)
+        return HookDispatchResult()
+
+    session.hook_dispatcher = SimpleNamespace(fire_session_end=dispatch)
+    session.mcp_manager = SimpleNamespace(close=lambda: cleanup.append("mcp"))
+    monkeypatch.setattr(session.store, "close", lambda: cleanup.append("store"))
+    return session, calls, cleanup, surface
+
+
+def test_session_end_is_not_replayed_after_mcp_cleanup_failure(tmp_path, monkeypatch):
+    session, calls, cleanup, _ = _session_end_retry_fixture(
+        tmp_path, monkeypatch, lambda session: None
+    )
+
+    def close_mcp():
+        cleanup.append("mcp")
+        if cleanup.count("mcp") == 1:
+            raise RuntimeError("cleanup incomplete")
+
+    session.mcp_manager.close = close_mcp
+    with pytest.raises(RuntimeError, match="cleanup incomplete"):
+        session.close(reason="user_exit")
+    session.close(reason="cleanup_retry")
+
+    assert [call["reason"] for call in calls] == ["user_exit"]
+    assert cleanup == ["mcp", "store", "mcp", "store"]
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, TimeoutError])
+def test_session_end_uncertain_effect_is_not_replayed(tmp_path, monkeypatch, failure):
+    effects = []
+
+    def uncertain_hook(session):
+        effects.append("external effect may have happened")
+        raise failure("uncertain hook result")
+
+    session, calls, cleanup, surface = _session_end_retry_fixture(
+        tmp_path, monkeypatch, uncertain_hook
+    )
+    session.close()
+    session.close()
+
+    assert len(effects) == len(calls) == 1
+    assert any("uncertain hook result" in warning for warning in surface.warnings)
+    assert cleanup == ["mcp", "store", "mcp", "store"]
+
+
+def test_session_end_reentrant_close_does_not_dispatch_twice(tmp_path, monkeypatch):
+    def reenter(session):
+        session.close(reason="reentrant_cleanup")
+
+    session, calls, cleanup, _ = _session_end_retry_fixture(tmp_path, monkeypatch, reenter)
+    session.close(reason="outer_close")
+
+    assert [call["reason"] for call in calls] == ["outer_close"]
+    assert cleanup == ["mcp", "store", "mcp", "store"]
+
+
+def test_session_end_concurrent_close_latches_before_blocking_hook(tmp_path, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    errors = []
+
+    def blocked_hook(session):
+        entered.set()
+        if not release.wait(timeout=2):
+            raise TimeoutError("fixture did not release hook")
+
+    session, calls, cleanup, surface = _session_end_retry_fixture(
+        tmp_path, monkeypatch, blocked_hook
+    )
+
+    def close(reason):
+        try:
+            session.close(reason=reason)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=close, args=("first",), daemon=True)
+    second = threading.Thread(target=close, args=("second",), daemon=True)
+    first.start()
+    try:
+        assert entered.wait(timeout=1)
+        second.start()
+        second.join(timeout=1)
+        assert not second.is_alive(), "the latch lock must not cover hook execution"
+        assert [call["reason"] for call in calls] == ["first"]
+    finally:
+        release.set()
+        first.join(timeout=2)
+        if second.ident is not None:
+            second.join(timeout=2)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not errors
+    assert not surface.warnings
+    assert cleanup.count("mcp") == cleanup.count("store") == 2
+
+
+def test_session_end_attempt_does_not_hide_later_store_failure(tmp_path, monkeypatch):
+    session, calls, cleanup, _ = _session_end_retry_fixture(
+        tmp_path, monkeypatch, lambda session: None
+    )
+
+    def close_store():
+        cleanup.append("store")
+        if cleanup.count("store") == 1:
+            raise OSError("store cleanup incomplete")
+
+    monkeypatch.setattr(session.store, "close", close_store)
+    with pytest.raises(OSError, match="store cleanup incomplete"):
+        session.close()
+    session.close()
+    assert len(calls) == 1
+    assert cleanup == ["mcp", "store", "mcp", "store"]
+
+
+def test_session_end_without_hooks_preserves_cleanup_retry(tmp_path, monkeypatch):
+    session, calls, cleanup, _ = _session_end_retry_fixture(
+        tmp_path, monkeypatch, lambda session: None
+    )
+    session.hook_dispatcher = None
+    session.close()
+    session.close()
+    assert calls == []
+    assert cleanup == ["mcp", "store", "mcp", "store"]
+
+
+def test_session_end_latch_is_per_instance(tmp_path, monkeypatch):
+    sessions = [
+        _session_end_retry_fixture(tmp_path / name, monkeypatch, lambda session: None)
+        for name in ("first", "second")
+    ]
+    for session, calls, cleanup, _ in sessions:
+        session.close()
+        session.close()
+        assert len(calls) == 1
+        assert cleanup == ["mcp", "store", "mcp", "store"]
+
+
+def test_session_end_context_failure_consumes_attempt(tmp_path, monkeypatch):
+    session, calls, cleanup, _ = _session_end_retry_fixture(
+        tmp_path, monkeypatch, lambda session: None
+    )
+    original = session._hook_runtime_context
+    failure = RuntimeError("context unavailable before hook")
+    monkeypatch.setattr(session, "_hook_runtime_context", lambda: (_ for _ in ()).throw(failure))
+    with pytest.raises(RuntimeError) as observed:
+        session.close()
+    assert observed.value is failure
+    monkeypatch.setattr(session, "_hook_runtime_context", original)
+    session.close()
+    assert calls == []
+    assert cleanup == ["store", "mcp", "store"]
+
+
+def _session_end_bridge_fixture(tmp_path, agent):
+    from alysis_code.ide.artifacts import ArtifactStore
+    from alysis_code.ide.event_stream import EventContext, EventSequencer, ProtocolEventSurface
+    from alysis_code.ide.prompt_queue import DurablePromptQueue
+    from alysis_code.ide.stdio_bridge import BridgeJob, BridgeSession, StdioBridge
+
+    output = io.StringIO()
+    queue = DurablePromptQueue(tmp_path / "close.sqlite3")
+    bridge = StdioBridge(stdout=output, prompt_queue=queue)
+    session = BridgeSession(
+        session_id="ordinary-close",
+        root=tmp_path,
+        mode="auto",
+        surface=ProtocolEventSurface(
+            context=EventContext(session_id="ordinary-close"),
+            emit=bridge._record_and_write_event,
+            sequencer=EventSequencer(),
+        ),
+        agent_session=agent,
+        artifact_store=ArtifactStore([]),
+        sensitive_media=False,
+    )
+    job = BridgeJob(
+        job_id="retained-terminal",
+        session_id=session.session_id,
+        created_at="now",
+        status="completed",
+        exit_code=0,
+        worker_never_started=True,
+    )
+    session.last_job = job
+    bridge._sessions[session.session_id] = session
+    bridge._jobs[job.job_id] = job
+
+    def cancel(request_id):
+        bridge.process_line(
+            json.dumps(
+                {
+                    "protocol_version": "1",
+                    "id": request_id,
+                    "method": "session.cancel",
+                    "params": {"session_id": session.session_id},
+                }
+            )
+            + "\n"
+        )
+        return next(
+            json.loads(line)
+            for line in output.getvalue().splitlines()
+            if json.loads(line).get("id") == request_id
+        )
+
+    return bridge, session, job, cancel
+
+
+@pytest.mark.parametrize("failed_cleanup", ["mcp", "store"])
+@pytest.mark.parametrize("uncertain_hook", [False, True])
+def test_session_end_bridge_cleanup_failure_stays_blocked(
+    tmp_path, monkeypatch, failed_cleanup, uncertain_hook
+):
+    """Current main's real legacy cancellation refuses retry; never restore old success."""
+    effects = []
+
+    def hook_effect(session):
+        effects.append("possible hook effect")
+        if uncertain_hook:
+            raise TimeoutError("inert hook uncertainty")
+
+    agent, calls, cleanup, _ = _session_end_retry_fixture(tmp_path, monkeypatch, hook_effect)
+    failure = OSError("inert late cleanup failure")
+
+    def close_component(component):
+        cleanup.append(component)
+        if component == failed_cleanup:
+            raise failure
+
+    agent.mcp_manager.close = lambda: close_component("mcp")
+    monkeypatch.setattr(agent.store, "close", lambda: close_component("store"))
+    bridge, session, job, cancel = _session_end_bridge_fixture(tmp_path, agent)
+    try:
+        failed = cancel("first")
+        assert failed["error"]["code"] == "browser_cleanup_incomplete"
+        assert session.cancellation_uncertain is True
+        assert session.cancellation_transitions == 1
+        assert not session.closed and session.close_when_idle
+        assert bridge._sessions[session.session_id] is session
+        assert bridge._jobs[job.job_id] is job
+        assert cancel("retry")["error"]["code"] == "session_busy"
+        assert len(effects) == len(calls) == 1
+        assert cleanup == ["mcp", "store"]
+    finally:
+        # Fixture-only queue handle retirement; do not retry failed agent cleanup.
+        bridge._prompt_queue.release_owner(bridge._prompt_queue_owner_id)
+
+
+@pytest.mark.parametrize("failed_cleanup", ["mcp", "store"])
+def test_session_end_async_bridge_preserves_original_close_error(
+    tmp_path, monkeypatch, failed_cleanup
+):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hook_effect(session):
+        entered.set()
+        assert release.wait(2), "fixture hook was not released"
+
+    agent, calls, cleanup, _ = _session_end_retry_fixture(tmp_path, monkeypatch, hook_effect)
+    failure = OSError("original late close failure")
+
+    def close_component(component):
+        cleanup.append(component)
+        if component == failed_cleanup:
+            raise failure
+
+    agent.mcp_manager.close = lambda: close_component("mcp")
+    monkeypatch.setattr(agent.store, "close", lambda: close_component("store"))
+    bridge, session, job, cancel = _session_end_bridge_fixture(tmp_path, agent)
+    session.close_when_idle = True
+    worker = None
+    try:
+        bridge._schedule_session_close_after_job(session, job)
+        assert entered.wait(1)
+        worker = session.close_worker
+        assert worker is not None
+        release.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        original = session.close_error
+        assert original is not None and original.__cause__ is failure
+        assert session.close_attempted is True
+        assert session.close_worker is None and not session.closed
+        bridge._schedule_session_close_after_job(session, job)
+        assert session.close_worker is None
+        assert session.close_error is original
+        assert cancel("retry")["error"]["code"] == "session_busy"
+        assert len(calls) == 1 and cleanup == ["mcp", "store"]
+    finally:
+        release.set()
+        if worker is not None:
+            worker.join(2)
+        bridge._prompt_queue.release_owner(bridge._prompt_queue_owner_id)
 
 
 def test_run_turn_prompt_hook_rewrites_prompt_and_fires_stop(

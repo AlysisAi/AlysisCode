@@ -79,6 +79,7 @@ from ..provider_model_catalog import (
 from ..provider_url import display_endpoint
 from ..reasoning_contracts import (
     UNKNOWN_CONTRACT,
+    model_reasoning_contract,
     reasoning_contract_for,
     reasoning_labels_allowed_by_contract,
 )
@@ -3207,6 +3208,11 @@ def _prompt_default_model(console: Console, state: ConfigMenuState) -> str:
     rows = _default_model_rows(state)
     if state._provider_model_catalog_warning:
         console.print(f"[yellow]{state._provider_model_catalog_warning}[/yellow]")
+    if not rows:
+        console.print(
+            "No models are currently available for this account. Reconnect and try again."
+        )
+        raise Abort()
     current_model = str(state.fields.get("model") or "").strip()
     row_values = {value for value, _label, _description in rows}
     current_value = current_model if current_model in row_values else rows[0][0]
@@ -3287,7 +3293,7 @@ def _provider_models_for_state(
         )
         if preset is not None and preset.key == "alysis":
             state._provider_model_catalog_warning = (
-                "The hosted catalog is unavailable; only free models can be selected."
+                "The hosted model catalog is unavailable; reconnect and try again."
             )
     else:
         state._provider_model_catalog_warning = ""
@@ -3737,11 +3743,30 @@ def _thinking_labels_for_state(
             str(model or state.fields.get("model") or ""),
             preset_key=getattr(preset, "key", None),
         )
+        model_id = str(model or state.fields.get("model") or "")
+        if preset is None or preset.provider_key == "openrouter":
+            contract = model_reasoning_contract(model_id)
+            if preset is not None:
+                candidate = next(
+                    (item for item in state._provider_models_cache if item.id == model_id), None
+                )
+                if candidate is not None and candidate.reasoning_contract is not None:
+                    contract = candidate.reasoning_contract
         preset_key = getattr(preset, "key", None)
-        if preset_key == "nvidia" and contract is UNKNOWN_CONTRACT:
+        if preset_key in {"alysis", "nvidia"} and contract is UNKNOWN_CONTRACT:
             return ("auto",)
         current = _normalize_thinking_label(state.thinking_label)
-        if preset_key in {"alysis", "nvidia", "zai-coding-plan"}:
+        if preset is None or preset_key in {
+            "alysis",
+            "openai",
+            "openai-responses",
+            "mistral",
+            "minimax",
+            "nvidia",
+            "together",
+            "zai-coding-plan",
+            "openrouter",
+        }:
             # A global effort may have been saved for the previously active
             # provider. Do not preserve an invalid value merely because it is
             # current; these controls are exact per hosted model and surface.

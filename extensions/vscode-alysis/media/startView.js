@@ -24,6 +24,13 @@
   const permissionLabel = document.getElementById("permissionLabel");
   const permissionDetail = document.getElementById("permissionDetail");
   const permissionPalette = document.getElementById("permissionPalette");
+  // These controls belong to the static template (their handlers are bound once below).
+  // Reuse the nodes while reading their current values/text on each state update.
+  const permissionOptions = Array.from(document.querySelectorAll("[data-permission]"));
+  const forgeControls = Array.from(document.querySelectorAll('[data-surface="forge"], [data-forge-starter], [data-forge-draft]'));
+  const settingsGroups = Array.from(document.querySelectorAll(".settings-group"), group => ({
+    group, heading: group.querySelector("h2"), rows: Array.from(group.querySelectorAll(".settings-row"))
+  }));
   const modelLabel = document.getElementById("modelLabel");
   const recentBlock = document.getElementById("recentBlock");
   const recentCards = document.getElementById("recentCards");
@@ -102,10 +109,6 @@
   let forgeRunning = false;
   let modeControlSignature = "";
   let settingsFilterSignature = "";
-  let readyGateSignature = "";
-  // These capability controls belong to the static sidebar shell. Querying the
-  // entire growing transcript for them on every token wastes rendering time.
-  const forgeControls = document.querySelectorAll('[data-surface="forge"], [data-forge-starter], [data-forge-draft]');
   let currentState = null;
   /** @type {Map<string, { signature: string, node: HTMLElement }>} */
   const renderedItems = new Map();
@@ -118,6 +121,9 @@
   /** itemId -> epoch millis a rate limit clears, so a re-render never restarts the countdown. */
   const retryDeadlines = new Map();
   let countdownTimer = 0;
+  let activitySignature = "";
+  let readyGateSignature = "";
+  let readinessStripSignature = "";
   /** Submitted instructions, newest last, for ArrowUp recall from an empty composer. */
   let history = Array.isArray(savedState?.history)
     ? savedState.history.filter((entry) => typeof entry === "string").slice(-30)
@@ -410,7 +416,7 @@
     permissionStrip.setAttribute("aria-expanded", "true");
     /** @type {HTMLElement | null} */ (permissionPalette.querySelector('[aria-checked="true"]'))?.focus();
   });
-  for (const button of document.querySelectorAll("[data-permission]")) {
+  for (const button of permissionOptions) {
     button.addEventListener("click", () => {
       if (taskRunning || forgeRunning || taskPending) return;
       const nextPermission = button.getAttribute("data-permission");
@@ -429,7 +435,7 @@
       permissionStrip?.focus();
     } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
       event.preventDefault();
-      const options = Array.from(permissionPalette.querySelectorAll("[data-permission]"));
+      const options = permissionOptions;
       const current = document.activeElement ? options.indexOf(document.activeElement) : 0;
       const index = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
       /** @type {HTMLElement} */ (options[index])?.focus();
@@ -1164,7 +1170,7 @@
       permissionStrip.disabled = taskRunning || forgeRunning || taskPending;
     }
     if (taskRunning || forgeRunning || taskPending) closePermissionPalette();
-    for (const option of document.querySelectorAll("[data-permission]")) {
+    for (const option of permissionOptions) {
       option.setAttribute("aria-checked", String(option.getAttribute("data-permission") === permissionMode));
     }
     if (permissionLabel && permissionDetail) {
@@ -1732,11 +1738,11 @@
 
   /** One shared ticker keeps every countdown honest without a timer per card. */
   function startCountdownTicker() {
-    if (countdownTimer || !document.querySelector("[data-countdown-deadline]")) {
+    if (countdownTimer || !conversationItems?.querySelector("[data-countdown-deadline]")) {
       return;
     }
     countdownTimer = setInterval(() => {
-      const nodes = document.querySelectorAll("[data-countdown-deadline]");
+      const nodes = conversationItems?.querySelectorAll("[data-countdown-deadline]") || [];
       if (nodes.length === 0) {
         clearInterval(countdownTimer);
         countdownTimer = 0;
@@ -2452,6 +2458,11 @@
   }
 
   function renderActivity(results, events) {
+    // Streamed chat state also carries these panes. Keep open disclosures and
+    // focused controls attached while their own data remains unchanged.
+    const signature = JSON.stringify([results, events]);
+    if (signature === activitySignature) return;
+    activitySignature = signature;
     const actionRoot = document.getElementById("actionResults");
     const eventRoot = document.getElementById("runtimeEvents");
     if (actionRoot) {
@@ -4578,10 +4589,10 @@
     const query = settingsSearch?.value.trim().toLocaleLowerCase() || "";
     const terms = query.split(/\s+/).filter(Boolean);
     let matches = 0;
-    for (const group of document.querySelectorAll(".settings-group")) {
-      const heading = group.querySelector("h2")?.textContent || "";
+    for (const { group, heading: headingElement, rows } of settingsGroups) {
+      const heading = headingElement?.textContent || "";
       let groupMatches = 0;
-      for (const row of group.querySelectorAll(".settings-row")) {
+      for (const row of rows) {
         const text = `${heading} ${row.textContent}`.toLocaleLowerCase();
         const matched = terms.every((term) => text.includes(term));
         // Filtering must not override a capability gate applied by the host.
@@ -4617,6 +4628,9 @@
       ? []
       : readiness.blockers.slice(0, 3);
     const blockers = welcomeVisible ? all.slice(1) : all;
+    const signature = JSON.stringify(blockers);
+    if (signature === readinessStripSignature) return;
+    readinessStripSignature = signature;
     if (blockers.length === 0) {
       readinessStrip.replaceChildren();
       readinessStrip.hidden = true;
@@ -4673,18 +4687,20 @@
   function renderReadyGate(state) {
     composerReady = state.ready === true;
     const blocker = Array.isArray(state.readiness?.blockers) ? state.readiness.blockers[0] : null;
-    const signature = JSON.stringify([composerReady, blocker, state.readyReason]);
-    if (signature === readyGateSignature) {
-      syncWorkflowContext();
-      updateSubmitState();
-      return;
-    }
-    readyGateSignature = signature;
     if (connectFirst) {
       connectFirst.hidden = composerReady;
     }
     const progress = blocker?.progress === true;
     readyGateProgress = progress;
+    const signature = JSON.stringify([composerReady, state.readyReason, blocker]);
+    if (signature === readyGateSignature) {
+      // Conversation changes still update Send/Stop and the composer, without
+      // replacing a recovery button between pointer-down and click.
+      syncWorkflowContext();
+      updateSubmitState();
+      return;
+    }
+    readyGateSignature = signature;
     connectFirst?.classList.toggle("progress", progress);
     const heading = document.getElementById("connectFirstTitle");
     if (heading) {

@@ -13,6 +13,7 @@ from typing import Any
 
 from .llm.metadata import strip_provider_metadata_from_message
 from .llm.types import BillingMode, CostSource, UsageConfidence, UsageContract, UsageSource
+from .llm.types import parse_token_count as _safe_int
 from .model_registry import ModelMeta, ModelRegistry
 from .provider_telemetry import base_url_host
 from .request_estimation import (
@@ -49,7 +50,8 @@ class UsageRecord:
     usage_source_detail: str = UsageSource.LOCAL_ESTIMATE.value
     usage_confidence: str = UsageConfidence.ESTIMATED.value
     output_includes_reasoning: bool = True
-    usage_schema_version: int = 6
+    usage_schema_version: int = 7
+    input_tokens_scope: str = "request"
     provider_key: str | None = None
     protocol: str | None = None
     base_url_host: str | None = None
@@ -87,6 +89,7 @@ class UsageRecord:
         return {
             "event_type": "llm_usage",
             "usage_schema_version": self.usage_schema_version,
+            "input_tokens_scope": self.input_tokens_scope,
             "timestamp": self.timestamp,
             "role": self.role,
             "requested_model": self.requested_model,
@@ -376,52 +379,12 @@ def estimate_completion_tokens(content: str, tool_calls: list[Any]) -> int:
     return estimate_tokens(base)
 
 
-def _prompt_character_count(
-    messages: list[dict[str, Any]],
-    tool_list: list[dict[str, Any]] | None,
-) -> int:
-    payload: dict[str, Any] = {"messages": _messages_without_provider_metadata(messages)}
-    if tool_list:
-        payload["tools"] = tool_list
-    return len(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-
-
-def _looks_like_character_count(
-    *,
-    api_count: int | None,
-    estimated_tokens: int,
-    character_count: int,
-) -> bool:
-    if api_count is None or api_count <= 0 or estimated_tokens <= 0:
-        return False
-    if character_count <= 0:
-        return api_count >= max(estimated_tokens * 3, estimated_tokens + 256)
-
-    # Some OpenAI-compatible providers put character counts in token fields.
-    # Trust plausible API token counts, but replace counts that are much closer
-    # to raw text size than to the local tokenizer estimate.
-    minimum_delta = 64 if character_count < 2048 else 256
-    far_above_tokens = api_count >= max(estimated_tokens * 2.75, estimated_tokens + minimum_delta)
-    close_to_chars = abs(api_count - character_count) <= max(16, int(character_count * 0.15))
-    return far_above_tokens and close_to_chars
-
-
-def _safe_int(value: Any) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed < 0:
-        return None
-    return parsed
-
-
 def _safe_float(value: Any) -> float | None:
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return parsed
+    return parsed if math.isfinite(parsed) else None
 
 
 def _safe_bool(value: Any) -> bool:
@@ -452,6 +415,47 @@ def _safe_request_plan_payload(payload: Any) -> dict[str, Any] | None:
         value = _safe_label(payload.get(key))
         if value is not None:
             safe[key] = value
+    # Wire diagnostics are an allowlist of content-free values. Never pass through
+    # an arbitrary provider metadata field (it may contain screen text or secrets).
+    for key in ("wire_history_sha256", "wire_instructions_sha256", "wire_tools_sha256"):
+        value = payload.get(key)
+        if (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value)
+        ):
+            safe[key] = value
+    for key, allowed in (
+        (
+            "wire_tool_choice",
+            {"auto", "required", "none", "function", "custom", "tool", "any", "omitted", "other"},
+        ),
+        (
+            "wire_reasoning_effort",
+            {
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra",
+                "omitted",
+                "other",
+            },
+        ),
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value in allowed:
+            safe[key] = value
+    for key in (
+        "wire_previous_history_prefix_preserved",
+        "wire_previous_instructions_unchanged",
+        "wire_previous_tools_unchanged",
+    ):
+        if isinstance(payload.get(key), bool):
+            safe[key] = payload[key]
     for key in ("previous_response_id_used", "fallback_used", "stream"):
         if key in payload:
             safe[key] = bool(payload.get(key))
@@ -473,6 +477,18 @@ def _safe_request_plan_payload(payload: Any) -> dict[str, Any] | None:
         "sent_input_item_count",
         "continuation_anchor_index",
         "resent_stable_instruction_count",
+        "wire_schema_version",
+        "wire_history_bytes",
+        "wire_history_items",
+        "wire_instructions_bytes",
+        "wire_tools_bytes",
+        "wire_previous_history_items",
+        "wire_shared_prefix_items",
+        "wire_shared_prefix_bytes",
+        "wire_image_parts",
+        "wire_media_parts",
+        "wire_text_parts",
+        "wire_tool_count",
     ):
         value = _safe_int(payload.get(key))
         if value is not None:
@@ -591,7 +607,7 @@ def _prompt_estimate_calibration(
     *,
     api_prompt_tokens: int | None,
     estimated_prompt_tokens: int,
-    corrected_fields: list[str],
+    input_tokens_scope: str,
     usage_source: str,
     api_prompt_tokens_authoritative: bool = False,
 ) -> tuple[int | None, float | None]:
@@ -599,7 +615,7 @@ def _prompt_estimate_calibration(
         api_prompt_tokens is None
         or estimated_prompt_tokens <= 0
         or (usage_source != "api" and not api_prompt_tokens_authoritative)
-        or "prompt_tokens" in corrected_fields
+        or input_tokens_scope != "request"
     ):
         return None, None
     error_tokens = api_prompt_tokens - estimated_prompt_tokens
@@ -626,28 +642,6 @@ def _robust_calibration_ratios(values: Iterable[float]) -> list[float]:
     return coherent if len(coherent) >= 3 and len(coherent) * 2 > len(ratios) else []
 
 
-def _resolve_total_tokens(
-    *,
-    api_total_tokens: int | None,
-    prompt_tokens: int,
-    completion_tokens: int,
-    prompt_character_count: int,
-    completion_character_count: int,
-) -> tuple[int, str | None]:
-    expected_total = prompt_tokens + completion_tokens
-    if api_total_tokens is None:
-        return expected_total, None
-    if api_total_tokens < expected_total:
-        return expected_total, "api_usage_total_below_component_sum"
-    if _looks_like_character_count(
-        api_count=api_total_tokens,
-        estimated_tokens=expected_total,
-        character_count=prompt_character_count + completion_character_count,
-    ):
-        return expected_total, "api_usage_looked_like_character_counts:total_tokens"
-    return api_total_tokens, None
-
-
 def _resolve_model_rate(
     requested_meta: ModelMeta,
     response_meta: ModelMeta | None,
@@ -662,9 +656,9 @@ def _resolve_model_rate(
 def parse_rate(value: Any) -> float | None:
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    if parsed < 0:
+    if not math.isfinite(parsed) or parsed < 0:
         return None
     return parsed
 
@@ -720,14 +714,22 @@ def _usage_cost_usd(
             cost += read_tokens * cache_read_input_rate
 
     if creation_5m_tokens > 0:
-        rate = cache_creation_5m_input_rate or cache_creation_input_rate
+        rate = (
+            cache_creation_5m_input_rate
+            if cache_creation_5m_input_rate is not None
+            else cache_creation_input_rate
+        )
         if rate is None:
             cache_pricing_missing = True
         else:
             cost += creation_5m_tokens * rate
 
     if creation_1h_tokens > 0:
-        rate = cache_creation_1h_input_rate or cache_creation_input_rate
+        rate = (
+            cache_creation_1h_input_rate
+            if cache_creation_1h_input_rate is not None
+            else cache_creation_input_rate
+        )
         if rate is None:
             cache_pricing_missing = True
         else:
@@ -821,10 +823,7 @@ def build_usage_record(
         else estimated_prompt_tokens
     )
     estimated_completion_tokens = estimate_completion_tokens(response_content, response_tool_calls)
-    prompt_character_count = _prompt_character_count(messages, tool_list)
-    completion_character_count = len(
-        _completion_payload_for_estimation(response_content, response_tool_calls)
-    )
+    input_tokens_scope = getattr(api_usage, "input_tokens_scope", "request")
     if api_usage is not None:
         reported_output_includes_reasoning = bool(
             getattr(api_usage, "output_includes_reasoning", True)
@@ -889,67 +888,16 @@ def build_usage_record(
         value is not None for value in (raw_api_completion_tokens, raw_api_total_tokens)
     ) or (raw_api_prompt_tokens is not None and not prompt_measurement_is_local)
     usage_source = "estimate" if prompt_measurement_is_local else "api"
-    corrected_fields: list[str] = []
-    # Reasoning models (OpenAI o-series / gpt-5, etc.) report output_tokens that
-    # INCLUDE hidden reasoning tokens, so the API completion count legitimately
-    # exceeds the visible response text. The character-count heuristic compares
-    # the API count against a visible-only estimate, so on a concise answer with
-    # heavy reasoning it false-positives and would overwrite a correct API count
-    # with a far-too-low estimate. Authoritative protocols bypass all such
-    # corrections; compatible providers also bypass the completion correction
-    # whenever they explicitly report reasoning tokens.
-    api_reasoning_present = (_safe_int(api_reasoning_tokens) or 0) > 0
-
+    # A local estimate cannot invalidate a provider measurement. Preserve each
+    # reported component independently, even for partial or unusual payloads.
     if prompt_tokens is None:
         prompt_tokens = fallback_prompt_estimate_tokens
         usage_source = "estimate"
-    elif (
-        prompt_measurement_source == UsageSource.PROVIDER_RESPONSE.value
-        and not api_usage_counts_authoritative
-        and _looks_like_character_count(
-            api_count=prompt_tokens,
-            estimated_tokens=fallback_prompt_estimate_tokens,
-            character_count=prompt_character_count,
-        )
-    ):
-        prompt_tokens = fallback_prompt_estimate_tokens
-        usage_source = "estimate"
-        corrected_fields.append("prompt_tokens")
     if completion_tokens is None:
         completion_tokens = estimated_completion_tokens
         usage_source = "estimate"
-    elif (
-        not api_usage_counts_authoritative
-        and not api_reasoning_present
-        and _looks_like_character_count(
-            api_count=completion_tokens,
-            estimated_tokens=estimated_completion_tokens,
-            character_count=completion_character_count,
-        )
-    ):
-        completion_tokens = estimated_completion_tokens
-        usage_source = "estimate"
-        corrected_fields.append("completion_tokens")
-    total_correction_reason: str | None = None
-    if total_tokens is None or usage_source == "estimate":
+    if total_tokens is None:
         total_tokens = prompt_tokens + completion_tokens
-        if usage_source != "estimate":
-            usage_source = "api"
-    elif api_usage_counts_authoritative:
-        # Native/provider-owned protocols define these counts as part of their
-        # response contract. Preserve them exactly, including non-visible
-        # reasoning, formatting, and tool-structure tokens.
-        total_correction_reason = None
-    else:
-        total_tokens, total_correction_reason = _resolve_total_tokens(
-            api_total_tokens=total_tokens,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            prompt_character_count=prompt_character_count,
-            completion_character_count=completion_character_count,
-        )
-        if total_correction_reason is not None:
-            corrected_fields.append("total_tokens")
     if usage_source == "estimate":
         usage_source_detail = (
             UsageSource.MIXED.value
@@ -989,45 +937,32 @@ def build_usage_record(
         copy.deepcopy(api_raw_provider_usage) if isinstance(api_raw_provider_usage, dict) else None
     )
 
-    if "prompt_tokens" in corrected_fields:
-        cache_read_input_tokens = None
-        cache_creation_input_tokens = None
-        cache_creation_5m_input_tokens = None
-        cache_creation_1h_input_tokens = None
-        input_tokens_uncached = None
-        input_tokens_uncached_derived = False
-
     cached_prompt_tokens = cache_read_input_tokens
     uncached_prompt_tokens: int | None = None
-    if prompt_tokens is not None:
-        if cached_prompt_tokens is not None:
-            uncached_prompt_tokens = max(0, prompt_tokens - cached_prompt_tokens)
+    if raw_api_prompt_tokens is not None and not prompt_measurement_is_local:
+        if cached_prompt_tokens is not None and prompt_tokens >= cached_prompt_tokens:
+            uncached_prompt_tokens = prompt_tokens - cached_prompt_tokens
         elif input_tokens_uncached is not None:
             uncached_prompt_tokens = input_tokens_uncached
-    if input_tokens_uncached is None and prompt_tokens is not None:
+    if (
+        input_tokens_uncached is None
+        and raw_api_prompt_tokens is not None
+        and not prompt_measurement_is_local
+    ):
         cached_read = cache_read_input_tokens or 0
         cache_creation = cache_creation_input_tokens or 0
-        if cached_read > 0 or cache_creation > 0:
-            input_tokens_uncached = max(0, prompt_tokens - cached_read - cache_creation)
+        if (
+            cached_read > 0 or cache_creation > 0
+        ) and prompt_tokens >= cached_read + cache_creation:
+            input_tokens_uncached = prompt_tokens - cached_read - cache_creation
             input_tokens_uncached_derived = True
     prompt_estimate_error_tokens, prompt_estimate_error_ratio = _prompt_estimate_calibration(
         api_prompt_tokens=(None if prompt_measurement_is_local else raw_api_prompt_tokens),
         estimated_prompt_tokens=fallback_prompt_estimate_tokens,
-        corrected_fields=corrected_fields,
+        input_tokens_scope=input_tokens_scope,
         usage_source=usage_source,
         api_prompt_tokens_authoritative=prompt_tokens_authoritative,
     )
-    correction_reasons: list[str] = []
-    character_count_corrected_fields = [
-        field for field in corrected_fields if field in {"prompt_tokens", "completion_tokens"}
-    ]
-    if character_count_corrected_fields:
-        correction_reasons.append(
-            "api_usage_looked_like_character_counts:" + ",".join(character_count_corrected_fields)
-        )
-    if total_correction_reason is not None:
-        correction_reasons.append(total_correction_reason)
-    usage_correction_reason = ";".join(correction_reasons) if correction_reasons else None
     requested_meta = registry.get(requested_model)
     response_meta: ModelMeta | None = None
     if response_model:
@@ -1110,7 +1045,8 @@ def build_usage_record(
     )
 
     return UsageRecord(
-        usage_schema_version=6,
+        usage_schema_version=7,
+        input_tokens_scope=input_tokens_scope,
         timestamp=now_iso(),
         role=role,
         requested_model=requested_model,
@@ -1140,7 +1076,13 @@ def build_usage_record(
         request_mode=safe_request_mode,
         cache_strategy=safe_cache_strategy,
         request_plan=safe_request_plan,
-        request_has_media=request_contains_media(messages),
+        # Ephemeral pixels have already been scrubbed when accounting runs. The
+        # adapter measured the actual outgoing content before that cleanup.
+        request_has_media=(
+            safe_request_plan["wire_media_parts"] > 0
+            if safe_request_plan is not None and "wire_media_parts" in safe_request_plan
+            else request_contains_media(messages)
+        ),
         cached_prompt_tokens=cached_prompt_tokens,
         uncached_prompt_tokens=uncached_prompt_tokens,
         input_tokens_uncached=input_tokens_uncached,
@@ -1156,10 +1098,10 @@ def build_usage_record(
         prompt_estimate_tokens=fallback_prompt_estimate_tokens,
         prompt_estimate_error_tokens=prompt_estimate_error_tokens,
         prompt_estimate_error_ratio=prompt_estimate_error_ratio,
-        raw_api_prompt_tokens=raw_api_prompt_tokens if corrected_fields else None,
-        raw_api_completion_tokens=raw_api_completion_tokens if corrected_fields else None,
-        raw_api_total_tokens=raw_api_total_tokens if corrected_fields else None,
-        usage_correction_reason=usage_correction_reason,
+        raw_api_prompt_tokens=raw_api_prompt_tokens,
+        raw_api_completion_tokens=raw_api_completion_tokens,
+        raw_api_total_tokens=raw_api_total_tokens,
+        usage_correction_reason=None,
     )
 
 
@@ -1320,6 +1262,22 @@ class UsageSummary:
             return
         record = UsageRecord(
             usage_schema_version=max(1, _safe_int(payload.get("usage_schema_version")) or 1),
+            input_tokens_scope=str(
+                payload.get("input_tokens_scope")
+                or (
+                    "interaction"
+                    if payload.get("protocol") == "gemini_interactions"
+                    or (
+                        isinstance(payload.get("raw_provider_usage"), dict)
+                        and (
+                            _safe_int(payload["raw_provider_usage"].get("toolUsePromptTokenCount"))
+                            or 0
+                        )
+                        > 0
+                    )
+                    else "request"
+                )
+            ),
             timestamp=str(payload.get("timestamp") or ""),
             role=str(payload.get("role") or "main"),
             requested_model=str(payload.get("requested_model") or "unknown-model"),
@@ -1780,9 +1738,10 @@ class UsageSummary:
         records: list[UsageRecord],
     ) -> dict[str, Any]:
         media_known_records = [record for record in records if record.usage_schema_version >= 5]
-        calibration_records = [
-            record for record in media_known_records if not record.request_has_media
+        request_records = [
+            record for record in media_known_records if record.input_tokens_scope == "request"
         ]
+        calibration_records = [record for record in request_records if not record.request_has_media]
         raw_ratios = [
             float(record.prompt_estimate_error_ratio)
             for record in calibration_records
@@ -1816,9 +1775,8 @@ class UsageSummary:
             "calibration_usable_calls": len(ratios),
             "calibration_outlier_calls": max(0, len(raw_ratios) - len(ratios)),
             "calibration_excluded_unknown_media_calls": (len(records) - len(media_known_records)),
-            "calibration_excluded_media_calls": (
-                len(media_known_records) - len(calibration_records)
-            ),
+            "calibration_excluded_media_calls": (len(request_records) - len(calibration_records)),
+            "calibration_excluded_aggregate_calls": len(media_known_records) - len(request_records),
             "calibration_stable": len(ratios) >= 3,
             "prompt_estimate_error_ratio_avg": (sum(ratios) / len(ratios) if ratios else None),
             "prompt_estimate_error_ratio_p90": p90,

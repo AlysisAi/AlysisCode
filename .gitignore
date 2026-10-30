@@ -6,6 +6,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+/native/git-ssh-sign/target/
+/native/windows-sandbox/vendor/srt-win/target-qa/
 
 # Virtualenv
 .venv/

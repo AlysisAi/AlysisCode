@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +24,13 @@ from alysis_code.sandbox_runner import (
 from alysis_code.sandbox_settings import resolve_shell_sandbox_settings
 
 TEST_DOCKER_IMAGE = "test/alysis-sandbox:dev"
+
+
+@pytest.fixture(autouse=True)
+def controlled_host_path(monkeypatch):
+    # Linux argv tests run on every host; do not inspect unrelated host SDKs.
+    # Discovery tests install their own executable fixtures on PATH explicitly.
+    monkeypatch.setenv("PATH", os.defpath)
 
 
 def _cfg(
@@ -269,7 +278,9 @@ def test_resolve_shell_sandbox_settings_env_overrides_config(
 def test_resolve_shell_sandbox_settings_defaults_from_plain_app_config() -> None:
     settings = resolve_shell_sandbox_settings(_plain_cfg())
     assert settings.mode == "strict"
-    assert settings.backend == "auto"
+    import platform
+
+    assert settings.backend == ("windows-mxc" if platform.system() == "Windows" else "auto")
     assert settings.network == "off"
     assert settings.preview_access == "auto"
     assert settings.bwrap_profile == "hardened"
@@ -438,7 +449,7 @@ def test_create_session_defers_strict_shell_runner_construction_until_shell_run(
     monkeypatch.setattr(agent_loop_mod, "build_shell_runner", fail_build_shell_runner)
 
     session = create_session(
-        cfg=AppConfig(model="test-model"),
+        cfg=_cfg(mode="strict", backend="docker"),
         root=tmp_path,
         mode="auto",
         yes=True,
@@ -493,7 +504,7 @@ def test_shell_run_with_explicit_host_runner_uses_host_subprocess(
     assert result["stdout"] == "ok"
 
 
-def test_shell_run_with_explicit_host_runner_retries_python_with_python3_when_permission_denied(
+def test_shell_run_preserves_denied_command_without_switching_interpreters(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -524,11 +535,11 @@ def test_shell_run_with_explicit_host_runner_retries_python_with_python3_when_pe
         cmd="python -m unittest -v",
         runner=HostShellRunner(),
     )
-    assert calls == ["python -m unittest -v", "python3 -m unittest -v"]
+    assert calls == ["python -m unittest -v"]
     assert result["cmd"] == "python -m unittest -v"
-    assert result["effective_cmd"] == "python3 -m unittest -v"
-    assert result["exit_code"] == 0
-    assert result["stdout"] == "ok"
+    assert result["effective_cmd"] == "python -m unittest -v"
+    assert result["exit_code"] == 127
+    assert result["stderr"] == "/bin/sh: 1: python: Permission denied"
 
 
 def test_shell_run_with_bwrap_runner_wraps_command(
@@ -558,6 +569,118 @@ def test_shell_run_with_bwrap_runner_wraps_command(
     assert "--unshare-net" in argv
     assert argv[-3:] == ["sh", "-lc", "echo hi"]
     assert result["exit_code"] == 0
+
+
+@pytest.fixture
+def bwrap_primary_scope(tmp_path, monkeypatch):
+    from alysis_code import host_file_policy
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    config = outside / "configuration"
+    data = outside / "data"
+    runtime = outside / "runtime"
+    for directory in (config, data, runtime):
+        directory.mkdir()
+    monkeypatch.setattr(host_file_policy.config, "config_path", lambda: config / "config.json")
+    monkeypatch.setattr(host_file_policy.config, "_data_dir", lambda: data)
+    prefixes = ("prefix", "exec_prefix", "base_prefix", "base_exec_prefix")
+    monkeypatch.setattr(
+        host_file_policy, "sys", SimpleNamespace(**dict.fromkeys(prefixes, str(runtime)))
+    )
+    for prefix in ("ALYSIS", "SYLLIPTOR"):
+        for name in ("DESKTOP_CONTROL_PATHS", "DESKTOP_USER_DATA", "DESKTOP_RUNTIME_ROOTS"):
+            monkeypatch.delenv(f"{prefix}_{name}", raising=False)
+    # In particular, no extended-root option may activate the older check.
+    monkeypatch.setenv("ALYSIS_DESKTOP_RUNTIME_ROOTS", "[]")
+
+    def argv(root, access="workspace-write"):
+        return sandbox_runner_mod._build_bwrap_argv(
+            root=root,
+            cwd=root,
+            cmd="never executed",
+            network="off",
+            clear_env=True,
+            profile="compat",
+            unshare_cgroup=False,
+            filesystem_access=access,
+            additional_workspace_roots=(),
+        )[0]
+
+    return workspace, host_file_policy, argv
+
+
+@pytest.mark.parametrize("source", ["configuration", "data", "desktop-control"])
+@pytest.mark.parametrize("relation", ["contains-private", "inside-private"])
+@pytest.mark.parametrize("access", ["workspace-write", "read-only"])
+def test_bwrap_primary_scope_refuses_private_overlap_without_extended_roots(
+    bwrap_primary_scope, monkeypatch, source, relation, access
+):
+    workspace, policy, argv = bwrap_primary_scope
+    private = workspace / "private"
+    project = private / "project"
+    project.mkdir(parents=True)
+    canary = private / "canary.txt"
+    canary.write_text("synthetic-private")
+    if source == "configuration":
+        monkeypatch.setattr(policy.config, "config_path", lambda: private / "config.json")
+    elif source == "data":
+        monkeypatch.setattr(policy.config, "_data_dir", lambda: private)
+    else:
+        monkeypatch.setenv("ALYSIS_DESKTOP_CONTROL_PATHS", json.dumps([str(private)]))
+    root = workspace if relation == "contains-private" else project
+    with pytest.raises(ConfigError, match="private host state"):
+        argv(root, access)
+    assert canary.read_text() == "synthetic-private"
+
+
+@pytest.mark.parametrize("prefix", ["prefix", "exec_prefix", "base_prefix", "base_exec_prefix"])
+@pytest.mark.parametrize("relation", ["contains-runtime", "inside-runtime"])
+def test_bwrap_primary_scope_refuses_python_alias_writes_without_extended_roots(
+    bwrap_primary_scope, monkeypatch, prefix, relation
+):
+    workspace, policy, argv = bwrap_primary_scope
+    runtime = workspace / "runtime"
+    package = runtime / "lib" / "synthetic_package"
+    package.mkdir(parents=True)
+    monkeypatch.setattr(policy.sys, prefix, str(runtime))
+    root = workspace if relation == "contains-runtime" else package
+    with pytest.raises(ConfigError, match="trusted runtime"):
+        argv(root)
+    # Runtime code is readable; a genuinely read-only primary alias is safe.
+    assert _has_argv_triple(argv(root, "read-only"), "--ro-bind", str(root), "/workspace")
+
+
+def test_bwrap_primary_scope_refuses_future_private_names(bwrap_primary_scope, monkeypatch):
+    workspace, _policy, argv = bwrap_primary_scope
+    future = workspace / "future-private"
+    monkeypatch.setenv("ALYSIS_DESKTOP_CONTROL_PATHS", json.dumps([str(future)]))
+    with pytest.raises(ConfigError, match="private host state"):
+        argv(workspace)
+    assert not future.exists()
+
+
+def test_bwrap_primary_scope_protects_desktop_parent_and_preserves_managed_task(
+    bwrap_primary_scope, monkeypatch
+):
+    workspace, _policy, argv = bwrap_primary_scope
+    task = workspace / "work-tasks" / "synthetic-task"
+    task.mkdir(parents=True)
+    monkeypatch.setenv("ALYSIS_DESKTOP_USER_DATA", str(workspace))
+    with pytest.raises(ConfigError, match="application's data folder"):
+        argv(workspace)
+    assert _has_argv_triple(argv(task), "--bind", str(task), "/workspace")
+
+
+def test_bwrap_primary_scope_refuses_editable_engine_code(bwrap_primary_scope, monkeypatch):
+    workspace, _policy, argv = bwrap_primary_scope
+    package = workspace / "src" / "alysis_code"
+    package.mkdir(parents=True)
+    monkeypatch.setattr(sandbox_runner_mod, "__file__", str(package / "sandbox_runner.py"))
+    with pytest.raises(ConfigError, match="trusted runtime"):
+        argv(workspace)
 
 
 def test_bwrap_hardened_runner_adds_read_only_repo_metadata_overlays(
@@ -698,8 +821,10 @@ def test_bwrap_runner_binds_active_python_runtime_after_tmpfs(
     monkeypatch.setattr(sandbox_runner_mod.shutil, "which", lambda *_args, **_kwargs: None)
     monkeypatch.setenv("PATH", os.pathsep.join(["/usr/local/bin", "/usr/bin"]))
 
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     runner = BwrapShellRunner(network="off", clear_env=False, profile="hardened")
-    runner.run(root=tmp_path, cwd=tmp_path, cmd="python -m pytest -q", timeout_s=5)
+    runner.run(root=workspace, cwd=workspace, cmd="python -m pytest -q", timeout_s=5)
 
     argv = list(captured["args"][0])  # type: ignore[index]
     venv_s = os.fspath(venv_root.resolve())
@@ -735,80 +860,6 @@ def test_bwrap_runner_binds_active_python_runtime_after_tmpfs(
     path_entries = _argv_setenv_value(argv, "PATH").split(os.pathsep)
     assert path_entries[:2] == ["/usr/local/bin", "/usr/bin"]
     assert venv_bin_s not in path_entries
-
-
-def test_bwrap_runner_binds_common_user_toolchains(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-    venv_bin = tmp_path / "runtime" / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    venv_python = venv_bin / "python"
-    venv_python.write_text("#!/bin/sh\n", encoding="utf-8")
-
-    node_root = tmp_path / "home" / "apollo" / ".nvm" / "versions" / "node" / "v22.0.0"
-    node_bin = node_root / "bin"
-    node_bin.mkdir(parents=True)
-    node = node_bin / "node"
-    npm = node_bin / "npm"
-    node.write_text("#!/bin/sh\n", encoding="utf-8")
-    npm.write_text("#!/bin/sh\n", encoding="utf-8")
-
-    python_userbase = tmp_path / "home" / "apollo" / ".local"
-    python_userbase_bin = python_userbase / "bin"
-    python_userbase_bin.mkdir(parents=True)
-    pytest_bin = python_userbase_bin / "pytest"
-    pytest_bin.write_text("#!/usr/bin/python3\n", encoding="utf-8")
-
-    cargo_home = tmp_path / "home" / "apollo" / ".cargo"
-    cargo_bin = cargo_home / "bin"
-    cargo_bin.mkdir(parents=True)
-    cargo = cargo_bin / "cargo"
-    cargo.write_text("#!/bin/sh\n", encoding="utf-8")
-    rustup_home = tmp_path / "home" / "apollo" / ".rustup"
-    rustc = rustup_home / "toolchains" / "stable" / "bin" / "rustc"
-    rustc.parent.mkdir(parents=True)
-    rustc.write_text("#!/bin/sh\n", encoding="utf-8")
-
-    which_map = {
-        "node": os.fspath(node),
-        "npm": os.fspath(npm),
-        "pytest": os.fspath(pytest_bin),
-        "cargo": os.fspath(cargo),
-        "rustc": os.fspath(rustc),
-    }
-
-    def fake_which(command: str, *, path: str | None = None) -> str | None:
-        return which_map.get(command)
-
-    def fake_run(*args, **_kwargs):  # type: ignore[no-untyped-def]
-        captured["args"] = args
-        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(sandbox_runner_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(sandbox_runner_mod, "_supports_bwrap_unshare_cgroup", lambda: False)
-    monkeypatch.setattr(sandbox_runner_mod.shutil, "which", fake_which)
-    monkeypatch.setattr(sandbox_runner_mod.sys, "executable", os.fspath(venv_python))
-    monkeypatch.setenv("PATH", os.pathsep.join([os.fspath(node_bin), os.fspath(cargo_bin)]))
-    monkeypatch.setenv("CARGO_HOME", os.fspath(cargo_home))
-    monkeypatch.setenv("RUSTUP_HOME", os.fspath(rustup_home))
-    monkeypatch.setattr(sandbox_runner_mod.site, "getuserbase", lambda: os.fspath(python_userbase))
-
-    runner = BwrapShellRunner(network="off", clear_env=False, profile="hardened")
-    runner.run(root=tmp_path, cwd=tmp_path, cmd="npm test && cargo test", timeout_s=5)
-
-    argv = list(captured["args"][0])  # type: ignore[index]
-    tmpfs_idx = argv.index("--tmpfs")
-    for bound_root in (node_root, python_userbase, cargo_home, rustup_home):
-        bound_root_s = os.fspath(bound_root.resolve())
-        assert _bwrap_ro_bind_index(argv, bound_root_s, _bwrap_dest(bound_root)) > tmpfs_idx
-
-    path_entries = _argv_setenv_value(argv, "PATH").split(os.pathsep)
-    assert path_entries == [os.fspath(node_bin), os.fspath(cargo_bin)]
-    assert _argv_setenv_value(argv, "CARGO_HOME") == os.fspath(cargo_home.resolve())
-    assert _argv_setenv_value(argv, "RUSTUP_HOME") == os.fspath(rustup_home.resolve())
-    assert _argv_setenv_value(argv, "PYTHONUSERBASE") == os.fspath(python_userbase.resolve())
 
 
 def test_shell_run_with_docker_runner_wraps_command(

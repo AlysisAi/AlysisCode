@@ -31,7 +31,7 @@ from alysis_code.forge_host_protocol import (
     validate_envelope,
 )
 
-FIXTURES = Path(__file__).parents[1] / "schemas" / "forge-host-v2" / "fixtures" / "valid"
+FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures" / "forge_host_v2" / "valid"
 
 
 def _load(name: str) -> dict[str, Any]:

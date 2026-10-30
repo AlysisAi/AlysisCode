@@ -31,8 +31,9 @@ def _sandbox_doctor_table(result: SandboxDiagnostic) -> Table:
     table.add_row("mode", result.configured_mode, "shell_sandbox.mode")
     table.add_row("configured backend", result.configured_backend, "shell_sandbox.backend")
     table.add_row("selected backend", result.selected_backend or "-", "")
-    table.add_row("sandbox image", result.docker_image, "dev shell/verify image")
-    table.add_row("server image", result.server_image, "server worker image")
+    if result.selected_backend not in {"windows-native", "windows-mxc"}:
+        table.add_row("sandbox image", result.docker_image, "dev shell/verify image")
+        table.add_row("server image", result.server_image, "server worker image")
     for check in result.checks:
         table.add_row(check.name, check.status, check.detail)
     return table
@@ -151,6 +152,11 @@ def sandbox_doctor(
 
 @sandbox_app.command("setup")
 def sandbox_setup(
+    native_windows: bool = typer.Option(
+        False,
+        "--native-windows",
+        help="Install the experimental native Windows sandbox account and network rules (one UAC prompt).",
+    ),
     pull: bool = typer.Option(
         True,
         "--pull/--no-pull",
@@ -158,7 +164,79 @@ def sandbox_setup(
     ),
 ) -> None:
     """Prepare Alysis Code's safe command runner."""
+    if native_windows:
+        import subprocess
+
+        from ...windows_sandbox import resolve_helper
+
+        try:
+            helper = resolve_helper()
+        except ConfigError as exc:
+            _console().print(str(exc), style="red", markup=False)
+            raise typer.Exit(code=2) from exc
+        _console().print(
+            "Installing the experimental Alysis Windows sandbox. Windows will request administrator consent. Commands use isolated AppContainers with an independent filesystem write restriction."
+        )
+        result = subprocess.run([str(helper), "install"], check=False)
+        if result.returncode:
+            raise typer.Exit(code=result.returncode)
+        _console().print(
+            "Setup completed. Select windows-native with network=off and run alysis sandbox doctor --smoke. This preview is not release-qualified."
+        )
+        return
     _run_sandbox_setup_command(pull=pull)
+
+
+@sandbox_app.command("native-status")
+def sandbox_native_status() -> None:
+    """Print native setup status as JSON without changing machine configuration."""
+    import json
+
+    from ...windows_sandbox import helper_status
+
+    try:
+        result = helper_status()
+    except ConfigError as exc:
+        _console().print(str(exc), style="red", markup=False)
+        raise typer.Exit(code=1) from exc
+    typer.echo(json.dumps(result))
+
+
+@sandbox_app.command("native-capabilities")
+def sandbox_native_capabilities() -> None:
+    """Print engine compatibility as JSON; does not install or probe the helper."""
+    import json
+
+    from ...windows_sandbox import engine_capabilities
+
+    typer.echo(json.dumps(engine_capabilities()))
+
+
+@sandbox_app.command("mxc-capabilities")
+def sandbox_mxc_capabilities() -> None:
+    """Print the separate MXC candidate contract, without setup or readiness claims."""
+    import json
+
+    from ...windows_mxc_contract import engine_capabilities
+
+    typer.echo(json.dumps(engine_capabilities()))
+
+
+@sandbox_app.command("recover-native")
+def sandbox_recover_native() -> None:
+    """Recover this user's native ACL journal after interrupted execution."""
+    import subprocess
+
+    from ...windows_sandbox import resolve_helper
+
+    try:
+        helper = resolve_helper()
+    except ConfigError as exc:
+        _console().print(str(exc), style="red", markup=False)
+        raise typer.Exit(code=1) from exc
+    result = subprocess.run([str(helper), "recover"], check=False)
+    if result.returncode:
+        raise typer.Exit(code=result.returncode)
 
 
 @sandbox_app.command("pull")

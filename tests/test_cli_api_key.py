@@ -633,7 +633,9 @@ def test_create_session_strict_model_metadata_policy_allows_override_backed_capa
 
 def test_agent_session_context_left_uses_model_window_and_effective_budget(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from alysis_code import token_budget
     from alysis_code.cli_impl.tui.footer import footer_fragments
     from alysis_code.cli_impl.tui.state import TuiState
 
@@ -650,15 +652,24 @@ def test_agent_session_context_left_uses_model_window_and_effective_budget(
         "compaction": {"safety_margin_tokens": 600},
     }
 
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="readonly",
-        yes=False,
-        max_steps=1,
-        no_log=True,
-        api_key_override="override-key",
-    )
+    # Constructing a session should not initialize the optional tokenizer just
+    # for a HUD estimate. The first requested context measurement below still
+    # includes the complete startup messages, tool schemas and growth afterward.
+    with monkeypatch.context() as startup_patch:
+        startup_patch.setattr(
+            token_budget,
+            "_token_encoder",
+            lambda: pytest.fail("session construction must defer token estimation"),
+        )
+        session = create_session(
+            cfg=cfg,
+            root=tmp_path,
+            mode="readonly",
+            yes=False,
+            max_steps=1,
+            no_log=True,
+            api_key_override="override-key",
+        )
     try:
         ctx = session.context_left()
         model_meta = session.model_registry.get("custom-model")
@@ -690,7 +701,7 @@ def test_agent_session_context_left_uses_model_window_and_effective_budget(
         fresh_footer = footer_fragments(
             TuiState(context_pct=cli_mod._chat_context_percent_value(session)), width=120
         )
-        assert "context: 100% left" in "".join(text for _, text in fresh_footer)
+        assert "context: n/a" in "".join(text for _, text in fresh_footer)
 
         session.messages.append({"role": "user", "content": "additional context " * 100})
         grown_ctx = session.context_left()
@@ -708,7 +719,7 @@ def test_agent_session_context_left_uses_model_window_and_effective_budget(
         grown_text = "".join(text for _, text in grown_footer)
         assert "context:" in grown_text
         assert "context: 100% left" not in grown_text
-        assert "context: n/a" not in grown_text
+        assert "context: n/a" in grown_text
     finally:
         session.close()
 
@@ -1250,7 +1261,9 @@ def test_run_uses_infrastructure_exit_code_after_transient_llm_retries_exhaust(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_run_agent(**_kwargs: object) -> int:
-        raise LLMError("LLM request failed: [Errno -2] Name or service not known")
+        import httpx
+
+        raise LLMError("LLM request failed") from httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(cli_mod, "run_agent", fake_run_agent)
     env = {
@@ -2944,11 +2957,13 @@ def test_chat_usage_and_context_commands_are_handled(tmp_path: Path, monkeypatch
     assert "Usage" in result.output
     assert "Cache efficiency: 65.00% hit" in result.output
     assert "largest uncached 30 at call 2" in result.output
-    assert result.output.count("Context Window Left") == 2
+    assert result.output.count("Context Window Projection") == 2
     assert "context_window_left_percent" in result.output
     assert "Effective Input Budget" in result.output
     assert "Conversation Context Left" in result.output
-    assert "15 tokens   ↓ 10   ↑ 5   context left: 98.4%" in result.output
+    assert "15 tokens   ↓ 10   ↑ 5" in result.output
+    assert "Awaiting provider usage" in result.output
+    assert "context left: 98.4%" not in result.output
     assert "Session usage:" not in result.output
     assert captured["instruction"] == "hello"
 
@@ -2969,13 +2984,19 @@ def test_chat_turn_usage_line_formats_compact_totals_and_context_warning() -> No
                 "corrected_usage_calls": 16,
             }
 
+    from alysis_code.llm.types import LLMUsage
+    from alysis_code.provider_usage import capture_provider_usage
+
+    client = SimpleNamespace(model="test")
     session = SimpleNamespace(
+        client=client,
+        last_provider_usage=capture_provider_usage(LLMUsage(60, 10, 70), client=client),
         _usage_hud_enabled=True,
-        _hud_context_cache=SimpleNamespace(percent_left=99.4),
+        _hud_context_cache=SimpleNamespace(percent_left=99.4, context_window_tokens=10000),
         usage_summary=_Summary(),
     )
     assert cli_mod._chat_turn_usage_line(session) == (
-        "153.8k [dim]tokens[/dim]   "
+        "153.8k [dim]tokens[/dim] [dim](includes estimates)[/dim]   "
         "[dim]↓[/dim] 150.3k   "
         "[dim]↑[/dim] 3,422   "
         "[dim]context left:[/dim] 99.4%",
@@ -2986,39 +3007,41 @@ def test_chat_turn_usage_line_formats_compact_totals_and_context_warning() -> No
 
     session._hud_context_cache = SimpleNamespace(
         percent_left=72.2,
+        context_window_tokens=10000,
         dynamic_context_percent_left=93.3,
         effective_percent_left=8.5,
     )
     assert cli_mod._chat_turn_usage_line(session) == (
-        "153.8k [dim]tokens[/dim]   [dim]↓[/dim] 150.3k   "
-        "[dim]↑[/dim] 3,422   [dim]context left:[/dim] 93.3%",
+        "153.8k [dim]tokens[/dim] [dim](includes estimates)[/dim]   [dim]↓[/dim] 150.3k   "
+        "[dim]↑[/dim] 3,422   [dim]context left:[/dim] 99.4%",
         "\u26a0\ufe0e  Critical input budget — run /compact to reduce context",
     )
     assert cli_mod._chat_turn_usage_style(session) == "bold red"
-    assert cli_mod._chat_context_hud_value(session) == "93.3% !!"
+    assert cli_mod._chat_context_hud_value(session) == "99.4% !!"
 
     session._hud_context_cache = SimpleNamespace(
         percent_left=55.0,
+        context_window_tokens=10000,
         dynamic_context_percent_left=44.0,
         effective_percent_left=15.0,
     )
     assert cli_mod._chat_turn_usage_line(session) == (
-        "153.8k [dim]tokens[/dim]   "
+        "153.8k [dim]tokens[/dim] [dim](includes estimates)[/dim]   "
         "[dim]↓[/dim] 150.3k   "
         "[dim]↑[/dim] 3,422   "
-        "[dim]context left:[/dim] 44.0%",
+        "[dim]context left:[/dim] 99.4%",
         "\u26a0\ufe0e  Low input budget — run /compact to reduce context",
     )
     assert cli_mod._chat_turn_usage_style(session) == "yellow"
-    assert cli_mod._chat_context_hud_value(session) == "44.0% !"
+    assert cli_mod._chat_context_hud_value(session) == "99.4% !"
 
     session._hud_context_cache = SimpleNamespace(percent_left=None)
     assert cli_mod._chat_turn_usage_line(session) == (
-        "153.8k [dim]tokens[/dim]   [dim]↓[/dim] 150.3k   [dim]↑[/dim] 3,422",
+        "153.8k [dim]tokens[/dim] [dim](includes estimates)[/dim]   [dim]↓[/dim] 150.3k   [dim]↑[/dim] 3,422",
         None,
     )
 
-    session._hud_context_cache = SimpleNamespace(percent_left=99.4)
+    session._hud_context_cache = SimpleNamespace(percent_left=99.4, context_window_tokens=10000)
     session.usage_summary = SimpleNamespace(
         totals=lambda: {
             "prompt_tokens": 0,
@@ -3427,6 +3450,8 @@ def test_chat_compact_nothing_to_compact_prints_message(tmp_path: Path, monkeypa
 
 def test_chat_usage_hud_off_keeps_usage_tracking(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
+    from alysis_code.llm.types import LLMUsage
+    from alysis_code.provider_usage import capture_provider_usage
 
     class _DummyStore:
         session_id = "sid"
@@ -3464,11 +3489,14 @@ def test_chat_usage_hud_off_keeps_usage_tracking(tmp_path: Path, monkeypatch) ->
         model_name = "gpt-5-nano"
         source = "fallback"
         max_input_tokens = 8192
+        context_window_tokens = 8192
         used_input_tokens = 128
         remaining_tokens = 8064
         percent_left = 98.4
 
     class _DummySession:
+        client = SimpleNamespace(model="gpt-5-nano")
+        last_provider_usage = capture_provider_usage(LLMUsage(128, 10, 138), client=client)
         store = _DummyStore()
         usage_summary = _DummyUsageSummary()
         stream = False

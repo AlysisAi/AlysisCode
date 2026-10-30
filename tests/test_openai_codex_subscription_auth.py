@@ -1448,3 +1448,54 @@ def test_responses_client_retries_one_401_with_refreshed_subscription_auth() -> 
     assert sent["tools"][0]["tools"][0]["strict"] is False
     assert "previous_response_id" not in sent
     assert "temperature" not in sent
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_subscription_context_preserves_streamed_provider_cache_and_reasoning_usage(stream):
+    from alysis_code.provider_usage import capture_provider_usage
+
+    body = {
+        "id": "resp_usage",
+        "status": "completed",
+        "model": "gpt-test",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }
+        ],
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "total_tokens": 120,
+            "input_tokens_details": {"cached_tokens": 60},
+            "output_tokens_details": {"reasoning_tokens": 5},
+        },
+    }
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["store"] is False
+        assert "max_output_tokens" not in payload
+        event = {"type": "response.completed", "response": body}
+        return httpx.Response(
+            200,
+            text=f"event: response.completed\ndata: {json.dumps(event)}\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = OpenAIResponsesClient(
+        base_url="https://api.openai.com/v1",
+        api_key="",
+        model="gpt-test",
+        provider_auth=_FakeStreamingCodexAuth(),
+        transport=httpx.MockTransport(handler),
+    )
+    response = client.chat(messages=[{"role": "user", "content": "hello"}], stream=stream)
+    reading = capture_provider_usage(response.usage, client=client)
+    assert reading["input_tokens"] == 100
+    assert reading["cached_tokens"] == 60
+    assert reading["output_tokens"] == 20
+    assert reading["reasoning_tokens"] == 5
+    assert reading["total_tokens"] == 120

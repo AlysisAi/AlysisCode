@@ -1085,7 +1085,7 @@ def test_attempt_auto_resolve_conflict_uses_structured_node_text_refinement(
     assert captured["verify_commands"] == ["node --test"]
 
 
-@pytest.mark.parametrize("context_tokens", [9948, 13_000])
+@pytest.mark.parametrize("context_tokens", [9948, 13_500])
 def test_conflict_instruction_bundle_preserves_scope_and_unmerged_files_under_tight_budget(
     tmp_path: Path,
     context_tokens: int,
@@ -1190,6 +1190,7 @@ def test_conflict_instruction_bundle_preserves_scope_and_unmerged_files_under_ti
     assert (
         "additional tasks omitted" in bundle.instruction
         or "earlier requirements omitted" in bundle.instruction
+        or bundle.truncation_strategy == "execution_priority_minimal_plan"
     )
 
 

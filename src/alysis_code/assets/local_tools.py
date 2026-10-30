@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -15,8 +16,8 @@ from typing import Any
 
 from ..config import AppConfig
 from ..execution_deadline import ExecutionDeadline, deadline_timeout_or_raise
+from ..host_file_handles import open_host_file_read
 from ..model_registry import ModelRegistry
-from .ingestion import _ensure_pillow_can_open
 from .models import AssetError
 from .untrusted_content import build_untrusted_asset_text_block
 
@@ -47,12 +48,13 @@ class LocalAssetViewer:
         self.execution_deadline = execution_deadline
         self._pending: dict[str, dict[str, Any]] = {}
         self._sensitive_inflight: list[dict[str, Any]] = []
+        self._computer_use_readiness: dict[str, object] | None = None
 
     def status(self) -> dict[str, Any]:
         pillow_ready = importlib.util.find_spec("PIL") is not None
         meta = ModelRegistry(cfg=self.cfg).get(self.cfg.model, include_provider_auth=False)
         vision_ready = meta.supports_vision is True
-        return {
+        result = {
             "state": "ready" if pillow_ready and vision_ready else "unavailable",
             "basis": "local_decoder_and_configured_model_capability",
             "image_decoder_available": pillow_ready,
@@ -65,6 +67,18 @@ class LocalAssetViewer:
             if pillow_ready and vision_ready
             else "Use a configured model with image-input support and install Pillow. No alternate provider is selected automatically.",
         }
+        # Only the actual readiness lookup used by this viewer is summarized later.
+        # No request, image, credential or global configuration is consulted there.
+        self._computer_use_readiness = {
+            key: result[key]
+            for key in (
+                "state",
+                "image_decoder_available",
+                "model_supports_vision",
+                "model_capability_source",
+            )
+        }
+        return result
 
     def take_visual_message(
         self, delivery_id: Any, *, sensitive: bool = False
@@ -131,7 +145,7 @@ class LocalAssetViewer:
             self.execution_deadline, 15.0, reserve_seconds=1.0, operation="asset_view"
         )
         source_hash = hashlib.sha256()
-        with source.open("rb") as source_file:
+        with open_host_file_read(source) as source_file:
             for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
                 source_hash.update(chunk)
                 deadline_timeout_or_raise(
@@ -179,36 +193,39 @@ class LocalAssetViewer:
             video_filter += (
                 "scale='min(2048,iw)':'min(2048,ih)':force_original_aspect_ratio=decrease"
             )
-            decoded = subprocess.run(
-                [
-                    ffmpeg,
-                    "-nostdin",
-                    "-hide_banner",
-                    "-loglevel",
-                    "info",
-                    "-protocol_whitelist",
-                    "file,pipe",
-                    "-f",
-                    _VIDEO_FORMATS[source.suffix.lower()],
-                    "-copyts",
-                    "-ss",
-                    str(requested_timestamp),
-                    "-i",
-                    str(source),
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    video_filter,
-                    "-f",
-                    "image2pipe",
-                    "-vcodec",
-                    "png",
-                    "pipe:1",
-                ],
-                capture_output=True,
-                timeout=timeout or 15.0,
-                check=False,
-            )
+            with open_host_file_read(source) as source_file:
+                fd_root = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
+                decoded = subprocess.run(
+                    [
+                        ffmpeg,
+                        "-nostdin",
+                        "-hide_banner",
+                        "-loglevel",
+                        "info",
+                        "-protocol_whitelist",
+                        "file,pipe",
+                        "-f",
+                        _VIDEO_FORMATS[source.suffix.lower()],
+                        "-copyts",
+                        "-ss",
+                        str(requested_timestamp),
+                        "-i",
+                        str(source) if os.name == "nt" else f"{fd_root}/{source_file.fileno()}",
+                        "-frames:v",
+                        "1",
+                        "-vf",
+                        video_filter,
+                        "-f",
+                        "image2pipe",
+                        "-vcodec",
+                        "png",
+                        "pipe:1",
+                    ],
+                    capture_output=True,
+                    timeout=timeout or 15.0,
+                    check=False,
+                    **({"pass_fds": (source_file.fileno(),)} if os.name != "nt" else {}),
+                )
             if decoded.returncode or not decoded.stdout:
                 raise ValueError("Could not decode a video frame at the requested timestamp.")
             match = re.search(
@@ -224,8 +241,13 @@ class LocalAssetViewer:
         else:
             if requested_timestamp is not None:
                 raise ValueError("timestamp_s applies to video inputs only.")
-            _ensure_pillow_can_open(source)
-            image = Image.open(source)
+            with open_host_file_read(source) as source_file:
+                image_bytes = source_file.read(_MAX_IMAGE_BYTES + 1)
+            if len(image_bytes) > _MAX_IMAGE_BYTES:
+                raise ValueError("Visual input exceeds the bounded image limit.")
+            with Image.open(io.BytesIO(image_bytes)) as checked:
+                checked.verify()
+            image = Image.open(io.BytesIO(image_bytes))
         with image:
             if image.width * image.height > _MAX_PIXELS:
                 raise ValueError("Image exceeds the decoded pixel limit; provide a smaller image.")
@@ -248,7 +270,7 @@ class LocalAssetViewer:
             raise ValueError("Rendered visual input exceeds the model attachment limit.")
         source_sha256 = source_hash.hexdigest()
         current_hash = hashlib.sha256()
-        with source.open("rb") as source_file:
+        with open_host_file_read(source) as source_file:
             for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
                 current_hash.update(chunk)
                 deadline_timeout_or_raise(

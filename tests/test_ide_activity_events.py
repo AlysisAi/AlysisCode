@@ -26,6 +26,29 @@ def test_activity_capabilities_publish_semantic_contract() -> None:
     assert capabilities["legacy_tool_events_preserved"] is True
 
 
+@pytest.mark.parametrize(
+    "suffix,title",
+    [
+        ("list", "List command windows"),
+        ("open", "Open command window"),
+        ("read", "Read command window"),
+        ("write", "Send terminal input"),
+        ("close", "Close command window"),
+    ],
+)
+def test_registered_terminal_actions_have_exact_semantics_without_exposing_input(suffix, title):
+    event = tool_activity(
+        call_id="terminal",
+        name=f"desktop_terminal_{suffix}",
+        status="blocked",
+        arguments={"terminal_id": "owned-terminal", "text": "private command input"},
+    ).to_payload()
+    assert event["display_title"] == title
+    assert event["kind"] == "command"
+    assert event["status"] == "blocked"
+    assert "private command input" not in json.dumps(event)
+
+
 def test_internal_tool_names_become_stable_friendly_semantics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -59,6 +82,47 @@ def test_external_and_unknown_tool_names_never_leak_private_names() -> None:
     assert "mcp__" not in json.dumps(external)
     assert internal["display_title"] == "Use developer tool"
     assert "internal.runtime.helper" not in json.dumps(internal)
+
+
+def test_document_activity_keeps_each_declared_action_through_out_of_order_completion() -> None:
+    emitted: list[dict] = []
+    surface = ProtocolEventSurface(
+        context=EventContext(session_id="documents"),
+        emit=emitted.append,
+        semantic_activity_events=True,
+    )
+    surface.emit_tool_call_started(
+        "create",
+        "document_operation",
+        "{}",
+        arguments={
+            "action": "create",
+            "format": "xlsx",
+            "output": "deliveries/Έσοδα.xlsx",
+            "spec": "private-working-spec.json",
+        },
+    )
+    surface.emit_tool_call_started(
+        "inspect",
+        "document_operation",
+        "{}",
+        arguments={
+            "action": "inspect",
+            "source": "source.xlsx",
+        },
+    )
+    surface.emit_tool_call_completed("inspect", True, "{}")
+    surface.emit_tool_call_completed("create", False, "{}", status="blocked")
+    rows = [e["payload"] for e in emitted if e["type"] == "activity_update"]
+    assert [(r["operation"], r["kind"], r["target"], r["status"]) for r in rows] == [
+        ("create_document", "edit", "deliveries/Έσοδα.xlsx", "running"),
+        ("inspect_document", "read", "source.xlsx", "running"),
+        ("inspect_document", "read", "source.xlsx", "succeeded"),
+        ("create_document", "edit", "deliveries/Έσοδα.xlsx", "blocked"),
+    ]
+    assert rows[0]["display_title"] == rows[3]["display_title"] == "Create document"
+    assert "private-working-spec" not in json.dumps(rows)
+    assert not surface._activity_tool_names
 
 
 def test_patch_activity_preserves_safe_diff_and_exact_stats(

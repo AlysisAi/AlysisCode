@@ -201,6 +201,52 @@ class TestEncodedForms(RedactorTestCase):
 
 
 class TestRiskyPatterns(RedactorTestCase):
+    def test_case_sensitive_entropy_and_original_syntax_are_preserved(self) -> None:
+        # Lowercasing the credential itself would reduce entropy below the
+        # threshold and leak it. Matching may normalize case; masking may not.
+        payload = "AaBbCcDd" * 4
+        text = f'Prefix "AcCeSs_ToKeN": "{payload}" SUFFIX\n'
+        self.assertEqual(
+            self.redactor.redact(text),
+            f'Prefix "AcCeSs_ToKeN": "{REDACTED_PATTERN}" SUFFIX\n',
+        )
+        low_entropy = "aabbccdd" * 4
+        text = f"ToKeN={low_entropy}"
+        self.assertEqual(self.redactor.redact(text), text)
+
+    def test_unicode_boundaries_and_case_equivalents_are_preserved(self) -> None:
+        payload = "AaBbCcDd" * 4
+        cases = (
+            (f"πtoken={payload}", f"πtoken={payload}"),
+            (f"paſſword={payload}", f"paſſword={REDACTED_PATTERN}"),
+            (f"clİent_secret={payload}", f"clİent_secret={REDACTED_PATTERN}"),
+            (f"api_Key={payload}", f"api_Key={REDACTED_PATTERN}"),
+            (f"TOKEN={payload}ı", f"TOKEN={REDACTED_PATTERN}"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.redactor.redact(text), expected)
+
+    def test_known_values_and_unicode_placeholder_names_keep_offsets(self) -> None:
+        payload = "AaBbCcDd" * 4
+        for name in ("EXAMPLE_TOKEN", "EXAMPLE_İ_TOKEN"):
+            with self.subTest(name=name):
+                redactor = lr.SecretRedactor({name: SECRET})
+                text = f"value={SECRET}; Authorization: Bearer {payload}; value={SECRET}"
+                self.assertEqual(
+                    redactor.redact(text),
+                    f"value=«redacted:{name}»; Authorization: Bearer {REDACTED_PATTERN}; "
+                    f"value=«redacted:{name}»",
+                )
+
+    def test_embedded_key_and_adjacent_matches_keep_their_boundaries(self) -> None:
+        payload = "AaBbCcDd" * 4
+        text = f"myapi-token={payload}; secret={payload}; token=aaaaaaaaaaaaaaaa"
+        self.assertEqual(
+            self.redactor.redact(text),
+            f"myapi-token={REDACTED_PATTERN}; secret={REDACTED_PATTERN}; token=aaaaaaaaaaaaaaaa",
+        )
+
     def test_authorization_bearer_header(self) -> None:
         result = self.redactor.redact("Authorization: Bearer q1W2e3R4t5Y6u7I8o9P0a1S2d3F4g5H6")
         self.assertEqual(result, f"Authorization: Bearer {REDACTED_PATTERN}")

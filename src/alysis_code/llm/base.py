@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from .types import InputTokenCount, LLMError, LLMResponse, UsageContract
 
@@ -9,6 +11,28 @@ _REQUIRED_TOOL_NAMES_ATTRIBUTE = "_alysis_required_tool_names"
 _SERIAL_TOOL_CALLS_ATTRIBUTE = "_alysis_serial_tool_calls_required"
 _STATELESS_RESPONSES_ATTRIBUTE = "_alysis_stateless_responses_required"
 _OMITTED_REASONING_DISPLAY_ATTRIBUTE = "_alysis_omitted_reasoning_display_required"
+_SCOPED_TOKEN_COUNTER_ATTRIBUTE = "_alysis_scoped_token_counter"
+_Counter = TypeVar("_Counter", bound=Callable[..., InputTokenCount | None])
+_token_count_request_context: ContextVar[Callable[[], AbstractContextManager[None]] | None] = (
+    ContextVar("input_token_count_request_context", default=None)
+)
+
+
+def scoped_input_token_counter(counter: _Counter) -> _Counter:
+    """Declare that a counter scopes its network work with input_token_count_request.
+
+    Local estimation and disabled counting need no request scope. Unmarked
+    extension counters remain conservatively guarded as a whole.
+    """
+    setattr(counter, _SCOPED_TOKEN_COUNTER_ATTRIBUTE, True)
+    return counter
+
+
+@contextmanager
+def input_token_count_request() -> Iterator[None]:
+    request_context = _token_count_request_context.get()
+    with request_context() if request_context is not None else nullcontext():
+        yield
 
 
 class RequiredToolCallingUnsupportedError(LLMError):
@@ -141,6 +165,7 @@ def count_input_tokens_if_supported(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any | None = None,
+    request_context: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> InputTokenCount | None:
     contract = getattr(client, "usage_contract", None)
     if not isinstance(contract, UsageContract) or not contract.supports_input_token_count:
@@ -148,5 +173,13 @@ def count_input_tokens_if_supported(
     counter = getattr(client, "count_input_tokens", None)
     if not callable(counter):
         return None
-    result = counter(messages=messages, tools=tools, tool_choice=tool_choice)
+    if getattr(counter, _SCOPED_TOKEN_COUNTER_ATTRIBUTE, False):
+        token = _token_count_request_context.set(request_context)
+        try:
+            result = counter(messages=messages, tools=tools, tool_choice=tool_choice)
+        finally:
+            _token_count_request_context.reset(token)
+    else:
+        with request_context() if request_context is not None else nullcontext():
+            result = counter(messages=messages, tools=tools, tool_choice=tool_choice)
     return result if isinstance(result, InputTokenCount) else None

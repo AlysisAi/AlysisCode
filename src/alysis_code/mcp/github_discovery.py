@@ -252,9 +252,13 @@ def discovery_result(action: str, raw: Any) -> dict[str, Any]:
     _keys(
         raw,
         {"catalog_id", "tools"} | ({"target_id"} if action == DESCRIBE else set()),
-        {"next_cursor"} if action == DISCOVER else set(),
+        {"next_cursor", "instructions"} if action == DISCOVER else set(),
     )
     _ref(raw["catalog_id"])
+    if "instructions" in raw and (
+        not isinstance(raw["instructions"], str) or len(raw["instructions"]) > 12_000
+    ):
+        _fail("GitHub server instructions must be a bounded string.")
     if action == DESCRIBE:
         _ref(raw["target_id"])
     elif action != DISCOVER:

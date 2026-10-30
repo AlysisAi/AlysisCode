@@ -35,6 +35,8 @@ from alysis_code.llm.openai_compat import OpenAICompatClient
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
 from alysis_code.llm.types import LLMError
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 _PROVIDERS = (
     "openai_responses",
     "openai_compat",
@@ -83,10 +85,19 @@ def _assert_fixed_computer_use_contract(tools: list[dict[str, Any]]) -> None:
     }
     assert schemas["computer_action"]["required"] == ["action"]
     assert "snapshot_id" not in schemas["computer_action"]["properties"]
-    assert len(schemas["computer_action"]["oneOf"]) == 8
+    assert len(schemas["computer_action"]["oneOf"]) == 9
     text_branch = schemas["computer_action"]["oneOf"][1]
-    assert text_branch["properties"]["action"]["enum"] == ["type", "set_value"]
+    assert text_branch["properties"]["action"]["enum"] == ["set_value"]
     assert text_branch["required"] == ["element_id", "text"]
+    for branch_index, payload in [(2, "text"), (3, "keys")]:
+        branch = schemas["computer_action"]["oneOf"][branch_index]
+        assert branch["required"] == [payload, "element_id"]
+        assert "oneOf" not in branch
+    assert "target" not in schemas["computer_action"]["properties"]
+    assert "input_mode" not in schemas["computer_action"]["properties"]
+    assert {"cmd", "meta", "backspace", "arrowleft"} <= set(
+        schemas["computer_action"]["properties"]["keys"]["items"]["enum"]
+    )
     assert schemas["computer_action"]["additionalProperties"] is False
     assert schemas["computer_action"]["properties"]["action"]["enum"] == [
         "press",
@@ -103,27 +114,25 @@ def _assert_fixed_computer_use_contract(tools: list[dict[str, Any]]) -> None:
     action_function = next(
         function for function in functions if function["name"] == "computer_action"
     )
-    # Native targets are controlled in the background with semantic actions only.
-    assert "keypad buttons" in action_function["description"]
-    assert "refused for native targets before anything is sent" in action_function["description"]
     action_description = action_function["description"]
     element_description = schemas["computer_action"]["properties"]["element_id"]["description"]
+    assert (
+        "Native legacy background supports semantic press, focus, set_value" in action_description
+    )
+    assert (
+        "No focused-target, input_mode, v2, quit or reopen route is available" in action_description
+    )
+    assert "Fresh exact observed element ID" in element_description
     assert "set_value" in element_description
-    for expected in ("AXTextField", "AXTextArea", "AXScrollArea", "set_value"):
-        assert expected in COMPUTER_USE_SYSTEM_PROMPT
-        assert expected in action_description
-    assert "background_synthetic_input_unsupported" in COMPUTER_USE_SYSTEM_PROMPT
-    assert "AXTextField" in element_description
-    assert "AXTextArea" in element_description
-    assert "AXScrollArea" in element_description
-    history_branch = schemas["computer_action"]["oneOf"][6]
+    assert "Human input in the controlled application yields control" in COMPUTER_USE_SYSTEM_PROMPT
+    history_branch = schemas["computer_action"]["oneOf"][7]
     assert history_branch == {
         "properties": {
             "action": {"type": "string", "enum": ["history_back"]},
         },
         "additionalProperties": False,
     }
-    activate_branch = schemas["computer_action"]["oneOf"][7]
+    activate_branch = schemas["computer_action"]["oneOf"][8]
     assert activate_branch["properties"]["action"]["enum"] == ["activate_application"]
     assert activate_branch["required"] == ["application"]
     assert schemas["computer_wait"] == {
@@ -139,15 +148,15 @@ def _assert_fixed_computer_use_contract(tools: list[dict[str, Any]]) -> None:
         "additionalProperties": False,
     }
 
-    assert "computer_state accepts\nno target selector" in COMPUTER_USE_SYSTEM_PROMPT
+    assert "The initial application is authorized by the host" in COMPUTER_USE_SYSTEM_PROMPT
+    assert "its window may still require selection" in COMPUTER_USE_SYSTEM_PROMPT
+    assert "exact host-issued surface_ref" in COMPUTER_USE_SYSTEM_PROMPT
     assert "activate_application" in COMPUTER_USE_SYSTEM_PROMPT
     assert 'action "history_back"' in COMPUTER_USE_SYSTEM_PROMPT
     assert "Never use history_back for a native application target" in COMPUTER_USE_SYSTEM_PROMPT
-    assert "keypad buttons and menu items" in COMPUTER_USE_SYSTEM_PROMPT
-    assert "delivers only semantic Accessibility actions" in COMPUTER_USE_SYSTEM_PROMPT
-    assert "pointer-only clicks are not delivered to native apps" in " ".join(
-        COMPUTER_USE_SYSTEM_PROMPT.split()
-    )
+    assert "background semantic Accessibility actions" in COMPUTER_USE_SYSTEM_PROMPT
+    assert "no verified host-owned foreground handoff" in COMPUTER_USE_SYSTEM_PROMPT
+    assert "Never repeat an uncertain action blindly" in COMPUTER_USE_SYSTEM_PROMPT
     assert "semantic-DOM behavior is unchanged" in COMPUTER_USE_SYSTEM_PROMPT
     assert "Never copy, guess, or send a" in COMPUTER_USE_SYSTEM_PROMPT
     assert "snapshot_id" in COMPUTER_USE_SYSTEM_PROMPT
@@ -163,7 +172,7 @@ def _expected_wire_tools(
     if provider == "openai_compat":
         return copy.deepcopy(tools)
     if provider == "openai_responses":
-        return [{"type": "function", **function} for function in functions]
+        return [{"type": "function", "strict": False, **function} for function in functions]
     if provider == "anthropic_messages":
         return [
             {

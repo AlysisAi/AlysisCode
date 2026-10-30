@@ -18,7 +18,8 @@ configuration, operation, extension points, and security in more detail.
 - [Architecture](architecture.md): session loop, providers, tools, and verification.
 - [Agent system prompts](agent_prompts.md): shared prompt, model guidance, and child prompts.
 - [Security model](security_model.md): trust boundaries and host-enforced controls.
-- [Shell sandbox](shell_sandbox.md): Docker and Bubblewrap configuration.
+- [Shell sandbox](shell_sandbox.md): command isolation and backend configuration.
+- [Windows CLI sandbox](windows-cli-sandbox.md): installation, diagnostics and helper packaging.
 - [Forge](forge.md): plan and execute larger tasks.
 - [Background terminals](terminals.md): manage background commands and durable services.
 - [Subagents](subagents.md): delegate focused work with constrained permissions.
@@ -33,6 +34,8 @@ configuration, operation, extension points, and security in more detail.
 - [Skills](skills.md)
 - [Skill lifecycle](skills_lifecycle.md)
 - [Plugins](plugins.md)
+- [GitHub MCP integration](github-mcp-plugin.md)
+- [Ephemeral MCP data](mcp-ephemeral-retention.md)
 - [Custom tools](custom_tools.md)
 - [Lifecycle hooks](hooks.md)
 - [Custom tool and hook examples](examples/README.md)
@@ -46,3 +49,14 @@ configuration, operation, extension points, and security in more detail.
 - [Security policy](../.github/SECURITY.md): private vulnerability reporting.
 - [Code of Conduct](../.github/CODE_OF_CONDUCT.md): community participation expectations.
 - [Changelog](CHANGELOG.md): user-facing release history.
+
+## Desktop and terminal workflows
+
+- [Desktop engine contracts](desktop-engine.md)
+- [Documents and Office files](document-runtime.md)
+- [Prompt history](tui-prompt-history.md)
+- [Agent questions](tui-user-questions.md)
+- [Integration inspectors and planning](tui-integrations-planning.md)
+- [Selected-account GitHub actions](github-host-actions.md)
+- [Google Workspace plugins](GOOGLE_WORKSPACE_PLUGINS.md)
+- [Open-file inspection](open-panel-inspection.md)

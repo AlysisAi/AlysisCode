@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 from rich.console import Console
 
 from alysis_code.compaction.tool_output_offload import ToolOutputOffloader
@@ -2349,7 +2350,11 @@ def test_run_task_worker_executor_429_exception_is_provider_throttled(
     _configure_zero_diff_worker(monkeypatch)
 
     def fake_run_agent(**_kwargs):  # type: ignore[no-untyped-def]
-        raise LLMError("LLM error 429: rate limit quota exceeded")
+        request = httpx.Request("POST", "https://provider.invalid/v1/responses")
+        response = httpx.Response(429, request=request)
+        raise LLMError("Provider request failed") from httpx.HTTPStatusError(
+            "Request rejected", request=request, response=response
+        )
 
     monkeypatch.setattr("alysis_code.swarm_worker.run_agent", fake_run_agent)
     monkeypatch.setattr(
@@ -2388,7 +2393,7 @@ def test_run_task_worker_executor_timeout_exception_is_provider_unavailable(
     _configure_zero_diff_worker(monkeypatch)
 
     def fake_run_agent(**_kwargs):  # type: ignore[no-untyped-def]
-        raise LLMError("LLM request failed: The read operation timed out")
+        raise LLMError("LLM request failed") from httpx.ReadTimeout("Fixture deadline")
 
     monkeypatch.setattr("alysis_code.swarm_worker.run_agent", fake_run_agent)
     monkeypatch.setattr(

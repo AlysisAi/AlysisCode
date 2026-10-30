@@ -10,7 +10,6 @@ from typing import Any
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.markdown import Markdown
 from rich.prompt import Prompt
 from rich.text import Text
 
@@ -521,6 +520,10 @@ class RichSurface:
         return not _looks_like_markdown(text)
 
     def _render_markdown(self, text: str) -> None:
+        # Plain status/management processes also import these surface helpers.
+        # Load the Markdown parser only when there is Markdown to render.
+        from rich.markdown import Markdown
+
         self.console.print(Markdown(text, code_theme="monokai"))
 
     def _erase_streamed_output_lines(self, line_count: int) -> None:

@@ -1,0 +1,116 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.supabase"
+name = "Supabase"
+version = "1.0.0"
+description = "Supabase's official remote MCP tools. Its SQL, migration and function deploy tools can change or delete any data and reach project secrets; each call asks you first."
+author = "Alysis AI (integration); Supabase (MCP server)"
+license = "MIT"
+homepage = "https://supabase.com/docs/guides/getting-started/mcp"
+keywords = ["supabase", "mcp", "database", "postgres", "sql"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Supabase's official remote MCP server (no URL options: the reviewed list below is the guard).
+# The app keeps the sign-in; only the reviewed tools are offered, and every tool not marked
+# reads_only asks a person before each call (Review, Auto and Full access alike).
+# execute_sql and apply_migration run any SQL the person approves, including changing or deleting
+# data (and reading what the database role can read); deploy_edge_function deploys code that runs
+# with the project's secrets. Their results can carry instructions. Left out: paid actions (projects,
+# branches, costs), pause/restore, branch delete/reset, secret management, and every tool whose
+# documented permission isn't in oauth_scopes (branches: environment:*; API keys: secrets:read).
+[[components.verified_connector]]
+id = "supabase"
+url = "https://mcp.supabase.com/mcp"
+resource = "https://mcp.supabase.com/mcp"
+oauth_issuer = "https://api.supabase.com"
+oauth_sign_in_origins = ["https://api.supabase.com"]
+oauth_client = "dynamic"
+oauth_scopes = ["organizations:read", "projects:read", "database:read", "database:write", "analytics:read", "edge_functions:read", "edge_functions:write", "storage:read", "storage:write"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "list_tables"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_extensions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_migrations"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "query_logs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_advisors"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_project_url"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "generate_typescript_types"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_edge_functions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_edge_function"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_projects"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_project"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_organizations"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_organization"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_docs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_storage_buckets"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_storage_config"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "execute_sql"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "apply_migration"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "deploy_edge_function"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update_storage_config"
+reads_only = false
+
+[security]
+contact = "https://supabase.com/.well-known/security.txt"

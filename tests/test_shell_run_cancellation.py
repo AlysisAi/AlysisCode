@@ -31,6 +31,8 @@ from alysis_code.process_reaping import (
     run_in_tracked_process_group,
 )
 from alysis_code.sandbox_runner import HostShellRunner, LazyShellRunner
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.tools.shell import CANCELLED_COMMAND_MESSAGE, ShellError, shell_run
 from alysis_code.verify_gate import (
     CANCELLED_VERIFICATION_MESSAGE,
@@ -43,6 +45,15 @@ _SLEEP_SECONDS = 30
 # How long a stopped command may take to end, from the moment the check fires.
 # Measured well under a second; generous for a loaded machine.
 _STOPPED_WITHIN_SECONDS = 3.0
+
+
+@pytest.fixture
+def shell_approval(monkeypatch):
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind == "shell_run"),
+    )
 
 
 def _shell_join(args: list[str]) -> str:
@@ -169,7 +180,10 @@ def test_the_timeout_still_applies_with_a_cancel_check(tmp_path: Path) -> None:
     started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         run_in_tracked_process_group(
-            _python_cmd(f"import time; time.sleep({_SLEEP_SECONDS})"),
+            _python_cmd(
+                "import sys, time; print('timeout stdout', flush=True); "
+                f"print('timeout stderr', file=sys.stderr, flush=True); time.sleep({_SLEEP_SECONDS})"
+            ),
             shell=True,
             cwd=str(tmp_path),
             timeout=1,
@@ -178,6 +192,13 @@ def test_the_timeout_still_applies_with_a_cancel_check(tmp_path: Path) -> None:
             cancel_check=lambda: False,
         )
     assert caught.value.timeout == 1
+    # CPython's Windows subprocess.run collects text-mode output after killing
+    # the child; POSIX preserves the bytes captured in TimeoutExpired instead.
+    # The tracked runner deliberately retains those platform semantics.
+    expected_stdout = "timeout stdout" if os.name == "nt" else b"timeout stdout"
+    expected_stderr = "timeout stderr" if os.name == "nt" else b"timeout stderr"
+    assert expected_stdout in caught.value.stdout
+    assert expected_stderr in caught.value.stderr
     assert time.monotonic() - started < 1 + _STOPPED_WITHIN_SECONDS
 
 
@@ -286,7 +307,7 @@ def test_verify_starts_no_further_check_after_a_cancel(
     assert not (tmp_path / "second-ran").exists()
 
 
-def test_the_turn_hands_its_cancellation_to_shell_run(tmp_path: Path) -> None:
+def test_the_turn_hands_its_cancellation_to_shell_run(tmp_path: Path, shell_approval) -> None:
     # The turn gives the token to the tools in this set (``_run_tool_with_turn_cancellation``).
     assert {"shell_run", "verify_run"} <= _SHELL_CANCELLABLE_WAIT_TOOL_NAMES
     cfg = AppConfig(model="test-model")
@@ -299,7 +320,7 @@ def test_the_turn_hands_its_cancellation_to_shell_run(tmp_path: Path) -> None:
         max_steps=1,
         no_log=True,
         api_key_override="override-key",
-        non_interactive=True,
+        non_interactive=False,
     )
     try:
         check = _CancelWhen(_child_started(tmp_path))
@@ -310,6 +331,66 @@ def test_the_turn_hands_its_cancellation_to_shell_run(tmp_path: Path) -> None:
         _stopped_in_time(check)
         payload = caught.value.result_payload
         assert payload is not None and payload["cancelled"] is True
+        assert "started" in payload["stdout"]
+        assert "child.pid" in payload["material_touched_repo_paths"]
         assert _ends_soon(int((tmp_path / "child.pid").read_text()))
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("bytes_output", [False, True])
+def test_timeout_preserves_partial_output_and_directory(tmp_path: Path, bytes_output: bool) -> None:
+    class TimedOutRunner:
+        def run(self, **kwargs):
+            raise subprocess.TimeoutExpired(
+                kwargs["cmd"],
+                kwargs["timeout_s"],
+                output=b"partial\n" if bytes_output else "partial\n",
+                stderr=b"diagnostic\n" if bytes_output else "diagnostic\n",
+            )
+
+    with pytest.raises(ShellError) as caught:
+        shell_run(root=tmp_path, cmd="slow-command", timeout_s=1, runner=TimedOutRunner())
+    assert caught.value.result_payload == {
+        "error": "Command timed out after 1s",
+        "timed_out": True,
+        "cmd": "slow-command",
+        "cwd": str(tmp_path.resolve()),
+        "stdout": "partial\n",
+        "stderr": "diagnostic\n",
+        "truncated": False,
+    }
+
+
+def test_failed_shell_keeps_partial_edits_in_tool_receipt(
+    tmp_path: Path, monkeypatch, shell_approval
+) -> None:
+    cfg = AppConfig(model="test-model")
+    cfg.extra_fields = {"shell_sandbox": {"mode": "off"}}
+    session = create_session(
+        cfg=cfg,
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=1,
+        no_log=True,
+        api_key_override="override-key",
+        non_interactive=False,
+    )
+    failure = ShellError("Command timed out after 1s", result_payload={"timed_out": True})
+
+    def partial_command(**kwargs):
+        (tmp_path / "result.任意").write_text("partial change")
+        raise failure
+
+    monkeypatch.setattr("alysis_code.agent_loop.shell_run", partial_command)
+    try:
+        with pytest.raises(ShellError) as caught:
+            session.tools["shell_run"].run({"cmd": "slow-command"})
+        assert caught.value is failure
+        assert failure.result_payload["timed_out"] is True
+        assert failure.result_payload["material_touched_repo_paths"] == ["result.任意"]
+        assert failure.result_payload["touched_repo_paths"] == ["result.任意"]
+        assert "exit_code" not in failure.result_payload
     finally:
         session.close()

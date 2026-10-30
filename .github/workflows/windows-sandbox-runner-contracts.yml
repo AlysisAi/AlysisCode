@@ -1,0 +1,44 @@
+name: Windows sandbox runner contracts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-sandbox-runner-contracts
+  cancel-in-progress: false
+
+jobs:
+  runner-contracts:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - name: Install locked test environment
+        run: uv sync --locked --python 3.12 --extra dev
+      - name: Cancellation and checkpoint contracts
+        run: |
+          New-Item -ItemType Directory .qa-results/runner-ci | Out-Null
+          git rev-parse HEAD | Set-Content .qa-results/runner-ci/source.txt
+          # These include real Windows job objects around a trusted Python fixture.
+          # They do not qualify PSEC containment or the supported Windows client matrix.
+          uv run --no-sync python -m pytest -q -p no:cacheprovider tests/test_sandbox_workspace.py tests/test_shell_execution_context.py tests/test_prompt_payload.py tests/test_prompts_invariants.py tests/test_windows_sandbox_cancellation.py tests/test_windows_sandbox_job.py tests/test_shell_run_cancellation.py tests/test_process_reaping.py tests/test_ide_change_ledger.py tests/test_windows_sandbox.py tests/test_windows_mxc.py tests/test_windows_mxc_network_qualification.py tests/test_windows_mxc_release_review.py tests/test_windows_private_state.py tests/test_shell_sandbox.py tests/test_verify_gate.py tests/test_host_file_policy.py tests/test_host_file_publication.py tests/test_windows_final_path.py tests/test_contained_file_qualification.py tests/test_windows_coding_candidate_qualification.py tests/test_windows_git_recovery_qualification.py tests/test_contained_read_tools.py tests/test_host_asset_handles.py tests/test_fs_tools.py tests/test_fs_file_ops_tool.py tests/test_fs_edit_tool.py tests/test_fs_safety_policy.py tests/test_read_ledger.py tests/test_image_generation.py tests/test_search_rg_security.py tests/test_git_apply_patch_tool.py tests/test_git_history_tool.py tests/test_git_diff_tool.py tests/test_git_safe.py tests/test_git_directory_denial.py tests/test_windows_mxc_directory_qualification.py --junitxml .qa-results/runner-ci/tests.xml 2>&1 | Tee-Object .qa-results/runner-ci/tests.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Approval and fallback contracts
+        run: |
+          uv run --no-sync python -m pytest -q -p no:cacheprovider tests/test_sandbox_approval_fallback.py tests/test_approval_review.py tests/test_agent_loop_review_approval.py tests/test_native_approval_routing.py tests/test_tool_runtime_excludes_approval_wait.py tests/test_git_sandbox_recovery.py --junitxml .qa-results/runner-ci/approvals.xml 2>&1 | Tee-Object .qa-results/runner-ci/approvals.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: windows-sandbox-runner-contracts
+          path: .qa-results/runner-ci
+          if-no-files-found: warn

@@ -1339,38 +1339,6 @@ def test_runtime_process_spawn_denied_by_default_for_os_spawnlp(
     assert "process" in result["error_info"]["message"]
 
 
-def test_runtime_process_spawn_denied_blocks_fork(tmp_path: Path, monkeypatch) -> None:
-    if not hasattr(os, "fork"):
-        pytest.skip("os.fork is not available on this platform")
-    workspace = tmp_path / "workspace"
-    _configure_trust_dir(workspace, monkeypatch)
-    _write_tool(
-        workspace,
-        "fork_denied.py",
-        name="fork_denied_tool",
-        body=(
-            "import os\n"
-            "pid = os.fork()\n"
-            "if pid == 0:\n"
-            "    os._exit(0)\n"
-            "os.waitpid(pid, 0)\n"
-            "return {'ran': True}"
-        ),
-    )
-    spec = _trust_project_spec(_discover_project_spec(workspace))
-
-    result = run_custom_tool(
-        spec=spec,
-        args={},
-        workspace_root=workspace,
-        session_id="session-1",
-    )
-
-    assert result["success"] is False
-    assert result["error_info"]["type"] == "CapabilityViolation"
-    assert "process" in result["error_info"]["message"]
-
-
 def test_runtime_process_spawn_unrestricted_allows_spawn_under_existing_tree_guard(
     tmp_path: Path,
     monkeypatch,

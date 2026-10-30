@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
-from alysis_code import __version__
+from alysis_code import __version__, computer_use_platform_policy
 from alysis_code.capabilities import (
     DESKTOP_FEATURES,
     DESKTOP_PROTOCOLS,
@@ -36,7 +38,9 @@ def test_engine_reports_one_version_everywhere_it_is_written() -> None:
     assert payload["version"] == __version__ == declared_version()
 
 
-def test_capabilities_advertise_host_v2_as_the_only_planner_authority() -> None:
+@pytest.mark.parametrize("host", ["darwin", "win32"])
+def test_capabilities_advertise_host_v2_as_the_only_planner_authority(monkeypatch, host) -> None:
+    monkeypatch.setattr(computer_use_platform_policy, "sys", SimpleNamespace(platform=host))
     payload = build_capabilities_payload()
 
     assert (
@@ -49,12 +53,17 @@ def test_capabilities_advertise_host_v2_as_the_only_planner_authority() -> None:
         }
     )
     assert "forge-planner" not in payload["protocols"]
-    assert payload["features"] == {feature: True for feature in DESKTOP_FEATURES}
+    cu = {
+        "sensitive-host-context-v1",
+        "computer-use-host-v1",
+        "computer-discovery-v1",
+        "task-budget-host-v1",
+        "browser-start-host-v1",
+    }
+    expected = set(DESKTOP_FEATURES) - (cu if host != "darwin" else set())
+    assert payload["features"] == {feature: True for feature in expected}
+    assert all((feature in payload["features"]) == (host == "darwin") for feature in cu)
     assert payload["features"]["ide.bridge"] is True
-    assert payload["features"]["sensitive-host-context-v1"] is True
-    assert payload["features"]["computer-use-host-v1"] is True
-    assert payload["features"]["task-budget-host-v1"] is True
-    assert payload["features"]["browser-start-host-v1"] is True
     assert payload["features"]["ide.private-utf8-stdio-v1"] is True
     assert payload["features"]["forge.host-v2"] is True
     assert payload["features"]["forge.host-authoritative-verification-v1"] is True

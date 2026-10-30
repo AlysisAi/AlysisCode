@@ -38,6 +38,9 @@ _FAIL_OUTPUT = (
 )
 
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
+
 def _row(command: str, code: int, **extra: Any) -> dict[str, Any]:
     return {
         "command": command,

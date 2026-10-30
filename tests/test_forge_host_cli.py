@@ -15,7 +15,7 @@ from alysis_code.forge_host_cli import (
 from alysis_code.forge_host_protocol.codec import validate_envelope
 from alysis_code.forge_host_protocol.models import EventEnvelope, PlanReady
 
-FIXTURES = Path(__file__).parents[1] / "schemas" / "forge-host-v2" / "fixtures" / "valid"
+FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures" / "forge_host_v2" / "valid"
 
 
 def _ready() -> PlanReady:

@@ -138,6 +138,7 @@ class BackgroundProcess:
 
         self._popen = spawn.popen
         self._cleanup = spawn.cleanup
+        self._process_tree = spawn.process_tree
         self._termination_mode: BackgroundTerminationMode = spawn.termination_mode
         self._output = _OutputBuffer(max_lines=output_max_lines, max_bytes=output_max_bytes)
         self._condition = threading.Condition()
@@ -375,9 +376,13 @@ class BackgroundProcess:
             )
             return
 
-        self._stdout_done.wait()
-        self._stderr_done.wait()
-        cleanup_reason = self._run_cleanup_once()
+        # Detached children can keep pipes open after their parent exits. Stop
+        # owned Seatbelt descendants before waiting for the readers' EOF.
+        cleanup_reason = self._run_cleanup_once() if self._process_tree is not None else None
+        if cleanup_reason is None:
+            self._stdout_done.wait()
+            self._stderr_done.wait()
+        cleanup_reason = cleanup_reason or self._run_cleanup_once()
         if cleanup_reason is None and self._ownership_ledger is not None:
             self._ownership_ledger.release(self._ownership_handle)
 
@@ -406,6 +411,8 @@ class BackgroundProcess:
         self._send_kill()
 
     def _send_terminate(self) -> None:
+        if self._process_tree is not None:
+            self._process_tree.signal(signal.SIGTERM)
         if self._termination_mode == "direct":
             self._run_cleanup_and_record_failure()
             _terminate_direct_popen(self._popen)
@@ -423,6 +430,8 @@ class BackgroundProcess:
         _signal_posix_process_group(self._posix_pgid, signal.SIGTERM)
 
     def _send_kill(self) -> None:
+        if self._process_tree is not None:
+            self._process_tree.signal(signal.SIGKILL)
         if self._termination_mode == "direct":
             self._run_cleanup_and_record_failure()
             _kill_direct_popen(self._popen)
@@ -510,17 +519,26 @@ class TerminalManager:
         cwd: Path,
         root: Path,
         env_overrides: dict[str, str] | None = None,
+        scoped_runner: BackgroundShellRunner | None = None,
+        scoped_settings: ShellSandboxSettings | None = None,
     ) -> str:
+        if (scoped_runner is None) != (scoped_settings is None):
+            raise ValueError("Scoped background execution requires both runner and settings")
+        settings = scoped_settings or self._settings
         with self._lock:
             if not cmd.strip():
                 raise ValueError("cmd cannot be empty")
 
             root_abs = root.resolve()
             cwd_abs = cwd.resolve()
-            try:
-                cwd_abs.relative_to(root_abs)
-            except ValueError as exc:
-                raise ValueError(f"cwd escapes root: {cwd}") from exc
+            from .sandbox_workspace import contains_workspace_path
+
+            if not contains_workspace_path(
+                root_abs,
+                cwd_abs,
+                (*settings.additional_workspace_roots, *settings.additional_read_roots),
+            ):
+                raise ValueError(f"cwd escapes root and approved additional folders: {cwd}")
 
             running_count = sum(
                 1 for process in self._processes.values() if not process.is_terminal()
@@ -535,7 +553,7 @@ class TerminalManager:
         spawn: BackgroundProcessSpawn | None = None
         pending_released = False
         try:
-            spawn = self._runner.start(
+            spawn = (scoped_runner or self._runner).start(
                 root=root_abs,
                 cwd=cwd_abs,
                 cmd=cmd,

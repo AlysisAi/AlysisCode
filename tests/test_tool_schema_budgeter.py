@@ -1,10 +1,69 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from alysis_code.context.tool_schema_budgeter import (
     analyze_tool_schema_budget,
     compact_custom_mcp_tool_parameters,
     tool_schema_signature,
 )
+
+
+@pytest.mark.parametrize(
+    "tools",
+    [
+        None,
+        [],
+        [None, "invalid", 7],
+        [{"type": "function", "function": {"name": "δοκιμή", "description": "中文 👩🏽‍💻"}}],
+        [
+            {"type": "function", "function": {"name": "one", "parameters": {"enum": ["a", "b"]}}},
+            None,
+            {"type": "function", "function": {"name": "two", "description": "other"}},
+        ],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "mcp__synthetic__lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "enum": ["Ελληνικά", "中文"]},
+                            "items": {"type": "array", "items": {"type": "number"}},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {"name": "custom__synthetic", "description": "👩🏽‍💻"},
+            },
+        ],
+    ],
+)
+def test_total_only_estimation_preserves_report_total_without_ranking_work(monkeypatch, tools):
+    from alysis_code.context import tool_schema_budgeter
+    from alysis_code.request_estimation import estimate_tool_schema_tokens
+
+    expected = analyze_tool_schema_budget(tools).total_tokens
+    original = tool_schema_budgeter.estimate_tokens
+    counted = []
+
+    def estimate(text):
+        counted.append(text)
+        return original(text)
+
+    monkeypatch.setattr(tool_schema_budgeter, "estimate_tokens", estimate)
+    assert estimate_tool_schema_tokens(tools) == expected
+    valid_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
+    assert counted == (
+        [json.dumps(valid_tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))]
+        if valid_tools
+        else []
+    )
 
 
 def test_tool_schema_signature_is_stable_across_dict_key_order() -> None:

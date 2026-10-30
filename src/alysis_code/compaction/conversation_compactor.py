@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from alysis_code.cancellation import CooperativeCancellationError
+from alysis_code.execution_deadline import DeadlineExhausted
 from alysis_code.internal_artifacts import provider_history_messages
 from alysis_code.llm.base import ChatClient, count_input_tokens_if_supported
 from alysis_code.llm.cache_control_blocks import cacheable_prefix_message_count
@@ -48,6 +50,8 @@ from alysis_code.usage_tracker import (
     usage_context_from_client_response,
 )
 
+from .call_observation import measure_compactor_llm_call
+from .call_policy import compaction_provider_call
 from .importance import ScoredTurn, estimate_turn_tokens, extract_text, score_turn
 from .settings import CompactionSettings
 
@@ -837,7 +841,10 @@ class ConversationCompactor:
                     client=self.compactor_client,
                     messages=messages,
                     tools=tool_list,
+                    request_context=lambda: compaction_provider_call(self.compactor_client),
                 )
+            except (DeadlineExhausted, CooperativeCancellationError):
+                raise
             except Exception as exc:  # noqa: BLE001 -- accounting fallback is optional
                 self._store.append(
                     "compaction_warning",
@@ -1629,11 +1636,12 @@ class ConversationCompactor:
         ]
 
         try:
-            response = self.compactor_client.chat(
-                messages=prompt_messages,
-                tools=None,
-                stream=False,
-            )
+            with compaction_provider_call(self.compactor_client), measure_compactor_llm_call():
+                response = self.compactor_client.chat(
+                    messages=prompt_messages,
+                    tools=None,
+                    stream=False,
+                )
         except LLMError as exc:
             self._store.append(
                 "compaction_warning",
@@ -1725,12 +1733,13 @@ class ConversationCompactor:
             else {}
         )
         try:
-            response = self.compactor_client.chat(
-                messages=prompt_messages,
-                tools=tool_list,
-                stream=False,
-                **choice_options,
-            )
+            with compaction_provider_call(self.compactor_client), measure_compactor_llm_call():
+                response = self.compactor_client.chat(
+                    messages=prompt_messages,
+                    tools=tool_list,
+                    stream=False,
+                    **choice_options,
+                )
         except LLMError as exc:
             self._store.append(
                 "compaction_warning",
@@ -2756,6 +2765,8 @@ class ConversationCompactor:
                         provider_request_messages,
                         tool_list,
                     )
+                except (DeadlineExhausted, CooperativeCancellationError):
+                    raise
                 except Exception as exc:  # noqa: BLE001 -- optional preflight must degrade safely
                     self._store.append(
                         "compaction_warning",
@@ -3220,6 +3231,8 @@ class ConversationCompactor:
         if self._input_token_counter is not None:
             try:
                 counted = self._input_token_counter(provider_messages, tool_list)
+            except (DeadlineExhausted, CooperativeCancellationError):
+                raise
             except Exception as exc:  # noqa: BLE001 - preflight measurement is optional
                 self._store.append(
                     "compaction_warning",

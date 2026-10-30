@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/microsoft/mxc",
+  "commit": "c6f301d53a1430c4c921a05c57af838f7392348f",
+  "license": "MIT",
+  "license_file": "LICENSE.mxc",
+  "integration": "optional Cargo mxc feature; direct BaseContainerRunner; internal upstream API pinned by full revision",
+  "entrypoints": ["mxc-protocol", "mxc-probe", "mxc-run-request"],
+  "shipping_default": false,
+  "qualification": "prototype-unqualified",
+  "lifecycle": "Original-parent watcher plus noninheritable helper-owned outer job before any workload spawn. Strict original-job drain precedes upstream wait and enforcement teardown.",
+  "policy": "Explicit environment, native read/write/deny, no ancestor-list grants, no dispatcher, no ACL fallback, container UI isolation, offline or outbound enabled with ingress/host loopback denied. Private-network behavior remains to qualify.",
+  "limits": [
+    "Canonical local paths only. Workspace-write preparation persistently reserves missing instruction files and protected directories; original handles survive full job drain. Read-only mode creates no reservations. Native absent-path read-only rules and a full-deny rename experiment failed; those approaches are not used.",
+    "Engine windows-mxc is explicit development-only and requires its own digest-pinned helper; auto and installed windows-native protocols are unchanged.",
+    "No general alias/race or arbitrary workspace qualification yet.",
+    "No Desktop activation or production engine pin change.",
+    "No durable services or interactive PTY qualification.",
+    "Use scripts/qualify_windows_mxc.py to retain bounded tool and live process-family evidence; unsupported hosts are recorded separately."
+  ]
+}

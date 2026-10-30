@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import re
 import tomllib
 import warnings
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Literal
+from urllib.parse import SplitResult, parse_qsl, urlsplit, urlunsplit
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -17,6 +20,14 @@ from pydantic import (
     ValidationError,
     field_validator,
     model_validator,
+)
+
+from .plugin_skill_text import (
+    MAX_PLUGIN_SKILL_TEXT_CHARS,
+    MAX_PLUGIN_SKILLS,
+    allowed_origins,
+    is_one_line,
+    lint_plugin_skill,
 )
 
 MANIFEST_FILENAME = "alysis-plugin.toml"
@@ -190,10 +201,266 @@ class HookComponent(BaseModel):
     enabled: bool = True
 
 
+CUSTOM_PLUGIN_PREFIX = "custom."
+_CUSTOM_PLUGIN_ID_PATTERN = re.compile(r"^custom\.[a-z][a-z0-9_]{0,19}$")
+MAX_CUSTOM_TOOLS = 64
+
+
+def custom_tool_alias(name: str, max_chars: int = 28) -> str:
+    """The model-facing part of a custom tool's name: lowercase letters, digits and underscores.
+
+    Short enough that ``mcp__custom_<name>__<alias>`` stays within 64 characters.
+    """
+    alias = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
+    if not alias or not alias[0].isalpha():
+        alias = f"t_{alias}"
+    if len(alias) <= max_chars:
+        return alias
+    # A shared prefix is common in real server catalogs. Preserve the original
+    # name's identity when shortening it, instead of merging unrelated tools.
+    suffix = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    return f"{alias[: max_chars - 13].rstrip('_')}_{suffix}"
+
+
+class CustomConnectorTool(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]
+    #: The person's own mark. A server's readOnlyHint never sets it.
+    reads_only: bool = False
+
+
+# The user's decision for custom plugins: HTTPS only, no localhost (review M2D1-C3 / SOL-1).
+_LOCAL_NAME_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa", ".localdomain")
+_KEY_LIKE_NAME = re.compile(r"key|token|secret|passw|auth|sig|session|credential", re.IGNORECASE)
+
+
+def _not_a_public_name(host: str) -> str | None:
+    """Why a host isn't a public server name, or None. The URL parser already turns numeric
+    spellings (127.1, 2130706433, 0x7f.1) into an address, so any address is refused."""
+    name = host.strip("[]").rstrip(".").lower()
+    try:
+        ipaddress.ip_address(name)
+        return "an IP address"
+    except ValueError:
+        pass
+    if name == "localhost" or name.endswith(_LOCAL_NAME_SUFFIXES) or "." not in name:
+        return "a local name"
+    last = name.rsplit(".", 1)[1]
+    if last.isdigit() or re.fullmatch(r"0x[0-9a-f]*", last):
+        return "an IP address"
+    return None
+
+
+class CustomConnectorComponent(BaseModel):
+    """The user's own online tool server (Plugins M2d): HTTPS only, the app keeps the login."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,31}$")]
+    url: HttpUrl
+    auth: Literal["none", "api_key", "oauth"]
+    #: For an API key: the header main sends it in, and whether main writes "Bearer " first.
+    auth_header: Annotated[str, Field(pattern=r"^[A-Za-z0-9-]{1,64}$")] | None = None
+    auth_bearer: bool = False
+    #: For OAuth (M2d-2): where the person signs in, and how Alysis's client was registered. The
+    #: client id and the tokens stay in the app's store; changing these needs consent again.
+    oauth_issuer: HttpUrl | None = None
+    oauth_client: Literal["dynamic", "own"] | None = None
+    oauth_scopes: list[Annotated[str, Field(pattern=r"^[\x21\x23-\x5b\x5d-\x7e]{1,128}$")]] = Field(
+        default_factory=list, max_length=32
+    )
+    tools: list[CustomConnectorTool] = Field(min_length=1, max_length=MAX_CUSTOM_TOOLS)
+
+    @model_validator(mode="after")
+    def _validate_connector(self) -> CustomConnectorComponent:
+        if str(self.url.scheme).lower() != "https" or not self.url.host:
+            raise ValueError("url must be an https address")
+        if self.url.username or self.url.password or self.url.fragment:
+            raise ValueError("url may not contain a user name, password or fragment")
+        problem = _not_a_public_name(str(self.url.host))
+        if problem:
+            raise ValueError(
+                f"url must be a public server name, not {problem}: custom plugins are HTTPS only;"
+                " a program on this computer belongs under your own tool servers"
+            )
+        if any(_KEY_LIKE_NAME.search(name) for name, _ in parse_qsl(self.url.query or "", True)):
+            raise ValueError("url may not carry a key in its query; use the API key setting")
+        if (self.auth == "api_key") != (self.auth_header is not None):
+            raise ValueError("auth_header is required for an API key, and only then")
+        if self.auth != "api_key" and self.auth_bearer:
+            raise ValueError("auth_bearer needs an API key")
+        oauth = self.auth == "oauth"
+        if oauth != (self.oauth_issuer is not None) or oauth != (self.oauth_client is not None):
+            raise ValueError("oauth_issuer and oauth_client are required for OAuth, and only then")
+        if self.oauth_scopes and not oauth:
+            raise ValueError("oauth_scopes need OAuth")
+        if self.oauth_issuer is not None and (
+            str(self.oauth_issuer.scheme).lower() != "https"
+            or not self.oauth_issuer.host
+            or self.oauth_issuer.username
+            or self.oauth_issuer.password
+            or self.oauth_issuer.fragment
+        ):
+            raise ValueError("oauth_issuer must be an https address")
+        # RFC 8414: an issuer has no query or fragment (review OA-C2).
+        if self.oauth_issuer is not None and (
+            self.oauth_issuer.query or self.oauth_issuer.fragment
+        ):
+            raise ValueError("oauth_issuer can't have a query or fragment")
+        if self.oauth_issuer is not None and (
+            problem := _not_a_public_name(str(self.oauth_issuer.host))
+        ):
+            raise ValueError(f"oauth_issuer must be a public server name, not {problem}")
+        names = [tool.name for tool in self.tools]
+        if len(set(names)) != len(names):
+            raise ValueError("tool names must be unique")
+        if len({custom_tool_alias(name) for name in names}) != len(names):
+            raise ValueError("tool names must stay distinct once lowercased for the model")
+        return self
+
+
+VERIFIED_PLUGIN_PREFIX = "alysis."
+_VERIFIED_PLUGIN_ID_PATTERN = re.compile(r"^alysis\.[a-z][a-z0-9_]{0,19}$")
+MAX_VERIFIED_TOOLS = 96
+#: The shortest alias room any verified plugin has: ``mcp__<20 characters>__<alias>``.
+VERIFIED_TOOL_ALIAS_CHARS = 37
+DEFAULT_CONNECTOR_ARGUMENT_BYTES = 8 * 1024
+MAX_VERIFIED_ARGUMENT_BYTES = 32 * 1024
+
+
+def verified_tool_alias(plugin_id: str, name: str) -> str:
+    """The model-facing part of a verified connector tool's name (``mcp__notion__<alias>``).
+
+    Uses all the room ``mcp__<name>__`` leaves within 64 characters; names distinct at the
+    shortest room (checked in the descriptor) stay distinct.
+    """
+    short = plugin_id.removeprefix(VERIFIED_PLUGIN_PREFIX)
+    return custom_tool_alias(name, 64 - len(f"mcp__{short}__"))
+
+
+def _https_address(value: str, field: str, *, query: bool) -> SplitResult:
+    """A public https address written exactly as reviewed; the text is kept as is, unparsed."""
+    parts = urlsplit(value)
+    if (
+        parts.scheme != "https"
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or "#" in value
+        or any(c.isspace() for c in value)
+    ):
+        raise ValueError(f"{field} must be an https address without a user name or fragment")
+    if parts.query and not query:
+        raise ValueError(f"{field} can't have a query")
+    if problem := _not_a_public_name(parts.hostname):
+        raise ValueError(f"{field} must be a public server name, not {problem}")
+    return parts
+
+
+class VerifiedConnectorTool(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]
+    #: Alysis's review. It is the only source of what is a read; a server's hint never counts.
+    reads_only: bool
+
+
+class VerifiedHostArgument(BaseModel):
+    """An argument the desktop app fills in after approval; the AI can never set it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")]
+    source: Literal["atlassian_site"]
+
+
+class VerifiedConnectorComponent(BaseModel):
+    """A vendor's official online tool server, reviewed by Alysis in a pinned bundled descriptor.
+
+    Like a custom connector, the app keeps the login and calls the server. The reviewed tool
+    list is the only list offered, and its marks are the only source of what is a read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,31}$")]
+    url: Annotated[str, Field(min_length=1, max_length=512)]
+    #: The RFC 8707 / 9728 resource; the url without its query when not given.
+    resource: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+    oauth_issuer: Annotated[str, Field(min_length=1, max_length=512)]
+    #: Extra origins for the authorize, token, register and revoke endpoints.
+    oauth_sign_in_origins: list[Annotated[str, Field(min_length=1, max_length=256)]] = Field(
+        default_factory=list, max_length=8
+    )
+    oauth_client: Literal["dynamic"]
+    oauth_scopes: list[
+        Annotated[str, Field(pattern=r"^[\x21\x23-\x26\x28-\x5b\x5d-\x7e]{1,128}$")]
+    ] = Field(min_length=1, max_length=32)
+    tools: list[VerifiedConnectorTool] = Field(min_length=1, max_length=MAX_VERIFIED_TOOLS)
+    host_arguments: list[VerifiedHostArgument] = Field(default_factory=list, max_length=4)
+    max_argument_bytes: Annotated[
+        int, Field(ge=DEFAULT_CONNECTOR_ARGUMENT_BYTES, le=MAX_VERIFIED_ARGUMENT_BYTES)
+    ] = DEFAULT_CONNECTOR_ARGUMENT_BYTES
+
+    @property
+    def effective_resource(self) -> str:
+        if self.resource is not None:
+            return self.resource
+        parts = urlsplit(self.url)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+    @model_validator(mode="after")
+    def _validate_connector(self) -> VerifiedConnectorComponent:
+        url = _https_address(self.url, "url", query=True)
+        if any(_KEY_LIKE_NAME.search(name) for name, _ in parse_qsl(url.query, True)):
+            raise ValueError("url may not carry a key in its query")
+        if self.resource is not None:
+            _https_address(self.resource, "resource", query=False)
+        _https_address(self.oauth_issuer, "oauth_issuer", query=False)
+        for origin in self.oauth_sign_in_origins:
+            parts = _https_address(origin, "oauth_sign_in_origins", query=False)
+            if parts.path or origin != f"https://{parts.netloc}":
+                raise ValueError("oauth_sign_in_origins entries are bare https origins")
+        if len(set(self.oauth_sign_in_origins)) != len(self.oauth_sign_in_origins):
+            raise ValueError("oauth_sign_in_origins must be unique")
+        if len(set(self.oauth_scopes)) != len(self.oauth_scopes):
+            raise ValueError("oauth_scopes must be unique")
+        names = [tool.name for tool in self.tools]
+        if len(set(names)) != len(names):
+            raise ValueError("tool names must be unique")
+        if len({custom_tool_alias(name, VERIFIED_TOOL_ALIAS_CHARS) for name in names}) != len(
+            names
+        ):
+            raise ValueError("tool names must stay distinct once lowercased for the model")
+        arguments = [argument.name for argument in self.host_arguments]
+        if len(set(arguments)) != len(arguments):
+            raise ValueError("host_arguments names must be unique")
+        return self
+
+
+class PluginSkillComponent(BaseModel):
+    """Plain-text publisher guidance inside the signed descriptor; never files, never authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,47}$")]
+    title: Annotated[str, Field(min_length=1, max_length=80)]
+    description: Annotated[str, Field(min_length=1, max_length=140)]
+    uses_tools: list[str] = Field(default_factory=list, max_length=16)
+    text: Annotated[str, Field(min_length=1)]
+
+
 class Components(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     skill: list[SkillComponent] = Field(default_factory=list)
+    # Inside [components], so a changed skill text is an access change (Needs review).
+    plugin_skill: list[PluginSkillComponent] = Field(
+        default_factory=list, max_length=MAX_PLUGIN_SKILLS
+    )
+    custom_connector: list[CustomConnectorComponent] = Field(default_factory=list, max_length=1)
+    verified_connector: list[VerifiedConnectorComponent] = Field(default_factory=list, max_length=1)
     tool: list[ToolComponent] = Field(default_factory=list)
     mcp_server: list[McpServerComponent] = Field(default_factory=list)
     hook: list[HookComponent] = Field(default_factory=list)
@@ -228,6 +495,89 @@ class PluginManifest(BaseModel):
     compatibility: Compatibility
     components: Components = Field(default_factory=Components)
     security: Security | None = None
+
+    @model_validator(mode="after")
+    def _validate_custom_plugin(self) -> PluginManifest:
+        """`custom.*` is the user's own online plugin, and nothing else may be one."""
+        components = self.components
+        if not self.plugin.id.startswith(CUSTOM_PLUGIN_PREFIX):
+            if components.custom_connector:
+                raise ValueError("components.custom_connector: only for custom.* plugins")
+            return self
+        if not _CUSTOM_PLUGIN_ID_PATTERN.fullmatch(self.plugin.id):
+            raise ValueError("plugin.id: a custom plugin id is custom.<lowercase name>")
+        if len(components.custom_connector) != 1:
+            raise ValueError("a custom plugin has exactly one components.custom_connector")
+        if (
+            components.skill
+            or components.tool
+            or components.mcp_server
+            or components.hook
+            or components.verified_connector
+        ):
+            raise ValueError(
+                "a custom plugin can't run programs: no skill folders, tools, MCP servers or hooks"
+            )
+        # The person's own text reaches approval labels and the skill catalog (review M2-C1).
+        for field, value in (("name", self.plugin.name), ("description", self.plugin.description)):
+            if not is_one_line(value):
+                raise ValueError(f"plugin.{field}: a custom plugin's {field} must be one line")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_verified_connector(self) -> PluginManifest:
+        """A verified connector is an Alysis-reviewed plugin of its own: plugin skills only."""
+        components = self.components
+        if not components.verified_connector:
+            return self
+        if not _VERIFIED_PLUGIN_ID_PATTERN.fullmatch(self.plugin.id):
+            raise ValueError(
+                "components.verified_connector: only for alysis.<lowercase name> plugins"
+            )
+        if (
+            components.skill
+            or components.tool
+            or components.mcp_server
+            or components.hook
+            or components.custom_connector
+        ):
+            raise ValueError("components.verified_connector: only plugin skills may accompany it")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_plugin_skills(self) -> PluginManifest:
+        skills = self.components.plugin_skill
+        if not skills:
+            return self
+        if len({skill.name for skill in skills}) != len(skills):
+            raise ValueError("components.plugin_skill: names must be unique")
+        if not is_one_line(self.plugin.name):
+            raise ValueError("plugin.name: must be one line when the plugin carries skills")
+        if sum(len(skill.text) for skill in skills) > MAX_PLUGIN_SKILL_TEXT_CHARS:
+            raise ValueError(
+                f"components.plugin_skill: more than {MAX_PLUGIN_SKILL_TEXT_CHARS} characters"
+            )
+        origins = allowed_origins(
+            [str(server.url) for server in self.components.mcp_server if server.url]
+            + [str(connector.url) for connector in self.components.custom_connector]
+            + [
+                origin
+                for connector in self.components.verified_connector
+                for origin in (connector.url, *connector.oauth_sign_in_origins)
+            ]
+            + ([str(self.plugin.homepage)] if self.plugin.homepage else [])
+        )
+        for skill in skills:
+            problems = lint_plugin_skill(
+                title=skill.title,
+                description=skill.description,
+                text=skill.text,
+                uses_tools=skill.uses_tools,
+                allowed_origins=origins,
+            )
+            if problems:
+                raise ValueError(f"components.plugin_skill {skill.name}: " + "; ".join(problems))
+        return self
 
 
 def resolve_manifest_path(plugin_root: Path) -> Path:
@@ -279,6 +629,9 @@ def _validate_manifest_invariants(manifest: PluginManifest, plugin_root: Path) -
         + len(manifest.components.tool)
         + len(manifest.components.mcp_server)
         + len(manifest.components.hook)
+        + len(manifest.components.plugin_skill)
+        + len(manifest.components.custom_connector)
+        + len(manifest.components.verified_connector)
     )
     if total_components > 32:
         messages.append(
@@ -469,8 +822,14 @@ __all__ = [
     "PluginManifestError",
     "PluginMeta",
     "Security",
+    "CustomConnectorComponent",
+    "CustomConnectorTool",
+    "PluginSkillComponent",
     "SkillComponent",
     "ToolComponent",
+    "VerifiedConnectorComponent",
+    "VerifiedConnectorTool",
+    "VerifiedHostArgument",
     "_validate_manifest_invariants",
     "load_manifest",
 ]

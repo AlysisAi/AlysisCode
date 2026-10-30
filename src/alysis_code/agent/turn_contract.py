@@ -362,17 +362,19 @@ class Expectation:
 
 @dataclass(frozen=True)
 class ExpectationEvidence:
-    """A post-edit run whose output contains an ``expected_output`` literal."""
+    """Observed command output or a host-observed change to a named output file."""
 
     expectation_id: str
     normalized_command: str
     generation: int
+    source: str = "command_output"
 
     def as_payload(self) -> dict[str, Any]:
         return {
             "expectation_id": self.expectation_id,
             "normalized_command": self.normalized_command,
             "generation": self.generation,
+            **({"source": self.source} if self.source != "command_output" else {}),
         }
 
 

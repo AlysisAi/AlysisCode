@@ -10,6 +10,8 @@ from alysis_code.computer_use_diagnostics import computer_use_local_result_failu
 from alysis_code.config import AppConfig
 from alysis_code.llm.types import LLMResponse, ToolCall
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 @pytest.mark.parametrize(
     "tool, error, expected",

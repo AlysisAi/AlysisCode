@@ -48,7 +48,12 @@ def _write_prior_turns(session_path: Path) -> None:
 
 
 def test_run_help_exposes_desktop_transport_options() -> None:
-    result = CliRunner().invoke(alysis_app, ["run", "--help"], terminal_width=160)
+    result = CliRunner().invoke(
+        alysis_app,
+        ["run", "--help"],
+        terminal_width=160,
+        env={"COLUMNS": "160", "TERM": "dumb"},
+    )
 
     assert result.exit_code == 0
     # Rich may truncate or style help according to the runner's terminal. Check

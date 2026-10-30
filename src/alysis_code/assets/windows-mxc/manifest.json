@@ -1,0 +1,22 @@
+{
+  "ancestor_grants": false,
+  "automatic_fallback": false,
+  "containment": "mxc-psec",
+  "directory_discovery": true,
+  "host_acl_mutation": false,
+  "implementation": "alysis-windows-sandbox",
+  "metadata_reservations": "persistent-protected-directories",
+  "network_modes": [
+    "off",
+    "on"
+  ],
+  "protocol": 4,
+  "qualification": "prototype-unqualified",
+  "scoped_local_preview": true,
+  "security_revision": 11,
+  "upstream_commit": "c6f301d53a1430c4c921a05c57af838f7392348f",
+  "platform": "win32-x64",
+  "sha256": "b977585de545b26f58fb7dd40e2793e3283ba1e30f9708a1c024c87e6eb6dfb8",
+  "source_commit": "ae3e9a1e494506a99782cbda16080228e090a11f",
+  "source_inventory_sha256": "edef0a786f566ec01bfff00150c1b7726bc87eab5435e4a20258b874b98e8efc"
+}

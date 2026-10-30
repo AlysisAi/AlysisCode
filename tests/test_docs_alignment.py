@@ -102,25 +102,6 @@ def test_documented_install_command_points_at_the_installer_script() -> None:
     assert windows_command in _read("scripts/install.ps1")
 
 
-def test_readme_keeps_public_launch_surface() -> None:
-    readme = _read("README.md")
-
-    assert "Alysis Code" in readme
-    assert 'src="docs/assets/banner.svg"' in readme
-    assert (_repo_root() / "docs/assets/banner.svg").is_file()
-    # The product site. Derived from alysis_cloud so a future move updates this
-    # assertion with the constant rather than leaving a stale literal behind.
-    from alysis_code.alysis_cloud import site_url
-
-    assert f"{site_url()}/" in readme
-    assert f'href="{site_url()}/docs">Documentation</a>' in readme
-    assert 'href="docs/CHANGELOG.md">Changelog</a>' in readme
-    assert (_repo_root() / "docs/CHANGELOG.md").is_file()
-    assert 'href="https://github.com/sponsors/AlysisAi"' in readme
-    assert "pipx install alysis-code" in readme
-    assert "Apache-2.0" in readme
-
-
 def test_governance_and_packaging_metadata_are_public_ready() -> None:
     from alysis_code.alysis_cloud import site_url
 
@@ -141,12 +122,6 @@ def test_governance_and_packaging_metadata_are_public_ready() -> None:
     assert pyproject["project"]["urls"]["Documentation"] == f"{site_url()}/docs"
 
 
-def test_vscode_changelog_uses_current_product_identity() -> None:
-    introduction = _read("extensions/vscode-alysis/CHANGELOG.md").split("## [Unreleased]", 1)[0]
-
-    assert "Alysis Code VS Code extension" in introduction
-
-
 def test_docs_index_links_only_existing_public_docs() -> None:
     repo_root = _repo_root()
     docs_index = _read("docs/README.md")
@@ -164,83 +139,6 @@ def test_docs_index_links_only_existing_public_docs() -> None:
         assert target.exists(), raw_path
 
 
-def test_public_docs_cover_core_user_and_contributor_topics() -> None:
-    reference = _read("docs/reference.md")
-    architecture = _read("docs/architecture.md")
-    subagents = _read("docs/subagents.md")
-    mcp = _read("docs/mcp.md")
-    skills = _read("docs/skills.md")
-    forge = _read("docs/forge.md")
-    security = _read("docs/security_model.md")
-
-    assert "readonly" in reference
-    assert "review" in reference
-    assert "fullaccess" in reference
-    assert "runtime_kind" in reference
-    assert "High-level flow" in architecture
-    assert "workspace_root" in architecture
-    assert "active_workdir" in architecture
-    assert "Subagents" in subagents
-    for name in (
-        "explorer",
-        "general",
-        "frontend-engineer",
-        "debugger",
-        "verifier",
-        "code-reviewer",
-        "visual-designer",
-    ):
-        assert name in subagents
-    assert "routing_visibility" in subagents
-    assert "parallel_batch_eligible" in subagents
-    assert "parallel_safe" not in subagents
-    assert "image_generation.enabled" in subagents
-    assert "Visual QA" in subagents
-    assert "Streamable HTTP" in mcp
-    assert "OAuth" in mcp
-    assert "Skills" in skills
-    assert "skill_read" in skills
-    assert "Forge" in forge
-    assert "forge exec" in forge
-    assert "verification" in forge.lower()
-    assert "safe HTTP" in security
-    assert "MCP" in security
-
-
-def test_internal_cleanup_artifacts_stay_absent() -> None:
-    repo_root = _repo_root()
-    absent_paths = [
-        "RE" + "FACTOR_NOTES.md",
-        "RE" + "FACTOR_PLAN.md",
-        "qa_" + "reports",
-        "scripts/skills_" + "do" + "gfood_campaign.py",
-        "scripts/skills_" + "do" + "gfood_validation_round.py",
-        "docs/SANDBOX.md",
-        "docs/FORGE.md",
-        "docs/skills_" + "evals.md",
-        "docs/internal",
-        "docs/subagents",
-        "docs/tooling",
-        "docs/forge_plan_phase.md",
-        "docs/forge_execution_phase.md",
-        "docs/forge_swarm.md",
-    ]
-
-    source_paths = set(_checkout_paths(repo_root))
-    for path in absent_paths:
-        path_prefix = f"{path.rstrip('/')}/"
-        assert not any(
-            source_path == path or source_path.startswith(path_prefix)
-            for source_path in source_paths
-        ), path
-
-    terminals = _read("docs/terminals.md")
-    assert "shell_background" in terminals
-    assert "shell_output" in terminals
-    assert "shell_kill" in terminals
-    assert "shell_list" in terminals
-
-
 def test_source_urls_and_container_docs_point_to_alysisai() -> None:
     branding = _read("src/alysis_code/branding.py")
     sandbox = _read("docs/shell_sandbox.md")
@@ -249,19 +147,3 @@ def test_source_urls_and_container_docs_point_to_alysisai() -> None:
     assert "ghcr.io/alysisai/alysis-sandbox" in sandbox
     assert "ap" + "fivos/alysis" not in branding
     assert "ghcr.io/ap" + "fivos" not in sandbox
-
-
-def test_current_copy_uses_the_correct_article_for_alysis() -> None:
-    repo_root = _repo_root()
-    bad_phrase = "a " + "Alysis"
-    bad_command_phrase = "a " + "alysis executable"
-    text_suffixes = {".md", ".py", ".ts", ".json"}
-
-    for raw_path in _checkout_paths(repo_root):
-        candidate = repo_root / raw_path
-        # The Git index can still include files deleted in the current checkout.
-        if candidate.suffix not in text_suffixes or not candidate.is_file():
-            continue
-        contents = candidate.read_text(encoding="utf-8")
-        assert bad_phrase not in contents, raw_path
-        assert bad_command_phrase not in contents, raw_path

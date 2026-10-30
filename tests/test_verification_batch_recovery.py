@@ -499,18 +499,14 @@ def test_finalization_does_not_hide_failed_or_ambiguous_execution(
     finals = [event["payload"]["content"] for event in events if event["type"] == "final"]
     assert len(finals) == 1
     reported_content = finals[0].split("\n\n---", 1)[0]
-    if one_shot:
-        expected_report = (
-            report + "\n\nNot verified: required checks failed or could not be confirmed."
-        )
-        if separate_calls:
-            assert reported_content.startswith(
-                expected_report + "\n\nPreserved verified checkpoint:"
-            )
-        else:
-            assert reported_content == expected_report
-    else:
-        assert reported_content == report
+    # Preserve the model's report and append the host's failure notice. Neither
+    # the text nor the structured result may conceal unresolved failed checks.
+    final_payload = [event["payload"] for event in events if event["type"] == "final"][0]
+    assert final_payload["verification_notice"] is True
+    assert final_payload["task_outcome"]["verified_success"] is False
+    assert "verification_failed" in final_payload["task_outcome"]["problems"]
+    assert reported_content.startswith(report + "\n\nNot verified:")
+    assert "required or observed checks failed" in reported_content
     verification = [
         event["payload"]["result"]
         for event in events

@@ -443,12 +443,27 @@ class ChangeLedger:
         return ref
 
     def _initialize(self) -> None:
+        # Windows process creation rejects an oversized working directory.
+        # Below it, Git uses a short relative GIT_DIR plus longpaths for objects.
+        if os.name == "nt" and len(os.fspath(self.storage_dir)) >= 260:
+            raise ChangeLedgerError(
+                "Windows Git checkpoint storage path is too long. "
+                "Choose a shorter Alysis data directory before making changes."
+            )
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.index_dir.mkdir(parents=True, exist_ok=True)
         if not self.git_dir.exists():
             try:
                 result = subprocess.run(
-                    ["git", "init", "--bare", "--quiet", os.fspath(self.git_dir)],
+                    [
+                        "git",
+                        *(["-c", "core.longpaths=true"] if os.name == "nt" else []),
+                        "init",
+                        "--bare",
+                        "--quiet",
+                        "objects.git",
+                    ],
+                    cwd=self.storage_dir,
                     capture_output=True,
                     timeout=self.git_timeout_seconds,
                     check=False,
@@ -1494,7 +1509,8 @@ class ChangeLedger:
         process_env = dict(env or build_git_process_env())
         command = [
             "git",
-            f"--git-dir={os.fspath(self.git_dir)}",
+            *(["-c", "core.longpaths=true"] if os.name == "nt" else []),
+            "--git-dir=objects.git",
             f"--work-tree={os.fspath(self.workspace_root)}",
             "-c",
             "core.autocrlf=false",
@@ -1505,6 +1521,7 @@ class ChangeLedger:
         try:
             result = subprocess.run(
                 command,
+                cwd=self.storage_dir,
                 input=input_bytes,
                 capture_output=True,
                 timeout=self.git_timeout_seconds,

@@ -26,6 +26,7 @@ from alysis_code.agent.verification_commands import _matching_effective_verifica
 from alysis_code.config import AppConfig
 from alysis_code.llm.types import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.verification_contract import (
     VerificationCommandProvenance,
@@ -93,6 +94,11 @@ def test_real_turn_distinguishes_recommended_and_required_commands(
         for setting in ("VERIFY_SANDBOX_MODE", "SHELL_SANDBOX_MODE"):
             monkeypatch.delenv(f"{prefix}_{setting}", raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
+    )
     root = tmp_path / "repo"
     (root / "tests").mkdir(parents=True)
     (root / "pyproject.toml").write_text(

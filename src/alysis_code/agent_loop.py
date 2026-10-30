@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from .mcp.manager import ForgeTaskScopedMcpManager, McpManager
     from .runtime_kind import RuntimeKind
     from .surface.base import Surface
+    from .tools.search import search_rg
+    from .tools.shell import shell_run
+    from .tools.symbols import symbol_search
+    from .tools.web import web_fetch
     from .workspace_binding import WorkspaceBinding
 
 # isort: off
@@ -420,18 +424,6 @@ from .tools.availability import (  # noqa: F401
 # tools.fs re-exports
 from .tools.fs import fs_list, fs_read  # noqa: F401
 
-# tools.search re-exports
-from .tools.search import search_rg  # noqa: F401
-
-# tools.shell re-exports
-from .tools.shell import shell_run  # noqa: F401
-
-# tools.symbols re-exports
-from .tools.symbols import symbol_search  # noqa: F401
-
-# tools.web re-exports
-from .tools.web import web_fetch  # noqa: F401
-
 # isort: on
 
 
@@ -735,3 +727,31 @@ def run_agent(
         # the agentbox error flag, and a budget stop is not an error. The
         # machine-readable marker travels as session.stop_reason instead.
         session.close()
+
+
+def __getattr__(name: str) -> Any:
+    modules = {
+        "search_rg": ".tools.search",
+        "shell_run": ".tools.shell",
+        "symbol_search": ".tools.symbols",
+        "web_fetch": ".tools.web",
+    }
+    if name not in modules:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    value = getattr(import_module(modules[name], __package__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | {"search_rg", "shell_run", "symbol_search", "web_fetch"})
+
+
+__all__ = [name for name in globals() if not name.startswith("_")] + [
+    "search_rg",
+    "shell_run",
+    "symbol_search",
+    "web_fetch",
+]

@@ -177,6 +177,32 @@ def test_exact_handles_survive_resume_and_typos_expose_only_current_session(tmp_
     )
 
 
+def test_matching_handle_and_locator_read_only_the_verified_current_artifact(tmp_path: Path):
+    layout = SessionArtifactLayout(tmp_path / "session")
+    artifact = layout.artifact_fs_path("tool_outputs", "result.txt")
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("observed result", encoding="utf-8")
+    handle = layout.register_artifact(artifact)
+    locator = layout.locator_for_path(artifact)
+    assert (
+        session_artifact_read(artifact_layout=layout, handle=handle, locator=locator)["content"]
+        == "observed result"
+    )
+    for mismatched in (
+        "session_artifacts/tool_outputs/other.txt",
+        "session_artifacts/../result.txt",
+    ):
+        with pytest.raises(SessionArtifactReadError) as exc:
+            session_artifact_read(artifact_layout=layout, handle=handle, locator=mismatched)
+        assert exc.value.result_payload["error_code"] == "session_artifact_reference_mismatch"
+    for invalid_handle in ("artifact:unknown", handle):
+        if invalid_handle == handle:
+            artifact.write_text("changed result", encoding="utf-8")
+        with pytest.raises(SessionArtifactReadError) as exc:
+            session_artifact_read(artifact_layout=layout, handle=invalid_handle, locator=locator)
+        assert exc.value.result_payload["error_code"] == "session_artifact_handle_not_found"
+
+
 def test_handle_cannot_silently_resolve_changed_artifact_content(tmp_path: Path):
     layout = SessionArtifactLayout(tmp_path / "session")
     artifact = layout.artifact_fs_path("tool_outputs", "mutable.txt")

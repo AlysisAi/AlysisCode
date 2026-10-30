@@ -494,6 +494,8 @@ def _run_live_tui(
                 feed(pipe)
             except BaseException as exc:  # noqa: BLE001 - surface feeder failures in the test
                 feed_errors.append(exc)
+                # Ctrl-C is context-dependent (copy/cancel/modal handling), so
+                # it cannot guarantee shutdown after a feeder assertion fails.
                 pipe.close()
 
         feeder = threading.Thread(target=run_feed, daemon=True)
@@ -518,7 +520,8 @@ def _run_live_tui(
             if feed_errors:
                 raise feed_errors[0] from None
             raise
-        feeder.join(timeout=2)
+        finally:
+            feeder.join(timeout=2)
 
     assert not feeder.is_alive()
     assert feed_errors == []

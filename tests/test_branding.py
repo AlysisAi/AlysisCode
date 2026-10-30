@@ -206,8 +206,6 @@ def test_custom_tool_runtime_still_loads_standalone() -> None:
     finally:
         sys.modules.pop(spec.name, None)
 
-    # Both spellings must be blocked from passthrough, since the runtime
-    # injects each of them itself.
+    # The runtime injects the tool name, so passthrough must not override it.
     injected = module._INJECTED_ENV_NAMES
-    assert "ALYSIS_TOOL_NAME" in injected
     assert "ALYSIS_TOOL_NAME" in injected

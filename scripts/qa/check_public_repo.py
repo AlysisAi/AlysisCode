@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -58,6 +59,13 @@ _BLOCKED_SUFFIXES = {
 }
 _PUBLIC_EDITOR_PACKAGES = {"vscode-alysis", "jetbrains-alysis", "shared-ui"}
 _PUBLIC_VERIFICATION_KEY = "extensions/vscode-alysis/resources/managed-cli-release-public.pem"
+_PUBLIC_GIT_CA_BUNDLE = "src/alysis_code/assets/windows-git/ucrt64/etc/ssl/cert.pem"
+# Exact upstream runtime assets, not a general size or credential-file exception.
+_PINNED_RUNTIME_ASSETS = {
+    "src/alysis_code/assets/windows-git/ucrt64/bin/libSkiaSharp.dll": "8dc867e29f3dacca41e15af5d557542f4982c59f770ba6ac811ed6026fd2874e",
+    "src/alysis_code/assets/windows-git/ucrt64/bin/libcrypto-3-x64.dll": "f8839fd7d5b5e7b1763c88705538c5762a2f97df17f37092e37de3c663f30b1e",
+    _PUBLIC_GIT_CA_BUNDLE: "76055a37e6fbc802e2051bcb620210a915d112f4284a5e93fb2e68c7106398ba",
+}
 _ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 _MAX_TRACKED_FILE_BYTES = 5 * 1024 * 1024
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
@@ -74,6 +82,26 @@ _PUBLIC_CLOUD_DEFAULT_DECLARATION = (
 )
 
 
+# Vendor-wide connector endpoints, not project deployment addresses. Keep these
+# exceptions scoped to the exact reviewed declarations and catalog fixture.
+_CONNECTOR_MCP_URL = "https://" + ".".join(("mcp", "supabase", "com")) + "/mcp"
+_CONNECTOR_API_URL = "https://" + ".".join(("api", "supabase", "com"))
+_PUBLIC_CONNECTOR_DECLARATIONS = {
+    "src/alysis_code/extensions/bundled/supabase/alysis-plugin.toml": {
+        f'url = "{_CONNECTOR_MCP_URL}"',
+        f'resource = "{_CONNECTOR_MCP_URL}"',
+        f'oauth_issuer = "{_CONNECTOR_API_URL}"',
+        f'oauth_sign_in_origins = ["{_CONNECTOR_API_URL}"]',
+    },
+    "tests/test_verified_plugin_catalog.py": {
+        f'"url": "{_CONNECTOR_MCP_URL}",',
+        f'"resource": "{_CONNECTOR_MCP_URL}",',
+        f'"oauth_issuer": "{_CONNECTOR_API_URL}",',
+        f'"oauth_sign_in_origins": ["{_CONNECTOR_API_URL}"],',
+    },
+}
+
+
 def deployment_content_violations(path_text: str, content: bytes) -> list[str]:
     """Reject deployment hosts and project-bound keys without printing their values.
 
@@ -88,7 +116,8 @@ def deployment_content_violations(path_text: str, content: bytes) -> list[str]:
             path_text == "src/alysis_code/alysis_cloud.py"
             and line.strip() == _PUBLIC_CLOUD_DEFAULT_DECLARATION
         )
-        if _DEPLOYMENT_HOST_RE.search(line) and not approved_default:
+        approved_connector = line.strip() in _PUBLIC_CONNECTOR_DECLARATIONS.get(path_text, set())
+        if _DEPLOYMENT_HOST_RE.search(line) and not (approved_default or approved_connector):
             reasons.add("deployment-specific backend host")
         if _DEPLOYMENT_KEY_RE.search(line):
             reasons.add("deployment-specific backend key")
@@ -125,8 +154,10 @@ def path_violation(path_text: str) -> str | None:
         and (len(lower_parts) < 2 or lower_parts[1] not in _PUBLIC_EDITOR_PACKAGES)
     ):
         return "unreleased editor package"
-    if "power_mode" in lower_parts:
+    if "power_mode" in lower_parts or re.search(r"(?:^|_)power(?:_|$)", path.stem.lower()):
         return "unreleased Power mode package"
+    if lower_parts[:2] == ("docs", "drafts"):
+        return "unreleased draft documentation"
     if parts & _CACHE_DIRS:
         return "generated cache directory"
     if path.parts and path.parts[0] in _LOCAL_ROOTS:
@@ -135,7 +166,10 @@ def path_violation(path_text: str) -> str | None:
         return "local generated file"
     if path.name.startswith(".env") and path.name not in _ENV_EXAMPLES:
         return "environment file"
-    if path.suffix.lower() in _BLOCKED_SUFFIXES and path_text != _PUBLIC_VERIFICATION_KEY:
+    if path.suffix.lower() in _BLOCKED_SUFFIXES and path_text not in {
+        _PUBLIC_VERIFICATION_KEY,
+        _PUBLIC_GIT_CA_BUNDLE,
+    }:
         return "credential-bearing or generated file type"
     return None
 
@@ -150,6 +184,20 @@ def collect_violations(paths: Iterable[str], root: Path) -> list[str]:
             continue
 
         local_path = root / path_text
+        pinned_asset = path_text in _PINNED_RUNTIME_ASSETS
+        if pinned_asset and local_path.is_file():
+            content = local_path.read_bytes()
+            if hashlib.sha256(content).hexdigest() != _PINNED_RUNTIME_ASSETS[path_text]:
+                violations.append(f"{path_text}: pinned runtime asset digest mismatch")
+            if path_text == _PUBLIC_GIT_CA_BUNDLE:
+                from cryptography.x509 import load_pem_x509_certificates
+
+                try:
+                    certificates = load_pem_x509_certificates(content)
+                    if not certificates or b"PRIVATE KEY" in content:
+                        raise ValueError("not a public certificate bundle")
+                except ValueError:
+                    violations.append(f"{path_text}: expected only public CA certificates")
         if path_text == _PUBLIC_VERIFICATION_KEY and local_path.is_file():
             from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
@@ -157,7 +205,11 @@ def collect_violations(paths: Iterable[str], root: Path) -> list[str]:
                 load_pem_public_key(local_path.read_bytes())
             except (ValueError, TypeError):
                 violations.append(f"{path_text}: expected a public verification key")
-        if local_path.is_file() and local_path.stat().st_size > _MAX_TRACKED_FILE_BYTES:
+        if (
+            local_path.is_file()
+            and local_path.stat().st_size > _MAX_TRACKED_FILE_BYTES
+            and not pinned_asset
+        ):
             violations.append(f"{path_text}: tracked file exceeds 5 MiB")
         elif local_path.is_file():
             violations.extend(deployment_content_violations(path_text, local_path.read_bytes()))

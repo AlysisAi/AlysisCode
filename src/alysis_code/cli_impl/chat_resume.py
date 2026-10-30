@@ -7,11 +7,13 @@ from typing import Any
 from ..runtime_kind import RuntimeKind
 from ..step_budget import normalize_step_budget_policy, step_budget_is_autonomous
 from ..surface.styles import STYLE_CONTENT, STYLE_EMPHASIS
+from .commands import _materialize_cli_globals
 
 _PROTECTED_GLOBAL_NAMES: set[str] = set()
 
 
 def _sync_cli_globals(cli_mod: Any) -> None:
+    _materialize_cli_globals(cli_mod)
     module_globals = globals()
     if not _PROTECTED_GLOBAL_NAMES:
         for local_name, local_value in module_globals.items():
@@ -772,6 +774,10 @@ def _resume_chat_session(
 
     if history_messages:
         new_session.messages.extend(history_messages)
+
+    from ..provider_usage import restore_provider_usage
+
+    restore_provider_usage(new_session, target_path)
 
     # Restore workspace verification provenance without pinning an objective.
     _restore_chat_resume_evidence(

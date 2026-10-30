@@ -13,11 +13,7 @@ import pytest
 from alysis_code.cli_impl.tui import run_tui
 from alysis_code.cli_impl.tui.app import _model_access_setup_hint
 from alysis_code.cli_impl.tui.config import is_tui_enabled
-from alysis_code.cli_impl.tui.content import (
-    HEADING_TEXT,
-    HINT_TEXT,
-    pretty_model_label,
-)
+from alysis_code.cli_impl.tui.content import pretty_model_label
 from alysis_code.cli_impl.tui.footer import footer_fragments
 from alysis_code.cli_impl.tui.owl import load_owl_animation
 from alysis_code.cli_impl.tui.state import TuiState
@@ -35,12 +31,6 @@ def test_tui_enabled_by_default(monkeypatch):
     assert is_tui_enabled() is True
 
 
-def test_canonical_tui_flag_disables_tui(monkeypatch):
-    monkeypatch.delenv("ALYSIS_TUI", raising=False)
-    monkeypatch.setenv("ALYSIS_TUI", "0")
-    assert is_tui_enabled() is False
-
-
 @pytest.mark.parametrize(
     "value,expected", [("1", True), ("true", True), ("0", False), ("off", False), ("", True)]
 )
@@ -50,24 +40,6 @@ def test_tui_flag_parsing(monkeypatch, value, expected):
 
 
 # --------------------------- content ---------------------------
-
-
-def test_static_text_matches_target():
-    from alysis_code.cli_impl.tui.content import CREDIT_TEXT
-
-    # The heading is the Alysis Code wordmark (the prompt question lives in the box).
-    assert HEADING_TEXT == "Alysis Code"
-    assert CREDIT_TEXT == "crafted by AlysisAI"
-    # Signature command and workspace path-reference discovery remain visible.
-    assert "/forge" in HINT_TEXT
-    assert "@ for file paths" in HINT_TEXT
-
-
-def test_input_placeholder_is_alysis_greeting():
-    from alysis_code.cli_impl.tui.content import INPUT_PLACEHOLDER
-
-    assert "Alysis Code" in INPUT_PLACEHOLDER
-    assert "coding buddy" in INPUT_PLACEHOLDER
 
 
 def test_disconnected_landing_uses_one_neutral_model_access_instruction():
@@ -201,37 +173,34 @@ def test_footer_context_never_rounds_up_to_full_or_down_to_empty():
     assert "context: 1% left" in near_empty
 
 
-def test_footer_context_metric_uses_conversation_budget():
-    from alysis_code.cli_impl.commands.startup import (
-        _chat_context_percent_value,
-    )
+def test_footer_context_metric_uses_provider_input_including_startup_and_cache():
+    from alysis_code.cli_impl.commands.startup import _chat_context_percent_value
+    from alysis_code.llm.types import LLMUsage
+    from alysis_code.provider_usage import capture_provider_usage
 
+    client = SimpleNamespace(model="model")
     measured = SimpleNamespace(
+        client=client,
+        last_provider_usage=capture_provider_usage(
+            LLMUsage(8000, 500, 8500, cached_prompt_tokens=6000), client=client
+        ),
         _hud_context_cache=SimpleNamespace(
-            dynamic_context_budget_tokens=120_000,
+            context_window_tokens=10000,
             dynamic_context_percent_left=100.0,
             effective_percent_left=99.2,
-        )
+        ),
     )
-    assert _chat_context_percent_value(measured) == 100.0
-
-    # Exhausted conversation space must stay at zero, not fall back to the
-    # remaining capacity that includes the reserved startup baseline.
+    assert _chat_context_percent_value(measured) == 20.0
+    # New local content and budget changes do not claim a fresh measurement.
     measured._hud_context_cache.dynamic_context_percent_left = 0.0
-    assert _chat_context_percent_value(measured) == 0.0
-
-    measured._hud_context_cache.dynamic_context_percent_left = None
-    assert _chat_context_percent_value(measured) == 99.2
-
-    window_fallback = SimpleNamespace(
-        _hud_context_cache=SimpleNamespace(
-            effective_percent_left=None,
-            context_window_percent_left=95.7,
-        )
-    )
-    assert _chat_context_percent_value(window_fallback) == 95.7
-
-    # No measurement yet → None (footer renders n/a).
+    assert _chat_context_percent_value(measured) == 20.0
+    measured.last_provider_usage["input_tokens"] = 0
+    assert _chat_context_percent_value(measured) == 100.0
+    measured.last_provider_usage["input_scope"] = "interaction"
+    assert _chat_context_percent_value(measured) is None
+    measured.last_provider_usage["input_scope"] = "request"
+    client.model = "changed"
+    assert _chat_context_percent_value(measured) is None
     assert _chat_context_percent_value(SimpleNamespace(_hud_context_cache=None)) is None
 
 
@@ -299,13 +268,6 @@ def test_footer_forge_badge_shown_when_active():
     # Order: FORGE chip precedes the exec-mode badge on line 2.
     line2 = text.split("\n")[1]
     assert line2.index("FORGE") < line2.index("safe")
-
-
-def test_forge_placeholder_constant():
-    from alysis_code.cli_impl.tui.content import INPUT_PLACEHOLDER_FORGE
-
-    assert "Forge" in INPUT_PLACEHOLDER_FORGE
-    assert "/goal" in INPUT_PLACEHOLDER_FORGE
 
 
 def test_footer_is_two_lines_and_right_aligned():
@@ -702,3 +664,11 @@ def test_startup_warning_keeps_welcome_then_exits():
     assert ("warn", "streaming is disabled for this run") in transcript
     # … but it is not a turn, so the welcome landing stayed up.
     assert _has_conversation(transcript) is False
+
+
+def test_footer_marks_usage_totals_with_local_fallbacks():
+    text = _plain(
+        footer_fragments(TuiState(model_name="m", tokens=100, tokens_estimated=True), width=150)
+    )
+    assert "100 processed (includes estimates)" in text
+    assert "context: n/a" in text

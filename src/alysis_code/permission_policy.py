@@ -233,10 +233,18 @@ class PermissionPolicy:
             if external_directory is not None:
                 self.external_directory_override = _validate_safety_override(external_directory)
 
-    def evaluate(self, request: PermissionRequest) -> PermissionEvaluation:
+    def evaluate(
+        self,
+        request: PermissionRequest,
+        *,
+        review_external: bool = False,
+        review_authentication: bool = False,
+    ) -> PermissionEvaluation:
         normalized = _normalize_request(request)
-        safety = self._evaluate_safety_overrides(normalized)
-        if safety is not None:
+        safety = self._evaluate_safety_overrides(
+            normalized, review_external=review_external, review_authentication=review_authentication
+        )
+        if safety is not None and safety.decision is PolicyEffect.DENY:
             return safety
 
         matches: list[tuple[int, int, int, PermissionRule]] = []
@@ -253,6 +261,8 @@ class PermissionPolicy:
             # Earlier rules win only after specificity and safety precedence tie.
             matches.append((specificity, effect_precedence, -rule.order, rule))
         if not matches:
+            if safety is not None:
+                return safety
             return PermissionEvaluation(
                 decision=PolicyEffect.ASK,
                 reason="no_matching_rule",
@@ -261,6 +271,10 @@ class PermissionPolicy:
                 specificity=0,
             )
         specificity, _, _, winner = max(matches, key=lambda item: item[:3])
+        # A mandatory question can restrict an allow rule, but must never turn
+        # the winning deny rule into an action a person could approve.
+        if safety is not None and winner.effect is not PolicyEffect.DENY:
+            return safety
         return PermissionEvaluation(
             decision=winner.effect,
             reason="matched_rule",
@@ -270,9 +284,14 @@ class PermissionPolicy:
         )
 
     def _evaluate_safety_overrides(
-        self, request: _NormalizedRequest
+        self,
+        request: _NormalizedRequest,
+        *,
+        review_external: bool = False,
+        review_authentication: bool = False,
     ) -> PermissionEvaluation | None:
         candidates: list[tuple[PolicyEffect, str, str]] = []
+        # The legacy review_authentication argument cannot suppress credential safety.
         if request.sensitive:
             candidates.append(
                 (
@@ -281,7 +300,9 @@ class PermissionPolicy:
                     "override:sensitive",
                 )
             )
-        if request.external_directory:
+        if request.external_directory and not (
+            review_external and self.external_directory_override is PolicyEffect.ASK
+        ):
             candidates.append(
                 (
                     self.external_directory_override,
@@ -374,9 +395,19 @@ class PermissionPolicyStore:
             )
             _save_policy_to_path(self.path, policy)
 
-    def evaluate(self, request: PermissionRequest) -> PermissionEvaluation:
+    def evaluate(
+        self,
+        request: PermissionRequest,
+        *,
+        review_external: bool = False,
+        review_authentication: bool = False,
+    ) -> PermissionEvaluation:
         try:
-            return self.load().evaluate(request)
+            return self.load().evaluate(
+                request,
+                review_external=review_external,
+                review_authentication=review_authentication,
+            )
         except PermissionPolicyCorruptError:
             return PermissionEvaluation(
                 decision=PolicyEffect.DENY,

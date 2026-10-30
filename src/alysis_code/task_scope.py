@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .command_text import command_text
+from .bounded_capture import run_capture
 from .file_classification import BROAD_SOURCE_EXTENSIONS, INFERRED_FILE_EXTENSIONS, classify_path
 from .git_safe import build_git_process_env
 from .runtime_artifacts import ROOT_RUNTIME_ARTIFACT_DIR_NAMES, is_runtime_artifact_path
@@ -386,11 +386,9 @@ def _run_git_capture(
     root: Path, args: list[str], *, text: bool = False
 ) -> subprocess.CompletedProcess[Any] | None:
     try:
-        return subprocess.run(
+        return run_capture(
             ["git", "-C", os.fspath(root), *args],
-            check=False,
-            capture_output=True,
-            **command_text(text),
+            text=text,
             env=build_git_process_env(),
             timeout=_READ_ONLY_GIT_TIMEOUT_S,
         )

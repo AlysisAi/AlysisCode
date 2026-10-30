@@ -63,7 +63,8 @@
         "session.context",
         "session.images.list",
         "session.modelInfo",
-        "session.subagents.status"
+        "session.subagents.status",
+        "session.artifactChecks"
       ],
       "required_params": [
         "session_id"
@@ -152,6 +153,7 @@
         "images",
         "image_paths",
         "idempotency_key",
+        "task_relation",
         "context_blocks",
         "temperature",
         "stream",
@@ -163,8 +165,18 @@
         "no_log",
         "yes",
         "subagents_enabled",
-        "skill"
-      ]
+        "skill",
+        "explicit_plugin_skill"
+      ],
+      "task_relation": {
+        "present_values": [
+          "new_task"
+        ],
+        "absence": "legacy_current_instruction",
+        "scope": "ordinary_unpinned_nondelegated_interactive_chat",
+        "queue_binding": "original_message_and_intent",
+        "workspace_evidence": "preserved"
+      }
     },
     "chat.queue.list": {
       "required_params": [
@@ -438,7 +450,8 @@
         "images",
         "workspace_trusted",
         "host_capabilities",
-        "skill"
+        "skill",
+        "explicit_plugin_skill"
       ]
     },
     "session.history": {
@@ -493,6 +506,10 @@
         "redacted": true,
         "bounded": true,
         "secret_values_included": false
+      },
+      "successful_task_recovery": {
+        "task_state_recovery": "not_restored",
+        "task_id": null
       },
       "mutates": true
     },
@@ -705,11 +722,21 @@
       ],
       "mutates": true
     },
+    "session.close": {
+      "required_params": [
+        "session_id"
+      ],
+      "mutates": true,
+      "idle_session_close_supported": true,
+      "worker_settlement_required": true,
+      "retained_session_state_removed": true
+    },
     "session.cancel": {
       "required_params": [
         "session_id"
       ],
       "optional_params": [
+        "job_id",
         "reason",
         "close_when_idle"
       ],
@@ -726,7 +753,15 @@
         "completed",
         "failed"
       ],
-      "stale_active_jobs_reconciled": true
+      "stale_active_jobs_reconciled": true,
+      "qualified_job_id": {
+        "absence": "legacy_session_wide",
+        "present_invalid": "invalid_field",
+        "unknown_foreign_non_current": "job_not_found",
+        "retained_terminal": "read_only_existing_summary",
+        "admission": "same_lock_session_job_pair",
+        "effects": "private_transition_fenced_through_callbacks_and_close"
+      }
     },
     "approval.respond": {
       "required_params": [
@@ -1371,7 +1406,8 @@
       ],
       "optional_params": [
         "workspace",
-        "path"
+        "path",
+        "expected_hash"
       ],
       "mutates": true,
       "workspace_trust_required": true,
@@ -1840,7 +1876,8 @@
       ],
       "optional_params": [
         "workspace",
-        "path"
+        "path",
+        "expected_hash"
       ],
       "mutates": true,
       "workspace_trust_required": true,
@@ -1950,6 +1987,27 @@
         "workspace",
         "path",
         "project",
+        "yes",
+        "confirm",
+        "trust_approval"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "ext.custom.save": {
+      "required_params": [
+        "plugin_id",
+        "descriptor",
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
         "yes",
         "confirm",
         "trust_approval"
@@ -2443,6 +2501,25 @@
       ],
       "mutates": true
     },
+    "computer_start_resolved.respond": {
+      "required_params": [
+        "version",
+        "session_id",
+        "job_id",
+        "tool_call_id",
+        "operation_id",
+        "host_nonce",
+        "generation_nonce",
+        "inventory_nonce",
+        "request_id",
+        "allow"
+      ],
+      "optional_params": [
+        "code",
+        "unverified_target_ids"
+      ],
+      "mutates": true
+    },
     "commands.list": {
       "optional_params": [
         "mode"
@@ -2461,14 +2538,20 @@
         "workspace_fence",
         "capability_fingerprint"
       ],
-      "mutates": true
+      "mutates": true,
+      "workspace_required": true,
+      "result_redaction": {
+        "secret_values_included": false
+      },
+      "notes": "Host-only, single-use dispatch receipt for negotiated approval protocol 1. Requires a current execute-phase request and matching active job and fences; it does not authorize execution."
     },
     "session.userQuestions.get": {
       "required_params": [
         "session_id",
         "job_id"
       ],
-      "mutates": false
+      "mutates": false,
+      "notes": "Turn-scoped question broker. Reads can inspect the last job; answer and touch require the active uncancelled job and an unexpired question. Returns session_id, job_id and question snapshots."
     },
     "session.userQuestions.answer": {
       "required_params": [
@@ -2477,7 +2560,8 @@
         "request_id",
         "answers"
       ],
-      "mutates": true
+      "mutates": true,
+      "notes": "Turn-scoped question broker. Reads can inspect the last job; answer and touch require the active uncancelled job and an unexpired question. Returns session_id, job_id and question snapshots."
     },
     "session.userQuestions.touch": {
       "required_params": [
@@ -2485,7 +2569,263 @@
         "job_id",
         "request_id"
       ],
-      "mutates": true
+      "mutates": true,
+      "notes": "Turn-scoped question broker. Reads can inspect the last job; answer and touch require the active uncancelled job and an unexpired question. Returns session_id, job_id and question snapshots."
+    },
+    "provider.auth.status": {
+      "required_params": [
+        "provider_id"
+      ],
+      "result_redaction": {
+        "secret_values_included": false,
+        "route_scope": "Opaque fingerprint from the same fresh, verified provider status; no tokens or account label."
+      }
+    },
+    "skill.import.preview": {
+      "required_params": [
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "source",
+        "subdir",
+        "ref",
+        "yes"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "skill.import.install": {
+      "required_params": [
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "draft_id",
+        "selected",
+        "project",
+        "accept_partial",
+        "yes"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "skill.import.discard": {
+      "required_params": [
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "draft_id"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "skill.document.read": {
+      "required_params": [],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "name"
+      ],
+      "mutates": false,
+      "workspace_trust_required": false,
+      "workspace_required": true
+    },
+    "skill.document.save": {
+      "required_params": [
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "content",
+        "name",
+        "revision",
+        "copy_from",
+        "project",
+        "yes"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "skill.update.preview": {
+      "required_params": [
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "name",
+        "project",
+        "yes",
+        "expected_source"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "hooks.document.read": {
+      "required_params": [],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "layer"
+      ],
+      "mutates": false,
+      "workspace_trust_required": false,
+      "workspace_required": true
+    },
+    "hooks.document.save": {
+      "required_params": [
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "layer",
+        "content",
+        "revision",
+        "yes"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "skill.import.describe": {
+      "required_params": [
+        "draft_id"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path"
+      ],
+      "mutates": false,
+      "workspace_trust_required": false,
+      "workspace_required": true
+    },
+    "skill.import.package": {
+      "required_params": [
+        "draft_id",
+        "workspace_trusted"
+      ],
+      "requires_one_of": [
+        "workspace",
+        "path"
+      ],
+      "optional_params": [
+        "workspace",
+        "path",
+        "yes"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true,
+      "workspace_required": true
+    },
+    "session.outputArtifacts": {
+      "required_params": [
+        "session_id",
+        "job_id"
+      ],
+      "mutates": false,
+      "workspace_required": false,
+      "workspace_trust_required": false,
+      "result": {
+        "required": [
+          "session_id",
+          "job_id",
+          "task_id",
+          "paths"
+        ]
+      },
+      "errors": [
+        "invalid_params",
+        "output_artifacts_unavailable"
+      ]
+    }
+  },
+  "roles": {
+    "plugin_projection": {
+      "launch_argument": "--role plugin-projection",
+      "methods": {
+        "plugin.skills.list": {
+          "required_params": [
+            "version",
+            "workspace",
+            "epoch",
+            "lifecycle_revision",
+            "bound_plugins"
+          ],
+          "mutates": false,
+          "workspace_required": true,
+          "secret_values_in_params": false
+        },
+        "plugin.skills.read": {
+          "required_params": [
+            "version",
+            "workspace",
+            "epoch",
+            "lifecycle_revision",
+            "bound_plugins",
+            "selection"
+          ],
+          "mutates": false,
+          "workspace_required": true,
+          "secret_values_in_params": false
+        }
+      },
+      "allowed_methods": [
+        "initialize",
+        "health",
+        "getCapabilities",
+        "bridge.shutdown",
+        "plugin.skills.list",
+        "plugin.skills.read"
+      ],
+      "default_deny": true
     }
   }
 }

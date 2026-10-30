@@ -22,8 +22,10 @@ MAX_EXPANDED = 100 * 1024 * 1024
 
 
 def _read(path: Path, limit: int) -> bytes:
-    if not path.is_file() or path.stat().st_nlink != 1:
-        raise ValueError("Input must be an existing file without hard links.")
+    # Inputs are read into private snapshots, never modified in place. Checkpoint
+    # storage can hold another hard link to an otherwise ordinary workspace file.
+    if not path.is_file():
+        raise ValueError("Input must be an existing regular file.")
     with path.open("rb") as stream:
         data = stream.read(limit + 1)
     if len(data) > limit:
@@ -108,6 +110,8 @@ def run(args) -> dict:
     spec_path = _path(root, args.spec) if getattr(args, "spec", None) else None
     spec = _spec(spec_path) if spec_path else None
     format_name = args.format if args.command == "create" else _format(source)
+    if args.command == "recalculate" and format_name != "xlsx":
+        raise ValueError("Recalculation requires an .xlsx workbook.")
     output = _path(root, args.output) if getattr(args, "output", None) else None
     if output is not None:
         if _format(output) != format_name:
@@ -142,12 +146,39 @@ def run(args) -> dict:
             }
         staged_output = stage / ("result." + format_name)
         if args.command == "create":
-            details = adapter.create(spec, staged_output, root)
+            if format_name == "pptx":
+                details = adapter.create(
+                    spec, staged_output, root, read_guard=getattr(args, "read_guard", None)
+                )
+            else:
+                details = adapter.create(spec, staged_output, root)
+        elif args.command == "recalculate":
+            from alysis_code.execution_deadline import deadline_timeout_or_raise
+            from alysis_code.office.calculation import recalculate
+
+            details = recalculate(
+                snapshot,
+                staged_output,
+                root,
+                timeout_seconds=deadline_timeout_or_raise(
+                    getattr(args, "execution_deadline", None),
+                    90.0,
+                    reserve_seconds=1.0,
+                    operation="document_operation",
+                ),
+                cancel_check=getattr(args, "cancel_check", None),
+            )
         else:
             details = adapter.edit(snapshot, spec, staged_output, root)
         produced = _read(staged_output, MAX_FILE)
         _package(produced)
         inspected = adapter.inspect(staged_output)
+        if args.command == "recalculate":
+            inspected.update(
+                formula_results="recalculated",
+                cached_values="recalculated_this_operation",
+                needs_recalculation=details["state"] != "passed",
+            )
         if (
             source is not None
             and hashlib.sha256(_read(source, MAX_FILE)).hexdigest() != source_hash
@@ -157,13 +188,16 @@ def run(args) -> dict:
         output.parent.mkdir(parents=True, exist_ok=True)
         os.link(staged_output, output)  # exclusive, atomic; no silent replacement
         return {
-            "status": "created" if args.command == "create" else "edited",
+            "status": {"create": "created", "edit": "edited", "recalculate": "recalculated"}[
+                args.command
+            ],
             "format": format_name,
             "output": str(output.relative_to(root)),
             "sha256": hashlib.sha256(produced).hexdigest(),
             "source_sha256": source_hash,
             "details": {key: value for key, value in details.items() if key not in inspected},
             "content": inspected,
+            **({"calculation": details} if args.command == "recalculate" else {}),
             "preview": {"state": "not_rendered", "visual_review": "not_performed"},
             "next": "Render and inspect all page previews when a renderer is configured.",
         }
@@ -183,11 +217,12 @@ def main() -> int:
     create.add_argument("--format", choices=FORMATS, required=True)
     create.add_argument("--spec", required=True)
     create.add_argument("--output", required=True)
-    for command in ("inspect", "edit", "render"):
+    for command in ("inspect", "edit", "render", "recalculate"):
         item = sub.add_parser(command)
         item.add_argument("--source", required=True)
         if command == "edit":
             item.add_argument("--spec", required=True)
+        if command in {"edit", "recalculate"}:
             item.add_argument("--output", required=True)
         if command == "render":
             item.add_argument(
@@ -197,8 +232,9 @@ def main() -> int:
             )
     args = parser.parse_args()
     try:
-        print(json.dumps(run(args), ensure_ascii=False, allow_nan=False))
-        return 0
+        result = run(args)
+        print(json.dumps(result, ensure_ascii=False, allow_nan=False))
+        return int(result.get("calculation", {}).get("state") == "failed")
     except (ValueError, OSError, ImportError, zipfile.BadZipFile, RecursionError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         return 1

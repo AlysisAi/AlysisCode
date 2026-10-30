@@ -513,14 +513,13 @@ def test_real_volatile_builder_retains_wire_prefix_or_declines_reuse(
 
 @pytest.mark.parametrize("protocol", ["anthropic", "gemini", "unknown"])
 def test_only_declared_inline_instruction_protocols_are_eligible(
-    tmp_path: Path, protocol: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protocol: str
 ) -> None:
     requests: list[dict[str, Any]] = []
     main = _client("compat" if protocol == "unknown" else protocol, requests)
     summary_client = _client("compat" if protocol == "unknown" else protocol, requests)
     if protocol == "unknown":
-        main.preserves_late_system_message_position = None
-        summary_client.preserves_late_system_message_position = None
+        monkeypatch.setattr(type(main), "preserves_late_system_message_position", None)
     compactor = _compactor(tmp_path, main_client=main, compactor_client=summary_client)
     assert _prefix_request(compactor, _history()) is None
     assert requests == []

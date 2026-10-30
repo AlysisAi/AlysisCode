@@ -7,6 +7,7 @@ from alysis_code.file_classification import (
     describe_path_kinds,
     is_code_implementation_path,
     is_generated_or_vendor_path,
+    is_repository_metadata_path,
     is_symbol_scannable_path,
     is_test_path,
     language_for_path,
@@ -158,3 +159,20 @@ def test_vendored_tree_conventions_classify_as_generated_or_vendor(path: str) ->
 )
 def test_vendored_lookalike_names_stay_first_party(path: str) -> None:
     assert is_generated_or_vendor_path(path) is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["clone/.git/HEAD", "src/.hg/store/data", r"repo\.svn\entries", "vendor/lib/.git/config"],
+)
+def test_repository_metadata_remains_excluded_from_code_scans(path):
+    assert is_repository_metadata_path(path)
+    assert is_generated_or_vendor_path(path)
+    assert not is_symbol_scannable_path(path)
+
+
+@pytest.mark.parametrize(
+    "path", ["repo/.github/workflows/build.yml", "vendor/lib/source.py", "build/generated.py"]
+)
+def test_dependency_sources_and_similar_names_are_not_repository_metadata(path):
+    assert not is_repository_metadata_path(path)

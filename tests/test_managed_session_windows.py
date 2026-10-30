@@ -106,7 +106,7 @@ def test_junction_directory_is_rejected_without_touching_target(tmp_path: Path) 
 
 
 def test_parent_swap_during_leaf_open_cannot_redirect_creation(tmp_path: Path, monkeypatch) -> None:
-    from alysis_code import _windows_session_files as native
+    from alysis_code import _windows_managed_session as native
 
     directory, detached, foreign = (
         tmp_path / "sessions",
@@ -115,27 +115,26 @@ def test_parent_swap_during_leaf_open_cannot_redirect_creation(tmp_path: Path, m
     )
     directory.mkdir()
     foreign.mkdir()
-    original_open = native.open_session_leaf
+    original_open = native._Api.open_relative
+    attempted = []
 
-    def swap_parent(handle, filename, *, append):
-        directory.rename(detached)
-        subprocess.run(
-            ["cmd.exe", "/d", "/c", "mklink", "/J", str(directory), str(foreign)],
-            check=True,
-            capture_output=True,
-            timeout=10,
-        )
-        return original_open(handle, filename, append=append)
+    def swap_parent(self, handle, filename, **kwargs):
+        if not kwargs["directory"]:
+            with pytest.raises(PermissionError) as error:
+                directory.rename(detached)
+            assert error.value.winerror in {5, 32}
+            attempted.append(filename)
+        return original_open(self, handle, filename, **kwargs)
 
-    monkeypatch.setattr(native, "open_session_leaf", swap_parent)
+    monkeypatch.setattr(native._Api, "open_relative", swap_parent)
     persistence = prepare_managed_session_persistence(sessions_dir=directory, session_id="session")
     try:
-        with pytest.raises(ManagedSessionError, match="directory changed"):
-            persistence.seal()
+        persistence.seal()
     finally:
         persistence.close()
     assert list(foreign.iterdir()) == []
-    assert (detached / "session.jsonl").read_bytes() == b""
+    assert attempted and not detached.exists()
+    assert (directory / "session.jsonl").read_bytes() == b""
 
 
 def test_hard_link_is_rejected_before_acl_mutation(tmp_path: Path) -> None:
@@ -169,38 +168,47 @@ def test_append_handle_cannot_overwrite_history_after_seek(tmp_path: Path) -> No
     assert path.read_bytes() == b'{"type":"prior"}\n{"type":"new"}\n'
 
 
-@pytest.mark.parametrize("stage", ["descriptor-transfer", "acl"])
+@pytest.mark.parametrize("stage", ["descriptor-transfer", "acl", "acl-readback"])
 def test_admission_failure_releases_handles(tmp_path: Path, monkeypatch, stage: str) -> None:
     import ctypes
     from ctypes import wintypes
 
-    from alysis_code import _windows_session_files as native
+    from alysis_code import _windows_managed_session as native
 
     directory = tmp_path / "sessions"
     captured = []
-    original_open = native._open_relative
+    original_open = native._Api.open_relative
 
     def capture(*args, **kwargs):
         result = original_open(*args, **kwargs)
-        captured.append(result[0])
+        captured.append(result)
         return result
 
-    monkeypatch.setattr(native, "_open_relative", capture)
+    monkeypatch.setattr(native._Api, "open_relative", capture)
     if stage == "descriptor-transfer":
 
         def reject_transfer(*_args):
             raise OSError("simulated descriptor allocation failure")
 
-        original_leaf = native.open_session_leaf
+        original_admit = native._Api.admit_private_file
 
         def reject_leaf_transfer(*args, **kwargs):
-            with monkeypatch.context() as patch:
-                patch.setattr(native.msvcrt, "open_osfhandle", reject_transfer)
-                return original_leaf(*args, **kwargs)
+            original_admit(*args, **kwargs)
+            monkeypatch.setattr(native.msvcrt, "open_osfhandle", reject_transfer)
 
-        monkeypatch.setattr(native, "open_session_leaf", reject_leaf_transfer)
+        monkeypatch.setattr(native._Api, "admit_private_file", reject_leaf_transfer)
+    elif stage == "acl-readback":
+        # Return success without filling the verified control bits. The actual
+        # ACL write succeeds, but verification must still fail closed.
+        monkeypatch.setattr(native._main_windows, "_GetSecurityControl", lambda *_args: True)
     else:
-        monkeypatch.setattr(native, "_SetSecurityInfo", lambda *_args: 5)
+        original_init = native._Api.__init__
+
+        def reject_acl(self):
+            original_init(self)
+            monkeypatch.setattr(self.advapi, "SetSecurityInfo", lambda *_args: 5)
+
+        monkeypatch.setattr(native._Api, "__init__", reject_acl)
     with pytest.raises(ManagedSessionError):
         prepare_managed_session_persistence(sessions_dir=directory, session_id="session")
     assert captured
@@ -214,7 +222,7 @@ def test_admission_failure_releases_handles(tmp_path: Path, monkeypatch, stage: 
 
 
 def test_directory_swaps_cannot_substitute_initial_identity(tmp_path: Path, monkeypatch) -> None:
-    from alysis_code import _windows_session_files as native
+    from alysis_code import _windows_managed_session as native
 
     directory, replacement, detached = (
         tmp_path / "sessions",
@@ -223,25 +231,26 @@ def test_directory_swaps_cannot_substitute_initial_identity(tmp_path: Path, monk
     )
     directory.mkdir()
     replacement.mkdir()
-    original_open = native.open_directory
+    original_open = native._Api.open_relative
     calls = 0
 
-    def switch_before_open(path):
+    def switch_before_open(self, parent, name, **kwargs):
         nonlocal calls
+        if name != directory.name or not kwargs["directory"]:
+            return original_open(self, parent, name, **kwargs)
         calls += 1
         directory.rename(detached)
         replacement.rename(directory)
-        fd = original_open(path)
-        if calls == 1:
-            # Restore A for lstat after opening B. A second path-based probe
-            # would see B again; fstat of the first handle must expose the swap.
+        handle = original_open(self, parent, name, **kwargs)
+        # The newly opened replacement is pinned, so restoration itself is
+        # blocked. Its retained fstat must differ from initial A's lstat.
+        with pytest.raises(PermissionError):
             directory.rename(replacement)
-            detached.rename(directory)
-        return fd
+        return handle
 
-    monkeypatch.setattr(native, "open_directory", switch_before_open)
+    monkeypatch.setattr(native._Api, "open_relative", switch_before_open)
     with pytest.raises(ManagedSessionError, match="directory changed"):
         prepare_managed_session_persistence(sessions_dir=directory, session_id="session")
     assert calls == 1
     assert list(directory.iterdir()) == []
-    assert list(replacement.iterdir()) == []
+    assert list(detached.iterdir()) == []

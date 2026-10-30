@@ -154,37 +154,34 @@ def test_failure_and_empty_results_are_distinct():
 
 
 @pytest.mark.parametrize("fails", [False, True])
-def test_delayed_started_callback_cannot_overwrite_terminal_status(monkeypatch, fails):
+def test_delayed_worker_start_cannot_overwrite_terminal_status(monkeypatch, fails):
     async def run():
-        pending = []
-        loop = asyncio.get_running_loop()
-        schedule = loop.call_soon_threadsafe
-
-        def delayed(callback, *args, **kwargs):
-            if getattr(callback, "__name__", "") == "started":
-                pending.append(callback)
-                return None
-            return schedule(callback, *args, **kwargs)
-
-        monkeypatch.setattr(loop, "call_soon_threadsafe", delayed)
-
         class Engine:
             def review(self, request, **kwargs):
                 if fails:
-                    raise RuntimeError("synthetic failure")
+                    raise RuntimeError("private provider detail")
                 return result(findings=())
 
         controller = ReviewController(lambda token: Engine(), on_change=lambda: None)
+        callbacks = []
+        execute = controller._execute
+
+        def delayed_start(request, token, factory, dispose, started):
+            return execute(request, token, factory, dispose, lambda: callbacks.append(started))
+
+        monkeypatch.setattr(controller, "_execute", delayed_start)
         await controller.start(ReviewRequest.working_tree())
-        assert not controller.running
         terminal_status = controller.status
+        terminal_result = controller.result
         assert (
             "failed (RuntimeError)" in terminal_status if fails else "0 findings" in terminal_status
         )
-        assert pending
-        for callback in pending:
-            callback()
+        assert len(callbacks) == 1
+        callbacks[0]()
+        await asyncio.sleep(0)
         assert controller.status == terminal_status
+        assert controller.result is terminal_result
+        assert not controller.running
 
     asyncio.run(run())
 

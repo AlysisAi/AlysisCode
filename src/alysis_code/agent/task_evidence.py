@@ -35,6 +35,7 @@ class TaskEvidenceState:
     material_edit_generation: int = 0
     verification_relevant_edit_generation: int = 0
     touched_repo_paths: set[str] = field(default_factory=set)
+    touched_external_paths: set[str] = field(default_factory=set)
 
     def to_payload(self) -> dict[str, Any]:
         # AcceptanceWorkspaceSnapshot.as_payload is a truncated diagnostic view;
@@ -49,6 +50,7 @@ class TaskEvidenceState:
             "material_edit_generation": self.material_edit_generation,
             "verification_relevant_edit_generation": self.verification_relevant_edit_generation,
             "touched_repo_paths": sorted(self.touched_repo_paths),
+            "touched_external_paths": sorted(self.touched_external_paths),
             "snapshot": {
                 "preexisting_paths": sorted(self.snapshot.preexisting_paths),
                 "preexisting_test_paths": sorted(self.snapshot.preexisting_test_paths),
@@ -116,6 +118,7 @@ def seed_execution_state(state: Any, baseline: TaskEvidenceState) -> None:
     state.material_edit_generation = baseline.material_edit_generation
     state.verification_relevant_edit_generation = baseline.verification_relevant_edit_generation
     state.touched_repo_paths.update(baseline.touched_repo_paths)
+    state.touched_external_paths.update(baseline.touched_external_paths)
 
 
 def persist_task_evidence(session: Any, execution_state: Any = None) -> None:
@@ -132,6 +135,7 @@ def persist_task_evidence(session: Any, execution_state: Any = None) -> None:
         ):
             setattr(baseline, name, max(getattr(baseline, name), getattr(execution_state, name)))
         baseline.touched_repo_paths.update(execution_state.touched_repo_paths)
+        baseline.touched_external_paths.update(execution_state.touched_external_paths)
     try:
         session.store.append(TASK_EVIDENCE_EVENT, baseline.to_payload())
     except Exception:
@@ -206,6 +210,9 @@ def restore_task_evidence(
             baseline_available=payload["baseline_available"] is True,
             parent_session_id=parent,
             touched_repo_paths=set(strings(payload, "touched_repo_paths")),
+            touched_external_paths=set(
+                strings({"touched_external_paths": [], **payload}, "touched_external_paths")
+            ),
         )
         for name in (
             "material_edit_count",

@@ -79,7 +79,7 @@ GUIDE = {
         "inspection": "At most 5000 table cells, 20000 paragraph/run nodes, 8 group levels; imported tables at most 100 rows and 100 columns.",
         "images": "Local workspace PNG/JPEG only, <=20 MiB, <=25 million pixels; contain-fit preserves aspect ratio.",
         "editing": "Whole-target replacement requires one paragraph and at most one plain run. Rich text requires a paragraph/run locator. Grouped shapes, fields, merged cells and non-text shapes cannot be edited.",
-        "layout": "16:9 slides; inch geometry. Shape bounds are checked. Text-fit checks are conservative estimates, not rendered overflow verification. No rendering or full-fidelity guarantee.",
+        "layout": "16:9 slides; inch geometry. Shape bounds are checked; text fit remains unverified until rendering and page-image review. Preserve margins and shorten or split dense content when needed. No full-fidelity guarantee.",
     },
 }
 
@@ -137,22 +137,13 @@ def _bounds(element: dict, slide_width: int, slide_height: int) -> tuple[int, ..
 
 
 def _fit(text: str, width: int, height: int, font_size: float) -> None:
-    """Reject likely overflow; this is deliberately not a font renderer."""
+    """Validate usable geometry; only rendering can determine text layout."""
     width_pt = width / EMU_PER_INCH * 72 - 14.4
     height_pt = height / EMU_PER_INCH * 72 - 7.2
     if width_pt <= 0 or height_pt <= 0:
         raise ValueError("Text frame is too small")
-    # A conservative width allowance includes Greek and wide Unicode characters.
-    lines = 0
-    for line in text.split("\n"):
-        units = sum(
-            1.0 if unicodedata.east_asian_width(c) in "WF" else 0.62 for c in line.expandtabs(4)
-        )
-        lines += max(1, math.ceil(units * font_size / width_pt))
-    if lines * font_size * 1.2 > height_pt + 0.5:
-        raise ValueError(
-            "Text is likely to overflow its frame (estimated, not rendered); shorten it or enlarge the frame"
-        )
+    # Character counts cannot model fonts, shaping or line breaking. Preserve
+    # the supplied text and report layout as unchecked until page review.
 
 
 def _write_text(
@@ -191,8 +182,8 @@ def _image_bytes(value: object, workspace: Path) -> tuple[bytes, int, int]:
     if not candidate.resolve().is_relative_to(root) or not candidate.is_file():
         raise ValueError("Image must be a regular file inside the workspace")
     info = candidate.stat()
-    if info.st_nlink != 1 or info.st_size > MAX_IMAGE_BYTES:
-        raise ValueError("Image must not be hard linked and must be at most 20 MiB")
+    if info.st_size > MAX_IMAGE_BYTES:
+        raise ValueError("Image must be at most 20 MiB")
     data = candidate.read_bytes()
     if len(data) > MAX_IMAGE_BYTES:
         raise ValueError("Image must be at most 20 MiB")
@@ -216,7 +207,7 @@ def _image_bytes(value: object, workspace: Path) -> tuple[bytes, int, int]:
     return data, width, height
 
 
-def create(spec: dict, output: Path, workspace: Path) -> dict:
+def create(spec: dict, output: Path, workspace: Path, *, read_guard=None) -> dict:
     """Create a bounded, editable deck at a caller-owned staging path."""
     _keys(spec, {"title", "slides"}, "presentation")
     slides = spec.get("slides")
@@ -331,6 +322,8 @@ def create(spec: dict, output: Path, workspace: Path) -> dict:
                         total_text += len(text)
                 table.first_row = header
             else:
+                if read_guard is not None:
+                    read_guard(element.get("path"))
                 data, pixel_width, pixel_height = _image_bytes(element.get("path"), workspace)
                 scale = min(width / pixel_width, height / pixel_height)
                 image_width, image_height = round(pixel_width * scale), round(pixel_height * scale)

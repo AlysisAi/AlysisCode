@@ -15,11 +15,13 @@ import httpx
 
 from ..cancellation import CooperativeCancellationError
 from ..error_text import sanitize_error_text_for_output
+from ..mcp import github_policy_json
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from ..reasoning_contracts import WIRE_THINKING_LEVEL, reasoning_contract_for
 from ..request_estimation import estimate_provider_payload_tokens
 from ..token_budget import estimate_tokens
 from ..web_search_adapters import AUTO_WEB_SEARCH_ADAPTER, GEMINI_GROUNDING_ADAPTER
+from .base import input_token_count_request, scoped_input_token_counter
 from .cache_policy import merge_cache_policy_metadata
 from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
 from .http_cancellation import (
@@ -62,6 +64,7 @@ from .types import (
     UsageConfidence,
     UsageContract,
 )
+from .types import parse_token_count as _as_non_negative_int
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1067,15 +1070,6 @@ def _parse_usage(raw: Any) -> LLMUsage | None:
     if not isinstance(raw, dict):
         return None
 
-    def _as_non_negative_int(value: Any) -> int | None:
-        try:
-            parsed = int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-        if parsed is None or parsed >= 0:
-            return parsed
-        return None
-
     prompt_tokens = _as_non_negative_int(raw.get("promptTokenCount"))
     completion_tokens = _as_non_negative_int(raw.get("candidatesTokenCount"))
     tool_use_prompt_tokens = _as_non_negative_int(raw.get("toolUsePromptTokenCount"))
@@ -1093,14 +1087,18 @@ def _parse_usage(raw: Any) -> LLMUsage | None:
     if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
     input_tokens_uncached = None
-    if prompt_tokens is not None and cached_tokens is not None:
-        input_tokens_uncached = max(0, prompt_tokens - cached_tokens)
+    if prompt_tokens is not None and cached_tokens is not None and prompt_tokens >= cached_tokens:
+        input_tokens_uncached = prompt_tokens - cached_tokens
     usage = LLMUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
         cached_prompt_tokens=cached_tokens,
         input_tokens_uncached=input_tokens_uncached,
+        input_tokens_uncached_derived=input_tokens_uncached is not None,
+        # Internal tool prompts are folded into billing input above. Their sum
+        # is not a measurement of a single model context.
+        input_tokens_scope="interaction" if tool_use_prompt_tokens else "request",
         cache_read_input_tokens=cached_tokens,
         reasoning_tokens=thoughts_tokens,
         raw_provider_usage=copy.deepcopy(raw),
@@ -1679,6 +1677,7 @@ class GeminiGenerateContentClient:
             sanitize_error_text_for_output(f"LLM error {response.status_code}: {data!r}")
         )
 
+    @scoped_input_token_counter
     def count_input_tokens(
         self,
         *,
@@ -1746,16 +1745,17 @@ class GeminiGenerateContentClient:
                 raw_provider_usage=copy.deepcopy(data),
             )
 
-        return run_provider_limited_call(
-            call=_send_request,
-            provider_key=self.provider_key,
-            provider_concurrency_caps=self.provider_concurrency_caps,
-            retry_settings=self.provider_retry_settings,
-            operation="gemini_generate_content_count_input_tokens",
-            sleep_fn=self._provider_sleep_fn,
-            random_fn=self._provider_random_fn,
-            retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
-        )
+        with input_token_count_request():
+            return run_provider_limited_call(
+                call=_send_request,
+                provider_key=self.provider_key,
+                provider_concurrency_caps=self.provider_concurrency_caps,
+                retry_settings=self.provider_retry_settings,
+                operation="gemini_generate_content_count_input_tokens",
+                sleep_fn=self._provider_sleep_fn,
+                random_fn=self._provider_random_fn,
+                retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
+            )
 
     def _resolve_cached_content(
         self,
@@ -2823,6 +2823,8 @@ class GeminiGenerateContentClient:
         )
         for frame in iter_sse_frames(response.iter_lines()):
             raw_event = parse_sse_json_frame(frame, stream_name="Gemini GenerateContent stream")
+            if github_policy_json.active():
+                raw_event = github_policy_json.provider_payload(frame.data, protocol="gemini")
             if not isinstance(raw_event, dict):
                 raise LLMError("Gemini GenerateContent stream emitted non-object JSON event")
             accumulator.handle(frame, raw_event)
@@ -2840,7 +2842,11 @@ class GeminiGenerateContentClient:
         reasoning_is_summary: bool = False,
     ) -> LLMResponse:
         try:
-            data = response.json()
+            data = (
+                github_policy_json.provider_payload(response.text, protocol="gemini")
+                if github_policy_json.active()
+                else response.json()
+            )
         except Exception as e:  # noqa: BLE001
             raise LLMError("Gemini GenerateContent returned non-JSON response") from e
         if not isinstance(data, dict):

@@ -33,6 +33,8 @@ class ManagedSkillRecord:
     source_commit: str | None = None
     installed_at: str | None = None
     family: str = "native"
+    source_digest: str | None = None
+    source_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -387,6 +389,8 @@ def _parse_managed_installs(
             source_commit=str(payload.get("source_commit") or "").strip() or None,
             installed_at=str(payload.get("installed_at") or "").strip() or None,
             family=str(payload.get("family") or "native").strip() or "native",
+            source_digest=str(payload.get("source_digest") or "").strip() or None,
+            source_ref=str(payload.get("source_ref") or "").strip() or None,
         )
     return installs, tuple(issues)
 
@@ -406,6 +410,8 @@ def _save_state(path: Path, state: SkillLifecycleState) -> None:
                 "source_commit": record.source_commit,
                 "installed_at": record.installed_at,
                 "family": record.family,
+                "source_digest": record.source_digest,
+                "source_ref": record.source_ref,
             }
             for name, record in sorted(state.managed_installs.items(), key=lambda item: item[0])
         },

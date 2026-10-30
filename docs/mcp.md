@@ -212,6 +212,52 @@ Alysis Code assigns local aliases for exposed MCP tools using the server id or c
 mcp__docs__search
 ```
 
+## Approvals
+
+MCP tool calls are approved like file changes, using the tool annotations the server
+lists for each tool (`readOnlyHint`, `destructiveHint`):
+
+| Mode | Asks before an MCP tool call |
+|---|---|
+| `readonly` | MCP tools are not available |
+| `review` | Every call, unless the tool has `readOnlyHint: true` |
+| `auto` | Only tools with `destructiveHint: true`, like file deletes; the approval reviewer answers when one is bound. `--yes` skips it |
+| `fullaccess` | Never |
+
+Only explicit `true` values count. A tool without annotations is treated as a write: it
+asks in `review` and runs in `auto`. `destructiveHint: true` wins over `readOnlyHint`.
+The approval kind is `mcp_tool_run:<server_id>/<tool_name>`, with `mcp_server_id` and
+`mcp_tool_id` in the approval's tool identity. The approval preview names the server and
+tool and shows the call's arguments as JSON. "Allow for this session" covers that one
+tool for any arguments; a tool marked destructive asks every time. Resource tools
+(`mcp_resources_list`, `mcp_resource_read`) only read the session's snapshot and never ask.
+
+### Desktop app: your tool servers ask before every call
+
+The desktop app turns on a stricter rule for its chat engines with
+`ALYSIS_DESKTOP_TOOL_SERVER_APPROVAL` (`mcp/person_approval.py`). The CLI and IDE extensions
+don't set it and keep the table above.
+
+- Every call to a configured server asks a person, in `review`, `auto` and `fullaccess`,
+  reads included. A server's `readOnlyHint` grants nothing. The approval reviewer never
+  answers these, "Allow for this session" isn't offered and saved allow rules don't apply
+  (deny rules still do). A run that can't ask a person doesn't dispatch the call.
+- A tool the **person** marked "only reads" on the app's Plugins page runs without asking.
+  The app stores marks in the file the variable names, tied to the server's identity: a
+  SHA-256 of the transport and the URL, or of the transport, command and arguments,
+  joined with NUL. A different program under the same id loses its marks. A missing,
+  oversized, symlinked or malformed file means no marks.
+- Exempt: servers the app registers itself (Computer Use), listed by id **and** exact
+  stdio command. They keep the table above. A value the engine can't parse keeps the rule
+  on with no exemptions.
+- Resource tools and prompts are unchanged by this rule.
+- `alysis mcp status --json` reports `tool_server_approval.active`, and per server
+  `call_approval` (`every_call` or `permission_mode`) and `tools` (name, the server's
+  read-only and destructive claims, and whether the person marked it), from the same code.
+
+In Full access the agent can still run shell commands, so this rule keeps a tool server
+from being used as a tool without the person; it is not a sandbox for the server.
+
 ## Roots
 
 Roots are disabled by default. Enable the current workspace root for a server with:
@@ -309,6 +355,35 @@ Stdio servers receive a conservative baseline environment plus only the configur
 Resolved secret values are not written back into diagnostics, errors, or metadata. Missing environment variables fail clearly at config or runtime boundaries without printing the missing value.
 
 ## Diagnostics
+
+External tool requests participate in bounded repetition reassessment even when
+the task does not edit a repository. Three consecutive identical successful MCP
+requests prompt the model to compare the latest evidence with its goal; a second
+notice can follow at six. Changing the tool or
+arguments (including a page cursor), an intervening local tool, or a failed call
+breaks the exact-repetition episode. Independently, eight completed MCP calls
+since the last notice trigger a progress checkpoint even when tools or arguments
+change. Failed calls count toward this checkpoint; local calls do not. There is
+at most one activity checkpoint, and both signals share a maximum of two notices
+per turn. Routine activity therefore cannot consume the entire budget before a
+later repetition episode. The checkpoint asks the model
+to identify concrete evidence, remaining uncertainty and a useful next step.
+Neither signal claims that external state is unchanged or the task is stuck.
+The model can continue useful pagination or a justified wait, choose a
+different observation or authorized action, or report a blocker. The detector
+retains only an argument digest and counters. It does not force a tool, grant
+permission, replay uncertain input, or supply completion evidence. MCP `is_error`
+results are surfaced as failed calls.
+
+For Responses, Chat Completions and Anthropic adapters, `llm_usage.request_plan`
+retains content-free diagnostics measured from the adapted transport payload:
+image/media/text part counts, final tool count, tool-choice kind and an allowlisted
+reasoning-effort label where that wire dialect supplies it. Omitted effort means
+the request did not specify that field, not that the provider disabled reasoning.
+History/instruction/tool hashes and lengths support local request comparisons.
+These fields do not log screenshots, URLs, tool arguments, tool names or credentials,
+and do not prove the provider interpreted an image. Media accounting uses the
+prepared-request measurement even after one-request screenshots are scrubbed.
 
 Use:
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import urllib.request
 
@@ -15,6 +16,9 @@ from alysis_code.execution_deadline import DeadlineExhausted, ExecutionDeadline
 def test_stalled_replacement_uses_shared_deadline_and_preserves_old_service(manager):  # noqa: F811
     port = free_port()
     previous = manager.start(cmd=server(port), cwd=manager.root, readiness=readiness(port))
+    assert previous.payload["readiness"].get("endpoint_owned") is True, json.dumps(
+        previous.payload, indent=2
+    )
     deadline = ExecutionDeadline.from_duration(2.0)
     started = time.monotonic()
     result = manager.start(
@@ -72,6 +76,9 @@ def test_expired_shared_deadline_prevents_even_immediate_probe_launch(manager): 
 def test_deadline_during_handoff_retires_only_candidate(manager, monkeypatch, after_readiness):  # noqa: F811
     port = free_port()
     previous = manager.start(cmd=server(port), cwd=manager.root, readiness=readiness(port))
+    assert previous.payload["readiness"].get("endpoint_owned") is True, json.dumps(
+        previous.payload, indent=2
+    )
     clock = [0.0]
     deadline = ExecutionDeadline.from_absolute(
         started_at_monotonic=0,
@@ -83,7 +90,9 @@ def test_deadline_during_handoff_retires_only_candidate(manager, monkeypatch, af
 
     def ready_then_budget_closes(**kwargs):
         result = check(**kwargs)
-        clock[0] = after_readiness
+        if clock[0] == 0:
+            assert result.get("endpoint_owned") is True, json.dumps(result, indent=2)
+            clock[0] = after_readiness
         return result
 
     monkeypatch.setattr(manager, "_check_readiness", ready_then_budget_closes)

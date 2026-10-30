@@ -62,8 +62,44 @@ def test_command_rejects_symlink_and_escape_outputs_before_writing(tmp_path):
             run(request)
 
 
+def test_hardlinked_inputs_are_read_only_snapshots(tmp_path):
+    document = Document()
+    document.add_paragraph("Original")
+    source = tmp_path / "original.docx"
+    document.save(source)
+    before = source.read_bytes()
+    os.link(source, tmp_path / "checkpoint.docx")
+    inspected = run(SimpleNamespace(workspace=str(tmp_path), command="inspect", source=source.name))
+    paragraph = inspected["content"]["paragraphs"][0]
+    spec = {
+        "expected_source_sha256": inspected["source_sha256"],
+        "edits": [
+            {
+                "locator": paragraph["locator"],
+                "expected_text_sha256": paragraph["text_sha256"],
+                "find": "Original",
+                "replace": "Revised",
+            }
+        ],
+    }
+    (tmp_path / "request.json").write_text(json.dumps(spec))
+    os.link(tmp_path / "request.json", tmp_path / "request-checkpoint.json")
+    result = run(
+        SimpleNamespace(
+            workspace=str(tmp_path),
+            command="edit",
+            source=source.name,
+            spec="request.json",
+            output="revised.docx",
+        )
+    )
+    assert result["status"] == "edited"
+    assert Document(tmp_path / "revised.docx").paragraphs[0].text == "Revised"
+    assert source.read_bytes() == (tmp_path / "checkpoint.docx").read_bytes() == before
+
+
 def test_missing_renderer_does_not_modify_editable_file(tmp_path, monkeypatch):
-    monkeypatch.delenv("ALYSIS_OFFICE_SOFFICE", raising=False)
+    monkeypatch.setattr("alysis_code.office.rendering.renderer_path", lambda: None)
     source = tmp_path / "original.docx"
     Document().save(source)
     original = source.read_bytes()
@@ -119,7 +155,7 @@ def test_request_rejects_ambiguous_json(tmp_path, text):
 
 
 def test_capability_names_exact_interpreter_and_never_claims_rendered(monkeypatch):
-    monkeypatch.delenv("ALYSIS_OFFICE_SOFFICE", raising=False)
+    monkeypatch.setattr("alysis_code.office.renderer_path", lambda: None)
     status = office_capability_status()
     assert status["state"] == "ready"
     assert sys.executable in status["command"]
@@ -189,14 +225,20 @@ def test_converter_kills_child_even_when_launcher_exits(tmp_path):
     pid = int(pid_file.read_text())
     try:
         for _ in range(50):
-            if not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+            try:
+                status = psutil.Process(pid).status()
+            except psutil.NoSuchProcess:
+                break
+            if status == psutil.STATUS_ZOMBIE:
                 break
             time.sleep(0.01)
         else:
             pytest.fail("Converter descendant survived its owning process group")
     finally:
-        if psutil.pid_exists(pid):
+        try:
             psutil.Process(pid).kill()
+        except psutil.NoSuchProcess:
+            pass
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX cancellation")

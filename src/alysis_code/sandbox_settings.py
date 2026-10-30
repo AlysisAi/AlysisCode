@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
 import math
+import platform
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .branding import default_sandbox_docker_image, env_get
 from .config import AppConfig, ConfigError
 
 _VALID_MODES = {"off", "warn", "strict"}
-_VALID_BACKENDS = {"auto", "bwrap", "docker", "seatbelt"}
+_VALID_BACKENDS = {"auto", "bwrap", "docker", "seatbelt", "windows-native", "windows-mxc"}
 # What happens when the mode asks for a sandbox and no backend is usable on this machine:
 # "refuse" (no command runs), or "ask" (each command runs on the host only after the user
 # approves that exact command). A host sets "ask" only when it can show those approvals.
@@ -25,6 +28,26 @@ class ShellSandboxSettings:
     mode: str = "strict"
     backend: str = "auto"
     network: str = "off"
+    filesystem_access: str = "workspace-write"
+    windows_read_roots: tuple[str, ...] = ()
+    # Shell discovery is metadata-only. Fixed contained file workers need only
+    # their explicit roots, including runtime paths beside private app state.
+    windows_directory_discovery: bool = True
+    additional_workspace_roots: tuple[str, ...] = ()
+    # Host-admitted, operation-local read grants for Seatbelt. Not loaded from
+    # project config/environment and never promoted to writable workspaces.
+    additional_read_roots: tuple[str, ...] = ()
+    # Reviewed Seatbelt capabilities; never populated from project configuration.
+    network_domains: tuple[str, ...] | None = None
+    private_network_endpoints: tuple[str, ...] = ()
+    unix_sockets: tuple[str, ...] = ()
+    additional_read_files: tuple[str, ...] = ()
+    forward_env: tuple[str, ...] = ()
+    ssh_agent_socket: str | None = None
+    git_metadata_access: bool = False
+    # Reviewed contained Git authentication for one operation. Never read
+    # from project config or persisted in a permission profile.
+    github_auth: bool = False
     preview_access: str = "auto"
     bwrap_profile: str = "hardened"
     docker_image: str = DEFAULT_SHELL_SANDBOX_DOCKER_IMAGE
@@ -44,6 +67,32 @@ class ShellSandboxSettings:
 
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+ADDITIONAL_WORKSPACE_ROOTS_ENV = "ALYSIS_SHELL_SANDBOX_ADDITIONAL_WORKSPACE_ROOTS"
+
+
+def additional_workspace_roots_from_environment() -> tuple[str, ...]:
+    """Explicit launcher authority, never a project-config or model-tool field."""
+    raw = env_get(ADDITIONAL_WORKSPACE_ROOTS_ENV)
+    if raw is None:
+        return ()
+    try:
+        if len(raw) > 131_072:
+            raise ValueError("oversized folder list")
+        values = json.loads(raw)
+        if not isinstance(values, list) or len(values) > 32:
+            raise ValueError("expected at most 32 folders")
+        if any(
+            not isinstance(value, str)
+            or not value.strip()
+            or "\0" in value
+            or not Path(value).is_absolute()
+            for value in values
+        ):
+            raise ValueError("folders must be absolute paths")
+        return tuple(dict.fromkeys(values))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"Invalid {ADDITIONAL_WORKSPACE_ROOTS_ENV}: {exc}") from exc
 
 
 def _parse_choice(
@@ -187,6 +236,19 @@ def resolve_shell_sandbox_settings(cfg: AppConfig) -> ShellSandboxSettings:
         raise ConfigError("Invalid shell_sandbox config: expected object")
 
     cfg_map: dict[str, Any] = raw_cfg if isinstance(raw_cfg, dict) else {}
+    filesystem_access = _parse_choice(
+        env_get("ALYSIS_SHELL_SANDBOX_FILESYSTEM_ACCESS") or cfg_map.get("filesystem_access"),
+        field_name="shell_sandbox.filesystem_access",
+        allowed={"read-only", "workspace-write"},
+        default="workspace-write",
+    )
+    read_roots = cfg_map.get("windows_read_roots", [])
+    if not isinstance(read_roots, list) or any(
+        not isinstance(p, str) or not p.strip() for p in read_roots
+    ):
+        raise ConfigError(
+            "shell_sandbox.windows_read_roots must be a list of absolute directory paths"
+        )
     mode = _parse_choice(
         cfg_map.get("mode"),
         field_name="shell_sandbox.mode",
@@ -393,10 +455,18 @@ def resolve_shell_sandbox_settings(cfg: AppConfig) -> ShellSandboxSettings:
         default=unavailable_fallback,
     )
 
+    # Resolve once for all consumers, including file tools and durable services.
+    # Never probe availability here: a broken Windows bundle must not select host
+    # execution or Docker as an automatic fallback.
+    if backend == "auto" and platform.system() == "Windows":
+        backend = "windows-mxc"
     return ShellSandboxSettings(
         mode=mode,
         backend=backend,
         network=network,
+        filesystem_access=filesystem_access,
+        windows_read_roots=tuple(read_roots),
+        additional_workspace_roots=additional_workspace_roots_from_environment(),
         preview_access=preview_access,
         bwrap_profile=bwrap_profile,
         docker_image=docker_image,

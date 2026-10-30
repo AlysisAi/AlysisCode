@@ -22,6 +22,8 @@ from alysis_code.cli_impl.tui.transcript import TuiTranscript
 from alysis_code.config import AppConfig, clone_cfg
 from alysis_code.session_store import SessionStore
 from alysis_code.subagents import built_in_subagents
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.surface.types import SubagentStartEvent, ToolEndEvent, ToolStartEvent
 from alysis_code.usage_tracker import UsageSummary
 from alysis_code.verify_gate import VerifyError
@@ -40,6 +42,7 @@ def _store(root: Path, *, session_id: str = "chat-rebuild-test") -> SessionStore
 class _FakeMcpBinding:
     def __init__(self, *, session_mode: str | None = None) -> None:
         self.tool_alias = "mcp__alpha__echo"
+        self.tool_name = "echo"
         self.description = "Echo via MCP"
         self.parameters = {"type": "object", "properties": {}, "required": []}
         self.session_mode = session_mode
@@ -193,12 +196,18 @@ def test_rebuild_session_tools_preserves_effective_verification_commands(
 
     monkeypatch.setattr(verify_gate_mod.subprocess, "run", fake_run)
 
+    class VerificationSurface(NoopSurface):
+        def request_approval(self, request):
+            return ApprovalDecision(request.kind == "verify_run")
+
     cfg = AppConfig(model="test-model", web_search_mode="off")
     cfg.verify_commands = ["ruff check ."]
     session = _make_session(
         tmp_path,
         cfg=cfg,
         effective_verification_commands=["pytest -q"],
+        surface=VerificationSurface(),
+        non_interactive=False,
     )
     try:
         cli_mod._rebuild_session_tools_for_mode(session=session, mode="auto")

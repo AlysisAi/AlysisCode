@@ -16,10 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
-
 from ..atomic_io import _fsync_dir
 from ..branding import env_get
 from .errors import (
@@ -396,6 +392,9 @@ def _allowed_key_sources(version: int) -> frozenset[str]:
 
 def _decrypt_envelope(path: Path, envelope: dict[str, Any]) -> dict[str, Any]:
     version, stored_source, nonce, ciphertext = _validate_envelope(envelope, path=path)
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
     key_material = _key_material_for_source(stored_source, path=path)
     try:
         plaintext = AESGCM(key_material.key).decrypt(nonce, ciphertext, TOKEN_STORE_AAD)
@@ -468,6 +467,10 @@ def _write_encrypted_payload(
     *,
     key_material: _KeyMaterial | None = None,
 ) -> None:
+    # Load encryption before any key material is created or rotated. Merely
+    # registering commands or inspecting an absent store needs no crypto backend.
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
     policy = _oauth_key_source_policy()
     if policy == KEY_SOURCE_FILESYSTEM:
         # The policy is authoritative even for an internal rewrite that passed
@@ -628,6 +631,8 @@ def _weak_fallback_key_material(path: Path) -> _KeyMaterial:
     allows existing encrypted credentials to be upgraded without signing users
     out.
     """
+
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
     salt = _load_or_create_salt(weak_fallback_salt_path(path))
     identity = f"{platform.node()}\0{getpass.getuser()}".encode()

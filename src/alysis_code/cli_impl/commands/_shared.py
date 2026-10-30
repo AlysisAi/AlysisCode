@@ -18,6 +18,12 @@ if TYPE_CHECKING:
     from rich.console import Console
 
 
+JSON_OPTION_HELP = (
+    "Emit one machine-readable JSON value on stdout and nothing else. "
+    "Exit code 0 means the command ran; the payload carries the auth state."
+)
+
+
 class Mode(StrEnum):
     review = "review"
     auto = "auto"

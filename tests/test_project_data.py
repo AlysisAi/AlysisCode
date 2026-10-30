@@ -13,6 +13,9 @@ from alysis_code.project_data import ProjectDataError, project_artifact_path, pr
 def test_project_directory_preserves_run_pointer_bytes_and_inode(tmp_path):
     from alysis_code.forge import load_current_run_paths
 
+    # Keep repository discovery inside this fixture, including when --basetemp
+    # is below a developer's existing checkout.
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
     current = tmp_path / ".alysis"
     run = current / "runs/run-000001"
     run.mkdir(parents=True)

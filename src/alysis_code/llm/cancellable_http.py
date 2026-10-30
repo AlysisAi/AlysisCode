@@ -14,6 +14,7 @@ synchronous connection behavior.
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 from collections.abc import Iterator
@@ -25,6 +26,13 @@ from typing import Any
 import httpx
 
 from ..cancellation import CooperativeCancellationError
+from ..computer_use_attribution import transport_attempt
+from ..computer_use_call_diagnostics import (
+    _begin_provider_transport_evidence,
+    _count_provider_images,
+    _provider_evidence_active,
+    note_computer_use_provider_evidence,
+)
 from ..task_budget import current_task_budget
 from ..task_budget import need as budget_need
 
@@ -127,6 +135,86 @@ class _RequestOutcome:
     error: BaseException | None = None
 
 
+def _transport_entry(request: httpx.Request) -> int | None:
+    transport_attempt()
+    ordinal = _begin_provider_transport_evidence()
+    if ordinal is None:
+        return None
+    evidence: dict[str, object] = {"phase": "transport_attempted", "attemptOrdinal": ordinal}
+    # The body has already passed the request's existing admission/cancellation
+    # gates. Never read a stream or expose the Request to an external callback.
+    try:
+        body = request.content
+        if len(body) <= 16 * 1024 * 1024:
+            count = _count_provider_images(json.loads(body))
+            if count is not None:
+                evidence["transportImageCount"] = count
+    except Exception:
+        pass
+    note_computer_use_provider_evidence(evidence)
+    return ordinal
+
+
+class _EvidenceAsyncTransport(httpx.AsyncBaseTransport):
+    """Observe only an already selected transport; preserve its lifetime/behavior."""
+
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
+        self._transport = transport
+        self._closed = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        ordinal = _transport_entry(request)
+        response = await self._transport.handle_async_request(request)
+        if ordinal is not None:
+            note_computer_use_provider_evidence(
+                {"phase": "response_received", "attemptOrdinal": ordinal}
+            )
+        return response
+
+    async def aclose(self) -> None:
+        if not self._closed:
+            self._closed = True
+            await self._transport.aclose()
+
+    async def __aenter__(self) -> _EvidenceAsyncTransport:
+        await self._transport.__aenter__()
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        if not self._closed:
+            self._closed = True
+            await self._transport.__aexit__(*args)
+
+
+class _EvidenceSyncTransport(httpx.BaseTransport):
+    def __init__(self, transport: httpx.BaseTransport) -> None:
+        self._transport = transport
+        self._closed = False
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        ordinal = _transport_entry(request)
+        response = self._transport.handle_request(request)
+        if ordinal is not None:
+            note_computer_use_provider_evidence(
+                {"phase": "response_received", "attemptOrdinal": ordinal}
+            )
+        return response
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._transport.close()
+
+    def __enter__(self) -> _EvidenceSyncTransport:
+        self._transport.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        if not self._closed:
+            self._closed = True
+            self._transport.__exit__(*args)
+
+
 async def _perform_request(
     *,
     timeout_s: float | httpx.Timeout,
@@ -138,6 +226,9 @@ async def _perform_request(
 ) -> object:
     captured_requests: list[httpx.Request] = []
     budget = current_task_budget()
+    selected_transport = transport or (httpx.AsyncHTTPTransport(retries=0) if budget else None)
+    if selected_transport is not None and _provider_evidence_active():
+        selected_transport = _EvidenceAsyncTransport(selected_transport)
 
     async def _capture_request(request: httpx.Request) -> None:
         captured_requests.append(request)
@@ -145,7 +236,7 @@ async def _perform_request(
     try:
         async with httpx.AsyncClient(
             timeout=timeout_s,
-            transport=transport or (httpx.AsyncHTTPTransport(retries=0) if budget else None),
+            transport=selected_transport,
             follow_redirects=False,
             **({"trust_env": False} if budget else {}),
             event_hooks={"request": [_capture_request]},
@@ -380,6 +471,8 @@ def provider_httpx_client(*, timeout: Any, transport: Any = None) -> Any:
     """
     budget = current_task_budget()
     if budget is None:
+        if isinstance(transport, httpx.BaseTransport) and _provider_evidence_active():
+            transport = _EvidenceSyncTransport(transport)
         return httpx.Client(timeout=timeout, transport=transport)
     return cancellation_aware_httpx_client(
         timeout_s=timeout, transport=transport, cancellation_token=budget

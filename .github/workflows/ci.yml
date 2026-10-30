@@ -38,7 +38,8 @@ jobs:
   test:
     name: test (ubuntu-latest, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Leave room for the full sandbox, Office and protocol integration suite.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +67,7 @@ jobs:
           version: "0.11.23"
 
       - name: Sync locked test dependencies
-        run: uv sync --frozen --python "${{ matrix.python-version }}" --extra dev --extra documents
+        run: uv sync --frozen --no-editable --python "${{ matrix.python-version }}" --extra dev --extra documents
 
       - name: Check public repository contents
         run: uv run --frozen --no-sync python scripts/qa/check_public_repo.py
@@ -77,7 +78,22 @@ jobs:
       - name: Format check
         run: uv run --frozen --no-sync ruff format --check .
 
+      - name: Install native sandbox for real CLI qualification
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap apparmor-profiles libreoffice-writer libreoffice-calc libreoffice-impress
+          # Older distro images ship this inactive extra profile. Load it only
+          # where supplied; newer images may already have their packaged policy.
+          # Keep host-wide restrictions and require the real bwrap probe below.
+          if [ -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict ] && command -v apparmor_parser >/dev/null && sudo aa-status --enabled; then
+            sudo apparmor_parser --replace /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          fi
+          bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev true
+
       - name: Test
+        env:
+          ALYSIS_TEST_OFFICE_SOFFICE: /usr/bin/soffice
+          ALYSIS_RUN_BWRAP_RUNTIME_TESTS: "1"
         run: uv run --frozen --no-sync pytest -q
 
   reliability-qualification:
@@ -87,9 +103,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Newer macOS runner images currently cannot expose Python loopback listeners.
-        # https://github.com/actions/runner-images/issues/14409
-        os: [ubuntu-latest, windows-latest, macos-14]
+        # Keep native Mac coverage on a supported, pinned runner image.
+        os: [ubuntu-latest, windows-latest, macos-15]
     env:
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
     steps:
@@ -105,8 +120,25 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.23"
+      - name: Install the Linux file-worker sandbox
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y bubblewrap
       - name: Sync locked qualification dependencies
-        run: uv sync --frozen --python "3.12" --extra dev --extra documents
+        # Use the standalone runtime family we distribute. setup-python's macOS
+        # build can stall HTTPServer startup for 30s resolving loopback names:
+        # https://github.com/actions/setup-python/issues/1223
+        run: uv sync --frozen --no-editable --managed-python --python "3.12" --extra dev --extra documents
+      - name: Beta and Alpha account, credit and model contracts
+        run: >-
+          uv run --frozen --no-sync pytest -q
+          tests/test_paid_plan_status.py tests/test_paid_plan_presentation.py
+          tests/test_account_login.py tests/test_account_status.py
+          tests/test_hosted_account_error_display.py tests/test_reasoning_contracts.py
+          tests/test_model_reasoning_catalog.py
+          tests/test_paid_hosted_transport.py
+
       - name: Test hosted onboarding and installer failure handling
         run: uv run --frozen --no-sync pytest -q tests/test_alysis_cloud.py tests/test_windows_installer.py
       - name: Qualify source and installed wheel
@@ -127,7 +159,7 @@ jobs:
 
   macos-smoke:
     name: macOS smoke
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     env:
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
@@ -149,12 +181,22 @@ jobs:
           version: "0.11.23"
 
       - name: Sync locked smoke dependencies
-        run: uv sync --frozen --python "3.12" --extra dev --extra documents
+        run: uv sync --frozen --no-editable --managed-python --python "3.12" --extra dev --extra documents
 
       - name: Smoke test CLI
         run: |
           uv run --frozen --no-sync alysis --help
           uv run --frozen --no-sync alysis --version
+
+      - name: Install native search dependency
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ripgrep
+
+      - name: Seatbelt shell sandbox on a real Mac
+        run: >-
+          uv run --frozen --no-sync pytest -q
+          tests/test_sandbox_approval_fallback.py tests/test_macos_*.py
 
       - name: Smoke test macOS network lifecycle
         run: |
@@ -204,7 +246,7 @@ jobs:
         os:
           - ubuntu-latest
           - windows-latest
-          - macos-14
+          - macos-15
           - macos-15-intel
 
     steps:
@@ -225,8 +267,14 @@ jobs:
         with:
           version: "0.11.23"
 
+      - name: Install the Linux file-worker sandbox
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y bubblewrap
+
       - name: Sync locked bridge dependencies
-        run: uv sync --frozen --extra dev --extra documents
+        run: uv sync --frozen --no-editable --managed-python --python "3.12" --extra dev --extra documents
 
       - name: Install extension dependencies
         working-directory: extensions/vscode-alysis
@@ -276,6 +324,17 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: extensions/vscode-alysis
         run: npm audit --audit-level=high
+
+      - name: Retain packaged extension test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: vscode-dogfood-${{ matrix.os }}
+          path: |
+            qa_reports/vscode_dogfood/**/summary.json
+            qa_reports/vscode_dogfood/**/report.json
+            qa_reports/vscode_dogfood/**/report.md
+          if-no-files-found: ignore
 
   uv-project-workflow:
     name: uv project workflow
@@ -331,14 +390,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export SOURCE_DATE_EPOCH
+          # Only mutate the generated stamp after proving the checkout is clean.
+          # Restore on build failure and ordinary interruption as well as success.
+          trap 'git restore --source=HEAD --worktree -- src/alysis_code/_build_info.py' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          uv run --frozen --no-sync python scripts/generate_build_info.py --require-clean --no-fetch
           uv build --clear --no-create-gitignore --no-build-isolation --no-sources --out-dir dist/python
 
       - name: Validate archive identity, inventory, and clean installation
         run: >-
           uv run --frozen --no-sync python
           scripts/release/validate_python_distributions.py dist/python
+          --expected-commit "${{ github.sha }}"
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

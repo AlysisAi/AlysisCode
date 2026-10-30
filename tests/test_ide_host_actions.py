@@ -61,6 +61,7 @@ def _make_bridge(
     timeout: float = 1.0,
     approval_protocol: int = 0,
     mode: str = "auto",
+    explicit_github_all: bool = False,
 ) -> tuple[io.StringIO, StdioBridge, str, dict[str, Any], list[Any], list[HostActionError]]:
     out = io.StringIO()
     artifact_root = tmp_path / "session-artifacts"
@@ -99,11 +100,19 @@ def _make_bridge(
         create_session_fn=lambda **kwargs: FakeSession(**kwargs),
         host_action_timeout_seconds=timeout,
     )
+    github_params = {}
+    if explicit_github_all:
+        from alysis_code.extensions.install import install_plugin
+        from tests.fixtures.github_repository_policy import explicit_all
+
+        install_plugin(source="alysis.github", repo_root=tmp_path, trust_prompt=lambda _: True)
+        github_params["github_repository_policy"] = explicit_all(tmp_path)
     bridge.process_line(
         _request(
             "session.create",
             {
                 "workspace": os.fspath(tmp_path),
+                **github_params,
                 "mode": mode,
                 "model": "test-model",
                 "workspace_trusted": workspace_trusted,
@@ -572,6 +581,93 @@ def test_session_cancellation_deterministically_cancels_host_action(
     assert late["ok"] is False
     assert late["error"]["code"] == "stale_host_action_response"
     bridge.close()
+
+
+@pytest.mark.parametrize(
+    ("action", "arguments", "asks"),
+    [
+        ("github.git.push", {"branch": "main"}, True),
+        ("github.git.fetch", {}, False),
+    ],
+)
+def test_full_access_still_asks_a_person_for_remote_connector_writes(
+    tmp_path, monkeypatch, action, arguments, asks
+):
+    out, bridge, sid, _captured, results, errors = _make_bridge(
+        tmp_path,
+        monkeypatch,
+        actions=(action,),
+        action=action,
+        arguments=arguments,
+        timeout=2.0,
+        approval_protocol=1,
+        mode="fullaccess",
+        explicit_github_all=True,
+    )
+    try:
+        prepared = _start_host_action(out, bridge, sid)
+        assert prepared["payload"]["phase"] == "prepare"
+        _respond(
+            bridge,
+            prepared,
+            request_id="prepared",
+            result={
+                "preparation_id": "pa_" + "b" * 32,
+                "required": True,
+                "write_effect": True,
+                "kind": "mcp",
+                "reason": "Fixture",
+                "preview": f"{action} fixture",
+                "target": "@fixture: owner/repo",
+            },
+        )
+        next_line = _wait_for(
+            out,
+            lambda line: (
+                (
+                    line.get("type") == "prompt_for_input"
+                    and line.get("payload", {}).get("kind") == "approval"
+                )
+                or (
+                    line.get("type") == "host_action_requested"
+                    and line["payload"].get("phase") in {"execute", "discard"}
+                )
+            ),
+        )
+        if not asks:
+            assert next_line["payload"]["phase"] == "execute"
+            return
+        assert next_line["type"] == "prompt_for_input"
+        metadata = next_line["payload"]["metadata"]
+        assert metadata["always_ask_person"] is True
+        assert metadata["prepared_action"] == "pa_" + "b" * 32
+        assert next_line["payload"]["allow_for_session_supported"] is False
+        bridge.process_line(
+            _request(
+                "approval.respond",
+                {
+                    "session_id": sid,
+                    "approval_id": next_line["payload"]["approval_id"],
+                    "allow": False,
+                    "allow_for_session": False,
+                },
+                "deny",
+            )
+        )
+        discard = _wait_for(
+            out,
+            lambda line: (
+                line.get("type") == "host_action_requested"
+                and line["payload"].get("phase") in {"execute", "discard"}
+            ),
+        )
+        assert discard["payload"]["phase"] == "discard"
+        _respond(bridge, discard, request_id="discarded", result={"discarded": True})
+        _wait_for(out, lambda line: line.get("type") == "message_end")
+        assert not results and len(errors) == 1
+        assert errors[0].dispatch_state == "not_dispatched"
+    finally:
+        bridge.close()
 
 
 @pytest.mark.parametrize("dispatched", [False, True])

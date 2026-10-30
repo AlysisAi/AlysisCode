@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,28 @@ from alysis_code.sandbox_doctor import (
 )
 
 
+def test_native_capabilities_needs_no_setup_or_configuration(tmp_path, monkeypatch):
+    from alysis_code import windows_sandbox as native
+
+    def forbidden():
+        raise AssertionError("capabilities must not probe or install a helper")
+
+    monkeypatch.setattr(native, "resolve_helper", forbidden)
+    monkeypatch.setattr(cli_mod, "load_config", forbidden)
+    result = CliRunner().invoke(alysis_app, ["sandbox", "native-capabilities"], env=_env(tmp_path))
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["contract"] == "alysis.windows-sandbox.capabilities"
+    assert payload["schema_version"] == 1
+    assert payload["protocol"] == 3
+    assert payload["security_revision"] == 4
+    assert payload["platforms"] == ["win32-x64"]
+    assert payload["network_modes"] == ["off", "on"]
+    assert payload["features"]["durable_services"] is False
+    assert "ready" not in payload
+    assert "installed" not in payload
+
+
 def _env(tmp_path: Path) -> dict[str, str]:
     return {
         "ALYSIS_CONFIG_DIR": os.fspath(tmp_path / "cfg"),
@@ -23,6 +47,24 @@ def _env(tmp_path: Path) -> dict[str, str]:
         "ALYSIS_API_KEY": "",
         "OPENAI_API_KEY": "",
     }
+
+
+def test_mxc_capabilities_is_separate_and_cannot_claim_setup_readiness(tmp_path, monkeypatch):
+    from alysis_code import windows_mxc
+    from alysis_code.windows_mxc_contract import engine_capabilities
+
+    def forbidden():
+        raise AssertionError("capabilities must not load configuration or execute a helper")
+
+    monkeypatch.setattr(windows_mxc, "resolve_helper", forbidden)
+    monkeypatch.setattr(cli_mod, "load_config", forbidden)
+    result = CliRunner().invoke(alysis_app, ["sandbox", "mxc-capabilities"], env=_env(tmp_path))
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == engine_capabilities()
+    assert payload["desktop_activation"] == "signed-beta-or-local-candidate"
+    assert payload["qualification"] == "prototype-unqualified"
+    assert not ({"ready", "installed"} & payload.keys())
 
 
 def _diagnostic(
@@ -75,6 +117,22 @@ def test_doctor_sandbox_reports_beginner_guidance(
     assert "Alysis Code needs a safe runner" in result.output
     assert "Docker is installed, but it is not running" in result.output
     assert "ALYSIS_SHELL_SANDBOX_MODE" in result.output
+
+
+def test_native_doctor_labels_preview_and_omits_docker_images(tmp_path, monkeypatch):
+    diagnostic = replace(
+        _diagnostic(ready=True, checks=(SandboxCheck("native launch", "ok", "verified"),)),
+        status="experimental_ready",
+        configured_backend="windows-native",
+        selected_backend="windows-native",
+    )
+    monkeypatch.setattr(cli_mod, "diagnose_sandbox", lambda *_args, **_kwargs: diagnostic)
+    result = CliRunner().invoke(alysis_app, ["sandbox", "doctor", "--smoke"], env=_env(tmp_path))
+    assert result.exit_code == 0
+    assert "Windows sandbox preview" in result.output
+    assert "experimental" in result.output
+    assert "sandbox image" not in result.output
+    assert "server image" not in result.output
 
 
 def test_sandbox_pull_downloads_images_then_runs_smoke_doctor(

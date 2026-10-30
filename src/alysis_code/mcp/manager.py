@@ -9,22 +9,17 @@ import threading
 import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ..runtime_kind import RuntimeKind, normalize_runtime_kind
-from ..tools.registry import iter_builtin_tool_metadata
-from .client import (
-    McpHttpClient,
-    McpListedResource,
-    McpListedTool,
-    McpStdioClient,
-)
+from .catalog import McpListedTool
 from .config import load_resolved_mcp_config, project_mcp_config_path, user_mcp_config_path
 from .errors import McpConfigError as ConfigError
 from .forge_scope import ForgeTaskMcpScope
 from .models import ResolvedMcpConfig, ResolvedMcpServer
+from .native_relay_guard import legacy_windows_description_max_chars, legacy_windows_tool_guidance
 from .prompts import McpListedPrompt, prompts_mode_enabled
-from .resources import resources_mode_enabled
+from .resources import McpListedResource, resources_mode_enabled
 from .retention import ephemeral_tool_io, requested_result_summary
 from .untrusted_content import (
     MCP_UNTRUSTED_TEXT_CHAR_LIMIT,
@@ -32,9 +27,11 @@ from .untrusted_content import (
     build_host_owned_mcp_tool_description,
     build_untrusted_mcp_text_block,
     reduce_model_facing_tool_schema,
+    server_instructions_context,
 )
 
 if TYPE_CHECKING:
+    from .client import McpHttpClient, McpStdioClient
     from .visual_delivery import McpVisualDelivery
 
 _LIVE_TOOL_RUNTIMES = frozenset(
@@ -60,8 +57,65 @@ _MAX_LISTED_MCP_PROMPTS_PER_SERVER = 128
 _DEFAULT_MCP_PROMPT_LIST_LIMIT = 20
 _MAX_MCP_PROMPT_LIST_LIMIT = 50
 _ALIAS_CHARS_RE = re.compile(r"[^a-z0-9]+")
-_McpLiveClient = McpStdioClient | McpHttpClient
 _RESOURCE_TOOL_ALIASES = frozenset({"mcp_resources_list", "mcp_resource_read"})
+
+
+class _McpLiveClient(Protocol):
+    """Connection interface used by catalog and lifecycle management."""
+
+    transport: Any
+
+    @property
+    def closed(self) -> bool: ...
+    @property
+    def tools_list_changed(self) -> bool: ...
+    @property
+    def resources_list_changed(self) -> bool: ...
+    @property
+    def prompts_list_changed(self) -> bool: ...
+    @property
+    def session_negotiated(self) -> bool: ...
+    @property
+    def roots_capability_enabled(self) -> bool: ...
+    @property
+    def supports_tools(self) -> bool: ...
+    @property
+    def supports_resources(self) -> bool: ...
+    @property
+    def supports_prompts(self) -> bool: ...
+    @property
+    def server_instructions(self) -> str | None: ...
+    def ensure_initialized(self) -> None: ...
+    def observe_notifications(self) -> None: ...
+    def list_tools(self) -> tuple[McpListedTool, ...]: ...
+    def list_resources(self) -> tuple[McpListedResource, ...]: ...
+    def list_prompts(self) -> tuple[McpListedPrompt, ...]: ...
+    def read_resource(self, *, resource_uri: str, allowed_uris: Any = None) -> Any: ...
+    def get_prompt(self, *, name: str, arguments: dict[str, str] | None = None) -> Any: ...
+    def call_tool(self, *, tool_name: str, arguments: dict[str, Any]) -> Any: ...
+    def close(self) -> None: ...
+
+
+def __getattr__(name: str) -> Any:
+    # Keep the canonical public classes and the manager's injection seam, while
+    # an empty/disabled catalog needs no transports or OAuth implementation.
+    if name not in {"McpStdioClient", "McpHttpClient"}:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import client
+
+    value = getattr(client, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | {"McpStdioClient", "McpHttpClient"})
+
+
+def _client_factory(name: str) -> Any:
+    if name in globals():
+        return globals()[name]
+    return __getattr__(name)
 
 
 class _McpClientLease:
@@ -157,6 +211,11 @@ class _McpClientLease:
     def supports_tools(self) -> bool:
         with self._lock:
             return self._require_client().supports_tools
+
+    @property
+    def server_instructions(self) -> str | None:
+        with self._lock:
+            return self._require_client().server_instructions
 
     @property
     def supports_resources(self) -> bool:
@@ -478,12 +537,9 @@ class McpToolBinding:
             payload["structured_content"] = _normalize_prompt_structured_content(
                 result.structured_content
             )
-        if result.extracted_text and not self.ephemeral_io:
-            payload["text"] = _wrap_tool_result_text(
-                server_id=self.server_id,
-                tool_name=self.tool_name,
-                text=result.extracted_text,
-            )
+        # Each text block is already fenced in content, in its original order.
+        # Repeating extracted_text here doubles escaped states and can offload a
+        # small paginated response before the model can use its observed targets.
         if images:
             receipt = (
                 self.visual_delivery.stage(images, source=self.tool_alias)
@@ -630,6 +686,7 @@ class McpManager:
         self._resource_stale_server_ids: set[str] = set()
         self._prompt_stale_server_ids: set[str] = set()
         self._clients_by_server_id: dict[str, _McpSessionClient] = {}
+        self._server_instructions_by_id: dict[str, str] = {}
         self._prompt_clients_by_server_id: dict[str, _McpSessionClient] = {}
         self._prompt_server_catalogs_by_id = {
             server.id: self._initial_prompt_server_catalog(server)
@@ -672,6 +729,17 @@ class McpManager:
     def tool_bindings(self) -> tuple[_McpManagerToolBinding, ...]:
         self._ensure_tool_snapshot()
         return self._tool_bindings
+
+    def server_instructions_context(self) -> str | None:
+        """Describe connected servers without treating their prose as authorization."""
+        self._ensure_tool_snapshot()
+        return server_instructions_context(
+            {
+                server_id: value
+                for server_id, value in self._server_instructions_by_id.items()
+                if server_id not in self._disabled_server_ids
+            }
+        )
 
     @property
     def closed(self) -> bool:
@@ -815,6 +883,10 @@ class McpManager:
                     server_id=server.id,
                     tool_name=tool.name,
                     server_description=tool.description,
+                    host_guidance=legacy_windows_tool_guidance(server.id, tool.name),
+                    description_max_chars=legacy_windows_description_max_chars(
+                        server.id, tool.name
+                    ),
                 ),
                 _validate_function_tool_schema(server=server, tool=tool),
             )
@@ -830,6 +902,13 @@ class McpManager:
     ) -> None:
         client.ensure_initialized()
         if self._snapshot_loaded:
+            if (
+                getattr(client, "server_instructions", None) or ""
+            ).strip() != self._server_instructions_by_id.get(server.id, ""):
+                raise RuntimeError(
+                    f"MCP server '{server.id}' usage instructions changed. Recreate the "
+                    "session before using the new instructions."
+                )
             expected_tools = [
                 (binding.tool_name, binding.description, binding.parameters)
                 for binding in self._tool_bindings
@@ -1608,6 +1687,14 @@ class McpManager:
         try:
             admitted = self._admit_server_catalogs(self._collect_server_catalogs())
             collected_catalogs = tuple(catalog for catalog, _tools in admitted)
+            self._server_instructions_by_id = {
+                catalog.server.id: instructions.strip()
+                for catalog in collected_catalogs
+                if isinstance(
+                    instructions := getattr(catalog.client, "server_instructions", None), str
+                )
+                and instructions.strip()
+            }
             admitted_tools = {catalog.server.id: tools for catalog, tools in admitted}
             leased_catalogs: list[_CollectedServerCatalog] = []
             for catalog in collected_catalogs:
@@ -1670,6 +1757,14 @@ class McpManager:
                                 server_id=catalog.server.id,
                                 tool_name=record.tool.name,
                                 server_description=record.tool.description,
+                                host_guidance=legacy_windows_tool_guidance(
+                                    catalog.server.id, record.tool.name
+                                ),
+                                description_max_chars=(
+                                    legacy_windows_description_max_chars(
+                                        catalog.server.id, record.tool.name
+                                    )
+                                ),
                             ),
                             parameters=copy.deepcopy(record.parameters),
                             client=catalog.client,
@@ -1934,14 +2029,26 @@ class McpManager:
             raise
 
     def _build_live_client(self, server: ResolvedMcpServer) -> _McpLiveClient:
+        from .native_relay_guard import REFUSAL, is_reserved_relay_name, legacy_windows_launch
+
+        # LR-41 permits only the selected legacy Windows interactive tuple.
+        # This is availability, not W11 admission. The old standalone Mac socket
+        # relay remains denied; a task-owned Mac launch needs its actual owner.
+        # Arbitrary args are data. The transport inspects the exact selected
+        # executable and supported execution positions immediately before launch.
+        if server.id.rsplit("/", 1)[-1] == "alysis-computer" or (
+            server.transport == "stdio" and is_reserved_relay_name(server.command or "")
+        ):
+            if legacy_windows_launch(server, self.runtime_kind) is None:
+                raise ConfigError(REFUSAL)
         if server.transport == "stdio":
-            return McpStdioClient(
+            return _client_factory("McpStdioClient")(
                 server=server,
                 workspace_root=self.workspace_root,
                 runtime_kind=self.runtime_kind,
             )
         if server.transport == "http":
-            return McpHttpClient(
+            return _client_factory("McpHttpClient")(
                 server=server,
                 workspace_root=self.workspace_root,
                 runtime_kind=self.runtime_kind,
@@ -1994,6 +2101,11 @@ class McpManager:
         denied_keys = {_normalize_tool_name_key(name) for name in server.denied_tools}
         filtered: list[McpListedTool] = []
         for tool in raw_tools:
+            if server.id == "alysis-computer":
+                from .native_relay_guard import LEGACY_WINDOWS_TOOLS
+
+                if tool.name not in LEGACY_WINDOWS_TOOLS:
+                    continue
             tool_key = _normalize_tool_name_key(tool.name)
             if allowed_keys and tool_key not in allowed_keys:
                 continue
@@ -2006,6 +2118,10 @@ class McpManager:
         self,
         records: list[_FlatToolRecord],
     ) -> dict[str, str]:
+        # Secure-store readers import the MCP package without constructing tool
+        # bindings. Load the built-in tool/agent graph only when it is needed.
+        from ..tools.registry import iter_builtin_tool_metadata
+
         reserved_names = {metadata.name for metadata in iter_builtin_tool_metadata()}
         groups: dict[str, list[_FlatToolRecord]] = {}
         for record in records:
@@ -2429,3 +2545,11 @@ def build_mcp_execution_context_summary(
         }
     except Exception:
         return None
+
+
+# Preserve the existing non-private star-import surface, including canonical
+# client classes that are now materialized only when explicitly requested.
+__all__ = [name for name in globals() if not name.startswith("_")] + [
+    "McpHttpClient",
+    "McpStdioClient",
+]

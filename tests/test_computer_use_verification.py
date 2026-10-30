@@ -22,6 +22,8 @@ from alysis_code.ide.protocol import ProtocolError
 from alysis_code.ide.stdio_bridge import ComputerUseHostBinding, _computer_use_host_param
 from alysis_code.provider_auth.openai_codex import _sanitize_openai_tool_schema
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 def test_optional_host_only_tool_is_negotiated_without_changing_legacy_three():
     feature = capabilities_payload()["features"]["computer_use_host"]

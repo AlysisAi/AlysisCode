@@ -782,6 +782,12 @@ def test_runtime_panel_elapsed_freezes_across_polls_and_evict_readd(
         def append(self, event_type: str, payload: dict[str, Any]) -> None:
             self.events.append((event_type, payload))
 
+        def events_since(self, cursor):
+            return [
+                {"type": kind, "payload": payload}
+                for kind, payload in self.events[max(0, cursor) :]
+            ], len(self.events)
+
     class _FinalClient:
         model = "test-model"
         temperature = 0.0
@@ -937,6 +943,9 @@ def test_navigation_keeps_one_formatted_terminal_child_outcome(
 
         def append(self, _event_type: str, _payload: dict[str, Any]) -> None:
             return
+
+        def events_since(self, cursor):
+            return [], max(0, cursor)
 
     class _ChildStore:
         session_id = "child-session"

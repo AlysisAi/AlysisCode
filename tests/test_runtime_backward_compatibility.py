@@ -15,6 +15,8 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse
 from alysis_code.runtime_kind import RuntimeKind
 from alysis_code.subagents import SubagentDefinition
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
 
 
@@ -31,6 +33,11 @@ class _Store:
     def append(self, event_type: str, payload: dict[str, Any]) -> None:
         self.events.append((event_type, payload))
 
+    def events_since(self, cursor: int):
+        return [
+            {"type": kind, "payload": payload} for kind, payload in self.events[max(0, cursor) :]
+        ], len(self.events)
+
     def configure_web_fetch_trusted_domains(self, domains: Any) -> tuple[str, ...]:
         return tuple(domains or ())
 
@@ -38,6 +45,11 @@ class _Store:
         path = self.session_artifact_root / category / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+
+class _CompatSurface(NoopSurface):
+    def request_approval(self, request):
+        return ApprovalDecision(request.kind in {"shell_run", "verify_run"})
 
 
 def _build_compat_tools(
@@ -50,7 +62,7 @@ def _build_compat_tools(
     return build_tools(
         root=tmp_path,
         console=None,
-        surface=None,
+        surface=_CompatSurface(),
         store=_Store(tmp_path),
         mode="auto",
         yes=True,

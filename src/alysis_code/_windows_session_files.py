@@ -262,11 +262,16 @@ def _information(handle: int) -> tuple[_FileInfo, tuple[int, bytes]]:
     return info, (identity.volume, bytes(identity.identifier))
 
 
-def open_directory(path: Path) -> int:
+def open_directory(path: Path, *, read_security: bool = False, retain_name: bool = False) -> int:
+    # Attribute-only access does not enforce sharing restrictions. LIST_DIRECTORY
+    # participates in sharing, so omitting SHARE_DELETE then prevents retargeting.
     handle = _CreateFile(
         str(path),
-        _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
-        _SHARE_ALL,
+        _FILE_READ_ATTRIBUTES
+        | _SYNCHRONIZE
+        | (_READ_CONTROL if read_security else 0)
+        | (_FILE_READ_DATA if retain_name else 0),
+        0x00000003 if retain_name else _SHARE_ALL,
         None,
         3,
         0x02200000,
@@ -308,7 +313,13 @@ def assert_same_directory(directory_fd: int, path: Path) -> None:
 
 
 def _open_relative(
-    directory: int, filename: str, *, access: int, create: bool = False, descriptor=None
+    directory: int,
+    filename: str,
+    *,
+    access: int,
+    create: bool = False,
+    exclusive: bool = False,
+    descriptor=None,
 ) -> tuple[int, bool]:
     # Only a validated session basename is allowed: no device, ADS or traversal syntax.
     if not filename or any(char in filename for char in "\\/:") or filename in {".", ".."}:
@@ -333,7 +344,7 @@ def _open_relative(
         None,
         0x80,
         _SHARE_ALL,
-        3 if create else 1,  # FILE_OPEN_IF / FILE_OPEN
+        2 if exclusive else (3 if create else 1),  # FILE_CREATE / FILE_OPEN_IF / FILE_OPEN
         0x00200000 | 0x40 | 0x20,
         None,
         0,  # REPARSE_POINT | NON_DIRECTORY | SYNCHRONOUS
@@ -415,6 +426,59 @@ def _acl_bytes(acl) -> bytes:
     # ACL header: revision, reserved, size (USHORT), ACE count, reserved.
     size = C.cast(acl, C.POINTER(W.USHORT))[1]
     return C.string_at(acl, size)
+
+
+def assert_current_user_private(file_fd: int) -> None:
+    """Validate authority without repairing a potentially attacker-written ACL."""
+    descriptor, owner = _POINTER(), _POINTER()
+    try:
+        result = _GetSecurityInfo(
+            msvcrt.get_osfhandle(file_fd),
+            _SE_FILE_OBJECT,
+            1 | _DACL_SECURITY_INFORMATION,
+            C.byref(owner),
+            None,
+            None,
+            None,
+            C.byref(descriptor),
+        )
+        if result:
+            raise C.WinError(result)
+        sid = _current_user_sid()
+        control, revision = W.WORD(), W.DWORD()
+        _check(_GetSecurityControl(descriptor, C.byref(control), C.byref(revision)))
+        with _private_descriptor(sid) as expected:
+            if (
+                _sid_text(owner) != sid
+                or not control.value & 0x1000
+                or _acl_bytes(_dacl(descriptor)) != _acl_bytes(_dacl(expected))
+            ):
+                raise ManagedSessionError(
+                    "Private authority must have the current user's protected owner-only ACL"
+                )
+    finally:
+        if descriptor:
+            _LocalFree(descriptor)
+
+
+def create_private_file(directory: int, filename: str) -> int:
+    """Create a fresh file relative to a retained directory, private from birth."""
+    handle = None
+    try:
+        with _private_descriptor(_current_user_sid(), set_owner=True) as descriptor:
+            handle, _ = _open_relative(
+                directory,
+                filename,
+                access=_FILE_READ_DATA | 0x0002 | _FILE_READ_ATTRIBUTES | _READ_CONTROL,
+                exclusive=True,
+                descriptor=descriptor,
+            )
+        _regular_identity(handle)
+        fd = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY | os.O_NOINHERIT)
+        handle = None
+        return fd
+    finally:
+        close_handle(handle)
 
 
 def enforce_owner_private_file(file_fd: int) -> None:

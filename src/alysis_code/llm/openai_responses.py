@@ -15,9 +15,16 @@ from typing import Any
 import httpx
 
 from ..cancellation import CooperativeCancellationError
+from ..computer_use_call_diagnostics import (
+    _count_provider_images,
+    _provider_attempt_ordinal,
+    _provider_serialization_ordinal,
+    note_computer_use_provider_evidence,
+)
 from ..computer_use_diagnostics import DIAGNOSTIC_CODES, set_safe_provider_error_fields
 from ..error_text import sanitize_error_text_for_output
 from ..execution_deadline import DeadlineExhausted
+from ..mcp.github_policy_json import arguments as github_policy_arguments
 from ..provider_auth import (
     ProviderAuthAdapter,
     ProviderAuthError,
@@ -26,13 +33,17 @@ from ..provider_auth import (
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from ..request_estimation import estimate_provider_payload_tokens
 from ..web_search_adapters import AUTO_WEB_SEARCH_ADAPTER, OPENAI_RESPONSES_ADAPTER
+from . import resolved_entry
 from .base import (
+    input_token_count_request,
     omitted_reasoning_display_required,
+    scoped_input_token_counter,
     serial_tool_calls_required,
     stateless_responses_required,
 )
 from .cache_policy import merge_cache_policy_metadata
 from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
+from .focused_input_diagnostic import record_stream_diagnostic
 from .http_cancellation import (
     cancellable_httpx_request,
     cancellable_httpx_send,
@@ -67,7 +78,6 @@ from .request_plan import LLMRequestPlan, RequestCachePlan, WireRequestDiagnosti
 from .request_shape import build_request_shape_report
 from .streaming import (
     SSEFrame,
-    decode_text_chunks,
     iter_lines_from_text_chunks,
     iter_sse_frames,
     parse_sse_json_frame,
@@ -986,8 +996,10 @@ def _responses_tool_from_chat_tool(tool: dict[str, Any]) -> dict[str, Any] | Non
             if description:
                 mapped["description"] = description
             strict = function.get("strict", tool.get("strict"))
-            if strict is not None:
-                mapped["strict"] = bool(strict)
+            # Responses auto-normalizes an unspecified schema into strict mode,
+            # including making optional selectors required. Preserve the tool's
+            # original optionality unless its author explicitly chose strict mode.
+            mapped["strict"] = False if strict is None else bool(strict)
             return mapped
 
         name = str(tool.get("name") or "").strip()
@@ -995,6 +1007,8 @@ def _responses_tool_from_chat_tool(tool: dict[str, Any]) -> dict[str, Any] | Non
             return None
         mapped = copy.deepcopy(tool)
         mapped["type"] = "function"
+        if mapped.get("strict") is None:
+            mapped["strict"] = False
         return mapped
     if tool_type in {"web_search", "web_search_preview"}:
         return copy.deepcopy(tool)
@@ -1394,11 +1408,22 @@ def _parse_response_tool_calls(data: dict[str, Any]) -> list[ToolCall]:
                 "status": item.get("status"),
             }
         }
+        checked = resolved_entry.arguments(item.get("arguments"), name=name, call_id=call_id)
+        if resolved_entry.active() and name == resolved_entry.NAME and item.get("name") != name:
+            checked = ({}, None)
+        restricted_args = github_policy_arguments(item.get("arguments"), name)
         tool_calls.append(
             ToolCall(
                 id=call_id,
                 name=name,
-                arguments=_parse_arguments(item.get("arguments") or "{}"),
+                arguments=(
+                    checked[0]
+                    if checked is not None
+                    else restricted_args
+                    if restricted_args is not None
+                    else _parse_arguments(item.get("arguments") or "{}")
+                ),
+                _resolved_entry_proof=checked[1] if checked is not None else None,
                 provider_metadata=provider_metadata,
             )
         )
@@ -1445,6 +1470,57 @@ def _stream_error_message(data: dict[str, Any]) -> str:
     return repr(data)
 
 
+def _responses_stream_error(data: dict[str, Any], event_type: str) -> LLMError:
+    """Retain closed provider metadata from HTTP-200 SSE failures.
+
+    Protected desktop turns discard exception text. Structured codes must survive
+    that boundary, and transient errors use the existing bounded request retry
+    policy. No tool action is dispatched or replayed by this helper.
+    """
+    response = data.get("response")
+    container = response if isinstance(response, dict) else data
+    detail = container.get("error")
+    detail = detail if isinstance(detail, dict) else container
+    codes = [
+        value
+        for value in (detail.get("code"), detail.get("type"))
+        if type(value) is str and value in DIAGNOSTIC_CODES
+    ]
+    code = next((value for value in codes if value in HARD_QUOTA_CODES), next(iter(codes), None))
+    status = next(
+        (
+            value
+            for value in (detail.get("status_code"), detail.get("status"), detail.get("code"))
+            if type(value) is int and 400 <= value <= 599
+        ),
+        None,
+    )
+    if status is None:
+        status = {
+            "rate_limit_exceeded": 429,
+            "insufficient_quota": 429,
+            "usage_limit_reached": 429,
+            "billing_hard_limit_reached": 429,
+            "server_error": 500,
+            "internal_error": 500,
+            "overloaded_error": 503,
+        }.get(code)
+    error = set_safe_provider_error_fields(
+        LLMError(
+            sanitize_error_text_for_output(
+                f"OpenAI Responses stream {event_type}: {_stream_error_message(data)}"
+            )
+        ),
+        status=status,
+        code=code,
+        parameter=detail.get("param"),
+    )
+    error.provider_error_origin = "responses_stream"
+    if code in HARD_QUOTA_CODES:
+        mark_provider_call_non_retryable(error)
+    return error
+
+
 class _OpenAIResponsesStreamAccumulator:
     def __init__(
         self,
@@ -1456,6 +1532,7 @@ class _OpenAIResponsesStreamAccumulator:
         self.on_reasoning_delta = on_reasoning_delta
         self.response: dict[str, Any] = {"object": "response", "output": []}
         self.output_items: dict[int, dict[str, Any]] = {}
+        self._resolved_selectors: dict[int, dict[str, str]] = {}
         self.text_parts: dict[tuple[int, int], dict[str, Any]] = {}
         self.reasoning_summary_parts: dict[tuple[int, int], dict[str, Any]] = {}
         self.reasoning_delta_keys: set[tuple[int, int] | None] = set()
@@ -1478,7 +1555,7 @@ class _OpenAIResponsesStreamAccumulator:
         self.event_count += 1
 
         if event_type == "error":
-            raise LLMError(f"OpenAI Responses stream error: {_stream_error_message(data)}")
+            raise _responses_stream_error(data, event_type)
         if event_type == "response.incomplete":
             response = data.get("response")
             if isinstance(response, dict) and _response_hit_output_limit(response):
@@ -1486,7 +1563,7 @@ class _OpenAIResponsesStreamAccumulator:
                 return
             raise LLMError(f"OpenAI Responses stream {event_type}: {_stream_error_message(data)}")
         if event_type == "response.failed":
-            raise LLMError(f"OpenAI Responses stream {event_type}: {_stream_error_message(data)}")
+            raise _responses_stream_error(data, event_type)
         if event_type in {"response.created", "response.in_progress", "response.queued"}:
             self._merge_response(data.get("response"))
             return
@@ -1621,7 +1698,20 @@ class _OpenAIResponsesStreamAccumulator:
                     }
                 )
 
+    def _check_resolved_selectors(self, index: int, item: dict[str, Any]) -> None:
+        if not resolved_entry.active():
+            return
+        # Remember first non-empty selectors even across empty/missing updates.
+        selectors = self._resolved_selectors.setdefault(index, {})
+        for key in ("id", "call_id", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                previous = selectors.setdefault(key, value)
+                if previous != value:
+                    resolved_entry.invalidate_parent()
+
     def _set_output_item(self, index: int, item: dict[str, Any]) -> None:
+        self._check_resolved_selectors(index, item)
         copied = copy.deepcopy(item)
         existing = self.output_items.get(index)
         if existing is not None:
@@ -1879,8 +1969,25 @@ class _OpenAIResponsesStreamAccumulator:
             data,
             event_type="response.function_call_arguments.delta",
         )
+        self._check_resolved_selectors(
+            output_index,
+            {
+                **data,
+                "id": data.get("item_id"),
+            },
+        )
         delta = data.get("delta")
         if isinstance(delta, str):
+            item = self.output_items.get(output_index)
+            name = (
+                item.get("name", resolved_entry.NAME)
+                if isinstance(item, dict)
+                else resolved_entry.NAME
+            )
+            if resolved_entry.active():
+                resolved_entry.bound_stream(
+                    "".join(self.argument_chunks.get(output_index, ())) + delta, name
+                )
             self.argument_chunks.setdefault(output_index, []).append(delta)
         item = self.output_items.get(output_index)
         if isinstance(item, dict) and str(item.get("type") or "") == "function_call":
@@ -1895,6 +2002,13 @@ class _OpenAIResponsesStreamAccumulator:
         output_index = _event_output_index(
             data,
             event_type="response.function_call_arguments.done",
+        )
+        self._check_resolved_selectors(
+            output_index,
+            {
+                **data,
+                "id": data.get("item_id"),
+            },
         )
         item = self.output_items.get(output_index)
         before = copy.deepcopy(item) if isinstance(item, dict) else None
@@ -2264,6 +2378,7 @@ class OpenAIResponsesClient:
         error.provider_error_body = sanitize_error_text_for_output(json.dumps(data))
         return error
 
+    @scoped_input_token_counter
     def count_input_tokens(
         self,
         *,
@@ -2350,16 +2465,17 @@ class OpenAIResponsesClient:
                     raw_provider_usage=copy.deepcopy(data),
                 )
 
-        return run_provider_limited_call(
-            call=_send_request,
-            provider_key=self.provider_key,
-            provider_concurrency_caps=self.provider_concurrency_caps,
-            retry_settings=self.provider_retry_settings,
-            operation="responses_count_input_tokens",
-            sleep_fn=self._provider_sleep_fn,
-            random_fn=self._provider_random_fn,
-            retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
-        )
+        with input_token_count_request():
+            return run_provider_limited_call(
+                call=_send_request,
+                provider_key=self.provider_key,
+                provider_concurrency_caps=self.provider_concurrency_caps,
+                retry_settings=self.provider_retry_settings,
+                operation="responses_count_input_tokens",
+                sleep_fn=self._provider_sleep_fn,
+                random_fn=self._provider_random_fn,
+                retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
+            )
 
     def chat(
         self,
@@ -2477,9 +2593,19 @@ class OpenAIResponsesClient:
                 input_mode = "previous_response_id"
                 continuation_anchor_index = continuation.anchor_index
 
+        active_cache_policy = plan.cache.openai_prompt_cache_policy_metadata()
+        declared_cache_strategy = (
+            str(self.prompt_cache_policy_metadata.get("strategy") or "").strip()
+            if isinstance(self.prompt_cache_policy_metadata, dict)
+            else ""
+        )
+        if active_cache_policy is not None and declared_cache_strategy not in {"", "none"}:
+            # A key field activates routing on the declared cache (for example
+            # the subscription's implicit cache); it is not a different strategy.
+            active_cache_policy["strategy"] = declared_cache_strategy
         cache_policy = merge_cache_policy_metadata(
             self.prompt_cache_policy_metadata,
-            plan.cache.openai_prompt_cache_policy_metadata(),
+            active_cache_policy,
         )
 
         def _build_payload(
@@ -2536,6 +2662,16 @@ class OpenAIResponsesClient:
                 payload["max_output_tokens"] = int(max_tokens)
             if stream:
                 payload["stream"] = True
+            evidence_ordinal = _provider_serialization_ordinal()
+            if evidence_ordinal is not None:
+                evidence: dict[str, object] = {
+                    "phase": "serialized",
+                    "attemptOrdinal": evidence_ordinal,
+                }
+                image_count = _count_provider_images(payload)
+                if image_count is not None:
+                    evidence["serializedImageCount"] = image_count
+                note_computer_use_provider_evidence(evidence)
             if self.provider_auth is not None:
                 payload = self.provider_auth.adapt_responses_payload(payload)
             if self.provider_key == "alysis":
@@ -2693,6 +2829,32 @@ class OpenAIResponsesClient:
                 request_plan_metadata,
             )
 
+        def _transport_payload_bytes() -> bytes:
+            # This is the body actually passed to HTTPX, after authentication
+            # adaptation and every retry edit. Preparation is not transport entry.
+            body = _json_bytes(payload)
+            ordinal = _provider_attempt_ordinal(prepare=True)
+            if ordinal is not None:
+                evidence: dict[str, object] = {
+                    "phase": "payload_prepared_at_transport",
+                    "attemptOrdinal": ordinal,
+                }
+                count = _count_provider_images(payload)
+                if count is not None:
+                    evidence["adaptedImageCount"] = count
+                if self.provider_auth is None:
+                    evidence["adapter"] = "none"
+                else:
+                    from ..provider_auth.openai_codex import OpenAICodexSubscriptionAuth
+
+                    evidence["adapter"] = (
+                        "openai_codex_subscription"
+                        if isinstance(self.provider_auth, OpenAICodexSubscriptionAuth)
+                        else "other"
+                    )
+                note_computer_use_provider_evidence(evidence)
+            return body
+
         def _send_request() -> LLMResponse:
             nonlocal input_mode, payload, previous_response_id, reasoning
             nonlocal request_plan_metadata, sent_input
@@ -2780,7 +2942,7 @@ class OpenAIResponsesClient:
                                     force_refresh=auth_refresh_used,
                                     cancellation_token=cancellation_token,
                                 ),
-                                content=_json_bytes(payload),
+                                content=_transport_payload_bytes(),
                             ) as response:
                                 if response.status_code >= 400:
                                     response.read()
@@ -2847,7 +3009,7 @@ class OpenAIResponsesClient:
                                 force_refresh=auth_refresh_used,
                                 cancellation_token=cancellation_token,
                             ),
-                            content=_json_bytes(payload),
+                            content=_transport_payload_bytes(),
                         )
                 except CooperativeCancellationError:
                     raise
@@ -2950,6 +3112,7 @@ class OpenAIResponsesClient:
         on_reasoning_delta: Callable[[str], None] | None,
         cancellation_token: Any | None = None,
     ) -> LLMResponse:
+        record_stream_diagnostic(response)
         accumulator = _OpenAIResponsesStreamAccumulator(
             on_text_delta=on_text_delta,
             on_reasoning_delta=on_reasoning_delta,
@@ -2975,25 +3138,50 @@ class OpenAIResponsesClient:
                     )
                 yield chunk
 
-        text_chunks = decode_text_chunks(
+        text_chunks = resolved_entry.decode_chunks(
             _observed_byte_chunks(),
             encoding=response.encoding or "utf-8",
         )
         for frame in iter_sse_frames(iter_lines_from_text_chunks(text_chunks)):
-            raw_event = parse_sse_json_frame(frame, stream_name="OpenAI Responses stream")
+            raw_event = (
+                resolved_entry.provider_loads(frame.data)
+                if resolved_entry.active()
+                else parse_sse_json_frame(frame, stream_name="OpenAI Responses stream")
+            )
             if not isinstance(raw_event, dict):
                 raise LLMError("OpenAI Responses stream emitted non-object JSON event")
             progress_revision = accumulator.progress_revision
+            if str(raw_event.get("type") or frame.event or "") in {
+                "error",
+                "response.failed",
+                "response.incomplete",
+            }:
+                record_stream_diagnostic(response, raw_event, event_count=accumulator.event_count)
             accumulator.handle(frame, raw_event)
+            if resolved_entry.active():
+                for item in accumulator.output_items.values():
+                    resolved_entry.bound_stream(item.get("arguments"), item.get("name", ""))
             if accumulator.progress_revision != progress_revision:
                 last_meaningful_progress = progress_clock()
         data = accumulator.finish()
+        if resolved_entry.active():
+            for index, item in enumerate(data.get("output", [])):
+                if isinstance(item, dict) and item.get("name") == resolved_entry.NAME:
+                    resolved_entry.bound_stream(item.get("arguments"))
+                    if index in accumulator.argument_chunks and item.get("arguments") != "".join(
+                        accumulator.argument_chunks[index]
+                    ):
+                        resolved_entry.invalidate_parent()
         return self._parse_chat_response(_response_from_json(data))
 
     @staticmethod
     def _parse_chat_response(response: httpx.Response) -> LLMResponse:
         try:
-            data = response.json()
+            data = (
+                resolved_entry.provider_loads(response.content)
+                if resolved_entry.active()
+                else response.json()
+            )
         except Exception as e:  # noqa: BLE001
             raise LLMError("OpenAI Responses returned non-JSON response") from e
         if not isinstance(data, dict):
@@ -3173,3 +3361,8 @@ class OpenAIResponsesClient:
             response_id=response_id,
             model=response_model,
         )
+
+
+resolved_entry._register_client(
+    OpenAIResponsesClient, ("chat", "_parse_chat_response", "_parse_stream_response")
+)

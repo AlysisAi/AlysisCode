@@ -16,7 +16,9 @@ _STRIPPED_MCP_TOOL_DESCRIPTION_PREFIXES = (
 )
 
 
-def sanitize_mcp_tool_description(description: str) -> str:
+def sanitize_mcp_tool_description(
+    description: str, *, max_chars: int = MAX_MCP_TOOL_DESCRIPTION_CHARS
+) -> str:
     kept_lines: list[str] = []
     for line in str(description or "").splitlines():
         normalized = line.lstrip().casefold()
@@ -24,6 +26,6 @@ def sanitize_mcp_tool_description(description: str) -> str:
             continue
         kept_lines.append(line)
     body = "\n".join(kept_lines).strip()
-    if len(body) > MAX_MCP_TOOL_DESCRIPTION_CHARS:
-        body = body[:MAX_MCP_TOOL_DESCRIPTION_CHARS].rstrip()
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip()
     return f"[mcp-tool-description begin]\n{body}\n[mcp-tool-description end]"

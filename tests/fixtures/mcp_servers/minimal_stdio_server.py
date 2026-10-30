@@ -61,6 +61,7 @@ def _initialize_result(config: dict[str, Any]) -> dict[str, Any]:
         "protocolVersion": str(config.get("protocol_version") or "2024-11-05"),
         "capabilities": capabilities,
         "serverInfo": server_info,
+        **({"instructions": config["instructions"]} if "instructions" in config else {}),
     }
 
 

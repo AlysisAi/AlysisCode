@@ -1,0 +1,266 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.clickup"
+name = "ClickUp"
+version = "1.0.0"
+description = "ClickUp's official remote MCP tools: read and search tasks, docs and chat. Every change asks you first; chat messages and comments post as you."
+author = "Alysis AI (integration); ClickUp (MCP server)"
+license = "MIT"
+homepage = "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server"
+keywords = ["clickup", "mcp", "tasks", "projects", "docs"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# ClickUp's official remote MCP server (all plans; the Free plan allows 100 calls a day). ClickUp
+# issues no refresh token, so the person signs in again when its sign-in ends. Chat messages and
+# comments post as the person and notify others; update_document_page can replace a whole page;
+# delete_task moves a task to Trash. Each change asks a person first. Left out: merge_tasks and
+# delete_comment (can't be undone), execute_operator with its get_operators/get_schema (a gate to
+# operations the server can change), and file uploads.
+[[components.verified_connector]]
+id = "clickup"
+url = "https://mcp.clickup.com/mcp"
+resource = "https://mcp.clickup.com/mcp"
+oauth_issuer = "https://mcp.clickup.com"
+oauth_sign_in_origins = []
+oauth_client = "dynamic"
+oauth_scopes = ["read", "write"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "clickup_get_task"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_filter_tasks"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_custom_fields"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_current_time_entry"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_time_entries"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_task_time_in_status"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_bulk_tasks_time_in_status"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_download_task_attachment"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_task_comments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_threaded_comments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_list_document_pages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_document_pages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_list_document_page_attachments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_download_document_page_attachment"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_chat_channels"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_chat_channel_messages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_chat_message_replies"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_list"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_folder"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_search_reminders"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_workspace_hierarchy"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_workspace_members"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_find_member_by_name"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_resolve_assignees"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_get_user"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_search"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "clickup_create_task"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_update_task"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_delete_task"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_move_task"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_add_task_to_list"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_remove_task_from_list"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_add_task_dependency"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_remove_task_dependency"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_add_task_link"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_remove_task_link"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_space_tag"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_add_tag_to_task"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_remove_tag_from_task"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_start_time_tracking"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_stop_time_tracking"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_add_time_entry"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_task_comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_update_comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_document"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_document_page"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_update_document_page"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_send_chat_message"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_update_chat_message"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_react_to_chat_message"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_list"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_list_in_folder"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_update_list"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_folder"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_update_folder"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_create_reminder"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "clickup_update_reminder"
+reads_only = false
+
+[security]
+contact = "https://clickup.com/security"

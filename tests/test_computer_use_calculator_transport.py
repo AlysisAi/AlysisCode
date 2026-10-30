@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from test_computer_use_serialization import _stream_response, _SyntheticSubscriptionAuth
 
 from alysis_code.agent_loop import create_session
@@ -19,6 +20,8 @@ from alysis_code.llm.base import (
 )
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
 from alysis_code.surface.noop_surface import NoopSurface
+
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
 
 
 def test_native_keypad_sequence_preserves_goal_labels_values_and_fresh_ids_on_subscription_wire(

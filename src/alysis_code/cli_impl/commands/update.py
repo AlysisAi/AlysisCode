@@ -26,7 +26,6 @@ from . import _patchable
 from ._shared import _console
 
 update_app = typer.Typer(add_completion=False, help="Check for and apply Alysis Code updates.")
-_BACKGROUND_UPDATE_SUBCOMMANDS = {"chat", "run", "forge"}
 _update_prompt_completed = False
 
 

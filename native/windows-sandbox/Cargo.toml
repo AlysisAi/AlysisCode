@@ -1,0 +1,40 @@
+[package]
+name = "alysis-windows-sandbox"
+version = "0.3.3"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Native Windows execution helper for the Alysis engine"
+
+[features]
+default = []
+# Deliberate opt-in while exact policy and lifecycle parity are qualified.
+mxc = ["dep:mxc-sdk"]
+
+[[bin]]
+name = "alysis-sandbox"
+path = "src/main.rs"
+
+[[example]]
+name = "mxc-nested-probe"
+path = "examples/mxc_nested_probe.rs"
+required-features = ["mxc"]
+
+[[example]]
+name = "mxc-readonly-directory-probe"
+path = "examples/mxc_readonly_directory_probe.rs"
+required-features = ["mxc"]
+
+[target.'cfg(windows)'.dependencies]
+mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "c6f301d53a1430c4c921a05c57af838f7392348f", default-features = false, optional = true }
+srt-win = { path = "vendor/srt-win" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Isolation", "Win32_System_Threading"] }
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

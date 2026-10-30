@@ -24,6 +24,20 @@ from alysis_code.mcp.transport_stdio import live_stdio_transport_diagnostics
 
 
 @pytest.fixture
+def approved_local_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Approve controlled local checks in explicit integration fixtures."""
+    from alysis_code.surface import ApprovalDecision
+    from alysis_code.surface.noop_surface import NoopSurface
+
+    monkeypatch.setattr(NoopSurface, "host_managed_approvals", True, raising=False)
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
+    )
+
+
+@pytest.fixture
 def configured_hosted_api(monkeypatch: pytest.MonkeyPatch) -> str:
     """Explicit deployment configuration for offline hosted-service tests."""
     api_url = "https://hosted.example.invalid/api"
@@ -61,6 +75,28 @@ def require_symlinks(tmp_path: Path) -> None:
         raise
 
 
+@pytest.fixture
+def mac_computer_use_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise inert Mac protocol fixtures without changing the native host."""
+    from types import SimpleNamespace
+
+    from alysis_code import computer_use_platform_policy
+
+    monkeypatch.setattr(computer_use_platform_policy, "sys", SimpleNamespace(platform="darwin"))
+
+
+@pytest.fixture
+def authorized_hosted_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give picker tests an explicit account catalog without provider requests."""
+    from alysis_code.cli_impl import config_menu
+    from alysis_code.provider_model_catalog import ProviderModelOption
+
+    options = tuple(
+        ProviderModelOption(id=name, label=name) for name in ("gpt-6-luna", "claude-haiku-5-5")
+    )
+    monkeypatch.setattr(config_menu, "_provider_models_for_state", lambda *_args: options)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def isolate_terminal_ownership_records(tmp_path_factory: pytest.TempPathFactory):
     """Never let background-process crash markers from tests reach the real user profile."""
@@ -74,6 +110,12 @@ def isolate_terminal_ownership_records(tmp_path_factory: pytest.TempPathFactory)
             os.environ.pop(key, None)
         else:
             os.environ[key] = previous
+
+
+@pytest.fixture(autouse=True)
+def isolate_local_memory(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+    """Ordinary agent turns must never read or update the developer's real memory."""
+    monkeypatch.setenv("ALYSIS_MEMORY_HOME", str(tmp_path_factory.mktemp("local-memory")))
 
 
 class OAuthFixtureServer:

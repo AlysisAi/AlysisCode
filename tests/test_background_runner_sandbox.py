@@ -674,6 +674,7 @@ def test_build_bwrap_argv_matches_inline_construction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("PATH", os.defpath)
     monkeypatch.setattr(
         sandbox_runner_mod.subprocess,
         "run",

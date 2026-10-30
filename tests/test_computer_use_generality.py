@@ -10,6 +10,8 @@ from alysis_code.config import AppConfig
 from alysis_code.embedded_browser_visual import ComputerUseViewer
 from alysis_code.llm.types import LLMResponse, ToolCall
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 def test_repeated_visual_and_subtree_observation_reaches_host(tmp_path):
     calls = []
@@ -69,7 +71,7 @@ def test_goal_facts_are_unicode_exact_and_do_not_certify_task_completion(name, v
     )
 
 
-def test_discovery_is_read_only_and_start_requires_opaque_host_ids(tmp_path):
+def test_discovery_is_read_only_and_start_requires_listed_app_labels(tmp_path):
     inventory = {
         "version": 1,
         "targets": [
@@ -84,17 +86,34 @@ def test_discovery_is_read_only_and_start_requires_opaque_host_ids(tmp_path):
     tools = build_computer_start_tools(
         lambda args: calls.append(args) or BrowserStartHandoff("bound"), inventory
     )
-    assert tools["computer_discover"].run({}) == inventory
+    assert tools["computer_discover"].run({}) == {
+        "version": 1,
+        "targets": [
+            {
+                "app": "研究 Σημειώσεις",
+                "application_ref": inventory["targets"][0]["target_id"],
+                "route": "native",
+            }
+        ],
+    }
     assert calls == []
-    args = {
+    host_args = {
         "target_ids": [inventory["targets"][0]["target_id"]],
         "allowed_actions": [],
         "goal": "Διάβασε τη σημείωση.",
         "constraints": ["Μην πληκτρολογήσεις."],
     }
+    args = {
+        "goal": host_args["goal"],
+        "constraints": host_args["constraints"],
+        "operates_apps": False,
+        "app_steps": [{"app": "研究 Σημειώσεις", "actions": []}],
+    }
     assert isinstance(tools["computer_start"].run(args), BrowserStartHandoff)
-    assert calls == [args]
-    assert "error" in tools["computer_start"].run({**args, "target_ids": ["org.unfamiliar.app"]})
+    assert calls == [host_args], "the host receives the exact ID derived from the plan"
+    assert "error" in tools["computer_start"].run(
+        {**args, "app_steps": [{"app": "org.unfamiliar.app", "actions": []}]}
+    )
     assert len(calls) == 1
     # A controlled model fixture tests handoff plumbing, not language understanding.
     session = create_session(

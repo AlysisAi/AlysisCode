@@ -559,7 +559,11 @@ def _launch_suite_coverage_errors(cases: Sequence[SkillsEvalCase]) -> tuple[str,
         bundled_names = sorted(
             child.name
             for child in root.iterdir()
-            if child.is_dir() and (child / "SKILL.md").is_file()
+            if child.is_dir()
+            and (child / "SKILL.md").is_file()
+            # These evaluations create ordinary CLI sessions without a desktop
+            # host bridge. Computer Use has separate host protocol/runtime tests.
+            and child.name != "computer-use"
         )
         missing_bundled = [name for name in bundled_names if name.casefold() not in expected_by_key]
         if missing_bundled:

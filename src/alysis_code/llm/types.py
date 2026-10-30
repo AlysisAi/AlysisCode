@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -114,6 +114,19 @@ class UsageContract:
         return self.input_token_count_strategy != "none"
 
 
+def parse_token_count(value: Any) -> int | None:
+    """Accept nonnegative integral counts without truncating malformed usage."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed < 0 or (isinstance(value, float) and value != parsed):
+        return None
+    return parsed
+
+
 @dataclass(frozen=True)
 class InputTokenCount:
     input_tokens: int
@@ -136,6 +149,7 @@ class ToolCall:
     name: str
     arguments: dict[str, Any]
     provider_metadata: dict[str, Any] | None = None
+    _resolved_entry_proof: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -161,6 +175,9 @@ class LLMUsage:
     confidence: UsageConfidence = UsageConfidence.REPORTED
     output_includes_reasoning: bool = True
     total_includes_reasoning: bool = True
+    # Interactions can aggregate several model calls; their input total is not
+    # a measurement of one context window.
+    input_tokens_scope: str = "request"
 
     def normalized(self) -> LLMUsage:
         """Return the provider-independent invariant used by accounting.

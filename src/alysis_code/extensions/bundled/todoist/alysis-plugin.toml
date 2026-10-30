@@ -1,0 +1,198 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.todoist"
+name = "Todoist"
+version = "1.0.0"
+description = "Todoist's official remote MCP tools: find and read your tasks and projects. Every change asks you first; deleting and public template links are left out."
+author = "Alysis AI (integration); Todoist (MCP server)"
+license = "MIT"
+homepage = "https://github.com/Doist/todoist-mcp"
+keywords = ["todoist", "mcp", "tasks", "todo", "projects"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Todoist's official remote MCP server (Doist). The sign-in server is todoist.com, the one extra
+# sign-in site. Scope data:read_write (not data:delete or project:delete). Comments and assignments
+# notify other people; project-move can change a project's workspace and visibility; each change asks a
+# person first. Left out: delete-object (permanent), export-project-template (a public link anyone can
+# open), import-project-template (reads an outside file), analyze-project-health (an AI analysis), and
+# the search/fetch pair that repeats find-* and fetch-object.
+[[components.verified_connector]]
+id = "todoist"
+url = "https://ai.todoist.net/mcp"
+resource = "https://ai.todoist.net/mcp"
+oauth_issuer = "https://todoist.com"
+oauth_sign_in_origins = ["https://todoist.com"]
+oauth_client = "dynamic"
+oauth_scopes = ["data:read_write"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "find-tasks"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-tasks-by-date"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-completed-tasks"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-projects"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-sections"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-comments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-reminders"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "view-attachment"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-labels"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-filters"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-activity"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get-productivity-stats"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get-project-health"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get-project-activity-stats"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get-workspace-insights"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get-overview"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "fetch-object"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "user-info"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find-project-collaborators"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list-workspaces"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "add-tasks"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "complete-tasks"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "uncomplete-tasks"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update-tasks"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "reschedule-tasks"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add-projects"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update-projects"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "project-management"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "project-move"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add-sections"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update-sections"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add-comments"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update-comments"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add-reminders"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update-reminders"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add-labels"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update-labels"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add-filters"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update-filters"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "reorder-objects"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "manage-assignments"
+reads_only = false
+
+[security]
+contact = "https://doist.com/security"

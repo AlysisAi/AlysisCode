@@ -1807,15 +1807,26 @@ def build_blast_radius_status_summary(assessment: BlastRadiusAssessment) -> str:
         return ""
     command = (assessment.gate_command or "").strip()
     unattributed_ids = assessment.new_failures or assessment.unattributed
+    reported_failures = (
+        assessment.new_failures
+        + assessment.unattributed
+        + assessment.pre_existing
+        + assessment.agent_authored
+    )
+    if assessment.status == BlastRadiusStatus.UNATTRIBUTED and not reported_failures:
+        # A missing baseline limits comparison, not the observed passing result.
+        # Keep the assessment unchanged: it must not become proof of no regression.
+        template = (
+            "Checks passed: ran {count} nearby test file(s) after the change{detail}; "
+            "no failures were reported. No pre-change baseline covers this scope, "
+            "so a before/after comparison is unavailable."
+        )
     attribution_detail = (
         "I cannot tell whether these failures are mine: "
         f"{_format_ids(unattributed_ids)}. Their cause is UNATTRIBUTED — neither confirmed "
         "pre-existing nor confirmed a regression."
         if unattributed_ids
-        else (
-            "no failures were reported, but the clean result is UNATTRIBUTED because it "
-            "cannot be compared with a baseline."
-        )
+        else ("a before/after comparison is unavailable for this scope.")
     )
     line = template.format(
         count=len(assessment.scope.paths),
@@ -1827,6 +1838,12 @@ def build_blast_radius_status_summary(assessment: BlastRadiusAssessment) -> str:
         attribution_detail=attribution_detail,
         baseline=assessment.baseline_command or "the clean-tree baseline",
     )
+    if assessment.agent_authored:
+        line += f" Failing agent-authored tests: {_format_ids(assessment.agent_authored)}."
+    if assessment.pre_existing:
+        line += (
+            f" Failures also observed before the change: {_format_ids(assessment.pre_existing)}."
+        )
     if assessment.status == BlastRadiusStatus.REGRESSED and assessment.over_broad:
         line += (
             f" Breaking {len(assessment.new_failures)} previously passing tests means the "

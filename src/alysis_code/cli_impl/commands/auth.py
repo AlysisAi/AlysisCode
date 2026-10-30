@@ -31,7 +31,7 @@ from ...provider_auth import (
     provider_auth_setup_options,
 )
 from . import _patchable
-from ._shared import _console
+from ._shared import JSON_OPTION_HELP, _console
 
 auth_app = typer.Typer(
     add_completion=False,
@@ -39,11 +39,6 @@ auth_app = typer.Typer(
 )
 
 ALYSIS_LOGIN_CONNECTION_ID = "alysis"
-
-JSON_OPTION_HELP = (
-    "Emit one machine-readable JSON value on stdout and nothing else. "
-    "Exit code 0 means the command ran; the payload carries the auth state."
-)
 
 
 def _status_payload(
@@ -88,6 +83,27 @@ def _connected_credential_scope(status: Any) -> str | None:
         return None
     scope = str(getattr(status, "credential_scope", None) or "").strip()
     return scope or None
+
+
+def native_provider_status_payload(provider_id: str) -> dict[str, Any]:
+    """Read a fresh provider-owned status for CLI and IDE callers; never cache identity."""
+    try:
+        adapter = create_provider_auth(provider_id)
+        status = adapter.account_status()
+    except ProviderAuthError as exc:
+        return _status_payload(
+            connection=provider_id, authenticated=False, verified=False, error=str(exc)
+        )
+    return _status_payload(
+        connection=provider_id,
+        authenticated=status.connected,
+        account_label=status.account_label,
+        credential_scope=_connected_credential_scope(status),
+        detail=status.detail,
+        transport=f"native Alysis Code client ({adapter.protocol})",
+        display_name=adapter.display_name,
+        verified=bool(status.verified),
+    )
 
 
 def _emit_json(payload: Any) -> None:
@@ -325,37 +341,15 @@ def auth_status(
     cfg = _patchable("load_config", load_config)()
     resolved = _cli_runtime_id(cfg, runtime_id)
     if _use_direct_provider(cfg, resolved, requested=runtime_id):
+        if emit_json:
+            _emit_json(native_provider_status_payload(resolved))
+            return
         try:
             adapter = create_provider_auth(resolved)
             status = adapter.account_status()
         except ProviderAuthError as exc:
-            if emit_json:
-                # The probe answered: the connection is not usable, and the
-                # reason is data rather than a failure of this command.
-                _emit_json(
-                    _status_payload(
-                        connection=resolved,
-                        authenticated=False,
-                        error=str(exc),
-                    )
-                )
-                return
             _console().print(f"[red]Authentication error:[/red] {exc}")
             raise typer.Exit(code=2) from exc
-        if emit_json:
-            _emit_json(
-                _status_payload(
-                    connection=resolved,
-                    authenticated=status.connected,
-                    account_label=status.account_label,
-                    credential_scope=_connected_credential_scope(status),
-                    detail=status.detail,
-                    transport=f"native Alysis Code client ({adapter.protocol})",
-                    display_name=adapter.display_name,
-                    verified=bool(status.verified),
-                )
-            )
-            return
         console = _console()
         console.print(f"Connection: {adapter.display_name} ({resolved})")
         console.print(f"Transport: native Alysis Code client ({adapter.protocol})")

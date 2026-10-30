@@ -373,7 +373,6 @@ from ...skills import (
     validate_skill_bundle,
 )
 from ...step_budget import DEFAULT_CHAT_MAX_STEPS
-from ...swarm_orchestrator import run_swarm
 from ...swarm_trace import SerializedSwarmTraceSink
 from ...task_readiness import EXECUTION_UNREADY_SCOPE_WARNING
 from ...task_scope import (
@@ -390,7 +389,7 @@ from ...tools.registry import (
     summarize_tool_output_chunk,
     tool_input_preview,
 )
-from ...tools.web_search import resolve_web_search_runtime_status
+from ...tools.web_search_runtime import resolve_web_search_runtime_status
 from ...usage_tracker import aggregate_usage_from_session_logs, format_context_percent, format_usd
 from ...verification_repair import TASK_STATUS_COMPLETED_UNVERIFIED
 from ...verify_gate import (
@@ -852,6 +851,12 @@ def _agent_loop_module() -> Any:
     return agent_loop
 
 
+def run_swarm(*args: Any, **kwargs: Any) -> Any:
+    from ...swarm_orchestrator import run_swarm as run_impl
+
+    return run_impl(*args, **kwargs)
+
+
 def build_tools(*args: Any, **kwargs: Any) -> Any:
     return _agent_loop_module().build_tools(*args, **kwargs)
 
@@ -885,6 +890,12 @@ def set_session_active_workdir(*args: Any, **kwargs: Any) -> Any:
 
 
 def run_agent(*args: Any, **kwargs: Any) -> Any:
+    from ...cli_run_deadline import finish_expired_managed_launch
+
+    if not args:
+        expired = finish_expired_managed_launch(**kwargs)
+        if expired is not None:
+            return expired
     return _agent_loop_module().run_agent(*args, **kwargs)
 
 

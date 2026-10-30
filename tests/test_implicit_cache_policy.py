@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,8 +99,10 @@ def test_subscription_factory_preview_and_diagnostics_agree_on_implicit_caching(
         assert policy["strategy"] == "implicit_provider"
         assert policy["status"] == "enabled"
         assert policy["enabled"] is True
+        # No session key is passed here, so none is emitted; the route allows only the key.
         assert policy["emitted_fields"] == []
-        assert policy["emits_request_fields"] is False
+        assert policy["allowed_fields"] == ["prompt_cache_key"]
+        assert policy["emits_request_fields"] is True
         assert policy["trusted_usage_fields"] == ["cache_read_input_tokens"]
         assert _prefix_shape(policy).protected_prefix_message_count == 3
     assert client.prompt_cache_key is None
@@ -231,12 +234,15 @@ def test_explicit_cache_availability_does_not_activate_prefix_protection(profile
 
 def test_subscription_config_reload_preserves_cache_policy_and_route(monkeypatch, tmp_path) -> None:
     cfg = _config(_subscription_profile())
-    client = make_llm_client(cfg=cfg, api_key="", model=cfg.model)
+    client = make_llm_client(
+        cfg=cfg, api_key="", model=cfg.model, prompt_cache_key="synthetic-stream-key"
+    )
     route = client.route_identity
     policy = client.prompt_cache_policy_metadata.copy()
     session = SimpleNamespace(
         cfg=cfg,
         client=client,
+        prompt_cache_stream_key="synthetic-stream-key",
         router_client=None,
         conversation_compactor=None,
         mode="review",
@@ -255,9 +261,10 @@ def test_subscription_config_reload_preserves_cache_policy_and_route(monkeypatch
     assert client.prompt_cache_policy_metadata == policy
     assert client.route_identity == route
     assert client.prompt_cache_policy_metadata["enabled"] is True
+    assert client.prompt_cache_policy_metadata["emitted_fields"] == ["prompt_cache_key"]
 
 
-def test_subscription_prepared_request_emits_no_cache_fields_and_keeps_reported_hits(
+def test_subscription_prepared_request_emits_only_hashed_cache_key_and_keeps_reported_hits(
     monkeypatch,
 ) -> None:
     captured = []
@@ -310,17 +317,18 @@ def test_subscription_prepared_request_emits_no_cache_fields_and_keeps_reported_
     response = client.chat(messages=[{"role": "user", "content": "synthetic request"}])
 
     assert len(captured) == 1
-    assert (
-        not {"prompt_cache_key", "prompt_cache_retention", "cache_control", "cached_content"}
-        & captured[0].keys()
-    )
+    assert not {"prompt_cache_retention", "cache_control", "cached_content"} & captured[0].keys()
+    # Only a digest of the session key reaches the provider, never the raw value.
+    wire_key = captured[0]["prompt_cache_key"]
+    assert re.fullmatch(r"alysis:codex:[0-9a-f]{32}", wire_key)
+    assert "synthetic-key" not in json.dumps(captured[0])
     assert response.usage is not None
     assert response.usage.cache_read_input_tokens == 800
-    assert client.prompt_cache_policy_metadata["emitted_fields"] == []
-    _assert_request_strategy_preserved(client, response)
+    assert client.prompt_cache_policy_metadata["emitted_fields"] == ["prompt_cache_key"]
+    _assert_request_strategy_preserved(client, response, emitted_fields=["prompt_cache_key"])
 
 
-def _assert_request_strategy_preserved(client, response) -> None:
+def _assert_request_strategy_preserved(client, response, *, emitted_fields=()) -> None:
     expected = client.prompt_cache_policy_metadata["strategy"]
     usage_context = usage_context_from_client_response(
         client=client, response=response, operation="main_llm"
@@ -330,7 +338,7 @@ def _assert_request_strategy_preserved(client, response) -> None:
     telemetry = last_provider_call_summary()
     assert telemetry["cache_policy"]["strategy"] == expected
     assert telemetry["cache_policy"]["enabled"] is True
-    assert telemetry["cache_policy"]["emitted_fields"] == []
+    assert telemetry["cache_policy"]["emitted_fields"] == list(emitted_fields)
     assert telemetry["request_plan"]["cache_strategy"] == expected
 
 

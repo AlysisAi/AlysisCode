@@ -12,6 +12,7 @@ model is told the git policy up front in the environment context.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -84,7 +85,9 @@ def _bwrap_ro_binds(args: list[str]) -> list[str]:
     ]
 
 
-def _bwrap_args(tmp_path: Path, **kwargs) -> list[str]:
+def _bwrap_args(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs) -> list[str]:
+    # Mount-policy tests must not discover SDKs from the CI runner's host PATH.
+    monkeypatch.setenv("PATH", os.defpath)
     args, _env = _build_bwrap_argv(
         root=tmp_path,
         cwd=tmp_path,
@@ -98,21 +101,25 @@ def _bwrap_args(tmp_path: Path, **kwargs) -> list[str]:
     return args
 
 
-def test_bwrap_protects_git_by_default(tmp_path: Path) -> None:
+def test_bwrap_protects_git_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / ".git").mkdir()
-    assert "/workspace/.git" in _bwrap_ro_binds(_bwrap_args(tmp_path))
+    assert "/workspace/.git" in _bwrap_ro_binds(_bwrap_args(tmp_path, monkeypatch))
 
 
-def test_bwrap_safe_git_write_skips_protection(tmp_path: Path) -> None:
+def test_bwrap_safe_git_write_skips_protection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     (tmp_path / ".git").mkdir()
-    args = _bwrap_args(tmp_path, allow_repo_meta_writes=True)
+    args = _bwrap_args(tmp_path, monkeypatch, allow_repo_meta_writes=True)
     assert "/workspace/.git" not in _bwrap_ro_binds(args)
 
 
-def test_bwrap_honors_protect_repo_meta_setting(tmp_path: Path) -> None:
+def test_bwrap_honors_protect_repo_meta_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Previously welded to the hardened profile; the config knob was dead.
     (tmp_path / ".git").mkdir()
-    args = _bwrap_args(tmp_path, protect_repo_meta=False)
+    args = _bwrap_args(tmp_path, monkeypatch, protect_repo_meta=False)
     assert "/workspace/.git" not in _bwrap_ro_binds(args)
 
 
@@ -153,6 +160,15 @@ def test_settings_parse_safe_git_writes(monkeypatch) -> None:
 
 
 def test_git_policy_line_states_the_allowance(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    # This assertion describes the other backends' restricted Git allowance.
+    # The native Mac policy permits real Git, including literal command lists.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_BACKEND", "docker")
+    monkeypatch.setattr(
+        "alysis_code.sandbox_runner.select_shell_sandbox_backend",
+        lambda _: SimpleNamespace(backend="docker"),
+    )
     monkeypatch.delenv("ALYSIS_SHELL_SANDBOX_SAFE_GIT_WRITES", raising=False)
     monkeypatch.delenv("ALYSIS_SHELL_SANDBOX_PROTECT_REPO_META", raising=False)
     monkeypatch.delenv("ALYSIS_SHELL_SANDBOX_MODE", raising=False)
@@ -171,6 +187,21 @@ def test_git_policy_line_states_the_allowance(monkeypatch) -> None:
 
     cfg.extra_fields["shell_sandbox"] = {"mode": "off"}
     assert _sandbox_git_policy_line(cfg) is None
+
+
+def test_git_policy_line_describes_native_mac_scope(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "alysis_code.sandbox_runner.select_shell_sandbox_backend",
+        lambda _: SimpleNamespace(backend="seatbelt"),
+    )
+    cfg = AppConfig(model="test-model")
+    cfg.extra_fields["shell_sandbox"] = {"safe_git_writes": True, "protect_repo_meta": True}
+    line = _sandbox_git_policy_line(cfg)
+    assert line and "real Git under Seatbelt" in line and "&&, || or ;" in line
+    assert "github_auth" in line and "credentials" in line
+    assert "network_domains" in line and "unix_sockets" in line
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap unavailable")

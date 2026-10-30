@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from alysis_code.agent.session import AgentSession
@@ -37,7 +38,11 @@ def test_emit_terminal_error_writes_redacted_joinable_record(tmp_path: Path) -> 
     logger = build_crash_diagnostic_logger(path=diag_path, run_id="r", session_id="s")
     store = _FakeStore()
     session = SimpleNamespace(store=store, crash_diagnostics=logger)
-    error = Exception("LLM error 401: Incorrect API key provided: sk-ABCDEFGHIJKLMNOP1234")
+    error = LLMError("Incorrect API key provided: sk-ABCDEFGHIJKLMNOP1234")
+    request = httpx.Request("POST", "https://provider.invalid/v1/responses")
+    error.__cause__ = httpx.HTTPStatusError(
+        "Request rejected", request=request, response=httpx.Response(401, request=request)
+    )
 
     # Unbound call with a duck-typed self keeps the test off the heavy session factory.
     AgentSession._emit_terminal_error(session, error)
@@ -87,7 +92,7 @@ class _FailingClient:
         temperature: float | None = None,
     ) -> Any:
         _ = messages, tools, stream, on_text_delta, temperature
-        raise LLMError("LLM request failed: connection timed out")
+        raise LLMError("LLM request failed") from httpx.ReadTimeout("Fixture deadline")
 
 
 def test_run_turn_records_terminal_error_to_store_end_to_end(tmp_path: Path) -> None:
@@ -120,7 +125,7 @@ def test_run_turn_records_terminal_error_to_store_end_to_end(tmp_path: Path) -> 
 
     payload = terminal[-1]
     assert payload["operation"] == "run_turn"
-    # 'connection timed out' is a transient provider outage, joinable across modes.
+    # A typed transport timeout is a transient provider outage across modes.
     assert payload["failure_category"] == FailureCategory.PROVIDER_UNAVAILABLE.value
     assert payload["failure_category"] in {member.value for member in FailureCategory}
     assert "error_summary" in payload

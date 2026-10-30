@@ -9,6 +9,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any
 
+from ..computer_use_call_diagnostics import RESULT_CODES as COMPUTER_USE_RESULT_CODES
 from ..llm.metadata import (
     ANTHROPIC_MESSAGES_PROVIDER_METADATA_KEY,
     GEMINI_GENERATE_CONTENT_PROVIDER_METADATA_KEY,
@@ -116,15 +117,29 @@ _COMPUTER_USE_PRIVATE_IDENTIFIER_KEYS = frozenset(
         "previous_snapshot_id",
         "snapshot_id",
         "window_id",
+        "window_ref",
+        "inventory_id",
         "window_title_digest",
     }
 )
 _REDACTED_COMPUTER_USE_IDENTIFIER = "[redacted: transient computer use identifier]"
+_COMPUTER_USE_WINDOW_REFERENCE_RE = re.compile(
+    r"window_(?:ref|inventory)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 _COMPUTER_USE_RAW_IDENTIFIER_RE = re.compile(
-    r"(?:[\"']?)(?:element_id|artifact_id|artifactId|upload_id|uploadId|table_id|account_element_id|status_element_id|merchant_element_id|period_element_id|period_from_element_id|period_through_element_id|previous_snapshot_id|snapshot_id)(?:[\"']?)"
+    r"(?:[\"']?)(?:element_id|artifact_id|artifactId|upload_id|uploadId|table_id|account_element_id|status_element_id|merchant_element_id|period_element_id|period_from_element_id|period_through_element_id|previous_snapshot_id|snapshot_id|window_ref|inventory_id)(?:[\"']?)"
     r"\s*:\s*(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
     re.IGNORECASE,
 )
+
+
+def redact_computer_use_window_references(text: str) -> str:
+    """Project terminal prose without retaining issued or invented window tokens.
+
+    This projection is display-only; private tool dispatch remains byte-exact.
+    """
+    return _COMPUTER_USE_WINDOW_REFERENCE_RE.sub("[window reference]", text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,7 +308,7 @@ def _redact_computer_use_identifier_fields(value: Any, *, parent_key: str = "") 
     if parent_key.casefold() in (
         _COMPUTER_USE_PRIVATE_IDENTIFIER_KEYS
         | _COMPUTER_USE_NUMERIC_TAINT_KEYS
-        | {"_raw_arguments"}
+        | {"_raw_arguments", "assertions"}
     ):
         return _REDACTED_COMPUTER_USE_IDENTIFIER
     if isinstance(value, dict):
@@ -370,6 +385,20 @@ def redact_sensitive_tool_result(
             stub["retryable"] = False
         else:
             stub["error"] = "Sensitive tool operation failed; details redacted."
+            if normalized_tool in _COMPUTER_USE_TOOL_NAMES:
+                # Closed diagnostics survive persistence/duplicate guards. These strings
+                # carry no recovery authority; that remains in the operation-local latch.
+                code = result.get("error")
+                if not isinstance(code, str) or code not in COMPUTER_USE_RESULT_CODES:
+                    code = result.get("error_code")
+                if isinstance(code, str) and code in COMPUTER_USE_RESULT_CODES - {"none", "other"}:
+                    stub["error_code"] = code
+                previous = result.get("previous_error_code")
+                if isinstance(previous, str) and previous in COMPUTER_USE_RESULT_CODES - {
+                    "none",
+                    "other",
+                }:
+                    stub["previous_error_code"] = previous
     return stub
 
 
@@ -1000,6 +1029,7 @@ def _project_openai_computer_use_replay(
     provider_call_ids: list[str],
     tool_names: list[str],
     tool_arguments: list[Any],
+    allow_web_search: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     output_items = metadata.get("output_items")
     if not isinstance(output_items, list):
@@ -1019,6 +1049,22 @@ def _project_openai_computer_use_replay(
         if not isinstance(raw_item, dict):
             raise _computer_use_contract_error()
         item_type = str(raw_item.get("type") or "")
+        if item_type == "web_search_call" and allow_web_search:
+            # Hosted search and local functions can share a Responses output
+            # batch. This is provider replay data, never a local action. Keep
+            # only protocol fields in the same transient envelope as call IDs.
+            if not isinstance(raw_item.get("id"), str) or not isinstance(
+                raw_item.get("action"), dict
+            ):
+                raise _computer_use_contract_error()
+            projected_items.append(
+                {
+                    key: copy.deepcopy(raw_item[key])
+                    for key in ("type", "id", "status", "action")
+                    if key in raw_item
+                }
+            )
+            continue
         if item_type == "function_call":
             native_id = str(raw_item.get("call_id") or raw_item.get("id") or "")
             if (
@@ -1082,11 +1128,28 @@ def _project_openai_computer_use_replay(
                     if (
                         not isinstance(text, str)
                         or not isinstance(annotations, list)
-                        or annotations
+                        or (annotations and not allow_web_search)
                     ):
                         raise _computer_use_contract_error()
+                    projected_annotations = []
+                    for annotation in annotations:
+                        if (
+                            not isinstance(annotation, dict)
+                            or annotation.get("type") != "url_citation"
+                            or not isinstance(annotation.get("url"), str)
+                            or not isinstance(annotation.get("title"), str)
+                            or type(annotation.get("start_index")) is not int
+                            or type(annotation.get("end_index")) is not int
+                        ):
+                            raise _computer_use_contract_error()
+                        projected_annotations.append(
+                            {
+                                key: annotation[key]
+                                for key in ("type", "url", "title", "start_index", "end_index")
+                            }
+                        )
                     projected_content.append(
-                        {"type": "output_text", "text": text, "annotations": []}
+                        {"type": "output_text", "text": text, "annotations": projected_annotations}
                     )
                     continue
                 if part_type == "refusal":
@@ -1117,6 +1180,7 @@ def _project_anthropic_computer_use_replay(
     provider_call_ids: list[str],
     tool_names: list[str],
     tool_arguments: list[Any],
+    allow_web_search: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     content_blocks = metadata.get("content_blocks")
     if not isinstance(content_blocks, list):
@@ -1136,6 +1200,26 @@ def _project_anthropic_computer_use_replay(
         if not isinstance(raw_block, dict):
             raise _computer_use_contract_error()
         block_type = str(raw_block.get("type") or "")
+        if block_type == "server_tool_use" and allow_web_search:
+            if (
+                raw_block.get("name") != "web_search"
+                or not isinstance(raw_block.get("id"), str)
+                or not isinstance(raw_block.get("input"), dict)
+            ):
+                raise _computer_use_contract_error()
+            projected_blocks.append(
+                {key: copy.deepcopy(raw_block[key]) for key in ("type", "id", "name", "input")}
+            )
+            continue
+        if block_type == "web_search_tool_result" and allow_web_search:
+            if not isinstance(raw_block.get("tool_use_id"), str) or not isinstance(
+                raw_block.get("content"), (list, dict)
+            ):
+                raise _computer_use_contract_error()
+            projected_blocks.append(
+                {key: copy.deepcopy(raw_block[key]) for key in ("type", "tool_use_id", "content")}
+            )
+            continue
         if block_type == "tool_use":
             native_id = str(raw_block.get("id") or "")
             if (
@@ -1173,7 +1257,24 @@ def _project_anthropic_computer_use_replay(
         if block_type == "text":
             if not isinstance(raw_block.get("text"), str):
                 raise _computer_use_contract_error()
-            projected_blocks.append({"type": "text", "text": raw_block["text"]})
+            projected_text = {"type": "text", "text": raw_block["text"]}
+            if allow_web_search and raw_block.get("citations") is not None:
+                citations = raw_block["citations"]
+                if not isinstance(citations, list) or any(
+                    not isinstance(citation, dict)
+                    or citation.get("type") != "web_search_result_location"
+                    for citation in citations
+                ):
+                    raise _computer_use_contract_error()
+                projected_text["citations"] = [
+                    {
+                        key: copy.deepcopy(citation[key])
+                        for key in ("type", "url", "title", "cited_text", "encrypted_index")
+                        if key in citation
+                    }
+                    for citation in citations
+                ]
+            projected_blocks.append(projected_text)
             continue
         raise _computer_use_contract_error()
     return {"content_blocks": projected_blocks}, native_call_ids
@@ -1284,6 +1385,7 @@ def _project_computer_use_provider_metadata(
     provider_call_ids: list[str],
     tool_names: list[str],
     tool_arguments: list[Any],
+    allow_web_search: bool = False,
 ) -> tuple[dict[str, Any] | None, list[str] | None]:
     if not isinstance(provider_metadata, dict):
         return None, None
@@ -1315,6 +1417,15 @@ def _project_computer_use_provider_metadata(
             provider_call_ids=provider_call_ids,
             tool_names=tool_names,
             tool_arguments=tool_arguments,
+            **(
+                {"allow_web_search": allow_web_search}
+                if key
+                in {
+                    OPENAI_RESPONSES_PROVIDER_METADATA_KEY,
+                    ANTHROPIC_MESSAGES_PROVIDER_METADATA_KEY,
+                }
+                else {}
+            ),
         )
         if native_call_ids is not None and candidate_ids != native_call_ids:
             raise _computer_use_contract_error()
@@ -1358,6 +1469,7 @@ def canonicalize_computer_use_response_for_dispatch(
     *,
     used_protocol_ids: set[str] | None = None,
     allowed_tool_names: Collection[str] | None = None,
+    allow_web_search: bool = False,
 ) -> Any:
     """Own Computer Use linkage IDs and reject tools outside the fixed contract.
 
@@ -1417,12 +1529,15 @@ def canonicalize_computer_use_response_for_dispatch(
         provider_call_ids=provider_call_ids,
         tool_names=tool_names,
         tool_arguments=tool_arguments,
+        allow_web_search=allow_web_search and allowed_tool_names is not None,
     )
     replay_call_ids = native_call_ids if native_call_ids is not None else call_ids
     provider_call_id_omitted = _gemini_function_call_id_omissions(
         provider_metadata,
         expected_count=len(response_tool_calls),
     )
+
+    from ..llm.resolved_entry import canonical_call_proof
 
     canonical_calls: list[Any] = []
     for index, tool_call in enumerate(response_tool_calls):
@@ -1441,6 +1556,11 @@ def canonicalize_computer_use_response_for_dispatch(
                     id=call_ids[index],
                     name=tool_names[index],
                     provider_metadata=tool_metadata,
+                    **(
+                        {"_resolved_entry_proof": canonical_call_proof(tool_call, call_ids[index])}
+                        if hasattr(tool_call, "_resolved_entry_proof")
+                        else {}
+                    ),
                 )
             )
         except (TypeError, ValueError):
@@ -1504,7 +1624,17 @@ def strip_computer_use_provider_state_for_persistence(response: Any) -> Any:
     stripped_calls: list[Any] = []
     for tool_call in getattr(response, "tool_calls", None) or []:
         try:
-            stripped_calls.append(replace(tool_call, provider_metadata=None))
+            stripped_calls.append(
+                replace(
+                    tool_call,
+                    provider_metadata=None,
+                    **(
+                        {"_resolved_entry_proof": None}
+                        if hasattr(tool_call, "_resolved_entry_proof")
+                        else {}
+                    ),
+                )
+            )
         except (TypeError, ValueError):
             stripped_calls.append(
                 _PersistenceSafeToolCall(

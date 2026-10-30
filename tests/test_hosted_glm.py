@@ -9,6 +9,7 @@ import pytest
 from alysis_code.config import AppConfig
 from alysis_code.llm.factory import make_llm_client
 from alysis_code.llm.openai_compat import attach_provider_metadata_to_assistant_message
+from alysis_code.model_reasoning import hosted_model_capabilities, model_reasoning_capabilities
 from alysis_code.model_registry import ModelRegistry
 from alysis_code.profile_presets import get_preset, make_profile_from_preset
 from alysis_code.profiles import add_profile, set_active_profile
@@ -44,10 +45,29 @@ def test_hosted_glm_metadata_and_reasoning_match_the_gateway():
     assert contract.mode == ALWAYS_ON
     assert contract.replay_reasoning_content
     assert contract.values == ("low", "high", "max")
+    assert contract.default == "max"
+
+
+@pytest.mark.parametrize(
+    "model,values,default",
+    [
+        ("glm-5.3-flash", ("low", "high", "max"), "max"),
+        ("glm-5.3", ("low", "high", "max"), "max"),
+    ],
+)
+def test_overlapping_hosted_glm_ids_keep_their_exact_account_and_picker_efforts(
+    model, values, default
+):
+    cfg = hosted_config()
+    cfg.model = model
+    for capabilities in (hosted_model_capabilities(model), model_reasoning_capabilities(cfg)):
+        assert tuple(row["id"] for row in capabilities["reasoning_efforts"]) == values
+        assert capabilities["default_reasoning_effort"] == default
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_hosted_glm_factory_round_trips_tool_reasoning_without_provider_key(stream):
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
+def test_hosted_glm_factory_round_trips_tool_reasoning_without_provider_key(stream, effort):
     captured = []
     tool = {
         "id": "call_one",
@@ -60,7 +80,7 @@ def test_hosted_glm_factory_round_trips_tool_reasoning_without_provider_key(stre
         captured.append(body)
         assert request.headers["authorization"] == "Bearer slk_test"
         assert body["model"] == "glm-5.3-flash"
-        assert body["reasoning_effort"] == "low"
+        assert body["reasoning_effort"] == effort
         assert body.get("thinking", {}).get("type") != "disabled"
         if len(captured) == 1:
             message = {
@@ -86,7 +106,7 @@ def test_hosted_glm_factory_round_trips_tool_reasoning_without_provider_key(stre
         cfg=hosted_config(),
         api_key="slk_test",
         model="glm-5.3-flash",
-        reasoning_effort="low",
+        reasoning_effort=effort,
         transport=httpx.MockTransport(handle),
     )
     history = [{"role": "user", "content": "Read README.md"}]

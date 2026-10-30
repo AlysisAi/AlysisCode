@@ -16,6 +16,8 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.execution_deadline import ExecutionDeadline
 from alysis_code.llm.openai_compat import LLMError, LLMResponse, ToolCall
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 
 
 class _ScriptedClient:
@@ -46,6 +48,10 @@ def _session(
     checkpoint: bool = False,
     checks: bool = True,
 ):
+    class EvidenceSurface(NoopSurface):
+        def request_approval(self, request):
+            return ApprovalDecision(request.kind == "shell_run")
+
     monkeypatch.setenv("ALYSIS_VERIFY_SANDBOX_MODE", "off")
     monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     command = '"' + sys.executable.replace("\\", "/") + '" check.py'
@@ -66,8 +72,72 @@ def _session(
         one_shot_execution=True,
         session_log_dir_override=root / "logs",
         session_id_override=name,
+        surface=EvidenceSurface(),
     )
     return session, command
+
+
+@pytest.mark.parametrize("default_output", [False, True])
+def test_nested_project_interpretation_writes_and_acceptance_use_the_same_exact_path(
+    tmp_path, monkeypatch, default_output
+):
+    import subprocess
+
+    from alysis_code.agent.task_artifact_binding import declared_changed_output_paths
+
+    repo = tmp_path / "repo"
+    project = repo / "module"
+    project.mkdir(parents=True)
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    (repo / "keep.txt").write_text("parent original")
+    (project / "keep.txt").write_text("project original")
+    if default_output:
+        monkeypatch.setenv("ALYSIS_DESKTOP_TASK_OUTPUT_DIRECTORY", "outputs/current")
+    session, _ = _session(project, monkeypatch, checks=False)
+    instruction = "Create note.txt and preserve keep.txt unchanged."
+    relative = "outputs/current/note.txt" if default_output else "note.txt"
+    try:
+        session.client = _ScriptedClient(
+            (
+                "task_artifacts",
+                {
+                    "paths": [
+                        {
+                            "directory": "",
+                            "name": "note.txt",
+                            "role": "required_output",
+                            "location": "task_output" if default_output else "workspace",
+                            "path_base": "active_workdir",
+                            "evidence_quote": instruction,
+                        },
+                        {
+                            "directory": "",
+                            "name": "keep.txt",
+                            "role": "preservation_target",
+                            "location": "workspace",
+                            "path_base": "active_workdir",
+                            "evidence_quote": instruction,
+                        },
+                    ]
+                },
+            ),
+            ("fs_write", {"path": relative, "content": "new note\n"}),
+            ("fs_read", {"path": relative}),
+        )
+        session.run_turn(instruction)
+        contract = session._turn_execution_state.acceptance_contract
+        assert contract.path_refs[0].workspace_relative_path == f"module/{relative}"
+        assert contract.path_refs[1].workspace_relative_path == "module/keep.txt"
+        assert (project / relative).read_text() == "new note\n"
+        assert not (repo / relative).exists()
+        assert (repo / "keep.txt").read_text() == "parent original"
+        assert (project / "keep.txt").read_text() == "project original"
+        assert declared_changed_output_paths(
+            session._turn_execution_state, relative_to="module"
+        ) == [relative]
+        assert not contract.problem_names()
+    finally:
+        session.close()
 
 
 def _rewrite_checker(session, command):
@@ -80,6 +150,133 @@ def _rewrite_checker(session, command):
     )
     assert not session.last_turn_outcome["verified_success"]
     assert session.last_turn_outcome["generation"] == 1
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("later_code_edit", [False, True])
+def test_inferred_checks_follow_current_turn_edits_without_resetting_task_authority(
+    tmp_path, monkeypatch, resume, later_code_edit
+):
+    (tmp_path / "source.py").write_text("value = 1\n")
+    checker = "from source import value\nassert value in (2, 3)\n"
+    (tmp_path / "check.py").write_text(checker)
+    session, command = _session(tmp_path, monkeypatch)
+    try:
+        session.client = _ScriptedClient(
+            ("fs_read", {"path": "source.py"}),
+            ("fs_write", {"path": "source.py", "content": "value = 2\n"}),
+            ("shell_run", {"cmd": command}),
+        )
+        session.run_turn("Update source.py to set value to 2. Preserve check.py unchanged.")
+        assert session.verification_contract_type == "repo_native"
+        assert session.last_turn_outcome["verified_success"]
+        task_id = session._task_evidence_state.task_id
+        snapshot = session._task_evidence_state.snapshot
+        if resume:
+            recovered = session.store.events_snapshot()
+            old_session = session
+            session, _ = _session(tmp_path, monkeypatch, name="resumed")
+            restore_conversation_evidence(
+                session, recovered, source_session_id=old_session.store.session_id
+            )
+            old_session.close()
+        instruction = (
+            "Update source.py to set value to 3. Preserve check.py unchanged."
+            if later_code_edit
+            else "Create note.txt and inventory.csv. Keep every existing file unchanged."
+        )
+        calls = (
+            [
+                ("fs_read", {"path": "source.py"}),
+                ("fs_write", {"path": "source.py", "content": "value = 3\n"}),
+            ]
+            if later_code_edit
+            else [
+                (
+                    "task_artifacts",
+                    {
+                        "paths": [
+                            {
+                                "directory": "",
+                                "name": name,
+                                "role": "required_output",
+                                "evidence_quote": instruction,
+                            }
+                            for name in ("note.txt", "inventory.csv")
+                        ]
+                    },
+                ),
+                ("fs_write", {"path": "note.txt", "content": "A new note.\n"}),
+                ("fs_read", {"path": "note.txt"}),
+                ("fs_write", {"path": "inventory.csv", "content": "item,count\nmap,2\n"}),
+                ("fs_read", {"path": "inventory.csv"}),
+            ]
+        )
+        session.client = _ScriptedClient(*calls)
+        event_start = len(session.store.events_snapshot())
+        session.run_turn(instruction)
+        state = session._turn_execution_state
+        assert session._task_evidence_state.task_id == task_id
+        assert session._task_evidence_state.snapshot == snapshot
+        assert "source.py" in state.touched_repo_paths
+        assert (tmp_path / "check.py").read_text() == checker
+        assert state.verification_attempt_count == 0
+        if later_code_edit:
+            assert state.turn_touched_repo_paths == {"source.py"}
+            assert not session.last_turn_outcome["verified_success"]
+            assert "verification_not_attempted" in session.last_turn_outcome["problems"]
+        else:
+            from alysis_code.agent.task_artifact_binding import declared_changed_output_paths
+
+            assert state.turn_touched_repo_paths == {"note.txt", "inventory.csv"}
+            assert session.last_turn_outcome["verified_success"], session.last_turn_outcome
+            assert session.last_turn_outcome["problems"] == []
+            assert declared_changed_output_paths(state) == ["inventory.csv", "note.txt"]
+            assert session.client.serial == len(calls) + 1
+            assert not any(
+                event["type"] == "completion_gate_nudge"
+                for event in session.store.events_snapshot()[event_start:]
+            )
+    finally:
+        session.close()
+
+
+def test_real_turn_output_declaration_matches_final_task_and_does_not_recycle_prior_paths(
+    tmp_path, monkeypatch
+):
+    from alysis_code.agent.task_artifact_binding import declared_changed_output_paths
+
+    session, _ = _session(tmp_path, monkeypatch, checks=False)
+    instruction = "Create inventory.csv."
+    try:
+        session.client = _ScriptedClient(
+            (
+                "task_artifacts",
+                {
+                    "paths": [
+                        {
+                            "directory": "",
+                            "name": "inventory.csv",
+                            "role": "required_output",
+                            "evidence_quote": instruction,
+                        }
+                    ]
+                },
+            ),
+            ("fs_write", {"path": "inventory.csv", "content": "item,total\nbooks,7\n"}),
+            ("fs_read", {"path": "inventory.csv"}),
+        )
+        assert session.run_turn(instruction) == 0
+        state = session._turn_execution_state
+        assert state.acceptance_contract.task_id == session.last_turn_outcome["task_id"]
+        assert session.last_turn_outcome["terminal"] is True
+        assert declared_changed_output_paths(state) == ["inventory.csv"]
+        session.client = _ScriptedClient(("fs_read", {"path": "inventory.csv"}))
+        session.run_turn("Read inventory.csv and explain its contents. Do not change files.")
+        assert session._turn_execution_state.turn_touched_repo_paths == set()
+        assert declared_changed_output_paths(session._turn_execution_state) == []
+    finally:
+        session.close()
 
 
 @pytest.mark.parametrize("relation", ["continuation", "amendment"])

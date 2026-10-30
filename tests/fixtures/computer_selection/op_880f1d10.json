@@ -1,0 +1,770 @@
+{
+ "source": "Operation 880f1d10-a2bd-4fb9-a41f-64a7349fa35c, chat_20261012t202646z_f1bbf65e (12 Oct 2026), app 3c196eca, engine 99b2e1ee. The model-visible list (107 apps: 7 running, 96 installed, 4 no_window including TextEdit) keeps the captured labels, order and availability; third-party names are replaced with neutral labels and target IDs are synthetic (the session log holds only labels). computer_start_calls are the three captured model arguments, verbatim. The captured turn had 14 tool calls: discover, start, discover, start, nine discovers, start.",
+ "inventory": {
+  "version": 1,
+  "targets": [
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100001",
+    "name": "Alysis Code",
+    "route": "native"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100002",
+    "name": "Calculator",
+    "route": "native"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100003",
+    "name": "Running App 1",
+    "route": "native"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100004",
+    "name": "Running App 2",
+    "route": "native"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100005",
+    "name": "Finder",
+    "route": "native"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100006",
+    "name": "Messages",
+    "route": "native"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100007",
+    "name": "Terminal",
+    "route": "native"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100008",
+    "name": "Installed App 1",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100009",
+    "name": "Windowless App 1",
+    "route": "native",
+    "availability": "no_window"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10000a",
+    "name": "Installed App 2",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10000b",
+    "name": "Installed App 3",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10000c",
+    "name": "Installed App 4",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10000d",
+    "name": "Windowless App 2",
+    "route": "native",
+    "availability": "no_window"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10000e",
+    "name": "Installed App 5",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10000f",
+    "name": "Installed App 6",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100010",
+    "name": "Installed App 7",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100011",
+    "name": "Installed App 8",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100012",
+    "name": "Xcode",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100013",
+    "name": "App Store",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100014",
+    "name": "Automator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100015",
+    "name": "Books",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100016",
+    "name": "Calendar",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100017",
+    "name": "Chess",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100018",
+    "name": "Clock",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100019",
+    "name": "Contacts",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10001a",
+    "name": "Dictionary",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10001b",
+    "name": "FaceTime",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10001c",
+    "name": "Find My",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10001d",
+    "name": "Font Book",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10001e",
+    "name": "Freeform",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10001f",
+    "name": "Games",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100020",
+    "name": "Home",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100021",
+    "name": "Image Playground",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100022",
+    "name": "Journal",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100023",
+    "name": "Mail",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100024",
+    "name": "Maps",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100025",
+    "name": "Mission Control",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100026",
+    "name": "Music",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100027",
+    "name": "Notes",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100028",
+    "name": "Phone",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100029",
+    "name": "Photo Booth",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10002a",
+    "name": "Photos",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10002b",
+    "name": "Podcasts",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10002c",
+    "name": "Preview",
+    "route": "native",
+    "availability": "no_window"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10002d",
+    "name": "QuickTime Player",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10002e",
+    "name": "Reminders",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10002f",
+    "name": "Shortcuts",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100030",
+    "name": "Stickies",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100031",
+    "name": "Stocks",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100032",
+    "name": "TV",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100033",
+    "name": "TextEdit",
+    "route": "native",
+    "availability": "no_window"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100034",
+    "name": "Time Machine",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100035",
+    "name": "Tips",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100036",
+    "name": "Activity Monitor",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100037",
+    "name": "AirPort Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100038",
+    "name": "Audio MIDI Setup",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100039",
+    "name": "Bluetooth File Exchange",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10003a",
+    "name": "ColorSync Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10003b",
+    "name": "Console",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10003c",
+    "name": "Digital Color Meter",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10003d",
+    "name": "Disk Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10003e",
+    "name": "Grapher",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10003f",
+    "name": "Magnifier",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100040",
+    "name": "Migration Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100041",
+    "name": "Print Center",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100042",
+    "name": "Screen Sharing",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100043",
+    "name": "Script Editor",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100044",
+    "name": "VoiceOver Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100045",
+    "name": "Voice Memos",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100046",
+    "name": "Weather",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100047",
+    "name": "iPhone Mirroring",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100048",
+    "name": "Display Calibrator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100049",
+    "name": "AVB Configuration",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10004a",
+    "name": "Accessibility Reader",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10004b",
+    "name": "Add Printer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10004c",
+    "name": "Apple Diagnostics",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10004d",
+    "name": "Archive Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10004e",
+    "name": "DVD Player",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10004f",
+    "name": "Desk View",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100050",
+    "name": "Directory Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100051",
+    "name": "Expansion Slot Utility",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100052",
+    "name": "Feedback Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100053",
+    "name": "Folder Actions Setup",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100054",
+    "name": "Ticket Viewer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100055",
+    "name": "Wireless Diagnostics",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100056",
+    "name": "AuthorizationPromptService",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100057",
+    "name": "Batteries",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100058",
+    "name": "Bluetooth Setup Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100059",
+    "name": "BluetoothUIServer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10005a",
+    "name": "Captive Network Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10005b",
+    "name": "Certificate Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10005c",
+    "name": "Database Events",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10005d",
+    "name": "Enhanced Logging",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10005e",
+    "name": "Erase Assistant",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10005f",
+    "name": "FamilyExtensionHost",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100060",
+    "name": "Image Events",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100061",
+    "name": "Installer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100062",
+    "name": "Language Chooser",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100063",
+    "name": "Medical Imaging Calibrator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100064",
+    "name": "NetAuthAgent",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100065",
+    "name": "OBEXAgent",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100066",
+    "name": "Picture in Picture",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100067",
+    "name": "Paired Devices",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100068",
+    "name": "PassViewer",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d100069",
+    "name": "Family Request",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10006a",
+    "name": "Pro Display Calibrator",
+    "route": "native",
+    "availability": "installed"
+   },
+   {
+    "target_id": "00000000-0000-4000-8000-880f1d10006b",
+    "name": "ARDAgent",
+    "route": "native",
+    "availability": "installed"
+   }
+  ]
+ },
+ "computer_start_calls": [
+  {
+   "goal": "Open Calculator and calculate 12345 × 6789. Create a new TextEdit document containing the calculation and result. Save as “Calculation.txt” inside a newly created Desktop folder named “Alysis Test October 12”. Close the document, reopen the saved file, and confirm its saved contents.",
+   "constraints": [
+    "Do not alter or overwrite any existing user files. If the requested Desktop folder or target file already exists, do not overwrite it; stop and report the conflict.",
+    "Use the exact arithmetic expression and file/folder names requested.",
+    "Reopen the saved document and verify its visible contents before reporting."
+   ],
+   "operates_apps": true,
+   "app_steps": [
+    {
+     "app": "Calculator",
+     "actions": [
+      "activate_application"
+     ]
+    },
+    {
+     "app": "Finder",
+     "actions": [
+      "activate_application",
+      "press",
+      "set_value",
+      "press"
+     ]
+    },
+    {
+     "app": "TextEdit",
+     "actions": [
+      "activate_application",
+      "press",
+      "set_value",
+      "press",
+      "set_value",
+      "press",
+      "press"
+     ]
+    }
+   ]
+  },
+  {
+   "goal": "Open Calculator and calculate 12345 × 6789. Create a new TextEdit document containing the calculation and result. Save as “Calculation.txt” inside a newly created Desktop folder named “Alysis Test October 12”. Close the document, reopen the saved file, and confirm its saved contents.",
+   "constraints": [
+    "Do not alter or overwrite any existing user files. If the requested Desktop folder or target file already exists, do not overwrite it; stop and report the conflict.",
+    "Use the exact arithmetic expression and file/folder names requested.",
+    "Reopen the saved document and verify its visible contents before reporting."
+   ],
+   "operates_apps": true,
+   "app_steps": [
+    {
+     "app": "Calculator",
+     "actions": [
+      "activate_application"
+     ]
+    },
+    {
+     "app": "Finder",
+     "actions": [
+      "activate_application",
+      "press",
+      "set_value"
+     ]
+    },
+    {
+     "app": "TextEdit",
+     "actions": [
+      "activate_application",
+      "press",
+      "set_value",
+      "press"
+     ]
+    }
+   ]
+  },
+  {
+   "goal": "Open Calculator and calculate 12345 × 6789. Write the calculation and result in a new TextEdit document. Save it as “Calculation.txt” inside a new Desktop folder named “Alysis Test October 12”. Close and reopen the document, then confirm what was saved.",
+   "constraints": [
+    "If the destination folder or file already exists, do not overwrite it; stop and report the conflict.",
+    "Use Calculator for the calculation and TextEdit for the document.",
+    "Close and reopen the saved document and verify the visible contents before reporting."
+   ],
+   "operates_apps": true,
+   "app_steps": [
+    {
+     "app": "Calculator",
+     "actions": [
+      "activate_application"
+     ]
+    },
+    {
+     "app": "Finder",
+     "actions": [
+      "activate_application",
+      "press",
+      "key",
+      "type"
+     ]
+    },
+    {
+     "app": "TextEdit",
+     "actions": [
+      "activate_application",
+      "press",
+      "focus",
+      "set_value",
+      "key",
+      "press"
+     ]
+    }
+   ]
+  }
+ ],
+ "tool_call_names": [
+  "computer_discover",
+  "computer_start",
+  "computer_discover",
+  "computer_start",
+  "computer_discover",
+  "computer_discover",
+  "computer_discover",
+  "computer_discover",
+  "computer_discover",
+  "computer_discover",
+  "computer_discover",
+  "computer_discover",
+  "computer_discover",
+  "computer_start"
+ ]
+}

@@ -23,6 +23,7 @@ from alysis_code.agent.sensitive_output import (
     redact_sensitive_tool_arguments,
     sensitive_tool_boundary,
 )
+from alysis_code.agent.task_artifact_binding import TOOL_NAME as ARTIFACT_BINDING_TOOL
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.ide.artifacts import ArtifactStore
@@ -45,6 +46,34 @@ from alysis_code.llm.base import (
 )
 from alysis_code.llm.types import LLMResponse, ToolCall
 from alysis_code.surface.noop_surface import NoopSurface
+
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
+
+@pytest.mark.parametrize(
+    "version,interaction,valid",
+    [(1, 2, True), (None, 2, False), (True, 2, False), (2, 2, False), (1, None, False)],
+)
+def test_application_lifecycle_host_binding_requires_exact_negotiation(version, interaction, valid):
+    raw = ComputerUseHostBinding(
+        operation_id="operation-lifecycle",
+        broker_fingerprint="sha256:" + "a" * 64,
+        authority_epoch=1,
+        scope_digest="sha256:" + "b" * 64,
+    ).to_protocol()
+    raw["application_lifecycle_version"] = version
+    if interaction is not None:
+        raw["interaction_version"] = interaction
+    if valid:
+        bound = stdio_bridge_module._computer_use_host_param(
+            {"computer_use_host": raw}, request_id="lifecycle"
+        )
+        assert bound.interaction_version == 2 and bound.application_lifecycle_version == 1
+    else:
+        with pytest.raises(ProtocolError):
+            stdio_bridge_module._computer_use_host_param(
+                {"computer_use_host": raw}, request_id="lifecycle"
+            )
 
 
 def _request(method: str, params: dict[str, Any], request_id: str = "request") -> str:
@@ -181,10 +210,10 @@ def test_fixed_computer_tools_are_sensitive_and_redact_typed_text() -> None:
     def request(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         calls.append((name, arguments))
         if name == "computer_state":
-            return {"snapshot_id": "snapshot-fresh", "elements": []}
+            return {"snapshot_id": "snapshot-fresh", "source": "chrome-dom", "elements": []}
         return {
             "receipt": {"action": arguments["action"]},
-            "state": {"snapshot_id": "snapshot-after", "elements": []},
+            "state": {"snapshot_id": "snapshot-after", "source": "chrome-dom", "elements": []},
         }
 
     tools = build_computer_use_tools(request)
@@ -606,7 +635,7 @@ def test_record_search_guidance_reaches_each_provider_step_without_retaining_pri
         assert session.run_turn("find my invoices") == 0
         durable = json.dumps(session.messages)
         assert not hasattr(session, "task_state")
-        retained_evidence = json.dumps(session._task_evidence_state.to_payload())  # noqa: SLF001
+        assert session._task_evidence_state is None  # noqa: SLF001
         retained_events = json.dumps(session.store.events_snapshot())
         assert session.store.enabled is False
         assert session.store.artifact_persistence_enabled is False
@@ -659,7 +688,6 @@ def test_record_search_guidance_reaches_each_provider_step_without_retaining_pri
     assert surface.final_messages == [partial]
     for canary in canaries:
         assert canary not in durable
-        assert canary not in retained_evidence
         assert canary not in retained_events
         assert canary not in json.dumps(client.calls), "consumed request objects must be scrubbed"
     assert not any(tmp_path.iterdir())
@@ -831,7 +859,13 @@ def test_sensitive_session_recovers_when_model_initially_answers_without_host_ca
                 tool_calls=[ToolCall(id="state-retry", name="computer_state", arguments={})],
                 raw={},
             ),
-            LLMResponse(content="The approved target is ready.", tool_calls=[], raw={}),
+            LLMResponse(
+                content=json.dumps(
+                    {"outcome": "completed_unverified", "summary": "The approved target is ready."}
+                ),
+                tool_calls=[],
+                raw={},
+            ),
         ]
     )
     session.client = client  # type: ignore[assignment]
@@ -846,7 +880,7 @@ def test_sensitive_session_recovers_when_model_initially_answers_without_host_ca
     assert "Call computer_state now" in retry_messages
     assert "Select a Computer Use target first" not in retry_messages
     assert surface.final_messages == [
-        "Computer Use completed the authorized workflow through the trusted host boundary."
+        "Computer Use run ended. The reported result has not been independently verified."
     ]
     assert not any(tmp_path.iterdir())
 
@@ -911,7 +945,16 @@ def test_sensitive_session_recovers_when_model_attempts_action_before_observatio
                 ],
                 raw={},
             ),
-            LLMResponse(content="The verified control now shows PASS.", tool_calls=[], raw={}),
+            LLMResponse(
+                content=json.dumps(
+                    {
+                        "outcome": "completed_unverified",
+                        "summary": "The verified control now shows PASS.",
+                    }
+                ),
+                tool_calls=[],
+                raw={},
+            ),
         ]
     )
     session.client = client  # type: ignore[assignment]
@@ -925,12 +968,12 @@ def test_sensitive_session_recovers_when_model_attempts_action_before_observatio
     correction_messages = json.dumps(client.calls[1]["messages"], ensure_ascii=False)
     assert "prior action was not sent to the host" in correction_messages
     assert surface.final_messages == [
-        "Computer Use completed the authorized workflow through the trusted host boundary."
+        "Computer Use run ended. The reported result has not been independently verified."
     ]
     assert not any(tmp_path.iterdir())
 
 
-def test_sensitive_session_continues_an_incomplete_host_itinerary(tmp_path: Path) -> None:
+def test_sensitive_session_switches_only_when_model_requests_for_user_goal(tmp_path: Path) -> None:
     host_calls: list[tuple[str, dict[str, Any]]] = []
     transitioned = False
 
@@ -1001,13 +1044,35 @@ def test_sensitive_session_continues_an_incomplete_host_itinerary(tmp_path: Path
                 tool_calls=[ToolCall(id="state-calculator", name="computer_state", arguments={})],
                 raw={},
             ),
-            LLMResponse(content="Calculator is complete.", tool_calls=[], raw={}),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="model-transition",
+                        name="computer_action",
+                        arguments={
+                            "action": "activate_application",
+                            "application": "Google Chrome",
+                        },
+                    )
+                ],
+                raw={},
+            ),
             LLMResponse(
                 content="",
                 tool_calls=[ToolCall(id="state-chrome", name="computer_state", arguments={})],
                 raw={},
             ),
-            LLMResponse(content="The full itinerary is complete.", tool_calls=[], raw={}),
+            LLMResponse(
+                content=json.dumps(
+                    {
+                        "outcome": "completed_unverified",
+                        "summary": "The full itinerary is complete.",
+                    }
+                ),
+                tool_calls=[],
+                raw={},
+            ),
         ]
     )
     session.client = client  # type: ignore[assignment]
@@ -1022,40 +1087,32 @@ def test_sensitive_session_continues_an_incomplete_host_itinerary(tmp_path: Path
         "computer_state",
     ]
     assert len(client.calls) == 4
-    correction_messages = json.dumps(client.calls[2]["messages"], ensure_ascii=False)
-    assert "approved application itinerary is incomplete" in correction_messages
-    assert "trusted controller transitioned" in correction_messages
-    assert "Call computer_state now" in correction_messages
-    assert "Google Chrome" in correction_messages
+    assert "approved application itinerary is incomplete" not in json.dumps(client.calls)
     assert surface.final_messages == [
-        "Computer Use completed the authorized workflow through the trusted host boundary."
+        "Computer Use run ended. The reported result has not been independently verified."
     ]
     assert not any(tmp_path.iterdir())
 
 
-def test_sensitive_session_rejects_completion_when_host_itinerary_stays_incomplete(
+def test_allowed_app_list_does_not_force_visits_or_claim_verified_completion(
     tmp_path: Path,
 ) -> None:
-    host_calls: list[tuple[str, dict[str, Any]]] = []
+    calls = []
 
-    def host_request(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        host_calls.append((name, arguments))
-        if name == "computer_state":
-            return {
-                **_lab_state("snapshot-calculator", "10081"),
-                "alysis_workflow": {
-                    "version": 1,
-                    "required": True,
-                    "complete": False,
-                    "current_application": "Calculator",
-                    "next_application": "Google Chrome",
-                    "remaining_applications": ["Google Chrome"],
-                },
-            }
-        assert name == "computer_action"
-        assert arguments["action"] == "activate_application"
-        assert arguments["application"] == "Google Chrome"
-        return {"error": "transition unavailable"}
+    def host(name, args):
+        calls.append(name)
+        assert name == "computer_state"
+        return {
+            **_lab_state("snapshot-1", "READY"),
+            "alysis_workflow": {
+                "version": 1,
+                "required": True,
+                "complete": False,
+                "current_application": "Calculator",
+                "next_application": "Google Chrome",
+                "remaining_applications": ["Google Chrome"],
+            },
+        }
 
     surface = _RecordingSurface()
     session = create_session(
@@ -1068,49 +1125,35 @@ def test_sensitive_session_rejects_completion_when_host_itinerary_stays_incomple
         api_key_override="test-key",
         surface=surface,
         sensitive_media=True,
-        computer_use_host_request=host_request,
+        computer_use_host_request=host,
     )
     session.client = _ScriptedComputerUseClient(
         [
             LLMResponse(
                 content="",
-                tool_calls=[ToolCall(id="state-only", name="computer_state", arguments={})],
+                tool_calls=[ToolCall(id="read", name="computer_state", arguments={})],
                 raw={},
             ),
-            LLMResponse(content="Done early one.", tool_calls=[], raw={}),
             LLMResponse(
-                content="",
-                tool_calls=[ToolCall(id="refresh-state", name="computer_state", arguments={})],
+                content=json.dumps(
+                    {
+                        "outcome": "completed_unverified",
+                        "summary": "Requested calculator result observed.",
+                    }
+                ),
+                tool_calls=[],
                 raw={},
             ),
-            LLMResponse(content="Done early three.", tool_calls=[], raw={}),
         ]
-    )  # type: ignore[assignment]
+    )
     try:
-        assert session.run_turn("Use Calculator, then use Google Chrome.") == 1
+        assert session.run_turn("Read the calculator result. Chrome is available if needed.") == 0
     finally:
         session.close()
-
-    assert [name for name, _arguments in host_calls] == [
-        "computer_state",
-        "computer_action",
-        "computer_state",
-    ]
+    assert calls == ["computer_state"]
     assert surface.final_messages == [
-        "Computer Use stopped because the model did not complete every application in the "
-        "trusted host itinerary."
+        "Computer Use run ended. The reported result has not been independently verified."
     ]
-    assert surface.closed_errors[-1:] == [
-        (
-            "computer_use_itinerary_incomplete",
-            "Computer Use stopped without verified completion.",
-            False,
-        )
-    ]
-    assert all(
-        "completed the authorized workflow" not in message for message in surface.final_messages
-    )
-    assert not any(tmp_path.iterdir())
 
 
 def test_sensitive_stop_after_provider_return_prevents_tool_dispatch(tmp_path: Path) -> None:
@@ -1159,8 +1202,55 @@ def test_sensitive_stop_after_provider_return_prevents_tool_dispatch(tmp_path: P
     assert host_calls == []
 
 
-def test_stdio_bridge_stop_cancels_blocked_sensitive_computer_use_job(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bind_first", [False, True])
+def test_stdio_bridge_stop_cancels_blocked_sensitive_computer_use_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bind_first: bool
+) -> None:
     client = _BlockingCancellationAwareComputerUseClient()
+    instruction = "Observe the approved application, then act only if needed."
+    accepted_bindings: list[Any] = []
+    if bind_first:
+        from alysis_code.agent import task_artifact_binding
+
+        bind = task_artifact_binding.bind_path_interpretation
+
+        def record_accepted_binding(**kwargs: Any) -> Any:
+            refs = bind(**kwargs)
+            accepted_bindings.append(refs)
+            return refs
+
+        monkeypatch.setattr(
+            task_artifact_binding, "bind_path_interpretation", record_accepted_binding
+        )
+        instruction = "Inspect Planning notes.txt in the approved application."
+        blocking_chat = client.chat
+
+        def bind_then_block(*, cancellation_token: Any, **kwargs: Any) -> LLMResponse:
+            if not client.calls:
+                client.calls.append({"cancellation_token": cancellation_token, **kwargs})
+                return LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="declare-before-stop",
+                            name=ARTIFACT_BINDING_TOOL,
+                            arguments={
+                                "paths": [
+                                    {
+                                        "name": "Planning notes.txt",
+                                        "directory": "",
+                                        "role": "existing_input",
+                                        "evidence_quote": instruction,
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                    raw={},
+                )
+            return blocking_chat(cancellation_token=cancellation_token, **kwargs)
+
+        client.chat = bind_then_block  # type: ignore[method-assign]
     bridge, out, session = _sensitive_agent_bridge_session(tmp_path, client)
     job: BridgeJob | None = None
     try:
@@ -1170,7 +1260,7 @@ def test_stdio_bridge_stop_cancels_blocked_sensitive_computer_use_job(tmp_path: 
                 "chat.send",
                 {
                     "session_id": session.session_id,
-                    "message": "Observe the approved application, then act only if needed.",
+                    "message": instruction,
                 },
                 "start-sensitive-turn",
             )
@@ -1181,6 +1271,8 @@ def test_stdio_bridge_stop_cancels_blocked_sensitive_computer_use_job(tmp_path: 
         job_id = started["result"]["job_id"]
         job = bridge._jobs[job_id]  # noqa: SLF001
         assert client.started.wait(2), "provider invocation did not start"
+        if bind_first:
+            assert accepted_bindings == []
 
         bridge.process_line(
             _request(
@@ -1217,7 +1309,11 @@ def test_stdio_bridge_stop_cancels_blocked_sensitive_computer_use_job(tmp_path: 
         job.thread.join(timeout=2)
         assert not job.thread.is_alive()
         assert client.cancellation_observed.is_set()
-        assert len(client.calls) == 1
+        assert len(client.calls) == (2 if bind_first else 1)
+        if bind_first:
+            assert accepted_bindings == []
+            contract = session.agent_session._turn_execution_state.acceptance_contract
+            assert contract is None
         assert (
             tuple(tool["function"]["name"] for tool in client.calls[0]["tools"])
             == COMPUTER_USE_TOOL_NAMES
@@ -1674,7 +1770,11 @@ def test_one_shot_computer_use_uses_host_owned_final_without_repo_completion_gat
                 tool_calls=[ToolCall(id="state-1", name="computer_state", arguments={})],
                 raw={},
             ),
-            LLMResponse(content="STATE_OK", tool_calls=[], raw={}),
+            LLMResponse(
+                content=json.dumps({"outcome": "completed_unverified", "summary": "STATE_OK"}),
+                tool_calls=[],
+                raw={},
+            ),
             LLMResponse(
                 content=("Blocker: no relevant editable path was found. No changes made: other."),
                 tool_calls=[],
@@ -1691,7 +1791,7 @@ def test_one_shot_computer_use_uses_host_owned_final_without_repo_completion_gat
     assert [name for name, _arguments in host_calls] == ["computer_state"]
     assert len(client.calls) == 2
     assert surface.final_messages == [
-        "Computer Use completed the authorized workflow through the trusted host boundary."
+        "Computer Use run ended. The reported result has not been independently verified."
     ]
     assert not any(tmp_path.iterdir())
 
@@ -1743,7 +1843,13 @@ def test_authenticated_host_text_is_transient_while_cli_history_stays_status_onl
                 tool_calls=[ToolCall(id="state-chrome", name="computer_state", arguments={})],
                 raw={},
             ),
-            LLMResponse(content=visible_description, tool_calls=[], raw={}),
+            LLMResponse(
+                content=json.dumps(
+                    {"outcome": "completed_unverified", "summary": visible_description}
+                ),
+                tool_calls=[],
+                raw={},
+            ),
         ]
     )
     try:
@@ -1755,7 +1861,7 @@ def test_authenticated_host_text_is_transient_while_cli_history_stays_status_onl
     assert surface.final_messages == [visible_description]
     assert visible_description not in durable_messages
     assert (
-        "Computer Use completed the authorized workflow through the trusted host boundary."
+        "Computer Use run ended. The reported result has not been independently verified."
         in durable_messages
     )
     assert not any(tmp_path.iterdir())
@@ -1790,7 +1896,13 @@ def test_computer_use_snapshot_binding_is_revoked_between_turns(tmp_path: Path) 
                 tool_calls=[ToolCall(id="state-1", name="computer_state", arguments={})],
                 raw={},
             ),
-            LLMResponse(content="Observed the approved app.", tool_calls=[], raw={}),
+            LLMResponse(
+                content=json.dumps(
+                    {"outcome": "completed_unverified", "summary": "Observed the approved app."}
+                ),
+                tool_calls=[],
+                raw={},
+            ),
         ]
     )
     session.client = client  # type: ignore[assignment]
@@ -1822,7 +1934,14 @@ def test_computer_use_snapshot_binding_is_revoked_between_turns(tmp_path: Path) 
                 raw={},
             ),
             LLMResponse(
-                content="The selected control was freshly observed.", tool_calls=[], raw={}
+                content=json.dumps(
+                    {
+                        "outcome": "completed_unverified",
+                        "summary": "The selected control was freshly observed.",
+                    }
+                ),
+                tool_calls=[],
+                raw={},
             ),
         ]
         assert session.run_turn("Press the selected control.") == 0
@@ -1834,7 +1953,7 @@ def test_computer_use_snapshot_binding_is_revoked_between_turns(tmp_path: Path) 
     assert [name for name, _arguments in host_calls] == ["computer_state", "computer_state"]
     assert len(client.calls) == 5
     assert surface.final_messages[-1] == (
-        "Computer Use completed the authorized workflow through the trusted host boundary."
+        "Computer Use run ended. The reported result has not been independently verified."
     )
     assert not any(tmp_path.iterdir())
 
@@ -2301,3 +2420,756 @@ def test_host_response_rejects_binding_mismatch_and_cancel_unblocks_waiter(
     assert len(failures) == 1
     assert isinstance(failures[0], BridgeCancellationError)
     assert str(failures[0]) == "user_stop"
+
+
+@pytest.mark.parametrize(
+    "reported,expected",
+    [
+        (None, "incomplete"),
+        ("blocked", "blocked"),
+        ("incomplete", "incomplete"),
+        ("completed_unverified", "completed_unverified"),
+    ],
+)
+def test_goal_report_preserves_prose_and_never_promotes_state_read_to_verified_success(
+    tmp_path: Path, reported: str | None, expected: str
+) -> None:
+    prose = (
+        "I could not submit the request or read a reply."
+        if reported != "completed_unverified"
+        else "The requested state was observed."
+    )
+    final = prose if reported is None else json.dumps({"outcome": reported, "summary": prose})
+    surface = _RecordingSurface()
+    session = create_session(
+        cfg=AppConfig(model="computer-use-test-model", routing_mode="code_only"),
+        root=tmp_path,
+        mode="review",
+        yes=False,
+        max_steps=3,
+        no_log=True,
+        api_key_override="test-key",
+        sensitive_media=True,
+        surface=surface,
+        computer_use_response_mode="host_sanitized_text",
+        computer_use_host_request=lambda name, arguments: _lab_state("snapshot-report", "READY"),
+    )
+    session.client = _ScriptedComputerUseClient(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="report-state", name="computer_state", arguments={})],
+                raw={},
+            ),
+            LLMResponse(content=final, tool_calls=[], raw={}),
+        ]
+    )
+    try:
+        assert session.run_turn("Submit a request and report its reply.") == 0
+        assert session.last_turn_outcome["outcome"] == expected
+        assert surface.final_messages == [prose]
+        assert prose not in json.dumps(session.messages)
+    finally:
+        session.close()
+
+
+def test_model_requested_transition_uses_real_stdio_request_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from test_computer_use_approval import challenge
+
+    from alysis_code.surface.types import ApprovalDecision
+
+    client = _ScriptedComputerUseClient(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="first-state", name="computer_state", arguments={})],
+                raw={},
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="model-transition",
+                        name="computer_action",
+                        arguments={
+                            "action": "activate_application",
+                            "application": "Google Chrome",
+                        },
+                    )
+                ],
+                raw={},
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="second-state", name="computer_state", arguments={})],
+                raw={},
+            ),
+            LLMResponse(
+                content=json.dumps(
+                    {
+                        "outcome": "completed_unverified",
+                        "summary": "Both applications were observed.",
+                    }
+                ),
+                tool_calls=[],
+                raw={},
+            ),
+        ]
+    )
+    bridge, out, session = _sensitive_agent_bridge_session(tmp_path, client)
+    session.agent_session.max_steps = 6
+    monkeypatch.setattr(
+        bridge, "_request_approval", lambda *args, **kwargs: ApprovalDecision(allow=True)
+    )
+    job = None
+    try:
+        bridge.process_line(
+            _request(
+                "chat.send",
+                {
+                    "session_id": session.session_id,
+                    "message": "Use Calculator and then Google Chrome.",
+                },
+                "start-transition",
+            )
+            + "\n"
+        )
+        started = next(row for row in _lines(out) if row.get("id") == "start-transition")
+        job = bridge._jobs[started["result"]["job_id"]]
+        seen = set()
+        calls = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            for event in _lines(out):
+                if event.get("type") != "computer_use_request":
+                    continue
+                payload = event["payload"]
+                if payload["request_id"] in seen:
+                    continue
+                seen.add(payload["request_id"])
+                calls.append(payload)
+                index = len(calls)
+                complete = index > 1
+                workflow = {
+                    "version": 1,
+                    "required": True,
+                    "complete": complete,
+                    "current_application": "Google Chrome" if complete else "Calculator",
+                    "next_application": None if complete else "Google Chrome",
+                    "remaining_applications": [] if complete else ["Google Chrome"],
+                }
+                state = {
+                    **_lab_state(f"snapshot-transition-{index}", "READY"),
+                    "alysis_workflow": workflow,
+                }
+                result = (
+                    {
+                        "receipt": {"action": "activate_application", "semantic": True},
+                        "state": state,
+                        "alysis_workflow": workflow,
+                    }
+                    if payload["arguments"].get("approval_phase") == "execute"
+                    else state
+                )
+                if payload["arguments"].get("approval_phase") == "prepare":
+                    result = challenge(required=False)
+                binding = {
+                    key: payload[key]
+                    for key in [
+                        "request_id",
+                        "response_nonce",
+                        "operation_id",
+                        "tool_call_id",
+                        "tool_name",
+                        "arguments_fingerprint",
+                        "expires_at",
+                    ]
+                }
+                bridge.process_line(
+                    _request(
+                        "computer.respond",
+                        {
+                            **binding,
+                            "session_id": session.session_id,
+                            "job_id": event["job_id"],
+                            "ok": True,
+                            "result": result,
+                        },
+                        f"respond-transition-{index}",
+                    )
+                    + "\n"
+                )
+            if job.thread and not job.thread.is_alive():
+                break
+            time.sleep(0.01)
+        assert job.thread is not None
+        job.thread.join(timeout=1)
+        assert not job.thread.is_alive()
+        assert [p["tool_name"] for p in calls] == [
+            "computer_state",
+            "computer_action",
+            "computer_action",
+            "computer_state",
+        ]
+        assert calls[1]["tool_call_id"].startswith("alysis_cu_call_")
+        assert calls[1]["tool_call_id"] == calls[2]["tool_call_id"]
+        assert calls[1]["arguments"]["snapshot_id"] == "snapshot-transition-1"
+        assert len({p["tool_call_id"] for p in calls}) == 3
+        assert session.pending_computer_use == {}
+        assert session.agent_session.last_turn_outcome["outcome"] == "completed_unverified"
+        assert "missing_tool_call_id" not in json.dumps(_lines(out))
+    finally:
+        if job and job.thread:
+            job.thread.join(timeout=1)
+        bridge.close()
+
+
+def test_general_evidence_captures_thread_context_and_never_enters_replay():
+    replay, transient = [], []
+    surface = ProtocolEventSurface(
+        context=EventContext(session_id="evidence-session"),
+        emit=replay.append,
+        emit_transient=transient.append,
+        computer_use_evidence_version=1,
+    )
+    surface.with_job("owned-job")
+    emit = surface.bind_computer_use_evidence_emitter()
+    surface.with_job("later-job")
+    payload = {
+        "version": 1,
+        "kind": "terminal",
+        "terminalOrigin": "model_report",
+        "reportedOutcome": "blocked",
+        "stateCalls": 2,
+        "actionCalls": 0,
+        "knownHostFailure": False,
+    }
+    worker = threading.Thread(target=lambda: emit(payload))
+    worker.start()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert not replay
+    assert len(transient) == 1
+    assert transient[0]["job_id"] == "owned-job" and transient[0]["run_id"] is None
+    assert transient[0]["payload"] == payload
+    emit({**payload, "private_text": "SECRET"})
+    assert len(transient) == 1
+    disabled = ProtocolEventSurface(
+        context=EventContext(session_id="old-peer"),
+        emit=replay.append,
+        emit_transient=transient.append,
+    )
+    disabled.emit_computer_use_evidence(payload)
+    assert len(transient) == 1
+
+
+def test_general_evidence_emission_failure_does_not_change_execution():
+    def fail(_value):
+        raise RuntimeError("PRIVATE callback failure")
+
+    surface = ProtocolEventSurface(
+        context=EventContext(session_id="evidence-session"),
+        emit=fail,
+        emit_transient=fail,
+        computer_use_evidence_version=1,
+    )
+    surface.emit_computer_use_evidence(
+        {
+            "version": 1,
+            "kind": "timing",
+            "spanOrdinal": 1,
+            "timingScope": "engine",
+            "generationRole": "protected",
+            "span": "provider_call",
+            "phase": "begin",
+        }
+    )
+
+
+@pytest.mark.parametrize("version", [True, 0, 2, "1", None])
+def test_evidence_negotiation_rejects_nonexact_version_before_session_creation(
+    tmp_path, monkeypatch, version
+):
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    out = io.StringIO()
+    bridge = StdioBridge(stdout=out)
+    bridge.process_line(
+        _request(
+            "session.create",
+            {
+                "workspace": str(tmp_path),
+                "mode": "review",
+                "computer_use_evidence_version": version,
+            },
+            "bad-evidence",
+        )
+        + "\n"
+    )
+    result = next(line for line in _lines(out) if line.get("id") == "bad-evidence")
+    assert result["ok"] is False and result["error"]["code"] == "invalid_params"
+    assert not bridge._sessions
+
+
+@pytest.mark.parametrize("malformed_type", [[], {}])
+def test_context_image_evidence_does_not_preempt_existing_provider_validation(
+    tmp_path, monkeypatch, malformed_type
+):
+    import alysis_code.agent.turn.core as core
+    from alysis_code.agent.errors import AgentRuntimeError
+
+    evidence = []
+    surface = ProtocolEventSurface(
+        context=EventContext(session_id="malformed-evidence"),
+        emit=lambda value: None,
+        emit_transient=lambda envelope: evidence.append(envelope["payload"]),
+        computer_use_evidence_version=1,
+    )
+    session = create_session(
+        cfg=AppConfig(model="computer-use-test-model", routing_mode="code_only"),
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=1,
+        no_log=True,
+        api_key_override="fixture-key",
+        surface=surface,
+        sensitive_media=True,
+        computer_use_host_request=lambda name, args: _lab_state("snapshot", "READY"),
+        computer_observation_available=True,
+    )
+    session.messages.append(
+        {"role": "user", "content": [{"type": malformed_type, "text": "fixture"}]}
+    )
+    called = []
+
+    class ExistingProviderValidation(RuntimeError):
+        pass
+
+    def provider(**kwargs):
+        called.append(
+            any(
+                isinstance(part, dict) and part.get("type") == malformed_type
+                for message in kwargs.get("messages", [])
+                if isinstance(message, dict)
+                for part in (
+                    message.get("content") if isinstance(message.get("content"), list) else []
+                )
+            )
+        )
+        raise ExistingProviderValidation("fixture validation boundary")
+
+    monkeypatch.setattr(core, "_main_agent_chat", provider)
+    try:
+        with pytest.raises(AgentRuntimeError, match="protected provider or host request failed"):
+            # Protected failures are deliberately projected by the session;
+            # the existing provider boundary must run without leaking its text.
+            session.run_turn("Observe the permitted fixture.")
+    finally:
+        session.close()
+    assert called == [True]
+    assert any(
+        item.get("phase") == "context_projected" and item.get("projectedImageCount") == 0
+        for item in evidence
+    )
+
+
+@pytest.mark.parametrize("order", ["first", "invented", "late", "mixed", "premature-final"])
+def test_sensitive_artifact_declaration_is_rejected_before_handler_or_path_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    order: str,
+) -> None:
+    from alysis_code.agent import task_artifact_binding
+    from alysis_code.llm.metadata import (
+        GEMINI_GENERATE_CONTENT_PROVIDER_METADATA_KEY,
+        PROVIDER_METADATA_KEY,
+    )
+
+    instruction = "Inspect Planning notes.txt in the approved application."
+    private_row = "SYNTHETIC_DECLARATION_PRIVATE_UI_ROW"
+    unread_content = "SYNTHETIC_DECLARATION_UNREAD_FILE_CONTENT"
+    (tmp_path / "Planning notes.txt").write_text(unread_content, encoding="utf-8")
+    host_calls: list[str] = []
+    binding_calls: list[dict[str, Any]] = []
+    immediate: list[list[dict[str, Any]]] = []
+    bind = task_artifact_binding.bind_path_interpretation
+
+    def record_binding(**kwargs: Any) -> Any:
+        binding_calls.append(kwargs["arguments"])
+        return bind(**kwargs)
+
+    monkeypatch.setattr(task_artifact_binding, "bind_path_interpretation", record_binding)
+
+    def host_request(name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        host_calls.append(name)
+        assert name == "computer_state"
+        return _lab_state("declaration-snapshot", private_row)
+
+    declaration = ToolCall(
+        id="provider-declaration-capability",
+        name=ARTIFACT_BINDING_TOOL,
+        arguments={
+            "paths": [
+                {
+                    "name": "Invented.txt" if order == "invented" else "Planning notes.txt",
+                    "directory": "",
+                    "role": "existing_input",
+                    "evidence_quote": instruction,
+                }
+            ]
+        },
+    )
+    observation = ToolCall(id="observation", name="computer_state", arguments={})
+    batches = [[declaration], [observation]]
+    if order == "late":
+        batches.reverse()
+    elif order == "mixed":
+        batches = [
+            [
+                declaration,
+                ToolCall(
+                    id="unobserved-action",
+                    name="computer_action",
+                    arguments={"action": "press", "element_id": "unobserved-element"},
+                ),
+            ],
+            [observation],
+        ]
+    responses = [LLMResponse(content="", tool_calls=batch, raw={}) for batch in batches]
+    signature = "SYNTHETIC_DECLARATION_PRIVATE_PROVIDER_SIGNATURE"
+    response_id = "SYNTHETIC_DECLARATION_PRIVATE_PROVIDER_RESPONSE"
+    native_part = {
+        "thoughtSignature": signature,
+        "functionCall": {
+            "id": declaration.id,
+            "name": ARTIFACT_BINDING_TOOL,
+            "args": json.loads(json.dumps(declaration.arguments)),
+        },
+    }
+    if order in {"first", "premature-final"}:
+        responses[0] = LLMResponse(
+            content="",
+            tool_calls=[declaration],
+            raw={},
+            provider_metadata={
+                GEMINI_GENERATE_CONTENT_PROVIDER_METADATA_KEY: {
+                    "response_id": response_id,
+                    "content": {"role": "model", "parts": [native_part]},
+                }
+            },
+        )
+    if order == "premature-final":
+        responses.insert(1, LLMResponse(content="The task is complete.", tool_calls=[], raw={}))
+    responses.append(
+        LLMResponse(content="The file contents remain unverified.", tool_calls=[], raw={})
+    )
+
+    class InspectingClient(_ScriptedComputerUseClient):
+        def chat(self, **kwargs: Any) -> LLMResponse:
+            immediate.append(json.loads(json.dumps(kwargs["messages"])))
+            return super().chat(**kwargs)
+
+    session = create_session(
+        cfg=AppConfig(model="computer-use-test-model", routing_mode="code_only"),
+        root=tmp_path,
+        mode="review",
+        yes=False,
+        max_steps=6,
+        no_log=False,
+        api_key_override="test-key",
+        sensitive_media=True,
+        computer_use_host_request=host_request,
+    )
+    client = InspectingClient(responses)
+    session.client = client  # type: ignore[assignment]
+    try:
+        assert session.artifact_output_access is None
+        assert session.run_turn(instruction) == 0
+        contract = session._turn_execution_state.acceptance_contract  # noqa: SLF001
+        assert binding_calls == []
+        assert contract is None
+        assert getattr(session, "_task_evidence_state", None) is None
+        failures = [
+            event
+            for event in session.store.events_snapshot()
+            if event.get("type") == "computer_use_provider_contract_failure"
+        ]
+        assert len(failures) == 1
+        assert failures[0]["payload"]["reason"] == "unknown_computer_use_tool"
+        if order == "premature-final":
+            assert len(client.calls) == 4
+            assert "your prior response made no trusted host call" in json.dumps(immediate[2])
+        assert host_calls == ["computer_state"]
+        assert session.store.enabled is False
+        assert session.store.artifact_persistence_enabled is False
+        retained_events = json.dumps(session.store.events_snapshot())
+        durable = json.dumps(session.messages)
+        for messages in immediate:
+            assert any(
+                message.get("role") == "user" and message.get("content") == instruction
+                for message in messages
+            ), "argument taints must not erase the original user instruction"
+        if order != "mixed":
+            retained_declarations = [
+                call
+                for message in session.messages
+                for call in message.get("tool_calls", [])
+                if (call.get("function") or {}).get("name") == ARTIFACT_BINDING_TOOL
+            ]
+            assert retained_declarations == []
+        assert private_row not in durable
+        assert "declaration-snapshot" not in durable
+        for private_value in (
+            private_row,
+            "declaration-snapshot",
+            unread_content,
+            signature,
+            response_id,
+            declaration.id,
+        ):
+            assert private_value not in retained_events
+        assert unread_content not in json.dumps(immediate)
+        if order in {"first", "premature-final"}:
+            for messages in immediate[1:]:
+                replay = [
+                    message[PROVIDER_METADATA_KEY][GEMINI_GENERATE_CONTENT_PROVIDER_METADATA_KEY]
+                    for message in messages
+                    if GEMINI_GENERATE_CONTENT_PROVIDER_METADATA_KEY
+                    in (message.get(PROVIDER_METADATA_KEY) or {})
+                ]
+                assert not any(item["content"]["parts"] == [native_part] for item in replay)
+                assert not any(
+                    message.get("role") == "tool" and message.get("tool_call_id") == declaration.id
+                    for message in messages
+                )
+            for capability in (signature, response_id, declaration.id):
+                assert capability not in durable
+                assert capability not in json.dumps(client.calls, default=str)
+        for call in client.calls:
+            assert tuple(tool["function"]["name"] for tool in call["tools"]) == (
+                *COMPUTER_USE_TOOL_NAMES,
+            )
+            assert "call task_artifacts alone" not in json.dumps(call["messages"])
+        assert tuple(session.tools) == COMPUTER_USE_TOOL_NAMES
+    finally:
+        session.close()
+
+    assert not session.store.path.exists()
+    assert not session.store.path.with_suffix(".outcome.json").exists()
+    assert not session.store.session_artifact_root.exists()
+    assert list(tmp_path.iterdir()) == [tmp_path / "Planning notes.txt"]
+    assert (tmp_path / "Planning notes.txt").read_text(encoding="utf-8") == unread_content
+
+
+@pytest.mark.parametrize("unoffered_tool", ["shell", "fs_read", "computer_upload"])
+def test_sensitive_artifact_surface_still_rejects_unoffered_tools(
+    tmp_path: Path,
+    unoffered_tool: str,
+) -> None:
+    host_calls: list[str] = []
+
+    def host_request(name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        host_calls.append(name)
+        assert name == "computer_state"
+        return _lab_state("restricted-snapshot", "READY")
+
+    class InspectingClient(_ScriptedComputerUseClient):
+        def chat(self, **kwargs: Any) -> LLMResponse:
+            if len(self.calls) == 1:
+                assert not host_calls, "the rejected response must not dispatch any call"
+            return super().chat(**kwargs)
+
+    client = InspectingClient(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="provider-unoffered-capability-389a1f",
+                        name=unoffered_tool,
+                        arguments={},
+                    )
+                ],
+                raw={},
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="provider-observation-capability-389a1f",
+                        name="computer_state",
+                        arguments={},
+                    )
+                ],
+                raw={},
+            ),
+            LLMResponse(content="Observed the approved application.", tool_calls=[], raw={}),
+        ]
+    )
+    session = create_session(
+        cfg=AppConfig(model="computer-use-test-model", routing_mode="code_only"),
+        root=tmp_path,
+        mode="review",
+        yes=False,
+        max_steps=5,
+        no_log=True,
+        api_key_override="test-key",
+        sensitive_media=True,
+        computer_use_host_request=host_request,
+    )
+    session.client = client  # type: ignore[assignment]
+    try:
+        assert session.run_turn("Inspect Planning notes.txt in the approved application.") == 0
+        assert host_calls == ["computer_state"]
+        assert len(client.calls) == 3
+        for call in client.calls:
+            names = tuple(tool["function"]["name"] for tool in call["tools"])
+            assert names == COMPUTER_USE_TOOL_NAMES
+            assert unoffered_tool not in names
+        assert session.artifact_output_access is None
+        assert session.store.enabled is False
+        assert session.store.artifact_persistence_enabled is False
+        retained_events = json.dumps(session.store.events_snapshot())
+        for capability in (
+            "restricted-snapshot",
+            "provider-unoffered-capability-389a1f",
+            "provider-observation-capability-389a1f",
+        ):
+            assert capability not in retained_events
+    finally:
+        session.close()
+
+    assert not session.store.path.exists()
+    assert not session.store.path.with_suffix(".outcome.json").exists()
+    assert not session.store.session_artifact_root.exists()
+    assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("after_observation", [False, True])
+def test_sensitive_rejected_artifact_declaration_never_retains_unknown_private_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    after_observation: bool,
+) -> None:
+    from alysis_code.agent import task_artifact_binding
+
+    # Model text read only from pixels has no preceding AX-string taint. The
+    # declaration must redact it before validation, even when it is refused.
+    private_pixels_text = "SYNTHETIC_PIXELS_ONLY_PRIVATE_NAME_75C198.txt"
+    instruction = "Inspect Planning notes.txt in the approved application."
+    events: list[dict[str, Any]] = []
+    immediate: list[list[dict[str, Any]]] = []
+    binding_calls: list[dict[str, Any]] = []
+    host_calls: list[str] = []
+    bind = task_artifact_binding.bind_path_interpretation
+
+    def record_binding(**kwargs: Any) -> Any:
+        binding_calls.append(kwargs["arguments"])
+        return bind(**kwargs)
+
+    monkeypatch.setattr(task_artifact_binding, "bind_path_interpretation", record_binding)
+
+    def host_request(name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        host_calls.append(name)
+        assert name == "computer_state"
+        return _lab_state("private-declaration-observation", "READY")
+
+    declaration_arguments = {
+        "paths": [
+            {
+                "name": private_pixels_text,
+                "directory": "",
+                "role": "existing_input",
+                "evidence_quote": "Inspect " + private_pixels_text,
+            }
+        ]
+    }
+    declaration = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="private-declaration-75c198",
+                name=ARTIFACT_BINDING_TOOL,
+                arguments=declaration_arguments,
+            )
+        ],
+        raw={},
+    )
+    observation = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="observe-75c198",
+                name="computer_state",
+                arguments={},
+            )
+        ],
+        raw={},
+    )
+    responses = [observation, declaration] if after_observation else [declaration, observation]
+    responses.append(LLMResponse(content="Observation completed.", tool_calls=[], raw={}))
+
+    class InspectingClient(_ScriptedComputerUseClient):
+        def chat(self, **kwargs: Any) -> LLMResponse:
+            immediate.append(json.loads(json.dumps(kwargs["messages"])))
+            return super().chat(**kwargs)
+
+    client = InspectingClient(responses)
+    surface = ProtocolEventSurface(
+        context=EventContext(session_id="private-declaration"),
+        emit=events.append,
+        sequencer=EventSequencer(),
+    )
+    session = create_session(
+        cfg=AppConfig(model="computer-use-test-model", routing_mode="code_only"),
+        root=tmp_path,
+        mode="review",
+        yes=False,
+        max_steps=5,
+        no_log=False,
+        api_key_override="test-key",
+        surface=surface,
+        sensitive_media=True,
+        computer_use_host_request=host_request,
+    )
+    session.client = client  # type: ignore[assignment]
+    try:
+        assert session.run_turn(instruction) == 0
+        assert binding_calls == []
+        assert host_calls == ["computer_state"]
+        immediate_next = immediate[2 if after_observation else 1]
+        for messages in immediate:
+            assert any(
+                message.get("role") == "user" and message.get("content") == instruction
+                for message in messages
+            )
+        assert private_pixels_text not in json.dumps(immediate_next)
+        assert any(
+            event.get("type") == "computer_use_provider_contract_failure"
+            and event["payload"]["reason"] == "unknown_computer_use_tool"
+            for event in session.store.events_snapshot()
+        )
+        assert ARTIFACT_BINDING_TOOL not in json.dumps(events)
+        for retained in (session.messages, events, client.calls, session.store.events_snapshot()):
+            for private_value in (
+                private_pixels_text,
+                "private-declaration-observation",
+                "private-declaration-75c198",
+                "observe-75c198",
+            ):
+                assert private_value not in json.dumps(retained, default=str)
+        contract = session._turn_execution_state.acceptance_contract  # noqa: SLF001
+        assert contract is None
+        assert getattr(session, "_task_evidence_state", None) is None
+        assert session.artifact_output_access is None
+        assert session.store.enabled is False
+        assert session.store.artifact_persistence_enabled is False
+    finally:
+        session.close()
+
+    assert not session.store.path.exists()
+    assert not session.store.path.with_suffix(".outcome.json").exists()
+    assert not session.store.session_artifact_root.exists()
+    assert not any(tmp_path.iterdir())

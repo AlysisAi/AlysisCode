@@ -11,12 +11,14 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
-from alysis_code.documents.__main__ import _path, _render
+from alysis_code.documents.__main__ import _check_execution, _path, _render
 from alysis_code.office import renderer_path
 
 
@@ -74,7 +76,16 @@ def _publish_directory(source: Path, destination: Path) -> None:
         raise OSError(code, os.strerror(code), str(destination))
 
 
-def _convert(executable: Path, source: Path, destination: Path, profile: Path) -> None:
+def _convert(
+    executable: Path,
+    source: Path,
+    destination: Path,
+    profile: Path,
+    *,
+    target_format: str = "pdf",
+    timeout_seconds: float = 90,
+    cancel_check: Callable[[], bool] | None = None,
+) -> None:
     if os.name != "posix":
         raise ValueError("Office renderer process containment currently supports macOS and Linux.")
 
@@ -85,6 +96,11 @@ def _convert(executable: Path, source: Path, destination: Path, profile: Path) -
         '<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
         '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
         '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
+        '<prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop>'
+        '<prop oor:name="DisableActiveContent" oor:op="fuse"><value>true</value></prop>'
+        '<prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop>'
+        '</item><item oor:path="/org.openoffice.Office.Calc/Formula/Load">'
+        '<prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop>'
         "</item></oor:items>",
         encoding="utf-8",
     )
@@ -96,7 +112,7 @@ def _convert(executable: Path, source: Path, destination: Path, profile: Path) -
         "--nodefault",
         "--norestore",
         "--convert-to",
-        "pdf",
+        target_format,
         "--outdir",
         str(destination),
         str(source),
@@ -107,7 +123,18 @@ def _convert(executable: Path, source: Path, destination: Path, profile: Path) -
             command, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True
         )
         try:
-            status = process.wait(timeout=90)
+            deadline = time.monotonic() + timeout_seconds
+            while process.poll() is None:
+                if cancel_check and cancel_check():
+                    raise KeyboardInterrupt
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout_seconds)
+                try:
+                    process.wait(timeout=min(0.2, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+            status = process.returncode
             if status:
                 raise ValueError(
                     f"Office renderer failed (exit {status}); no preview was published."
@@ -124,12 +151,25 @@ def _convert(executable: Path, source: Path, destination: Path, profile: Path) -
             process.wait()
 
 
-def render(source: Path, preview: Path, root: Path, source_hash: str) -> dict:
+def render(source: Path, preview: Path, root: Path, source_hash: str, **conversion_options) -> dict:
     with _cancellation():
-        return _render_office(source, preview, root, source_hash)
+        return _render_office(source, preview, root, source_hash, **conversion_options)
 
 
-def _render_office(source: Path, preview: Path, root: Path, source_hash: str) -> dict:
+def _render_office(
+    source: Path,
+    preview: Path,
+    root: Path,
+    source_hash: str,
+    *,
+    execution_deadline=None,
+    **conversion_options,
+) -> dict:
+    execution_options = {
+        "execution_deadline": execution_deadline,
+        "cancel_check": conversion_options.get("cancel_check"),
+    }
+    _check_execution(**execution_options)
     executable = renderer_path()
     if executable is None:
         raise ValueError(
@@ -142,18 +182,17 @@ def _render_office(source: Path, preview: Path, root: Path, source_hash: str) ->
         stage = Path(temp)
         converted = stage / "converted"
         converted.mkdir()
-        _convert(executable, source, converted, stage / "profile")
+        _convert(executable, source, converted, stage / "profile", **conversion_options)
         pdf = converted / (source.stem + ".pdf")
         if not pdf.is_file() or pdf.is_symlink():
             raise ValueError("Office renderer did not create its expected PDF.")
         pages = stage / "preview"
         pages.mkdir()
         shutil.copyfile(pdf, pages / "preview.pdf")
-        result = _render(pages / "preview.pdf", pages)
-        if any(page["characters_outside_page"] for page in result["pages"]):
-            raise ValueError(
-                "Rendered document contains text outside page bounds; review the layout."
-            )
+        result = _render(pages / "preview.pdf", pages, **execution_options)
+        # A rendering defect is precisely when the caller needs these images.
+        # Preserve the observations and publish the preview; artifact_check
+        # records the failed bounds check separately from conversion success.
         result.update(
             {
                 "status": "rendered",
@@ -169,6 +208,7 @@ def _render_office(source: Path, preview: Path, root: Path, source_hash: str) ->
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         _path(root, str(preview))
+        _check_execution(**execution_options)
         preview.parent.mkdir(parents=True, exist_ok=True)
         _publish_directory(pages, preview)
         return result

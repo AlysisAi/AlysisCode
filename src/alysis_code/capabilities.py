@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import __version__
+from .computer_use_platform_policy import computer_use_blocked
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,9 @@ DESKTOP_FEATURES: tuple[str, ...] = (
     "shell.sandbox-approval-fallback-v1",
     # Command output decodes as UTF-8, then the console code page, never failing.
     "shell.output-decoding-v1",
+    "shell.additional-workspace-roots-v1",
+    "shell.desktop-runtime-roots-v1",
+    "host.file-policy-v1",
     "forge.host-v2",
     "forge.host-authoritative-verification-v1",
     "forge.planning-profiles-v1",
@@ -213,7 +217,21 @@ def build_capabilities_payload() -> dict[str, Any]:
         "name": "alysis",
         "version": __version__,
         "protocols": dict(DESKTOP_PROTOCOLS),
-        "features": {feature: True for feature in DESKTOP_FEATURES},
+        "features": {
+            feature: True
+            for feature in DESKTOP_FEATURES
+            if not (
+                computer_use_blocked()
+                and feature
+                in {
+                    "sensitive-host-context-v1",
+                    "computer-use-host-v1",
+                    "computer-discovery-v1",
+                    "task-budget-host-v1",
+                    "browser-start-host-v1",
+                }
+            )
+        },
         "sandbox": {
             "detected_backends": _detected_sandbox_backends(),
             "active_backend": None,

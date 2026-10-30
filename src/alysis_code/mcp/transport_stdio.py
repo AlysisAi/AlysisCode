@@ -32,6 +32,14 @@ from .jsonrpc import (
     parse_jsonrpc_line,
 )
 from .models import ResolvedMcpServer
+from .native_relay_guard import (
+    REFUSAL,
+    LegacyWindowsRefusal,
+    check_native_relay_launch,
+    legacy_windows_launch,
+    legacy_windows_parameters,
+    resolve_launch,
+)
 from .server_requests import (
     McpServerRequestContext,
     McpServerRequestHandler,
@@ -48,7 +56,9 @@ _STDOUT_READ_CHUNK_SIZE = 4096
 _STDERR_READ_CHUNK_SIZE = 4096
 _STDOUT_NOTIFICATION_QUIESCENCE_WAIT_S = 0.25
 _STDOUT_RESPONSE_QUIESCENCE_WAIT_S = 0.1
-_STDOUT_RESPONSE_FOLLOW_UP_BUDGET_S = _STDOUT_RESPONSE_QUIESCENCE_WAIT_S * 2
+# Keep the quiet window short, but allow the reader to be descheduled briefly
+# before it publishes that boundary. Continuous follow-up output stays bounded.
+_STDOUT_RESPONSE_FOLLOW_UP_BUDGET_S = 1.0
 _STDERR_QUIESCENCE_WAIT_S = 0.75
 _FD_READY_POLL_INTERVAL_S = 0.01
 _READER_THREAD_JOIN_WAIT_S = 1.0
@@ -274,6 +284,17 @@ class McpStdioTransport:
         self.host_env = os.environ if host_env is None else host_env
         self._server_request_context = server_request_context
         self._server_request_handler = server_request_handler
+        self._legacy_windows_launch = legacy_windows_launch(
+            server,
+            (
+                server_request_context.runtime_kind
+                if server_request_context
+                and server_request_context.server_id == server.id
+                and server_request_context.workspace_root == self.workspace_root
+                else None
+            ),
+            self.host_env,
+        )
         self.spawn_env = build_stdio_subprocess_env(
             overlay_env=server.env,
             host_env=self.host_env,
@@ -732,9 +753,44 @@ class McpStdioTransport:
         self._stdout_thread.start()
         self._stderr_thread.start()
 
-    def _spawn(self, launch: list[str] | str) -> subprocess.Popen[bytes]:
+    def _spawn(self, launch: list[str]) -> subprocess.Popen[bytes]:
+        if self._legacy_windows_launch is not None and launch != [
+            self._legacy_windows_launch.command,
+            "--allow-all",
+        ]:
+            raise ValueError(REFUSAL)
+        # Pin the executable before Popen: implicit Windows .exe/PATH resolution
+        # must not launch a different identity from the one the guard inspected.
+        resolved = resolve_launch(
+            launch[0],
+            env=self.host_env if _IS_WINDOWS else self.spawn_env,
+            cwd=self.workspace_root,
+            windows=_IS_WINDOWS,
+            windows_pathext=False,
+        )
+        if resolved is None:
+            raise FileNotFoundError("MCP executable could not be resolved.")
+        self._native_relay_inspection = check_native_relay_launch(
+            resolved,
+            launch[1:],
+            server_id=self.server.id,
+            env=self.spawn_env,
+            cwd=self.workspace_root,
+            windows=_IS_WINDOWS,
+            host_env=self.host_env,
+            legacy=self._legacy_windows_launch,
+            server=self.server,
+            runtime_kind=(
+                self._server_request_context.runtime_kind if self._server_request_context else None
+            ),
+        )
+        # Canonical identity is for denial only. In particular, a venv Python
+        # symlink must retain its invocation path and argv[0].
+        command: list[str] | str = [resolved, *launch[1:]]
+        if _IS_WINDOWS and Path(resolved).suffix.casefold() in _WINDOWS_BATCH_EXTENSIONS:
+            command = windows_batch_command_line(resolved, launch[1:])
         return subprocess.Popen(
-            launch,
+            command,
             cwd=self.workspace_root,
             env=self.spawn_env,
             stdin=subprocess.PIPE,
@@ -755,8 +811,17 @@ class McpStdioTransport:
         if resolved is None:
             raise self._build_error(f"failed to launch process: {not_found}") from not_found
         try:
-            if os.path.splitext(resolved)[1].casefold() in _WINDOWS_BATCH_EXTENSIONS:
-                return self._spawn(windows_batch_command_line(resolved, self.server.args))
+            # This lookup uses the child's PATH/PATHEXT. Recheck here as well as
+            # at _spawn's final Popen boundary, including .cmd/.bat wrappers.
+            check_native_relay_launch(
+                resolved,
+                self.server.args,
+                server_id=self.server.id,
+                env=self.spawn_env,
+                cwd=self.workspace_root,
+                windows=True,
+                host_env=self.host_env,
+            )
             return self._spawn([resolved, *self.server.args])
         except Exception as exc:  # noqa: BLE001
             raise self._build_error(f"failed to launch process: {exc}") from exc
@@ -1209,6 +1274,14 @@ class McpStdioTransport:
         params: dict[str, Any] | None,
         timeout_s: float,
     ) -> JsonRpcResponse:
+        if self._legacy_windows_launch is not None and method == "tools/call":
+            try:
+                params = legacy_windows_parameters(params)
+            except LegacyWindowsRefusal as refusal:
+                # A parameter refusal is the model's to read and recover from:
+                # a structured, not-dispatched tool error, not a transport fault.
+                # Nothing is started or written for it.
+                return JsonRpcResponse(id=self._id_generator.next(), result=refusal.tool_result())
         if timeout_s <= 0:
             raise self._build_error("timeout_s must be > 0.")
         cancellation_token = current_mcp_cancellation_token()

@@ -808,6 +808,86 @@ test("dropping files attaches images and turns anything else into an @ mention",
   assert.deepEqual(errors, []);
 });
 
+test("chat streaming preserves activity disclosure and focus while changed results still render", () => {
+  const { window, errors } = mountStartView();
+  const document = window.document;
+  const chat = { sessionId: "activity-stream", running: true, items: [] };
+  const results = [{ actionId: "diagnostic", title: "Local check", status: "complete", payload: { value: 1 } }];
+  postState(window, chat, { actionResults: results, runtimeEvents: [] });
+  const details = document.querySelector("#actionResults details");
+  const summary = details.querySelector("summary");
+  details.open = true;
+  summary.tabIndex = 0;
+  summary.focus();
+  postState(window, { ...chat, items: [{ id: "a1", kind: "assistant", text: "New output" }] },
+    { actionResults: JSON.parse(JSON.stringify(results)), runtimeEvents: [] });
+  assert.equal(document.querySelector("#actionResults details"), details);
+  assert.equal(details.open, true);
+  assert.equal(document.activeElement, summary);
+  results[0].payload.value = 2;
+  postState(window, chat, { actionResults: results, runtimeEvents: [] });
+  assert.match(document.querySelector("#actionResults pre").textContent, /"value": 2/);
+  postState(window, chat, { actionResults: [], runtimeEvents: [] });
+  assert.equal(document.querySelector("#actionResults details"), null);
+  assert.deepEqual(errors, []);
+});
+
+test("unchanged setup recovery controls retain focus and new host actions replace old ones", () => {
+  const { window, messages, errors } = mountStartView();
+  const document = window.document;
+  const chat = { sessionId: "setup-stream", running: false, items: [] };
+  const blocker = { id: "engine", title: "Check the engine", detail: "The connection needs attention.",
+    actions: [{ label: "Check", command: "alysis.runDoctor" }] };
+  const extra = { ready: false, readiness: { ok: false, blockers: [blocker] } };
+  postState(window, chat, extra);
+  const hero = document.querySelector("#connectFirstActions button");
+  const recovery = document.querySelector("#readinessStrip button");
+  recovery.focus();
+  postState(window, { ...chat, items: [{ id: "a1", kind: "assistant", text: "Connection details" }] },
+    JSON.parse(JSON.stringify(extra)));
+  assert.equal(document.querySelector("#connectFirstActions button"), hero);
+  assert.equal(document.querySelector("#readinessStrip button"), recovery);
+  assert.equal(document.activeElement, recovery);
+  blocker.actions[0] = { label: "Locate", command: "alysis.locateCli" };
+  postState(window, chat, extra);
+  messages.length = 0;
+  document.querySelector("#readinessStrip button").click();
+  assert.equal(messages.at(-1).command, "alysis.locateCli");
+  assert.equal(document.querySelector("#connectFirstActions button").textContent, "Locate");
+  postState(window, chat, { ready: true, readiness: { ok: true, blockers: [] } });
+  assert.equal(document.querySelector("#connectFirst").hidden, true);
+  assert.equal(document.querySelector("#readinessStrip").hidden, true);
+  assert.deepEqual(errors, []);
+});
+
+test("the transcript countdown ticks and stops without scanning unrelated page elements", () => {
+  const { window, errors } = mountStartView();
+  const document = window.document;
+  const ticks: (() => void)[] = [];
+  const stopped: number[] = [];
+  window.setInterval = (callback: () => void) => { ticks.push(callback); return ticks.length; };
+  window.clearInterval = (id: number) => { stopped.push(id); };
+  let now = 1_000_000;
+  window.Date.now = () => now;
+  const unrelated = document.createElement("span");
+  unrelated.dataset.countdownDeadline = String(now + 60_000);
+  unrelated.textContent = "Outside the transcript";
+  document.body.append(unrelated);
+  postState(window, { sessionId: "countdown", items: [] });
+  assert.equal(ticks.length, 0);
+  postState(window, { sessionId: "countdown", items: [{ id: "limited", kind: "error", errorKind: "rate_limited",
+    errorTitle: "Please wait", errorDetail: "Try again soon", retryAfterSeconds: 2 }] });
+  assert.equal(ticks.length, 1);
+  assert.match(document.querySelector(".error-countdown").textContent, /2s/);
+  now += 3_000;
+  ticks[0]();
+  assert.equal(document.querySelector(".error-countdown").textContent, "You can try again now.");
+  assert.equal(document.querySelector(".error-countdown").hasAttribute("data-countdown-deadline"), false);
+  assert.deepEqual(stopped, [1]);
+  assert.equal(unrelated.textContent, "Outside the transcript");
+  assert.deepEqual(errors, []);
+});
+
 test("Start Here remains responsive and error-free across 1,000 rapid state updates", () => {
   const { window, errors } = mountStartView();
   const started = performance.now();

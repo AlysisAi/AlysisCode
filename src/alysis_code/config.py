@@ -23,7 +23,8 @@ from .branding import (
     canonical_user_data_dir,
     env_get,
 )
-from .llm.provider_limits import (
+from .config_errors import ConfigError
+from .llm.provider_defaults import (
     DEFAULT_PROVIDER_CONCURRENCY_CAPS,
     DEFAULT_PROVIDER_RETRY_BASE_DELAY_SECONDS,
     DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS,
@@ -47,15 +48,15 @@ from .step_budget import (
 from .web_research import normalize_trusted_domain_entry
 from .web_search_adapters import normalize_web_search_adapter
 from .web_search_policy import normalize_web_search_policy
+from .windows_verification_command import (
+    is_windows_verifier_command,
+    split_windows_verifier_command,
+)
 
 if os.name == "nt":  # pragma: no cover - exercised on Windows
     import msvcrt
 else:  # pragma: no cover - exercised on POSIX
     import fcntl
-
-
-class ConfigError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -774,6 +775,8 @@ def is_generic_configured_verify_preset(commands: Sequence[str] | None) -> bool:
 
 def split_verify_command_parts(command: str) -> list[str] | None:
     text = str(command or "")
+    if is_windows_verifier_command(text):
+        return split_windows_verifier_command(text)
     launcher_path_parts = _split_supported_launcher_path_command_parts(text)
     if launcher_path_parts is not None:
         return launcher_path_parts

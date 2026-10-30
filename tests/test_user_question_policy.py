@@ -29,7 +29,8 @@ def test_question_policy_is_shared_across_model_families_and_densities(profile):
     assert "ask one concise clarifying question before starting" not in prompt
     assert "Clear tasks need no questions" in prompt
     assert "new consequential uncertainty" in prompt
-    assert "essential inputs with no safe fallback" in prompt
+    assert "permissions, secrets, or essential inputs" in prompt
+    assert "name the missing input and hold dependent actions" in prompt
 
 
 def test_one_shot_composition_never_suggests_waiting_for_question_ui():

@@ -59,7 +59,7 @@ from alysis_code.forge_host_protocol.models import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "schemas" / "forge-host-v2" / "fixtures"
+FIXTURES = ROOT / "tests" / "fixtures" / "forge_host_v2"
 NOW = datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc)
 EXPIRES = "2026-08-21T09:10:00Z"
 ZERO_FP = "0" * 64
@@ -826,7 +826,8 @@ def test_checked_schema_and_typed_models_have_identical_object_boundaries() -> N
 
 def test_current_app_canonical_json_golden_is_preserved() -> None:
     # Vendored copy of the desktop app's canonical-JSON golden (Alysis Code app
-    # tests/fixtures/forge-plan-approval-canonical-golden.json); both sides must agree.
+    # tests/fixtures/forge_host_v2/forge-plan-approval-canonical-golden.json);
+    # both sides must agree.
     golden = json.loads(
         (
             Path(__file__).parent

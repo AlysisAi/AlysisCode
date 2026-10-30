@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _fs_link_helpers import directory_link
 from typer.testing import CliRunner
 
 from alysis_code.cli import app as alysis_app
@@ -31,7 +32,19 @@ def _attempt_directory_swap(directory: Path, detached: Path, foreign: Path) -> b
             raise
         assert directory.is_dir() and not detached.exists()
         return False
-    directory.symlink_to(foreign, target_is_directory=True)
+    directory_link(directory, foreign)
+    return True
+
+
+def _attempt_leaf_swap(path: Path, detached: Path, foreign: Path) -> bool:
+    try:
+        path.rename(detached)
+    except PermissionError as exc:
+        if os.name != "nt" or exc.winerror not in {5, 32}:
+            raise
+        assert path.is_file() and not detached.exists()
+        return False
+    path.symlink_to(foreign)
     return True
 
 
@@ -114,7 +127,7 @@ def test_symlinked_session_directory_fails_before_subscription_setup(
     real_dir = tmp_path / "real-sessions"
     real_dir.mkdir()
     alias = tmp_path / "session-alias"
-    alias.symlink_to(real_dir, target_is_directory=True)
+    directory_link(alias, real_dir)
 
     result, reached = _invoke_managed_run(
         tmp_path=tmp_path,
@@ -131,13 +144,19 @@ def test_symlinked_session_directory_fails_before_subscription_setup(
 def test_session_file_symlink_fails_before_subscription_and_does_not_touch_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    require_symlinks: None,
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     foreign = tmp_path / "foreign.jsonl"
     original = '{"foreign":true}\n'
     foreign.write_text(original, encoding="utf-8")
-    (sessions_dir / "safe-session.jsonl").symlink_to(foreign)
+    try:
+        (sessions_dir / "safe-session.jsonl").symlink_to(foreign)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows symlink privilege unavailable; junction coverage is separate")
+        raise
 
     result, reached = _invoke_managed_run(
         tmp_path=tmp_path,
@@ -446,6 +465,7 @@ def test_existing_log_permission_restriction_failure_stops_before_provider_setup
 def test_final_writer_seal_rejects_leaf_swap_before_provider_setup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    require_symlinks: None,
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -456,13 +476,13 @@ def test_final_writer_seal_rejects_leaf_swap_before_provider_setup(
     foreign.write_text("foreign\n", encoding="utf-8")
     original_validate = ManagedSessionPersistence.validate_bound_path
     swapped = False
+    attempted = False
 
     def swap_before_final_validation(self: ManagedSessionPersistence) -> None:
-        nonlocal swapped
-        if not swapped:
-            swapped = True
-            session_path.rename(detached)
-            session_path.symlink_to(foreign)
+        nonlocal swapped, attempted
+        if not attempted:
+            attempted = True
+            swapped = _attempt_leaf_swap(session_path, detached, foreign)
         original_validate(self)
 
     monkeypatch.setattr(
@@ -477,11 +497,15 @@ def test_final_writer_seal_rejects_leaf_swap_before_provider_setup(
         monkeypatch=monkeypatch,
     )
 
-    assert result.exit_code == 2
-    assert "changed" in result.output
-    assert reached == {"subscription": False, "run": False}
+    assert attempted
+    assert result.exit_code == (2 if swapped else 0), result.output
+    if swapped:
+        assert "changed" in result.output
+    assert reached == {"subscription": not swapped, "run": not swapped}
     assert foreign.read_text(encoding="utf-8") == "foreign\n"
-    assert detached.read_text(encoding="utf-8") == '{"type":"prior"}\n'
+    assert (detached if swapped else session_path).read_text(
+        encoding="utf-8"
+    ) == '{"type":"prior"}\n'
 
 
 def test_final_writer_creation_failure_stops_before_provider_setup(
@@ -509,6 +533,7 @@ def test_final_writer_creation_failure_stops_before_provider_setup(
 def test_path_swap_after_preprovider_seal_uses_only_the_retained_writer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    require_symlinks: None,
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -519,11 +544,12 @@ def test_path_swap_after_preprovider_seal_uses_only_the_retained_writer(
     foreign = tmp_path / "foreign.jsonl"
     foreign.write_text("foreign\n", encoding="utf-8")
     reached = {"subscription": False, "run": False}
+    swapped = False
 
     def subscription(**_kwargs: object) -> None:
+        nonlocal swapped
         reached["subscription"] = True
-        session_path.rename(detached)
-        session_path.symlink_to(foreign)
+        swapped = _attempt_leaf_swap(session_path, detached, foreign)
 
     def run_impl(*_args: object, **kwargs: object) -> None:
         reached["run"] = True
@@ -574,7 +600,8 @@ def test_path_swap_after_preprovider_seal_uses_only_the_retained_writer(
     assert reached == {"subscription": True, "run": True}
     assert foreign.read_text(encoding="utf-8") == "foreign\n"
     detached_events = [
-        json.loads(line) for line in detached.read_text(encoding="utf-8").splitlines()
+        json.loads(line)
+        for line in (detached if swapped else session_path).read_text(encoding="utf-8").splitlines()
     ]
     assert detached_events[0] == prior
     assert detached_events[1]["type"] == "final"
@@ -676,7 +703,9 @@ def test_read_and_append_share_the_same_admitted_file_descriptor(tmp_path: Path)
     ]
 
 
-def test_session_leaf_swap_after_validation_fails_closed(tmp_path: Path) -> None:
+def test_session_leaf_swap_after_validation_fails_closed(
+    tmp_path: Path, require_symlinks: None
+) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     session_path = sessions_dir / "safe-session.jsonl"
@@ -689,16 +718,22 @@ def test_session_leaf_swap_after_validation_fails_closed(tmp_path: Path) -> None
         session_id="safe-session",
     )
     detached = sessions_dir / "detached.jsonl"
-    session_path.rename(detached)
-    session_path.symlink_to(foreign)
     try:
-        with pytest.raises(ManagedSessionError, match="changed"):
+        swapped = _attempt_leaf_swap(session_path, detached, foreign)
+        if swapped:
+            with pytest.raises(ManagedSessionError, match="changed"):
+                persistence.claim_text_writer()
+        else:
+            persistence.validate_bound_path()
+            assert persistence.events_snapshot() == [{"type": "prior"}]
             persistence.claim_text_writer()
     finally:
         persistence.close()
 
     assert foreign.read_text(encoding="utf-8") == "foreign\n"
-    assert detached.read_text(encoding="utf-8") == '{"type":"prior"}\n'
+    assert (detached if swapped else session_path).read_text(
+        encoding="utf-8"
+    ) == '{"type":"prior"}\n'
 
 
 def test_session_directory_swap_after_admission_fails_closed(tmp_path: Path) -> None:

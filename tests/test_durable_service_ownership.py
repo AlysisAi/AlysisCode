@@ -54,6 +54,15 @@ def server(port: int, delay: float = 0) -> str:
     )
 
 
+def tcp_listener(port: int) -> str:
+    # Persistence fault tests need an owned TCP endpoint, not HTTP startup.
+    # Keep the real child process, socket probe and OS ownership verification.
+    return command(
+        "from socketserver import TCPServer, BaseRequestHandler; "
+        f"TCPServer(('127.0.0.1', {port}), BaseRequestHandler).serve_forever()"
+    )
+
+
 @pytest.fixture
 def manager(tmp_path: Path):
     root = tmp_path / "workspace"
@@ -145,6 +154,9 @@ def test_replacement_proves_candidate_before_stopping_old_instance(manager):
     previous = manager.start(
         cmd=server(port := free_port()), cwd=manager.root, readiness=readiness(port)
     )
+    assert previous.payload["readiness"].get("endpoint_owned") is True, json.dumps(
+        previous.payload, indent=2
+    )
     replacement_port = free_port()
     replacement = manager.start(
         cmd=server(replacement_port, 0.1),
@@ -152,7 +164,9 @@ def test_replacement_proves_candidate_before_stopping_old_instance(manager):
         readiness=readiness(replacement_port),
         replace_service_id=previous.service_id,
     )
-    assert replacement.payload["handoff"]["status"] == "committed"
+    assert replacement.payload["handoff"]["status"] == "committed", json.dumps(
+        replacement.payload, indent=2
+    )
     assert manager._popens[previous.service_id].poll() is not None
     fresh = dsm.DurableServiceManager(
         root=manager.root, state_dir=manager.state_dir, settings=manager.settings
@@ -303,25 +317,34 @@ def test_metadata_write_failure_cleans_candidate_and_preserves_previous(
     manager, monkeypatch, stage
 ):
     previous = manager.start(
-        cmd=server(port := free_port()), cwd=manager.root, readiness=readiness(port)
+        cmd=tcp_listener(port := free_port()), cwd=manager.root, readiness=readiness(port)
     )
+    assert previous.payload["alive"], previous.payload
+    assert previous.payload["readiness"]["endpoint_owned"], previous.payload
     original = manager._write_metadata
+    injected = []
 
     def fail_candidate(metadata):
         if metadata["service_id"] != previous.service_id and (
             stage == "initial" or metadata.get("replaces_service_id")
         ):
+            injected.append(metadata["service_id"])
             raise OSError("simulated metadata storage failure")
         original(metadata)
 
     monkeypatch.setattr(manager, "_write_metadata", fail_candidate)
     with pytest.raises(OSError, match="metadata storage"):
-        manager.start(
-            cmd=server(new_port := free_port()),
+        candidate = manager.start(
+            cmd=tcp_listener(new_port := free_port()),
             cwd=manager.root,
             readiness=readiness(new_port),
             replace_service_id=previous.service_id,
         )
+        pytest.fail(f"Replacement did not reach the metadata failure: {candidate.payload!r}")
+    # Cleanup may attempt to persist the same candidate again after the error.
+    assert injected
+    assert len(set(injected)) == 1
+    assert previous.service_id not in injected
     for service_id, popen in manager._popens.items():
         if service_id != previous.service_id:
             assert popen.poll() is not None
@@ -361,8 +384,10 @@ def test_readiness_container_identity_write_failure_cleans_owned_candidate(manag
 @pytest.mark.parametrize("raises", [False, True])
 def test_partial_previous_cleanup_keeps_proven_candidate_available(manager, monkeypatch, raises):
     previous = manager.start(
-        cmd=server(port := free_port()), cwd=manager.root, readiness=readiness(port)
+        cmd=tcp_listener(port := free_port()), cwd=manager.root, readiness=readiness(port)
     )
+    assert previous.payload["alive"], previous.payload
+    assert previous.payload["readiness"]["endpoint_owned"], previous.payload
     original_stop = manager.stop
 
     def stop(service_id):
@@ -376,7 +401,7 @@ def test_partial_previous_cleanup_keeps_proven_candidate_available(manager, monk
 
     monkeypatch.setattr(manager, "stop", stop)
     candidate = manager.start(
-        cmd=server(new_port := free_port()),
+        cmd=tcp_listener(new_port := free_port()),
         cwd=manager.root,
         readiness=readiness(new_port),
         replace_service_id=previous.service_id,

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,11 +15,16 @@ from alysis_code.config import AppConfig, ConfigError
 from alysis_code.mcp.config import load_resolved_mcp_config, user_mcp_config_path
 from alysis_code.mcp.errors import McpConfigError
 from alysis_code.mcp.forge_scope import ForgeAllowedMcpTool, ForgeTaskMcpScope
-from alysis_code.mcp.manager import McpManager, create_forge_task_scoped_mcp_manager
+from alysis_code.mcp.manager import (
+    McpManager,
+    _validate_function_tool_schema,
+    create_forge_task_scoped_mcp_manager,
+)
 from alysis_code.mcp.untrusted_content import (
     MCP_UNTRUSTED_TEXT_CHAR_LIMIT,
     build_host_owned_mcp_tool_description,
     build_untrusted_mcp_text_block,
+    reduce_model_facing_tool_schema,
 )
 from alysis_code.runtime_kind import RuntimeKind
 from alysis_code.session_store import read_session_events
@@ -53,11 +60,26 @@ def _basic_cfg() -> AppConfig:
     return AppConfig(model="test-model", base_url="https://example.com/v1")
 
 
-def _assert_schema_keys_absent(value: object) -> None:
+_NAMED_SCHEMA_MAP_KEYS = {
+    "$defs",
+    "definitions",
+    "dependentSchemas",
+    "patternProperties",
+    "properties",
+}
+
+
+def _assert_schema_keys_absent(value: object, *, inside_named_schema_map: bool = False) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
-            assert key not in _STRIPPED_SCHEMA_KEYS
-            _assert_schema_keys_absent(item)
+            # Keys of properties/$defs are argument names, which may be called "title".
+            if not inside_named_schema_map:
+                assert key not in _STRIPPED_SCHEMA_KEYS
+            _assert_schema_keys_absent(
+                item,
+                inside_named_schema_map=not inside_named_schema_map
+                and key in _NAMED_SCHEMA_MAP_KEYS,
+            )
         return
     if isinstance(value, list):
         for item in value:
@@ -174,6 +196,95 @@ def _load_multi_server_manager(
         runtime_kind=runtime_kind,
         session_id="sid",
     )
+
+
+def test_model_facing_schema_keeps_arguments_named_like_annotations() -> None:
+    schema = {
+        "type": "object",
+        "description": "TOOL_DESCRIPTION",
+        "properties": {
+            "title": {"type": "string", "description": "TITLE_DESCRIPTION"},
+            "description": {"type": "string", "default": "DEFAULT_SENTINEL"},
+            "default": {"type": "boolean", "examples": [True]},
+            "body": {"type": "string", "title": "BODY_TITLE"},
+            "event": {
+                "type": "object",
+                "properties": {"description": {"type": "string", "$comment": "C"}},
+                "required": ["description"],
+            },
+        },
+        "$defs": {"title": {"type": "string", "markdownDescription": "M"}},
+        "required": ["title", "description"],
+    }
+
+    reduced = reduce_model_facing_tool_schema(schema)
+
+    assert reduced == {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "default": {"type": "boolean"},
+            "body": {"type": "string"},
+            "event": {
+                "type": "object",
+                "properties": {"description": {"type": "string"}},
+                "required": ["description"],
+            },
+        },
+        "$defs": {"title": {"type": "string"}},
+        "required": ["title", "description"],
+    }
+    assert set(reduced["required"]) <= set(reduced["properties"])
+    assert schema["properties"]["title"]["description"] == "TITLE_DESCRIPTION"
+
+
+_KEYWORD_NAMES = ("$defs", "definitions", "dependentSchemas", "patternProperties", "properties")
+
+
+@pytest.mark.parametrize("name", _KEYWORD_NAMES)
+def test_arguments_and_definitions_named_like_schema_keywords_are_still_stripped(name: str) -> None:
+    annotated = {
+        "type": "string",
+        "description": "SERVER_INSTRUCTION_SENTINEL",
+        "title": "ANNOTATION_SENTINEL",
+        "default": "DEFAULT_SENTINEL",
+        "enum": ["kept"],
+    }
+    schema = {
+        "type": "object",
+        "properties": {
+            name: copy.deepcopy(annotated),
+            "nested": {
+                "type": "object",
+                "description": "NESTED_SENTINEL",
+                "properties": {name: {**copy.deepcopy(annotated), "type": "object"}},
+            },
+        },
+        "$defs": {name: copy.deepcopy(annotated)},
+        "required": [name],
+    }
+
+    reduced = reduce_model_facing_tool_schema(schema)
+
+    kept = {"type": "string", "enum": ["kept"]}
+    assert reduced == {
+        "type": "object",
+        "properties": {
+            name: kept,
+            "nested": {"type": "object", "properties": {name: {**kept, "type": "object"}}},
+        },
+        "$defs": {name: kept},
+        "required": [name],
+    }
+    sink = _validate_function_tool_schema(
+        server=SimpleNamespace(id="fixture"),
+        tool=SimpleNamespace(name="fixture_tool", input_schema=schema),
+    )
+    serialized = json.dumps(sink)
+    assert name in sink["properties"]
+    for sentinel in ("SERVER_INSTRUCTION", "ANNOTATION", "DEFAULT", "NESTED"):
+        assert f"{sentinel}_SENTINEL" not in serialized
 
 
 def test_mcp_manager_filters_active_servers_by_runtime_kind(
@@ -694,7 +805,7 @@ def test_mcp_manager_tools_list_changed_does_not_mutate_frozen_catalog(
         manager.close()
 
 
-def test_mcp_manager_wraps_external_tool_result_text_at_both_levels(
+def test_mcp_manager_wraps_external_tool_result_text_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manager = _load_manager(
@@ -727,7 +838,7 @@ def test_mcp_manager_wraps_external_tool_result_text_at_both_levels(
             text="ok",
         )
 
-        assert result["text"] == expected
+        assert "text" not in result
         assert result["content"][0]["text"] == expected
         assert result["content_summary"] == "text(2 chars)"
     finally:
@@ -771,12 +882,12 @@ def test_mcp_manager_truncates_external_tool_result_text_before_wrapping(
         )
         serialized = json.dumps(result, ensure_ascii=True, sort_keys=True)
 
-        assert result["text"] == expected
+        assert "text" not in result
         assert result["content"][0]["text"] == expected
         assert raw_text not in serialized
-        assert raw_text[:MCP_UNTRUSTED_TEXT_CHAR_LIMIT] in result["text"]
-        assert "truncated: true" in result["text"]
-        assert f"char_count: {len(raw_text)}" in result["text"]
+        assert raw_text[:MCP_UNTRUSTED_TEXT_CHAR_LIMIT] in result["content"][0]["text"]
+        assert "truncated: true" in result["content"][0]["text"]
+        assert f"char_count: {len(raw_text)}" in result["content"][0]["text"]
     finally:
         manager.close()
 
@@ -818,11 +929,11 @@ def test_mcp_manager_omits_binary_like_external_tool_result_text(
         )
         serialized = json.dumps(result, ensure_ascii=True, sort_keys=True)
 
-        assert result["text"] == expected
+        assert "text" not in result
         assert result["content"][0]["text"] == expected
         assert raw_text not in serialized
-        assert "(omitted: binary-like text)" in result["text"]
-        assert "truncated: false" in result["text"]
+        assert "(omitted: binary-like text)" in result["content"][0]["text"]
+        assert "truncated: false" in result["content"][0]["text"]
     finally:
         manager.close()
 

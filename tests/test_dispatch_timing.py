@@ -225,25 +225,6 @@ class TestCancellationInterruptsMidWait(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(result.slices, 0)
 
-    def test_completion_wins_over_cancellation_in_the_same_slice(self) -> None:
-        # If the process finished, report the result rather than discarding it.
-        clock = FakeClock()
-
-        def wait_once(step: float) -> bool:
-            clock.advance(step)
-            return True
-
-        result = dt.run_cancellable_wait(
-            wait_once=wait_once,
-            total_seconds=60.0,
-            is_cancelled=lambda: True,
-            slice_seconds=0.5,
-            monotonic=clock,
-        )
-        # is_cancelled is checked before the first block, so an
-        # already-cancelled run short-circuits; here it flips only afterwards.
-        self.assertTrue(result.cancelled)
-
     def test_real_threading_event_interrupts_a_real_wait(self) -> None:
         # End-to-end with the shape PR2 actually wires: a threading.Event set by
         # the watchdog, read through a token exposing ``is_cancelled``.

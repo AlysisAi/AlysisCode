@@ -4,7 +4,6 @@ import json
 import os
 import sys
 from typing import Any, NoReturn
-from urllib.parse import urlsplit
 
 import typer
 
@@ -20,6 +19,7 @@ from ...config import (
     save_config,
     save_persisted_profile_key,
 )
+from ...provider_url import is_loopback_endpoint
 from . import _patchable
 from ._shared import _console, _Table
 
@@ -313,12 +313,7 @@ def _profile_requires_api_key(cfg: AppConfig, profile: Any) -> bool:
     from ...profiles import resolve_effective_base_url
 
     base_url = resolve_effective_base_url(cfg=cfg, profile=profile)
-    host = str(urlsplit(base_url).hostname or "").strip("[]").lower()
-    if not host:
-        return False
-    return host not in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} and not host.endswith(
-        ".localhost"
-    )
+    return not is_loopback_endpoint(base_url)
 
 
 def _profile_selection_error(
@@ -505,12 +500,16 @@ def profile_presets(
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON array."),
 ) -> None:
     """List available provider presets."""
+    from ...llm.factory import resolve_model_protocol
+    from ...model_reasoning import contract_reasoning_capabilities
+    from ...model_registry import catalog_model_capabilities
     from ...profile_presets import (
         PROFILE_PRESETS,
         model_options_for_preset,
         preset_protocol_kind,
         preset_selection_label,
     )
+    from ...reasoning_contracts import reasoning_contract_for
 
     if json_output:
         typer.echo(
@@ -524,9 +523,26 @@ def profile_presets(
                         "base_url": preset.base_url,
                         "api_key_env": preset.api_key_env,
                         "requires_api_key": bool(preset.api_key_env),
+                        "setup_warning": preset.setup_warning,
+                        "connection_description": preset.connection_description,
                         "models": [
-                            {"id": model_id, "description": description}
-                            for model_id, _label, description in model_options_for_preset(preset)
+                            {
+                                "id": model_id,
+                                "label": label,
+                                "description": description,
+                                "protocol": resolve_model_protocol(
+                                    provider_key=preset.provider_key,
+                                    model=model_id,
+                                    protocol=preset.protocol,
+                                ),
+                                **catalog_model_capabilities(model_id, preset.provider_key),
+                                **contract_reasoning_capabilities(
+                                    reasoning_contract_for(
+                                        preset.provider_key, model_id, preset_key=preset.key
+                                    )
+                                ),
+                            }
+                            for model_id, label, description in model_options_for_preset(preset)
                         ],
                         "default_model": (
                             preset.suggested_models[0] if preset.suggested_models else ""

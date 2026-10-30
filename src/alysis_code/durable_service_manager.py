@@ -17,7 +17,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,9 +26,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import psutil
 
+from .agent.scoped_access import ExecutionDirectoryIdentity
 from .background_runner import _apply_env_overrides
 from .branding import default_sandbox_docker_image
 from .command_text import command_text
+from .config import ConfigError
 from .error_text import sanitize_optional_error_summary
 from .execution_deadline import (
     MINIMUM_TOOL_START_SECONDS,
@@ -103,11 +105,16 @@ class DurableServiceManager:
         cwd: Path,
         readiness: dict[str, Any] | None = None,
         replace_service_id: str | None = None,
+        execution_directory: ExecutionDirectoryIdentity | None = None,
         execution_deadline: ExecutionDeadline | None = None,
     ) -> DurableServiceStart:
         cleaned_cmd = str(cmd or "").strip()
         if not cleaned_cmd:
             raise ValueError("cmd cannot be empty")
+        if execution_directory is not None:
+            execution_directory.check()
+            if str(cwd) != execution_directory.path:
+                raise ConfigError("The execution directory does not match its approval.")
         cwd_abs = cwd.resolve()
         try:
             cwd_abs.relative_to(self.root)
@@ -127,6 +134,7 @@ class DurableServiceManager:
             cwd_abs=cwd_abs,
             readiness_spec=readiness_spec,
             execution_deadline=execution_deadline,
+            execution_directory=execution_directory,
             launch_builder=lambda service_id: self._build_launch(
                 cmd=cleaned_cmd,
                 cwd=cwd_abs,
@@ -284,9 +292,15 @@ class DurableServiceManager:
         readiness_spec: dict[str, Any],
         launch_builder: Callable[[str], dict[str, Any]],
         execution_deadline: ExecutionDeadline | None = None,
+        execution_directory: ExecutionDirectoryIdentity | None = None,
         metadata_extra: dict[str, Any] | None = None,
         metadata_from_readiness: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> DurableServiceStart:
+        # This identity only refuses changed directories; it grants no authority.
+        directory = execution_directory or ExecutionDirectoryIdentity.capture(str(cwd_abs))
+        directory.check()
+        if directory.path != str(cwd_abs):
+            raise ConfigError("The execution directory does not match its approval.")
         if execution_deadline is not None:
             decision = execution_deadline.start_decision(
                 DeadlineOperation.SHELL_BACKGROUND,
@@ -314,6 +328,7 @@ class DurableServiceManager:
                 stdout_path.open("ab", buffering=0) as stdout_fh,
                 stderr_path.open("ab", buffering=0) as stderr_fh,
             ):
+                directory.check()
                 popen = subprocess.Popen(
                     launch["popen_args"],
                     shell=bool(launch["shell"]),
@@ -348,6 +363,7 @@ class DurableServiceManager:
             "started_at_wall": started_at,
             "root": os.fspath(self.root),
             "cwd": os.fspath(cwd_abs),
+            "execution_directory_identity": asdict(directory),
             "backend": str(launch["backend"]),
             "container_name": launch.get("container_name"),
             "cmd_sha256": hashlib.sha256(cleaned_cmd.encode("utf-8")).hexdigest(),
@@ -547,6 +563,14 @@ class DurableServiceManager:
             }
 
         backend = self.settings.backend
+        if backend in {"windows-native", "windows-mxc"} or (
+            backend == "auto" and platform.system() == "Windows"
+        ):
+            raise RuntimeError(
+                "Durable services are not qualified for the experimental Windows native sandbox. "
+                "Use a session-owned background command, or an explicitly configured Docker backend. "
+                "Host fallback is disabled."
+            )
         has_bwrap = platform.system().lower() == "linux" and shutil.which("bwrap") is not None
         has_docker = shutil.which("docker") is not None
         if backend in {"auto", "bwrap"} and has_bwrap:
@@ -558,6 +582,7 @@ class DurableServiceManager:
                 clear_env=self.settings.clear_env,
                 profile=self.settings.bwrap_profile,
                 unshare_cgroup=_supports_bwrap_unshare_cgroup(),
+                filesystem_access=self.settings.filesystem_access,
             )
             argv = [item for item in argv if item != "--die-with-parent"]
             return {
@@ -601,6 +626,7 @@ class DurableServiceManager:
                 protect_repo_meta=self.settings.protect_repo_meta,
                 env_allowlist=self.settings.docker_env_allowlist,
                 published_ports=published_ports,
+                filesystem_access=self.settings.filesystem_access,
             )
             argv[2:2] = ["--label", f"alysis.service_id={service_id}"]
             return {
@@ -741,6 +767,24 @@ class DurableServiceManager:
                         "type": readiness_type,
                         "status": ReadinessStatus.FAILED.value,
                         "detail": "readiness command is empty",
+                    }
+                try:
+                    recorded = metadata.get("execution_directory_identity")
+                    if not isinstance(recorded, dict):
+                        raise ConfigError(
+                            "Readiness directory identity is unavailable; restart the service."
+                        )
+                    directory = ExecutionDirectoryIdentity(**recorded)
+                    if directory.path != metadata.get("cwd"):
+                        raise ConfigError("Readiness directory does not match its launch.")
+                    # Status probes reuse the original launch identity, never a
+                    # fresh capture of a potentially replaced directory.
+                    directory.check()
+                except (ConfigError, TypeError, ValueError):
+                    return {
+                        "type": readiness_type,
+                        "status": ReadinessStatus.FAILED.value,
+                        "detail": "readiness execution directory changed or is unbound; restart the service",
                     }
                 try:
                     result = subprocess.run(
@@ -1188,6 +1232,7 @@ def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "started_at_wall",
         "root",
         "cwd",
+        "execution_directory_identity",
         "backend",
         "container_name",
         "container_id",

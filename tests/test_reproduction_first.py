@@ -53,7 +53,19 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig, ConfigError, set_config_value
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
+
+
+@pytest.fixture
+def approved_scripted_tools(monkeypatch):
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"shell_run", "verify_run"}),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Synthetic buggy repo + tool-effect driver
@@ -794,6 +806,7 @@ _REPRO_SOURCE = "from src.textutil import slugify\nassert slugify('a--b--') == '
 def test_scripted_run_reports_a_satisfied_reproduction(
     buggy_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
+    approved_scripted_tools,
 ) -> None:
     """Repro first, fix second, repro passes: engagement is recorded and exit is clean.
 
@@ -882,6 +895,7 @@ def test_scripted_run_reports_a_satisfied_reproduction(
 def test_supplemental_check_after_silent_authoritative_verify_finalizes_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    approved_scripted_tools,
 ) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "title.py").write_text(

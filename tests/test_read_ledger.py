@@ -58,6 +58,33 @@ def _write_lines(path: Path, *lines: str) -> None:
     path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8", newline="")
 
 
+def test_attached_folder_receipts_expire_when_scope_is_removed(tmp_path):
+    from alysis_code.project_folders import folder_scope
+
+    main, extra = tmp_path / "main", tmp_path / "共有"
+    main.mkdir()
+    extra.mkdir()
+    path = extra / "data.txt"
+    path.write_text("observed content\n")
+    ledger = SessionReadLedger(root=main)
+    assert ledger.content_hash(str(path)) is None
+    with folder_scope(main, [str(extra)]):
+        content_hash = ledger.content_hash(str(path))
+        assert content_hash
+        result = ledger.filter_result(
+            path=str(path),
+            result={"path": str(path), "content": path.read_text(), "truncated": False},
+            content_hash_before=content_hash,
+            force=False,
+        )
+        assert result.get("read_receipt_id")
+        ledger.record_delivery(result=result, content_for_message=json.dumps(result))
+        snapshot = ledger.snapshot()
+        assert str(path) in snapshot
+    assert ledger.content_hash(str(path)) is None
+    assert SessionReadLedger(root=main).seed_from_snapshot(snapshot) == 0
+
+
 def test_exact_unchanged_reread_is_replaced_by_compact_notice(tmp_path: Path) -> None:
     _write_lines(tmp_path / "demo.txt", "one", "two", "three", "four")
     tools, store = _tools(tmp_path, session_id="exact")
@@ -392,3 +419,10 @@ def test_changed_file_invalidates_both_presentations_and_snapshot(tmp_path: Path
         )
     finally:
         store.close()
+
+
+@pytest.fixture(autouse=True)
+def file_semantics_without_os_backend(monkeypatch):
+    # These unit tests isolate approval, stale-file and ledger behavior.
+    # Native/WSL containment is exercised by the installed-runtime qualifier.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from test_approval_review import _Surface
 
 import alysis_code.agent_loop as agent_loop_mod
 import alysis_code.verify_gate as verify_gate_mod
@@ -128,7 +129,7 @@ def _build_tools(
     return build_tools(
         root=tmp_path,
         console=Console(file=io.StringIO(), force_terminal=False),
-        surface=surface,
+        surface=surface if surface is not None else _Surface(allow=True),
         store=_store(tmp_path),
         mode=mode,
         yes=yes,
@@ -179,6 +180,7 @@ def _create_interactive_session(
         session_log_dir_override=sessions_dir,
         session_id_override=session_id,
         verify_cmd=verify_cmd,
+        surface=_Surface(allow=True),
     )
 
 
@@ -232,7 +234,11 @@ def test_verify_run_uses_configured_commands_and_writes_artifact(
         "output_truncated": False,
         "fallback_used": False,
     }
-    command_results = result["command_results"]
+    command_results = [dict(row) for row in result["command_results"]]
+    for row in command_results:
+        scope = row.pop("verification_execution_scope")
+        assert isinstance(scope, str) and len(scope) == 64
+        assert all(char in "0123456789abcdef" for char in scope)
     unknown_report = {
         "runner": "unknown",
         "failed_ids": [],
@@ -328,7 +334,7 @@ def test_verify_run_respects_session_log_dir_override_outside_root(
     repo.mkdir()
     sessions_dir = tmp_path / "runtime" / "sessions"
     session = create_session(
-        cfg=AppConfig(model="test-model"),
+        cfg=_host_verify_cfg(),
         root=repo,
         mode="auto",
         yes=True,
@@ -337,6 +343,7 @@ def test_verify_run_respects_session_log_dir_override_outside_root(
         api_key_override="override-key",
         session_log_dir_override=sessions_dir,
         session_id_override="verify-override",
+        surface=_Surface(allow=True),
     )
     try:
         result = session.tools["verify_run"].run({"commands": ["pytest -q"]})
@@ -364,7 +371,7 @@ def test_verify_run_logs_real_external_artifact_path_in_session_events(
     repo.mkdir()
     sessions_dir = tmp_path / "runtime" / "sessions"
     session = create_session(
-        cfg=AppConfig(model="test-model"),
+        cfg=_host_verify_cfg(),
         root=repo,
         mode="auto",
         yes=True,
@@ -373,6 +380,7 @@ def test_verify_run_logs_real_external_artifact_path_in_session_events(
         api_key_override="override-key",
         session_log_dir_override=sessions_dir,
         session_id_override="verify-event-log",
+        surface=_Surface(allow=True),
     )
     try:
         result = session.tools["verify_run"].run({"commands": ["pytest -q"]})
@@ -1885,7 +1893,12 @@ def test_verify_run_classifies_missing_wrapper_as_infra_unavailable(
     assert result["all_passed"] is False
     assert result["failure_category"] == "infra_unavailable"
     assert result["command_results"][0]["real_execution"] is False
-    assert result["command_results"][0]["non_execution_reason"] == "execution_layer_failure"
+    # Only the POSIX host runner observes launcher absence before dispatch.
+    # A Windows host must not turn this mocked bash diagnostic into that proof.
+    expected_reason = (
+        "host_launcher_unavailable" if os.name == "posix" else "execution_layer_failure"
+    )
+    assert result["command_results"][0]["non_execution_reason"] == expected_reason
     assert result["primary_failure"]["snippet"] == (
         "/bin/bash: ./gradlew: No such file or directory"
     )
@@ -2434,7 +2447,7 @@ def test_verify_run_reports_workspace_services_without_stopping_them(
     tools = build_tools(
         root=tmp_path,
         console=Console(file=io.StringIO(), force_terminal=False),
-        surface=None,
+        surface=_Surface(allow=True),
         store=_store(tmp_path),
         mode="auto",
         yes=True,

@@ -77,17 +77,30 @@ VALID_EXTENSION_COMMAND_ROUTE_TYPES = {
     "tree_refresh",
 }
 
-# These responses are negotiated with the desktop's trusted host controller.
-# VS Code does not advertise that host capability or own these approval/media
-# boundaries; its typed client must not pretend to implement them.
+# These integrations belong to the desktop host. VS Code has no corresponding
+# approval/media controller, customization workbench or session-output handoff.
+# Keep them visible as bridge-only features rather than claiming extension support.
 DESKTOP_HOST_ONLY_METHODS = {
     "browser_start.respond",
     "computer.respond",
+    "computer_start_resolved.respond",
     "task_budget.respond",
     "host.action.dispatched",
     "session.userQuestions.get",
     "session.userQuestions.answer",
     "session.userQuestions.touch",
+    "session.outputArtifacts",
+    "ext.custom.save",
+    "hooks.document.read",
+    "hooks.document.save",
+    "skill.document.read",
+    "skill.document.save",
+    "skill.import.describe",
+    "skill.import.discard",
+    "skill.import.install",
+    "skill.import.package",
+    "skill.import.preview",
+    "skill.update.preview",
 }
 
 TS_CLIENT_COVERAGE_EXEMPT_METHODS = {
@@ -335,38 +348,68 @@ def _cli_registration_graph() -> tuple[
     dict[str, tuple[Path, str]],
     set[FeatureRef],
 ]:
-    imported_paths = _root_import_paths(CLI_ROOT_PATH)
-    local_apps = _local_typer_apps(CLI_ROOT_PATH)
-    prefix_by_app: dict[str, tuple[str, ...]] = {"app": ()}
-    module_by_app: dict[str, tuple[Path, str]] = {"app": (CLI_ROOT_PATH, "app")}
+    prefix_by_app: dict[str, tuple[str, ...]] = {}
+    module_by_app: dict[str, tuple[Path, str]] = {}
     group_features: set[FeatureRef] = set()
 
-    unresolved = list(_iter_add_typer_calls(CLI_ROOT_PATH))
-    while unresolved:
-        next_unresolved: list[tuple[str, str, str]] = []
-        progressed = False
-        for parent_app, child_app, group_name in unresolved:
-            parent_prefix = prefix_by_app.get(parent_app)
-            if parent_prefix is None:
-                next_unresolved.append((parent_app, child_app, group_name))
+    def visit(path: Path, app_var: str, prefix: tuple[str, ...], ancestors: set) -> None:
+        identity = (path.resolve(), app_var)
+        if identity in ancestors:
+            raise ExtractionError(f"Cyclic Typer registration at {path}:{app_var}")
+        key = " ".join(prefix)
+        prefix_by_app[key] = prefix
+        module_by_app[key] = (path, app_var)
+        if prefix:
+            group_features.add(FeatureRef("cli_command_group", key))
+        imported_paths = _root_import_paths(path)
+        local_apps = _local_typer_apps(path)
+        for parent_app, child_app, group_name in _iter_add_typer_calls(path):
+            if parent_app != app_var:
                 continue
-            child_prefix = (*parent_prefix, group_name)
-            prefix_by_app[child_app] = child_prefix
             module_ref = imported_paths.get(child_app)
             if module_ref is None and child_app in local_apps:
-                module_ref = (CLI_ROOT_PATH, child_app)
+                module_ref = (path, child_app)
             if module_ref is None:
                 raise ExtractionError(
-                    f"TODO: cannot resolve module for Typer app {child_app!r} "
-                    f"registered as {' '.join(child_prefix)!r}"
+                    f"TODO: cannot resolve module for Typer app {child_app!r} registered in {path}"
                 )
-            module_by_app[child_app] = module_ref
-            group_features.add(FeatureRef("cli_command_group", " ".join(child_prefix)))
-            progressed = True
-        if not progressed:
-            missing = ", ".join(f"{parent}->{child}" for parent, child, _name in next_unresolved)
-            raise ExtractionError(f"TODO: cannot resolve nested Typer app registrations: {missing}")
-        unresolved = next_unresolved
+            visit(*module_ref, (*prefix, group_name), ancestors | {identity})
+
+    visit(CLI_ROOT_PATH, "app", (), set())
+    # The runtime registers these groups lazily. Read its actual static registry
+    # without importing command backends or duplicating their names in this checker.
+    lazy_path = CLI_ROOT_PATH.with_name("lazy_groups.py")
+    if lazy_path.exists():
+        registry = next(
+            (
+                node.value
+                for node in _parse_python(lazy_path).body
+                if isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "_GROUPS"
+                    for target in node.targets
+                )
+            ),
+            None,
+        )
+        if registry is None:
+            raise ExtractionError("Lazy CLI group registry is missing")
+        groups = ast.literal_eval(registry)
+        if not isinstance(groups, dict):
+            raise ExtractionError("Lazy CLI group registry must be a literal mapping")
+        for name, target in groups.items():
+            if not isinstance(name, str) or not isinstance(target, tuple) or len(target) != 2:
+                raise ExtractionError("Invalid lazy CLI group registration")
+            module, attribute = target
+            if not all(isinstance(value, str) and value for value in (name, module, attribute)):
+                raise ExtractionError("Invalid lazy CLI group target")
+            level = len(module) - len(module.lstrip(".")) + 1
+            visit(
+                _resolve_import_path(lazy_path, module.lstrip("."), level),
+                attribute,
+                (name,),
+                set(),
+            )
 
     return prefix_by_app, module_by_app, group_features
 

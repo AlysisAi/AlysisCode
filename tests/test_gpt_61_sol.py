@@ -74,7 +74,7 @@ def test_api_picker_saves_sol_with_correct_prices_and_efforts(preset):
 
 
 @pytest.mark.parametrize("catalog", ["paid", "free", "offline"])
-def test_hosted_picker_checks_account_catalog_and_never_broadens_free_access(
+def test_hosted_picker_uses_current_paid_catalog_and_rejects_retired_sol(
     monkeypatch, catalog, configured_hosted_api
 ):
     cfg = config("alysis")
@@ -89,25 +89,26 @@ def test_hosted_picker_checks_account_catalog_and_never_broadens_free_access(
             raise ProviderModelCatalogError("offline")
         models = ["deepseek-flash", "gpt-6-luna", "unreviewed-model"]
         if catalog == "paid":
-            models.append(MODEL)
+            models.extend([MODEL, "gpt-6.1-terra"])
         return tuple(ProviderModelOption(id=m, label=m) for m in models)
 
     monkeypatch.setattr(config_menu, "discover_provider_models", discover)
     flow = ConfigFlow(cfg=cfg)
-    # A saved paid model cannot grant access if the account is now Free/offline.
+    # A saved or stale catalog entry cannot restore a retired hosted model.
     flow.state.fields["model"] = MODEL
     flow.choose("default")
     ids = [r.value for r in flow.screen().rows]
-    assert (MODEL in ids) is (catalog == "paid")
+    assert MODEL not in ids
+    assert ("gpt-6.1-terra" in ids) is (catalog == "paid")
     assert "unreviewed-model" not in ids
     assert len(calls) == 1
     assert calls[0]["api_key"] == "slk_test"
     if catalog == "paid":
-        flow.choose(MODEL)
-        assert set(r.value for r in flow.screen().rows) == set(EFFORTS)
+        flow.choose("gpt-6.1-terra")
+        assert set(r.value for r in flow.screen().rows) == set(EFFORTS) | {"off"}
         flow.choose("high")
         assert flow.state.commit_to(cfg).saved
-        assert cfg.model == MODEL
+        assert cfg.model == "gpt-6.1-terra"
         assert cfg.base_url == f"{configured_hosted_api}/llm/v1"
 
 

@@ -18,6 +18,7 @@ from alysis_code.agent.session import create_session
 from alysis_code.config import AppConfig, resolve_prompt_guidance_profile
 from alysis_code.prompt_guidance_catalog import (
     GUIDANCE_PROFILES,
+    PROMPT_FAMILIES,
     PromptGuidanceProfile,
     profile_variant,
 )
@@ -44,8 +45,18 @@ def _assert_delivered_evidence_contract(system: str, profile: PromptGuidanceProf
     )
 
 
-@pytest.mark.parametrize("profile", GUIDANCE_PROFILES)
-@pytest.mark.parametrize("one_shot", [False, True], ids=["chat", "one-shot"])
+# Batching delivery covers every profile in both modes at the model boundary.
+# Repeat these catalog/tool contracts in one-shot for each rendering category.
+@pytest.mark.parametrize(
+    ("profile", "one_shot"),
+    [
+        *[pytest.param(profile, False, id=f"chat-{profile}") for profile in GUIDANCE_PROFILES],
+        *[
+            pytest.param(profile, True, id=f"one-shot-{profile}")
+            for profile in ("compact", "balanced", "expanded", "gpt-normal", "gpt-expanded")
+        ],
+    ],
+)
 def test_delivered_delegation_profiles_keep_choice_and_synthesis_obligations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -101,6 +112,12 @@ def test_delivered_delegation_profiles_keep_choice_and_synthesis_obligations(
         ):
             assert obligation in delegation
         assert "untrusted evidence" in delegation
+        trust_boundary = next(
+            line for line in delegation.splitlines() if "untrusted evidence" in line
+        )
+        for term in ("instructions", "authority", "permission"):
+            assert term in trust_boundary
+        assert "never" in trust_boundary or "cannot change" in trust_boundary
         assert "subagent_spawn" in delegation and "subagent_run" in delegation
         assert "subagent_resume" in delegation and "subagent_send" in delegation
         assert "leave its primary investigation to the child" in delegation
@@ -191,7 +208,9 @@ def test_delivered_delegation_profiles_keep_choice_and_synthesis_obligations(
         session.close()
 
 
-@pytest.mark.parametrize("profile", GUIDANCE_PROFILES)
+# Parent aliases/densities map to one child profile per family. Integration
+# tests cover both parent variants; exercise each child with both launch tools.
+@pytest.mark.parametrize("profile", [f"{family}-normal" for family in PROMPT_FAMILIES])
 @pytest.mark.parametrize("launch_tool", ["subagent_run", "subagent_spawn"])
 def test_launched_children_receive_brief_boundary_without_copying_parent_history(
     tmp_path: Path,

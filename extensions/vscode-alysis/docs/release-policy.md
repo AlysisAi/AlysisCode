@@ -44,9 +44,9 @@ enabled, maintainers need:
 - protected `vscode-installed-live-provider-qa`, `vscode-real-wsl-acceptance`,
   `vscode-real-remote-ssh-acceptance`, `vscode-release-evidence`, and `managed-cli-release-assets`
   environments. Each must have a required reviewer, disable administrator bypass, and allow only
-  the custom `v*` deployment tag pattern. Self-review is allowed only with sole reviewer
-  `Perdikis10` (GitHub user ID `190930654`), as pinned in the release approval policy; that user
-  may fill all signoff roles with actual approvals at each gate. Other configurations require
+  the custom `v*` deployment tag pattern. Self-review is allowed only under the single-maintainer
+  exception enforced by `scripts/release/vscode_approval_policy.py`. That maintainer may fill
+  all signoff roles with actual approvals at each gate. Other configurations require
   self-review prevention and distinct approvers. Workflows verify this configuration before entry.
 - `ALYSIS_LIVE_API_KEY` stored only as a secret in `vscode-installed-live-provider-qa`, with
   `ALYSIS_LIVE_QA_PROVIDER`, `ALYSIS_LIVE_QA_MODEL`, and `ALYSIS_LIVE_QA_BASE_URL` plus

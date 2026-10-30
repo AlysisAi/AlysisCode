@@ -26,6 +26,12 @@ COMMIT_B = "b" * 40
 def _env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(
+        "alysis_code.skills.paths.canonical_user_config_dir", lambda: tmp_path / "config"
+    )
+    monkeypatch.setattr(
+        "alysis_code.skills.discovery.canonical_user_config_dir", lambda: tmp_path / "config"
+    )
 
 
 def _manifest(
@@ -352,6 +358,60 @@ def test_platform_mismatch_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(PluginInstallError, match="platform"):
         install_plugin(source="acme.demo", repo_root=tmp_path, trust_prompt=lambda request: True)
+
+
+@pytest.mark.parametrize("plugin_id", ["alysis.github", "alysis_.github", "alysis.google-drive"])
+def test_git_source_cannot_claim_the_first_party_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, plugin_id: str
+) -> None:
+    _env(monkeypatch, tmp_path)
+    _mock_clone(monkeypatch, plugin_id=plugin_id, components=False)
+
+    with pytest.raises(PluginInstallError, match="reserved for plugins bundled"):
+        install_plugin(
+            source=f"git+https://example.com/acme/demo.git@{COMMIT_A}",
+            repo_root=tmp_path,
+            trust_prompt=lambda request: pytest.fail("A reserved id must fail before trust review"),
+        )
+    assert load_global_state().installed == {}
+
+
+def test_plugin_ids_that_share_an_install_folder_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env(monkeypatch, tmp_path)
+    _mock_clone(monkeypatch, plugin_id="acme.demo", components=False)
+    install_plugin(
+        source=f"git+https://example.com/acme/demo.git@{COMMIT_A}",
+        repo_root=tmp_path,
+        trust_prompt=lambda request: True,
+    )
+    _mock_clone(monkeypatch, plugin_id="acme_.demo", components=False)
+
+    with pytest.raises(PluginInstallError, match="collides with acme.demo"):
+        install_plugin(
+            source=f"git+https://example.com/other/demo.git@{COMMIT_B}",
+            repo_root=tmp_path,
+            trust_prompt=lambda request: pytest.fail(
+                "A colliding id must fail before trust review"
+            ),
+        )
+    assert set(load_global_state().installed) == {"acme.demo"}
+
+
+def test_catalog_entry_must_contain_its_own_plugin_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env(monkeypatch, tmp_path)
+    _mock_clone(monkeypatch, plugin_id="acme.other", components=False)
+    _mock_registry(monkeypatch)
+
+    with pytest.raises(PluginInstallError, match="contains a different plugin id"):
+        install_plugin(
+            source="acme.demo",
+            repo_root=tmp_path,
+            trust_prompt=lambda request: pytest.fail("A mismatched catalog entry must fail first"),
+        )
 
 
 def test_registry_id_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

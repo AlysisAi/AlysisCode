@@ -18,13 +18,7 @@ from ..profiles import (
     resolve_effective_base_url,
 )
 from ..provider_auth import ProviderAuthError, create_provider_auth
-from . import (
-    anthropic_messages,
-    gemini_generate_content,
-    gemini_interactions,
-    openai_compat,
-    openai_responses,
-)
+from ..provider_url import is_loopback_endpoint
 from .base import ChatClient
 from .cache_capabilities import resolve_effective_cache_capability
 from .cache_policy import resolve_prompt_cache_policy
@@ -137,12 +131,7 @@ def make_llm_client(
     # A loopback base URL only implies a free local runtime when no credential is
     # configured. Keyed gateways (LiteLLM, corporate proxies) front paid upstream
     # APIs over localhost too, and suppressing their cost would under-report spend.
-    loopback_host = (urlparse(base_url).hostname or "").strip().lower() in {
-        "localhost",
-        "127.0.0.1",
-        "::1",
-    }
-    unkeyed_loopback = loopback_host and not str(api_key or "").strip()
+    unkeyed_loopback = is_loopback_endpoint(base_url) and not str(api_key or "").strip()
     if resolved_profile.auth_provider:
         billing_mode = BillingMode.SUBSCRIPTION
     elif (
@@ -204,8 +193,12 @@ def make_llm_client(
             credential_scope = str(auth_scope() or "").strip() or credential_scope
     protocol_revision = ""
     if protocol == ANTHROPIC_MESSAGES_PROTOCOL:
+        from . import anthropic_messages
+
         protocol_revision = anthropic_messages.ANTHROPIC_MESSAGES_ROUTE_REVISION
     elif protocol == GEMINI_INTERACTIONS_PROTOCOL:
+        from . import gemini_interactions
+
         protocol_revision = gemini_interactions.GEMINI_INTERACTIONS_ROUTE_REVISION
     route_identity = build_provider_route_identity(
         protocol=protocol,
@@ -222,6 +215,8 @@ def make_llm_client(
         session_scope=credential_scope_fingerprint(session_id),
     )
     if protocol == OPENAI_RESPONSES_PROTOCOL:
+        from . import openai_responses
+
         return _attach_reasoning_trace_capability(
             openai_responses.OpenAIResponsesClient(
                 base_url=base_url,
@@ -281,6 +276,8 @@ def make_llm_client(
         )
 
     if protocol == GEMINI_GENERATE_CONTENT_PROTOCOL:
+        from . import gemini_generate_content
+
         return _attach_reasoning_trace_capability(
             gemini_generate_content.GeminiGenerateContentClient(
                 base_url=base_url,
@@ -347,6 +344,8 @@ def make_llm_client(
             "protocol='anthropic_messages', protocol='gemini_generate_content', or enable the "
             "experimental protocol='gemini_interactions' text-only prototype."
         )
+    from . import openai_compat
+
     return _attach_reasoning_trace_capability(
         openai_compat.OpenAICompatClient(
             base_url=base_url,
@@ -380,9 +379,9 @@ def resolve_model_protocol(*, provider_key: str | None, model: str, protocol: st
     """Resolve model-specific transports for both initial connections and live switches."""
     # Hosted OpenAI models need Responses for reasoning with function tools.
     # Keep the managed endpoint and Alysis device credential on this route.
-    if provider_key == "alysis" and model in {"gpt-6-luna", "gpt-6.1-sol"}:
+    if provider_key == "alysis" and model in {"gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"}:
         return OPENAI_RESPONSES_PROTOCOL
-    if provider_key == "openai" and model == "gpt-6.1-sol":
+    if provider_key == "openai" and model in {"gpt-6.1-sol", "gpt-6.1-terra"}:
         return OPENAI_RESPONSES_PROTOCOL
     if provider_key == "alysis" and model in {"claude-sonnet-5-5", "claude-haiku-5-5"}:
         return ANTHROPIC_MESSAGES_PROTOCOL

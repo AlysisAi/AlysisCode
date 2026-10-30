@@ -525,3 +525,37 @@ def test_gemini_interactions_extra_headers_override_defaults_case_insensitively(
     assert headers["api-revision"] == "2099-01-01"
     assert headers["content-type"] == "application/custom+json"
     assert len({name.casefold() for name in headers}) == len(headers)
+
+
+def test_interaction_usage_preserves_zero_cache_and_tool_counts_without_claiming_context_size():
+    from types import SimpleNamespace
+
+    from alysis_code.llm.gemini_interactions import _usage_from_response
+    from alysis_code.provider_usage import capture_provider_usage
+
+    for cached in (0, 60):
+        usage = _usage_from_response(
+            {
+                "usage": {
+                    "total_input_tokens": 100,
+                    "total_output_tokens": 0,
+                    "total_thought_tokens": 20,
+                    "total_tool_use_tokens": 30,
+                    "total_cached_tokens": cached,
+                    "total_tokens": 150,
+                }
+            }
+        )
+        reading = capture_provider_usage(usage, client=SimpleNamespace(model="gemini"))
+        assert reading["input_scope"] == "interaction"
+        assert reading["input_tokens"] == 130
+        assert reading["cached_tokens"] == cached
+        assert reading["uncached_tokens"] == 130 - cached
+        assert reading["uncached_derived"] is True
+        assert reading["output_tokens"] == 20
+        assert reading["reasoning_tokens"] == 20
+        assert reading["total_tokens"] == 150
+    zero = _usage_from_response(
+        {"usage": {"total_input_tokens": 0, "total_output_tokens": 0, "total_tokens": 0}}
+    )
+    assert zero.prompt_tokens == zero.completion_tokens == zero.total_tokens == 0

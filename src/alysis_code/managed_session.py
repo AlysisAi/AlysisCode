@@ -125,7 +125,8 @@ def _assert_same_regular_leaf(*, directory_fd: int, filename: str, file_fd: int)
 def _read_events_from_fd(file_fd: int) -> tuple[dict[str, Any], ...]:
     """Read the already-admitted descriptor without reopening its pathname."""
 
-    events: list[dict[str, Any]] = []
+    entries: list[tuple[int, dict[str, Any]]] = []
+    offset = 0
     try:
         os.lseek(file_fd, 0, os.SEEK_SET)
         pending = b""
@@ -137,6 +138,8 @@ def _read_events_from_fd(file_fd: int) -> tuple[dict[str, Any], ...]:
             lines = pending.split(b"\n")
             pending = lines.pop()
             for line in lines:
+                record_offset = offset
+                offset += len(line) + 1
                 stripped = line.strip()
                 if not stripped:
                     continue
@@ -145,18 +148,41 @@ def _read_events_from_fd(file_fd: int) -> tuple[dict[str, Any], ...]:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 if isinstance(value, dict):
-                    events.append(value)
+                    entries.append((record_offset, value))
         if pending.strip():
             try:
                 value = json.loads(pending.strip())
             except (json.JSONDecodeError, UnicodeDecodeError):
                 value = None
             if isinstance(value, dict):
-                events.append(value)
+                entries.append((offset, value))
     finally:
         # O_APPEND makes every later write target EOF, but leave the shared
         # offset at EOF as well so a transferred text writer starts cleanly.
         os.lseek(file_fd, 0, os.SEEK_END)
+    # Use the same in-log failure boundaries as ordinary replay, but never
+    # reopen a pathname or consult an unadmitted sidecar. The import is local
+    # because SessionStore itself imports this capability module.
+    from .session_store import SESSION_STORE_UNCOMMITTED_EVENT, _offset_or_none
+
+    ranges: list[tuple[int, int]] = []
+    for record_offset, event in entries:
+        if str(event.get("type") or "") != SESSION_STORE_UNCOMMITTED_EVENT:
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        start = _offset_or_none(payload.get("from_offset"))
+        end = _offset_or_none(payload.get("to_offset"))
+        if start is not None:
+            ranges.append((start, record_offset if end is None else min(end, record_offset)))
+    events: list[dict[str, Any]] = []
+    for record_offset, event in entries:
+        if str(event.get("type") or "") == SESSION_STORE_UNCOMMITTED_EVENT:
+            payload = event.get("payload")
+            if isinstance(payload, dict) and _offset_or_none(payload.get("from_offset")) is None:
+                events.append({**event, "payload": {**payload, "unidentified": True}})
+        elif not any(start <= record_offset < end for start, end in ranges):
+            events.append(event)
     return tuple(events)
 
 
@@ -172,17 +198,20 @@ class ManagedSessionPersistence:
         file_fd: int | None,
         append_enabled: bool,
         events: tuple[dict[str, Any], ...],
+        directory_capability: Any = None,
     ) -> None:
         self.sessions_dir = sessions_dir
         self.session_id = session_id
         self.path = sessions_dir / f"{session_id}.jsonl"
         self.append_enabled = append_enabled
         self._directory_fd = directory_fd
+        self._directory_capability = directory_capability
         self._file_fd = file_fd
         self._events = events
         self._sealed = False
         self._claimed = False
         self._claimed_writer: TextIO | None = None
+        self._recovery_fd: int | None = None
 
     def events_snapshot(self) -> list[dict[str, Any]]:
         # JSON round-tripping matches SessionStore's existing defensive copy
@@ -190,6 +219,14 @@ class ManagedSessionPersistence:
         return json.loads(json.dumps(self._events, ensure_ascii=True))
 
     def validate_bound_path(self) -> None:
+        if self._directory_capability is not None:
+            try:
+                self._directory_capability.validate()
+                if self._file_fd is not None:
+                    self._directory_capability.validate_leaf(self.path.name, self._file_fd)
+            except OSError as exc:
+                raise ManagedSessionError("Managed session path changed after admission") from exc
+            return
         if os.name == "nt":
             _windows.assert_same_directory(self._directory_fd, self.sessions_dir)
             if self._file_fd is not None:
@@ -237,9 +274,14 @@ class ManagedSessionPersistence:
         fd = self._file_fd
         self._file_fd = None
         try:
+            # Closing a failed buffered writer must not release our only file
+            # capability. Recovery and retry use this duplicate, never a path.
+            self._recovery_fd = os.dup(fd)
             self._claimed_writer = os.fdopen(fd, "a", encoding="utf-8", newline="\n")
         except Exception as exc:
             _close_quietly(fd)
+            _close_quietly(self._recovery_fd)
+            self._recovery_fd = None
             raise ManagedSessionError(
                 "Managed session log writer could not be prepared safely"
             ) from exc
@@ -263,6 +305,41 @@ class ManagedSessionPersistence:
         self._claimed = True
         return writer
 
+    def _retained_recovery_fd(self) -> int:
+        self.require_sealed()
+        if not self._claimed or self._recovery_fd is None:
+            raise ManagedSessionError("Managed session recovery capability is unavailable")
+        return self._recovery_fd
+
+    def retained_log_size(self) -> int:
+        return os.fstat(self._retained_recovery_fd()).st_size
+
+    def truncate_retained_log(self, size: int) -> None:
+        # Windows append-only handles intentionally refuse truncation. The
+        # caller records an in-log failure marker using the same capability.
+        os.ftruncate(self._retained_recovery_fd(), size)
+
+    def reopen_text_writer(self) -> TextIO:
+        if self._claimed_writer is not None and not self._claimed_writer.closed:
+            raise ManagedSessionError("Managed session writer is still open")
+        fd = os.dup(self._retained_recovery_fd())
+        try:
+            writer = os.fdopen(fd, "a", encoding="utf-8", newline="\n")
+        except BaseException:
+            _close_quietly(fd)
+            raise
+        self._claimed_writer = writer
+        return writer
+
+    def append_recovery_marker(self, text: str) -> None:
+        fd = self._retained_recovery_fd()
+        remaining = memoryview(text.encode("utf-8"))
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError("Managed session recovery marker write made no progress")
+            remaining = remaining[written:]
+
     def close(self) -> None:
         if self._claimed_writer is not None and not self._claimed_writer.closed:
             try:
@@ -270,10 +347,15 @@ class ManagedSessionPersistence:
             except OSError:
                 pass
         self._claimed_writer = None
+        _close_quietly(self._recovery_fd)
+        self._recovery_fd = None
         _close_quietly(self._file_fd)
         self._file_fd = None
         _close_quietly(self._directory_fd)
         self._directory_fd = -1
+        if self._directory_capability is not None:
+            self._directory_capability.close()
+            self._directory_capability = None
 
 
 def _prepare_sessions_directory(sessions_dir: Path, *, create: bool) -> tuple[Path, int]:
@@ -414,12 +496,30 @@ def prepare_managed_session_persistence(
     """
 
     normalized_id = normalize_managed_session_id(session_id)
+    if os.name == "nt":
+        from ._windows_managed_session import prepare_windows_managed_session
+
+        return prepare_windows_managed_session(
+            sessions_dir=sessions_dir, session_id=normalized_id, append=append
+        )
     resolved_dir, directory_fd = _prepare_sessions_directory(
         sessions_dir,
         create=append,
     )
     file_fd: int | None = None
     try:
+        try:
+            os.stat(
+                f"{normalized_id}.jsonl.uncommitted.json",
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise ManagedSessionError(
+                "Managed session has a legacy uncommitted sidecar; reconcile it before opening"
+            )
         if append:
             if os.name == "posix" and os.fstat(directory_fd).st_mode & 0o222 == 0:
                 raise ManagedSessionError("Managed session directory is not writable")

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from alysis_code.agent.errors import AgentRuntimeError
 from alysis_code.ide import stdio_bridge
 from alysis_code.ide.change_ledger import ChangeLedgerError
 
@@ -36,8 +39,10 @@ def test_checkpoint_setup_failure_detaches_ledger_and_next_turn_retries(
     assert stdio_bridge._prepare_change_ledger_with_deadline(session) is False
     assert session.change_ledger is None
     assert session.warnings == [
-        "Restore snapshots are unavailable; actions that may change files are paused: storage unavailable"
+        "Restore points are unavailable in this chat, so changes made in this turn can't be undone "
+        "from Alysis. They still go ahead. Reason: storage unavailable"
     ]
+    assert session.checkpoint_failure == "storage unavailable"
 
     baselined: list[str] = []
     healthy = SimpleNamespace(ensure_baseline=baselined.append)
@@ -46,6 +51,7 @@ def test_checkpoint_setup_failure_detaches_ledger_and_next_turn_retries(
     assert stdio_bridge._prepare_change_ledger_with_deadline(session) is True
     assert session.change_ledger is healthy
     assert baselined == [session.session_id]
+    assert session.checkpoint_failure is None
 
 
 def test_checkpoint_setup_reuses_a_healthy_existing_ledger(tmp_path: Path) -> None:
@@ -130,16 +136,19 @@ def test_tool_checkpoint_guard_serializes_setup_and_checks_again_until_ready(
         finally:
             release.set()
         for result in (first, second):
-            with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
+            with pytest.raises(AgentRuntimeError, match="restore snapshot") as refused:
                 result.result(timeout=5)
+            assert refused.value.result_payload["error_code"] == "checkpoint_unavailable"
+            assert refused.value.result_payload["dispatch_state"] == "not_dispatched"
+            assert refused.value.result_payload["retryable"] is False
     # One at a time, never in parallel; the second call checks again after the first.
     assert calls == ["job-1", "job-1"]
-    with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
+    with pytest.raises(AgentRuntimeError, match="restore snapshot"):
         guard.check_tool_call("file_edit", {})
     # Not ready is not cached: the worker keeps running and may have finished since.
     assert calls == ["job-1", "job-1", "job-1"]
     session.active_job = stdio_bridge.BridgeJob("job-2", session.session_id, "now")
-    with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
+    with pytest.raises(AgentRuntimeError, match="restore snapshot"):
         guard.check_tool_call("file_edit", {})
     assert calls == ["job-1", "job-1", "job-1", "job-2"]
 
@@ -282,8 +291,9 @@ def test_a_change_after_the_baseline_finishes_proceeds_in_the_same_request(
         "_prepare_change_ledger_with_deadline",
         lambda owner: prepare(owner, deadline_seconds=0.05),
     )
-    with pytest.raises(ChangeLedgerError, match="checkpoint_unavailable"):
+    with pytest.raises(AgentRuntimeError, match="restore snapshot") as refused:
         guard.check_tool_call("fs_write", {})
+    assert refused.value.result_payload["error_code"] == "checkpoint_unavailable"
     worker_done = session.checkpoint_setup[0]
     release.set()
     assert worker_done.wait(timeout=5)
@@ -349,3 +359,91 @@ def test_a_quick_baseline_shows_no_activity(
     )
     assert stdio_bridge._prepare_change_ledger_with_deadline(session) is True
     assert activities == []
+
+
+def test_tool_checkpoint_guard_lets_a_turn_go_ahead_once_when_setup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _session(tmp_path)
+    session.agent_session = SimpleNamespace(
+        store=SimpleNamespace(events_snapshot=lambda: [], append=lambda *args: None)
+    )
+    session.active_job = stdio_bridge.BridgeJob("job-1", session.session_id, "now")
+    guard = stdio_bridge._CheckpointToolDispatchGuard({"session": session})
+    calls: list[str] = []
+
+    def prepare(owner: object) -> bool:
+        calls.append(session.active_job.job_id)
+        session.checkpoint_failure = (
+            "Checkpoint storage could not start Git. Install Git and check that it can run."
+        )
+        return False
+
+    monkeypatch.setattr(stdio_bridge, "_prepare_change_ledger_with_deadline", prepare)
+    # A failed setup (not a slow one) never becomes ready by waiting: the turn goes ahead.
+    guard.check_tool_call("file_edit", {})
+    guard.check_tool_call("shell", {})
+    assert calls == ["job-1"], "one setup attempt per turn, not one per tool call"
+    session.active_job = stdio_bridge.BridgeJob("job-2", session.session_id, "now")
+    guard.check_tool_call("file_edit", {})
+    assert calls == ["job-1", "job-2"], "the next turn tries restore points again"
+
+
+def test_a_computer_without_git_still_lets_the_turn_change_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No mocks: Git really cannot start, as on a Windows computer without Git. Before, every tool
+    # that could change a file was refused with checkpoint_unavailable ("wait for setup to finish").
+    no_git = tmp_path / "path-without-git"
+    no_git.mkdir()
+    monkeypatch.setenv("PATH", str(no_git))
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+    session = _session(workspace)
+    session.agent_session = SimpleNamespace(
+        store=SimpleNamespace(events_snapshot=lambda: [], append=lambda *args: None)
+    )
+    session.active_job = stdio_bridge.BridgeJob("job-1", session.session_id, "now")
+    guard = stdio_bridge._CheckpointToolDispatchGuard({"session": session})
+
+    guard.check_tool_call("file_edit", {})
+    guard.check_tool_call("shell", {})
+
+    assert session.change_ledger is None
+    assert "could not start Git" in (session.checkpoint_failure or "")
+    assert any("can't be undone" in w and "could not start Git" in w for w in session.warnings)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the engine bundles its own Git only for Windows")
+def test_a_windows_computer_without_git_uses_the_engines_own_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No mocks: Git is missing from PATH, as on many Windows computers. The engine's own
+    # pinned Git (windows_toolchain) then gives the chat restore points and the Git tools.
+    from alysis_code.tools.git import git_status
+    from alysis_code.windows_toolchain import add_bundled_git_to_path
+
+    no_git = tmp_path / "path-without-git"
+    no_git.mkdir()
+    monkeypatch.setenv("PATH", str(no_git))
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
+    added = add_bundled_git_to_path()
+    assert added is not None and (added / "git.exe").is_file()
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    session = _session(workspace)
+    session.agent_session = SimpleNamespace(
+        store=SimpleNamespace(events_snapshot=lambda: [], append=lambda *args: None)
+    )
+    session.active_job = stdio_bridge.BridgeJob("job-1", session.session_id, "now")
+    guard = stdio_bridge._CheckpointToolDispatchGuard({"session": session})
+
+    guard.check_tool_call("file_edit", {})
+
+    assert session.change_ledger is not None
+    assert session.warnings == []
+    assert "notes.txt" in git_status(root=workspace)["status"]

@@ -39,6 +39,7 @@ from alysis_code.execution_deadline import ExecutionDeadline
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.llm.types import AssistantResponsePhase
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.text_normalization import normalize_for_matching
 from alysis_code.tools.availability import WEB_UNAVAILABLE_OBSERVATION
@@ -1376,6 +1377,11 @@ def _fake_one_shot_verify_run(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(agent_loop_mod, "run_task_verification", fake_run_task_verification)
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
+    )
 
 
 @pytest.mark.parametrize(
@@ -1888,9 +1894,9 @@ def test_one_shot_plan_only_then_final_records_single_continuation_intervention(
     assert finalized
     assert finalized[-1]["controller_interventions_total"] == 1
     assert finalized[-1]["controller_interventions"]["by_class"] == {
-        # Router-free path: every execute-capable turn gets the conditional
-        # reproduction-first directive (a context_setup intervention).
-        "context_setup": 1,
+        # Request artifact interpretation and reproduction guidance are context
+        # setup; only the actual continuation counts as a corrective intervention.
+        "context_setup": 2,
         "continuation": 1,
     }
 
@@ -2159,9 +2165,9 @@ def test_one_shot_final_completion_response_finishes_normally(tmp_path: Path) ->
     assert finalized
     assert finalized[-1]["controller_interventions_total"] == 0
     assert finalized[-1]["controller_interventions"]["by_class"] == {
-        # Router-free path: the conditional reproduction-first directive is
-        # context setup, not a corrective intervention.
-        "context_setup": 1,
+        # Request artifact interpretation and reproduction guidance are context
+        # setup, not corrective interventions.
+        "context_setup": 2,
     }
 
 
@@ -5866,6 +5872,11 @@ def test_one_shot_completion_gate_failed_verification_accepts_after_checklist(
     assert not surface.errors
     assert not any(event.get("type") == "forced_final_summary_requested" for event in events)
     assert surface.final_messages[-1].startswith(latest_final_text + "\n\nNot verified:")
+    # A failed observed check remains visible even if it was not one of the
+    # preconfigured required command strings.
+    final = next(event["payload"] for event in reversed(events) if event["type"] == "final")
+    assert final["verification_notice"] is True
+    assert final["task_outcome"]["problems"]
     assert session.last_turn_outcome["verified_success"] is False
 
 

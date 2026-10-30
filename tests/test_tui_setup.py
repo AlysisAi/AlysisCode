@@ -748,7 +748,7 @@ def test_flow_hosted_alysis_offers_login(monkeypatch, tmp_path):
     assert flow.api_key_result is not None
     assert flow.api_key_result.validation_status == "skipped"
     assert flow.model_result is not None
-    assert flow.model_result.model == "deepseek-flash"
+    assert flow.model_result.model == "gpt-6-luna"
     flow.submit_input(os.fspath(tmp_path))
     _drive_busy(flow)  # commit -> diagnose -> login_confirm
     assert flow.stage == "login_confirm"

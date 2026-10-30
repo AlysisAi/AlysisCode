@@ -1,18 +1,7 @@
-"""Greenfield work must earn verification governance, not be exempt from it.
+"""A passing agent-authored suite bootstraps best-effort verification.
 
-On a brand-new project the contract is downgraded to ``unavailable`` because
-"generic pytest fallback requires a trustworthy pre-existing Python test
-surface" - circular, since a new project has none by definition. The result
-(the greenfield governance gap): no completion-gate demands, no blast-radius directive, no
-regression baseline - the code most likely to be wrong gets the least
-scrutiny, and session 1 shipped a broken EXIF parser behind vacuous
-self-written tests.
-
-The fix: a passing agent-authored suite bootstraps the session contract from
-``unavailable`` to ``best_effort`` (source ``agent_authored_bootstrap``), so
-subsequent edits are held to re-running that suite; and an execute turn that
-creates new modules without detected test references finalizes with an advisory.
-That bounded reference scan does not measure executed coverage.
+Later turns retain that contract. New modules without detected test references
+produce an advisory; the reference scan does not measure executed coverage.
 """
 
 from __future__ import annotations
@@ -51,6 +40,8 @@ VERIFY_COMMAND = (
     subprocess.list2cmdline(_VERIFY_ARGS) if sys.platform == "win32" else shlex.join(_VERIFY_ARGS)
 )
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 
 @pytest.fixture(autouse=True)
 def _isolated_verification_environment(monkeypatch) -> None:
@@ -58,7 +49,7 @@ def _isolated_verification_environment(monkeypatch) -> None:
     # exercise bootstrap behavior, not Docker availability or the caller's
     # sandbox preference. The session config explicitly selects host execution.
     monkeypatch.delenv("ALYSIS_VERIFY_SANDBOX_MODE", raising=False)
-    monkeypatch.delenv("ALYSIS_VERIFY_SANDBOX_MODE", raising=False)
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
 
 
 class _ScriptedClient:
@@ -273,8 +264,14 @@ def test_bootstrapped_contract_arms_the_completion_gate_next_turn(
     assert assessment["gate_command"] == VERIFY_COMMAND
 
 
-def test_new_module_without_tests_gets_zero_coverage_marker(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("ALYSIS_ZERO_COVERAGE_ADVISORY", raising=False)
+@pytest.mark.parametrize("enabled", [False, True])
+def test_new_module_without_tests_gets_optional_coverage_marker(
+    tmp_path: Path, monkeypatch, enabled: bool
+) -> None:
+    if enabled:
+        monkeypatch.setenv("ALYSIS_ZERO_COVERAGE_ADVISORY", "on")
+    else:
+        monkeypatch.delenv("ALYSIS_ZERO_COVERAGE_ADVISORY", raising=False)
     session = _session(tmp_path)
     responses = [
         LLMResponse(
@@ -294,13 +291,15 @@ def test_new_module_without_tests_gets_zero_coverage_marker(tmp_path: Path, monk
         session.close()
 
     events = _events(log_path, "zero_coverage_modules")
-    assert events and events[-1]["modules"] == ["util.py"]
+    assert bool(events) is enabled
+    if enabled:
+        assert events[-1]["modules"] == ["util.py"]
     finals = _events(log_path, "final")
-    assert "without detected test references" in str(finals[-1]["content"])
+    assert ("without detected test references" in str(finals[-1]["content"])) is enabled
 
 
 def test_covered_new_module_gets_no_marker(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("ALYSIS_ZERO_COVERAGE_ADVISORY", raising=False)
+    monkeypatch.setenv("ALYSIS_ZERO_COVERAGE_ADVISORY", "on")
     session = _session(tmp_path)
     session.client = _ScriptedClient(_build_suite_turn_responses())  # type: ignore[assignment]
     try:

@@ -10,9 +10,9 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 | --- | ---: |
 | `blocked_until_security_model` | 14 |
 | `experimental_with_gate` | 1 |
-| `implemented_in_bridge_only` | 32 |
+| `implemented_in_bridge_only` | 48 |
 | `implemented_in_extension` | 411 |
-| `intentionally_cli_only` | 25 |
+| `intentionally_cli_only` | 39 |
 | `not_applicable_to_ide` | 30 |
 | `planned_for_protocol` | 0 |
 
@@ -21,8 +21,8 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Backend action metadata entries: 122
 - CLI Forge chat commands: 10
 - CLI chat slash commands: 36
-- CLI commands and groups: 130
-- IDE bridge methods: 205
+- CLI commands and groups: 144
+- IDE bridge methods: 221
 - VS Code package/chat commands: 54
 - VS Code slash commands and aliases: 68
 
@@ -111,6 +111,13 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Rationale: The backend and typed VS Code bridge client cover exact-session MCP server status, enable, disable, and restart. Status is bounded and redacted; mutations require Workspace Trust and an idle owning session, while enable/restart atomically reject catalog drift instead of replacing a live server with incompatible tools, resources, or prompts.
 - Bridge-only rationale: No standalone user-facing VS Code control is exposed yet. The typed, capability-negotiated client contract is ready for a separately reviewed native MCP lifecycle UX.
 
+### ide.method.session_close
+
+- Surface: `ide_bridge_method`
+- Features: `session.close`
+- Rationale: Optional typed idle-session retirement confirms worker settlement, queued-prompt cancellation and resource cleanup before an engine process is reused.
+- Bridge-only rationale: The desktop chat engine pool consumes this lifecycle receipt. VS Code has the typed client method but no session-retirement UI route.
+
 ### ide.method.bridge_shutdown
 
 - Surface: `ide_bridge_method`
@@ -174,12 +181,40 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Rationale: Read-only subagent and role model metadata for host settings pages: each subagent's model and provider as a run would resolve them, and why one is unavailable.
 - Bridge-only rationale: Consumed by the desktop Settings. The VS Code typed client supports this query but has no subagent settings page.
 
-### ide.methods.host_question_dispatch
+### ide.methods.artifact_checks
 
 - Surface: `ide_bridge_method`
-- Features: `host.action.dispatched`, `session.userQuestions.get`, `session.userQuestions.answer`, `session.userQuestions.touch`
-- Rationale: Host dispatch receipts and structured user questions are scoped to the active session and job.
-- Bridge-only rationale: These negotiated host interfaces are available to desktop clients. The VS Code frontend does not yet implement the question or dispatch UI.
+- Features: `session.artifactChecks`
+- Rationale: Returns engine-observed checks for exact artifact hashes without running new checks or accepting model-supplied receipts.
+- Bridge-only rationale: The desktop Results panel consumes these receipts; VS Code has a typed client but no artifact-check presenter yet.
+
+### ide.methods.host_dispatch_receipt
+
+- Surface: `ide_bridge_method`
+- Features: `host.action.dispatched`
+- Rationale: Single-use dispatch receipt for engine-owned host approval protocol 1 with exact session, active job and capability fences.
+- Bridge-only rationale: Desktop host uses the negotiated acknowledgement; the VS Code host does not yet negotiate approval protocol 1.
+
+### ide.methods.turn_user_questions
+
+- Surface: `ide_bridge_method`
+- Features: `session.userQuestions.get`, `session.userQuestions.answer`, `session.userQuestions.touch`
+- Rationale: Read, answer or renew live turn-scoped clarification questions without terminal scraping.
+- Bridge-only rationale: Desktop question UI consumes these methods; no equivalent VS Code question presenter is wired.
+
+### ide.methods.native_subscription_status
+
+- Surface: `ide_bridge_method`
+- Features: `provider.auth.status`
+- Rationale: Fresh native-provider status follows the engine secret-projection rules.
+- Bridge-only rationale: Desktop connection settings consume this optional method. VS Code has typed transport coverage but has not adopted native subscription status in its UI.
+
+### ide.methods.desktop_workbench
+
+- Surface: `ide_bridge_method`
+- Features: `computer_start_resolved.respond`, `ext.custom.save`, `hooks.document.read`, `hooks.document.save`, `session.outputArtifacts`, `skill.document.read`, `skill.document.save`, `skill.import.describe`, `skill.import.discard`, `skill.import.install`, `skill.import.package`, `skill.import.preview`, `skill.update.preview`
+- Rationale: These methods serve the desktop customization workbench, exact session-output handoff and native Computer Use controller.
+- Bridge-only rationale: VS Code has no matching draft-review, document-revision or native host controller. Their current support is in the engine and desktop client.
 
 
 ## implemented_in_extension
@@ -355,7 +390,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### cli.commands.intentional_cli_only
 
 - Surface: `cli_command`
-- Features: `auth list`, `auth status`, `config clear-api-key`, `config menu`, `config set-api-key`, `profile clear-key`, `profile set-key`, `power gate`, `server start`, `setup`, `whoami`
+- Features: `auth list`, `auth status`, `config clear-api-key`, `config menu`, `config set-api-key`, `profile check`, `profile clear-key`, `profile set-key`, `power gate`, `server start`, `setup`, `whoami`
 - Rationale: These commands are terminal setup/maintenance, provider-account inspection, legacy asset migration, local sandbox image management, server startup, or secret mutation flows; they must not be terminal-scraped or accept unsafe inline secrets through IDE protocol params.
 
 ### cli.chat_slash.ask_once
@@ -382,11 +417,29 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Features: `agents list`, `agents set`
 - Rationale: Subagent model settings. Hosts read them with the agents.list bridge method; the desktop host saves with `agents set`, as it saves other settings with `config set`. VS Code has no subagent settings page yet.
 
-### cli.commands.profile_check
+### cli.profile.check
 
 - Surface: `cli_command`
 - Features: `profile check`
-- Rationale: Validate a saved profile or a key read from stdin without changing stored credentials.
+- Rationale: Explicit CLI provider-profile request probe. VS Code retains its typed provider diagnostics instead of executing this terminal command.
+
+### cli.commands.local_memory
+
+- Surface: `cli_command`
+- Features: `memory add`, `memory delete`, `memory disable`, `memory edit`, `memory enable`, `memory export`, `memory list`, `memory request`
+- Rationale: Local memory inspection and editing stay in the CLI; VS Code has no corresponding memory-management view.
+
+### cli.commands.native_sandbox_diagnostics
+
+- Surface: `cli_command`
+- Features: `sandbox mxc-capabilities`, `sandbox native-capabilities`, `sandbox native-status`, `sandbox recover-native`
+- Rationale: Native Windows sandbox setup, recovery and diagnostics run locally and are not exposed as extension actions.
+
+### cli.command.upgrade
+
+- Surface: `cli_command`
+- Features: `upgrade`
+- Rationale: This command changes the host CLI installation through its terminal installer flow.
 
 
 ## not_applicable_to_ide
@@ -394,7 +447,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### cli.groups.namespaces
 
 - Surface: `cli_command_group`
-- Features: `auth`, `config`, `conventions`, `ext`, `forge`, `forge assets`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `profile`, `power`, `report`, `sandbox`, `sessions`, `skill`, `tool`, `update`, `agents`
+- Features: `auth`, `config`, `conventions`, `ext`, `forge`, `forge assets`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `profile`, `report`, `sandbox`, `sessions`, `skill`, `tool`, `update`, `agents`, `memory`
 - Rationale: Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision.
 
 ### cli.chat_slash.not_applicable

@@ -222,7 +222,7 @@ class AlysisSimpleAgent(AbstractInstalledAgent):
     def _copy_source_snapshot(self, snapshot: Path) -> None:
         repo_root = _REPO_ROOT
         snapshot.mkdir(parents=True, exist_ok=True)
-        for filename in ("pyproject.toml", "README.md", "LICENSE", "NOTICE"):
+        for filename in ("pyproject.toml", "README.md", "LICENSE", "NOTICE", "hatch_build.py"):
             source = repo_root / filename
             if source.exists():
                 shutil.copy2(source, snapshot / filename)

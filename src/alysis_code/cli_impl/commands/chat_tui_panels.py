@@ -327,7 +327,12 @@ def _chat_context_panel_spec(*, session: Any) -> PanelSpec:
             _context_percent_tone(dynamic_percent),
         ),
     ]
-    sections: list[tuple[str, list[tuple[str, str, str]]]] = [("Context", context_rows)]
+    from .startup import _chat_provider_usage_rows
+
+    sections: list[tuple[str, list[tuple[str, str, str]]]] = [
+        ("Provider Usage · Last Response", _chat_provider_usage_rows(session)),
+        ("Context", context_rows),
+    ]
     if any(row[1] != "n/a" for row in budget_rows):
         sections.append(("Effective Input Budget", budget_rows))
     if any(row[1] != "n/a" for row in conversation_rows):

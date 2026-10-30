@@ -11,6 +11,8 @@ from test_ide_computer_use_host import _bridge_session, _lines
 from alysis_code.ide.approval_binding import build_approval_binding
 from alysis_code.surface.types import ApprovalDecision, ApprovalRequest
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 def challenge(required: bool = True) -> dict[str, Any]:
     return {

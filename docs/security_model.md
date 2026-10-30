@@ -22,21 +22,36 @@ confusion, but they are not a substitute for reviewing changes before running th
 
 - `readonly` exposes inspection tools plus top-level read-only delegation controls; it never
   exposes writes, candidate apply/discard, or nested delegation.
-- `review` asks before writes and shell commands.
-- `auto` can make approved changes with fewer prompts.
-- `fullaccess` removes mode-level write and shell approval prompts.
+- `review` ("Ask for approval") asks before writes and shell commands. Commands that only
+  look (`ls`, `git status`, `rg`, `Get-ChildItem`, …; see `read_only_commands.py`) run
+  without asking.
+- `auto` ("Approve for me") runs normal work without asking: reads, edits inside the
+  workspace, read-only commands and sandboxed commands. The approvals that remain (a command
+  without a sandbox, `git push`, package installs, file deletion, discarding work, publishing
+  or deploying, credential files; see `command_review_rules.py`) are answered by a reviewer
+  model instead of a person (`agent/approval_review.py`). The reviewer sees the user's
+  messages and the exact action, not the agent's own messages or tool output. If it declines,
+  the agent gets the reason as a tool error and can try another route. If it cannot decide,
+  or after 3 declines in a row or 20 in one turn, the person is asked. Approvals that always
+  need a person (credential files, folders outside the project, IDE tasks, browser actions,
+  Computer Use) never go to the reviewer, and the user's permission rules and session grants
+  are applied first. The reviewer is the chat's model unless `role_models.approval_review`
+  (or `ALYSIS_MODEL_APPROVAL_REVIEW`) names another.
+- `fullaccess` removes Alysis action approval prompts, including mandatory-person prompts,
+  and the shell sandbox. The shared authority in `agent/action_approval.py` still honors
+  explicit deny rules. Tool admission, provider and operating-system constraints remain
+  separate. Do not rely on a final confirmation for critical deletes in this mode.
 
-The execution mode is the only approval authority. There is no second
-"auto-approve" switch that can answer prompts on your behalf: if the footer badge
-says `safe`, writes and shell commands stop and ask. In the TUI, Shift+Tab cycles
+The execution mode is the only approval authority: if the footer badge says `safe`, writes
+and shell commands stop and ask a person, and only `fast` lets the reviewer answer. In the TUI, Shift+Tab cycles
 the next-message selection (`read → safe → fast → full`) and `/permissions`
 selects one directly. The footer shows active → selected Permissions until the next
 real user message activates the choice. Selecting `fullaccess` prints a warning immediately;
 it does not widen a turn already in progress.
 
-`--yes` is scoped to `auto` mode, where it skips the file-deletion and
-sensitive-command confirmations. It does not relax `review` and does not grant
-Workspace Trust.
+`--yes` is not a blanket action approval: file deletion, sensitive access and connected
+tools still go through the shared authority and the active mode's policy. It does not
+relax `review`, override mandatory-person requests in `auto`, or grant Workspace Trust.
 
 `fullaccess` is for trusted workspaces only. It is not a sandbox boundary and should not be used for
 untrusted repositories, unknown prompts, or commands you would not run directly.
@@ -143,6 +158,15 @@ model-visible tool surface.
 Server-authored MCP tool descriptions are intentionally omitted from model-visible descriptions.
 MCP resource text is wrapped as untrusted content and size-limited before prompt inclusion. Task
 execution can further restrict MCP access through task-level scope rules.
+
+A successful connector call establishes the returned API fact, not that a
+published deliverable satisfies the request. Links need an authorized content
+check; an HTTP 200 response alone can still be the wrong page. A newly observed
+file establishes existence, not correct contents or a successful transformation.
+Unavailable checks leave the outcome unverified.
+
+Invalid provider tool batches are rejected before dispatch. Recovery retains the
+same permissions and deadlines and cannot replay writes with uncertain effects.
 
 ## Skills, Plugins, Hooks, And Custom Tools
 

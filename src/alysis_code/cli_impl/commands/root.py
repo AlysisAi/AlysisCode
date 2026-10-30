@@ -4,15 +4,14 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import typer
 
 from ... import __version__
-from ...auth_diagnostics import auth_doctor_payload
-from ...build_identity import decide_clean_build, version_line
+from ...build_identity import version_line
 from ...config import (
     AppConfig,
     ConfigError,
@@ -22,95 +21,122 @@ from ...config import (
     resolve_model_access_api_key,
     resolve_web_search_policy,
 )
-from ...provider_diagnostics import (
-    build_provider_diagnostics,
-    probe_reasoning_suppression_live,
-    validate_active_provider_live,
-    validate_web_search_live,
-)
 from ...provider_telemetry import (
     diagnostic_bundle_payload,
     last_provider_call_summary,
     last_web_search_summary,
 )
-from ...sandbox_doctor import diagnose_sandbox
 from ...skills import resolve_skills_enabled
 from ...step_budget import normalize_step_budget_policy
 from ...tools.availability import get_tool_availability
 from ...tools.registry import iter_builtin_tool_metadata
-from ...tools.web_search import resolve_web_search_runtime_status
-from ..assets_cli import assets_app as forge_assets_app
 from . import _patchable
+from ._entry import UNIDENTIFIABLE_BUILD_EXIT_CODE as UNIDENTIFIABLE_BUILD_EXIT_CODE
+from ._entry import _cli_module, _enforce_clean_build
+from ._shared import (
+    JSON_OPTION_HELP as _JSON_OPTION_HELP,
+)
 from ._shared import (
     Mode,
     _console,
     _Table,
 )
-from .agents import agents_app
-from .auth import JSON_OPTION_HELP as _JSON_OPTION_HELP
-from .auth import _status_payload as _auth_status_payload
-from .auth import auth_app
-from .config import config_app
-from .conventions import conventions_app
-from .extensions import ext_app
-from .forge import forge_app
-from .hooks import hooks_app
-from .ide_bridge import ide_bridge_app
-from .mcp import mcp_app, mcp_auth_app, mcp_prompts_app
-from .profile import profile_app
-from .report import report_app
-from .sandbox import sandbox_app
-from .server import server_app
-from .sessions import sessions_app
-from .skills import skill_app
-from .tools import tool_app
-from .update import (
-    _BACKGROUND_UPDATE_SUBCOMMANDS,
-    _cached_update_status_summary,
-    _start_background_update_check,
-    maybe_prompt_update_at_startup,
-    update_app,
-)
+from .lazy_groups import LazyCommandGroup, group_export
 
 if TYPE_CHECKING:
     from rich.table import Table
 
 
-def _cli_module() -> Any:
-    module = sys.modules.get("alysis_code.cli")
-    if module is not None:
-        return module
-    from ... import cli
-
-    return cli
+_BACKGROUND_UPDATE_SUBCOMMANDS = {"chat", "run", "forge"}
 
 
-app = typer.Typer(add_completion=False, help="Local CLI coding agent (multi-provider).")
-app.add_typer(auth_app, name="auth")
-app.add_typer(config_app, name="config")
-app.add_typer(profile_app, name="profile")
-app.add_typer(update_app, name="update")
-app.add_typer(sessions_app, name="sessions")
-app.add_typer(forge_app, name="forge")
-forge_app.add_typer(forge_assets_app, name="assets")
-app.add_typer(server_app, name="server")
-app.add_typer(ext_app, name="ext")
-app.add_typer(report_app, name="report")
-app.add_typer(mcp_app, name="mcp")
-app.add_typer(skill_app, name="skill")
-app.add_typer(agents_app, name="agents")
-app.add_typer(conventions_app, name="conventions")
-app.add_typer(tool_app, name="tool")
-app.add_typer(hooks_app, name="hooks")
-app.add_typer(sandbox_app, name="sandbox")
-app.add_typer(ide_bridge_app, name="ide-bridge")
-mcp_app.add_typer(mcp_prompts_app, name="prompts")
-mcp_app.add_typer(mcp_auth_app, name="auth")
+def _start_background_update_check() -> None:
+    # Automatic maintenance belongs to an interactive terminal session. Piped
+    # and managed invocations must not start unrelated network work while
+    # admitting a task. Explicit `update` commands retain their own policy.
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    from .update import _start_background_update_check as start
+
+    start()
 
 
-#: A build that cannot identify itself is a configuration problem, not a task
-#: failure, so it gets its own code rather than the generic 1.
-UNIDENTIFIABLE_BUILD_EXIT_CODE = 2
+def _cached_update_status_summary(cfg: AppConfig | None) -> str:
+    from .update import _cached_update_status_summary as summarize
+
+    return summarize(cfg)
+
+
+def maybe_prompt_update_at_startup(*, console: Any | None = None) -> str | None:
+    from .update import maybe_prompt_update_at_startup as prompt
+
+    return prompt(console=console)
+
+
+# Keep these patchable entry points while loading diagnostic backends only for
+# commands that use them. Registering run/IDE/Forge commands needs neither the
+# auth command implementation nor live provider and sandbox diagnostics.
+def auth_doctor_payload(*args: Any, **kwargs: Any) -> Any:
+    from ...auth_diagnostics import auth_doctor_payload
+
+    return auth_doctor_payload(*args, **kwargs)
+
+
+def build_provider_diagnostics(*args: Any, **kwargs: Any) -> Any:
+    from ...provider_diagnostics import build_provider_diagnostics
+
+    return build_provider_diagnostics(*args, **kwargs)
+
+
+def probe_reasoning_suppression_live(*args: Any, **kwargs: Any) -> Any:
+    from ...provider_diagnostics import probe_reasoning_suppression_live
+
+    return probe_reasoning_suppression_live(*args, **kwargs)
+
+
+def validate_active_provider_live(*args: Any, **kwargs: Any) -> Any:
+    from ...provider_diagnostics import validate_active_provider_live
+
+    return validate_active_provider_live(*args, **kwargs)
+
+
+def validate_web_search_live(*args: Any, **kwargs: Any) -> Any:
+    from ...provider_diagnostics import validate_web_search_live
+
+    return validate_web_search_live(*args, **kwargs)
+
+
+def diagnose_sandbox(*args: Any, **kwargs: Any) -> Any:
+    from ...sandbox_doctor import diagnose_sandbox
+
+    return diagnose_sandbox(*args, **kwargs)
+
+
+def resolve_web_search_runtime_status(*args: Any, **kwargs: Any) -> Any:
+    from ...tools.web_search_runtime import resolve_web_search_runtime_status
+
+    return resolve_web_search_runtime_status(*args, **kwargs)
+
+
+def _auth_status_payload(*args: Any, **kwargs: Any) -> Any:
+    from .auth import _status_payload
+
+    return _status_payload(*args, **kwargs)
+
+
+def __getattr__(name: str) -> Any:
+    # Preserve the real Typer objects exported to legacy Python callers without
+    # loading unrelated command modules for each process invocation.
+    value = group_export(name)
+    globals()[name] = value
+    return value
+
+
+app = typer.Typer(
+    cls=LazyCommandGroup,
+    add_completion=False,
+    help="Local CLI coding agent (multi-provider).",
+)
 
 
 @app.command()
@@ -134,25 +160,6 @@ def _show_version(value: bool) -> None:
     raise typer.Exit()
 
 
-def _enforce_clean_build(flag: bool) -> None:
-    """Refuse to start when the build cannot prove what it is.
-
-    Benchmark harnesses set ``ALYSIS_REQUIRE_CLEAN_BUILD=1`` so a campaign
-    cannot silently run against an unpinned or locally-modified build. One
-    earlier campaign did exactly that -- it ran against "latest main" -- and
-    none of its results can now be tied to a source tree.
-
-    Deliberately after ``--version``, which is eager: diagnosing a refusal
-    starts by asking the binary what it thinks it is, and that has to keep
-    working.
-    """
-    decision = decide_clean_build(flag=flag)
-    if decision.allowed:
-        return
-    typer.echo(f"alysis: {decision.message}", err=True)
-    raise typer.Exit(code=UNIDENTIFIABLE_BUILD_EXIT_CODE)
-
-
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -171,11 +178,37 @@ def main(
             "build time. Also enabled by ALYSIS_REQUIRE_CLEAN_BUILD=1."
         ),
     ),
+    add_dir: list[Path] | None = typer.Option(
+        None,
+        "--add-dir",
+        help="Allow another sandbox workspace folder for this invocation. Repeat for multiple folders.",
+    ),
 ) -> None:
     # Before anything else, and before the subcommand dispatch below, so that
     # `alysis run ...` under a benchmark harness is refused just as the bare
     # invocation is.
     _enforce_clean_build(require_clean_build)
+    if isinstance(add_dir, list) and add_dir:
+        from ...sandbox_settings import ADDITIONAL_WORKSPACE_ROOTS_ENV
+
+        values = []
+        for requested in add_dir:
+            absolute = requested.absolute()
+            if not absolute.is_dir():
+                raise typer.BadParameter(
+                    f"Additional workspace directory does not exist: {requested}"
+                )
+            values.append(str(absolute))
+        previous = os.environ.get(ADDITIONAL_WORKSPACE_ROOTS_ENV)
+        os.environ[ADDITIONAL_WORKSPACE_ROOTS_ENV] = json.dumps(values)
+
+        def restore_folder_authority() -> None:
+            if previous is None:
+                os.environ.pop(ADDITIONAL_WORKSPACE_ROOTS_ENV, None)
+            else:
+                os.environ[ADDITIONAL_WORKSPACE_ROOTS_ENV] = previous
+
+        ctx.call_on_close(restore_folder_authority)
     cli = _cli_module()
     if ctx.invoked_subcommand is not None:
         if ctx.invoked_subcommand in _BACKGROUND_UPDATE_SUBCOMMANDS:
@@ -238,7 +271,9 @@ def _require_active_subscription_ready(
     base_url: str | None,
     require_ready: bool = True,
 ) -> None:
-    _cli_module()._require_active_subscription_ready(
+    from ..execution_admission import _require_active_subscription_ready as require_ready_impl
+
+    _patchable("_require_active_subscription_ready", require_ready_impl)(
         model=model,
         base_url=base_url,
         require_ready=require_ready,
@@ -1166,7 +1201,11 @@ def _whoami_payload(cfg: AppConfig) -> dict[str, Any]:
         profile_active=bool(status.active),
         plan=(trial.plan if trial is not None else None),
         display_name=(trial.display_name if trial is not None else None),
-        billing=(trial.billing if trial is not None else None),
+        billing=(
+            account_login.billing_with_model_availability(cfg, trial.billing)
+            if trial is not None
+            else None
+        ),
         billing_status=(
             "available"
             if trial is not None and trial.billing is not None
@@ -1181,6 +1220,9 @@ def _whoami_payload(cfg: AppConfig) -> dict[str, Any]:
 @app.command()
 def whoami(
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
+    details: bool = typer.Option(
+        False, "--details", help="Show model IDs, token rates and reasoning options."
+    ),
 ) -> None:
     """Show your Alysis Code login status."""
     from ... import account_login
@@ -1202,8 +1244,36 @@ def whoami(
     console.print(f"Proxy: {status.base_url}")
     trial = account_login.fetch_trial_status(cfg)
     if trial is not None:
+        trial = replace(
+            trial, billing=account_login.billing_with_model_availability(cfg, trial.billing)
+        )
         line = account_login.format_trial_status_line(trial)
         if line:
             console.print(line)
+        for detail_line in account_login.format_paid_plan_details(trial, detailed=details is True):
+            console.print(detail_line, markup=False, highlight=False)
     else:
         console.print("[dim](Live account usage is unavailable. Check your account website.)[/dim]")
+
+
+@app.command()
+def upgrade(
+    plan: str = typer.Argument("plan_5", help="Plan to move to (plan_5 or plan_1)."),
+) -> None:
+    """Open your Alysis account page to subscribe or change plan."""
+    import webbrowser
+
+    from ... import account_login
+
+    if plan not in ("plan_1", "plan_5"):
+        raise typer.BadParameter("Choose plan_1 or plan_5.")
+    url = f"{account_login.cloud.account_url()}?upgrade={plan}"
+    console = _console()
+    opened = False
+    try:
+        opened = bool(webbrowser.open(url))
+    except webbrowser.Error:
+        opened = False
+    console.print(
+        f"{'Opened' if opened else 'Open'} {url} to choose your plan. Payment happens on the website."
+    )

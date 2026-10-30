@@ -5,16 +5,17 @@ import hashlib
 import json
 import uuid
 from collections import deque
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from itertools import count
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Literal, cast
 
+from ... import computer_use_attribution as attribution
 from ...budget_policy import (
     BUDGET_CHECKPOINT_NOTICE,
     PROGRESS_CHECKPOINT_FAILED_EVENT,
@@ -26,10 +27,26 @@ from ...budget_policy import (
     resolve_budget_grace_seconds,
 )
 from ...cancellation import CooperativeCancellationError
+from ...compaction.call_observation import observe_compactor_llm_durations
+from ...compaction.call_policy import compaction_provider_policy
+from ...computer_use_call_diagnostics import (
+    RESOLVED_START_REFUSAL_CODES,
+    RESULT_CODES,
+    ComputerUseCallTrace,
+    bind_computer_use_provider_evidence,
+)
 from ...computer_use_diagnostics import (
     CONTRACT_ERROR_CODES,
     computer_use_local_result_failure_code,
     computer_use_terminal_failure_code,
+)
+from ...computer_use_focus_diagnostic import record_focus_diagnostic
+from ...computer_use_platform_policy import (
+    UNAVAILABLE_MESSAGE,
+    computer_use_blocked,
+    computer_use_tool_blocked,
+    refuse_computer_use,
+    refuse_unavailable_mac_w7_computer_use,
 )
 from ...config import ConfigError
 from ...edit_discipline import scratch_summary_line
@@ -47,7 +64,7 @@ from ...failure_category import (
     classify_failure_category,
     is_context_window_exceeded_error,
 )
-from ...file_classification import is_generated_or_vendor_path
+from ...file_classification import is_generated_or_vendor_path, is_repository_metadata_path
 from ...hooks import HookDispatchResult
 from ...host_images import (
     HostScreenRedactor,
@@ -58,6 +75,8 @@ from ...llm.base import effective_tools_for_client
 from ...llm.metadata import assistant_message_from_response
 from ...llm.tool_call_markup import ToolCallMarkupFilter, contains_tool_call_markup
 from ...llm.types import AssistantResponsePhase, LLMError, LLMOutputLimitError
+from ...project_folders import scoped_turn
+from ...project_folders import turn_tools as project_turn_tools
 from ...runtime_kind import RuntimeKind
 from ...service_persistence import finalize_service_notice
 from ...step_budget import StepBudgetRequest, resolve_step_budget, step_budget_is_autonomous
@@ -90,17 +109,19 @@ from ...tools.availability import (
 from ...tools.availability import (
     tool_availability_snapshot as copy_tool_availability_snapshot,
 )
+from ...tools.errors import (
+    GitError,
+    HistorySearchError,
+    SearchError,
+    ShellError,
+    SymbolSearchError,
+)
 from ...tools.fs import FsError
-from ...tools.git import GitError
-from ...tools.history import HistorySearchError
 from ...tools.registry import (
     build_unknown_tool_recovery_payload,
     compatibility_tool_alias_for,
     transform_compatibility_tool_alias,
 )
-from ...tools.search import SearchError
-from ...tools.shell import ShellError
-from ...tools.symbols import SymbolSearchError
 from ...user_questions import question_broker
 from ...verify_gate import VerifyError, required_verify_commands
 from ..acceptance_contract import (
@@ -110,6 +131,7 @@ from ..acceptance_contract import (
     build_acceptance_contract,
     finalize_acceptance_contract,
 )
+from ..artifact_output_observation import ArtifactOutputObserver
 from ..blast_radius import (
     BLAST_RADIUS_TURN_DIRECTIVE,
     EMPTY_REPO_TEST_INDEX,
@@ -141,11 +163,27 @@ from ..completion_gate import (
     decide_completion_gate,
     record_completion_gate_decision,
 )
+from ..computer_use_completion import computer_use_completion_report
 from ..computer_use_files import COMPUTER_USE_FILE_TOOL_NAMES, computer_use_file_delivery_status
+from ..computer_use_history import (
+    COMPUTER_USE_OBSERVATION_METADATA_KEY,
+    supersede_computer_use_observations,
+)
+from ..computer_use_observation_progress import ComputerUseObservationProgress
+from ..computer_use_refusal import validated_host_refusal_feedback, validated_local_text_refusal
 from ..computer_use_tools import (
+    COMPUTER_USE_CAPTURE_REFUSAL_PROMPT,
     COMPUTER_USE_RESPONSE_MODES,
     COMPUTER_USE_TOOL_NAMES,
     COMPUTER_USE_VERIFICATION_TOOL_NAMES,
+    COMPUTER_USE_WINDOW_REPORT_PROMPT,
+    COMPUTER_USE_WINDOW_SELECTION_PROMPT,
+    LocalObservationRecoveryRequired,
+    LocalObservationRefusal,
+    computer_use_capture_refusal_pending,
+    computer_use_pending_read_code,
+    computer_use_window_report_required,
+    computer_use_window_selection_pending,
     computer_use_workflow_status,
 )
 from ..computer_use_uploads import COMPUTER_USE_UPLOAD_TOOL_NAMES
@@ -183,6 +221,7 @@ from ..prompt_context import (
     _session_verify_command_selection,
     _set_session_pinned_prefix_len,
     extract_user_visible_instruction,
+    request_model_identity,
     scrub_ephemeral_host_images,
 )
 from ..regression_baseline import _regression_baseline_enabled
@@ -202,6 +241,7 @@ from ..sensitive_output import (
     inject_ephemeral_computer_use_provider_state,
     inject_ephemeral_sensitive_tool_messages,
     redact_assistant_tool_call_message,
+    redact_computer_use_window_references,
     redact_consumed_sensitive_tool_messages,
     redact_sensitive_exception_taints,
     redact_sensitive_response_for_persistence,
@@ -223,8 +263,14 @@ from ..subagent_execution import (
     _SUBAGENT_PREASSIGNED_RUN_ID_ARG,
     project_subagent_parent_result,
 )
+from ..task_relation import new_task_instruction
 from ..tool_arguments import conform_tool_arguments, invalid_tool_arguments_result
 from ..tool_contract_recovery import ToolContractRecoveryAdmission, recovery_blocked_result
+from ..tool_repetition import (
+    EXTERNAL_TOOL_PROGRESS_CHECKPOINT,
+    EXTERNAL_TOOL_REASSESSMENT,
+    ExternalToolRepetitionTracker,
+)
 from ..tools_assembly import (
     _SHELL_CANCELLABLE_WAIT_TOOL_NAMES,
     _SHELL_CANCELLATION_TOKEN_ARG,
@@ -455,6 +501,23 @@ class _EmptyResponseAnomalyRecoveryState:
     last_tool_choice: dict[str, Any] | None = None
 
 
+def _drop_selection_directive(prompts: list[str], directive: str | None) -> None:
+    """Remove exactly the controller's own selection directive (by identity), nothing else."""
+    if directive is None:
+        return
+    for index, prompt in enumerate(prompts):
+        if prompt is directive:
+            del prompts[index]
+            return
+
+
+_COMPUTER_SELECTION_CORRECTION_TAIL = (
+    "Plan every app the original request uses in app_steps, in order, each step with the kinds of action it "
+    "needs (each named once); under normal approval the selected apps and actions are exactly those steps. For native apps select "
+    "semantic actions such as press, focus or set_value, plus activate_application when opening or switching to "
+    "an app. Preserve the original request and all constraints. Do not return a substitute answer before "
+    "correcting this selection. No permissions or user confirmation are needed for this correction."
+)
 _EMPTY_RESPONSE_STALL_RECOVERY_TEMPLATE = """The runtime detected a stalled exchange: {count} consecutive model response(s) carried no text and no tool call, so there was nothing to act on.
 The most recent tool output has been shortened in this context in case its size or content caused the stall. Treat it as unavailable rather than as a complete result.
 Continue from what you already know: take the next concrete action, re-run a tool if you genuinely need its output again, or give the final answer."""
@@ -1138,10 +1201,16 @@ def _emit_surface_warning(
 
 
 def _approval_declined_final_text(*, tool_name: str, approval_kind: str) -> str:
-    label = str(tool_name or approval_kind or "the requested action").strip()
+    from ...ide.activity_events import tool_activity
+
+    label = (
+        "check the requested file"
+        if approval_kind == "file_metadata"
+        else tool_activity(call_id="", name=tool_name or approval_kind).display_title.lower()
+    )
     return (
-        f"Approval declined for {label}. I stopped without retrying that action. "
-        "Tell me how you want to proceed."
+        f"The request to {label} was declined. That action did not run. "
+        "I stopped without retrying it."
     )
 
 
@@ -1181,6 +1250,33 @@ def _surface_accepts_reasoning_trace(surface: Any) -> bool:
     return True
 
 
+def _finish_computer_use_evidence(session: Any, *, origin: str, outcome: str) -> None:
+    """One content-free terminal fact, including exceptional session exits."""
+    state = getattr(session, "_computer_use_evidence_state", None)
+    if not isinstance(state, dict) or not state.get("enabled") or state.get("finished"):
+        return
+    state["finished"] = True
+    try:
+        payload = {
+            "version": 1,
+            "kind": "terminal",
+            "terminalOrigin": origin,
+            "reportedOutcome": state.get("reportedOutcome", outcome),
+            "stateCalls": state["stateCalls"],
+            "actionCalls": state["actionCalls"],
+            "knownHostFailure": state["knownHostFailure"],
+        }
+        if state["knownHostFailure"]:
+            payload["hostFailureCode"] = state.get("hostFailureCode", "other")
+        resolved_code = state.get("resolvedStartRefusalCode")
+        if type(resolved_code) is str and resolved_code in RESOLVED_START_REFUSAL_CODES:
+            payload["resolvedStartRefusalCode"] = resolved_code
+        state["emit"](payload)
+    except Exception:
+        pass
+
+
+@scoped_turn
 def run_turn(
     self,
     instruction: str,
@@ -1192,8 +1288,121 @@ def run_turn(
     cancellation_token: Any | None = None,
     record_cancellation_request: Callable[[], None] | None = None,
     chat_only: bool = False,
+    task_relation: str | None = None,
 ) -> int:
+    if getattr(self, "resolved_entry", None) is not None:
+        refuse_unavailable_mac_w7_computer_use()
+    if getattr(self, "sensitive_media", False):
+        refuse_computer_use()
+    # Capture from the original prompt before history/context/provider work.
+    explicit_instruction = new_task_instruction(
+        self, instruction, task_relation, chat_only=chat_only
+    )
     self._active_turn_message_start_index = len(self.messages)
+    evidence_state: dict[str, Any] = {
+        "enabled": False,
+        "finished": False,
+        "stateCalls": 0,
+        "actionCalls": 0,
+        "knownHostFailure": False,
+        "providerOrdinal": 0,
+    }
+    self._computer_use_evidence_state = evidence_state
+    bind_evidence = getattr(self.surface, "bind_computer_use_evidence_emitter", None)
+    try:
+        evidence_state["emit"] = (
+            bind_evidence() if callable(bind_evidence) else lambda payload: None
+        )
+    except Exception:
+        evidence_state["emit"] = lambda payload: None
+
+    attribution_owner = attribution.current()
+    resolved_terminal_refusal = None
+    resolved_entry = getattr(self, "resolved_entry", None)
+    if resolved_entry is not None and resolved_entry.retired is not None:
+        resolved_entry = None
+
+    @attribution.model_call
+    def _computer_evidence_chat(**kwargs: Any) -> Any:
+        if resolved_entry is not None:
+            with resolved_entry.model_request(self.client, self.stream, self.cfg):
+                return _main_agent_chat(**kwargs)
+        if not evidence_state["enabled"]:
+            return _main_agent_chat(**kwargs)
+        evidence_state["providerOrdinal"] += 1
+        ordinal = evidence_state["providerOrdinal"]
+        # This turn has been established from the actual installed host tools.
+        role = "protected" if self.sensitive_media else "unknown"
+        last_attempt = 0
+        started = perf_counter()
+        outcome = "unknown"
+
+        def emit(fields: dict[str, object]) -> None:
+            nonlocal last_attempt
+            if (
+                fields.get("phase") == "transport_attempted"
+                and type(fields.get("attemptOrdinal")) is int
+            ):
+                last_attempt = int(fields["attemptOrdinal"])
+            try:
+                evidence_state["emit"](
+                    {
+                        "version": 1,
+                        "kind": "provider",
+                        "providerOrdinal": ordinal,
+                        "generationRole": role,
+                        **fields,
+                    }
+                )
+            except Exception:
+                pass
+
+        with bind_computer_use_provider_evidence(emit):
+            count_images = sum(
+                1
+                for message in kwargs.get("messages", [])
+                if isinstance(message, dict)
+                for part in (
+                    message.get("content") if isinstance(message.get("content"), list) else []
+                )
+                if isinstance(part, dict)
+                and type(part.get("type")) is str
+                and part["type"] in {"image_url", "input_image"}
+            )
+            emit(
+                {
+                    "phase": "context_projected",
+                    "attemptOrdinal": 0,
+                    "projectedImageCount": count_images,
+                }
+            )
+            try:
+                result = _main_agent_chat(**kwargs)
+                outcome = "returned"
+                return result
+            except BaseException as error:
+                outcome = (
+                    "deadline"
+                    if isinstance(error, DeadlineExhausted)
+                    else (
+                        "cancelled"
+                        if isinstance(error, (CooperativeCancellationError, KeyboardInterrupt))
+                        else "failed"
+                    )
+                )
+                raise
+            finally:
+                emit(
+                    {
+                        "phase": "finished",
+                        "attemptOrdinal": last_attempt,
+                        "outcome": outcome,
+                        "durationMs": min(
+                            86_400_000, max(0, int((perf_counter() - started) * 1000))
+                        ),
+                    }
+                )
+
     turn_retained_isolated_material_run_ids: set[str] = set()
 
     def _background_turn_end_policy() -> Literal["wait", "cancel"]:
@@ -1588,6 +1797,22 @@ def run_turn(
             return
         deadline.observe_duration(operation, max(0.0, perf_counter() - started_at_perf_counter))
 
+    def _record_compactor_llm_duration(duration_seconds: float) -> None:
+        if deadline is not None:
+            deadline.observe_duration(DeadlineOperation.COMPACTION_LLM, duration_seconds)
+
+    @contextmanager
+    def _compaction_provider_request(client: Any) -> Iterator[None]:
+        _throw_if_cancelled()
+        if not _deadline_allows(
+            DeadlineOperation.COMPACTION_LLM,
+            minimum_remaining_seconds=MINIMUM_LLM_START_SECONDS,
+        ):
+            raise DeadlineExhausted("run deadline exhausted before compaction provider request")
+        with temporarily_clamp_client_timeout(client, deadline, operation="compaction_llm"):
+            yield
+        _throw_if_cancelled()
+
     def _diagnostic_event(
         event_type: str,
         payload: dict[str, Any] | None = None,
@@ -1655,7 +1880,48 @@ def run_turn(
         self.store.append("scratch_files", payload)
         _diagnostic_event("scratch_files", payload, durable=True)
 
-    def _finish_turn(code: int, *, reason: str, final_text: str = "") -> int:
+    def _capture_resolved_terminal_evidence(value: object) -> None:
+        if resolved_entry is None or getattr(self, "resolved_entry", None) is not resolved_entry:
+            return
+        evidence_code = resolved_entry.terminal_refusal_evidence_code(value)
+        if evidence_code is not None:
+            evidence_state["resolvedStartRefusalCode"] = evidence_code
+            evidence_state["reportedOutcome"] = "blocked"
+            # Entry negotiation is an ordinary turn, not a protected CU tool
+            # turn. Enable only this original owned terminal fact.
+            evidence_version = getattr(self.surface, "computer_use_evidence_version", None)
+            evidence_state["enabled"] = type(evidence_version) is int and evidence_version == 1
+
+    def _finish_turn(
+        code: int, *, reason: str, final_text: str = "", host_failure: bool = False
+    ) -> int:
+        if evidence_state["enabled"]:
+            origin = (
+                "host_error"
+                if host_failure
+                else "model_report"
+                if reason
+                in {"completed", "computer_use_goal_blocked", "computer_use_goal_incomplete"}
+                else (
+                    "cancel"
+                    if reason in {"cancelled", "cancelled_by_user"}
+                    else "deadline"
+                    if reason in {"run_budget_exhausted", "deadline_exhausted"}
+                    else "host_error"
+                    if reason == "computer_use_host_failure" and evidence_state["knownHostFailure"]
+                    else "validation"
+                    if reason.startswith("computer_use_")
+                    or reason == "computer_interaction_v2_stopped"
+                    else "unknown"
+                )
+            )
+            _finish_computer_use_evidence(
+                self,
+                origin=origin,
+                outcome="completed"
+                if code == 0 and not computer_use_window_selection_pending(self.tools)
+                else "failed",
+            )
         if self.sensitive_media:
             failure_code = computer_use_terminal_failure_code(code, reason)
             if failure_code is not None:
@@ -1698,7 +1964,15 @@ def run_turn(
         # The task brief is not re-derived here: material edits are evidence of
         # work, not of which task was accepted. A continuation that edited files
         # must never become the root objective because of those edits.
-        outcome = self._record_task_outcome(exit_code=code, reason=reason)
+        outcome = self._record_task_outcome(
+            exit_code=code,
+            reason=reason,
+            trusted_entry_blocked=(
+                resolved_entry is not None
+                and getattr(self, "resolved_entry", None) is resolved_entry
+                and resolved_entry.owns_terminal_refusal(resolved_terminal_refusal)
+            ),
+        )
         _diagnostic_event(
             "turn_finished",
             {
@@ -1743,6 +2017,8 @@ def run_turn(
         *,
         reason: str,
         exit_code: int,
+        transient_response: str | None = None,
+        host_failure: bool = False,
     ) -> int:
         nonlocal assistant_message_emitted
         final_text = _with_unapplied_isolated_notice(
@@ -1765,13 +2041,62 @@ def run_turn(
         )
         _emit_assistant_message_events(
             self.surface,
-            final_text,
+            transient_response or final_text,
             streamed_text_emitted=False,
         )
         if _legacy_message_tool_events_required(self.surface):
-            self.surface.on_assistant_message_done(final_text)
+            self.surface.on_assistant_message_done(transient_response or final_text)
         assistant_message_emitted = True
-        return _finish_turn(exit_code, reason=reason, final_text=final_text)
+        return _finish_turn(
+            exit_code, reason=reason, final_text=final_text, host_failure=host_failure
+        )
+
+    def _finish_capture_refusal(summary: str = "") -> int:
+        _throw_if_cancelled()
+        evidence_state["reportedOutcome"] = "blocked"
+        message = (
+            "Image capture is unavailable for this window. I couldn't inspect the image. "
+            "Please describe it or help make the window available, then continue."
+        )
+        transient = (
+            "Image capture is unavailable for this window. "
+            + redact_computer_use_window_references(summary)
+            if summary and computer_use_response_mode == "host_sanitized_text"
+            else None
+        )
+        return _finish_with_host_message(
+            message, reason="computer_use_goal_blocked", exit_code=0, transient_response=transient
+        )
+
+    def _finish_closed_host_refusal(feedback: dict[str, str]) -> int:
+        _throw_if_cancelled()
+        evidence_state["reportedOutcome"] = "blocked"
+        action_tool = self.tools.get("computer_action")
+        binding = (getattr(action_tool, "metadata", None) or {}).get(
+            "_computer_use_snapshot_binding"
+        )
+        explanation = (
+            "Normal quit was sent or may have been sent, but process exit is unverified. "
+            if getattr(binding, "quit_requested", False)
+            else "The request was refused before it was sent; no alternate input method was attempted. "
+            if feedback["dispatch"] == "not_dispatched"
+            else "The last action was sent or may have been sent, but its outcome is unverified. "
+        )
+        identity_message = (
+            "I couldn't verify the selected app or window. Any app already opened or earlier changes may remain. "
+            if feedback["cause"]
+            in {"target_changed", "target_window_changed", "target_app_changed"}
+            else ""
+        )
+        return _finish_with_host_message(
+            "Computer Use stopped. "
+            + identity_message
+            + explanation
+            + "Earlier established outcomes remain valid. No uncertain action was repeated; any remaining outcome is unverified.",
+            reason="computer_use_goal_blocked",
+            exit_code=0,
+            host_failure=True,
+        )
 
     hook_turn_system_messages: list[str] = []
     hook_turn_user_messages: list[str] = []
@@ -2161,7 +2486,16 @@ def run_turn(
         self.step_budget_runtime.active_turn_budget = None
         self.step_budget_runtime.last_resolution = None
 
-    turn_tools = dict(self.tools)
+    turn_tools, folder_context = project_turn_tools(self, dict(self.tools))
+    if folder_context and not chat_only:
+        ephemeral_turn_system_messages.append(folder_context)
+    if not chat_only:
+        from ...local_memory import memory_turn
+
+        memory_tools, memory_context = memory_turn(self)
+        turn_tools.update(memory_tools)
+        if memory_context:
+            ephemeral_turn_system_messages.append(memory_context)
     tool_retention_metadata = {
         name: getattr(tool, "metadata", None) or {} for name, tool in turn_tools.items()
     }
@@ -2199,6 +2533,15 @@ def run_turn(
             summary_protected_taints.update(taints)
 
     turn_tool_list = _registered_tool_schema_list(turn_tools, self.tool_list)
+    from ..tool_discovery import model_visible
+
+    # Deferred private tools have supplied no private observations and are not
+    # offered to the model yet. They must not disable ordinary streaming or
+    # erase native replay metadata merely because their server is connected.
+    ephemeral_tools_exposed = any(model_visible(turn_tools[name]) for name in ephemeral_tool_names)
+    discovery_tool = turn_tools.get("tool_search")
+    discovery_state = (getattr(discovery_tool, "metadata", {}) or {}).get("discovery_state", {})
+    discovery_generation = discovery_state.get("generation", 0)
     turn_tool_availability = copy_tool_availability_snapshot(
         getattr(self, "tool_availability_snapshot", {})
     )
@@ -2400,6 +2743,22 @@ def run_turn(
         + COMPUTER_USE_FILE_TOOL_NAMES
         + COMPUTER_USE_UPLOAD_TOOL_NAMES
     )
+    if (
+        self.sensitive_media
+        and not computer_use_tool_turn
+        and (turn_tools or self._sensitive_tool_surface_required)
+    ):
+        # Empty answer-only host context is not a CU tool turn. A foreign tool
+        # or loss of an originally installed surface must still fail closed.
+        raise ValueError("Sensitive session contains an invalid Computer Use tool surface.")
+    # Freeze dispatch and provider authority before any ordinary registrations.
+    computer_use_host_tool_names = frozenset(turn_tools) if computer_use_tool_turn else frozenset()
+    computer_use_provider_tool_names = tuple(turn_tools) if computer_use_tool_turn else ()
+    evidence_state["enabled"] = (
+        computer_use_tool_turn
+        and type(getattr(self.surface, "computer_use_evidence_version", None)) is int
+        and self.surface.computer_use_evidence_version == 1
+    )
     computer_use_response_mode = "status_only"
     if computer_use_tool_turn:
         response_modes = {
@@ -2490,7 +2849,9 @@ def run_turn(
     turn_user_message_index = len(self.messages) - 1
     if not isinstance(display_instruction, str) or not display_instruction.strip():
         display_instruction = controller_instruction or instruction
-    controller_instruction = display_instruction
+    controller_instruction = (
+        explicit_instruction if explicit_instruction is not None else display_instruction
+    )
     self.surface.on_user_message(display_instruction)
     _diagnostic_event(
         "turn_started",
@@ -2506,7 +2867,7 @@ def run_turn(
         request_messages = copy.deepcopy(self.messages)
         try:
             try:
-                response = _main_agent_chat(
+                response = _computer_evidence_chat(
                     client=self.client,
                     messages=request_messages,
                     tools=[],
@@ -2651,7 +3012,7 @@ def run_turn(
                 operation="main_llm",
             ):
                 _note_parent_request_for_keepalive(messages=chat_messages, tools=None)
-                chat_only_response = _main_agent_chat(
+                chat_only_response = _computer_evidence_chat(
                     client=self.client,
                     messages=chat_messages,
                     tools=None,
@@ -2712,14 +3073,23 @@ def run_turn(
         seed_execution_state,
     )
 
+    # An answer-only sensitive session is not a CU tool turn, but it is not
+    # ordinary repository work either. Never add repository capabilities to it.
+    ordinary_repository_turn = not self.sensitive_media and not computer_use_tool_turn
     acceptance_instruction = getattr(self, "acceptance_instruction", None)
-    task_evidence = begin_task_evidence(self, repo_scan=_session_repo_scan(self))
+    task_evidence = (
+        None
+        if not ordinary_repository_turn
+        else begin_task_evidence(self, repo_scan=_session_repo_scan(self))
+    )
 
     # No pre-turn routing: every turn takes the repo path with the full
     # per-mode agent surface. Invocation mode determines interaction/lifetime,
     # not whether the request calls for mutation. In every interface controller
     # pressure is armed separately from observed effects, without task keywords.
-    permission_allows_mutation = str(self.mode or "").strip().lower() != "readonly"
+    permission_allows_mutation = (
+        ordinary_repository_turn and str(self.mode or "").strip().lower() != "readonly"
+    )
     one_shot_turn_intent = _repo_turn_execution_posture(
         mode_allows_execution=permission_allows_mutation,
     )
@@ -2782,15 +3152,18 @@ def run_turn(
         route_execution_posture=route_execution_posture,
         classified_turn_intent=one_shot_turn_intent,
     )
-    execution_safeguards_enabled = repo_turn_execution_intent == "execute"
+    execution_safeguards_enabled = (
+        repo_turn_execution_intent == "execute" and ordinary_repository_turn
+    )
     resolved_turn_intent_kind = (
         "mutating_execution" if execution_safeguards_enabled else "read_only"
     )
-    _refresh_execute_turn_verification_selection(
-        self,
-        instruction=controller_instruction,
-        route_execution_posture=repo_turn_execution_intent,
-    )
+    if ordinary_repository_turn:
+        _refresh_execute_turn_verification_selection(
+            self,
+            instruction=controller_instruction,
+            route_execution_posture=repo_turn_execution_intent,
+        )
     self.store.append(
         "turn_intent_resolved",
         {
@@ -2849,16 +3222,20 @@ def run_turn(
 
     known_verification_commands = list(self.effective_verification_commands)
     acceptance_contract = None
-    if execution_safeguards_enabled:
-        acceptance_contract = build_acceptance_contract(
+    contract_instruction = (
+        explicit_instruction
+        if explicit_instruction is not None
+        else acceptance_instruction
+        if acceptance_instruction is not None
+        else controller_instruction
+        if instruction.lstrip().startswith(DESKTOP_CONTEXT_PREFIXES)
+        else instruction
+    )
+
+    def _build_turn_acceptance(interpreted_path_refs=None):
+        return build_acceptance_contract(
             root=self.root,
-            instruction=(
-                acceptance_instruction
-                if acceptance_instruction is not None
-                else controller_instruction
-                if instruction.lstrip().startswith(DESKTOP_CONTEXT_PREFIXES)
-                else instruction
-            ),
+            instruction=contract_instruction,
             delegated=self.subagent_depth > 0,
             authoritative_verification_commands=(
                 list(self.authoritative_verification_commands)
@@ -2871,12 +3248,32 @@ def run_turn(
             workspace_snapshot=task_evidence.snapshot,
             baseline_available=task_evidence.baseline_available,
             generation=task_evidence.verification_relevant_edit_generation,
+            interpreted_path_refs=interpreted_path_refs,
         )
+
+    if execution_safeguards_enabled:
+        acceptance_contract = _build_turn_acceptance()
         install_task_evidence(
             self,
             acceptance_contract,
-            instruction=instruction if acceptance_instruction is None else acceptance_instruction,
+            instruction=(
+                explicit_instruction
+                if explicit_instruction is not None
+                else instruction
+                if acceptance_instruction is None
+                else acceptance_instruction
+            ),
         )
+        if self.artifact_output_access is not None:
+            acceptance_contract.artifact_output_observer = ArtifactOutputObserver(
+                acceptance_contract,
+                self.artifact_output_access,
+                enroll_external=self.mode == "fullaccess",
+                remaining_seconds=lambda: (
+                    deadline.remaining_seconds() if deadline is not None else None
+                ),
+                cancelled=lambda: bool(getattr(cancellation_token, "is_cancelled", False)),
+            )
         self.store.append("acceptance_contract", acceptance_contract.as_payload())
     execution_state = TurnExecutionState(
         execution_requested=execution_safeguards_enabled,
@@ -2886,8 +3283,178 @@ def run_turn(
         acceptance_contract=acceptance_contract,
     )
     self._turn_execution_state = execution_state
-    seed_execution_state(execution_state, task_evidence)
-    if self.cfg.anytime_checkpoint.enabled and self.store.artifact_persistence_enabled:
+    if task_evidence is not None:
+        seed_execution_state(execution_state, task_evidence)
+    if acceptance_contract is not None:
+        from ..acceptance_contract import _path_source_literal
+        from ..task_artifact_binding import (
+            TOOL_DESCRIPTION as ARTIFACT_BINDING_DESCRIPTION,
+        )
+        from ..task_artifact_binding import (
+            TOOL_NAME as ARTIFACT_BINDING_TOOL,
+        )
+        from ..task_artifact_binding import (
+            bind_path_interpretation,
+            binding_parameters,
+            host_output_directory,
+            path_binding_identity,
+            retained_user_instructions,
+        )
+
+        artifact_binding_work_started = False
+        artifact_binding_batch_count = 0
+        artifact_binding_applied = False
+        artifact_binding_serialization_retries = 0
+        artifact_binding_identity = None
+        artifact_binding_result = None
+        artifact_binding_detected_refs = list(acceptance_contract.path_refs)
+        artifact_binding_earlier_instructions = retained_user_instructions(
+            self.store.events_snapshot()
+        )
+        artifact_binding_recovery_prompt = (
+            "No call in your previous batch was executed. Submit task_artifacts alone "
+            "and wait for its result before submitting actions or verification. "
+            "Use the complete current request to retain all paths and containing folders."
+        )
+        turn_path_base = self.active_workdir_relpath or "."
+        turn_output_directory = (
+            host_output_directory(self.root, relative_to=self.focus_relpath or ".")
+            if self.subagent_depth == 0
+            else None
+        )
+
+        def _bind_task_artifacts(arguments):
+            nonlocal acceptance_contract, artifact_binding_applied
+            nonlocal artifact_binding_identity, artifact_binding_result
+            if not artifact_binding_applied and (
+                artifact_binding_batch_count != 1 or artifact_binding_work_started
+            ):
+                return {
+                    "error": "requirements_already_in_use",
+                    "message": "Interpret paths once before actions or verification; only host-declared read-only context tools may precede or accompany it.",
+                }
+            try:
+                refs = bind_path_interpretation(
+                    root=self.root,
+                    instruction=contract_instruction,
+                    arguments=arguments,
+                    prior_refs=artifact_binding_detected_refs,
+                    earlier_instructions=artifact_binding_earlier_instructions,
+                    output_directory=turn_output_directory,
+                    working_directory=turn_path_base,
+                )
+            except ValueError as exc:
+                return {
+                    "error": "invalid_task_artifacts",
+                    "message": str(exc),
+                    "retryable": True,
+                    "expected_schema": binding_parameters(turn_output_directory, turn_path_base),
+                }
+            identity = path_binding_identity(refs)
+            if artifact_binding_applied:
+                if identity == artifact_binding_identity:
+                    # Harmless syntax/non-path differences cannot re-enroll
+                    # paths, alter requirements, or certify completion.
+                    return copy.deepcopy(artifact_binding_result)
+                return {
+                    "error": "requirements_already_in_use",
+                    "message": "The accepted paths, roles and requirements cannot change after declaration.",
+                }
+            replacement = _build_turn_acceptance(refs)
+            install_task_evidence(self, replacement, instruction=contract_instruction)
+            if self.artifact_output_access is not None:
+                replacement.artifact_output_observer = ArtifactOutputObserver(
+                    replacement,
+                    self.artifact_output_access,
+                    remaining_seconds=lambda: (
+                        deadline.remaining_seconds() if deadline is not None else None
+                    ),
+                    cancelled=lambda: bool(getattr(cancellation_token, "is_cancelled", False)),
+                )
+            acceptance_contract = replacement
+            execution_state.acceptance_contract = replacement
+            artifact_binding_applied = True
+            _drop_selection_directive(ephemeral_turn_system_messages, artifact_binding_guidance)
+            _drop_selection_directive(
+                ephemeral_turn_system_messages, artifact_binding_recovery_prompt
+            )
+            if self._anytime_checkpoints is not None:
+                self._anytime_checkpoints.select_task(
+                    task_evidence.task_id,
+                    acknowledged_checkpoint=self._acknowledged_checkpoint,
+                    acceptance_revision=replacement.acceptance_revision,
+                    remaining_seconds=deadline.remaining_seconds()
+                    if deadline is not None
+                    else None,
+                )
+            self.store.append("task_artifact_interpretation", {"paths": arguments["paths"]})
+            self.store.append("acceptance_contract", replacement.as_payload())
+            artifact_binding_identity = identity
+            artifact_binding_result = {
+                "paths": [ref.as_payload() for ref in refs],
+                "completion_verified": False,
+                "path_base": "workspace_root",
+                "message": "Request interpretation recorded. Permissions are unchanged. Verify actual outputs and their contents independently.",
+            }
+            return copy.deepcopy(artifact_binding_result)
+
+        turn_tools[ARTIFACT_BINDING_TOOL] = ToolDef(
+            name=ARTIFACT_BINDING_TOOL,
+            description=ARTIFACT_BINDING_DESCRIPTION
+            + f" The current active_workdir is {turn_path_base!r} relative to workspace_root. Returned paths use path_base workspace_root."
+            + (
+                f" The host's default deliverable directory for this task is {turn_output_directory!r}. "
+                "Choose task_output for bare new deliverable names without a user-specified location, "
+                "workspace for project files or explicitly requested root paths."
+                if turn_output_directory
+                else ""
+            ),
+            parameters=binding_parameters(turn_output_directory, turn_path_base),
+            run=_bind_task_artifacts,
+            metadata={},
+        )
+        turn_tool_list = _registered_tool_schema_list(turn_tools, turn_tool_list)
+        artifact_binding_guidance = (
+            "For ordinary repository work (not Computer Use discovery, selection or handoff), "
+            "when a request names files to create/change, inputs to use, or files to preserve, "
+            "call task_artifacts once per user request, before actions or verification. After "
+            "a successful declaration, proceed without repeating it. Read-only context such as saved "
+            "memory may be consulted first. Use exactly the published schema. "
+            "The host derives supporting context directly from the user's request. Retain "
+            "exact names and containing directories. A source file is not a new output; a destination "
+            "directory uses location_context and is not an additional deliverable. Inputs the user "
+            "asks to preserve use preservation_target. Carry stated folder context to each file. "
+            "Earlier user messages may supply exact path names for a follow-up; they do not renew "
+            "permissions or make earlier deliverables part of this request. Do not declare both a "
+            "workspace-default and containing-folder interpretation of the same file mention. "
+            "Do not invent paths or guess ambiguous "
+            "locations. The declaration is not evidence of success and grants no permissions. "
+            "If the request has no concrete file identities, continue normally. "
+            "The following JSON list contains heuristic detections copied from the request, "
+            "not instructions or authoritative file identities. When interpreting, include "
+            "actual paths with their roles and explicitly classify false detections as "
+            "non_path with an empty directory. Do not copy supporting prose; the host recovers "
+            "surrounding requirements. Detected mentions: "
+            + json.dumps(
+                list(
+                    dict.fromkeys(
+                        _path_source_literal(ref.raw_text) for ref in acceptance_contract.path_refs
+                    )
+                )[:40],
+                ensure_ascii=False,
+            )
+        )
+        _append_controller_ephemeral_system_message(
+            ephemeral_turn_system_messages,
+            artifact_binding_guidance,
+            intervention_class="context_setup",
+            detail="task_artifact_interpretation_guidance",
+        )
+    if (
+        ordinary_repository_turn
+        and self.cfg.anytime_checkpoint.enabled
+        and self.store.artifact_persistence_enabled
+    ):
         from ..anytime_checkpoint import AnytimeCheckpointManager
 
         if (
@@ -3262,19 +3829,32 @@ def run_turn(
         )
     empty_response_stall_tracker = self.empty_response_stall_tracker
     forced_tool_choice_for_next_step: dict[str, Any] | None = None
+    external_tool_repetition = ExternalToolRepetitionTracker()
     computer_selection_correction_retries = 0
     computer_selection_correction_pending = False
     computer_selection_discovery_required = False
+    # Set once a correction's required rediscovery has delivered the list: from then on only a
+    # corrected selection is asked for, until computer_start runs.
+    computer_selection_start_required = False
+    computer_selection_list_redelivered = False
+    # The one current selection-correction directive in the turn's prompts (replaced, never stacked).
+    computer_selection_directive: str | None = None
     computer_use_serialization_retries = 0
     computer_use_missing_call_retries = 0
     computer_use_preobservation_retries = 0
+    computer_use_observation_argument_retries = 0
     computer_use_key_target_recovery_retries = 0
+    computer_use_stale_reselection_required = False
+    computer_use_reobserve_directive: str | None = None
+    computer_use_failed_observation_retries = 0
+    computer_use_pending_host_refusal: dict[str, str] | None = None
+    computer_use_window_selection_directive: str | None = None
+    computer_use_window_report_directive: str | None = None
+    computer_use_capture_refusal_step: int | None = None
     computer_use_page_recovery_retries = 0
     computer_use_page_observation_required = False
-    computer_use_incomplete_workflow_retries = 0
-    computer_use_transition_observation_retries = 0
-    computer_use_transition_observation_required = False
     computer_use_successful_calls = 0
+    computer_use_observation_progress = ComputerUseObservationProgress()
     finalization_empty_anomaly_recovery_pending = False
     tool_markup_recoveries = 0
     output_limit_recoveries = 0
@@ -3391,7 +3971,7 @@ def run_turn(
         if _verification_expected_for_turn(
             turn_intent=repo_turn_execution_intent,
             blocked=False,
-            touched_repo_paths=execution_state.touched_repo_paths,
+            touched_repo_paths=execution_state.turn_touched_repo_paths,
             verification_contract_requires_execution=(
                 self.verification_contract_type
                 in {"authoritative_override", "explicit_override", "task_inferred"}
@@ -4156,6 +4736,22 @@ def run_turn(
     computer_use_host_response_text = ""
     step_iterator = count(1) if turn_max_steps is None else range(1, turn_max_steps + 1)
     for step in step_iterator:
+        if discovery_state.get("generation", 0) != discovery_generation:
+            discovery_generation = discovery_state["generation"]
+            visible_definitions = {
+                name: tool
+                for name, tool in turn_tools.items()
+                if name.casefold() not in web_tools_unavailable_for_turn
+                and (
+                    connector_verification_tools is None
+                    or connector_verification_tools.get(name) is tool
+                )
+            }
+            turn_tool_list = _registered_tool_schema_list(visible_definitions, turn_tool_list)
+            self.tool_list = _registered_tool_schema_list(self.tools, self.tool_list)
+            ephemeral_tools_exposed = ephemeral_tools_exposed or any(
+                model_visible(turn_tools[name]) for name in ephemeral_tool_names
+            )
         # Unconditional stop gate at the top of every step. Each of the other
         # budget checks guards one specific operation, so a step that happened
         # to take a path with no gated operation could open another one past
@@ -4298,7 +4894,7 @@ def run_turn(
         ) -> list[dict[str, Any]]:
             return _request_messages_with_volatile_suffix(
                 messages=messages,
-                turn_system_prompts=turn_prompts,
+                turn_system_prompts=(*turn_prompts, request_model_identity(self.client)),
                 turn_user_contexts=user_context_messages,
                 step_system_prompts=suffix_prompts,
             )
@@ -4458,24 +5054,12 @@ def run_turn(
         request_messages = _request_messages_for_step(self.messages)
         try:
             if self.conversation_compactor is not None:
-                if not _deadline_allows(
-                    DeadlineOperation.COMPACTION_LLM,
-                    minimum_remaining_seconds=MINIMUM_LLM_START_SECONDS,
-                ):
-                    return _deadline_exhausted_result("compaction_llm", step=step)
                 pre_compact_message_count = len(self.messages)
-                compactor_client = getattr(
-                    self.conversation_compactor,
-                    "compactor_client",
-                    None,
-                )
                 try:
                     self.refresh_compactor_calibration_filters()
-                    operation_started = perf_counter()
-                    with temporarily_clamp_client_timeout(
-                        compactor_client,
-                        deadline,
-                        operation="compaction_llm",
+                    with (
+                        observe_compactor_llm_durations(_record_compactor_llm_duration),
+                        compaction_provider_policy(_compaction_provider_request),
                     ):
                         compacted_messages, compacted = self.conversation_compactor.maybe_compact(
                             messages=self.messages,
@@ -4492,10 +5076,6 @@ def run_turn(
                             focus=instruction,
                             request_messages_builder=_provider_request_messages_builder,
                         )
-                    _record_deadline_duration(
-                        DeadlineOperation.COMPACTION_LLM,
-                        operation_started,
-                    )
                 except DeadlineExhausted:
                     return _deadline_exhausted_result("compaction_llm", step=step)
                 self.messages = compacted_messages
@@ -4594,13 +5174,14 @@ def run_turn(
             )
             # Computer Use response text cannot be safely rendered until its
             # snapshot/element capability values have been projected after the
-            # complete response arrives. Keep the provider call non-streaming;
+            # complete response arrives. V entry may buffer the raw stream with
+            # no display callbacks; other private paths remain non-streaming.
             # this does not alter the byte-exact tool arguments dispatched below.
             provider_stream = bool(
                 stream_used
-                and not sensitive_material_in_request
+                and (resolved_entry is not None or not sensitive_material_in_request)
                 and not computer_use_tool_turn
-                and not ephemeral_tool_names
+                and (resolved_entry is not None or not ephemeral_tools_exposed)
             )
             response_was_streamed = provider_stream
             main_llm_in_finalization = (
@@ -4641,9 +5222,17 @@ def run_turn(
                     tools=turn_tool_list,
                     preferred_tool_names=("computer_discover",),
                 )
+            elif computer_selection_start_required:
+                request_tool_choice = _safe_forced_tool_choice_for_recovery(
+                    client=self.client,
+                    tools=turn_tool_list,
+                    preferred_tool_names=("computer_start",),
+                )
             reasoning_sink = (
                 None
-                if sensitive_material_in_request or computer_use_tool_turn or ephemeral_tool_names
+                if sensitive_material_in_request
+                or computer_use_tool_turn
+                or ephemeral_tools_exposed
                 else _reasoning_trace_callback_for(
                     self.client,
                     stream=provider_stream,
@@ -4664,12 +5253,14 @@ def run_turn(
                     main_model_request_started = True
                     for _, visual_receipt in ephemeral_sensitive_visual_deliveries:
                         self.store.append("asset_visual_delivered", visual_receipt)
-                    resp = _main_agent_chat(
+                    resp = _computer_evidence_chat(
                         client=self.client,
                         messages=request_messages,
                         tools=turn_tool_list,
                         stream=provider_stream,
-                        on_text_delta=_on_text_delta if provider_stream else None,
+                        on_text_delta=_on_text_delta
+                        if provider_stream and resolved_entry is None
+                        else None,
                         on_reasoning_delta=reasoning_sink,
                         cancellation_token=cancellation_token,
                         tool_choice=request_tool_choice,
@@ -4683,7 +5274,7 @@ def run_turn(
                     self,
                     additional_messages=request_messages,
                 )
-                if computer_use_tool_turn or ephemeral_tool_names:
+                if computer_use_tool_turn or ephemeral_tools_exposed:
                     scrub_consumed_computer_use_provider_state(
                         request_messages,
                         computer_use_provider_replay_state,
@@ -4753,24 +5344,9 @@ def run_turn(
                     progress_handler("Context limit reached; compacting safely and retrying.")
                 compacted = False
                 try:
-                    if not _deadline_allows(
-                        DeadlineOperation.COMPACTION_LLM,
-                        minimum_remaining_seconds=MINIMUM_LLM_START_SECONDS,
-                    ):
-                        return _deadline_exhausted_result(
-                            "context_overflow_compaction",
-                            step=step,
-                        )
-                    compactor_client = getattr(
-                        self.conversation_compactor,
-                        "compactor_client",
-                        None,
-                    )
-                    operation_started = perf_counter()
-                    with temporarily_clamp_client_timeout(
-                        compactor_client,
-                        deadline,
-                        operation="context_overflow_compaction",
+                    with (
+                        observe_compactor_llm_durations(_record_compactor_llm_duration),
+                        compaction_provider_policy(_compaction_provider_request),
                     ):
                         compacted_messages, compacted = compact_for_overflow(
                             messages=self.messages,
@@ -4787,47 +5363,45 @@ def run_turn(
                             focus=instruction,
                             request_messages_builder=_provider_request_messages_builder,
                         )
-                    _record_deadline_duration(
-                        DeadlineOperation.COMPACTION_LLM,
-                        operation_started,
-                    )
-                    if compacted:
-                        self.messages = compacted_messages
-                        if self.read_ledger is not None:
-                            self.read_ledger.reset()
-                        self.invalidate_request_context(reason="provider_overflow_compaction")
-                        verify_fits = getattr(
-                            self.conversation_compactor,
-                            "request_fits_input_budget",
-                            None,
-                        )
-                        if callable(verify_fits) and not verify_fits(
-                            messages=self.messages,
-                            tool_list=effective_tools_for_client(
-                                self.client,
-                                turn_tool_list,
-                            ),
-                            main_model=self.client.model,
-                            cache_policy=getattr(
-                                self.client,
-                                "prompt_cache_policy_metadata",
+                        if compacted:
+                            self.messages = compacted_messages
+                            if self.read_ledger is not None:
+                                self.read_ledger.reset()
+                            self.invalidate_request_context(reason="provider_overflow_compaction")
+                            verify_fits = getattr(
+                                self.conversation_compactor,
+                                "request_fits_input_budget",
                                 None,
-                            ),
-                            request_messages_builder=_provider_request_messages_builder,
-                        ):
-                            compacted = False
-                            self.store.append(
-                                "compaction_warning",
-                                {
-                                    "warning": "context_overflow_retry_still_oversized",
-                                    "step": step,
-                                },
                             )
+                            if callable(verify_fits) and not verify_fits(
+                                messages=self.messages,
+                                tool_list=effective_tools_for_client(
+                                    self.client,
+                                    turn_tool_list,
+                                ),
+                                main_model=self.client.model,
+                                cache_policy=getattr(
+                                    self.client,
+                                    "prompt_cache_policy_metadata",
+                                    None,
+                                ),
+                                request_messages_builder=_provider_request_messages_builder,
+                            ):
+                                compacted = False
+                                self.store.append(
+                                    "compaction_warning",
+                                    {
+                                        "warning": "context_overflow_retry_still_oversized",
+                                        "step": step,
+                                    },
+                                )
                 except DeadlineExhausted:
                     return _deadline_exhausted_result(
                         "context_overflow_compaction",
                         step=step,
                     )
+                except CooperativeCancellationError:
+                    raise
                 except Exception as compact_error:  # noqa: BLE001 - preserve original provider error
                     self.store.append(
                         "compaction_warning",
@@ -4862,7 +5436,7 @@ def run_turn(
                             None
                             if sensitive_material_in_request
                             or computer_use_tool_turn
-                            or ephemeral_tool_names
+                            or ephemeral_tools_exposed
                             else _reasoning_trace_callback_for(
                                 self.client,
                                 stream=provider_stream,
@@ -4880,7 +5454,7 @@ def run_turn(
                                     tools=turn_tool_list,
                                     tool_choice=request_tool_choice,
                                 )
-                                resp = _main_agent_chat(
+                                resp = _computer_evidence_chat(
                                     client=self.client,
                                     messages=request_messages,
                                     tools=turn_tool_list,
@@ -4992,7 +5566,7 @@ def run_turn(
                         None
                         if sensitive_material_in_request
                         or computer_use_tool_turn
-                        or ephemeral_tool_names
+                        or ephemeral_tools_exposed
                         else _reasoning_trace_callback_for(
                             self.client,
                             stream=False,
@@ -5010,7 +5584,7 @@ def run_turn(
                                 tools=turn_tool_list,
                                 tool_choice=request_tool_choice,
                             )
-                            resp = _main_agent_chat(
+                            resp = _computer_evidence_chat(
                                 client=self.client,
                                 messages=request_messages,
                                 tools=turn_tool_list,
@@ -5102,15 +5676,54 @@ def run_turn(
                 _rollback_turn_after_llm_error()
                 raise
 
+        if computer_use_capture_refusal_step is not None:
+            # The terminal host result permits one report, not another tool,
+            # serialization correction, empty-response recovery or capture route.
+            _throw_if_cancelled()
+            safe_response = strip_computer_use_provider_state_for_persistence(
+                redact_sensitive_response_for_persistence(
+                    resp,
+                    taints=sensitive_response_taints | computer_use_private_identifiers,
+                    tool_metadata_by_name=tool_retention_metadata,
+                )
+            )
+            self._record_llm_usage(
+                client=self.client,
+                response=safe_response,
+                messages=request_messages,
+                tool_list=turn_tool_list,
+                operation="main_llm",
+            )
+            outcome, summary, declared = computer_use_completion_report(
+                str(getattr(resp, "content", "") or "")
+            )
+            return _finish_capture_refusal(
+                summary
+                if not getattr(resp, "tool_calls", None) and declared and outcome == "blocked"
+                else ""
+            )
+
         if not response_was_streamed:
             streamed_text_emitted = False
-        if computer_use_tool_turn or ephemeral_tool_names:
+        # Even an unadvertised private call must cross the retention boundary
+        # before dispatch. Once engaged, keep the boundary for the whole turn.
+        ephemeral_tools_exposed = ephemeral_tools_exposed or any(
+            getattr(call, "name", "") in ephemeral_tool_names
+            for call in (getattr(resp, "tool_calls", None) or [])
+        )
+        if computer_use_tool_turn or ephemeral_tools_exposed:
             computer_use_private_identifiers.update(collect_computer_use_provider_identifiers(resp))
             try:
                 resp = canonicalize_computer_use_response_for_dispatch(
                     resp,
                     used_protocol_ids=computer_use_protocol_ids_seen,
-                    allowed_tool_names=None if computer_use_tool_turn else turn_tools.keys(),
+                    allowed_tool_names=(
+                        computer_use_provider_tool_names
+                        if computer_use_tool_turn
+                        else turn_tools.keys()
+                    ),
+                    allow_web_search=not computer_use_tool_turn
+                    and not sensitive_material_in_request,
                 )
             except ValueError as contract_error:
                 code = getattr(contract_error, "computer_use_error_code", None)
@@ -5192,15 +5805,44 @@ def run_turn(
         # The authenticated Chrome host may request one transient copy of the model's
         # terminal prose so Electron can redact, bound, and persist it. Capture this
         # before the CLI's durable AX-taint projection; it never enters CLI history.
+        computer_use_goal_outcome, computer_use_goal_summary, computer_use_goal_declared = (
+            computer_use_completion_report(str(getattr(resp, "content", "") or ""))
+            if computer_use_tool_turn and not raw_computer_use_dispatch
+            else ("incomplete", "", False)
+        )
+        if (
+            computer_use_tool_turn
+            and computer_use_window_selection_pending(turn_tools)
+            and computer_use_goal_outcome == "completed_unverified"
+        ):
+            # A selection inventory has no observation or completion authority, even
+            # when the model reports success. Downgrade before terminal evidence too.
+            computer_use_goal_outcome = "incomplete"
+        if computer_use_tool_turn and computer_use_goal_declared:
+            evidence_state["reportedOutcome"] = {
+                "completed_unverified": "completed",
+                "blocked": "blocked",
+                "incomplete": "failed",
+            }.get(computer_use_goal_outcome, "unknown")
+        else:
+            evidence_state.pop("reportedOutcome", None)
+        # An undeclared object/array or fenced report is not a usable summary.
+        # Keep ordinary prose transiently available to the host, while malformed
+        # report attempts fall through to the existing honest host status.
+        # Window capabilities must be removed before either terminal emission
+        # path, including the host message's otherwise unredacted transient copy.
+        malformed_computer_use_report = (
+            not computer_use_goal_declared
+            and computer_use_goal_summary.lstrip().startswith(("{", "[", "```"))
+        )
         computer_use_host_response_text = (
-            str(getattr(resp, "content", "") or "").strip()
-            if computer_use_tool_turn
-            and computer_use_response_mode == "host_sanitized_text"
-            and not raw_computer_use_dispatch
+            redact_computer_use_window_references(computer_use_goal_summary)
+            if computer_use_response_mode == "host_sanitized_text"
+            and not malformed_computer_use_report
             else ""
         )
         private_dispatch_arguments = {}
-        if computer_use_tool_turn or ephemeral_tool_names:
+        if computer_use_tool_turn or ephemeral_tools_exposed:
             for tool_call in getattr(resp, "tool_calls", None) or []:
                 tool_name = str(getattr(tool_call, "name", "") or "")
                 tool_arguments = getattr(tool_call, "arguments", None)
@@ -5242,7 +5884,7 @@ def run_turn(
         # separate persistence copy below is still fully redacted and stripped.
         pending_computer_use_provider_replay_state = (
             computer_use_ephemeral_provider_replay_state(resp)
-            if raw_computer_use_dispatch or ephemeral_tool_names
+            if computer_use_tool_turn or ephemeral_tools_exposed
             else {}
         )
         persistence_safe_response_with_replay = redact_sensitive_response_for_persistence(
@@ -5252,7 +5894,7 @@ def run_turn(
         )
         persistence_safe_response = (
             strip_computer_use_provider_state_for_persistence(persistence_safe_response_with_replay)
-            if computer_use_tool_turn or ephemeral_tool_names
+            if computer_use_tool_turn or ephemeral_tools_exposed
             else persistence_safe_response_with_replay
         )
         if not raw_computer_use_dispatch:
@@ -5474,11 +6116,43 @@ def run_turn(
                 continue
 
         tool_calls = resp.tool_calls
+        if (
+            resolved_entry is not None
+            and len(tool_calls) > 1
+            and any(c.name == "computer_start_resolved_v1" for c in tool_calls)
+        ):
+            resolved_entry.retire("computer_use_start_request_invalid")
+            return _finish_with_host_message(
+                "Computer Use entry requires one tool call per response.",
+                reason="computer_use_start_request_invalid",
+                exit_code=0,
+                host_failure=True,
+            )
+        if computer_use_pending_host_refusal is not None and (
+            len(tool_calls) != 1 or tool_calls[0].name != "computer_state"
+        ):
+            # Forced tool choice is advisory. A refused host request cannot be
+            # followed by input, activation or an unverified completion claim.
+            return _finish_closed_host_refusal(computer_use_pending_host_refusal)
         if not tool_calls and computer_selection_correction_pending and not response_contentless:
             return _finish_with_host_message(
                 "Computer Use could not start because the app selection was not corrected. "
                 "No Computer Use session was started.",
                 reason="computer_selection_recovery_incomplete",
+                exit_code=1,
+            )
+        if computer_use_tool_turn and not tool_calls and computer_use_pending_read_code(turn_tools):
+            return _finish_with_host_message(
+                "Computer Use stopped because the malformed observation was not corrected. "
+                "Earlier action effects may remain; no complete result was verified.",
+                reason="computer_use_observation_recovery_incomplete",
+                exit_code=1,
+            )
+        if computer_use_tool_turn and not tool_calls and computer_use_stale_reselection_required:
+            return _finish_with_host_message(
+                "Computer Use stopped because the changed control was not successfully reselected. "
+                "No complete result was verified.",
+                reason="computer_use_stale_recovery_incomplete",
                 exit_code=1,
             )
         if computer_use_tool_turn and not tool_calls and computer_use_page_observation_required:
@@ -5519,148 +6193,6 @@ def run_turn(
                     progress_handler(
                         "The model did not start Computer Use; retrying with a required fresh "
                         "observation."
-                    )
-                continue
-        workflow_status = computer_use_workflow_status(turn_tools)
-        if (
-            computer_use_tool_turn
-            and not tool_calls
-            and computer_use_transition_observation_required
-        ):
-            computer_use_transition_observation_retries += 1
-            if computer_use_transition_observation_retries <= 2 and _step_limit_allows_more(step):
-                forced_tool_choice_for_next_step = _safe_forced_tool_choice_for_recovery(
-                    client=self.client,
-                    tools=turn_tool_list,
-                    preferred_tool_names=("computer_state",),
-                )
-                _append_controller_ephemeral_system_message(
-                    ephemeral_turn_system_messages,
-                    (
-                        "Computer Use protocol correction: the trusted controller already "
-                        "transitioned to the next application in the approved itinerary. "
-                        "Call computer_state now, then complete and verify that application "
-                        "stage before finalizing."
-                    ),
-                    intervention_class="computer_use_transition_observation",
-                    detail="post_transition_observation_required",
-                    step=step,
-                    metadata={
-                        "retry": computer_use_transition_observation_retries,
-                        "forced_tool_choice": forced_tool_choice_for_next_step is not None,
-                    },
-                )
-                progress_handler = getattr(self.surface, "on_progress_update", None)
-                if callable(progress_handler):
-                    progress_handler(
-                        "The approved application transition completed; observing the new "
-                        "target before continuing."
-                    )
-                continue
-        if (
-            computer_use_tool_turn
-            and not tool_calls
-            and workflow_status.get("known") is True
-            and workflow_status.get("required") is True
-            and workflow_status.get("complete") is not True
-        ):
-            computer_use_incomplete_workflow_retries += 1
-            if computer_use_incomplete_workflow_retries <= 2 and _step_limit_allows_more(step):
-                next_application = workflow_status.get("next_application")
-                transition_result: dict[str, Any] | None = None
-                transition_error = ""
-                transition_tool = turn_tools.get("computer_action")
-                if (
-                    isinstance(next_application, str)
-                    and next_application
-                    and transition_tool is not None
-                ):
-                    try:
-                        candidate_result = transition_tool.run(
-                            {
-                                "action": "activate_application",
-                                "application": next_application,
-                            }
-                        )
-                        if isinstance(candidate_result, dict):
-                            transition_result = candidate_result
-                            transition_error = str(candidate_result.get("error") or "")
-                        else:
-                            transition_error = "invalid_host_response"
-                    except Exception as error:  # noqa: BLE001
-                        transition_error = type(error).__name__
-
-                transition_completed = bool(transition_result is not None and not transition_error)
-                if transition_completed:
-                    computer_use_successful_calls += 1
-                    computer_use_transition_observation_required = True
-                    computer_use_transition_observation_retries = 0
-                    forced_tool_choice_for_next_step = _safe_forced_tool_choice_for_recovery(
-                        client=self.client,
-                        tools=turn_tool_list,
-                        preferred_tool_names=("computer_state",),
-                    )
-                    self.store.append(
-                        "computer_use_controller_transition",
-                        {
-                            "step": step,
-                            "application": next_application,
-                            "status": "done",
-                        },
-                    )
-                    _diagnostic_event(
-                        "computer_use_controller_transition",
-                        {
-                            "step": step,
-                            "application": next_application,
-                            "status": "done",
-                        },
-                    )
-                    next_instruction = (
-                        f' The trusted controller transitioned to "{next_application}". '
-                        "Call computer_state now, then finish and verify that application stage."
-                    )
-                else:
-                    forced_tool_choice_for_next_step = _safe_forced_tool_choice_for_recovery(
-                        client=self.client,
-                        tools=turn_tool_list,
-                        preferred_tool_names=("computer_state",),
-                    )
-                    self.store.append(
-                        "computer_use_controller_transition",
-                        {
-                            "step": step,
-                            "application": next_application,
-                            "status": "failed",
-                            "reason": transition_error or "transition_unavailable",
-                        },
-                    )
-                    next_instruction = (
-                        " Call computer_state now to refresh the trusted target binding, then "
-                        "continue the remaining approved application stage."
-                    )
-                _append_controller_ephemeral_system_message(
-                    ephemeral_turn_system_messages,
-                    (
-                        "Computer Use protocol correction: the trusted host reports that the "
-                        "approved application itinerary is incomplete. Do not finalize yet."
-                        f"{next_instruction}"
-                    ),
-                    intervention_class="computer_use_incomplete_workflow",
-                    detail="approved_itinerary_incomplete",
-                    step=step,
-                    metadata={
-                        "retry": computer_use_incomplete_workflow_retries,
-                        "forced_tool_choice": forced_tool_choice_for_next_step is not None,
-                        "controller_transition": transition_completed,
-                        "remaining_count": len(workflow_status.get("remaining_applications") or ()),
-                    },
-                )
-                progress_handler = getattr(self.surface, "on_progress_update", None)
-                if callable(progress_handler):
-                    progress_handler(
-                        "The model stopped before the approved application itinerary finished; "
-                        "continuing the remaining stage."
                     )
                 continue
         if computer_use_tool_turn and len(tool_calls) > 1:
@@ -5719,9 +6251,68 @@ def run_turn(
                     "one at a time."
                 )
             continue
+        if (
+            tool_calls
+            and acceptance_contract is not None
+            and not artifact_binding_applied
+            and not artifact_binding_work_started
+            and any(tc.name == ARTIFACT_BINDING_TOOL for tc in tool_calls)
+            and (
+                sum(tc.name == ARTIFACT_BINDING_TOOL for tc in tool_calls) != 1
+                or any(
+                    tc.name != ARTIFACT_BINDING_TOOL
+                    and (getattr(turn_tools.get(tc.name), "metadata", None) or {}).get(
+                        "read_only_context"
+                    )
+                    is not True
+                    for tc in tool_calls
+                )
+            )
+        ):
+            # An interpretation is a prerequisite, not an action that can race
+            # another call. Refuse the entire mixed batch before dispatch so the
+            # model can retry without freezing the heuristic requirements.
+            artifact_binding_serialization_retries += 1
+            if artifact_binding_serialization_retries > 2 or not _step_limit_allows_more(step):
+                raise AgentRuntimeError(
+                    "Path interpretation was repeatedly batched with dependent actions; "
+                    "no call in those batches was executed."
+                )
+            forced_tool_choice_for_next_step = _safe_forced_tool_choice_for_recovery(
+                client=self.client,
+                tools=turn_tool_list,
+                preferred_tool_names=(ARTIFACT_BINDING_TOOL,),
+            )
+            _drop_selection_directive(
+                ephemeral_turn_system_messages, artifact_binding_recovery_prompt
+            )
+            _append_controller_ephemeral_system_message(
+                ephemeral_turn_system_messages,
+                artifact_binding_recovery_prompt,
+                intervention_class="task_artifact_serialization",
+                detail="dependent_calls_refused",
+                step=step,
+                metadata={"retry": artifact_binding_serialization_retries},
+            )
+            continue
         if tool_calls:
             turn_tool_call_count += len(tool_calls)
-            if raw_computer_use_dispatch or ephemeral_tool_names:
+            if acceptance_contract is not None:
+                artifact_binding_batch_count = sum(
+                    tc.name == ARTIFACT_BINDING_TOOL for tc in tool_calls
+                )
+                # Lock before the whole batch: a binding cannot race an action.
+                # Only host-owned capability metadata admits context reads;
+                # tool names, model prose and remote read-only hints do not.
+                artifact_binding_work_started |= any(
+                    tc.name != ARTIFACT_BINDING_TOOL
+                    and (getattr(turn_tools.get(tc.name), "metadata", None) or {}).get(
+                        "read_only_context"
+                    )
+                    is not True
+                    for tc in tool_calls
+                )
+            if computer_use_tool_turn or ephemeral_tools_exposed:
                 computer_use_provider_replay_state.update(
                     pending_computer_use_provider_replay_state
                 )
@@ -5736,7 +6327,7 @@ def run_turn(
                 names += ", ..."
             assistant_message = assistant_message_from_response(
                 persistence_safe_response
-                if raw_computer_use_dispatch or ephemeral_tool_names
+                if computer_use_tool_turn or ephemeral_tools_exposed
                 else resp
             )
             durable_assistant_message = redact_assistant_tool_call_message(
@@ -5763,6 +6354,7 @@ def run_turn(
             step_had_successful_action_progress = False
             step_had_orchestration_progress = False
             step_exploration_attempt_count = 0
+            step_external_repetition_notices: list[dict[str, Any]] = []
             step_exploration_success_count = 0
             step_exploration_failed_count = 0
             step_repeated_exploration_pattern = False
@@ -5779,8 +6371,16 @@ def run_turn(
             step_computer_use_preobservation_required = False
             step_computer_selection_correction = False
             step_computer_discovery_terminal: str | None = None
+            step_computer_use_interaction_feedback = None
+            step_computer_use_interaction_host_failure = None
+            step_computer_use_valid_host_refusal = None
+            step_computer_use_local_text_refusal = False
             step_computer_use_key_target_not_routable = False
+            step_computer_use_invalid_keys = False
             step_computer_use_background_input_refused = False
+            step_computer_use_stale_target_refused = False
+            step_computer_use_observation_arguments_refused = False
+            step_computer_use_observation_stall: str | None = None
             step_computer_use_stale_page = False
             step_computer_use_lease_renewed = False
             step_reported_blocker_message: str | None = None
@@ -5843,18 +6443,39 @@ def run_turn(
                     dispatch_arguments[_SUBAGENT_CANCELLATION_TOKEN_ARG] = cancellation_token
                 return dispatch_arguments
 
+            @attribution.tool_call(attribution_owner)
             def _run_tool_with_turn_cancellation(
                 tool: ToolDef,
                 *,
                 tool_name: str,
                 arguments: dict[str, Any],
+                source_call: Any = None,
                 _verification_tools: dict[str, ToolDef] | None = connector_verification_tools,
             ) -> dict[str, Any]:
+                if computer_use_tool_blocked(tool_name, getattr(tool, "metadata", {}) or {}) or (
+                    tool_name == "computer_start_resolved_v1" and resolved_entry is None
+                ):
+                    return {
+                        "error": "computer_use_host_unavailable",
+                        "message": UNAVAILABLE_MESSAGE,
+                    }
                 if (
                     _verification_tools is not None
                     and _verification_tools.get(tool_name) is not tool
                 ):
                     return connector_verification_blocked_result()
+                if (
+                    tool_name == "browser_start"
+                    and resolved_entry is not None
+                    and not resolved_entry.choose_browser()
+                ):
+                    from ..computer_start_resolved import Refusal
+
+                    return Refusal("browser_start_unavailable")
+                if tool_name == "computer_start_resolved_v1" and resolved_entry is not None:
+                    return resolved_entry.dispatch(
+                        source_call, arguments, self.client, self.stream, self.cfg
+                    )
                 normalized_tool_name = tool_name.strip().casefold()
                 if (getattr(tool, "metadata", None) or {}).get("tool_type") == "mcp":
                     from ...mcp.cancellation import mcp_cancellation_scope
@@ -5869,15 +6490,11 @@ def run_turn(
                     normalized_tool_name in _SHELL_CANCELLABLE_WAIT_TOOL_NAMES
                     and cancellation_token is not None
                 ):
-                    # A shell wait blocks on someone else's process, so it is the
-                    # one tool whose dispatch has to observe cancellation from
-                    # the inside: the budget watchdog cannot otherwise reach a
-                    # wait that is already in flight. Handing the token down also
-                    # makes an already-cancelled run return without opening a new
-                    # wait at all. Deliberately not raising here -- the tool
-                    # returns a structured payload with the output collected so
-                    # far, and the step loop's existing checkpoint stops the run
-                    # on its next iteration.
+                    # Process-backed tools must observe Stop while in flight,
+                    # including contained file workers. The private object key
+                    # never enters a provider payload or a worker's JSON request.
+                    # Tool cleanup reaps its process family before returning;
+                    # the step loop then observes the cancelled turn.
                     wait_arguments: dict[Any, Any] = dict(arguments)
                     wait_arguments[_SHELL_CANCELLATION_TOKEN_ARG] = cancellation_token
                     return tool.run(wait_arguments)
@@ -6314,6 +6931,20 @@ def run_turn(
                     name=tc.name,
                     arguments=durable_tool_arguments,
                 )
+                if computer_use_tool_turn and effective_tool_name in {
+                    "computer_state",
+                    "computer_action",
+                }:
+                    count_key = (
+                        "stateCalls" if effective_tool_name == "computer_state" else "actionCalls"
+                    )
+                    evidence_state[count_key] = min(100_000, evidence_state[count_key] + 1)
+                call_trace = (
+                    ComputerUseCallTrace(self.surface, step, tc.id, effective_tool_name)
+                    if computer_use_tool_turn
+                    and effective_tool_name in computer_use_host_tool_names
+                    else None
+                )
                 if _legacy_message_tool_events_required(self.surface):
                     self.surface.on_tool_start(
                         ToolStartEvent(
@@ -6384,7 +7015,16 @@ def run_turn(
                     str(tc.name or "").strip().lower() == "subagent_run"
                     and subagent_turn_policy.reason == "user_opt_out"
                 )
-                if connector_verification_tools is not None and (
+                if computer_use_tool_blocked(
+                    effective_tool_name, getattr(tool, "metadata", {}) or {}
+                ) or (
+                    effective_tool_name == "computer_start_resolved_v1" and resolved_entry is None
+                ):
+                    result = {
+                        "error": "computer_use_host_unavailable",
+                        "message": UNAVAILABLE_MESSAGE,
+                    }
+                elif connector_verification_tools is not None and (
                     tool is None
                     or connector_verification_tools.get(effective_tool_name) is not tool
                 ):
@@ -6457,6 +7097,17 @@ def run_turn(
                     # Reject every sibling before hooks, approvals, caches or
                     # handlers, even when the repeated operation has a fresh ID.
                     result = recovery_blocked_result(whole_batch=True)
+                elif (
+                    prior_failures >= MAX_IDENTICAL_TOOL_CALL_FAILURES
+                    and computer_use_tool_turn
+                    and effective_tool_name == "computer_state"
+                    and (pending_read_code := computer_use_pending_read_code(turn_tools))
+                ):
+                    # Preserve trusted local provenance through duplicate suppression.
+                    # No handler/host call runs and the operation's retry budget still applies.
+                    result = LocalObservationRefusal(
+                        error=pending_read_code, error_code="repeated_tool_failure_guard"
+                    )
                 elif prior_failures >= MAX_IDENTICAL_TOOL_CALL_FAILURES:
                     previous_failure = last_failed_tool_call_results.get(retry_key)
                     previous_error_code = (
@@ -6859,25 +7510,47 @@ def run_turn(
                                         effective_tool_arguments,
                                         recovering=bool(tool_contract_recoveries),
                                     ):
-                                        result = _run_tool_with_turn_cancellation(
-                                            tool,
-                                            tool_name=effective_tool_name,
-                                            arguments=effective_tool_arguments,
-                                        )
+                                        if call_trace is not None:
+                                            result = call_trace.run(
+                                                lambda arguments, bound_tool=tool, bound_name=effective_tool_name, bound_call=tc: (
+                                                    _run_tool_with_turn_cancellation(
+                                                        bound_tool,
+                                                        tool_name=bound_name,
+                                                        arguments=arguments,
+                                                        source_call=bound_call,
+                                                    )
+                                                ),
+                                                effective_tool_arguments,
+                                            )
+                                        else:
+                                            result = _run_tool_with_turn_cancellation(
+                                                tool,
+                                                tool_name=effective_tool_name,
+                                                arguments=effective_tool_arguments,
+                                                source_call=tc,
+                                            )
                                     else:
                                         result = recovery_blocked_result()
                                     if effective_tool_name in {
                                         "browser_start",
                                         "computer_start",
+                                        "computer_start_resolved_v1",
                                     } and isinstance(result, BrowserStartHandoff):
-                                        _throw_if_cancelled()
-                                        _shutdown_parallel_subagent_executor()
-                                        return _finish_turn(0, reason="browser_start_handoff")
+                                        if computer_use_blocked():
+                                            result = {
+                                                "error": "browser_start_unavailable",
+                                                "message": UNAVAILABLE_MESSAGE,
+                                            }
+                                        else:
+                                            _throw_if_cancelled()
+                                            _shutdown_parallel_subagent_executor()
+                                            return _finish_turn(0, reason="browser_start_handoff")
                             except CooperativeCancellationError:
                                 raise
                             except ApprovalDeclinedError as e:
                                 terminal_approval_declined_error = e
                                 result = {
+                                    **(e.result_payload or {}),
                                     "status": "approval_declined",
                                     "approval_declined": True,
                                     "approval_kind": e.approval_kind,
@@ -6894,6 +7567,8 @@ def run_turn(
                                 VerifyError,
                                 AgentRuntimeError,
                             ) as e:
+                                if call_trace is not None:
+                                    call_trace.capture_exception(e)
                                 structured_result = getattr(e, "result_payload", None)
                                 if isinstance(structured_result, dict):
                                     result = copy.deepcopy(structured_result)
@@ -6901,6 +7576,8 @@ def run_turn(
                                 else:
                                     result = {"error": str(e)}
                             except Exception as e:  # noqa: BLE001
+                                if call_trace is not None:
+                                    call_trace.capture_exception(e)
                                 if effective_tool_name.casefold() in WEB_TOOL_NAMES:
                                     if is_recoverable_web_tool_error(e):
                                         result = {"error": str(e), "recoverable": True}
@@ -7002,6 +7679,54 @@ def run_turn(
                                 )
                             )
                 if (
+                    effective_tool_name == "computer_start_resolved_v1"
+                    and resolved_entry is not None
+                ):
+                    if (
+                        getattr(self, "resolved_entry", None) is resolved_entry
+                        and computer_selection_correction_pending
+                        and prior_failures >= MAX_IDENTICAL_TOOL_CALL_FAILURES
+                    ):
+                        if deadline is not None and deadline.is_exhausted():
+                            return _deadline_exhausted_result("tool_dispatch", step=step)
+                        _throw_if_cancelled()
+                        resolved_terminal_refusal = resolved_entry.refusal(
+                            "computer_selection_recovery_exhausted"
+                        )
+                        _capture_resolved_terminal_evidence(resolved_terminal_refusal)
+                        return _finish_with_host_message(
+                            "Computer Use selection correction was exhausted.",
+                            reason="computer_selection_recovery_exhausted",
+                            exit_code=0,
+                            host_failure=True,
+                        )
+                    correctable_v = resolved_entry.valid_correction(result)
+                    computer_selection_correction_pending = correctable_v
+                    step_computer_selection_correction = correctable_v
+                    if not correctable_v:
+                        _drop_selection_directive(
+                            ephemeral_turn_system_messages, computer_selection_directive
+                        )
+                        computer_selection_directive = None
+                    if correctable_v:
+                        computer_selection_correction_pending = True
+                        step_computer_selection_correction = True
+                        computer_selection_discovery_required = False
+                    elif getattr(
+                        self, "resolved_entry", None
+                    ) is resolved_entry and resolved_entry.owns_terminal_refusal(result):
+                        if deadline is not None and deadline.is_exhausted():
+                            return _deadline_exhausted_result("tool_dispatch", step=step)
+                        _throw_if_cancelled()
+                        resolved_terminal_refusal = result
+                        _capture_resolved_terminal_evidence(result)
+                        return _finish_with_host_message(
+                            "Computer Use entry could not continue safely. No task completion is established.",
+                            reason=result["code"],
+                            exit_code=0,
+                            host_failure=True,
+                        )
+                if (
                     effective_tool_name in {"computer_start", "computer_discover"}
                     and (getattr(tool, "metadata", None) or {}).get("host_owned") is True
                     and isinstance(result, ComputerDiscoveryTerminal)
@@ -7014,6 +7739,7 @@ def run_turn(
                     effective_tool_name == "computer_start"
                     and (getattr(tool, "metadata", None) or {}).get("host_owned") is True
                 ):
+                    computer_selection_start_required = False
                     # Only the local wrapper's pre-handoff refusals permit correction.
                     # Host denials, changed targets and uncertain actions must never
                     # acquire retry authority from this path.
@@ -7024,6 +7750,7 @@ def run_turn(
                         in {
                             "computer_start_invalid_selection",
                             "computer_start_unsupported_native_actions",
+                            "computer_start_scope_inconsistent",
                         }
                     )
                     if correctable and result.get("error") == "computer_start_invalid_selection":
@@ -7039,6 +7766,12 @@ def run_turn(
                     step_computer_selection_correction = correctable
                     if not correctable:
                         computer_selection_discovery_required = False
+                        # The selection ran (handoff or host answer): its directive is satisfied. A host
+                        # refusal gains no retry, so no correction imperative may outlive it.
+                        _drop_selection_directive(
+                            ephemeral_turn_system_messages, computer_selection_directive
+                        )
+                        computer_selection_directive = None
                 if (
                     effective_tool_name == "computer_discover"
                     and (getattr(tool, "metadata", None) or {}).get("host_owned") is True
@@ -7050,8 +7783,122 @@ def run_turn(
                 ):
                     # The host-owned local tool returns this request's captured
                     # inventory. Failed discovery must not satisfy the requirement.
+                    if computer_selection_discovery_required:
+                        computer_selection_list_redelivered = True
                     computer_selection_discovery_required = False
-                if computer_use_tool_turn:
+                computer_use_host_result = (
+                    computer_use_tool_turn and effective_tool_name in computer_use_host_tool_names
+                )
+                if computer_use_host_result:
+                    record_focus_diagnostic(
+                        "decision_result", effective_tool_name, effective_tool_arguments, result
+                    )
+                    if (
+                        effective_tool_name == "computer_state"
+                        and isinstance(result, dict)
+                        and "error" not in result
+                    ):
+                        computer_use_pending_host_refusal = None
+                window_selection_result = bool(
+                    computer_use_host_result
+                    and computer_use_window_selection_pending(turn_tools)
+                    and isinstance(result, dict)
+                    and "error" not in result
+                    and (
+                        result.get("kind") == "window_selection_required"
+                        or isinstance(result.get("state"), dict)
+                        and result["state"].get("kind") == "window_selection_required"
+                    )
+                )
+                if window_selection_result:
+                    computer_use_stale_reselection_required = False
+                    computer_use_page_observation_required = False
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_use_reobserve_directive
+                    )
+                    computer_use_reobserve_directive = None
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_use_window_selection_directive
+                    )
+                    computer_use_window_selection_directive = COMPUTER_USE_WINDOW_SELECTION_PROMPT
+                    _append_controller_ephemeral_system_message(
+                        ephemeral_turn_system_messages,
+                        computer_use_window_selection_directive,
+                        intervention_class="computer_window_selection",
+                        detail="window_selection_required",
+                        step=step,
+                    )
+                elif computer_use_host_result and not computer_use_window_selection_pending(
+                    turn_tools
+                ):
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_use_window_selection_directive
+                    )
+                    computer_use_window_selection_directive = None
+                if computer_use_host_result:
+                    report_window = computer_use_window_report_required(turn_tools)
+                    if report_window != (computer_use_window_report_directive is not None):
+                        _drop_selection_directive(
+                            ephemeral_turn_system_messages, computer_use_window_report_directive
+                        )
+                        computer_use_window_report_directive = (
+                            COMPUTER_USE_WINDOW_REPORT_PROMPT if report_window else None
+                        )
+                        if computer_use_window_report_directive is not None:
+                            _append_controller_ephemeral_system_message(
+                                ephemeral_turn_system_messages,
+                                computer_use_window_report_directive,
+                                intervention_class="computer_window_report",
+                                detail="multiple_windows",
+                                step=step,
+                            )
+                if (
+                    computer_use_host_result
+                    and effective_tool_name == "computer_state"
+                    and isinstance(result, dict)
+                    and "error" not in result
+                    and computer_use_capture_refusal_pending(turn_tools)
+                ):
+                    computer_use_capture_refusal_step = step
+                    # A terminal capture refusal supersedes any earlier image or
+                    # stale-surface retry directive, while preserving AX evidence.
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_use_reobserve_directive
+                    )
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_use_window_selection_directive
+                    )
+                    computer_use_reobserve_directive = computer_use_window_selection_directive = (
+                        None
+                    )
+                    computer_use_stale_reselection_required = (
+                        computer_use_page_observation_required
+                    ) = False
+                    forced_tool_choice_for_next_step = None
+                    _append_controller_ephemeral_system_message(
+                        ephemeral_turn_system_messages,
+                        COMPUTER_USE_CAPTURE_REFUSAL_PROMPT,
+                        intervention_class="computer_use_capture_refusal",
+                        detail="capture_refusal_limit",
+                        step=step,
+                    )
+                if (
+                    call_trace is not None
+                    and call_trace.boundary == "host_result"
+                    and isinstance(result, dict)
+                    and "error" in result
+                    and computer_use_local_result_failure_code(effective_tool_name, result) is None
+                ):
+                    evidence_state["knownHostFailure"] = True
+                    raw_code = result.get("error")
+                    evidence_state["hostFailureCode"] = (
+                        raw_code
+                        if isinstance(raw_code, str) and raw_code in RESULT_CODES
+                        else "other"
+                    )
+                if call_trace is not None:
+                    call_trace.finish(result)
+                if computer_use_host_result:
                     from ...task_budget import current_task_budget
 
                     task_budget = current_task_budget()
@@ -7071,6 +7918,7 @@ def run_turn(
                     )
                     if (
                         effective_tool_name == "computer_action"
+                        and not window_selection_result
                         and isinstance(result, dict)
                         and "error" not in result
                         and result.get("ok", True) is True
@@ -7084,6 +7932,59 @@ def run_turn(
                         # unrelated stale targets across a successful navigation chain.
                         # Reads/waits and refused or uncertain receipts never renew it.
                         computer_use_preobservation_retries = 0
+                        computer_use_stale_reselection_required = False
+                        step_computer_use_observation_stall = (
+                            computer_use_observation_progress.action_progress(
+                                str(effective_tool_arguments.get("action", "")),
+                                result,
+                            )
+                        )
+                    if (
+                        effective_tool_name in {"computer_state", "computer_wait"}
+                        and not window_selection_result
+                        and isinstance(result, dict)
+                        and "error" not in result
+                    ):
+                        step_computer_use_observation_stall = (
+                            computer_use_observation_progress.observe(
+                                result,
+                                effective_tool_arguments,
+                                is_wait=effective_tool_name == "computer_wait",
+                            )
+                        )
+                        # Check the validated observation before persistence redaction removes
+                        # its private snapshot binding. A consumed read directive must not
+                        # keep instructing the next model step to observe again.
+                        binding = (getattr(tool, "metadata", None) or {}).get(
+                            "_computer_use_snapshot_binding"
+                        )
+                        if (
+                            effective_tool_name == "computer_state"
+                            and computer_use_reobserve_directive is not None
+                            and not is_tool_unavailable_result(result)
+                            and (getattr(tool, "metadata", None) or {}).get(
+                                "computer_interaction_v2"
+                            )
+                            is True
+                            and isinstance(result.get("snapshot_id"), str)
+                            and getattr(binding, "snapshot_id", None) == result["snapshot_id"]
+                            and getattr(binding, "terminal_result", None) is None
+                        ):
+                            _drop_selection_directive(
+                                ephemeral_turn_system_messages, computer_use_reobserve_directive
+                            )
+                            computer_use_reobserve_directive = None
+                            computer_use_stale_reselection_required = False
+                    if isinstance(
+                        result, (LocalObservationRefusal, LocalObservationRecoveryRequired)
+                    ):
+                        # Only the local wrapper builds this type, before any host request.
+                        # Nothing was observed or sent; the read may be corrected. A host
+                        # result with the same code string never acquires this authority.
+                        step_computer_use_observation_arguments_refused = True
+                        step_computer_use_local_failure_code = (
+                            "computer_use_observation_arguments_invalid"
+                        )
                     if (
                         isinstance(result, dict)
                         and result.get("error") == "computer_use_fresh_observation_required"
@@ -7106,22 +8007,100 @@ def run_turn(
                         # effect and must continue to the terminal failure path.
                         step_computer_use_stale_page = True
                         computer_use_page_observation_required = True
+                    if (getattr(tool, "metadata", None) or {}).get(
+                        "computer_interaction_v2"
+                    ) is True and isinstance(result, dict):
+                        feedback = result.get("interaction_feedback")
+                        if isinstance(feedback, dict) and "error" in result:
+                            step_computer_use_interaction_feedback = feedback
+                            if call_trace is not None and call_trace.boundary == "host_result":
+                                step_computer_use_valid_host_refusal = (
+                                    validated_host_refusal_feedback(result)
+                                )
+                            elif (
+                                call_trace is not None
+                                and call_trace.boundary == "local_arguments"
+                                and effective_tool_name == "computer_action"
+                            ):
+                                step_computer_use_local_text_refusal = validated_local_text_refusal(
+                                    result
+                                )
+                            # Bind diagnostics to this result, not a sticky earlier host failure.
+                            # No error prose or arbitrary code becomes a terminal reason.
+                            raw_code = result.get("error")
+                            step_computer_use_interaction_host_failure = (
+                                raw_code
+                                if call_trace is not None
+                                and call_trace.boundary == "host_result"
+                                and type(raw_code) is str
+                                and raw_code in RESULT_CODES
+                                and computer_use_local_result_failure_code(
+                                    effective_tool_name, result
+                                )
+                                is None
+                                else None
+                            )
+                            if (
+                                (
+                                    step_computer_use_valid_host_refusal is not None
+                                    or step_computer_use_local_text_refusal
+                                )
+                                and feedback.get("dispatch") == "not_dispatched"
+                                and feedback.get("authority") == "valid_for_reobserve"
+                            ):
+                                computer_use_stale_reselection_required = True
+                                computer_use_page_observation_required = True
                     refused_codes = (
                         {result.get("error"), result.get("error_code"), result.get("code")}
-                        if effective_tool_name.strip().casefold() == "computer_action"
+                        if not (getattr(tool, "metadata", None) or {}).get(
+                            "computer_interaction_v2"
+                        )
+                        and effective_tool_name.strip().casefold() == "computer_action"
                         and isinstance(result, dict)
                         else set()
                     )
                     if (
-                        "computer_use_key_target_not_routable" in refused_codes
-                        and str(effective_tool_arguments.get("action") or "").strip().casefold()
-                        == "key"
-                    ) or "background_synthetic_input_unsupported" in refused_codes:
+                        (
+                            "computer_use_key_target_not_routable" in refused_codes
+                            and str(effective_tool_arguments.get("action") or "").strip().casefold()
+                            == "key"
+                        )
+                        or (
+                            "computer_use_invalid_keys_not_dispatched" in refused_codes
+                            and effective_tool_arguments.get("action") == "key"
+                        )
+                        or "background_synthetic_input_unsupported" in refused_codes
+                        or (
+                            bool(
+                                {
+                                    "computer_use_stale_element_not_dispatched",
+                                    "computer_use_stale_window_not_dispatched",
+                                }
+                                & refused_codes
+                            )
+                        )
+                    ):
                         # The Computer Use tool wrapper has already reset its trusted snapshot
                         # binding for this pre-dispatch controller refusal. Recovery is limited
                         # to a fresh observation and a bounded model correction; the ordinary
                         # host-failure terminal path remains authoritative after the bound.
                         step_computer_use_key_target_not_routable = True
+                        step_computer_use_invalid_keys = (
+                            "computer_use_invalid_keys_not_dispatched" in refused_codes
+                        )
+                        if step_computer_use_invalid_keys:
+                            computer_use_stale_reselection_required = True
+                            computer_use_page_observation_required = True
+                        step_computer_use_stale_target_refused = bool(
+                            {
+                                "computer_use_stale_element_not_dispatched",
+                                "computer_use_stale_window_not_dispatched",
+                            }
+                            & refused_codes
+                        )
+                        if step_computer_use_stale_target_refused:
+                            computer_use_stale_reselection_required = True
+                            computer_use_page_observation_required = True
                         step_computer_use_background_input_refused = (
                             "background_synthetic_input_unsupported" in refused_codes
                         )
@@ -7153,6 +8132,7 @@ def run_turn(
                                     "asset_id",
                                     "tab_id",
                                     "snapshot_id",
+                                    "image_frame",
                                     "rendered_sha256",
                                     "rendered_dimensions",
                                     "source_sha256",
@@ -7244,22 +8224,38 @@ def run_turn(
                             chunk=result_preview,
                         )
                     )
-                status = "failed" if isinstance(result, dict) and "error" in result else "done"
+                external_tool_failed = (
+                    getattr(tool, "metadata", {}).get("tool_type") == "mcp"
+                    and isinstance(result, dict)
+                    and result.get("is_error") is True
+                )
+                status = (
+                    "failed"
+                    if external_tool_failed or (isinstance(result, dict) and "error" in result)
+                    else "done"
+                )
                 if terminal_approval_declined_error is not None:
                     status = "failed"
                 result_dict = result if isinstance(result, dict) else {}
                 if getattr(self, "agentbox_telemetry", None) is not None:
                     self.agentbox_telemetry.tool(effective_tool_name)
                 tool_unavailable = is_tool_unavailable_result(result)
-                if computer_use_tool_turn:
+                repetition_notice = external_tool_repetition.observe(
+                    tool_name=effective_tool_name,
+                    arguments=effective_tool_arguments,
+                    metadata=getattr(tool, "metadata", {}),
+                    succeeded=status == "done" and not tool_unavailable,
+                )
+                if repetition_notice is not None:
+                    step_external_repetition_notices.append(repetition_notice)
+                # Declarations are not host observations, actions, or host failures.
+                if computer_use_tool_turn and effective_tool_name in computer_use_host_tool_names:
                     if status == "failed" or tool_unavailable:
                         step_computer_use_failed = True
                     else:
                         computer_use_successful_calls += 1
                         if effective_tool_name == "computer_state":
                             computer_use_page_observation_required = False
-                            computer_use_transition_observation_required = False
-                            computer_use_transition_observation_retries = 0
                 if status == "done" and not tool_unavailable:
                     if effective_tool_name == "shell_background":
                         background_processes_started_this_turn += 1
@@ -7830,6 +8826,7 @@ def run_turn(
                         path
                         for path in (touched_workspace_paths or ())
                         if is_generated_or_vendor_path(path)
+                        and not is_repository_metadata_path(path)
                     )
                     if vendored_touched:
                         vendored_edit_advisory_sent = True
@@ -8360,6 +9357,30 @@ def run_turn(
                         "content": content_for_message,
                     }
                 )
+                if status == "done" and (
+                    (getattr(self.tools.get(effective_tool_name), "metadata", None) or {}).get(
+                        COMPUTER_USE_OBSERVATION_METADATA_KEY
+                    )
+                    is True
+                ):
+                    superseded_observations = supersede_computer_use_observations(
+                        self.messages,
+                        latest_tool_call_id=tc.id,
+                        observation_tool_names=(
+                            name
+                            for name, observation_tool in self.tools.items()
+                            if (getattr(observation_tool, "metadata", None) or {}).get(
+                                COMPUTER_USE_OBSERVATION_METADATA_KEY
+                            )
+                            is True
+                        ),
+                        current_step_call_ids=(call.id for call in tool_calls),
+                    )
+                    if superseded_observations:
+                        self.store.append(
+                            "computer_use_observations_superseded",
+                            {"count": superseded_observations, "step": step},
+                        )
                 if tool_visual_delivery is not None and status == "done":
                     if ephemeral_visual:
                         ephemeral_sensitive_visual_deliveries.append(tool_visual_delivery)
@@ -8601,6 +9622,12 @@ def run_turn(
             if parallel_subagent_calls:
                 _throw_if_cancelled()
 
+            if computer_use_capture_refusal_step == step:
+                _throw_if_cancelled()
+                if _step_limit_allows_more(step):
+                    continue
+                return _finish_capture_refusal()
+
             if step_computer_discovery_terminal is not None:
                 return _finish_with_host_message(
                     COMPUTER_DISCOVERY_TERMINAL_MESSAGES[step_computer_discovery_terminal],
@@ -8608,38 +9635,84 @@ def run_turn(
                     exit_code=1,
                 )
 
+            if computer_selection_list_redelivered:
+                computer_selection_list_redelivered = False
+                if computer_selection_correction_pending and not step_computer_selection_correction:
+                    # The correction's "discover now" directive is satisfied. Left in the turn's
+                    # prompts it kept the model rediscovering the same list instead of selecting
+                    # (operation 880f1d10), so ask only for the corrected selection from here on.
+                    directive = (
+                        "Computer Use selection correction: nothing was started. This request's captured "
+                        "app list was delivered again; do not request it again. Call computer_start now with "
+                        "app labels copied exactly from it. " + _COMPUTER_SELECTION_CORRECTION_TAIL
+                    )
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_selection_directive
+                    )
+                    computer_selection_directive = directive
+                    computer_selection_start_required = True
+                    _append_controller_ephemeral_system_message(
+                        ephemeral_turn_system_messages,
+                        directive,
+                        intervention_class="computer_selection_correction",
+                        detail="captured_list_delivered",
+                        step=step,
+                        headline_counted=False,
+                        metadata={
+                            "recovery_tool": "computer_start",
+                            "retry": computer_selection_correction_retries,
+                        },
+                    )
+
             if step_computer_selection_correction:
                 computer_selection_correction_retries += 1
                 if computer_selection_correction_retries <= 2 and _step_limit_allows_more(step):
-                    # IDs are scoped to this request. After an invalid selection,
-                    # deliver its captured inventory as a dedicated discovery
-                    # result before asking the model to select again. Forcing
-                    # another start can repeat an ID retained in older history.
+                    # Labels are resolved against this request's list. After an invalid
+                    # selection, deliver that captured list as a dedicated discovery
+                    # result before asking the model to select again: forcing another
+                    # start can repeat a label retained in older history, and a stall
+                    # recovery may have shortened the correction that carried it.
                     recovery_tool = (
                         "computer_discover"
                         if computer_selection_discovery_required
-                        else "computer_start"
+                        else (
+                            "computer_start_resolved_v1"
+                            if resolved_entry is not None
+                            else "computer_start"
+                        )
                     )
                     forced_tool_choice_for_next_step = _safe_forced_tool_choice_for_recovery(
                         client=self.client,
                         tools=turn_tool_list,
                         preferred_tool_names=(recovery_tool,),
                     )
-                    _append_controller_ephemeral_system_message(
-                        ephemeral_turn_system_messages,
+                    directive = (
                         "Computer Use selection correction: nothing was started. "
                         + (
                             "Call computer_discover now to read this request's captured app list. "
-                            "After that result, call computer_start with exact target_ids from it; "
+                            "After that result, call computer_start with app labels copied exactly from it; "
                             if computer_selection_discovery_required
-                            else "Call computer_start with exact target_ids from the current "
-                            "available_targets and tool schema; "
+                            else f"Call {recovery_tool} with app labels copied exactly from the current "
+                            "available_targets; "
                         )
-                        + "IDs from earlier requests are invalid. For native apps select semantic "
-                        "actions such as press, focus or set_value, plus activate_application when "
-                        "the user asked to open an installed app. Preserve the original request and "
-                        "all constraints. Do not return a substitute answer before correcting this "
-                        "selection. No permissions or user confirmation are needed for this correction.",
+                        + "labels from earlier requests' lists may be absent. "
+                        + (
+                            _COMPUTER_SELECTION_CORRECTION_TAIL.replace(
+                                "No permissions or user confirmation are needed for this correction.",
+                                "Correction grants no additional authority or actions.",
+                            )
+                            if resolved_entry is not None
+                            else _COMPUTER_SELECTION_CORRECTION_TAIL
+                        )
+                    )
+                    # A stale directive beside the current one keeps asking for a step already done.
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_selection_directive
+                    )
+                    computer_selection_directive = directive
+                    _append_controller_ephemeral_system_message(
+                        ephemeral_turn_system_messages,
+                        directive,
                         intervention_class="computer_selection_correction",
                         detail="pre_handoff_selection_not_dispatched",
                         step=step,
@@ -8698,6 +9771,155 @@ def run_turn(
                         )
                     continue
 
+            if (
+                computer_use_tool_turn
+                and step_computer_use_failed
+                and step_computer_use_observation_arguments_refused
+            ):
+                computer_use_observation_argument_retries += 1
+                if computer_use_observation_argument_retries <= 2 and _step_limit_allows_more(step):
+                    forced_tool_choice_for_next_step = _safe_forced_tool_choice_for_recovery(
+                        client=self.client,
+                        tools=turn_tool_list,
+                        preferred_tool_names=("computer_state",),
+                    )
+                    _append_controller_ephemeral_system_message(
+                        ephemeral_turn_system_messages,
+                        (
+                            "Computer Use protocol correction: the engine refused that "
+                            "computer_state call's own arguments before any host request, so "
+                            "nothing was observed or sent. Earlier action results still stand; "
+                            "do not repeat any action. Call computer_state again with valid "
+                            "arguments. Omit assertions unless every assertion is an object with "
+                            "exactly role, name, property and expected: name is the element's "
+                            "non-empty observed label or title, property is one of value, "
+                            "enabled, disabled, focused, checked or selected, and expected is a "
+                            "string or boolean. Use include_image or element_id only when offered."
+                        ),
+                        intervention_class="computer_use_observation_arguments",
+                        detail="local_observation_arguments_not_sent",
+                        step=step,
+                        metadata={
+                            "retry": computer_use_observation_argument_retries,
+                            "forced_tool_choice": forced_tool_choice_for_next_step is not None,
+                        },
+                    )
+                    progress_handler = getattr(self.surface, "on_progress_update", None)
+                    if callable(progress_handler):
+                        progress_handler(
+                            "The observation request was malformed and was not sent; requesting "
+                            "a corrected observation."
+                        )
+                    continue
+
+            if computer_use_tool_turn and step_computer_use_interaction_feedback is not None:
+                feedback = step_computer_use_interaction_feedback
+                failed_observation = effective_tool_name in {"computer_state", "computer_wait"}
+                if (
+                    (
+                        step_computer_use_valid_host_refusal is not None
+                        or step_computer_use_local_text_refusal
+                    )
+                    and feedback.get("dispatch") == "not_dispatched"
+                    and feedback.get("authority") == "valid_for_reobserve"
+                    and _step_limit_allows_more(step)
+                    and (not failed_observation or computer_use_failed_observation_retries < 1)
+                ):
+                    # The host owns the equivalent-failure budget and revokes authority
+                    # after two replans. A refused observation gets at most one extra
+                    # read per turn; this does not renew the four-read action allowance.
+                    # No action, launch or activation is synthesized or replayed here.
+                    if failed_observation:
+                        computer_use_failed_observation_retries += 1
+                    if step_computer_use_interaction_host_failure == feedback.get("cause"):
+                        computer_use_pending_host_refusal = step_computer_use_valid_host_refusal
+                    forced_tool_choice_for_next_step = _safe_forced_tool_choice_for_recovery(
+                        client=self.client,
+                        tools=turn_tool_list,
+                        preferred_tool_names=("computer_state",),
+                    )
+                    _drop_selection_directive(
+                        ephemeral_turn_system_messages, computer_use_reobserve_directive
+                    )
+                    computer_use_reobserve_directive = "".join(
+                        (
+                            "The requested operation was not dispatched. The host permits a fresh observation and a new plan. ",
+                            "Call computer_state, then select the intended permitted surface and a current target. ",
+                            "Do not replay the old action or claim completion from a new snapshot or focus change.",
+                        )
+                    )
+                    _append_controller_ephemeral_system_message(
+                        ephemeral_turn_system_messages,
+                        computer_use_reobserve_directive,
+                        intervention_class="computer_interaction_v2_reobserve",
+                        detail="not_dispatched_authority_valid",
+                        step=step,
+                    )
+                    continue
+                cause = feedback.get("cause")
+                action_budget_refused = (
+                    cause == "computer_use_action_budget_exhausted"
+                    and step_computer_use_interaction_host_failure == cause
+                    and feedback.get("dispatch") == "not_dispatched"
+                )
+                closed_host_refusal = (
+                    step_computer_use_valid_host_refusal is not None
+                    and step_computer_use_interaction_host_failure == cause
+                    and cause
+                    not in {
+                        "computer_use_cancelled",
+                        "user_takeover",
+                        "computer_use_action_budget_exhausted",
+                        "computer_use_window_selection_exhausted",
+                    }
+                    and feedback.get("authority") != "takeover"
+                )
+                if closed_host_refusal:
+                    return _finish_closed_host_refusal(step_computer_use_valid_host_refusal)
+                explanation = (
+                    "Alysis couldn't settle on one window in the app. Tell me which window to use, for example by its title, then send your request again. "
+                    if cause == "computer_use_window_selection_exhausted"
+                    else "The action limit was reached before the next request was sent. Earlier delivered input may remain in the application. "
+                    if action_budget_refused
+                    else "Computer Use was cancelled. Late observations and images were discarded. "
+                    if cause == "computer_use_cancelled"
+                    else "The four-read recovery allowance was exhausted without a qualifying validated action. "
+                    if cause == "computer_use_refusal_reads_exhausted"
+                    else "Normal quit was sent or may have been sent, but process exit is unverified. "
+                    if (
+                        getattr(
+                            (getattr(tool, "metadata", None) or {}).get(
+                                "_computer_use_snapshot_binding"
+                            ),
+                            "quit_requested",
+                            False,
+                        )
+                        or feedback.get("dispatch") != "not_dispatched"
+                        and isinstance(effective_tool_arguments, dict)
+                        and effective_tool_arguments.get("action") == "quit_application"
+                    )
+                    else "The request was refused before it was sent; no alternate input method was attempted. "
+                    if feedback.get("dispatch") == "not_dispatched"
+                    else "Control is no longer authorized, or an action outcome needs verification. "
+                )
+                return _finish_with_host_message(
+                    "Computer Use stopped. "
+                    + explanation
+                    + "Earlier established outcomes remain valid. No uncertain action was repeated; any remaining outcome is unverified.",
+                    reason=(
+                        "computer_use_action_budget_exhausted"
+                        if action_budget_refused
+                        else "computer_use_window_selection_exhausted"
+                        if cause == "computer_use_window_selection_exhausted"
+                        else "computer_interaction_v2_stopped"
+                    ),
+                    exit_code=1,
+                    host_failure=(
+                        step_computer_use_interaction_host_failure not in {None, "none", "other"}
+                        and step_computer_use_interaction_host_failure == cause
+                    ),
+                )
+
             if computer_use_tool_turn and step_computer_use_key_target_not_routable:
                 computer_use_key_target_recovery_retries += 1
                 if (
@@ -8713,14 +9935,31 @@ def run_turn(
                     _append_controller_ephemeral_system_message(
                         ephemeral_turn_system_messages,
                         (
-                            "Computer Use protocol correction: the trusted host refused that "
-                            "input before sending anything. Keyboard keys, typed text, "
-                            "scrolling, dragging and pointer-only clicks are not delivered to "
-                            "native apps while Alysis works in the background. Call "
+                            "Computer Use protocol correction: key validation rejected the command before any input was sent. "
+                            "Call computer_state now, then form a NEW corrected action using documented keys as separate "
+                            "array entries (for example [cmd, shift, n]). Use type for Unicode text. Select a fresh element_id "
+                            "or target focused only when the current native observation advertises it. Do not repeat the "
+                            "same invalid payload or claim completion from an observation alone."
+                            if step_computer_use_invalid_keys
+                            else "Computer Use protocol correction: the native host proved that the "
+                            "control or ordinary window title changed before any input was sent. Call computer_state "
+                            "now within this same app, window and task. Wait for the intended control "
+                            "to be locally ready, inspect a relevant observed subtree if coverage is "
+                            "truncated, then select its NEW element_id from the fresh observation. "
+                            "Check ordinary protection, enabled state and the required action capability "
+                            "(including value_settable for text replacement). Never reuse the old ID, "
+                            "silently replay the refused action, or switch to another window. If the "
+                            "target remains unreadable or unstable, report the limitation."
+                            if step_computer_use_stale_target_refused
+                            else "Computer Use protocol correction: the trusted host refused that "
+                            "input before sending anything. That app-targeted background route "
+                            "is unavailable for the current observation. Call "
                             "computer_state now, then continue with press, focus or set_value "
-                            "on a fresh observed control. Do not retry the refused input; if "
-                            "the goal cannot be reached with those actions, stop and report "
-                            "that limit."
+                            "on a fresh observed control, or an input route explicitly advertised "
+                            "by the new native observation. Only arrange input_mode "
+                            "foreground when the authorized task requires shared keyboard/pointer "
+                            "control and the user can hand off the desktop. Never silently switch "
+                            "routes or repeat an uncertain action."
                             if step_computer_use_background_input_refused
                             else "Computer Use protocol correction: the trusted native controller "
                             "rejected the key target before dispatch because it is not a "
@@ -8733,7 +9972,9 @@ def run_turn(
                         ),
                         intervention_class="computer_use_key_target_recovery",
                         detail=(
-                            "fresh_state_then_semantic_native_action"
+                            "fresh_state_then_new_native_selection"
+                            if step_computer_use_stale_target_refused
+                            else "fresh_state_then_semantic_native_action"
                             if step_computer_use_background_input_refused
                             else "fresh_state_then_safe_native_action"
                         ),
@@ -8746,8 +9987,13 @@ def run_turn(
                     progress_handler = getattr(self.surface, "on_progress_update", None)
                     if callable(progress_handler):
                         progress_handler(
-                            "Background input was refused before anything was sent; requesting "
-                            "a fresh observation before continuing with semantic actions."
+                            "The key command was rejected before input; requesting a fresh observation and corrected command."
+                            if step_computer_use_invalid_keys
+                            else "The control or window title changed before input was sent; requesting a fresh "
+                            "observation and a new selection in the same window."
+                            if step_computer_use_stale_target_refused
+                            else "Background input was refused before anything was sent; requesting "
+                            "a fresh observation before choosing an advertised route or arranging a foreground handoff."
                             if step_computer_use_background_input_refused
                             else "The native key target was not keyboard-routable; requesting a "
                             "fresh observation before continuing safely."
@@ -8806,7 +10052,24 @@ def run_turn(
                 )
                 continue
 
+            if (
+                computer_use_tool_turn
+                and step_computer_use_failed
+                and step_computer_use_observation_arguments_refused
+            ):
+                if call_trace is not None:
+                    call_trace.emit("turn_failure")
+                return _finish_with_host_message(
+                    "Computer Use stopped because the malformed observation could not be corrected "
+                    "within this turn's limits. Earlier action effects may remain; "
+                    "no complete result was verified.",
+                    reason="computer_use_observation_arguments_invalid",
+                    exit_code=1,
+                )
+
             if computer_use_tool_turn and step_computer_use_failed:
+                if call_trace is not None:
+                    call_trace.emit("turn_failure")
                 if step_computer_use_local_failure_code is not None:
                     # Emit only after bounded recovery has been exhausted. A
                     # later step never inherits a recovered local result code.
@@ -8863,6 +10126,36 @@ def run_turn(
                     1,
                     reason="computer_use_host_failure",
                     final_text=final_text,
+                )
+
+            if computer_use_tool_turn and step_computer_use_observation_stall:
+                if step_computer_use_observation_stall in {"stop", "switch_stop"}:
+                    return _finish_with_host_message(
+                        "Computer Use stopped after repeated observations or app switches showed no new evidence. "
+                        "The requested result remains unverified; earlier partial work may remain.",
+                        reason="computer_use_observation_stalled",
+                        exit_code=1,
+                    )
+                _append_controller_ephemeral_system_message(
+                    ephemeral_turn_system_messages,
+                    (
+                        "Switching applications alone is not progress. The recent switches repeat the same "
+                        "app states. Stay in the app needed for the next unfinished step, verify the intended "
+                        "document or folder, and perform a supported action toward that step. "
+                        if step_computer_use_observation_stall == "switch_correct"
+                        else ""
+                    )
+                    + "The recent native reads repeat the same observed views without new evidence. "
+                    "Do not keep alternating the same window and subtree. Reassess the requested "
+                    "outcome from the current state; use a relevant different subtree or an "
+                    "available image only if it can resolve the missing evidence, or choose a "
+                    "supported semantic action from the fresh state. Do not replay an uncertain "
+                    "action. If no supported route can progress, report the partial result and limitation.",
+                    intervention_class="computer_use_observation_progress",
+                    detail="repeated_app_switches"
+                    if step_computer_use_observation_stall == "switch_correct"
+                    else "repeated_native_views",
+                    step=step,
                 )
 
             for visual_message, visual_receipt in pending_visual_deliveries:
@@ -9126,6 +10419,20 @@ def run_turn(
                         "blocked_response": True,
                         "blocked_response_allows_completion": False,
                     },
+                )
+
+            for repetition_notice in step_external_repetition_notices:
+                activity_checkpoint = repetition_notice["trigger"] == "activity_checkpoint"
+                _append_controller_system_message(
+                    EXTERNAL_TOOL_PROGRESS_CHECKPOINT
+                    if activity_checkpoint
+                    else EXTERNAL_TOOL_REASSESSMENT,
+                    intervention_class="progress_reassessment"
+                    if activity_checkpoint
+                    else "stagnation",
+                    detail="external_tool_reassessment",
+                    step=step,
+                    metadata=repetition_notice,
                 )
 
             if execution_phase_tracking_enabled:
@@ -9408,6 +10715,7 @@ def run_turn(
             continue
 
         final_text = resp.content.strip() if resp.content else ""
+        finalization_notes: list[str] = []
         if computer_use_tool_turn:
             if computer_use_successful_calls <= 0:
                 self.store.append(
@@ -9427,55 +10735,17 @@ def run_turn(
                     reason="computer_use_no_trusted_host_call",
                     exit_code=1,
                 )
-            if computer_use_transition_observation_required:
-                self.store.append(
-                    "computer_use_completion_rejected",
-                    {"step": step, "reason": "post_transition_observation_required"},
-                )
-                _diagnostic_event(
-                    "computer_use_completion_rejected",
-                    {"step": step, "reason": "post_transition_observation_required"},
-                    durable=True,
-                )
+            if computer_use_goal_declared and computer_use_goal_outcome != "completed_unverified":
+                blocked = computer_use_goal_outcome == "blocked"
                 return _finish_with_host_message(
-                    (
-                        "Computer Use stopped because the model did not observe and complete "
-                        "the application selected by the trusted itinerary transition."
-                    ),
-                    reason="computer_use_transition_unobserved",
-                    exit_code=1,
-                )
-            workflow_status = computer_use_workflow_status(turn_tools)
-            if (
-                workflow_status.get("known") is True
-                and workflow_status.get("required") is True
-                and workflow_status.get("complete") is not True
-            ):
-                remaining_count = len(workflow_status.get("remaining_applications") or ())
-                self.store.append(
-                    "computer_use_completion_rejected",
-                    {
-                        "step": step,
-                        "reason": "approved_itinerary_incomplete",
-                        "remaining_count": remaining_count,
-                    },
-                )
-                _diagnostic_event(
-                    "computer_use_completion_rejected",
-                    {
-                        "step": step,
-                        "reason": "approved_itinerary_incomplete",
-                        "remaining_count": remaining_count,
-                    },
-                    durable=True,
-                )
-                return _finish_with_host_message(
-                    (
-                        "Computer Use stopped because the model did not complete every "
-                        "application in the trusted host itinerary."
-                    ),
-                    reason="computer_use_itinerary_incomplete",
-                    exit_code=1,
+                    "The model reported that the goal is blocked; this report does not establish a host refusal."
+                    if blocked
+                    else "Computer Use ended without a completed goal report.",
+                    reason="computer_use_goal_blocked"
+                    if blocked
+                    else "computer_use_goal_incomplete",
+                    exit_code=0,
+                    transient_response=computer_use_host_response_text or None,
                 )
             file_status = computer_use_file_delivery_status(turn_tools)
             if file_status.get("complete") is not True:
@@ -9500,13 +10770,25 @@ def run_turn(
                     reason=reason,
                     exit_code=1,
                 )
+            if computer_use_goal_outcome != "completed_unverified":
+                blocked = computer_use_goal_outcome == "blocked"
+                return _finish_with_host_message(
+                    "The model reported that the goal is blocked; this report does not establish a host refusal."
+                    if blocked
+                    else "Computer Use ended without a completed goal report.",
+                    reason="computer_use_goal_blocked"
+                    if blocked
+                    else "computer_use_goal_incomplete",
+                    exit_code=0,
+                    transient_response=computer_use_host_response_text or None,
+                )
             # Provider prose can transform private AX labels, titles, bundle
             # identifiers, or coordinates in ways no CLI substring scrubber can
             # prove complete. The default remains status-only. For the explicitly
             # authenticated Chrome semantic-DOM path, emit one transient copy to
             # Electron, whose bounded redaction layer owns durable presentation.
             computer_use_status_text = (
-                "Computer Use completed the authorized workflow through the trusted host boundary."
+                "Computer Use run ended. The reported result has not been independently verified."
             )
             if (
                 computer_use_response_mode == "host_sanitized_text"
@@ -10197,7 +11479,10 @@ def run_turn(
                 and _verification_expected_for_turn(
                     turn_intent=completion_gate_turn_intent,
                     blocked=blocked_response_allows_completion,
-                    touched_repo_paths=execution_state.touched_repo_paths,
+                    # Inferred checks apply to this turn's effects. Historical
+                    # edits still retain their checker/preservation provenance,
+                    # but cannot turn a later document-only task into code work.
+                    touched_repo_paths=execution_state.turn_touched_repo_paths,
                     verification_contract_requires_execution=(
                         self.verification_contract_type
                         in {"authoritative_override", "explicit_override", "task_inferred"}
@@ -10841,7 +12126,7 @@ def run_turn(
                             },
                         )
                         if HONEST_UNVERIFIED_FINALIZATION_MARKER not in (final_text or ""):
-                            final_text = (final_text or "") + HONEST_UNVERIFIED_FINALIZATION_MARKER
+                            finalization_notes.append(HONEST_UNVERIFIED_FINALIZATION_MARKER)
                     if regressions_unresolved_finalization:
                         # Fail honest: regressions the change introduced that a
                         # bounded action-only repair could not resolve are not
@@ -10884,7 +12169,7 @@ def run_turn(
                         if regression_marker.strip() and regression_marker not in (
                             final_text or ""
                         ):
-                            final_text = (final_text or "") + regression_marker
+                            finalization_notes.append(regression_marker)
                     if unattributed_failures_finalization:
                         # Fail honest: failures whose relationship to the change
                         # could not be established are finalized as UNATTRIBUTED,
@@ -10919,7 +12204,7 @@ def run_turn(
                         if unattributed_marker.strip() and unattributed_marker not in (
                             final_text or ""
                         ):
-                            final_text = (final_text or "") + unattributed_marker
+                            finalization_notes.append(unattributed_marker)
                     if expectations_unconfirmed_finalization:
                         # Fail honest (turn-contract v2): task-named expectations
                         # neither confirmed by observed evidence nor disposed are
@@ -10959,7 +12244,7 @@ def run_turn(
                         if expectations_marker.strip() and expectations_marker not in (
                             final_text or ""
                         ):
-                            final_text = (final_text or "") + expectations_marker
+                            finalization_notes.append(expectations_marker)
                     if repro_unconfirmed_finalization:
                         # Fail honest (reproduction-first): the reported symptom
                         # was never validated by a reproduction that failed
@@ -11069,7 +12354,7 @@ def run_turn(
                             advisory.reason, advisory.explanation
                         )
                         if advisory_summary.strip() and advisory_summary not in (final_text or ""):
-                            final_text = (final_text or "") + advisory_summary
+                            finalization_notes.append(advisory_summary)
                 else:
                     self.store.append(
                         completion_gate_failed_event,
@@ -11319,7 +12604,7 @@ def run_turn(
                 )
             )
             if blast_radius_summary.strip() and blast_radius_summary not in (final_text or ""):
-                final_text = (final_text or "") + blast_radius_summary
+                finalization_notes.append(blast_radius_summary)
         if (
             zero_coverage_advisory_enabled(self.cfg)
             and completion_gate_enabled
@@ -11335,7 +12620,7 @@ def run_turn(
             if uncovered_modules:
                 zero_coverage_marker = build_zero_coverage_marker(uncovered_modules)
                 if zero_coverage_marker not in (final_text or ""):
-                    final_text = (final_text or "") + zero_coverage_marker
+                    finalization_notes.append(zero_coverage_marker)
                 self.store.append(
                     "zero_coverage_modules",
                     {
@@ -11373,6 +12658,19 @@ def run_turn(
             final_text = _with_unapplied_isolated_notice(final_text)
         if not stream_used:
             _phase_update_key("phase_writing_final_response")
+        if not completion_gate_enabled:
+            # Interactive/non-repository work still records an acceptance
+            # outcome. Refresh its host evidence even without repo repair loops.
+            finalize_acceptance_contract(
+                contract=execution_state.acceptance_contract,
+                root=self.root,
+                touched_paths=execution_state.touched_repo_paths,
+                durable_service_status=(
+                    self.durable_service_manager.status
+                    if self.durable_service_manager is not None
+                    else None
+                ),
+            )
         self.store.append(
             "turn_intent_finalized",
             {
@@ -11422,6 +12720,7 @@ def run_turn(
                 "task_outcome": outcome,
                 "verification_notice": verification_notice,
             },
+            finalization_notes=tuple(finalization_notes),
         )
         assistant_message_emitted = True
         return _finish_turn(0, reason="completed", final_text=final_text)

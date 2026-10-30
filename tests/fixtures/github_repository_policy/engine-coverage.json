@@ -1,0 +1,522 @@
+{
+  "corpus_sha256": "6cf983787d07e2da41229e44a54beb656160b586410c2789d2cff5d66041c3c6",
+  "previous_engine_cases": 108,
+  "remaining": [
+    {
+      "id": "G-list-changed-schema",
+      "consumer": "native_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-list-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-list-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-list-policy-after_approval",
+      "consumer": "app_only",
+      "boundary": "APP-only exact after_approval checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-list-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-repo-read-changed-schema",
+      "consumer": "native_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-repo-read-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-repo-read-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-repo-read-policy-after_approval",
+      "consumer": "app_only",
+      "boundary": "APP-only exact after_approval checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-repo-read-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-pr-list-changed-schema",
+      "consumer": "native_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-pr-list-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-pr-list-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-pr-list-policy-after_approval",
+      "consumer": "app_only",
+      "boundary": "APP-only exact after_approval checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-pr-list-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-pr-create-changed-schema",
+      "consumer": "native_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-pr-create-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-pr-create-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-pr-create-policy-after_approval",
+      "consumer": "approval_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-pr-create-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-pr-create-person-denied",
+      "consumer": "person_denial",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-git-fetch-changed-schema",
+      "consumer": "native_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-git-fetch-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-fetch-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-git-fetch-policy-after_approval",
+      "consumer": "approval_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-git-fetch-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-fetch-person-denied",
+      "consumer": "person_denial",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-git-pull-changed-schema",
+      "consumer": "native_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-git-pull-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-pull-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-git-pull-policy-after_approval",
+      "consumer": "approval_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-git-pull-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-pull-person-denied",
+      "consumer": "person_denial",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-git-push-changed-schema",
+      "consumer": "native_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-git-push-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-push-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-git-push-policy-after_approval",
+      "consumer": "approval_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-git-push-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-push-person-denied",
+      "consumer": "person_denial",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-changed-schema",
+      "consumer": "app_only",
+      "boundary": "APP-only raw local source schema/pin; engine receives effective schema plus runtime hash, not raw adapter source.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-root-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-root-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-rest-root-policy-after_approval",
+      "consumer": "app_only",
+      "boundary": "APP-only exact after_approval checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-root-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-branches-changed-schema",
+      "consumer": "app_only",
+      "boundary": "APP-only raw local source schema/pin; engine receives effective schema plus runtime hash, not raw adapter source.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-branches-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-branches-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-rest-branches-policy-after_approval",
+      "consumer": "app_only",
+      "boundary": "APP-only exact after_approval checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-branches-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-pr-create-changed-schema",
+      "consumer": "app_only",
+      "boundary": "APP-only raw local source schema/pin; engine receives effective schema plus runtime hash, not raw adapter source.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-pr-create-policy-before_admission",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_admission checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-pr-create-policy-after_setup_await",
+      "consumer": "prepare_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-rest-pr-create-policy-after_approval",
+      "consumer": "approval_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-rest-pr-create-policy-before_dispatch",
+      "consumer": "app_only",
+      "boundary": "APP-only exact before_dispatch checkpoint inside main admission/final transport; no matching engine await. Engine post-prepare/person waits tested separately.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-pr-create-person-denied",
+      "consumer": "person_denial",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-repo-read-stale-account_link_revision",
+      "consumer": "binding_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-repo-read-stale-plugin_manifest_sha256",
+      "consumer": "binding_retirement",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-repo-read-stale-generation",
+      "consumer": "app_only",
+      "boundary": "APP-only captured owner generation/job identity; not a renderer/model-supplied engine mutation.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-repo-read-stale-job_id",
+      "consumer": "app_only",
+      "boundary": "APP-only captured owner generation/job identity; not a renderer/model-supplied engine mutation.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-repo-read-stale-workspace_repository",
+      "consumer": "binding_retirement",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-repo-read-cancelled",
+      "consumer": "interrupt_prepare",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-repo-read-deadline",
+      "consumer": "interrupt_prepare",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "H-list-human-browse-outside",
+      "consumer": "app_only",
+      "boundary": "APP-only trusted human IPC entry; no engine route may select it.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-repo-read-all-mode-old-peer",
+      "consumer": "app_only",
+      "boundary": "APP-only negotiation of stored all with an old engine; current engine cannot act as an old peer.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-root-remote-get_file_contents",
+      "consumer": "remote_name",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-remote-search_repositories",
+      "consumer": "remote_name",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-remote-graphql",
+      "consumer": "remote_name",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-remote-github_api_read",
+      "consumer": "app_only",
+      "boundary": "APP-only source provenance: same-name/same-schema remote impostor is indistinguishable on the engine wire.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-root-runtime-schema_match",
+      "consumer": "runtime_refs",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-runtime-current",
+      "consumer": "runtime_refs",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-effective-schema-changed",
+      "consumer": "effective_schema",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-control-157",
+      "consumer": "discovery_control",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-control-158",
+      "consumer": "discovery_control",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-control-159",
+      "consumer": "discovery_control",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-control-160",
+      "consumer": "discovery_control",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-post-dispatch-revocation",
+      "consumer": "post_dispatch",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-list-list-partial-failure",
+      "consumer": "app_only",
+      "boundary": "APP-only iteration/partial failure between exact repository metadata HTTP calls.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-root-describe-revoked-after-verification",
+      "consumer": "post_dispatch",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-git-push-changed-local_branch",
+      "consumer": "app_only",
+      "boundary": "APP-only isolated Git snapshot/recheck and canonical network target.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-push-changed-local_commit",
+      "consumer": "app_only",
+      "boundary": "APP-only isolated Git snapshot/recheck and canonical network target.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-git-push-changed-origin",
+      "consumer": "app_only",
+      "boundary": "APP-only isolated Git snapshot/recheck and canonical network target.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-list-account-change-after-proof",
+      "consumer": "app_only",
+      "boundary": "APP-only live account proof/status await, before repository metadata port.",
+      "evidence": "app_only"
+    },
+    {
+      "id": "G-rest-pr-create-write-post-dispatch-revocation",
+      "consumer": "post_dispatch",
+      "boundary": "Guard-only: test replaces the private session policy at a real await. Production has no policy-update route; APP retirement/cancel/close/recreation must be tested separately.",
+      "evidence": "synthetic_owner_guard"
+    },
+    {
+      "id": "G-rest-root-describe-workspace",
+      "consumer": "discovery_control",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    },
+    {
+      "id": "G-rest-root-describe-repeated",
+      "consumer": "discovery_control",
+      "boundary": "ENGINE real producer; APP transport/account/credential counts remain separate.",
+      "evidence": "production_engine_boundary"
+    }
+  ],
+  "evidence_counts": {
+    "previous_engine_cases": 108,
+    "new_production_engine_boundary": 27,
+    "synthetic_owner_guard": 20,
+    "app_only": 38
+  }
+}

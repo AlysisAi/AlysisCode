@@ -1651,6 +1651,30 @@ def _safe_request_plan(plan: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(plan, Mapping):
         return None
     safe: dict[str, Any] = {}
+    for key, allowed in (
+        (
+            "wire_tool_choice",
+            {"auto", "required", "none", "function", "custom", "tool", "any", "omitted", "other"},
+        ),
+        (
+            "wire_reasoning_effort",
+            {
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra",
+                "omitted",
+                "other",
+            },
+        ),
+    ):
+        value = plan.get(key)
+        if isinstance(value, str) and value in allowed:
+            safe[key] = value
     for key in ("wire_history_sha256", "wire_instructions_sha256", "wire_tools_sha256"):
         value = plan.get(key)
         if (
@@ -1675,6 +1699,10 @@ def _safe_request_plan(plan: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "wire_previous_history_items",
         "wire_shared_prefix_items",
         "wire_shared_prefix_bytes",
+        "wire_image_parts",
+        "wire_media_parts",
+        "wire_text_parts",
+        "wire_tool_count",
     ):
         value = plan.get(key)
         if type(value) is int and value >= 0:

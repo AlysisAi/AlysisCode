@@ -1,0 +1,171 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.airtable"
+name = "Airtable"
+version = "1.0.0"
+description = "Airtable's official remote MCP tools: read and search your bases and records. Every change asks you first; deleting records, tables, pages and automations is left out."
+author = "Alysis AI (integration); Airtable (MCP server)"
+license = "MIT"
+homepage = "https://support.airtable.com/docs/using-the-airtable-mcp-server"
+keywords = ["airtable", "mcp", "database", "spreadsheet", "records"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Airtable's official remote MCP server. Its metadata names the whole site as the resource
+# (https://mcp.airtable.com), which is what the sign-in sends; the sign-in server is airtable.com
+# (issuer with its /oauth2/v1 path), the one extra sign-in site. The person picks the bases on
+# Airtable's sign-in page. Scopes: records and schema read/write and workspace reads (no comment
+# scopes: no tool uses them). Automations are saved as drafts the person turns on in Airtable. Each
+# change asks a person first. Left out: every delete (records, tables, interfaces, pages,
+# automations) and test_automation_webhook_trigger (sends a test call).
+[[components.verified_connector]]
+id = "airtable"
+url = "https://mcp.airtable.com/mcp"
+resource = "https://mcp.airtable.com"
+oauth_issuer = "https://airtable.com/oauth2/v1"
+oauth_sign_in_origins = ["https://airtable.com"]
+oauth_client = "dynamic"
+oauth_scopes = ["data.records:read", "data.records:write", "schema.bases:read", "schema.bases:write", "workspacesAndBases:read"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "fetch_automation_input_data"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_automation"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_create_automation_instructions"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_automations"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_bases"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_bases"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_form_schema"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_records_for_page"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_record_for_page"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "describe_page_element"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "describe_page_type"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_pages_for_base"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "display_records_for_table"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_records_for_table"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_candidate_linked_records"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_records"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_table_schema"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_views_for_table"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_tables_for_base"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_workspaces"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_external_accounts"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "create_automation"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update_automation"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_base"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_field"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update_field"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "submit_form"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_page"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_interface"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_records_for_table"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update_records_for_table"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "revert_action"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_table"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update_table"
+reads_only = false
+
+[security]
+contact = "https://www.airtable.com/security"

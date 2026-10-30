@@ -305,6 +305,207 @@ def _create_review_session(
     return out, bridge, session_id
 
 
+def test_artifact_check_receipts_are_read_from_the_named_session(tmp_path, monkeypatch):
+    out, bridge, session_id = _create_review_session(tmp_path, monkeypatch, lambda *_: 0)
+    report = {"path": "report.docx", "documentSha256": "a" * 64, "items": []}
+    session = bridge._require_session(session_id, request_id="test")
+    session.agent_session.tools = {
+        "artifact_check": SimpleNamespace(metadata={"artifact_reports": [report]})
+    }
+    try:
+        response = _send_bridge_request(
+            bridge,
+            out,
+            "session.artifactChecks",
+            {"session_id": session_id, "reports": [{"forged": True}]},
+        )
+        assert response["ok"] is True
+        assert response["result"] == {"session_id": session_id, "reports": [report]}
+        missing = _send_bridge_request(
+            bridge, out, "session.artifactChecks", {"session_id": "unrelated"}
+        )
+        assert missing["ok"] is False
+    finally:
+        bridge.close()
+
+
+def test_optional_browser_private_root_does_not_block_unrelated_chat(tmp_path, monkeypatch):
+    from alysis_code.ide.managed_browser import BrowserSecurityError
+
+    data = tmp_path / "private-data"
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(data))
+    out, bridge, session_id = _create_review_session(tmp_path, monkeypatch, lambda *_: 0)
+    try:
+        assert not (data / "ide-browser").exists()
+        response = _send_bridge_request(
+            bridge, out, "chat.send", {"session_id": session_id, "message": "Explain this term."}
+        )
+        assert response["ok"] is True
+        _wait_for_line(
+            out,
+            lambda line: (
+                line.get("type") == "activity_update"
+                and line.get("payload", {}).get("status") == "completed_unverified"
+            ),
+        )
+        status = _send_bridge_request(bridge, out, "session.status", {"session_id": session_id})
+        assert status["result"]["last_job"]["status"] == "completed"
+        assert not (data / "ide-browser").exists()
+        session = bridge._require_session(session_id, request_id="test")
+        with pytest.raises(BrowserSecurityError, match="outside the workspace"):
+            session.managed_browser.start("owner")
+        assert not (
+            data / "ide-browser"
+        ).exists()  # No private browser data is created inside the workspace.
+    finally:
+        bridge.close()
+
+
+def test_checkpoint_refusal_is_structured_before_dispatch_and_does_not_block_read_only_tools(
+    monkeypatch,
+):
+    from alysis_code.agent.errors import AgentRuntimeError
+
+    job = stdio_bridge.BridgeJob(job_id="first", session_id="session", created_at="now")
+    session = SimpleNamespace(active_job=job)
+    monkeypatch.setattr(stdio_bridge, "_checkpointing_supported", lambda _: True)
+    ready = [False]
+    monkeypatch.setattr(stdio_bridge, "_prepare_change_ledger_with_deadline", lambda _: ready[0])
+    guard = stdio_bridge._CheckpointToolDispatchGuard({"session": session})
+    with pytest.raises(AgentRuntimeError) as caught:
+        guard.check_tool_call("fs_write", {"path": "notes.txt", "content": "new"})
+    assert caught.value.result_payload["error_code"] == "checkpoint_unavailable"
+    assert caught.value.result_payload["retryable"] is False
+    assert caught.value.result_payload["dispatch_state"] == "not_dispatched"
+    guard.check_tool_call("fs_read", {"path": "notes.txt"})
+    ready[0] = True
+    session.active_job = stdio_bridge.BridgeJob(
+        job_id="next", session_id="session", created_at="later"
+    )
+    guard.check_tool_call("fs_write", {"path": "notes.txt", "content": "new"})
+
+
+def test_unused_or_closed_deferred_browser_never_initializes_on_cleanup():
+    created = []
+    closed = []
+    service = SimpleNamespace(status=lambda *_: "ready", close_all=lambda: closed.append(True))
+    proxy = stdio_bridge._DeferredManagedBrowserService(lambda: created.append(True) or service)
+    late_call = proxy.status
+    assert created == []
+    proxy.close_all()
+    assert created == []
+    with pytest.raises(stdio_bridge.BrowserError, match="closed"):
+        late_call("owner", "session")
+    assert created == []
+    with pytest.raises(stdio_bridge.BrowserError, match="closed"):
+        proxy.status("owner", "session")
+    assert created == []
+    used = stdio_bridge._DeferredManagedBrowserService(lambda: created.append(True) or service)
+    assert used.status("owner", "session") == "ready"
+    assert used.status("owner", "session") == "ready"
+    assert created == [True]
+    used.close_all()
+    used.close_all()
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("reserved", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_output_declarations_require_exact_completed_job_and_current_task(
+    tmp_path, monkeypatch, reserved, nested
+):
+    from alysis_code.agent.acceptance_contract import build_acceptance_contract
+    from alysis_code.agent.task_artifact_binding import bind_path_interpretation
+    from alysis_code.agent.verification import TurnExecutionState
+
+    project = tmp_path
+    if nested:
+        subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+        project = tmp_path / "project"
+        project.mkdir()
+    out, bridge, session_id = _create_review_session(project, monkeypatch, lambda *_: 0)
+    session = bridge._require_session(session_id, request_id="test")
+    instruction = "Create summary.csv."
+    refs = bind_path_interpretation(
+        root=session.root,
+        working_directory="project" if nested else ".",
+        instruction=instruction,
+        prior_refs=[],
+        arguments={
+            "paths": [
+                {
+                    "name": "summary.csv",
+                    "directory": "",
+                    "path_base": "active_workdir",
+                    "role": "required_output",
+                    "evidence_quote": instruction,
+                }
+            ]
+        },
+    )
+    contract = build_acceptance_contract(
+        root=session.root, instruction=instruction, interpreted_path_refs=refs
+    )
+    contract.task_id = "current-task"
+    state = TurnExecutionState(execution_requested=True, acceptance_contract=contract)
+    state.turn_touched_repo_paths.add("project/summary.csv" if nested else "summary.csv")
+    session.agent_session._turn_execution_state = state
+    session.agent_session.last_turn_outcome = {"terminal": True, "task_id": contract.task_id}
+    job = stdio_bridge.BridgeJob(
+        job_id="finished-job",
+        session_id=session_id,
+        created_at="now",
+        status="completed",
+        exit_code=0,
+        result={"task_outcome": dict(session.agent_session.last_turn_outcome)},
+    )
+    if reserved:
+        session.active_job = job
+    else:
+        session.last_job = job
+    params = {"session_id": session_id, "job_id": job.job_id}
+    try:
+        response = _send_bridge_request(bridge, out, "session.outputArtifacts", params)
+        assert response["ok"] is True
+        assert response["result"] == {**params, "task_id": "current-task", "paths": ["summary.csv"]}
+        for invalid in [
+            {**params, "paths": ["forged.csv"]},
+            {**params, "session_id": "other"},
+            {**params, "job_id": "previous"},
+        ]:
+            assert (
+                _send_bridge_request(bridge, out, "session.outputArtifacts", invalid)["ok"] is False
+            )
+        for attribute, value in [
+            ("status", "running"),
+            ("exit_code", 130),
+            ("session_id", "other"),
+        ]:
+            old = getattr(job, attribute)
+            setattr(job, attribute, value)
+            assert (
+                _send_bridge_request(bridge, out, "session.outputArtifacts", params)["ok"] is False
+            )
+            setattr(job, attribute, old)
+        session.agent_session.last_turn_outcome = {"terminal": True, "task_id": "stale"}
+        assert _send_bridge_request(bridge, out, "session.outputArtifacts", params)["ok"] is False
+        session.agent_session.last_turn_outcome = {"terminal": True, "task_id": "current-task"}
+        session.sensitive_media = True
+        assert _send_bridge_request(bridge, out, "session.outputArtifacts", params)["ok"] is False
+        session.sensitive_media = False
+        job.result = {"task_outcome": {"task_id": "other-task"}}
+        assert _send_bridge_request(bridge, out, "session.outputArtifacts", params)["ok"] is False
+        job.result = {"task_outcome": {"task_id": "current-task"}}
+        session.active_job = stdio_bridge.BridgeJob(
+            job_id="new-job", session_id=session_id, created_at="later"
+        )
+        assert _send_bridge_request(bridge, out, "session.outputArtifacts", params)["ok"] is False
+        session.active_job = None
+    finally:
+        session.active_job = None
+        bridge.close()
+
+
 def test_stdio_bridge_health_and_malformed_requests() -> None:
     out = io.StringIO()
     bridge = StdioBridge(stdout=out)
@@ -565,7 +766,7 @@ def test_stdio_bridge_managed_browser_protocol_lifecycle(
     assert fake.closed_all is True
 
 
-def test_stdio_bridge_session_close_keeps_cleanup_failure_retryable(
+def test_stdio_bridge_session_close_keeps_uncertain_cleanup_blocked(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -595,7 +796,7 @@ def test_stdio_bridge_session_close_keeps_cleanup_failure_retryable(
     )
     assert failed["error"] == {
         "code": "browser_cleanup_incomplete",
-        "message": "Managed browser cleanup is incomplete; retry session close.",
+        "message": "Managed browser cleanup is incomplete; the session remains blocked.",
     }
     assert "private detail" not in repr(failed)
 
@@ -606,8 +807,10 @@ def test_stdio_bridge_session_close_keeps_cleanup_failure_retryable(
         {"session_id": session_id},
         request_id="session-close-retry",
     )
-    assert retried["result"]["status"] == "closed"
-    assert browser.close_calls == 2
+    assert retried["error"]["code"] == "session_busy"
+    assert browser.close_calls == 1
+    assert bridge._sessions[session_id].cancellation_uncertain is True
+    assert bridge._sessions[session_id].closed is False
 
 
 def test_stdio_bridge_shutdown_retries_browser_cleanup_within_budget(
@@ -2239,10 +2442,23 @@ def test_stdio_bridge_run_start_accepts_documented_create_options(
     assert kwargs["max_steps"] == 7
 
 
+@pytest.mark.parametrize("confidence", [None, "estimated", "authoritative", "reported"])
 def test_stdio_bridge_session_context_reports_estimated_tokens_not_fake_zero(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    confidence: str | None,
 ) -> None:
+    if confidence is not None:
+        monkeypatch.setattr(
+            stdio_bridge,
+            "_call_context_left",
+            lambda _session: SimpleNamespace(
+                model_name="test-model",
+                used_input_tokens=123,
+                token_count_source="provider_response" if confidence != "estimated" else "mixed",
+                token_count_confidence=confidence,
+            ),
+        )
     out = io.StringIO()
     artifact_root = tmp_path / "session-artifacts"
     artifact_root.mkdir()
@@ -2279,14 +2495,20 @@ def test_stdio_bridge_session_context_reports_estimated_tokens_not_fake_zero(
     )
 
     assert context["ok"] is True
-    assert context["result"]["source"] == "tokenizer_estimate"
-    assert context["result"]["approximate"] is True
-    assert context["result"]["token_usage_available"] is True
-    assert context["result"]["used_input_tokens"] > 0
-    assert (
-        context["result"]["token_breakdown"]["total_tokens"]
-        == context["result"]["used_input_tokens"]
-    )
+    result = context["result"]
+    assert result["approximate"] is (confidence not in {"authoritative", "reported"})
+    assert result["token_usage_available"] is True
+    assert result["used_input_tokens"] > 0
+    assert result["context_categories"]
+    if confidence is None:
+        assert result["source"] == "tokenizer_estimate"
+        assert result["token_breakdown"]["total_tokens"] == result["used_input_tokens"]
+    else:
+        assert result["used_input_tokens"] == 123
+        assert result["count_confidence"] == confidence
+        assert result["count_source"] == (
+            "mixed" if confidence == "estimated" else "provider_response"
+        )
 
 
 def test_stdio_bridge_session_context_reports_unavailable_when_context_left_has_no_usage(
@@ -3193,6 +3415,8 @@ def test_stdio_bridge_session_resume_replays_bounded_redacted_history(
         return
     assert resume["ok"] is True
     assert resume["result"]["resumed"] is True
+    assert resume["result"]["task_state_recovery"] == "not_restored"
+    assert resume["result"]["task_id"] is None
     assert resume["result"]["history_count"] == 3
     assert resume["result"]["history_count_total"] == 3
     assert resume["result"]["bounded"] is False
@@ -3875,6 +4099,7 @@ def test_run_start_idempotency_key_rejects_changed_initial_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _isolate_alysis_state(tmp_path, monkeypatch)
     out, bridge, _session_id = _create_review_session(
         tmp_path,
         monkeypatch,
@@ -3893,6 +4118,20 @@ def test_run_start_idempotency_key_rejects_changed_initial_payload(
         request_id="initial-one",
     )
     assert first["ok"] is True
+    # Test the durable payload collision after the original worker retires;
+    # while it is still settling the admission fence correctly returns busy.
+    first_job = bridge._jobs[first["result"]["job_id"]]
+    _wait_for_line(
+        out,
+        lambda line: (
+            line.get("type") == "info_emitted"
+            and f"job_completed {first_job.job_id}"
+            in str(line.get("payload", {}).get("message", ""))
+        ),
+    )
+    assert first_job.thread is not None
+    first_job.thread.join(timeout=2.0)
+    assert not first_job.thread.is_alive()
     bridge.process_line(
         _request(
             "run.start",
@@ -3905,6 +4144,7 @@ def test_run_start_idempotency_key_rejects_changed_initial_payload(
     assert changed["ok"] is False
     assert changed["error"]["code"] == "prompt_queue_error"
     assert "different payload" not in repr(changed)
+    bridge.close()
 
 
 def test_stdio_bridge_live_session_setters_refresh_underlying_runtime(
@@ -5225,6 +5465,13 @@ def test_stdio_bridge_job_status_session_list_and_event_replay(
     job_id = [line for line in _json_lines(out) if line.get("id") == "chat"][0]["result"]["job_id"]
     _wait_for_line(out, lambda line: line.get("type") == "message_end")
 
+    # A reply precedes terminal cleanup. A completed but still reserved worker
+    # remains the active job until its final ownership handoff finishes.
+    worker = bridge._jobs[job_id].thread
+    assert worker is not None
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+
     bridge.process_line(_request("job.status", {"job_id": job_id}, request_id="job") + "\n")
     bridge.process_line(_request("session.list", request_id="sessions") + "\n")
     bridge.process_line(
@@ -5362,8 +5609,6 @@ def test_stdio_bridge_close_when_idle_releases_abandoned_session_browser(
         def close_all(self) -> None:
             nonlocal browser_close_calls
             browser_close_calls += 1
-            if browser_close_calls == 1:
-                raise RuntimeError("transient browser cleanup failure")
             browser_closed.set()
 
     def blocking_turn(_surface: Any, message: str) -> int:
@@ -5435,7 +5680,7 @@ def test_stdio_bridge_close_when_idle_releases_abandoned_session_browser(
         time.sleep(0.01)
     assert bridge._sessions[session_id].closed is True  # noqa: SLF001
     assert executed_messages == ["slow"]
-    assert browser_close_calls == 2
+    assert browser_close_calls == 1
     closed_status = _send_bridge_request(
         bridge,
         out,
@@ -5602,10 +5847,13 @@ def test_stdio_bridge_shutdown_terminal_state_is_not_overwritten_by_late_worker(
     assert started.wait(timeout=1.0)
     job = bridge._jobs[started_job["result"]["job_id"]]  # noqa: SLF001
 
-    bridge.close()
-    assert job.status == "failed"
-
-    release.set()
+    try:
+        with pytest.raises(stdio_bridge.BridgeSessionCleanupError, match="did not close cleanly"):
+            bridge.close()
+        assert job.status == "failed"
+        assert bridge._sessions[created["result"]["session_id"]].closed is False
+    finally:
+        release.set()
     assert job.thread is not None
     job.thread.join(timeout=1.0)
     assert not job.thread.is_alive()

@@ -14,6 +14,13 @@ import pytest
 from alysis_code.agent_loop import AgentRuntimeError, create_session
 from alysis_code.config import AppConfig
 from alysis_code.execution_deadline import ExecutionDeadline
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
+
+
+class _LocalServiceSurface(NoopSurface):
+    def request_approval(self, request):
+        return ApprovalDecision(request.kind in {"shell_service_start", "shell_background"})
 
 
 def _cfg() -> AppConfig:
@@ -54,7 +61,8 @@ def _create_service_session(
         max_steps=1,
         no_log=True,
         api_key_override="override-key",
-        non_interactive=True,
+        non_interactive=False,
+        surface=_LocalServiceSurface(),
         session_log_dir_override=sessions_dir,
         execution_deadline=execution_deadline,
     )

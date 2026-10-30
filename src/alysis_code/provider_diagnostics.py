@@ -48,7 +48,7 @@ from .profile_presets import (
 )
 from .profiles import ProfileSpec, get_active_profile, resolve_effective_base_url
 from .provider_auth import ProviderAuthError, create_provider_auth
-from .tools.web_search import resolve_web_search_runtime_status
+from .tools.web_search_runtime import resolve_web_search_runtime_status
 from .web_search_adapters import (
     AUTO_WEB_SEARCH_ADAPTER,
     EXTERNAL_WEB_SEARCH_ADAPTERS,

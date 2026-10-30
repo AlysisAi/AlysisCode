@@ -19,6 +19,8 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.types import LLMResponse, ToolCall
 from alysis_code.runtime_kind import RuntimeKind
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 
 def test_mixed_failures_different_effective_commands_and_unknown_fields_survive() -> None:
     result = {

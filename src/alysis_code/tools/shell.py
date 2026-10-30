@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -14,15 +13,10 @@ from ..pipeline_facts import (
     pipeline_meaningful_stage,
     split_top_level_pipeline,
 )
-from ..process_reaping import CommandCancelledError, runner_takes_cancel_check
-
-
-class ShellError(RuntimeError):
-    def __init__(self, message: str, *, result_payload: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        # The tool result to record instead of the bare message, when there is one.
-        self.result_payload = result_payload
-
+from ..process_reaping import CommandCancelledError, CommandCleanupError, runner_takes_cancel_check
+from ..sandbox_runner import execution_scope_fingerprint
+from ..sandbox_workspace import contains_workspace_path, runner_workspace_roots
+from .errors import ShellError
 
 CANCELLED_COMMAND_MESSAGE = "Command stopped because the run was cancelled."
 _OUTPUT_LIMIT = 20000
@@ -32,24 +26,6 @@ def _truncate(text: str) -> tuple[str, bool]:
     if len(text) > _OUTPUT_LIMIT:
         return text[:_OUTPUT_LIMIT] + "...(truncated)", True
     return text, False
-
-
-_PYTHON_CMD_PATTERN = re.compile(r"(^|(?:&&|\|\||;)\s*)python(?=\s)")
-
-
-def _python3_fallback_cmd(cmd: str) -> str | None:
-    match = _PYTHON_CMD_PATTERN.search(cmd)
-    if not match:
-        return None
-    start, end = match.span()
-    prefix = match.group(1)
-    replacement = f"{prefix}python3"
-    return f"{cmd[:start]}{replacement}{cmd[end:]}"
-
-
-def _is_python_permission_denied(stderr: str) -> bool:
-    lowered = stderr.lower()
-    return "python: permission denied" in lowered
 
 
 def _pipeline_capture_platform_ok() -> bool:
@@ -72,10 +48,8 @@ def shell_run(
     base = root.resolve()
     if cwd:
         cwd_path = (base / cwd).resolve()
-        try:
-            cwd_path.relative_to(base)
-        except ValueError as e:
-            raise ShellError(f"cwd escapes root: {cwd}") from e
+        if not contains_workspace_path(base, cwd_path, runner_workspace_roots(runner)):
+            raise ShellError(f"cwd escapes root and approved additional folders: {cwd}")
     else:
         cwd_path = base
 
@@ -99,6 +73,72 @@ def shell_run(
         run_kwargs["cancel_check"] = cancel_check
 
     def _run(command_text: str) -> tuple[Any, list[int] | None, str]:
+        if os.name == "nt":
+            from ..git_native import native_argv
+            from ..git_shell_inspection import inspection_argv
+            from ..sandbox_runner import LazyShellRunner
+            from ..windows_mxc import WindowsMxcRunner
+
+            argv = inspection_argv(command_text)
+            mutation = native_argv(command_text)
+            native_read = native_argv(command_text, inspection=True)
+            # The desktop retains a lazy runner. Resolve its actual authorized
+            # backend, not mutable config or a guessed backend string. Loading
+            # validates the helper; it does not prepare a writable command.
+            actual_runner = (
+                runner._resolve_runner()
+                if (argv is not None or mutation is not None or native_read is not None)
+                and isinstance(runner, LazyShellRunner)
+                else runner
+            )
+            if native_read is not None and isinstance(actual_runner, WindowsMxcRunner):
+                from ..git_native import run
+
+                roots = [base, *(Path(p).resolve() for p in runner_workspace_roots(runner))]
+                granted_root = next(p for p in roots if cwd_path.is_relative_to(p))
+                completed = run(
+                    settings=actual_runner.settings,
+                    root=granted_root,
+                    cwd=cwd_path,
+                    argv=native_read,
+                    timeout_s=max(1, int(timeout_s)),
+                    cancel_check=cancel_check,
+                    inspection=True,
+                )
+                return completed, [completed.returncode], completed.stderr
+            if argv is not None and isinstance(actual_runner, WindowsMxcRunner):
+                from ..contained_read_tools import ContainedReadTools
+
+                # Keep the existing approval and cwd checks above. Select the
+                # narrower read-only worker before shell setup can reserve files.
+                roots = [base, *(Path(p).resolve() for p in runner_workspace_roots(runner))]
+                granted_root = next(p for p in roots if cwd_path.is_relative_to(p))
+                result = ContainedReadTools(actual_runner.settings, granted_root).run(
+                    "git_shell_inspect",
+                    {"argv": argv, "cwd": str(cwd_path.relative_to(granted_root))},
+                    cancel_check=cancel_check,
+                    timeout_s=max(1, int(timeout_s)),
+                )
+                completed = subprocess.CompletedProcess(
+                    command_text, result["exit_code"], result["stdout"], result["stderr"]
+                )
+                completed.inspection_truncated = result["truncated"]
+                completed.inspection_backend = "contained-readonly-git"
+                return completed, [completed.returncode], completed.stderr
+            if mutation is not None and isinstance(actual_runner, WindowsMxcRunner):
+                from ..git_native import run
+
+                roots = [base, *(Path(p).resolve() for p in runner_workspace_roots(runner))]
+                granted_root = next(p for p in roots if cwd_path.is_relative_to(p))
+                completed = run(
+                    settings=actual_runner.settings,
+                    root=granted_root,
+                    cwd=cwd_path,
+                    argv=mutation,
+                    timeout_s=max(1, int(timeout_s)),
+                    cancel_check=cancel_check,
+                )
+                return completed, [completed.returncode], completed.stderr
         run_cmd = (
             build_pipeline_status_capture_command(command_text) if wants_capture else command_text
         )
@@ -128,31 +168,60 @@ def shell_run(
             },
         )
 
+    def _cleanup_failed(e: CommandCleanupError) -> ShellError:
+        partial_stdout, stdout_truncated = _truncate(e.stdout)
+        partial_stderr, stderr_truncated = _truncate(e.stderr)
+        return ShellError(
+            str(e),
+            result_payload={
+                "error": str(e),
+                "cancelled": False,
+                "cleanup_confirmed": False,
+                "cmd": cmd,
+                "cwd": str(cwd_path),
+                "stdout": partial_stdout,
+                "stderr": partial_stderr,
+                "truncated": stdout_truncated or stderr_truncated,
+            },
+        )
+
+    def _timed_out(e: subprocess.TimeoutExpired) -> ShellError:
+        def output_text(value: str | bytes | None) -> str:
+            return (
+                value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+            )
+
+        stdout, stdout_truncated = _truncate(output_text(e.stdout))
+        stderr, stderr_truncated = _truncate(output_text(e.stderr))
+        message = f"Command timed out after {timeout_s:g}s"
+        return ShellError(
+            message,
+            result_payload={
+                "error": message,
+                "timed_out": True,
+                "cmd": cmd,
+                "cwd": str(cwd_path),
+                "stdout": stdout,
+                "stderr": stderr,
+                "truncated": stdout_truncated or stderr_truncated,
+            },
+        )
+
     try:
         cp, stage_status, stderr_text = _run(cmd)
     except subprocess.TimeoutExpired as e:
-        raise ShellError(f"Command timed out after {timeout_s:g}s") from e
+        raise _timed_out(e) from e
     except CommandCancelledError as e:
         raise _cancelled(e) from e
+    except CommandCleanupError as e:
+        raise _cleanup_failed(e) from e
     except Exception as e:  # noqa: BLE001
         raise ShellError(f"Failed to run command: {e}") from e
 
     effective_cmd = cmd
-    fallback_cmd = _python3_fallback_cmd(cmd)
-    if fallback_cmd and cp.returncode != 0 and _is_python_permission_denied(stderr_text):
-        try:
-            cp, stage_status, stderr_text = _run(fallback_cmd)
-            effective_cmd = fallback_cmd
-        except subprocess.TimeoutExpired as e:
-            raise ShellError(f"Command timed out after {timeout_s:g}s") from e
-        except CommandCancelledError as e:
-            raise _cancelled(e) from e
-        except Exception as e:  # noqa: BLE001
-            raise ShellError(f"Failed to run command: {e}") from e
-
     stdout, stdout_truncated = _truncate(cp.stdout or "")
     stderr, stderr_truncated = _truncate(stderr_text)
-    truncated = stdout_truncated or stderr_truncated
+    truncated = stdout_truncated or stderr_truncated or getattr(cp, "inspection_truncated", False)
 
     # A plain command (no top-level pipe) has a one-element status list equal to
     # its exit code. A pipeline whose per-stage status could not be observed
@@ -169,6 +238,24 @@ def shell_run(
         "stdout": stdout,
         "stderr": stderr,
         "truncated": truncated,
+        **({"sandbox_policy": cp.sandbox_policy} if getattr(cp, "sandbox_policy", None) else {}),
+        **(
+            {"execution_context": cp.execution_context}
+            if getattr(cp, "execution_context", None)
+            else {}
+        ),
+        **({"git_observation": cp.git_observation} if getattr(cp, "git_observation", None) else {}),
+        **(
+            {"execution_backend": cp.inspection_backend}
+            if getattr(cp, "inspection_backend", None)
+            else {}
+        ),
+        **(
+            {"host_launcher_unavailable": True}
+            if getattr(cp, "host_launcher_unavailable", False) is True
+            else {}
+        ),
         "pipeline_stages": pipeline_stages,
         "pipeline_stage_status": stage_status,
+        "verification_execution_scope": execution_scope_fingerprint(runner),
     }

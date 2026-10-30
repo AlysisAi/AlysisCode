@@ -1,0 +1,20 @@
+---
+name: spreadsheets
+description: Create, edit, or analyze spreadsheet files, with explicit formula calculation, data provenance, and preservation checks.
+---
+
+Use when: The request concerns an XLSX workbook or a table of data requiring spreadsheet calculations, formatting, or analysis.
+
+Do not use when: The task merely mentions Excel, changes application code, or needs only a short arithmetic answer.
+
+Inspect the inputs, worksheet structure, formulas, units and missing values before editing. Preserve source files and unrelated cells. Distinguish missing values from zero and retain identifiers as text when appropriate. Keep assumptions and source references understandable to the workbook's reader.
+
+Check `capability_status.office` and use `document_operation` with action `describe` and format `xlsx`. This native tool runs in the installed engine environment even when shell commands run in a separate container. Use the managed helper when it supports the actual workbook. For advanced features, use an available capable library or spreadsheet connector; do not delete charts, named ranges or unsupported content to make an edit pass. Explain a preservation limitation if no suitable route exists.
+
+Use formulas for derived values where the user should be able to change inputs. Apply appropriate number formats to the actual numeric cells: percentages for rates, sensible decimal precision for amounts, and readable thousands separators. Do not leave management summaries displaying long raw decimal fractions. Avoid embedding currency symbols in numeric values. Follow the workbook's existing style. Size columns and charts for the actual data, with legible headers and units.
+
+Writing a formula does not calculate it. Use `document_operation` with action `recalculate` when configured, or a capable spreadsheet service, to recalculate and read back results. The managed command writes a new workbook, preserves original formulas and formatting, and reports calculation errors. Plan filenames before creation: keep specifications, drafts and calculated review copies in a working directory outside final deliverables. Check and inspect those copies, repairing layout or formulas there before occupying the user's requested final filename. Once ready, use `fs_copy` to copy the reviewed workbook into that new final path, then check the exact delivered file. Do not occupy the final path early and then delete it to make room; existing outputs are deliberately not overwritten. For revisions to an existing deliverable, use a new final version unless replacing it was authorized. Python's openpyxl and XlsxWriter do not calculate formulas; cached values may be stale or empty. Independently reconcile important totals against source data and check errors and representative edge cases. If recalculation is unavailable, state that formula results remain unverified instead of presenting caches as computed evidence.
+
+After edits, reopen the exact output and verify requested changes and preservation. Set sensible print areas, orientation and page scaling for the content; the creation helper supports `page_setup`. Wrap long notes instead of letting them run across the sheet. For tables that span pages, repeat the headers and row identifiers needed to understand each page. Inspect rendered sheets when rendering is available and useful, checking cut-off columns, missing labels, blank pages and unreadably small text. Repair layout before delivery; scaling a wide sheet to one page does not itself make it readable. Deliver the editable workbook with a concise explanation of assumptions and any unverified formulas or layout.
+
+Before delivery, call `artifact_check` on each final DOCX, XLSX, PPTX or PDF. It binds observed structural, calculation and rendering checks to that exact file version. Inspect every returned page image with `asset_view`; repair failed checks and recheck the changed file. These checks supplement source and task-specific validation; they do not prove the content is correct.

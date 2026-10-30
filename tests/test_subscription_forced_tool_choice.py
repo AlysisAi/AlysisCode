@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import copy
 import json
-import uuid
 
 import httpx
 import pytest
-from test_computer_discovery_recovery import _inventory, _selection, _selection_session
+from test_computer_discovery_recovery import (
+    _discovered,
+    _host,
+    _inventory,
+    _naming,
+    _selection,
+    _selection_session,
+)
 from test_openai_codex_subscription_auth import _FakeStreamingCodexAuth
 
 from alysis_code.agent.browser_start import BrowserStartHandoff
@@ -109,6 +115,7 @@ def test_other_tool_choices_keep_the_available_tools(choice):
 
 
 @pytest.mark.parametrize("empty_count", [0, 1, 2])
+@pytest.mark.usefixtures("mac_computer_use_protocol")
 def test_invalid_selection_recovers_through_real_subscription_request_adapter(
     tmp_path, empty_count
 ):
@@ -116,7 +123,8 @@ def test_invalid_selection_recovers_through_real_subscription_request_adapter(
     good = _selection(inventory, 127, ["activate_application", "press"])
     goal = "Open the selected app and read its value. Do not change anything else."
     good["goal"] = goal
-    bad = {**good, "target_ids": [str(uuid.uuid4())]}
+    # A label kept in older history from an earlier request's list, absent from this request's list.
+    bad = _naming(good, "Earlier App 127")
     requests = []
     host_calls = []
 
@@ -157,13 +165,13 @@ def test_invalid_selection_recovers_through_real_subscription_request_adapter(
                 item for item in payload["input"] if item.get("type") == "function_call_output"
             ][-1]
             current = json.loads(output["output"])
-            assert current == inventory
-            target = next(
-                target
-                for target in current["targets"]
-                if target["name"] == inventory["targets"][-1]["name"]
+            assert current == _discovered(inventory)
+            app = next(
+                app["app"]
+                for app in current["targets"]
+                if app["app"] == inventory["targets"][-1]["name"]
             )
-            arguments = {**bad, "target_ids": [target["target_id"]]}
+            arguments = _naming(bad, app)
         response = {
             "id": f"response-{number}",
             "status": "completed",
@@ -195,7 +203,7 @@ def test_invalid_selection_recovers_through_real_subscription_request_adapter(
         lambda args: host_calls.append(copy.deepcopy(args)) or BrowserStartHandoff("bound"),
     )
     old_inventory = copy.deepcopy(inventory)
-    old_inventory["targets"][-1]["target_id"] = bad["target_ids"][0]
+    old_inventory["targets"][-1]["name"] = "Earlier App 127"
     session.messages.extend(
         [
             {"role": "user", "content": "Find the app for the earlier request."},
@@ -214,7 +222,7 @@ def test_invalid_selection_recovers_through_real_subscription_request_adapter(
                 "role": "tool",
                 "tool_call_id": "prior-discovery",
                 "name": "computer_discover",
-                "content": json.dumps(old_inventory),
+                "content": json.dumps(_discovered(old_inventory)),
             },
             {"role": "assistant", "content": "The earlier app list was found."},
         ]
@@ -235,7 +243,9 @@ def test_invalid_selection_recovers_through_real_subscription_request_adapter(
     finally:
         session.close()
     assert len(requests) == 3 + empty_count
-    assert host_calls == [good], "only the corrected selection reaches desktop admission"
+    assert host_calls == [_host(good, inventory)], (
+        "only the corrected selection reaches desktop admission"
+    )
     retry = requests[1]
     assert retry["tool_choice"] == "required"
     assert retry["parallel_tool_calls"] is False
@@ -246,11 +256,37 @@ def test_invalid_selection_recovers_through_real_subscription_request_adapter(
     tool = namespace["tools"][0]
     assert tool["name"] == "computer_discover"
     assert tool["parameters"]["properties"] == {}
-    assert bad["target_ids"][0] in json.dumps(requests[0]["input"])
+    assert "Earlier App 127" in json.dumps(requests[0]["input"])
     assert all(goal in json.dumps(request["input"], ensure_ascii=False) for request in requests)
-    assert session.tools["computer_start"].parameters["properties"]["target_ids"]["items"][
-        "enum"
-    ] == [t["target_id"] for t in inventory["targets"]]
+    assert session.tools["computer_start"].parameters["properties"]["app_steps"]["items"][
+        "properties"
+    ]["app"]["enum"] == [t["name"] for t in inventory["targets"]]
+    target_ids = {target["target_id"] for target in inventory["targets"]}
+
+    def assert_read_only_identity(value, key=None):
+        if isinstance(value, dict):
+            assert "target_id" not in value
+            for field, item in value.items():
+                assert not any(target_id in field for target_id in target_ids)
+                assert_read_only_identity(item, field)
+        elif isinstance(value, list):
+            for item in value:
+                assert_read_only_identity(item)
+        elif isinstance(value, str):
+            if key == "application_ref":
+                assert value in target_ids
+                return
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                decoded = None
+            if isinstance(decoded, (dict, list)):
+                assert_read_only_identity(decoded)
+            else:
+                assert not any(target_id in value for target_id in target_ids)
+
+    for request in requests:
+        assert_read_only_identity(request["input"])
     assert any(
         item.get("type") == "function_call" and item.get("namespace") == "alysis"
         for item in retry["input"]

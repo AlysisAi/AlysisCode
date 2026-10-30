@@ -2,3 +2,7 @@ Alysis Code
 Copyright 2026 AlysisAi
 
 This product is licensed under the Apache License, Version 2.0.
+
+The bundled Windows sandbox incorporates Microsoft Windows Sandbox tooling,
+Copyright (c) Microsoft Corporation, under the MIT License. The license and
+exact source inventory accompany the helper in alysis_code/assets/windows-mxc.

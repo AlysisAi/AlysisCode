@@ -15,9 +15,11 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..cancellation import CooperativeCancellationError
+from ..computer_use_diagnostics import set_safe_provider_error_fields
 from ..error_text import sanitize_error_text_for_output
 from ..execution_deadline import DeadlineExhausted
 from ..failure_category import provider_unavailable_retry_reason
+from ..mcp.github_policy_json import arguments as github_policy_arguments
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from ..provider_url import known_provider_key_from_base_url
 from ..reasoning_contracts import (
@@ -30,11 +32,17 @@ from ..reasoning_contracts import (
     WIRE_THINKING_LEVEL,
     WIRE_THINKING_TYPE,
     reasoning_contract_for,
+    resolve_reasoning_provider,
 )
 from ..request_estimation import estimate_provider_payload_tokens
 from ..run_provenance import active_sampling_settings, apply_sampling_to_payload
 from ..transport_retry import RETRY_REASON_TRANSPORT_CONNECTION_DROP
-from .base import RequiredToolCallingUnsupportedError, required_tool_names_for_client
+from . import resolved_entry
+from .base import (
+    RequiredToolCallingUnsupportedError,
+    required_tool_names_for_client,
+    scoped_input_token_counter,
+)
 from .cache_capabilities import (
     CACHE_CONTROL_FIELD,
     OPENROUTER_SESSION_ID_FIELD,
@@ -106,6 +114,7 @@ from .provider_limits import (
     run_provider_limited_call,
 )
 from .reasoning_trace import CompatibleReasoningTrace
+from .reflection_history import reflection_history_for_transport
 from .request_plan import LLMRequestPlan, RequestCachePlan, WireRequestDiagnostics
 from .request_shape import build_request_shape_report
 from .streaming import (
@@ -113,7 +122,6 @@ from .streaming import (
     STREAM_ASSEMBLY_CONCAT,
     STREAM_ASSEMBLY_CUMULATIVE,
     STREAM_ASSEMBLY_SETTINGS,
-    decode_text_chunks,
     iter_lines_from_text_chunks,
 )
 from .temperature_compat import documented_temperature_omit_reason
@@ -250,7 +258,7 @@ def _stream_events(lines: Iterator[str], attempt: _HTTPAttempt) -> Iterator[dict
             return
         pending.append(data)
         try:
-            event = json.loads("\n".join(pending))
+            event = resolved_entry.provider_loads("\n".join(pending))
         except json.JSONDecodeError:
             continue
         if not isinstance(event, dict):
@@ -527,7 +535,18 @@ def _transport_provider_key(
     from_url = _provider_key_from_base_url(base_url)
     # The hosted gateway now serves multiple vendors. GLM uses the Alysis
     # contract so DeepSeek's thinking toggle and replay dialect cannot leak in.
-    if str(model or "").casefold() == "glm-5.3-flash":
+    if str(model or "").casefold() in {
+        "nemotron-3.5-super-vl",
+        "glm-5.3",
+        "reflection-beam",
+        "qwen3.8-2.4t",
+        "kimi-k3",
+        "glm-5.3-flash",
+        "minimax-m3.1-flash",
+        "muse-spark-open",
+        "mistral-large-4",
+        "mistral-large-4-0",
+    }:
         from ..provider_url import is_alysis_gateway_url
 
         if (
@@ -549,6 +568,7 @@ def _reasoning_transport_provider_key(
     *,
     transport_provider_key: str | None,
     reasoning_trace_adapter: str | None,
+    model: str | None = None,
 ) -> str | None:
     """Resolve only the provider dialect used for reasoning state on the wire.
 
@@ -562,7 +582,9 @@ def _reasoning_transport_provider_key(
         adapter=reasoning_trace_adapter,
     )
     if adapter == "auto":
-        return _normalize_provider_key(transport_provider_key) or None
+        return resolve_reasoning_provider(
+            _normalize_provider_key(transport_provider_key) or None, model
+        )
     return _REASONING_PROVIDER_BY_ADAPTER.get(adapter)
 
 
@@ -1165,6 +1187,12 @@ def _message_for_transport(
     return copied
 
 
+def _requires_initial_instructions(provider_key: str | None, model: str | None) -> bool:
+    return (provider_key == "alysis" and model in {"qwen3.8-2.4t", "reflection-beam"}) or (
+        provider_key == "together" and model == "reflection/Beam-1.0-501B-A23B"
+    )
+
+
 def _messages_for_transport(
     messages: list[dict[str, Any]],
     *,
@@ -1172,7 +1200,7 @@ def _messages_for_transport(
     reasoning_provider_key: str | None = None,
     model: str | None = None,
 ) -> list[dict[str, Any]]:
-    return [
+    result = [
         _message_for_transport(
             message,
             provider_key=provider_key,
@@ -1182,6 +1210,25 @@ def _messages_for_transport(
         for message in messages
         if isinstance(message, dict)
     ]
+    if _requires_initial_instructions(provider_key, model):
+        # These templates accept instructions only at the beginning (Beam can
+        # silently ignore later instructions). Preserve all host instructions
+        # in order, including completion checks, before adapting model history.
+        instructions = [m for m in result if m.get("role") in {"system", "developer"}]
+        if instructions:
+            result = [
+                {
+                    "role": "system",
+                    "content": "\n\n".join(
+                        _normalize_assistant_content_to_text(m.get("content")) for m in instructions
+                    ),
+                }
+            ] + [m for m in result if m.get("role") not in {"system", "developer"}]
+    if (provider_key == "alysis" and model == "reflection-beam") or (
+        provider_key == "together" and model == "reflection/Beam-1.0-501B-A23B"
+    ):
+        result = reflection_history_for_transport(result)
+    return result
 
 
 def _normalize_assistant_content_to_text(raw: Any) -> str:
@@ -1280,13 +1327,22 @@ def _parse_tool_calls(tool_calls_raw: list[dict[str, Any]]) -> list[ToolCall]:
             fn = tc["function"]
             name = fn["name"]
             args_s = fn.get("arguments") or "{}"
+            checked = resolved_entry.arguments(fn.get("arguments"), name=name, call_id=tc_id)
             if not isinstance(args_s, str):
                 args_s = json.dumps(args_s)
+            restricted_args = github_policy_arguments(fn.get("arguments"), name)
             tool_calls.append(
                 ToolCall(
                     id=tc_id,
                     name=name,
-                    arguments=_parse_arguments(args_s),
+                    arguments=(
+                        checked[0]
+                        if checked is not None
+                        else restricted_args
+                        if restricted_args is not None
+                        else _parse_arguments(args_s)
+                    ),
+                    _resolved_entry_proof=checked[1] if checked is not None else None,
                     provider_metadata=_gemini_tool_call_provider_metadata(tc),
                 )
             )
@@ -1304,12 +1360,23 @@ def _parse_stream_tool_calls(tool_chunks: dict[int, dict[str, Any]]) -> list[Too
             continue
         tc_id = chunk.get("id") or f"call_{idx}"
         args_s = chunk.get("arguments") or "{}"
+        checked = resolved_entry.arguments(
+            chunk.get("arguments"), name=name, call_id=chunk.get("id") or f"call_{idx}"
+        )
         metadata = chunk.get("provider_metadata")
+        restricted_args = github_policy_arguments(args_s, name)
         out.append(
             ToolCall(
                 id=tc_id,
                 name=name,
-                arguments=_parse_arguments(args_s),
+                arguments=(
+                    checked[0]
+                    if checked is not None
+                    else restricted_args
+                    if restricted_args is not None
+                    else _parse_arguments(args_s)
+                ),
+                _resolved_entry_proof=checked[1] if checked is not None else None,
                 provider_metadata=dict(metadata)
                 if isinstance(metadata, dict) and metadata
                 else None,
@@ -1442,6 +1509,28 @@ def alysis_trial_error_message(err: LLMError) -> str | None:
         and message.startswith("Hosted model capacity is busy. Retry in ")
     ):
         return message[:2048]
+    # Paid-plan answers (Plan 1 / Plan 5) are written for people and carry the
+    # reset date or upgrade link, so show them as sent. A paused model names
+    # itself and how long the pause lasts.
+    if code in (
+        "plan_credits_exhausted",
+        "plan_limit_reached",
+        "plan_unavailable",
+        "hosted_model_paused",
+    ) and isinstance(message, str):
+        return message[:2048]
+    if (
+        code == "model_not_allowed"
+        and isinstance(message, str)
+        and message.startswith(
+            (
+                "This model is not included in ",
+                # Hosted DeepSeek ended Oct 22, 2026; the gateway names replacements.
+                "DeepSeek models are no longer offered on Alysis hosted plans.",
+            )
+        )
+    ):
+        return message[:2048]
     if (
         code == "rate_limit_exceeded"
         and isinstance(message, str)
@@ -1457,6 +1546,14 @@ def alysis_trial_error_message(err: LLMError) -> str | None:
             )
         )
     ):
+        if (
+            message.startswith("Your available credit allowance is exhausted.")
+            and "alysis upgrade" not in message.casefold()
+        ):
+            return (
+                message[:1900].rstrip()
+                + " Run `alysis upgrade` to review plans on your Alysis account page."
+            )
         return message[:2048]
     template = _ALYSIS_PROXY_ERROR_MESSAGES.get(code)
     if template is None or "{account_url}" not in template:
@@ -1805,11 +1902,30 @@ def _display_error_body(body: str) -> str:
     return body
 
 
+def _plan_allowance_used_up(status_code: int, body: str) -> bool:
+    """A plan's usage allowance is used up until a reset time (Z.AI code 1308, "Usage limit
+    reached ... Your limit will reset at ..."). Retrying it cannot help, unlike a rate limit."""
+    if status_code != 429:
+        return False
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        return False
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, dict):
+        return False
+    message = str(error.get("message") or "").strip().casefold()
+    return str(error.get("code") or "") == "1308" or message.startswith("usage limit reached")
+
+
 def _error_from_status_body(*, status_code: int, body: str) -> LLMError:
     safe_body = sanitize_error_text_for_output(body)
     err = LLMError(f"LLM error {status_code}: {_display_error_body(safe_body)}")
     err.provider_status_code = int(status_code)
     err.provider_error_body = safe_body
+    if _plan_allowance_used_up(status_code, body):
+        # The hard-quota code is never retried (provider_limits) and names the cause (QA-011).
+        set_safe_provider_error_fields(err, status=status_code, code="usage_limit_reached")
     return err
 
 
@@ -1884,8 +2000,15 @@ def _response_with_stream_restart_metadata(
 
 class OpenAICompatClient:
     supports_forced_tool_choice = True
-    # Later system/developer messages stay in the ordered message stream.
-    preserves_late_system_message_position = True
+
+    @property
+    def preserves_late_system_message_position(self) -> bool:
+        return not _requires_initial_instructions(
+            _transport_provider_key(
+                base_url=self.base_url, provider_key=self.provider_key, model=self.model
+            ),
+            self.model,
+        )
 
     def __init__(
         self,
@@ -2021,6 +2144,7 @@ class OpenAICompatClient:
         reasoning_provider_key = _reasoning_transport_provider_key(
             transport_provider_key=transport_provider_key,
             reasoning_trace_adapter=self.reasoning_trace_adapter,
+            model=self.model,
         )
         contract = reasoning_contract_for(reasoning_provider_key, self.model)
         if contract.accepts_tool_choice_while_reasoning:
@@ -2120,6 +2244,19 @@ class OpenAICompatClient:
             self._tool_calling_compat_disabled.add(key)
 
     @property
+    def prefers_deferred_tool_schemas(self) -> bool:
+        # The hosted admission bound includes both schema bytes and per-tool
+        # overhead. A full desktop catalog can exceed this route's envelope
+        # before the first user turn; keep optional tools discoverable instead.
+        return (
+            self.model == "nemotron-3.5-super-vl"
+            and _transport_provider_key(
+                base_url=self.base_url, provider_key=self.provider_key, model=self.model
+            )
+            == "alysis"
+        )
+
+    @property
     def supports_tool_calling(self) -> bool:
         provider_key = _transport_provider_key(
             base_url=self.base_url,
@@ -2144,6 +2281,7 @@ class OpenAICompatClient:
         reasoning_provider_key = _reasoning_transport_provider_key(
             transport_provider_key=transport_provider_key,
             reasoning_trace_adapter=self.reasoning_trace_adapter,
+            model=self.model,
         )
         disabled_prompt_cache_fields = self._disabled_prompt_cache_fields_snapshot()
         active_cache_field_values = self._active_prompt_cache_request_field_values(
@@ -2199,6 +2337,7 @@ class OpenAICompatClient:
             headroom=4096,
         )
 
+    @scoped_input_token_counter
     def count_input_tokens(
         self,
         *,
@@ -2279,6 +2418,7 @@ class OpenAICompatClient:
         reasoning_provider_key = _reasoning_transport_provider_key(
             transport_provider_key=transport_provider_key,
             reasoning_trace_adapter=self.reasoning_trace_adapter,
+            model=self.model,
         )
         deepseek_thinking_enabled = (
             _deepseek_reasoning_payload_enabled(
@@ -3226,7 +3366,11 @@ class OpenAICompatClient:
         trace_adapter: str | None = None,
     ) -> LLMResponse:
         try:
-            data = resp.json()
+            data = (
+                resolved_entry.provider_loads(resp.content)
+                if resolved_entry.active()
+                else resp.json()
+            )
         except Exception as e:  # noqa: BLE001
             raise LLMError("LLM returned non-JSON response") from e
 
@@ -3377,7 +3521,7 @@ class OpenAICompatClient:
                 _check_stream_liveness(check_progress=True)
                 yield chunk
 
-        text_chunks = decode_text_chunks(
+        text_chunks = resolved_entry.decode_chunks(
             _observed_byte_chunks(),
             encoding=resp.encoding or "utf-8",
         )
@@ -3485,6 +3629,8 @@ class OpenAICompatClient:
 
                             tc_id = raw_tc.get("id")
                             if isinstance(tc_id, str) and tc_id and tc_id != entry["id"]:
+                                if entry["id"]:
+                                    resolved_entry.invalidate_parent()
                                 entry["id"] = tc_id
                                 event_progress = True
 
@@ -3506,13 +3652,23 @@ class OpenAICompatClient:
                                 continue
                             name = fn.get("name")
                             if isinstance(name, str) and name and name != entry["name"]:
+                                if entry["name"]:
+                                    resolved_entry.invalidate_parent()
                                 entry["name"] = name
                                 event_progress = True
                             args_piece = fn.get("arguments")
+                            if (
+                                resolved_entry.active()
+                                and entry["name"] == resolved_entry.NAME
+                                and args_piece is not None
+                                and not isinstance(args_piece, str)
+                            ):
+                                resolved_entry.invalidate_parent()
                             if isinstance(args_piece, str):
                                 args_suffix = _chunk_suffix(entry["arguments"], args_piece)
                                 if args_suffix:
                                     entry["arguments"] += args_suffix
+                                    resolved_entry.bound_stream(entry["arguments"], entry["name"])
                                     event_progress = True
 
                 if event_progress:
@@ -3571,3 +3727,8 @@ class OpenAICompatClient:
         except Exception:
             body = "<unable to read response body>"
         return body
+
+
+resolved_entry._register_client(
+    OpenAICompatClient, ("chat", "_parse_non_stream_response", "_parse_stream_response_body")
+)

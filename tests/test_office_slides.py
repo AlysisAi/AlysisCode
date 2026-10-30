@@ -171,7 +171,6 @@ def test_precise_run_edit_keeps_formatting_links_and_surrounding_text(tmp_path):
         "same_output",
         "overlap",
         "paragraph_break",
-        "overflow",
     ],
 )
 def test_invalid_edits_preserve_original_without_output(tmp_path, kind):
@@ -193,8 +192,6 @@ def test_invalid_edits_preserve_original_without_output(tmp_path, kind):
         spec["edits"] *= 2
     elif kind == "paragraph_break":
         spec["edits"][0]["text"] = "Two\nparagraphs"
-    else:
-        spec["edits"][0]["text"] = "overflow " * 500
     with pytest.raises(ValueError):
         slides.edit(source, spec, output, tmp_path)
     assert source.read_bytes() == original
@@ -253,21 +250,6 @@ def test_table_cell_edit_and_merged_cell_rejection(tmp_path):
     "element,reason",
     [
         ({"type": "text", "text": "Outside", "x": 12, "y": 1, "width": 2, "height": 1}, "outside"),
-        (
-            {
-                "type": "text",
-                "text": "\n".join(["Line"] * 30),
-                "x": 1,
-                "y": 1,
-                "width": 5,
-                "height": 1,
-            },
-            "overflow",
-        ),
-        (
-            {"type": "text", "text": "long " * 1000, "x": 1, "y": 1, "width": 5, "height": 1},
-            "overflow",
-        ),
         (
             {"type": "text", "text": "A", "x": True, "y": 1, "width": 5, "height": 1},
             "finite number",
@@ -374,3 +356,22 @@ def test_metadata_title_is_not_silently_truncated(tmp_path):
             {"title": "A" * 256, "slides": [{"title": "Hello"}]}, tmp_path / "output.pptx", tmp_path
         )
     assert not (tmp_path / "output.pptx").exists()
+
+
+def test_layout_is_not_decided_from_character_width_estimates(tmp_path):
+    text = "iiiiiiiiiiiiiiiiiiii Ω δοκιμή 漢字 " * 80
+    source, result = create_deck(
+        tmp_path,
+        {
+            "slides": [
+                {
+                    "elements": [
+                        {"type": "text", "text": text, "x": 1, "y": 1, "width": 5, "height": 1}
+                    ]
+                }
+            ]
+        },
+    )
+    assert Presentation(source).slides[0].shapes[0].text == text
+    assert result["text_overflow"] == "not_verified"
+    assert result["visual_review"] == "not_performed"

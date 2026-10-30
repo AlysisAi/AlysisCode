@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -960,3 +961,53 @@ def test_provider_cap_state_is_global_across_worker_threads() -> None:
 
     assert results == ["ok", "ok"]
     assert max_in_flight == 1
+
+
+_ZAI_PLAN_ALLOWANCE_BODY = json.dumps(
+    {
+        "error": {
+            "code": "1308",
+            "message": "Usage limit reached for 5 hour. Your limit will reset at 2026-10-22 23:01:15",
+        }
+    }
+)
+_RATE_LIMIT_BODY = json.dumps(
+    {"error": {"code": "1302", "message": "Rate limit reached for requests"}}
+)
+
+
+@pytest.mark.parametrize(
+    "body,attempts_expected",
+    [(_ZAI_PLAN_ALLOWANCE_BODY, 1), (_RATE_LIMIT_BODY, 3)],
+    ids=["plan allowance used up", "rate limit"],
+)
+def test_a_used_up_plan_allowance_is_not_retried_but_a_rate_limit_is(
+    body: str, attempts_expected: int
+) -> None:
+    """QA-011: Z.AI's 1308 means the plan's allowance is used up until a reset time; retrying it
+    only delays the message. An ordinary 429 rate limit is still retried."""
+    attempts = 0
+    error = openai_compat_mod._error_from_status_body(status_code=429, body=body)
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise error
+
+    with pytest.raises(LLMError):
+        run_provider_limited_call(
+            call=call,
+            provider_key="zai",
+            provider_concurrency_caps={},
+            retry_settings=ProviderRetrySettings(
+                max_retries=2, base_delay_seconds=1.0, max_delay_seconds=30.0
+            ),
+            operation="test_plan_allowance",
+            sleep_fn=lambda _seconds: None,
+            random_fn=lambda: 0.5,
+        )
+
+    assert attempts == attempts_expected
+    used_up = attempts_expected == 1
+    assert (getattr(error, "provider_error_code", None) == "usage_limit_reached") is used_up
+    assert "Your limit will reset at 2026-10-22 23:01:15" in str(error) or not used_up

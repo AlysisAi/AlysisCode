@@ -121,6 +121,15 @@ def test_real_turn_roundtrip_and_independent_work(tmp_path, finalize_early):
         assert len(deliveries) == 1
         assert "Green" in deliveries[0]["content"]
         assert not surface.user_questions.outstanding
+        if not finalize_early:
+            verified = [
+                event["payload"]
+                for event in session.store._events
+                if event["type"] == "user_question_response"
+            ]
+            assert len(verified) == 1
+            assert verified[0]["answers"][0]["text"] == "My exact detail 42"
+            assert verified[0]["question_evidence"][0]["id"] == "color"
         # Tool call/result adjacency remains legal for every provider.
         for index, message in enumerate(session.messages):
             if message.get("role") == "tool":

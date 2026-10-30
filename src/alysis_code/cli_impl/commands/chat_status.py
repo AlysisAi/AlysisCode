@@ -907,6 +907,8 @@ def _chat_turn_usage_line(session: Any) -> tuple[str | None, str | None] | None:
         f"[dim]↓[/dim] {_format_compact_token_count(totals.get('prompt_tokens'))}",
         f"[dim]↑[/dim] {_format_compact_token_count(totals.get('completion_tokens'))}",
     ]
+    if totals.get("estimate_usage_calls"):
+        segments[0] += " [dim](includes estimates)[/dim]"
     cache_read_tokens = int(totals.get("cache_read_input_tokens") or 0)
     cache_write_tokens = int(totals.get("cache_creation_input_tokens") or 0)
     if cache_read_tokens or cache_write_tokens:
@@ -965,6 +967,8 @@ def _chat_bottom_toolbar(
                 style="hud",
             )
             tokens_part = f"tokens={total_tokens}"
+            if totals.get("estimate_usage_calls"):
+                tokens_part += " (includes estimates)"
             cost_part = f"cost={cost_hud}"
 
     default_temperature_raw = getattr(session, "_toolbar_default_temperature", None)

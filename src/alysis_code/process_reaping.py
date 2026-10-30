@@ -15,14 +15,15 @@ Hard safety rule, enforced structurally by this module:
 
 * ``ProcessGroupRegistry`` can only learn a pgid through :meth:`register`,
   which the runner calls with the pgid of a process it just created.
-* Nothing here ever enumerates the process table, and nothing ever matches a
-  process by name, cmdline, or any other heuristic. There is no code path that
-  can signal a group the runner did not spawn.
+* Process names/argv never authorize signals. Seatbelt callers supply an owner
+  that queries inherited kernel policy on same-user PIDs, then rechecks creation
+  identities before signalling. Legacy callers may retain ancestry observation.
+  Neither mechanism is an OS job object or atomic PID handle.
 * A recorded pgid is refused if it is not a positive integer, if it is this
   process's own group (a defensive check for a host where session creation
   silently failed), or if the group leader's start token changed since
-  registration. That last guard reads ``/proc``, so it is active on Linux and
-  absent on macOS/BSD; there the residual exposure is a pgid recycled in the
+  registration. That guard reads ``/proc`` on Linux and libproc on macOS;
+  on other BSD hosts the residual exposure is a pgid recycled in the
   window between a tool call returning and the group being released, which is
   the same window ``release_if_finished`` closes on the very next statement.
 
@@ -42,17 +43,21 @@ from __future__ import annotations
 
 import inspect
 import os
+import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from .branding import env_get
-from .command_text import command_text
+from .command_text import command_text, decode_command_output
+from .macos_process_tree import MacProcessTree, process_identity
+from .macos_sandbox_owner import MacSandboxOwner
 from .runtime_kind import RuntimeKind, normalize_runtime_kind
 
 # Grace period between SIGTERM and SIGKILL for a tracked group.
@@ -179,6 +184,9 @@ class TrackedProcessGroup:
     origin: str
     started_at: float
     start_token: str | None = None
+    process_tree: MacProcessTree | MacSandboxOwner | None = field(
+        default=None, compare=False, repr=False
+    )
 
     def runtime_s(self, *, now: float | None = None) -> float:
         current = time.monotonic() if now is None else now
@@ -221,8 +229,43 @@ class ProcessGroupRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._groups: dict[int, TrackedProcessGroup] = {}
+        self._command_cleanups: set[_WindowsCommandCleanup] = set()
+        self._cleanup_callbacks: list[Callable[[], None]] = []
 
-    def register(self, *, pgid: int, command: str, origin: str) -> TrackedProcessGroup | None:
+    def defer_cleanup(self, callback: Callable[[], None]) -> bool:
+        """Retain dependent resources until all owned command cleanup completes.
+
+        False leaves cleanup with the caller. True transfers it to the retained
+        cleanup owner, including when stopping a process is currently denied.
+        """
+        with self._lock:
+            if not self._command_cleanups:
+                return False
+            self._cleanup_callbacks.append(callback)
+            return True
+
+    def _finish_command_cleanup(self, cleanup: _WindowsCommandCleanup) -> None:
+        with self._lock:
+            self._command_cleanups.discard(cleanup)
+            callbacks = []
+            if not self._command_cleanups:
+                callbacks, self._cleanup_callbacks = self._cleanup_callbacks, []
+        # Keep failed callbacks with their cleanup owner rather than dropping
+        # a staging directory whose deletion was denied.
+        cleanup.callbacks.extend(callbacks)
+        while cleanup.callbacks:
+            cleanup.callbacks[0]()
+            cleanup.callbacks.pop(0)
+
+    def register(
+        self,
+        *,
+        pgid: int,
+        command: str,
+        origin: str,
+        track_descendants: bool = False,
+        process_owner: MacSandboxOwner | None = None,
+    ) -> TrackedProcessGroup | None:
         """Record a group this runner just created. Returns ``None`` if refused."""
         if not _pgid_is_signalable(pgid):
             return None
@@ -232,6 +275,8 @@ class ProcessGroupRegistry:
             origin=str(origin or "shell_run"),
             started_at=time.monotonic(),
             start_token=_pid_start_token(int(pgid)),
+            process_tree=process_owner
+            or (MacProcessTree.start(pgid) if track_descendants else None),
         )
         with self._lock:
             self._groups[record.pgid] = record
@@ -240,7 +285,9 @@ class ProcessGroupRegistry:
     def release(self, pgid: int) -> None:
         """Forget a group unconditionally (the caller knows it is finished)."""
         with self._lock:
-            self._groups.pop(int(pgid), None)
+            record = self._groups.pop(int(pgid), None)
+        if record is not None and record.process_tree is not None:
+            record.process_tree.close()
 
     def release_if_finished(self, pgid: int) -> bool:
         """Drop the group when it no longer exists; keep it when it is alive.
@@ -249,7 +296,12 @@ class ProcessGroupRegistry:
         is dropped here; a command that timed out, was backgrounded with ``&``,
         or spawned a daemon leaves a live group and stays tracked for reaping.
         """
-        if not process_group_exists(int(pgid)):
+        with self._lock:
+            record = self._groups.get(int(pgid))
+        tree_alive = (
+            record is not None and record.process_tree is not None and record.process_tree.alive()
+        )
+        if not tree_alive and not process_group_exists(int(pgid)):
             self.release(pgid)
             return True
         return False
@@ -262,15 +314,17 @@ class ProcessGroupRegistry:
         """Tracked groups that still exist, dropping any that have since exited."""
         alive: list[TrackedProcessGroup] = []
         for record in self.tracked():
-            if process_group_exists(record.pgid) and _start_token_matches(record):
+            if (process_group_exists(record.pgid) and _start_token_matches(record)) or (
+                record.process_tree is not None and record.process_tree.alive()
+            ):
                 alive.append(record)
             else:
                 self.release(record.pgid)
         return tuple(alive)
 
     def clear(self) -> None:
-        with self._lock:
-            self._groups.clear()
+        for record in self.tracked():
+            self.release(record.pgid)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +354,10 @@ def _pgid_is_signalable(pgid: Any) -> bool:
 
 
 def _pid_start_token(pid: int) -> str | None:
-    """Linux process start time, used to detect PID reuse. ``None`` elsewhere."""
+    """Kernel process creation time on Linux/macOS, used to detect PID reuse."""
+    if sys.platform == "darwin":
+        identity = process_identity(pid)
+        return identity.token if identity is not None else None
     stat_path = Path("/proc") / str(pid) / "stat"
     try:
         text = stat_path.read_text(encoding="utf-8")
@@ -381,13 +438,17 @@ def reap_process_group(
     import signal as signal_module
 
     runtime_s = record.runtime_s()
+    tree_signal = SIGNAL_NONE
+    if record.process_tree is not None and record.process_tree.alive():
+        record.process_tree.terminate(grace_seconds)
+        tree_signal = SIGNAL_KILL
     if not _pgid_is_signalable(record.pgid) or not _start_token_matches(record):
         return ProcessReapOutcome(
             pgid=record.pgid,
             command=record.command,
             origin=record.origin,
             runtime_s=runtime_s,
-            signal_used=SIGNAL_NONE,
+            signal_used=tree_signal,
         )
     if not process_group_exists(record.pgid):
         return ProcessReapOutcome(
@@ -395,7 +456,7 @@ def reap_process_group(
             command=record.command,
             origin=record.origin,
             runtime_s=runtime_s,
-            signal_used=SIGNAL_NONE,
+            signal_used=tree_signal,
         )
     signal_process_group(record.pgid, signal_module.SIGTERM)
     if _wait_for_group_exit(record.pgid, timeout_s=grace_seconds):
@@ -437,7 +498,10 @@ def reap_tracked_groups(
                 runtime_s=record.runtime_s(),
                 signal_used=SIGNAL_NONE,
             )
-        registry.release(record.pgid)
+        if record.process_tree is None:
+            registry.release(record.pgid)
+        else:
+            registry.release_if_finished(record.pgid)
         outcomes.append(outcome)
     return tuple(outcomes)
 
@@ -477,6 +541,16 @@ def _describe_command(args: Any) -> str:
         return str(args)
 
 
+class CommandCleanupError(RuntimeError):
+    """The command failed to stop conclusively; its output remains diagnostic evidence."""
+
+    def __init__(self, cmd: str, *, stdout: str = "", stderr: str = "") -> None:
+        super().__init__("Sandbox process cleanup could not be confirmed.")
+        self.cmd = cmd
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 class CommandCancelledError(subprocess.SubprocessError):
     """A command's ``cancel_check`` fired before the command finished.
 
@@ -510,29 +584,130 @@ def runner_takes_cancel_check(runner: Any) -> bool:
     )
 
 
-def _stop_windows_process_tree(process: subprocess.Popen[Any]) -> None:  # pragma: no cover
+def _stop_windows_process_tree(
+    process: subprocess.Popen[Any],
+) -> list[Any] | None:  # pragma: no cover
     """End a command and the processes it started, at once (Windows).
 
     ``taskkill /T`` takes most of a second (about 0.8 s measured), more than half
     of what a Stop may take. ``psutil`` finds the children in one process snapshot
     and ends them directly. We hold the command's process handle, so its pid has
     not been reused; ``taskkill`` stays the fallback.
+    Return the observed children so the cleanup owner can confirm their exit.
+    None means the inventory could not be established, even if fallback stops
+    the direct process and its pipes close.
     """
-    from .terminal_manager import _kill_windows_process_tree
-
     try:
         import psutil
 
         parent = psutil.Process(process.pid)
-        family = [*parent.children(recursive=True), parent]
+        children = parent.children(recursive=True)
+        family = [*reversed(children), parent]
     except Exception:  # noqa: BLE001 - fall back to the slower, older way
+        from .terminal_manager import _kill_windows_process_tree
+
         _kill_windows_process_tree(process)
-        return
+        return None
     for member in family:
         try:
             member.kill()
         except psutil.Error:
             pass
+    return children
+
+
+_windows_cleanup_lock = threading.Lock()
+_windows_command_cleanups: set[_WindowsCommandCleanup] = set()
+
+
+class _WindowsCommandCleanup:
+    """Own handles and dependent resources even if starting a thread fails."""
+
+    def __init__(self, process: subprocess.Popen[Any], registry: ProcessGroupRegistry):
+        self.process = process
+        self.registry = registry
+        self.finished = threading.Event()
+        self.clean = False
+        self.thread_started = False
+        self.output: tuple[Any, Any] | None = None
+        self.error: BaseException | None = None
+        self.children: list[Any] | None = None
+        self.callbacks: list[Callable[[], None]] = []
+        with _windows_cleanup_lock:
+            _windows_command_cleanups.add(self)
+        with registry._lock:
+            registry._command_cleanups.add(self)
+
+    def run(self) -> None:
+        try:
+            try:
+                self.children = _stop_windows_process_tree(self.process)
+                self.output = self.process.communicate()
+            finally:
+                self.process.__exit__(*sys.exc_info())
+            if self.children is None:
+                return  # Unknown descendants remain explicitly pending.
+            if self.children:
+                import psutil
+
+                _, pending = psutil.wait_procs(self.children)
+                if pending:
+                    return
+            self.registry._finish_command_cleanup(self)
+            self.clean = True
+            with _windows_cleanup_lock:
+                _windows_command_cleanups.discard(self)
+        except BaseException as exc:
+            self.error = exc
+        finally:
+            self.finished.set()
+
+
+def start_windows_command_cleanup(
+    process: subprocess.Popen[Any], registry: ProcessGroupRegistry | None = None
+) -> _WindowsCommandCleanup:
+    """Transfer Windows process/pipe ownership without waiting on discovery or I/O.
+
+    Callers choose their own remaining wait budget. The retained cleanup owner
+    remains responsible for handles and descendants even if a thread cannot start.
+    """
+    cleanup = _WindowsCommandCleanup(process, registry or ProcessGroupRegistry())
+    try:
+        threading.Thread(target=cleanup.run, name="alysis-command-cleanup", daemon=True).start()
+        cleanup.thread_started = True
+    except Exception as exc:  # Thread resource exhaustion must not lose ownership.
+        cleanup.error = exc
+        # Popen.kill uses the owned Windows handle and does not wait or close
+        # reader-owned pipes. Retain everything else as pending, without claiming
+        # that killing the leader establishes descendant cleanup.
+        try:
+            process.kill()
+        except OSError:
+            pass
+    return cleanup
+
+
+def _finish_windows_command(
+    process: subprocess.Popen[Any], failure: BaseException, registry: ProcessGroupRegistry
+) -> None:
+    """Bound caller teardown while retaining ownership until cleanup finishes.
+
+    Windows communicate reader threads retain pipe locks after a timeout.
+    Popen.__exit__ closes those streams and waits without a deadline, so it
+    must not run on the caller when communication remains incomplete. The
+    cleanup task owns the original Popen handle and observed child identities;
+    a denied kill or a surviving pipe owner cannot extend the caller's wait.
+    """
+    cleanup = start_windows_command_cleanup(process, registry)
+    failure.cleanup_pending = True
+    if not cleanup.thread_started:
+        return
+    # This is the existing one-second final-drain allowance, now including tree
+    # termination and stream closure instead of preceding unbounded __exit__.
+    complete = cleanup.finished.wait(1.0)
+    failure.cleanup_pending = not complete or not cleanup.clean
+    if complete and cleanup.output is not None:
+        failure.stdout, failure.stderr = cleanup.output
 
 
 def communicate_until_cancelled(
@@ -540,6 +715,8 @@ def communicate_until_cancelled(
     *,
     timeout: float | None,
     cancel_check: Callable[[], bool],
+    input: bytes | str | None = None,
+    process_owner: MacSandboxOwner | None = None,
 ) -> tuple[Any, Any]:
     """``process.communicate(timeout=timeout)`` that reads ``cancel_check`` while it waits.
 
@@ -547,7 +724,8 @@ def communicate_until_cancelled(
     so the wait is taken in slices of :data:`CANCEL_CHECK_INTERVAL_SECONDS`. Raises
     :class:`subprocess.TimeoutExpired` when ``timeout`` runs out, as ``communicate``
     does, and :class:`CommandCancelledError` once ``cancel_check`` returns true.
-    Neither stops the process; the caller does.
+    Neither stops the process; the caller does. Optional stdin is supplied only
+    to the first communicate call; retries continue that same request.
     """
     deadline = None if timeout is None else time.monotonic() + timeout
     while True:
@@ -557,10 +735,20 @@ def communicate_until_cancelled(
         if deadline is not None:
             step = min(step, max(0.0, deadline - time.monotonic()))
         try:
-            return process.communicate(timeout=step)
-        except subprocess.TimeoutExpired:
+            if input is None:
+                return process.communicate(timeout=step)
+            first_input, input = input, None
+            return process.communicate(input=first_input, timeout=step)
+        except subprocess.TimeoutExpired as exc:
+            if process_owner is not None and process.poll() is not None:
+                # Detached grandchildren may hold stdout open after the leader
+                # exits. End their command authority before waiting for EOF.
+                if not process_owner.terminate():
+                    raise CommandCleanupError(_describe_command(process.args)) from None
             if timeout is not None and deadline is not None and time.monotonic() >= deadline:
-                raise subprocess.TimeoutExpired(process.args, timeout) from None
+                raise subprocess.TimeoutExpired(
+                    process.args, timeout, output=exc.output, stderr=exc.stderr
+                ) from None
 
 
 def run_in_tracked_process_group(
@@ -576,6 +764,8 @@ def run_in_tracked_process_group(
     stdin: Any | None = None,
     popen_factory: Callable[..., subprocess.Popen[str]] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    track_descendants: bool = False,
+    process_owner: MacSandboxOwner | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """``subprocess.run``-equivalent that starts the command in its own group.
 
@@ -612,8 +802,9 @@ def run_in_tracked_process_group(
         popen_kwargs["cwd"] = cwd
     if env is not None:
         popen_kwargs["env"] = env
+    local_registry = registry is None and track_descendants
     if registry is None:
-        if cancel_check is None:
+        if cancel_check is None and not track_descendants:
             return subprocess.run(
                 args,
                 shell=shell,
@@ -628,71 +819,125 @@ def run_in_tracked_process_group(
     # `subprocess.run` are the seams callers and tests patch, and a default
     # argument would capture the original before any patch could take effect.
     factory = popen_factory if popen_factory is not None else subprocess.Popen
-    # The body mirrors CPython's subprocess.run: the Popen context manager closes
-    # the pipes and reaps the child on every exit path, and a timeout kills the
-    # direct child before re-raising. The only additions are the process group and
-    # its registration.
-    with factory(args, shell=shell, **popen_kwargs) as process:
+    # Successful communication and POSIX cleanup keep Popen's normal lifetime.
+    # Incomplete Windows communication transfers that lifetime to a cleanup
+    # task, because Popen.__exit__ itself has no bounded pipe-close/wait path.
+    process = factory(args, shell=shell, **popen_kwargs)
+    cleanup_transferred = False
+    try:
         pgid = resolve_process_group_id(int(getattr(process, "pid", 0) or 0))
         tracked: TrackedProcessGroup | None = None
         if pgid is not None and registry is not None:
             label = str(command_label) if command_label else _describe_command(args)
-            tracked = registry.register(pgid=pgid, command=label, origin=origin)
+            tracked = registry.register(
+                pgid=pgid,
+                command=label,
+                origin=origin,
+                track_descendants=track_descendants,
+                **({"process_owner": process_owner} if process_owner is not None else {}),
+            )
+        ownership = None
+        ownership_handle = None
+        cleanup_requested = False
+        diagnostic_stdout = diagnostic_stderr = ""
         try:
-            if cancel_check is None:
+            if (
+                track_descendants
+                and process_owner is None
+                and sys.platform == "darwin"
+                and pgid is not None
+                and env is not None
+            ):
+                from .terminal_ownership import TerminalOwnershipLedger, seatbelt_scratch_cleanup_id
+
+                ownership = TerminalOwnershipLedger()
+                ownership_handle = ownership.track(
+                    child_pid=process.pid,
+                    termination_mode="process_group",
+                    posix_pgid=pgid,
+                    cleanup_kind="seatbelt-scratch",
+                    cleanup_id=seatbelt_scratch_cleanup_id(Path(env["TMPDIR"])),
+                )
+            if cancel_check is None and process_owner is None:
                 stdout, stderr = process.communicate(timeout=timeout)
             else:
                 stdout, stderr = communicate_until_cancelled(
-                    process, timeout=timeout, cancel_check=cancel_check
+                    process,
+                    timeout=timeout,
+                    cancel_check=cancel_check or (lambda: False),
+                    **({"process_owner": process_owner} if process_owner is not None else {}),
                 )
         except subprocess.TimeoutExpired as exc:
-            # Killing only the leader is what orphans the children today. That is
-            # left as-is on purpose: the group stays registered, and finalization
-            # reaps it under the single audited decision path.
+            cleanup_requested = True
+            diagnostic_stdout = decode_command_output(exc.stdout)
+            diagnostic_stderr = decode_command_output(exc.stderr)
+            # Seatbelt must clean up now, including detached observed children.
+            # Other runners retain their existing finalization policy.
             if os.name == "nt":  # pragma: no cover - exercised on Windows
-                # Kill while the owned parent is still alive: once it exits,
-                # Windows can no longer walk its children and inherited output
-                # pipes can keep communicate() blocked indefinitely.
-                from .terminal_manager import _kill_windows_process_tree
-
-                _kill_windows_process_tree(process)
-                exc.stdout, exc.stderr = process.communicate(timeout=1.0)
+                cleanup_transferred = True
+                _finish_windows_command(process, exc, registry)
             else:
+                if tracked is not None and tracked.process_tree is not None:
+                    tracked.process_tree.signal(signal.SIGTERM)
                 process.kill()
                 process.wait()
+                if track_descendants and tracked is not None:
+                    reap_process_group(tracked, grace_seconds=_CANCEL_REAP_GRACE_SECONDS)
             raise
         except CommandCancelledError as exc:
+            cleanup_requested = True
             # Stop the command and everything it started now, as an interrupt
             # below does, then hand back what it printed so far.
             if os.name == "nt":  # pragma: no cover - exercised on Windows
-                _stop_windows_process_tree(process)
+                cleanup_transferred = True
+                _finish_windows_command(process, exc, registry)
+                raise
             else:
+                if tracked is not None and tracked.process_tree is not None:
+                    tracked.process_tree.signal(signal.SIGTERM)
                 process.kill()
+                process.wait()
                 if tracked is not None:
                     reap_process_group(tracked, grace_seconds=_CANCEL_REAP_GRACE_SECONDS)
             try:
                 exc.stdout, exc.stderr = process.communicate(timeout=1.0)
             except subprocess.TimeoutExpired:
                 pass
+            diagnostic_stdout = decode_command_output(exc.stdout)
+            diagnostic_stderr = decode_command_output(exc.stderr)
             raise
-        except BaseException:
+        except BaseException as exc:
+            cleanup_requested = True
             # Ctrl-C lands here. Before this change the terminal's SIGINT reached
             # the whole foreground group, so interrupting a command killed its
             # children too; now that the command leads its own session the runner
             # has to do that itself, or an interrupted test run would keep going.
             if os.name == "nt":
-                from .terminal_manager import _kill_windows_process_tree
-
-                _kill_windows_process_tree(process)
+                cleanup_transferred = True
+                _finish_windows_command(process, exc, registry)
             else:
+                if tracked is not None and tracked.process_tree is not None:
+                    tracked.process_tree.signal(signal.SIGTERM)
                 process.kill()
+                process.wait()
             if tracked is not None:
                 reap_process_group(tracked, grace_seconds=1.0)
             raise
         finally:
             if tracked is not None and registry is not None:
-                registry.release_if_finished(tracked.pgid)
+                if local_registry or process_owner is not None:
+                    reap_process_group(tracked, grace_seconds=_CANCEL_REAP_GRACE_SECONDS)
+                finished = registry.release_if_finished(tracked.pgid)
+                if finished and ownership is not None:
+                    ownership.release(ownership_handle)
+                if track_descendants and (local_registry or cleanup_requested) and not finished:
+                    raise CommandCleanupError(
+                        _describe_command(args), stdout=diagnostic_stdout, stderr=diagnostic_stderr
+                    )
         returncode = process.poll()
+    finally:
+        if not cleanup_transferred:
+            process.__exit__(*sys.exc_info())
     return subprocess.CompletedProcess(
         args=args,
         returncode=returncode if returncode is not None else 1,

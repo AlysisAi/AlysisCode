@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..host_file_handles import open_host_file_read
+from ..project_folders import containing_root
 from ..tools.fs import _DEFAULT_FS_READ_MAX_BYTES
 
 LineRange = tuple[int, int]
@@ -39,7 +41,7 @@ class SessionReadLedger:
             return None
         path_obj = (self.root / path).resolve()
         try:
-            path_obj.relative_to(self.root)
+            containing_root(self.root, path_obj)
         except ValueError:
             return None
         try:
@@ -47,7 +49,7 @@ class SessionReadLedger:
             # to support a bounded read, or trust stat metadata as content proof.
             if path_obj.stat().st_size > max_bytes:
                 return None
-            with path_obj.open("rb") as handle:
+            with open_host_file_read(path_obj) as handle:
                 content = handle.read(max_bytes + 1)
             if len(content) > max_bytes:
                 return None

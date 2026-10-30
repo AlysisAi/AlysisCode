@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
@@ -64,7 +66,11 @@ class _WaitingSurface(NoopSurface):
         self.tool_end_events.append(event)
 
 
-def test_tool_elapsed_excludes_approval_wait(tmp_path: Path) -> None:
+def test_tool_elapsed_excludes_approval_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Measure approval wait versus a host write, independent of OS worker availability/startup.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     surface = _WaitingSurface(wait_seconds=0.4)
     cfg = AppConfig(model="test-model", routing_mode="code_only")
     session = create_session(

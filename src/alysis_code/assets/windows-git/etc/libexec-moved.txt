@@ -1,0 +1,8 @@
+ucrt64/libexec/git-core/git-http-fetch.exe
+ucrt64/libexec/git-core/git-http-push.exe
+ucrt64/libexec/git-core/git-remote-http.exe
+ucrt64/libexec/git-core/git-remote-https.exe
+ucrt64/libexec/git-core/git-sh-i18n--envsubst.exe
+ucrt64/libexec/git-core/git.exe
+ucrt64/libexec/git-core/headless-git.exe
+ucrt64/libexec/git-core/scalar.exe

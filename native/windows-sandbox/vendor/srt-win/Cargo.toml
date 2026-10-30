@@ -1,0 +1,74 @@
+[package]
+name = "srt-win"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "Windows network sandbox helper for sandbox-runtime"
+
+[features]
+default = []
+account-appcontainer-candidate = []
+
+[lib]
+name = "srt_win"
+path = "src/lib.rs"
+
+[[bin]]
+name = "srt-win"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = { version = "0.62.2", features = [
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_LibraryLoader",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Memory",
+  "Win32_System_Rpc",
+  "Win32_System_SystemServices",
+  "Win32_System_JobObjects",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_Console",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Isolation",
+  "Win32_Security_Authorization",
+  "Win32_Security_Authentication_Identity",
+  "Win32_Security_Cryptography",
+  "Win32_Storage_FileSystem",
+  "Win32_NetworkManagement_WindowsFilteringPlatform",
+  "Win32_NetworkManagement_NetManagement",
+  "Win32_Networking_ActiveDirectory",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Registry",
+] }
+# `bundled` compiles the sqlite3 amalgamation via `cc` — works on the
+# Windows runner (MSVC). NOTE: `cargo check --target …-windows-msvc`
+# from a non-Windows host fails at the libsqlite3-sys build script
+# (no MSVC toolchain) unless CC/AR are stubbed. The whole library
+# (including the clap/serde-derive CLI structs in `cli.rs`) is
+# `#![cfg(windows)]`, so a host-target `cargo check` on macOS/Linux
+# compiles only the four-line `main.rs` shim — cross-target clippy
+# (stubbed CC/AR) is the ONLY local gate that compiles the
+# clap-derive structs.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Diagnostics_Etw", "Win32_System_Time", "Win32_Security_Credentials", "Win32_Networking_WinHttp", "Win32_Networking_WinSock"] }

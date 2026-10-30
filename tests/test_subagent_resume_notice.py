@@ -12,6 +12,7 @@ import pytest
 from test_subagent_catalog_wire_prefix import (
     _children,
     _resume,
+    _retained_history,
 )
 from test_subagent_catalog_wire_prefix import (
     _offline_only as _offline_only,
@@ -107,7 +108,8 @@ def test_successive_resumes_keep_each_notice_once_without_user_event_pollution(
         for notice in (second_notice, third_notice, fourth_notice):
             assert last.messages.count(notice) == 1
         for previous, current in zip(requests, requests[1:], strict=False):
-            assert current["input"][: len(previous["input"])] == previous["input"]
+            previous_history = _retained_history(previous, "input")
+            assert _retained_history(current, "input")[: len(previous_history)] == previous_history
         assert [
             e["payload"]["content"]
             for e in last.store.events_snapshot()
@@ -171,7 +173,6 @@ def test_startup_failure_does_not_invent_a_notice_or_lose_previous_notice(
         for event in failed_notices:
             assert current.messages.count(event["payload"]["message"]) == 1
         assert "Never delivered failed task." not in json.dumps(current.messages)
-        assert (
-            requests[-1]["input"][: len(prior_requests[-1]["input"])] == prior_requests[-1]["input"]
-        )
+        prior_history = _retained_history(prior_requests[-1], "input")
+        assert _retained_history(requests[-1], "input")[: len(prior_history)] == prior_history
         assert current.provider_session_id == children[0].provider_session_id

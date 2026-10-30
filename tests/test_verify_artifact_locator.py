@@ -18,6 +18,8 @@ from alysis_code.runtime_kind import RuntimeKind
 from alysis_code.session_store import SessionStore
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 
 def _tools(
     tmp_path: Path,

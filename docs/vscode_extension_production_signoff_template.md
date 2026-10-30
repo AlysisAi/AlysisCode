@@ -45,8 +45,8 @@ are complete. A generic component VSIX is never eligible for this signoff.
       no credential or provider response text is retained in the evidence artifact.
 - [ ] Every signing/provider/evidence/publication environment has a required reviewer, disables
       administrator bypass, and has exactly the custom deployment tag pattern `v*`. Self-review
-      is enabled only for sole reviewer `Perdikis10` (GitHub user ID `190930654`) under the
-      source-pinned single-maintainer policy; the workflow policy validator passed before entry.
+      is enabled only under the single-maintainer exception enforced by
+      `scripts/release/vscode_approval_policy.py`; the workflow policy validator passed before entry.
 - [ ] `python scripts/qa/check_ide_cli_parity.py`
 - [ ] `python -m pytest -q tests/test_ide_cli_parity_matrix.py tests/test_ide_protocol.py tests/test_ide_stdio_bridge.py tests/test_ide_protocol_contract.py`
 - [ ] `python -m pytest -q tests/test_release_smoke.py tests/test_managed_cli_release_manifest.py tests/test_managed_cli_release_smoke.py tests/test_vscode_vsix_sbom.py`

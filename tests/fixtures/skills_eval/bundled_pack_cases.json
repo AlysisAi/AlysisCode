@@ -4,9 +4,14 @@
     "workspace": "workspaces/bundled_address_pr_comments",
     "task": "Address every unresolved thread in review_threads.json, make the requested changes, run python checks.py, and write REVIEW_RESPONSES.md mapping T1 and T2 to their resolutions.",
     "invocation_mode": "normal",
-    "expected_skills": ["address-pr-comments"],
+    "expected_skills": [
+      "address-pr-comments"
+    ],
     "verification_command": "python -c \"import subprocess,sys; from pathlib import Path; subprocess.run([sys.executable,'checks.py'], check=True); text=Path('REVIEW_RESPONSES.md').read_text(); assert 'T1' in text and 'T2' in text\"",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_address_pr_comments_explicit",
@@ -14,18 +19,28 @@
     "task": "Resolve every unresolved thread in review_threads.json, verify the changes with python checks.py, and record a reply-ready mapping in REVIEW_RESPONSES.md.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "address-pr-comments",
-    "expected_skills": ["address-pr-comments"],
+    "expected_skills": [
+      "address-pr-comments"
+    ],
     "verification_command": "python -c \"import subprocess,sys; from pathlib import Path; subprocess.run([sys.executable,'checks.py'], check=True); text=Path('REVIEW_RESPONSES.md').read_text(); assert 'T1' in text and 'T2' in text\"",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_code_review_normal",
     "workspace": "workspaces/bundled_code_review",
     "task": "Review proposed.diff against the repository instructions and write actionable severity-ordered findings with exact file and line references to REVIEW.md. For a faulty conditional, include a concrete replacement or guard condition.",
     "invocation_mode": "normal",
-    "expected_skills": ["code-review"],
+    "expected_skills": [
+      "code-review"
+    ],
     "verification_command": "python -c \"import re; from pathlib import Path; text=Path('REVIEW.md').read_text(); lower=text.lower(); assert re.search(r'(?:src/)?calculator[.]py:2\\b', lower); assert re.search(r'count\\s*(?:<=|==)\\s*0', lower)\"",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_code_review_explicit",
@@ -33,18 +48,28 @@
     "task": "Assess proposed.diff for correctness, tests, security, and local conventions, then write severity-ordered file-and-line findings to REVIEW.md. For a faulty conditional, include a concrete replacement or guard condition.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "code-review",
-    "expected_skills": ["code-review"],
+    "expected_skills": [
+      "code-review"
+    ],
     "verification_command": "python -c \"import re; from pathlib import Path; text=Path('REVIEW.md').read_text(); lower=text.lower(); assert re.search(r'(?:src/)?calculator[.]py:2\\b', lower); assert re.search(r'count\\s*(?:<=|==)\\s*0', lower)\"",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_commit_normal",
     "workspace": "workspaces/bundled_commit",
     "task": "Run sh prepare_repo.sh, inspect only what it stages, and create one accurate Conventional Commit. Do not stage anything else, amend, or push.",
     "invocation_mode": "normal",
-    "expected_skills": ["commit"],
+    "expected_skills": [
+      "commit"
+    ],
     "verification_command": "python -c \"import subprocess; s=subprocess.check_output(['git','log','-1','--pretty=%s'], text=True).strip(); t=s.split(': ',1)[0].split('(',1)[0].rstrip('!'); paths=set(subprocess.check_output(['git','show','--pretty=','--name-only','HEAD'], text=True).splitlines()); count=int(subprocess.check_output(['git','rev-list','--count','HEAD'], text=True).strip()); content=subprocess.check_output(['git','show','HEAD:settings.toml'], text=True); assert ': ' in s and t in {'feat','fix','docs','refactor','test','chore','build','ci','perf'} and paths == {'settings.toml'} and count == 2 and content == 'retry_limit = 3\\n'\"",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_commit_explicit",
@@ -52,27 +77,43 @@
     "task": "Prepare the fixture with sh prepare_repo.sh, inspect the staged diff, and create exactly one Conventional Commit without amending or pushing.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "commit",
-    "expected_skills": ["commit"],
+    "expected_skills": [
+      "commit"
+    ],
     "verification_command": "python -c \"import subprocess; s=subprocess.check_output(['git','log','-1','--pretty=%s'], text=True).strip(); t=s.split(': ',1)[0].split('(',1)[0].rstrip('!'); paths=set(subprocess.check_output(['git','show','--pretty=','--name-only','HEAD'], text=True).splitlines()); count=int(subprocess.check_output(['git','rev-list','--count','HEAD'], text=True).strip()); content=subprocess.check_output(['git','show','HEAD:settings.toml'], text=True); assert ': ' in s and t in {'feat','fix','docs','refactor','test','chore','build','ci','perf'} and paths == {'settings.toml'} and count == 2 and content == 'retry_limit = 3\\n'\"",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_commit_unstaged_normal",
     "workspace": "workspaces/bundled_commit_unstaged",
     "task": "Run sh prepare_repo.sh, then commit my changes with an accurate message; skip anything that is obviously scratch output. Do not amend or push.",
     "invocation_mode": "normal",
-    "expected_skills": ["commit"],
+    "expected_skills": [
+      "commit"
+    ],
     "verification_command": "python -c \"import subprocess; s=subprocess.check_output(['git','log','-1','--pretty=%s'], text=True).strip(); t=s.split(': ',1)[0].split('(',1)[0].rstrip('!'); paths=set(subprocess.check_output(['git','show','--pretty=','--name-only','HEAD'], text=True).splitlines()); count=int(subprocess.check_output(['git','rev-list','--count','HEAD'], text=True).strip()); assert ': ' in s and t in {'feat','fix','docs','refactor','test','chore','build','ci','perf'} and 'settings.toml' in paths and 'debug.log' not in paths and count == 2\"",
-    "tags": ["bundled-pack", "positive", "unstaged"]
+    "tags": [
+      "bundled-pack",
+      "positive",
+      "unstaged"
+    ]
   },
   {
     "id": "bundled_debug_normal",
     "workspace": "workspaces/bundled_debug",
     "task": "python repro.py raises ValueError for an empty count even though the expected result is zero. Reproduce it, isolate the root cause, make the smallest fix, and verify the original command.",
     "invocation_mode": "normal",
-    "expected_skills": ["debug"],
+    "expected_skills": [
+      "debug"
+    ],
     "verification_command": "python repro.py",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_debug_explicit",
@@ -80,18 +121,28 @@
     "task": "Reproduce the ValueError from python repro.py, isolate and fix its cause, then verify that exact symptom is gone.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "debug",
-    "expected_skills": ["debug"],
+    "expected_skills": [
+      "debug"
+    ],
     "verification_command": "python repro.py",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_fix_ci_normal",
     "workspace": "workspaces/bundled_fix_ci",
     "task": "The build's slug check is failing. Inspect ci-output.txt, reproduce the failing command locally, fix the evidenced cause, and rerun only the affected check.",
     "invocation_mode": "normal",
-    "expected_skills": ["fix-ci"],
+    "expected_skills": [
+      "fix-ci"
+    ],
     "verification_command": "python ci_check.py",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_fix_ci_explicit",
@@ -99,18 +150,28 @@
     "task": "Use ci-output.txt to reproduce the failed slug job, implement the smallest repair, and rerun python ci_check.py without weakening the check.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "fix-ci",
-    "expected_skills": ["fix-ci"],
+    "expected_skills": [
+      "fix-ci"
+    ],
     "verification_command": "python ci_check.py",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_release_notes_normal",
     "workspace": "workspaces/bundled_release_notes",
     "task": "Draft RELEASE_NOTES.md for v1.5.0 from the merged history since v1.4.0 exported in history.txt. Group user-visible changes and call out the breaking change.",
     "invocation_mode": "normal",
-    "expected_skills": ["release-notes"],
+    "expected_skills": [
+      "release-notes"
+    ],
     "verification_command": "python -c \"from pathlib import Path; text=Path('RELEASE_NOTES.md').read_text(); required=('quoted fields','exit status','legacy --old'); assert all(item in text for item in required)\"",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_release_notes_explicit",
@@ -118,18 +179,28 @@
     "task": "Turn history.txt into grouped v1.5.0 notes in RELEASE_NOTES.md, including the breaking removal and the revision range starting at v1.4.0.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "release-notes",
-    "expected_skills": ["release-notes"],
+    "expected_skills": [
+      "release-notes"
+    ],
     "verification_command": "python -c \"from pathlib import Path; text=Path('RELEASE_NOTES.md').read_text(); required=('quoted fields','exit status','legacy --old'); assert all(item in text for item in required)\"",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_security_review_normal",
     "workspace": "workspaces/bundled_security_review",
     "task": "Perform a security assessment of proposed.diff and write severity-ordered findings with evidence and remediation to SECURITY_REPORT.md. Do not modify the source.",
     "invocation_mode": "normal",
-    "expected_skills": ["security-review"],
+    "expected_skills": [
+      "security-review"
+    ],
     "verification_command": "python -c \"from pathlib import Path; text=Path('SECURITY_REPORT.md').read_text().lower(); source=Path('src/loader.py').read_text(); assert 'eval' in text and 'severity' in text and 'eval(payload)' in source\"",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_security_review_explicit",
@@ -137,18 +208,28 @@
     "task": "Audit proposed.diff for exploitable risks, preserve the source unchanged, and record severity, evidence, and remediation in SECURITY_REPORT.md.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "security-review",
-    "expected_skills": ["security-review"],
+    "expected_skills": [
+      "security-review"
+    ],
     "verification_command": "python -c \"from pathlib import Path; text=Path('SECURITY_REPORT.md').read_text().lower(); source=Path('src/loader.py').read_text(); assert 'eval' in text and 'severity' in text and 'eval(payload)' in source\"",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_skill_creator_normal",
     "workspace": "workspaces/bundled_skill_creator",
     "task": "Create this workspace's first reusable instruction bundle named log-triage through the supported Alysis lifecycle flow. It should guide investigation of structured application logs, and it must validate cleanly.",
     "invocation_mode": "normal",
-    "expected_skills": ["skill-creator"],
+    "expected_skills": [
+      "skill-creator"
+    ],
     "verification_command": "python -c \"import subprocess,sys; from pathlib import Path; subprocess.run([sys.executable,'-m','alysis_code','skill','validate','.alysis_skills/log-triage'], check=True); assert Path('.alysis_skills/log-triage/SKILL.md').is_file()\"",
-    "tags": ["bundled-pack", "positive"]
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
   },
   {
     "id": "bundled_skill_creator_explicit",
@@ -156,9 +237,14 @@
     "task": "Scaffold and complete a reusable log-triage instruction bundle using the supported lifecycle commands, then validate its final bundle.",
     "invocation_mode": "explicit_skill",
     "explicit_skill_name": "skill-creator",
-    "expected_skills": ["skill-creator"],
+    "expected_skills": [
+      "skill-creator"
+    ],
     "verification_command": "python -c \"import subprocess,sys; from pathlib import Path; subprocess.run([sys.executable,'-m','alysis_code','skill','validate','.alysis_skills/log-triage'], check=True); assert Path('.alysis_skills/log-triage/SKILL.md').is_file()\"",
-    "tags": ["bundled-pack", "explicit"]
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
   },
   {
     "id": "bundled_negative_debug_concept",
@@ -168,7 +254,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "debug-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "debug-adjacent"
+    ]
   },
   {
     "id": "bundled_negative_ci_summary",
@@ -178,7 +268,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('CI.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "fix-ci-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "fix-ci-adjacent"
+    ]
   },
   {
     "id": "bundled_negative_security_explanation",
@@ -188,7 +282,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "security-review-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "security-review-adjacent"
+    ]
   },
   {
     "id": "bundled_negative_pr_discussion",
@@ -198,7 +296,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "address-pr-comments-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "address-pr-comments-adjacent"
+    ]
   },
   {
     "id": "bundled_negative_code_review_concept",
@@ -208,7 +310,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "code-review-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "code-review-adjacent"
+    ]
   },
   {
     "id": "bundled_negative_commit_concept",
@@ -218,7 +324,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "commit-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "commit-adjacent"
+    ]
   },
   {
     "id": "bundled_negative_release_notes_concept",
@@ -228,7 +338,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "release-notes-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "release-notes-adjacent"
+    ]
   },
   {
     "id": "bundled_negative_one_off_log_checklist",
@@ -238,7 +352,11 @@
     "expected_skills": [],
     "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
     "session_mode": "readonly",
-    "tags": ["bundled-pack", "negative-control", "skill-creator-adjacent"]
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "skill-creator-adjacent"
+    ]
   },
   {
     "id": "bundled_alysis_docs_normal",
@@ -287,5 +405,359 @@
       "alysis-docs-adjacent"
     ],
     "notes": "Activation and unchanged fixture are scored automatically. Review the session transcript separately for successful documentation retrieval and answer accuracy."
+  },
+  {
+    "id": "bundled_image_files_normal",
+    "workspace": "workspaces/bundled_image_files",
+    "task": "Read the saved boxes.ppm image and write its two box colours, left to right, to answer.txt. Use the file itself; do not operate an app.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "image-pdf-files"
+    ],
+    "verification_command": "python -c \"from pathlib import Path; t=Path('answer.txt').read_text().lower(); assert 'red' in t and 'green' in t and t.index('red') < t.index('green')\"",
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
+  },
+  {
+    "id": "bundled_image_files_explicit",
+    "workspace": "workspaces/bundled_image_files",
+    "task": "Read the saved boxes.ppm image and write its two box colours, left to right, to answer.txt. Use the file itself; do not operate an app.",
+    "invocation_mode": "explicit_skill",
+    "explicit_skill_name": "image-pdf-files",
+    "expected_skills": [
+      "image-pdf-files"
+    ],
+    "verification_command": "python -c \"from pathlib import Path; t=Path('answer.txt').read_text().lower(); assert 'red' in t and 'green' in t and t.index('red') < t.index('green')\"",
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
+  },
+  {
+    "id": "bundled_negative_image_files_concept",
+    "workspace": "workspaces/bundled_negative_controls",
+    "task": "Explain how an image differs from a PDF. Do not inspect any files, screens or apps, or create output.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "image-pdf-files-adjacent"
+    ]
+  },
+  {
+    "id": "bundled_office_files_normal",
+    "workspace": "workspaces/bundled_office_files",
+    "task": "Create report.docx from request.json with its paragraph and table, preserve request.json, and inspect the saved result.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "office-files"
+    ],
+    "verification_command": "python -c \"from pathlib import Path; from zipfile import ZipFile; z=ZipFile('report.docx'); t=z.read('word/document.xml').decode(); assert 'Synthetic paragraph' in t and '42' in t and Path('request.json').is_file()\"",
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
+  },
+  {
+    "id": "bundled_office_files_explicit",
+    "workspace": "workspaces/bundled_office_files",
+    "task": "Create report.docx from request.json with its paragraph and table, preserve request.json, and inspect the saved result.",
+    "invocation_mode": "explicit_skill",
+    "explicit_skill_name": "office-files",
+    "expected_skills": [
+      "office-files"
+    ],
+    "verification_command": "python -c \"from pathlib import Path; from zipfile import ZipFile; z=ZipFile('report.docx'); t=z.read('word/document.xml').decode(); assert 'Synthetic paragraph' in t and '42' in t and Path('request.json').is_file()\"",
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
+  },
+  {
+    "id": "bundled_negative_office_files_concept",
+    "workspace": "workspaces/bundled_negative_controls",
+    "task": "Explain the difference between Word, Excel, and PowerPoint for a beginner. Do not read, create, or change files or use an app.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "office-files-adjacent"
+    ]
+  },
+  {
+    "id": "bundled_local_files_normal",
+    "workspace": "workspaces/bundled_local_files",
+    "task": "List this folder, then rename source.txt to renamed.txt without replacing existing.txt. Verify the saved result.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "local-files"
+    ],
+    "verification_command": "python -c \"from pathlib import Path; assert Path('renamed.txt').read_text().strip() == 'Synthetic source' and not Path('source.txt').exists() and Path('existing.txt').read_text().strip() == 'Preserve this'\"",
+    "tags": [
+      "bundled-pack",
+      "positive"
+    ]
+  },
+  {
+    "id": "bundled_local_files_explicit",
+    "workspace": "workspaces/bundled_local_files",
+    "task": "List this folder, then rename source.txt to renamed.txt without replacing existing.txt. Verify the saved result.",
+    "invocation_mode": "explicit_skill",
+    "explicit_skill_name": "local-files",
+    "expected_skills": [
+      "local-files"
+    ],
+    "verification_command": "python -c \"from pathlib import Path; assert Path('renamed.txt').read_text().strip() == 'Synthetic source' and not Path('source.txt').exists() and Path('existing.txt').read_text().strip() == 'Preserve this'\"",
+    "tags": [
+      "bundled-pack",
+      "explicit"
+    ]
+  },
+  {
+    "id": "bundled_negative_local_files_concept",
+    "workspace": "workspaces/bundled_negative_controls",
+    "task": "Explain the difference between copying and moving a file. Do not list, search, open, or change any files or apps.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python -c \"from pathlib import Path; assert Path('README.md').is_file()\"",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "local-files-adjacent"
+    ]
+  },
+  {
+    "id": "bundled_documents_normal",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create report.docx from brief.md and services.csv. Include a real editable table with all locations and the source values, then total orders, revenue, direct cost and contribution. Include the overhead exclusion. Use plain decimal EUR amounts without digit-grouping separators. Check the document and inspect its rendered pages.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "documents"
+    ],
+    "verification_command": "python check_work.py docx",
+    "tags": [
+      "bundled-pack",
+      "positive",
+      "work-files"
+    ]
+  },
+  {
+    "id": "bundled_documents_explicit",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create report.docx from brief.md and services.csv. Include a real editable table with all locations and the source values, then total orders, revenue, direct cost and contribution. Include the overhead exclusion. Use plain decimal EUR amounts without digit-grouping separators. Check the document and inspect its rendered pages.",
+    "invocation_mode": "explicit_skill",
+    "expected_skills": [
+      "documents"
+    ],
+    "verification_command": "python check_work.py docx",
+    "tags": [
+      "bundled-pack",
+      "explicit",
+      "work-files"
+    ],
+    "explicit_skill_name": "documents"
+  },
+  {
+    "id": "bundled_negative_documents_concept",
+    "workspace": "workspaces/bundled_work",
+    "task": "In one sentence in chat, define a Word document. Do not inspect sources, research, create files, or edit anything.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python check_work.py unchanged",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "documents-adjacent"
+    ]
+  },
+  {
+    "id": "bundled_spreadsheets_normal",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create report.xlsx from services.csv. Keep all input rows in a Data sheet with the CSV headers. In Summary, put total orders, revenue, cost and contribution in B2:B5 in that order, each as a formula. Recalculate with a real engine, check the cached results against the source, and inspect the rendered pages. Keep labels and units readable.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "spreadsheets"
+    ],
+    "verification_command": "python check_work.py xlsx",
+    "tags": [
+      "bundled-pack",
+      "positive",
+      "work-files"
+    ]
+  },
+  {
+    "id": "bundled_spreadsheets_explicit",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create report.xlsx from services.csv. Keep all input rows in a Data sheet with the CSV headers. In Summary, put total orders, revenue, cost and contribution in B2:B5 in that order, each as a formula. Recalculate with a real engine, check the cached results against the source, and inspect the rendered pages. Keep labels and units readable.",
+    "invocation_mode": "explicit_skill",
+    "expected_skills": [
+      "spreadsheets"
+    ],
+    "verification_command": "python check_work.py xlsx",
+    "tags": [
+      "bundled-pack",
+      "explicit",
+      "work-files"
+    ],
+    "explicit_skill_name": "spreadsheets"
+  },
+  {
+    "id": "bundled_negative_spreadsheets_concept",
+    "workspace": "workspaces/bundled_work",
+    "task": "In one sentence in chat, define a spreadsheet formula. Do not inspect sources, research, create files, or edit anything.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python check_work.py unchanged",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "spreadsheets-adjacent"
+    ]
+  },
+  {
+    "id": "bundled_presentations_normal",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create a three-slide report.pptx from brief.md and services.csv for an operations review: scope, all location results, and totals with the overhead caveat. Use editable text/tables, plain decimal EUR amounts without digit-grouping separators, and inspect every rendered slide.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "presentations"
+    ],
+    "verification_command": "python check_work.py pptx",
+    "tags": [
+      "bundled-pack",
+      "positive",
+      "work-files"
+    ]
+  },
+  {
+    "id": "bundled_presentations_explicit",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create a three-slide report.pptx from brief.md and services.csv for an operations review: scope, all location results, and totals with the overhead caveat. Use editable text/tables, plain decimal EUR amounts without digit-grouping separators, and inspect every rendered slide.",
+    "invocation_mode": "explicit_skill",
+    "expected_skills": [
+      "presentations"
+    ],
+    "verification_command": "python check_work.py pptx",
+    "tags": [
+      "bundled-pack",
+      "explicit",
+      "work-files"
+    ],
+    "explicit_skill_name": "presentations"
+  },
+  {
+    "id": "bundled_negative_presentations_concept",
+    "workspace": "workspaces/bundled_work",
+    "task": "In one sentence in chat, define a slide deck. Do not inspect sources, research, create files, or edit anything.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python check_work.py unchanged",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "presentations-adjacent"
+    ]
+  },
+  {
+    "id": "bundled_pdf_normal",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create a one-page report.pdf from brief.md and services.csv with all location names, total orders, revenue, cost and contribution, and the overhead caveat. Use plain decimal EUR amounts without digit-grouping separators. Inspect the rendered page.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "pdf"
+    ],
+    "verification_command": "python check_work.py pdf",
+    "tags": [
+      "bundled-pack",
+      "positive",
+      "work-files"
+    ]
+  },
+  {
+    "id": "bundled_pdf_explicit",
+    "workspace": "workspaces/bundled_work",
+    "task": "Create a one-page report.pdf from brief.md and services.csv with all location names, total orders, revenue, cost and contribution, and the overhead caveat. Use plain decimal EUR amounts without digit-grouping separators. Inspect the rendered page.",
+    "invocation_mode": "explicit_skill",
+    "expected_skills": [
+      "pdf"
+    ],
+    "verification_command": "python check_work.py pdf",
+    "tags": [
+      "bundled-pack",
+      "explicit",
+      "work-files"
+    ],
+    "explicit_skill_name": "pdf"
+  },
+  {
+    "id": "bundled_negative_pdf_concept",
+    "workspace": "workspaces/bundled_work",
+    "task": "In one sentence in chat, define a PDF. Do not inspect sources, research, create files, or edit anything.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python check_work.py unchanged",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "pdf-adjacent"
+    ]
+  },
+  {
+    "id": "bundled_research_normal",
+    "workspace": "workspaces/bundled_work",
+    "task": "Compare the execution and cost implications in policy-a.md and policy-b.md. Write comparison.md with citations to both source files, each stated monthly budget, and the unknown costs. Distinguish evidence from recommendations. Use only the supplied sources; no internet is needed.",
+    "invocation_mode": "normal",
+    "expected_skills": [
+      "research"
+    ],
+    "verification_command": "python check_work.py research",
+    "tags": [
+      "bundled-pack",
+      "positive",
+      "work-files"
+    ]
+  },
+  {
+    "id": "bundled_research_explicit",
+    "workspace": "workspaces/bundled_work",
+    "task": "Compare the execution and cost implications in policy-a.md and policy-b.md. Write comparison.md with citations to both source files, each stated monthly budget, and the unknown costs. Distinguish evidence from recommendations. Use only the supplied sources; no internet is needed.",
+    "invocation_mode": "explicit_skill",
+    "expected_skills": [
+      "research"
+    ],
+    "verification_command": "python check_work.py research",
+    "tags": [
+      "bundled-pack",
+      "explicit",
+      "work-files"
+    ],
+    "explicit_skill_name": "research"
+  },
+  {
+    "id": "bundled_negative_research_concept",
+    "workspace": "workspaces/bundled_work",
+    "task": "In one sentence in chat, define a source citation. Do not inspect sources, research, create files, or edit anything.",
+    "invocation_mode": "normal",
+    "expected_skills": [],
+    "verification_command": "python check_work.py unchanged",
+    "session_mode": "readonly",
+    "tags": [
+      "bundled-pack",
+      "negative-control",
+      "research-adjacent"
+    ]
   }
 ]

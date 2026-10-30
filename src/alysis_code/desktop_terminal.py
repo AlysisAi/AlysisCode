@@ -16,7 +16,7 @@ TERMINAL_TOOLS = (
     (
         "terminal.open",
         "desktop_terminal_open",
-        "Open a real interactive shell in this chat's project. Requires Full access. The shell remains alive while the desktop app is running.",
+        "Open a real interactive shell in this chat's project, subject to the host's current permissions and containment policy. The host can request individual approval. A user denial means this attempt did not run; do not retry or suggest broader access to bypass it. The shell remains alive while the desktop app is running.",
         {},
         (),
         True,
@@ -32,7 +32,7 @@ TERMINAL_TOOLS = (
     (
         "terminal.write",
         "desktop_terminal_write",
-        "Send input to an integrated terminal. Requires Full access. Include a newline to submit a command or send control characters for interactive programs. Read the terminal first; sending input does not prove a command succeeded.",
+        "Send input to an integrated terminal, subject to the host's current permissions and containment policy. Include a newline to submit a command or send control characters for interactive programs. Read the terminal first; sending input does not prove a command succeeded. A denied request did not run and must not be retried through another route.",
         {"terminal_id": {"type": "string"}, "text": {"type": "string", "maxLength": 4096}},
         ("terminal_id", "text"),
         True,
@@ -40,7 +40,7 @@ TERMINAL_TOOLS = (
     (
         "terminal.close",
         "desktop_terminal_close",
-        "Close this chat's integrated terminal and stop its programs. Requires Full access.",
+        "Close this chat's integrated terminal and stop its programs, subject to the host's current permissions and containment policy. A denied request did not run.",
         {"terminal_id": {"type": "string"}},
         ("terminal_id",),
         True,

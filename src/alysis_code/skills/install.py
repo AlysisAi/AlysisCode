@@ -7,8 +7,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from time import strftime
+from urllib.parse import urlsplit
 
-from ..command_text import command_text
+from ..installer_git import run_installer_git
 from .paths import global_managed_skill_root, project_managed_skill_root, skill_bundle_dir_name
 from .state import (
     ManagedSkillRecord,
@@ -76,7 +77,7 @@ def install_skill_bundle(
             scope=("project" if project else "user"),
             source_kind=source_kind,
             source=source,
-            source_subdir=(str(subdir).strip() or None),
+            source_subdir=(str(subdir).strip() or None) if subdir is not None else None,
             source_commit=source_commit,
             installed_at=strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
@@ -237,27 +238,32 @@ def _extract_skill_zip(zip_path: Path, target_root: Path) -> None:
 
 
 def _clone_git_source(source: str, target_root: Path) -> tuple[str, Path, str | None]:
+    try:
+        remote = urlsplit(source)
+        if remote.scheme != "https" or not remote.hostname:
+            raise ValueError("unsupported transport")
+    except ValueError as exc:
+        raise SkillLifecycleError("Git skill sources must use an HTTPS URL.") from exc
     if shutil.which("git") is None:
         raise SkillLifecycleError("git is required for git-based skill installs.")
     try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", source, str(target_root)],
-            check=True,
-            capture_output=True,
-            **command_text(),
+        run_installer_git(
+            ["git", "clone", "--depth", "1", "--", source, str(target_root)],
+            cwd=None,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise SkillLifecycleError("Git skill clone timed out after 120s.") from exc
     except subprocess.CalledProcessError as exc:
-        stderr = str(exc.stderr or "").strip()
-        raise SkillLifecycleError(f"Failed to clone git skill source: {stderr or source}") from exc
+        raise SkillLifecycleError("Failed to clone git skill source.") from exc
     commit = None
     try:
-        completed = subprocess.run(
+        completed = run_installer_git(
             ["git", "-C", str(target_root), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            **command_text(),
+            cwd=None,
         )
         commit = str(completed.stdout or "").strip() or None
+    except subprocess.TimeoutExpired as exc:
+        raise SkillLifecycleError("Git skill revision check timed out after 120s.") from exc
     except subprocess.CalledProcessError:
         commit = None
     return "git", target_root, commit

@@ -4,7 +4,7 @@ from hashlib import sha256
 from typing import Any
 
 from ..config import AppConfig
-from .web_search import resolve_web_search_runtime, resolve_web_search_runtime_status
+from .web_search_runtime import resolve_web_search_runtime, resolve_web_search_runtime_status
 
 
 class WebSearchCapabilityProbe:

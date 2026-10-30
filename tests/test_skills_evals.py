@@ -48,6 +48,9 @@ from alysis_code.verification_command_analysis import analyze_verification_comma
 
 _BUNDLED_PACK_NAMES = {
     "alysis-docs",
+    "image-pdf-files",
+    "office-files",
+    "local-files",
     "address-pr-comments",
     "code-review",
     "commit",
@@ -56,6 +59,11 @@ _BUNDLED_PACK_NAMES = {
     "release-notes",
     "security-review",
     "skill-creator",
+    "documents",
+    "spreadsheets",
+    "presentations",
+    "pdf",
+    "research",
 }
 
 
@@ -233,7 +241,7 @@ def test_load_bundled_pack_eval_cases_covers_positive_explicit_and_negative_case
 
     cases = load_skills_eval_cases(manifest)
 
-    assert len(cases) == 28
+    assert len(cases) == 52
     for name in sorted(_BUNDLED_PACK_NAMES):
         matching = [case for case in cases if case.expected_skills == (name,)]
         expected_normal_count = 2 if name == "commit" else 1

@@ -89,7 +89,8 @@
         $package += "==$version"
     }
     Write-Host 'Installing Alysis Code (Python is downloaded automatically if needed)...'
-    $installArguments = @('tool', 'install', '--python', $pythonVersion, $package)
+    # Copy keeps shared uv cache hardlinks outside the contained worker's read roots.
+    $installArguments = @('tool', 'install', '--python', $pythonVersion, '--link-mode', 'copy', $package)
     if ($managed) { $installArguments += @('--reinstall', '--upgrade') }
     Invoke-Uv @installArguments
 
@@ -121,7 +122,7 @@
     Write-Host "Alysis Code $installedVersion is installed."
     Write-Host "Run 'alysis login' in this terminal, then approve the code in your browser."
     Write-Host "After sign-in, open your project folder and run 'alysis'."
-    Write-Host "For sandboxed commands on native Windows, start Docker Desktop and run 'alysis sandbox setup'."
+    Write-Host "On Windows x64, check the bundled native sandbox with 'alysis sandbox doctor'."
     if ($env:ALYSIS_NO_MODIFY_PATH -eq '1') {
         Write-Host "Persistent PATH was left unchanged. Executables are in $binDirectory."
     } else {

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import socket
 import threading
 import time
 from collections.abc import Iterable
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -75,12 +77,104 @@ def test_proxy_starts_on_loopback_and_shutdown_is_idempotent() -> None:
         socket.create_connection(endpoint, timeout=0.2)
 
 
-def test_absolute_form_http_is_sanitized_and_dials_only_numeric_ip() -> None:
+@pytest.mark.parametrize("method", ["GET", "CONNECT"])
+def test_command_proxy_credentials_are_isolated_and_never_forwarded(method):
+    dialer = RecordingDialer()
+    with (
+        BrowserEgressProxy(
+            require_authentication=True, resolver=_public_resolver, dialer=dialer
+        ) as owner,
+        BrowserEgressProxy(require_authentication=True) as other,
+    ):
+
+        def authorization(proxy):
+            url = urlsplit(proxy.proxy_url)
+            return b"Basic " + base64.b64encode(f"{url.username}:{url.password}".encode())
+
+        target = b"example.test:443" if method == "CONNECT" else b"http://example.test/"
+        header = method.encode() + b" " + target + b" HTTP/1.1\r\nHost: example.test\r\n"
+        for auth in (b"", authorization(other)):
+            request = (
+                header + (b"Proxy-Authorization: " + auth + b"\r\n" if auth else b"") + b"\r\n"
+            )
+            assert _request(owner, request).startswith(b"HTTP/1.1 407")
+        assert not dialer.calls
+        with _connect(owner) as client:
+            client.sendall(header + b"Proxy-Authorization: " + authorization(owner) + b"\r\n\r\n")
+            assert dialer.called.wait(timeout=1)
+            if method == "CONNECT":
+                assert _receive_until(client, b"\r\n\r\n").startswith(b"HTTP/1.1 200")
+            else:
+                upstream = _receive_until(dialer.peers[-1], b"\r\n\r\n")
+                assert b"proxy-authorization" not in upstream.lower()
+        for peer in dialer.peers:
+            peer.close()
+
+
+def test_exact_domain_policy_rejects_other_hosts_before_dns_or_connect():
+    resolutions = []
+    dialer = RecordingDialer()
+    with BrowserEgressProxy(
+        allowed_hosts=frozenset({"example.test"}),
+        resolver=lambda host, port: resolutions.append(host) or (_PUBLIC_V4,),
+        dialer=dialer,
+    ) as proxy:
+        for host in ("other.test", "sub.example.test", "127.0.0.1", "example.test.evil.test"):
+            response = _request(
+                proxy, f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode()
+            )
+            assert response.startswith(b"HTTP/1.1 403")
+        assert not resolutions and not dialer.calls
+        with _connect(proxy) as client:
+            client.sendall(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
+            assert _receive_until(client, b"\r\n\r\n").startswith(b"HTTP/1.1 200")
+    assert resolutions == ["example.test"]
+
+
+def test_allowlisted_domain_does_not_allow_private_dns_answers():
+    dialer = RecordingDialer()
+    with BrowserEgressProxy(
+        allowed_hosts=frozenset({"example.test"}), resolver=lambda *_: ("127.0.0.1",), dialer=dialer
+    ) as proxy:
+        assert _request(
+            proxy, b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n"
+        ).startswith(b"HTTP/1.1 403")
+        assert not dialer.calls
+
+
+def test_connect_accepts_implicit_tls_host_port_without_relaxing_destination_policy():
+    resolutions = []
+    dialer = RecordingDialer()
+    with BrowserEgressProxy(
+        allowed_hosts=frozenset({"example.test"}),
+        resolver=lambda host, port: resolutions.append(host) or (_PUBLIC_V4,),
+        dialer=dialer,
+    ) as proxy:
+        for target, host in (
+            ("example.test:443", "other.test"),
+            ("example.test:443", "example.test:8443"),
+            ("example.test:8443", "example.test"),
+        ):
+            assert _request(
+                proxy, f"CONNECT {target} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode()
+            ).startswith(b"HTTP/1.1 400")
+        assert _request(
+            proxy, b"CONNECT other.test:443 HTTP/1.1\r\nHost: other.test\r\n\r\n"
+        ).startswith(b"HTTP/1.1 403")
+        assert not resolutions and not dialer.calls
+        with _connect(proxy) as client:
+            client.sendall(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            assert _receive_until(client, b"\r\n\r\n").startswith(b"HTTP/1.1 200")
+    assert resolutions == ["example.test"]
+
+
+@pytest.mark.parametrize("version", [b"HTTP/1.0", b"HTTP/1.1"])
+def test_absolute_form_http_is_sanitized_and_dials_only_numeric_ip(version: bytes) -> None:
     dialer = RecordingDialer()
     with BrowserEgressProxy(resolver=_public_resolver, dialer=dialer) as proxy:
         with _connect(proxy) as client:
             client.sendall(
-                b"GET http://example.test/path?q=token-secret HTTP/1.1\r\n"
+                b"GET http://example.test/path?q=token-secret " + version + b"\r\n"
                 b"Host: example.test\r\n"
                 b"Proxy-Authorization: Basic should-not-leak\r\n"
                 b"Proxy-Connection: keep-alive\r\n"
@@ -127,6 +221,10 @@ def test_connect_tunnels_buffered_bytes_to_pinned_numeric_address() -> None:
 @pytest.mark.parametrize(
     "answers",
     [
+        b"GET http://example.test/ HTTP/2.0\r\nHost: example.test\r\n\r\n",
+        b"POST http://example.test/ HTTP/1.0\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n",
+        b"GET http://example.test/ HTTP/1.0\r\nHost: other.test\r\n\r\n",
+        b"GET http://example.test/ HTTP/1.0\r\n\r\n",
         ("127.0.0.1",),
         ("169.254.169.254",),
         ("10.0.0.1",),
@@ -519,3 +617,57 @@ def test_invalid_policy_and_deny_endpoint_inputs_are_safe() -> None:
     proxy = BrowserEgressProxy()
     with pytest.raises(BrowserEgressProxySecurityError, match="endpoint is invalid"):
         proxy.deny_endpoint("user:secret@localhost", 9222)
+
+
+@pytest.mark.parametrize(
+    "pattern,apex_allowed", [("*.example.test", False), ("**.example.test", True)]
+)
+def test_domain_wildcards_observe_label_boundaries_before_dns(pattern, apex_allowed):
+    resolutions = []
+    dialer = RecordingDialer()
+    with BrowserEgressProxy(
+        allowed_hosts=frozenset({pattern}),
+        resolver=lambda h, p: resolutions.append(h) or (_PUBLIC_V4,),
+        dialer=dialer,
+    ) as proxy:
+        for host in ("example.test.evil.test", "notexample.test", "127.0.0.1"):
+            assert _request(
+                proxy, f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}\r\n\r\n".encode()
+            ).startswith(b"HTTP/1.1 403")
+        assert not resolutions
+        for host in ("a.example.test", "a.b.example.test", "example.test"):
+            with _connect(proxy) as client:
+                client.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+                expected = (
+                    b"HTTP/1.1 403"
+                    if host == "example.test" and not apex_allowed
+                    else b"HTTP/1.1 200"
+                )
+                assert _receive_until(client, b"\r\n\r\n").startswith(expected)
+
+
+def test_private_exception_is_one_numeric_endpoint_not_general_private_dns_access():
+    resolutions = []
+    dialer = RecordingDialer()
+    with BrowserEgressProxy(
+        allowed_hosts=frozenset({"allowed.test"}),
+        allowed_private_endpoints=frozenset({("127.0.0.1", 8080)}),
+        resolver=lambda h, p: resolutions.append(h) or ("192.168.1.20",),
+        dialer=dialer,
+    ) as proxy:
+        for target in (
+            "127.0.0.1:8081",
+            "127.0.0.2:8080",
+            "allowed.test:8080",
+            "169.254.169.254:80",
+        ):
+            assert _request(
+                proxy, f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode()
+            ).startswith(b"HTTP/1.1 403")
+        assert resolutions == ["allowed.test"] and not dialer.calls
+        with _connect(proxy) as client:
+            client.sendall(b"CONNECT 127.0.0.1:8080 HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n")
+            assert _receive_until(client, b"\r\n\r\n").startswith(b"HTTP/1.1 200")
+            client.sendall(b"arbitrary TCP data")
+            assert dialer.peers[-1].recv(4096) == b"arbitrary TCP data"
+    assert [(ip, port) for ip, port, _ in dialer.calls] == [("127.0.0.1", 8080)]

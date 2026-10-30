@@ -65,6 +65,9 @@ def _create_chat_session(
     subagents_enabled: bool = False,
     subagent_registry: dict[str, SubagentDefinition] | None = None,
 ) -> tuple[object, _FakeShellRunner, Path]:
+    # Keep monkeypatched readers in this process so their directory arguments
+    # can be inspected independently of the contained-worker transport.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     repo = tmp_path / "repo"
     (repo / "packages" / "app").mkdir(parents=True, exist_ok=True)
     (repo / "packages" / "lib").mkdir(parents=True, exist_ok=True)

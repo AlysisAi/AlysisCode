@@ -8,11 +8,7 @@ from typing import Any
 
 from ..ide.protocol import redact_secrets
 from ..session_artifacts import SessionArtifactLayout
-
-
-class HistorySearchError(RuntimeError):
-    pass
-
+from .errors import HistorySearchError
 
 _SNIPPET_MAX_CHARS = 240
 _MAX_RESULTS = 500

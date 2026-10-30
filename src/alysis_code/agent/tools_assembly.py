@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import copy
 import importlib
 import inspect
@@ -9,9 +10,10 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import Callable, Collection
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from time import perf_counter
@@ -32,8 +34,8 @@ from ..config import (
     resolve_web_search_policy,
     resolve_web_tools_enabled,
 )
-from ..consumer_verification import run_consumer_profile, validate_consumer_profile
-from ..context.tool_schema_budgeter import (
+from ..contained_read_tools import ContainedGitDirectoryError, ContainedReadTools
+from ..context.tool_schema_budgeter import (  # noqa: F401 - compatibility exports
     CUSTOM_MCP_SCHEMA_FAMILIES,
     DEFAULT_CUSTOM_MCP_DESCRIPTION_MAX_CHARS,
     JSON_SCHEMA_NAMED_SCHEMA_MAP_KEYS,
@@ -72,6 +74,7 @@ from ..execution_deadline import (
 )
 from ..extensions.activation import ActivationDecision
 from ..extensions.models import normalize_extension_id
+from ..extensions.plugin_skills import PluginSkill, find_plugin_skill, read_plugin_skill
 from ..host_actions import (
     GITHUB_WRITE_ACTIONS,
     HOST_ACTION_TOOL_NAMES,
@@ -80,13 +83,19 @@ from ..host_actions import (
     normalize_host_action_arguments,
     normalized_host_action_capabilities,
 )
-from ..ide.managed_browser import (
-    BrowserArtifact,
-    BrowserError,
-    BrowserSessionStatus,
-    ManagedBrowserService,
-)
+from ..host_file_handles import host_file_action
+from ..host_file_policy import HostFilePolicy, HostFilePolicyError
+from ..ide import managed_browser_api as _managed_browser_api
 from ..ide.protocol import redact_secrets
+from ..mcp import github_repository_policy as github_policy
+from ..mcp.connector_host import (
+    CONNECTOR_MCP_ACTION,
+    assert_connector_current,
+    check_connector_call,
+    connector_tool_name,
+    connector_tool_prefix,
+    wrap_connector_result,
+)
 from ..mcp.github_discovery import (
     ACTIONS as GITHUB_DISCOVERY_ACTIONS,
 )
@@ -111,6 +120,11 @@ from ..mcp.github_host import (
 from ..mcp.google_host import GOOGLE_MCP_ACTION, assert_google_current, wrap_google_result
 from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager, McpToolBinding
 from ..mcp.models import ResolvedMcpConfig, ResolvedMcpServer
+from ..mcp.native_relay_guard import (
+    legacy_windows_description_max_chars,
+    legacy_windows_observation_tool,
+)
+from ..mcp.person_approval import call_approval, tool_server_approval
 from ..mcp.untrusted_content import build_host_owned_mcp_tool_description
 from ..mcp.visual_delivery import McpVisualDelivery
 from ..model_registry import ModelRegistry
@@ -119,6 +133,7 @@ from ..personas import is_persona_name, persona_modes_enabled
 from ..pipeline_facts import resolve_pipeline_stage_status
 from ..policy import evaluate_shell_command
 from ..process_reaping import ProcessGroupRegistry
+from ..project_folders import containing_root, relative_path
 from ..read_only_commands import is_read_only_command
 from ..runtime_kind import RuntimeKind, normalize_runtime_kind
 from ..sandbox_runner import select_shell_sandbox_backend
@@ -162,6 +177,7 @@ from ..tools.availability import (
     tool_availability_snapshot,
 )
 from ..tools.capability_readiness import WebSearchCapabilityProbe
+from ..tools.errors import ShellError
 from ..tools.fs import (
     FsError,
     StaleFileError,
@@ -180,8 +196,6 @@ from ..tools.fs import (
     write_prepared_fs_edit,
     write_prepared_fs_write,
 )
-from ..tools.git import git_apply_patch, git_diff, git_history, git_status
-from ..tools.history import history_search
 from ..tools.image_generation import (
     ImageGenerationError,
     generate_images,
@@ -194,13 +208,7 @@ from ..tools.registry import (
     iter_builtin_tool_metadata,
     require_builtin_tool_metadata,
 )
-from ..tools.repo_map import repo_map
-from ..tools.search import search_rg
-from ..tools.shell import shell_run
-from ..tools.symbols import symbol_search
-from ..tools.test_discovery import test_discover
-from ..tools.web import web_fetch
-from ..tools.web_search import WebSearchError, resolve_web_search_runtime_status, web_search
+from ..tools.web_search_runtime import WebSearchError, resolve_web_search_runtime_status
 from ..usage_tracker import UsageSummary
 from ..verification_command_analysis import (
     VerificationCommandEvidentiaryCapability,
@@ -234,6 +242,7 @@ from . import _patchable
 from .action_approval import decide_action_approval
 from .approval_review import ApprovalReviewer, ReviewVerdict
 from .computer_use_evidence import observed_facts, valid_facts
+from .computer_use_history import COMPUTER_USE_OBSERVATION_METADATA_KEY
 from .errors import (
     AgentRuntimeError,
     ApprovalDeclinedError,
@@ -308,6 +317,13 @@ from .subagent_execution import (
     _subagent_termination_kind as _subagent_termination_kind,
 )
 from .subagent_workspace import SubagentWorkspaceProvider
+from .tool_definition import _MODEL_FACING_SCHEMA_PROSE_KEYS as _MODEL_FACING_SCHEMA_PROSE_KEYS
+from .tool_definition import ToolDef as ToolDef
+from .tool_definition import _drop_model_facing_schema_prose as _drop_model_facing_schema_prose
+from .tool_definition import _drop_schema_descriptions as _drop_schema_descriptions
+from .tool_definition import _model_facing_tool_description as _model_facing_tool_description
+from .tool_definition import _model_schema_family as _model_schema_family
+from .tool_definition import _schema_description_max_chars as _schema_description_max_chars
 from .verification_commands import (
     _expand_simple_verify_command_chain,
     _has_disallowed_shell_control_flow,
@@ -332,6 +348,65 @@ _snapshot_workspace_for_command_mutation_detection = (
 )
 _walk_workspace_snapshot_paths = _turn_snapshot._walk_workspace_snapshot_paths
 _workspace_snapshot_signature = _turn_snapshot._workspace_snapshot_signature
+
+
+# Canonical execution callables are resolved at dispatch. Registration retains
+# its existing metadata, availability and permission checks.
+_EXECUTION_IMPORTS = {
+    "run_consumer_profile": "alysis_code.consumer_verification",
+    "validate_consumer_profile": "alysis_code.consumer_verification",
+    "git_apply_patch": "alysis_code.tools.git",
+    "git_diff": "alysis_code.tools.git",
+    "git_history": "alysis_code.tools.git",
+    "git_status": "alysis_code.tools.git",
+    "history_search": "alysis_code.tools.history",
+    "repo_map": "alysis_code.tools.repo_map",
+    "search_rg": "alysis_code.tools.search",
+    "shell_run": "alysis_code.tools.shell",
+    "symbol_search": "alysis_code.tools.symbols",
+    "test_discover": "alysis_code.tools.test_discovery",
+    "web_fetch": "alysis_code.tools.web",
+}
+
+
+# These public types remain canonical exports. Tool registration needs only
+# annotations; browser execution owns loading the browser service and proxy.
+_MANAGED_BROWSER_EXPORTS = {
+    "BrowserArtifact",
+    "BrowserError",
+    "BrowserSessionStatus",
+    "ManagedBrowserService",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = (
+        "alysis_code.ide.managed_browser"
+        if name in _MANAGED_BROWSER_EXPORTS
+        else _EXECUTION_IMPORTS.get(name)
+    )
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+def _execution_dependency(name: str) -> Any:
+    return globals()[name] if name in globals() else __getattr__(name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXECUTION_IMPORTS) | _MANAGED_BROWSER_EXPORTS)
+
+
+def web_search(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    # Registration needs readiness metadata, not every provider's execution
+    # implementation. Keep the canonical tool's signature and injection points
+    # in its module and load it only for an actual dispatch.
+    from ..tools.web_search import web_search as execute
+
+    return execute(*args, **kwargs)
 
 
 def _call_with_optional_kwargs(
@@ -550,141 +625,6 @@ class ToolDispatchGuard(Protocol):
     ) -> None: ...
 
 
-@dataclass(frozen=True)
-class ToolDef:
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    run: Callable[[dict[str, Any]], dict[str, Any]]
-    metadata: dict[str, Any] = field(default_factory=dict)
-    # Host-only delivery interface, preserved when dispatch guards replace run.
-    # It is deliberately excluded from model schemas and persistence metadata.
-    visual_delivery: LocalAssetViewer | McpVisualDelivery | None = field(
-        default=None, repr=False, compare=False
-    )
-
-    def as_openai_tool(self) -> dict[str, Any]:
-        family = _model_schema_family(self.metadata)
-        description_max_chars = self.metadata.get("model_description_max_chars")
-        if family in CUSTOM_MCP_SCHEMA_FAMILIES:
-            description_max_chars = _schema_description_max_chars(description_max_chars)
-        description = str(self.metadata.get("model_description") or self.description)
-        description = _model_facing_tool_description(
-            description,
-            max_chars=description_max_chars,
-        )
-        parameters = self.parameters
-        if bool(self.metadata.get("compact_parameters_for_model")):
-            if family in CUSTOM_MCP_SCHEMA_FAMILIES:
-                parameters = compact_custom_mcp_tool_parameters(self.parameters)
-            else:
-                parameters = _drop_model_facing_schema_prose(
-                    self.parameters, preserve_descriptions=family == "builtin"
-                )
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": description,
-                "parameters": parameters,
-            },
-        }
-
-
-_MODEL_FACING_SCHEMA_PROSE_KEYS = frozenset(
-    {
-        "$comment",
-        "description",
-        "example",
-        "examples",
-        "markdownDescription",
-        "title",
-    }
-)
-
-
-def _model_schema_family(metadata: dict[str, Any]) -> str:
-    tool_type = str(metadata.get("tool_type") or "").strip().lower()
-    if tool_type == "custom_tool":
-        return "custom"
-    if tool_type in {"mcp", "mcp_tool"}:
-        return "mcp"
-    return tool_type
-
-
-def _schema_description_max_chars(value: Any) -> int:
-    try:
-        configured = int(value)
-    except (TypeError, ValueError):
-        configured = 0
-    if configured <= 0:
-        return DEFAULT_CUSTOM_MCP_DESCRIPTION_MAX_CHARS
-    return configured
-
-
-def _model_facing_tool_description(description: str, *, max_chars: Any) -> str:
-    text = " ".join(str(description or "").split())
-    try:
-        limit = int(max_chars)
-    except (TypeError, ValueError):
-        limit = 0
-    if limit <= 0 or len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
-
-
-def _drop_model_facing_schema_prose(
-    value: Any,
-    *,
-    preserve_descriptions: bool = False,
-    _inside_named_schema_map: bool = False,
-) -> Any:
-    """Remove schema annotations without deleting named fields or literal data.
-
-    Built-in parameter descriptions are the concise calling contract. Keep them
-    verbatim, including whitespace in quoted examples, rather than abbreviating
-    their meaning. Custom/MCP schemas use their existing separate budget policy.
-    """
-    if isinstance(value, dict):
-        reduced: dict[str, Any] = {}
-        for key, item in value.items():
-            normalized_key = str(key)
-            if _inside_named_schema_map:
-                reduced[key] = _drop_model_facing_schema_prose(
-                    item, preserve_descriptions=preserve_descriptions
-                )
-                continue
-            if normalized_key in _MODEL_FACING_SCHEMA_PROSE_KEYS and not (
-                preserve_descriptions and normalized_key == "description"
-            ):
-                continue
-            if (
-                normalized_key in JSON_SCHEMA_OPAQUE_DATA_KEYS
-                or normalized_key == "dependentRequired"
-            ):
-                reduced[key] = copy.deepcopy(item)
-                continue
-            reduced[key] = _drop_model_facing_schema_prose(
-                item,
-                preserve_descriptions=preserve_descriptions,
-                _inside_named_schema_map=(
-                    normalized_key in JSON_SCHEMA_NAMED_SCHEMA_MAP_KEYS
-                    or normalized_key == "dependencies"
-                ),
-            )
-        return reduced
-    if isinstance(value, list):
-        return [
-            _drop_model_facing_schema_prose(item, preserve_descriptions=preserve_descriptions)
-            for item in value
-        ]
-    return copy.deepcopy(value)
-
-
-def _drop_schema_descriptions(value: Any) -> Any:
-    return _drop_model_facing_schema_prose(value)
-
-
 def _shell_run_model_description(shell_environment: str | None) -> str:
     """The shell_run description, naming the session's shell when it has one."""
     base = _BUILTIN_MODEL_DESCRIPTIONS["shell_run"]
@@ -712,7 +652,9 @@ _BUILTIN_MODEL_DESCRIPTIONS: dict[str, str] = {
     ),
     "web_fetch": "Fetch a supplied/search URL.",
     "asset_view": "View a local image, crop, or timestamped video frame.",
-    "capability_status": "Inspect web/visual readiness and local PDF/Office creation, editing and review commands.",
+    "artifact_check": "Check an exact document version and render pages for review.",
+    "document_operation": "Create, inspect, edit and recalculate local documents in the installed engine runtime, independent of shell containers. Start with describe; finish with artifact_check.",
+    "capability_status": "Inspect web/visual readiness and available local PDF/Office creation, editing and review routes.",
     "web_search": (
         "Search current sources for unstable/requested facts; includes UTC retrieved_at. "
         "Fetch URLs with web_fetch."
@@ -724,7 +666,9 @@ _BUILTIN_MODEL_DESCRIPTIONS: dict[str, str] = {
     "history_search": "Search prior events.",
     "session_artifact_read": "Read or list current-session artifact handles.",
     "verify_run": (
-        "Run verification. Pass requested commands; otherwise use selected defaults. "
+        "Run verification. Choose at most one field: commands for tests/lint/build, "
+        "or consumer_profile for a separate public-interface check. Never combine them. "
+        "Pass requested commands; omit both fields only to use appropriate selected defaults. "
         "Managed restrictions apply."
     ),
     "shell_run": "Run a policy-checked shell command.",
@@ -877,7 +821,29 @@ _SHELL_CANCELLATION_TOKEN_ARG = object()
 # the cancellation token so PR2's watchdog can preempt a wait already in flight.
 # ``shell_run`` and ``verify_run`` wait on their own foreground commands: with the
 # token, a Stop ends such a command at once instead of when it finishes.
-_SHELL_CANCELLABLE_WAIT_TOOL_NAMES = frozenset({"shell_wait", "shell_run", "verify_run"})
+_SHELL_CANCELLABLE_WAIT_TOOL_NAMES = frozenset(
+    {
+        "shell_wait",
+        "shell_run",
+        "verify_run",
+        "fs_list",
+        "search_rg",
+        "symbol_search",
+        "repo_map",
+        "test_discover",
+        "git_diff",
+        "git_history",
+        "git_status",
+        "git_apply_patch",
+        "fs_write",
+        "fs_edit",
+        "fs_move",
+        "fs_copy",
+        "fs_delete",
+        "fs_mkdir",
+        "image_generate",
+    }
+)
 
 
 def _built_in_tool_exposed_in_mode(
@@ -998,6 +964,7 @@ def build_tools(
     completion_gate_tools_enabled: bool = False,
     skills_enabled: bool = True,
     skill_registry: dict[str, SkillBundle] | None = None,
+    plugin_skills: tuple[PluginSkill, ...] = (),
     subagents_enabled: bool = False,
     helper_subagents_enabled: bool = False,
     subagent_depth: int = 0,
@@ -1017,22 +984,27 @@ def build_tools(
     crash_diagnostic_log_path: str | os.PathLike[str] | None = None,
     crash_diagnostics: CrashDiagnosticLogger | None = None,
     tool_dispatch_guard: ToolDispatchGuard | None = None,
-    managed_browser_service: ManagedBrowserService | None = None,
+    managed_browser_service: _managed_browser_api.ManagedBrowserService | None = None,
     managed_browser_owner_id: str | None = None,
     managed_browser_cancel_check: Callable[[], bool] | None = None,
     host_action_handler: HostActionHandler | None = None,
     host_action_capabilities: Collection[str] | None = None,
     host_mcp: dict[str, Any] | None = None,
+    github_repository_policy: github_policy.RepositoryPolicy | None = None,
+    github_repository_policy_required: bool = False,
     google_mcp: list[dict[str, Any]] | None = None,
+    connector_mcp: list[dict[str, Any]] | None = None,
     subagent_coordinator: SubagentCoordinator | None = None,
     subagent_coordinator_sink: Callable[[SubagentCoordinator], None] | None = None,
     child_scheduler_sink: Callable[[ChildScheduler], None] | None = None,
     tool_availability_sink: Callable[[ToolAvailabilitySnapshot], None] | None = None,
     parent_steer_inbox: SteerInbox | None = None,
     read_ledger_sink: Callable[[SessionReadLedger], None] | None = None,
+    artifact_output_access_sink: Callable[[Callable[[str, bool], bool]], None] | None = None,
     readonly_child_web_tool_names: Collection[str] | None = None,
     child_managed_browser_tool_names: Collection[str] | None = None,
     approval_reviewer: ApprovalReviewer | None = None,
+    _scoped_file_dispatch: bool = True,
 ) -> dict[str, ToolDef]:
     root = root.resolve()
     workspace_context = resolve_workspace_context(root)
@@ -1058,6 +1030,15 @@ def build_tools(
         )
     )
     effective_host_actions = normalized_host_action_capabilities(host_action_capabilities)
+    github_restricted = (
+        github_repository_policy is not None and github_repository_policy.mode == "allow_list"
+    )
+    github_unavailable = github_repository_policy_required and github_repository_policy is None
+    if github_unavailable:
+        effective_host_actions -= github_policy.REPOSITORY_ACTIONS
+    if github_restricted and host_mcp is not None and host_mcp["protocol_version"] != 2:
+        effective_host_actions -= GITHUB_DISCOVERY_ACTIONS
+
     if host_mcp is not None or env_get("ALYSIS_DESKTOP_GITHUB_POLICY") is not None:
         effective_host_actions -= {"github.repo.read", "github.pr.list", "github.pr.create"}
     read_ledger = SessionReadLedger(
@@ -1244,6 +1225,19 @@ def build_tools(
     # constructs an inconsistent fullaccess+scope session. Normal persona
     # application also clamps that combination to review.
     is_full_access_mode = mode == _MODE_FULLACCESS and not persona_write_scope_active
+    # Host file tools execute outside the shell's native sandbox. Capture launcher
+    # policy once; model arguments and later environment changes cannot replace it.
+    host_file_settings = resolve_shell_sandbox_settings(cfg or AppConfig())
+    host_file_policy = (
+        None
+        if (is_full_access_mode and host_file_settings.mode == "off")
+        else HostFilePolicy.capture(
+            readonly_workspace=root if host_file_settings.filesystem_access == "read-only" else None
+        )
+    )
+    contained_read_tools = (
+        ContainedReadTools.for_settings(host_file_settings, root) if host_file_policy else None
+    )
 
     # Without a usable sandbox and with the host's "ask" fallback, commands run on the host,
     # each after the user approves it. This replaces the sandbox, so --yes does not skip it;
@@ -1275,6 +1269,8 @@ def build_tools(
                 "flagged_because": request.reason,
                 "outcome": verdict.outcome,
                 "risk": verdict.risk,
+                "user_authorization": verdict.user_authorization,
+                "review_failure": verdict.failure,
                 "reason": verdict.reason,
                 "error": verdict.error,
                 "model": verdict.model,
@@ -1299,7 +1295,10 @@ def build_tools(
             pass
 
     def _request_action_approval(
-        request: ApprovalRequest, *, requires_authorization: bool = True
+        request: ApprovalRequest,
+        *,
+        requires_authorization: bool = True,
+        operation_approved: bool = False,
     ) -> ApprovalDecision:
         decision = decide_action_approval(
             request,
@@ -1310,6 +1309,7 @@ def build_tools(
             reviewer=approval_reviewer,
             announce=_announce_review,
             requires_authorization=requires_authorization,
+            operation_approved=operation_approved,
         )
         if not decision.allow and decision.status == "denied_by_policy":
             raise AgentRuntimeError(
@@ -1320,6 +1320,61 @@ def build_tools(
                 },
             )
         return decision
+
+    from .scoped_access import PERMISSIONS_SCHEMA, ExecutionDirectoryIdentity, ScopedAccess
+
+    def _validate_reused_access(request: ApprovalRequest) -> None:
+        handler = getattr(surface, "standing_approval", None)
+        if not callable(handler):
+            return
+        try:
+            standing = handler(request)
+        except Exception as exc:
+            raise AgentRuntimeError(
+                "Permission rules could not be rechecked; saved access was not used."
+            ) from exc
+        if standing is not None and standing.outcome in {"deny", "ask_person"}:
+            decision = _request_action_approval(request)
+            if not decision.allow:
+                raise ApprovalDeclinedError("sandbox_access")
+
+    scoped_access = ScopedAccess(
+        root=root,
+        settings=host_file_settings,
+        approve=_request_action_approval,
+        enabled=(
+            (os.name == "nt" or sys.platform == "darwin")
+            and mode in {"auto", "review"}
+            and can_ask_person
+            and (
+                sys.platform == "darwin"
+                or (
+                    subagent_depth == 0
+                    and not one_shot_execution
+                    and resolved_runtime_kind == RuntimeKind.INTERACTIVE_CHAT
+                )
+            )
+            and not _custom_tools_write_scope_restricted(
+                mode=mode,
+                deny_write_prefixes=deny_write_prefixes,
+                allow_write_globs=allow_write_globs,
+                persona_allow_write_globs=persona_allow_write_globs,
+            )
+        ),
+        policy=host_file_policy,
+        record=store.append,
+        events_since=store.events_since,
+        validate_reuse=_validate_reused_access,
+    )
+    if scoped_access.enabled:
+        from .sandbox_access_store import SandboxAccessStore
+
+        scoped_access.access_store = SandboxAccessStore(
+            root=root, session_id=store.session_id, settings=host_file_settings
+        )
+    # Preserve each external root's read ledger across operations, never its access
+    # approval. A replaced directory gets a new delegate and cannot reuse reads.
+    scoped_file_delegates: dict[Any, dict[str, ToolDef]] = {}
 
     def _admit_routine_action(
         kind: str,
@@ -1340,6 +1395,41 @@ def build_tools(
             ),
             requires_authorization=False,
         )
+
+    def _artifact_output_access(path: str, authorize: bool) -> bool:
+        from .artifact_output_observation import FileMetadataApproval
+
+        external = not Path(path).is_relative_to(root)
+        try:
+            (host_file_policy or HostFilePolicy.capture()).guard_read(root, path)
+            decision = _request_action_approval(
+                FileMetadataApproval(
+                    kind="fs_read",
+                    reason="Verify the requested output file before and after this task.",
+                    preview=f"Read file metadata only for the requested output: {path}",
+                    files=[path],
+                    metadata={
+                        "access": "read",
+                        "external_directory": external,
+                    },
+                ),
+                # Ordinary workspace reads use routine admission; only an external
+                # baseline needs the same extra authority as an external fs_read.
+                requires_authorization=authorize and external,
+            )
+            if not decision.allow and decision.status in (None, "denied"):
+                # Optional observations may be unavailable, but a person's no
+                # ends this turn just like a denied edit or scoped-access request.
+                raise ApprovalDeclinedError("file_metadata")
+            return decision.allow
+        except ApprovalDeclinedError:
+            raise
+        except (AgentRuntimeError, HostFilePolicyError, OSError):
+            # A denied/unavailable optional check leaves completion unverified.
+            return False
+
+    if artifact_output_access_sink is not None:
+        artifact_output_access_sink(_artifact_output_access)
 
     def _critical_delete_reason(cmd: str, cwd: str | None) -> str | None:
         try:
@@ -1580,7 +1670,7 @@ def build_tools(
         root_abs = root.resolve()
         target = (root_abs / rel_path).resolve()
         try:
-            normalized = target.relative_to(root_abs)
+            normalized = relative_path(root_abs, target)
         except ValueError as e:
             payload = _path_escape_recovery_payload(
                 tool_name="filesystem",
@@ -1595,9 +1685,17 @@ def build_tools(
         return _resolve_rel_path(rel_path)
 
     def _guard_write_path(rel_path: str) -> None:
-        if is_full_access_mode:
+        _guard_host_file_path(rel_path, write=True)
+        if is_full_access_mode and host_file_policy is None:
             return
-        if _is_denied_path(rel_path):
+        target = (root / rel_path).resolve()
+        selected_root = containing_root(root, target)
+        protected_relative = os.fspath(target.relative_to(selected_root))
+        if selected_root != root.resolve() and allow_pattern_groups:
+            raise AgentRuntimeError(
+                "Additional folders are unavailable under this restricted write scope."
+            )
+        if _is_denied_path(protected_relative):
             raise AgentRuntimeError(f"Blocked write to protected path: {rel_path}")
         rel_norm = _normalize_rel_match_path(rel_path)
         rel_cf = rel_norm.casefold()
@@ -1613,6 +1711,40 @@ def build_tools(
                 )
             if not in_scope:
                 raise AgentRuntimeError(f"Blocked write outside allowed scope: {rel_path}")
+
+    def _guard_host_file_path(path: str, *, write: bool = False, recursive: bool = False) -> None:
+        if host_file_policy is None:
+            return
+        try:
+            if write:
+                host_file_policy.guard_write(root, path)
+            else:
+                host_file_policy.guard_read(root, path, recursive=recursive)
+        except HostFilePolicyError as exc:
+            raise AgentRuntimeError(str(exc)) from exc
+
+    def _run_file_mutation(
+        name: str,
+        payload: dict[str, Any],
+        local: Callable[[], dict[str, Any]],
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        # Directory handles cannot stop metadata-only Windows junction changes.
+        # All final mutations use the OS boundary after host approval/snapshots.
+        if contained_read_tools is not None:
+            return contained_read_tools.run_write(
+                name,
+                payload,
+                cancel_check=_cancellation_probe(args.get(_SHELL_CANCELLATION_TOKEN_ARG)),
+                timeout_s=int(
+                    deadline_timeout_or_raise(
+                        execution_deadline,
+                        30.0,
+                        operation=name,
+                    )
+                ),
+            )
+        return local()
 
     def _is_allowed_ancestor_dir_creation(rel_path: str) -> bool:
         if is_full_access_mode or not allow_pattern_groups:
@@ -1684,6 +1816,7 @@ def build_tools(
 
     def guard_sensitive_read(kind: str, *, path: str) -> list[dict[str, str]]:
         _admit_routine_action(kind, path, files=[path], access="read")
+        _guard_host_file_path(path)
         findings = _sensitive_path_findings([path])
         if findings and not (root / path).exists():
             message = (
@@ -1698,7 +1831,9 @@ def build_tools(
                     "retryable": False,
                 },
             )
-        return guard_sensitive_files(kind, files=[path])
+        findings = guard_sensitive_files(kind, files=[path])
+        _guard_host_file_path(path)
+        return findings
 
     def _mark_sensitive_result(
         result: dict[str, Any], findings: list[dict[str, str]]
@@ -1721,7 +1856,13 @@ def build_tools(
             "recoverable": True,
         }
 
-    def guard_write(kind: str, preview: str, *, files: list[str] | None = None) -> None:
+    def guard_write(
+        kind: str,
+        preview: str,
+        *,
+        files: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         _admit_routine_action(kind, preview, files=files)
         if is_full_access_mode:
             return
@@ -1738,6 +1879,7 @@ def build_tools(
                     reason="review mode requires confirmation for write operations",
                     preview=preview,
                     files=files or [],
+                    metadata=dict(metadata or {}),
                     allow_for_session_scope=exact_file_set_scope(files or [], operation=kind)
                     if files
                     else None,
@@ -1787,7 +1929,139 @@ def build_tools(
         if not decision.allow:
             raise ApprovalDeclinedError(tool_name)
 
-    def guard_shell(cmd: str, *, tool_name: str = "shell_run", cwd: str | None = None) -> None:
+    def _require_github_write_approval(
+        cmd: str,
+        *,
+        tool_name: str,
+        cwd: str | None = None,
+        access_grant=None,
+        scoped_execution: bool = False,
+        durable_execution: bool = False,
+    ) -> ExecutionDirectoryIdentity | None:
+        from ..command_review_rules import github_write_reason
+
+        credential_access = access_grant is not None and bool(
+            access_grant.settings.additional_read_files
+            or access_grant.settings.forward_env
+            or access_grant.settings.ssh_agent_socket
+            or access_grant.settings.github_auth
+        )
+        if credential_access and (
+            access_grant.command != cmd
+            or access_grant.tool != tool_name
+            or access_grant.cwd != str((root / cwd).resolve() if cwd else root.resolve())
+        ):
+            raise AgentRuntimeError("Authentication approval does not match this command/tool/cwd.")
+        from ..background_runner import HostBackgroundRunner
+        from ..sandbox_runner import HostShellRunner, LazyShellRunner
+        from ..sandbox_settings import ShellSandboxSettings
+        from ..shell_command_lexer import host_dialect
+        from ..windows_sandbox import WindowsNativeRunner
+
+        # Native/MXC runners execute PowerShell, unlike the host Windows cmd
+        # default. Inspect captured launcher/backend authority without resolving
+        # a lazy helper. Mixed/uncertain Windows backend hints conservatively
+        # keep the PowerShell decision; config never downgrades a real runner.
+        dialect = host_dialect()
+        selected_runner = (
+            shell_runner
+            if tool_name == "shell_run"
+            else getattr(terminal_manager, "_runner", None)
+            if tool_name == "shell_background"
+            else None
+        )
+        # File-tool policy does not select the shell interpreter. An explicit
+        # host runner executes cmd on Windows even when file tools use MXC.
+        # Unknown/lazy runners retain the conservative captured-policy hint.
+        settings_hints = (
+            []
+            if isinstance(selected_runner, (HostShellRunner, HostBackgroundRunner))
+            else [host_file_settings]
+        )
+        if access_grant is not None and (scoped_execution or credential_access):
+            settings_hints.append(access_grant.settings)
+        runners = (
+            [selected_runner]
+            if selected_runner is not None
+            else [shell_runner, getattr(terminal_manager, "_runner", None)]
+        )
+        if durable_service_manager is not None and (
+            tool_name == "shell_service_start" or durable_execution
+        ):
+            settings_hints.append(getattr(durable_service_manager, "settings", None))
+        for runner in runners:
+            if isinstance(runner, LazyShellRunner):
+                settings_hints.append(runner.execution_settings)
+                runner = runner.resolved_runner
+            if isinstance(runner, WindowsNativeRunner):
+                dialect = "powershell"
+        for settings_hint in settings_hints:
+            if (
+                isinstance(settings_hint, ShellSandboxSettings)
+                and settings_hint.mode != "off"
+                and (
+                    settings_hint.backend in {"windows-mxc", "windows-native"}
+                    or (settings_hint.backend == "auto" and os.name == "nt")
+                )
+            ):
+                dialect = "powershell"
+        remote_write = github_write_reason(
+            cmd,
+            dialect=dialect,
+            credential_access=credential_access,
+            # Exact files and selected env inputs may configure executables.
+            # Do not inspect values or infer that arbitrary inputs are harmless.
+            opaque_authentication_inputs=credential_access
+            and bool(
+                access_grant.settings.additional_read_files or access_grant.settings.forward_env
+            ),
+        )
+        if remote_write:
+            execution_directory = ExecutionDirectoryIdentity.capture(
+                str((root / cwd).resolve() if cwd else root.resolve())
+            )
+            choice = _request_action_approval(
+                ApprovalRequest(
+                    kind=tool_name,
+                    reason=remote_write,
+                    preview=cmd,
+                    command=cmd,
+                    metadata={
+                        "mandatory_explicit_approval": True,
+                        "always_ask_person": True,
+                        "allow_for_session_disabled": True,
+                        "cwd": execution_directory.path,
+                    },
+                    allow_for_session_scope=None,
+                )
+            )
+            if not choice.allow:
+                raise ApprovalDeclinedError(tool_name)
+            execution_directory.check()
+            # The exact command was separately approved by a person. Continue
+            # deny/fallback checks, but do not ask a duplicate mode-level card.
+            return execution_directory
+        return None
+
+    def _with_write_directory_checks(
+        directories: Collection[ExecutionDirectoryIdentity | None], operation: Callable[[], Any]
+    ) -> Any:
+        # Revalidate at the consumer dispatch join, after intervening approvals,
+        # runner preparation, mutation snapshots and event/store callbacks.
+        for directory in directories:
+            if directory is not None:
+                directory.check()
+        return operation()
+
+    def guard_shell(
+        cmd: str,
+        *,
+        tool_name: str = "shell_run",
+        cwd: str | None = None,
+        access_grant=None,
+        scoped_execution: bool = False,
+        durable_execution: bool = False,
+    ) -> ExecutionDirectoryIdentity | None:
         _admit_routine_action(tool_name, cmd, command=cmd)
         if persona_write_scope_active:
             raise AgentRuntimeError(
@@ -1800,22 +2074,34 @@ def build_tools(
             raise AgentRuntimeError(
                 f"Blocked fullaccess shell command by denylist pattern: {matched_pattern}"
             )
+        remote_write = _require_github_write_approval(
+            cmd,
+            tool_name=tool_name,
+            cwd=cwd,
+            access_grant=access_grant,
+            scoped_execution=scoped_execution,
+            durable_execution=durable_execution,
+        )
         if mode == "readonly" and not is_full_access_mode:
             raise AgentRuntimeError(f"Blocked in readonly mode: {tool_name}")
         critical = _critical_delete_reason(cmd, cwd)
+        operation_approved = (
+            critical is None
+            and access_grant is not None
+            and access_grant.command == cmd
+            and access_grant.tool == tool_name
+            and access_grant.cwd == str((root / cwd).resolve() if cwd else root.resolve())
+        )
         if is_full_access_mode:
             if critical:
                 _ask_person_before_critical_delete(cmd, tool_name=tool_name, concern=critical)
-            return
+            return remote_write
         decision = evaluate_shell_command(cmd)
         if not decision.allowed:
             raise AgentRuntimeError(f"Blocked command: {decision.reason}")
-        if critical is None and is_read_only_command(cmd):
-            # Commands that only look (ls, git status, rg, Get-ChildItem…) need no approval
-            # in any mode that runs commands; see read_only_commands.
-            return
         if _shell_commands_need_approval():
-            # Whoever answers sees every reason the command was flagged, not only the sandbox.
+            # Host fallback replaces the sandbox only after approval, including for
+            # read-only commands. Whoever answers sees every reason it was flagged.
             _approve_unsandboxed_command(
                 cmd,
                 tool_name=tool_name,
@@ -1823,7 +2109,13 @@ def build_tools(
                 or (f"sensitive command: {decision.reason}" if decision.needs_confirm else None),
                 session_grant_allowed=critical is None,
             )
-            return
+            return remote_write
+        if remote_write and critical is None:
+            return remote_write
+        if critical is None and is_read_only_command(cmd):
+            # Commands that only look need no mode-level approval once the runner's
+            # sandbox/fallback requirements are satisfied; see read_only_commands.
+            return remote_write
         if mode == "review":
             if _approver_unavailable():
                 raise AgentRuntimeError(
@@ -1838,11 +2130,12 @@ def build_tools(
                     allow_for_session_scope=None
                     if critical
                     else exact_command_scope(cmd, kind=tool_name),
-                )
+                ),
+                operation_approved=operation_approved,
             )
             if not decision.allow:
                 raise ApprovalDeclinedError(tool_name)
-            return
+            return remote_write
         # auto mode: a delete aimed at the project or home folder is reviewed even with --yes.
         concern = critical or (
             f"sensitive command: {decision.reason}" if decision.needs_confirm and not yes else None
@@ -1861,10 +2154,12 @@ def build_tools(
                     allow_for_session_scope=None
                     if critical
                     else exact_command_scope(cmd, kind=tool_name),
-                )
+                ),
+                operation_approved=operation_approved,
             )
             if not choice.allow:
                 raise ApprovalDeclinedError(tool_name)
+        return remote_write
 
     def guard_terminal_op(op_name: str) -> None:
         _admit_routine_action(op_name, op_name)
@@ -1873,7 +2168,7 @@ def build_tools(
         if mode == "readonly":
             raise AgentRuntimeError(f"Blocked in readonly mode: {op_name}")
 
-    def guard_verify(commands: list[str]) -> None:
+    def guard_verify(commands: list[str]) -> tuple[ExecutionDirectoryIdentity, ...]:
         _admit_routine_action(
             "verify_run",
             "\n".join(commands),
@@ -1884,8 +2179,18 @@ def build_tools(
                 "Blocked while persona write scope is active: verify_run. "
                 "Verification commands can write paths the persona scope cannot constrain."
             )
+        directories = tuple(
+            directory
+            for command in commands
+            if (
+                directory := _require_github_write_approval(
+                    command, tool_name="verify_run", cwd=str(root)
+                )
+            )
+            is not None
+        )
         if is_full_access_mode:
-            return
+            return directories
         if mode == "readonly":
             raise AgentRuntimeError("Blocked in readonly mode: verify_run")
 
@@ -1923,7 +2228,7 @@ def build_tools(
             )
             if not choice.allow:
                 raise ApprovalDeclinedError("verify_run")
-            return
+            return directories
 
         if mode == "review":
             if _approver_unavailable():
@@ -1941,7 +2246,7 @@ def build_tools(
             )
             if not decision.allow:
                 raise ApprovalDeclinedError("verify_run")
-            return
+            return directories
 
         if sensitive_reason and not yes:
             if _approver_unavailable():
@@ -1959,6 +2264,7 @@ def build_tools(
             )
             if not choice.allow:
                 raise ApprovalDeclinedError("verify_run")
+        return directories
 
     tools: list[ToolDef] = []
 
@@ -1994,6 +2300,7 @@ def build_tools(
         field_name: str,
         base_field_name: str,
         allow_empty: bool = False,
+        approved_roots: tuple[str, ...] | None = None,
     ) -> str:
         workspace_root = root.resolve()
         base_kind = _normalize_tool_path_base(raw_base, field_name=base_field_name)
@@ -2016,8 +2323,16 @@ def build_tools(
             requested.resolve() if requested.is_absolute() else (base_path / requested).resolve()
         )
         try:
-            candidate.relative_to(workspace_root)
+            containing_root(workspace_root, candidate)
         except ValueError as e:
+            from ..sandbox_workspace import contains_workspace_path, runner_workspace_roots
+
+            if tool_name in {"shell_run", "shell_background"} and contains_workspace_path(
+                workspace_root,
+                candidate,
+                runner_workspace_roots(shell_runner) if approved_roots is None else approved_roots,
+            ):
+                return str(candidate)
             payload = _path_escape_recovery_payload(
                 tool_name=tool_name,
                 attempted_path=text,
@@ -2026,7 +2341,7 @@ def build_tools(
                 path_base=base_kind,
             )
             raise AgentRuntimeError(str(payload["error"]), result_payload=payload) from e
-        rel_path = _workspace_relpath_for_path(workspace_root=workspace_root, path=candidate)
+        rel_path = relative_path(workspace_root, candidate)
         if rel_path == "README" and not (workspace_root / "README").exists():
             if (workspace_root / "README.md").exists():
                 return "README.md"
@@ -2052,6 +2367,10 @@ def build_tools(
             visual_delivery=visual_delivery,
             metadata={
                 "tool_type": "builtin",
+                "read_only_context": (
+                    "read" in metadata.categories
+                    and not {"write", "verify", "verification"}.intersection(metadata.categories)
+                ),
                 "compact_parameters_for_model": True,
                 "model_description": model_description
                 or _BUILTIN_MODEL_DESCRIPTIONS.get(metadata.name, metadata.description),
@@ -2102,6 +2421,74 @@ def build_tools(
             artifact_reference_prefix=artifact_reference_prefix,
         )
 
+    def _git_directory_failure(exc: ContainedGitDirectoryError) -> AgentRuntimeError:
+        # Inspect retained launcher authority, never current config or helper
+        # availability. Guidance must not initialize a runner or execute a retry.
+        from ..sandbox_runner import LazyShellRunner
+        from ..windows_mxc import WindowsMxcRunner
+
+        runner = shell_runner
+        settings = None
+        if isinstance(runner, LazyShellRunner):
+            if runner.resolved_runner is None:
+                settings = runner.execution_settings
+            else:
+                runner = runner.resolved_runner
+        if isinstance(runner, WindowsMxcRunner):
+            settings = runner.settings
+        can_recover = (
+            mode != "readonly"
+            # Child allow/deny filters are applied after build_tools returns.
+            # Its captured registry cannot promise the child's final exposure.
+            and subagent_depth == 0
+            and not persona_write_scope_active
+            and "shell_run" in active_tools
+            and settings is not None
+            and settings.mode == "strict"
+            and settings.backend == "windows-mxc"
+            and settings.filesystem_access == "workspace-write"
+        )
+        message = (
+            "The read-only Git helper could not open the project directory. "
+            "A separate sandboxed shell call is available under this session's existing policy."
+            if can_recover
+            else "Git inspection is unavailable in this Windows read-only sandbox."
+        )
+        payload: dict[str, Any] = {
+            "error": message,
+            "error_code": "git_directory_access_denied",
+            "unsupported_capability": "native_readonly_git",
+            "recoverable": can_recover,
+            "retry_same_tool": False,
+            "detail": str(exc),
+        }
+        if can_recover:
+            payload["recovery"] = {
+                "tool": "shell_run",
+                "cwd": ".",
+                "cwd_base": "workspace_root",
+                "requires_new_tool_call": True,
+                "instructions": (
+                    "Use a separate shell_run call for the requested Git inspection in the "
+                    "session's already authorized writable workspace. Preserve the requested "
+                    "paths, revisions and output limits. Normal tool hooks, approvals and "
+                    "sandbox policy still apply. Shell output differs from this tool's schema. "
+                    "Do not repeat this read tool or disable containment. "
+                    "This helper failure alone does not mean Git is unavailable for the task. "
+                    "Attempt the separate dispatch once before reporting Git inspection as "
+                    "blocked; if it is denied or fails, report that result without escalating. "
+                    "Use --no-optional-locks and -c core.fsmonitor=false for inspection, and "
+                    "--no-ext-diff --no-textconv for diff output. Do not change Git configuration."
+                ),
+            }
+        else:
+            payload["limitation"] = (
+                "This session cannot offer a qualified writable-shell recovery. "
+                "Do not retry with broader access or outside the sandbox. "
+                "Explain this Git limitation to the user; other supported reads remain available."
+            )
+        return AgentRuntimeError(message, result_payload=payload)
+
     def _append_builtin_tool(
         name: str,
         *,
@@ -2117,6 +2504,224 @@ def build_tools(
             readonly_child_web_tool_names=readonly_child_web_tool_names,
         ):
             return
+        # Repository-wide helpers can inspect more than the explicitly requested
+        # file. Refuse a private subtree before its content enters these readers.
+        original_run = run
+        if name in {
+            "fs_list",
+            "search_rg",
+            "symbol_search",
+            "repo_map",
+            "test_discover",
+            "git_diff",
+            "git_history",
+            "git_status",
+        }:
+
+            def guarded_read(args: dict[str, Any]) -> dict[str, Any]:
+                if name in {"fs_list", "search_rg", "symbol_search"}:
+                    path = _resolve_workspace_relative_path(
+                        tool_name=name,
+                        raw_path=args.get("root_path"),
+                        raw_base=args.get("path_base"),
+                        field_name="root_path",
+                        base_field_name="path_base",
+                        allow_empty=True,
+                    )
+                else:
+                    path = "."
+                _guard_host_file_path(path, recursive=True)
+                if name in {"fs_list", "search_rg", "symbol_search"}:
+                    args = {**args, "root_path": path, "path_base": "workspace_root"}
+                public_args = {key: value for key, value in args.items() if isinstance(key, str)}
+                if contained_read_tools is not None:
+                    try:
+                        return contained_read_tools.run(
+                            name,
+                            public_args,
+                            cancel_check=_cancellation_probe(
+                                args.get(_SHELL_CANCELLATION_TOKEN_ARG)
+                            ),
+                            timeout_s=int(
+                                deadline_timeout_or_raise(
+                                    execution_deadline,
+                                    30.0,
+                                    operation=name,
+                                )
+                            ),
+                        )
+                    except ContainedGitDirectoryError as exc:
+                        if name not in {"git_status", "git_diff", "git_history"}:
+                            raise
+                        raise _git_directory_failure(exc) from exc
+                return original_run(public_args)
+
+            run = guarded_read
+        elif host_file_policy is not None and name in {
+            "asset_view",
+            "fs_read",
+            "fs_write",
+            "fs_edit",
+            "fs_move",
+            "fs_copy",
+            "fs_delete",
+            "fs_mkdir",
+            "image_generate",
+            "git_apply_patch",
+        }:
+
+            def guarded_file_action(args: dict[str, Any]) -> dict[str, Any]:
+                try:
+                    with host_file_action(
+                        host_file_policy, readonly=name in {"fs_read", "asset_view"}
+                    ):
+                        return original_run(args)
+                except HostFilePolicyError as exc:
+                    raise AgentRuntimeError(str(exc)) from exc
+
+            run = guarded_file_action
+        if name in {"shell_run", "shell_background"} and scoped_access.enabled:
+            parameters = parameters or copied_tool_parameters(name)
+            permission_schema = copy.deepcopy(PERMISSIONS_SCHEMA)
+            if sys.platform != "darwin":
+                for field in (
+                    "network_domains",
+                    "private_network_endpoints",
+                    "unix_sockets",
+                    "read_files",
+                    "environment",
+                    "ssh_agent",
+                    "git_metadata",
+                ):
+                    permission_schema["properties"].pop(field)
+            parameters["properties"]["permissions"] = permission_schema
+            model_description = (model_description or _BUILTIN_MODEL_DESCRIPTIONS.get(name, "")) + (
+                " When the task needs internet, external file contents or a local preview, request "
+                "permissions in this call. Access is automatically reviewed in Approve for me; "
+                "the OS sandbox stays on. Default operation grants apply only to this command tree. "
+                "Use scope=turn only when subsequent commands need the same access; the reviewer "
+                "sees that duration, and the grant expires at the next user message. "
+                "On Windows and macOS, scope=session retains ordinary folder/network access for this chat until "
+                "revoked; save_as creates a reusable workspace profile after a person's approval. "
+                "Use sandbox_permissions to list or revoke access. Authentication inputs and daemon "
+                "sockets require a person for each operation. "
+                "Use shell_background with permissions.local_preview=true and persist=false "
+                "for a local server, bind it to 127.0.0.1, and stop it when finished. "
+                "For operation grants, include all scopes on EACH call: a preview that reads an external folder "
+                "needs read_folders together with local_preview. A filesystem/network OS "
+                "denial can be retried with these reviewed permissions; an approval or "
+                "policy denial must not be bypassed."
+            )
+            if sys.platform == "darwin":
+                model_description += (
+                    " On macOS, directory-name discovery outside the workspace is already allowed "
+                    "for ordinary folders: use absolute paths with directory listing/search commands "
+                    "without read_folders to locate the requested project. Reading file contents or "
+                    "editing files still needs the exact discovered folder scope. Do not request "
+                    "whole-home content access just to discover a project. macOS privacy permissions "
+                    "and protected app-state boundaries still apply."
+                )
+        if (
+            _scoped_file_dispatch
+            and scoped_access.enabled
+            and name
+            in {
+                "fs_read",
+                "fs_write",
+                "fs_edit",
+                "fs_move",
+                "fs_copy",
+                "fs_delete",
+                "fs_mkdir",
+                "fs_list",
+                "search_rg",
+                "symbol_search",
+            }
+        ):
+            local_run = run
+
+            def dispatch_scoped_file(args: dict[str, Any]) -> dict[str, Any]:
+                try:
+                    identity = scoped_access.external_file_root(name, args)
+                except (ConfigError, HostFilePolicyError) as exc:
+                    # A rejected scope is not a failed file operation or a human
+                    # denial. Preserve its cause for the retry guard and UI before
+                    # any delegated file tool can dispatch.
+                    guidance = (
+                        "Do not retry the same refused scope or broaden access to bypass it. "
+                        "Use an already authorized task folder, or explain the exact boundary "
+                        "and ask for a specific supported folder if the task needs one."
+                    )
+                    raise AgentRuntimeError(
+                        str(exc),
+                        result_payload={
+                            "error": str(exc),
+                            "error_code": "scoped_file_access_refused",
+                            "dispatch_state": "not_dispatched",
+                            "retryable": False,
+                            "tool_name": name,
+                            "guidance": guidance,
+                            "suggested_next_actions": [
+                                {
+                                    "action": "ask_or_explain_boundary",
+                                    "description": "Explain the refused folder scope before proceeding.",
+                                    "requires_user_confirmation": True,
+                                }
+                            ],
+                        },
+                    ) from exc
+                if identity is None:
+                    return local_run(args)
+                external_root = Path(identity.path)
+                # Reuse the complete file guards, sensitive-file approvals, stale-read
+                # checks and contained worker under the admitted operation root.
+                delegated = scoped_file_delegates.get(identity)
+                if delegated is None:
+                    delegated = build_tools(
+                        root=external_root,
+                        console=console,
+                        surface=surface,
+                        store=store,
+                        mode=mode,
+                        yes=yes,
+                        cfg=cfg,
+                        non_interactive=non_interactive,
+                        shell_runner=shell_runner,
+                        verification_enabled=False,
+                        skills_enabled=False,
+                        runtime_kind=resolved_runtime_kind,
+                        execution_deadline=execution_deadline,
+                        approval_reviewer=approval_reviewer,
+                        _scoped_file_dispatch=False,
+                    )
+                    if len(scoped_file_delegates) >= 32:
+                        raise AgentRuntimeError(
+                            "Too many scoped folders in this session; start a new chat."
+                        )
+                    scoped_file_delegates[identity] = delegated
+                translated = dict(args)
+                for key in ("path", "root_path", "source_path", "destination_path"):
+                    if isinstance(translated.get(key), str) and translated[key]:
+                        value = Path(translated[key])
+                        translated[key] = str(value if value.is_absolute() else root / value)
+                if isinstance(translated.get("paths"), list):
+                    translated["paths"] = [str(root / Path(value)) for value in translated["paths"]]
+                identity.check()
+                result = delegated[name].run(translated)
+                result = {**result, "scoped_workspace": str(external_root)}
+                # A relative result belongs to the delegated root, not the chat's
+                # project. Keep that identity unambiguous for UI and completion
+                # evidence consumers without changing the delegated read ledger.
+                for key in ("path", "source_path", "destination_path"):
+                    if isinstance(result.get(key), str) and result[key]:
+                        result[key] = str(external_root / result[key])
+                return result
+
+            run = dispatch_scoped_file
+            model_description = (model_description or _BUILTIN_MODEL_DESCRIPTIONS.get(name, "")) + (
+                " An explicit absolute path outside the project requests scoped access "
+                "through the current approval mode; no Full access switch is needed."
+            )
         tools.append(
             _make_tool_def(
                 name,
@@ -2192,13 +2797,28 @@ def build_tools(
         and resolved_runtime_kind == RuntimeKind.INTERACTIVE_CHAT
     ):
         _append_builtin_tool("request_user_input", run=questions.request)
-        _append_builtin_tool(
-            "wait_user_input",
-            run=lambda args: questions.collect(
+
+        def _collect_user_answers(args: dict) -> dict:
+            snapshot = questions.snapshot()
+            result = questions.collect(
                 args.get("request_id", ""),
                 cancellation_token=args.get(QUESTION_CANCELLATION_TOKEN),
-            ),
-        )
+            )
+            if result.get("answers"):
+                # Only this host broker can publish a verified answer, not a tool's
+                # claim that its output is a user message.
+                store.append(
+                    "user_question_response",
+                    {
+                        **result,
+                        "question_evidence": snapshot.get("questions", [])
+                        if snapshot and snapshot.get("request_id") == result.get("request_id")
+                        else [],
+                    },
+                )
+            return result
+
+        _append_builtin_tool("wait_user_input", run=_collect_user_answers)
 
     # report_blocker is a top-level completion-gate control signal, not a
     # repository action. Keep the runtime-kind check here as a fail-closed
@@ -2314,6 +2934,7 @@ def build_tools(
             capture_file_precondition(root=root, path=path) if sensitive_findings else None
         )
         sensitive = guard_sensitive_files("fs_edit", files=[path])
+        _guard_host_file_path(path, write=True)
         if stamped_precondition is not None:
             try:
                 assert_file_precondition(root=root, precondition=stamped_precondition)
@@ -2344,8 +2965,18 @@ def build_tools(
             diff = _unified_diff(prepared.original_content, prepared.updated_content, path)
             store.append("diff_preview", {"path": path, "diff": diff[:20000]})
             guard_write("fs_edit", diff[:20000] or f"(no diff) {path}", files=[path])
+        _guard_host_file_path(path, write=True)
         try:
-            result = write_prepared_fs_edit(prepared, root=root)
+            result = _run_file_mutation(
+                "fs_edit_prepared",
+                {
+                    key: value
+                    for key, value in asdict(prepared).items()
+                    if key not in {"root_obj", "path_obj"}
+                },
+                lambda: write_prepared_fs_edit(prepared, root=root),
+                args,
+            )
         except StaleFileError as error:
             return _stale_file_result(error)
         read_ledger.invalidate(path)
@@ -2391,14 +3022,27 @@ def build_tools(
         )
         if not sensitive:
             guard_write("fs_move", preview, files=[source_path, destination_path])
+        _guard_host_file_path(source_path, write=True)
+        _guard_host_file_path(destination_path, write=True)
         try:
-            result = fs_move(
-                root=root,
-                source_path=source_path,
-                destination_path=destination_path,
-                overwrite=overwrite,
-                source_precondition=source_precondition,
-                destination_precondition=destination_precondition,
+            result = _run_file_mutation(
+                "fs_move",
+                {
+                    "source_path": source_path,
+                    "destination_path": destination_path,
+                    "overwrite": overwrite,
+                    "source_precondition": asdict(source_precondition),
+                    "destination_precondition": asdict(destination_precondition),
+                },
+                lambda: fs_move(
+                    root=root,
+                    source_path=source_path,
+                    destination_path=destination_path,
+                    overwrite=overwrite,
+                    source_precondition=source_precondition,
+                    destination_precondition=destination_precondition,
+                ),
+                args,
             )
         except StaleFileError as error:
             return _stale_file_result(error)
@@ -2423,6 +3067,7 @@ def build_tools(
             base_field_name="destination_path_base",
         )
         _guard_write_path(destination_path)
+        _guard_host_file_path(source_path)
         overwrite = bool(args.get("overwrite", False))
         source_precondition = capture_file_precondition(root=root, path=source_path)
         destination_precondition = capture_file_precondition(root=root, path=destination_path)
@@ -2435,14 +3080,27 @@ def build_tools(
         )
         if not sensitive:
             guard_write("fs_copy", preview, files=[source_path, destination_path])
+        _guard_host_file_path(source_path)
+        _guard_host_file_path(destination_path, write=True)
         try:
-            result = fs_copy(
-                root=root,
-                source_path=source_path,
-                destination_path=destination_path,
-                overwrite=overwrite,
-                source_precondition=source_precondition,
-                destination_precondition=destination_precondition,
+            result = _run_file_mutation(
+                "fs_copy",
+                {
+                    "source_path": source_path,
+                    "destination_path": destination_path,
+                    "overwrite": overwrite,
+                    "source_precondition": asdict(source_precondition),
+                    "destination_precondition": asdict(destination_precondition),
+                },
+                lambda: fs_copy(
+                    root=root,
+                    source_path=source_path,
+                    destination_path=destination_path,
+                    overwrite=overwrite,
+                    source_precondition=source_precondition,
+                    destination_precondition=destination_precondition,
+                ),
+                args,
             )
         except StaleFileError as error:
             return _stale_file_result(error)
@@ -2508,11 +3166,21 @@ def build_tools(
 
         if ordinary:
             guard_write("fs_delete", _delete_preview(ordinary), files=ordinary)
+        for path in resolved:
+            _guard_host_file_path(path, write=True)
         if raw_paths is None:
             # Single-file form: identical result shape to the original tool.
             try:
-                result = fs_delete(
-                    root=root, path=resolved[0], precondition=preconditions[resolved[0]]
+                result = _run_file_mutation(
+                    "fs_delete",
+                    {
+                        "path": resolved[0],
+                        "precondition": asdict(preconditions[resolved[0]]),
+                    },
+                    lambda: fs_delete(
+                        root=root, path=resolved[0], precondition=preconditions[resolved[0]]
+                    ),
+                    args,
                 )
             except StaleFileError as error:
                 return _stale_file_result(error)
@@ -2522,7 +3190,17 @@ def build_tools(
         deleted_count = 0
         for path in resolved:
             try:
-                result = fs_delete(root=root, path=path, precondition=preconditions[path])
+                result = _run_file_mutation(
+                    "fs_delete",
+                    {
+                        "path": path,
+                        "precondition": asdict(preconditions[path]),
+                    },
+                    lambda path=path: fs_delete(
+                        root=root, path=path, precondition=preconditions[path]
+                    ),
+                    args,
+                )
             except StaleFileError as error:
                 entries.append({"path": path, "ok": False, **_stale_file_result(error)})
                 continue
@@ -2587,8 +3265,18 @@ def build_tools(
             diff = _unified_diff(old, content, path)
             store.append("diff_preview", {"path": path, "diff": diff[:20000]})
             guard_write("fs_write", diff[:20000] or f"(no diff) {path}", files=[path])
+        _guard_host_file_path(path, write=True)
         try:
-            result = write_prepared_fs_write(prepared, root=root)
+            result = _run_file_mutation(
+                "fs_write_prepared",
+                {
+                    key: value
+                    for key, value in asdict(prepared).items()
+                    if key not in {"root_obj", "path_obj"}
+                },
+                lambda: write_prepared_fs_write(prepared, root=root),
+                args,
+            )
         except StaleFileError as error:
             return _stale_file_result(error)
         read_ledger.invalidate(path)
@@ -2619,6 +3307,7 @@ def build_tools(
             base_field_name="path_base",
         )
         if _is_allowed_ancestor_dir_creation(path):
+            _guard_host_file_path(path, write=True)
             if _is_denied_path(path):
                 raise AgentRuntimeError(f"Blocked write to protected path: {path}")
         else:
@@ -2632,11 +3321,21 @@ def build_tools(
             f"exist_ok: {str(exist_ok).lower()}"
         )
         guard_write("fs_mkdir", preview, files=[path])
-        return fs_mkdir(
-            root=root,
-            path=path,
-            parents=parents,
-            exist_ok=exist_ok,
+        _guard_host_file_path(path, write=True)
+        return _run_file_mutation(
+            "fs_mkdir",
+            {
+                "path": path,
+                "parents": parents,
+                "exist_ok": exist_ok,
+            },
+            lambda: fs_mkdir(
+                root=root,
+                path=path,
+                parents=parents,
+                exist_ok=exist_ok,
+            ),
+            args,
         )
 
     _append_builtin_tool("fs_mkdir", run=_fs_mkdir)
@@ -2666,6 +3365,28 @@ def build_tools(
                 f"background: {str(args.get('background') or 'auto')}"
             )
             guard_write("image_generate", preview, files=relative_paths)
+            for relative_path in relative_paths:
+                _guard_host_file_path(relative_path, write=True)
+            publication: dict[str, Any] = {}
+            if contained_read_tools is not None:
+
+                def publish_generated_image(target: Path, payload: bytes) -> None:
+                    relative = target.relative_to(root.resolve()).as_posix()
+                    _guard_host_file_path(relative, write=True)
+                    contained_read_tools.run_write(
+                        "image_create_bytes",
+                        {"path": relative, "payload": base64.b64encode(payload).decode("ascii")},
+                        cancel_check=_cancellation_probe(args.get(_SHELL_CANCELLATION_TOKEN_ARG)),
+                        timeout_s=int(
+                            deadline_timeout_or_raise(
+                                execution_deadline,
+                                30.0,
+                                operation="image_create_bytes",
+                            )
+                        ),
+                    )
+
+                publication["publish"] = publish_generated_image
             try:
                 result = generate_images(
                     root=root,
@@ -2681,6 +3402,7 @@ def build_tools(
                         cfg.image_generation.timeout_s,
                         operation="image_generate",
                     ),
+                    **publication,
                 )
             except (ImageGenerationError, DeadlineExhausted) as exc:
                 raise AgentRuntimeError(f"Image generation failed: {exc}") from exc
@@ -2732,7 +3454,9 @@ def build_tools(
             return None
         return str(redact_secrets(public_url))
 
-    def _browser_status_payload(status: BrowserSessionStatus | Any) -> dict[str, Any]:
+    def _browser_status_payload(
+        status: _managed_browser_api.BrowserSessionStatus | Any,
+    ) -> dict[str, Any]:
         if isinstance(status, dict):
             source = status
         else:
@@ -2807,9 +3531,10 @@ def build_tools(
             )
 
     def _run_managed_browser(operation: Callable[[], Any]) -> Any:
+        browser_error = _execution_dependency("BrowserError")
         try:
             return operation()
-        except BrowserError as exc:
+        except browser_error as exc:
             raise AgentRuntimeError(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - do not expose provider or page secrets
             raise AgentRuntimeError("Managed browser operation failed safely.") from exc
@@ -2847,12 +3572,16 @@ def build_tools(
     if browser_tools_enabled:
         browser_owner_id = str(managed_browser_owner_id or store.session_id).strip()
 
-        def _browser_is_direct_only(status: BrowserSessionStatus | Any) -> bool:
+        def _browser_is_direct_only(
+            status: _managed_browser_api.BrowserSessionStatus | Any,
+        ) -> bool:
             if isinstance(status, dict):
                 return bool(status.get("allow_local_destinations"))
             return bool(getattr(status, "allow_local_destinations", False))
 
-        def _browser_require_agent_visible(session_id: str) -> BrowserSessionStatus | Any:
+        def _browser_require_agent_visible(
+            session_id: str,
+        ) -> _managed_browser_api.BrowserSessionStatus | Any:
             """Fence direct localhost sessions away from model-controlled tools.
 
             ``allow_local_destinations`` is immutable for a managed-browser
@@ -2951,7 +3680,9 @@ def build_tools(
                     cancel=_managed_browser_cancelled,
                 )
             )
-            if not isinstance(artifact, BrowserArtifact) and not hasattr(artifact, "artifact_id"):
+            if not isinstance(artifact, _execution_dependency("BrowserArtifact")) and not hasattr(
+                artifact, "artifact_id"
+            ):
                 raise AgentRuntimeError("Managed browser returned an invalid artifact.")
             return {
                 "artifact_id": str(artifact.artifact_id),
@@ -3112,8 +3843,18 @@ def build_tools(
 
     def _capability_status(_args: dict[str, Any]) -> dict[str, Any]:
         from alysis_code.documents import pdf_capability_status
+        from alysis_code.file_staging import capability_status as file_staging_capability_status
         from alysis_code.office import office_capability_status
 
+        pdf = pdf_capability_status()
+        office = office_capability_status()
+        if _built_in_tool_exposed_in_mode(
+            tool_name="document_operation", mode=mode, subagent_depth=subagent_depth
+        ):
+            from alysis_code.office.operations import native_capability_status
+
+            pdf = native_capability_status("pdf")
+            office = native_capability_status("docx")
         return {
             "web_search": web_search_probe.status(
                 cfg=cfg, api_key=api_key, exposed=web_search_exposed_in_mode
@@ -3131,11 +3872,104 @@ def build_tools(
                 "basis": "URL provenance and network reachability are checked per request",
             },
             "asset_view": local_asset_viewer.status(),
-            "pdf": pdf_capability_status(),
-            "office": office_capability_status(),
+            "pdf": pdf,
+            "office": office,
+            "file_staging": file_staging_capability_status(),
         }
 
     _append_builtin_tool("capability_status", run=_capability_status)
+
+    def _guard_document_output(path: str, *, checks: str | None = None) -> list[dict[str, str]]:
+        """``checks`` names the document a review folder holds verification files for. The folder
+        is a random id, and that was all the approval could show (QA-009)."""
+        _guard_write_path(path)
+        findings = guard_sensitive_files("fs_write", files=[path])
+        if not findings:
+            if checks:
+                guard_write(
+                    "fs_write",
+                    f"Create verification files for {checks}: {path}",
+                    files=[path],
+                    metadata={"purpose": "verification_files", "source_artifact": checks},
+                )
+            else:
+                guard_write("fs_write", f"Create document or review files: {path}", files=[path])
+        return findings
+
+    def _document_operation(args: dict[str, Any]) -> dict[str, Any]:
+        from alysis_code.documents.__main__ import _path
+        from alysis_code.office.operations import run_operation
+
+        normalized = {key: value for key, value in args.items() if key != "path_base"}
+        base_kind = _normalize_tool_path_base(args.get("path_base"), field_name="path_base")
+        base = (
+            Path(_default_active_workdir_relpath()) if base_kind == "active_workdir" else Path(".")
+        )
+        for key in ("source", "spec", "output"):
+            if key in args:
+                if not isinstance(args[key], str) or not args[key]:
+                    raise ValueError(f"{key} must be a nonempty path string.")
+                # Keep lexical paths until the helper has rejected symlinks;
+                # resolving first would hide them from its snapshot boundary.
+                normalized[key] = str(_path(root, str(base / args[key])).relative_to(root))
+        sensitive = []
+
+        def read_guard(path):
+            from alysis_code.documents.__main__ import _path
+
+            relative = str(_path(root, path).relative_to(root))
+            sensitive.extend(guard_sensitive_read("fs_read", path=relative))
+
+        def write_guard(path):
+            # The PDF helper writes its page previews to a Task reviews folder for the output.
+            review_folder = str(path).replace("\\", "/").startswith("Task reviews/")
+            checks = normalized.get("output") if review_folder else None
+            sensitive.extend(_guard_document_output(path, checks=checks))
+
+        result = run_operation(
+            root,
+            normalized,
+            read_guard=read_guard,
+            write_guard=write_guard,
+            execution_deadline=execution_deadline,
+            cancel_check=managed_browser_cancel_check,
+        )
+        if normalized.get("output"):
+            read_ledger.invalidate(normalized["output"])
+        return _mark_sensitive_result(result, sensitive)
+
+    _append_builtin_tool("document_operation", run=_document_operation)
+
+    from alysis_code.artifact_checks import ArtifactChecks
+
+    artifact_checks = ArtifactChecks(
+        root, execution_deadline=execution_deadline, cancel_check=managed_browser_cancel_check
+    )
+
+    def _artifact_check(args: dict[str, Any]) -> dict[str, Any]:
+        path = _resolve_workspace_relative_path(
+            tool_name="artifact_check",
+            raw_path=args.get("path"),
+            raw_base=args.get("path_base"),
+            field_name="path",
+            base_field_name="path_base",
+        )
+        sensitive = guard_sensitive_read("artifact_check", path=path)
+        result = artifact_checks.check(
+            path,
+            expected_sha256=args.get("expected_sha256"),
+            write_guard=lambda output: sensitive.extend(
+                _guard_document_output(output, checks=path)
+            ),
+            retain_report=lambda: not sensitive,
+        )
+        for tool in tools:
+            if tool.name == "artifact_check":
+                tool.metadata["artifact_reports"] = artifact_checks.reports()
+                break
+        return _mark_sensitive_result(result, sensitive)
+
+    _append_builtin_tool("artifact_check", run=_artifact_check)
 
     def _web_fetch_recovery_is_public_candidate(raw_url: str) -> bool:
         normalized = normalize_web_url(raw_url)
@@ -3372,7 +4206,7 @@ def build_tools(
             recovered_via_search = True
             if recovered_url:
                 requested_url = recovered_url
-        result = _patchable("web_fetch", web_fetch)(
+        result = _patchable("web_fetch", _execution_dependency("web_fetch"))(
             url=requested_url,
             max_chars=(args["max_chars"] if "max_chars" in args else 20000),
         )
@@ -3422,7 +4256,7 @@ def build_tools(
 
     _append_builtin_tool(
         "symbol_search",
-        run=lambda args: _patchable("symbol_search", symbol_search)(
+        run=lambda args: _patchable("symbol_search", _execution_dependency("symbol_search"))(
             root=root,
             query=str(args.get("query", "")),
             kind=str(args["kind"]) if args.get("kind") is not None else None,
@@ -3445,7 +4279,7 @@ def build_tools(
 
     _append_builtin_tool(
         "test_discover",
-        run=lambda args: _patchable("test_discover", test_discover)(
+        run=lambda args: _patchable("test_discover", _execution_dependency("test_discover"))(
             root=root,
             paths=args.get("paths"),
             symbols=args.get("symbols"),
@@ -3462,7 +4296,7 @@ def build_tools(
 
     _append_builtin_tool(
         "repo_map",
-        run=lambda args: _patchable("repo_map", repo_map)(
+        run=lambda args: _patchable("repo_map", _execution_dependency("repo_map"))(
             root=root,
             paths=args.get("paths"),
             symbols=args.get("symbols"),
@@ -3476,7 +4310,7 @@ def build_tools(
 
     _append_builtin_tool(
         "search_rg",
-        run=lambda args: _patchable("search_rg", search_rg)(
+        run=lambda args: _patchable("search_rg", _execution_dependency("search_rg"))(
             root=root,
             pattern=str(args.get("pattern", "")),
             root_path=_resolve_workspace_relative_path(
@@ -3537,7 +4371,7 @@ def build_tools(
         )
         _append_builtin_tool(
             "history_search",
-            run=lambda args: history_search(
+            run=lambda args: _execution_dependency("history_search")(
                 root=root,
                 session_id=store.session_id,
                 session_artifact_root=store.session_artifact_root,
@@ -3550,18 +4384,29 @@ def build_tools(
             ),
         )
 
-    if skills_enabled and resolved_skill_registry:
+    if skills_enabled and (resolved_skill_registry or plugin_skills):
 
         def _skill_read(args: dict[str, Any]) -> dict[str, Any]:
             raw_name = str(args.get("name", "")).strip()
             if not raw_name:
                 return {"error": "Missing required argument: name"}
-            skill = resolve_skill_by_name(resolved_skill_registry, raw_name)
+            # A plugin skill: publisher guidance, read only while its plugin is still on.
+            plugin_skill = find_plugin_skill(plugin_skills, raw_name)
+            if plugin_skill is not None:
+                return read_plugin_skill(root, plugin_skill)
+            skill = (
+                resolve_skill_by_name(resolved_skill_registry, raw_name)
+                if resolved_skill_registry
+                else None
+            )
             if skill is None:
                 return {
                     "error": f"Unknown skill: {raw_name}",
                     "available_skills": sorted(
-                        skill.name for skill in resolved_skill_registry.values()
+                        [
+                            *(skill.name for skill in (resolved_skill_registry or {}).values()),
+                            *(skill.name for skill in plugin_skills),
+                        ]
                     ),
                 }
             try:
@@ -3654,7 +4499,9 @@ def build_tools(
                     "consumer_profile and commands are separate checks; run each explicitly"
                 )
             try:
-                profile = validate_consumer_profile(args["consumer_profile"])
+                profile = _execution_dependency("validate_consumer_profile")(
+                    args["consumer_profile"]
+                )
             except ValueError as exc:
                 raise VerifyError(str(exc)) from exc
             guard_commands = [check["command"] for check in profile["checks"]]
@@ -3662,8 +4509,9 @@ def build_tools(
                 guard_commands.append(
                     "python -c " + shlex.quote("import " + profile["python_module"])
                 )
-            guard_verify(guard_commands)
+            write_directories = guard_verify(guard_commands)
             sensitive_findings: list[dict[str, str]] = []
+            consumer_artifact_path = _next_verify_artifact_path()
 
             def authorize_consumer_artifact(path: str) -> None:
                 sensitive_findings.extend(guard_sensitive_read("consumer_verification", path=path))
@@ -3673,17 +4521,23 @@ def build_tools(
                     root=root,
                     enabled=command_mutation_tracking_enabled,
                     ignored_paths=command_mutation_ignored_paths,
-                    operation=lambda: run_consumer_profile(
-                        root=root,
-                        spec=profile,
-                        artifact_path=_next_verify_artifact_path(),
-                        cfg=effective_cfg,
-                        timeout_s=verify_timeout_s,
-                        process_group_registry=process_group_registry,
-                        service_status=durable_service_manager.status
-                        if durable_service_manager is not None
-                        else None,
-                        authorize_artifact_read=authorize_consumer_artifact,
+                    operation=lambda: _with_write_directory_checks(
+                        write_directories,
+                        lambda: _execution_dependency("run_consumer_profile")(
+                            root=root,
+                            spec=profile,
+                            artifact_path=consumer_artifact_path,
+                            cfg=effective_cfg,
+                            timeout_s=verify_timeout_s,
+                            process_group_registry=process_group_registry,
+                            service_status=durable_service_manager.status
+                            if durable_service_manager is not None
+                            else None,
+                            authorize_artifact_read=authorize_consumer_artifact,
+                            before_command_launch=lambda: _with_write_directory_checks(
+                                write_directories, lambda: None
+                            ),
+                        ),
                     ),
                 )
             except DeadlineExhausted:
@@ -3859,26 +4713,34 @@ def build_tools(
                     "chaining. Pass just the test command (e.g. `pytest -q`); a leading "
                     "`cd <dir> &&` is fine, but move other setup into a separate shell_run."
                 )
-        guard_verify(commands)
+        write_directories = guard_verify(commands)
         workspace_services = _workspace_services_before_verification()
         artifact_path = _next_verify_artifact_path()
         result, touched_repo_paths = _run_with_command_mutation_detection(
             root=root,
             enabled=command_mutation_tracking_enabled,
             ignored_paths=command_mutation_ignored_paths,
-            operation=lambda: _call_with_optional_kwargs(
-                _patchable("run_task_verification", run_task_verification),
-                required_kwargs={
-                    "root": root,
-                    "commands": commands,
-                    "artifact_path": artifact_path,
-                    "cfg": effective_cfg,
-                },
-                optional_kwargs={
-                    "timeout_s": verify_timeout_s,
-                    "process_group_registry": process_group_registry,
-                    "cancel_check": _cancellation_probe(args.get(_SHELL_CANCELLATION_TOKEN_ARG)),
-                },
+            operation=lambda: _with_write_directory_checks(
+                write_directories,
+                lambda: _call_with_optional_kwargs(
+                    _patchable("run_task_verification", run_task_verification),
+                    required_kwargs={
+                        "root": root,
+                        "commands": commands,
+                        "artifact_path": artifact_path,
+                        "cfg": effective_cfg,
+                    },
+                    optional_kwargs={
+                        "timeout_s": verify_timeout_s,
+                        "before_command_launch": lambda: _with_write_directory_checks(
+                            write_directories, lambda: None
+                        ),
+                        "process_group_registry": process_group_registry,
+                        "cancel_check": _cancellation_probe(
+                            args.get(_SHELL_CANCELLATION_TOKEN_ARG)
+                        ),
+                    },
+                ),
             ),
         )
         payload = verify_run_result_to_payload(root=root, result=result)
@@ -4005,6 +4867,11 @@ def build_tools(
     if verification_enabled:
         _append_builtin_tool("verify_run", run=_verify_run)
 
+    def _shell_review_cwd(args: dict[str, Any]) -> str:
+        base = _normalize_tool_path_base(args.get("cwd_base"), field_name="cwd_base")
+        directory = root if base == "workspace_root" else root / _default_active_workdir_relpath()
+        return str((directory / str(args.get("cwd") or "").strip()).resolve())
+
     def _shell(args: dict[str, Any]) -> dict[str, Any]:
         dispatch_started = perf_counter()
         deadline_decision = _deadline_start_decision(
@@ -4024,6 +4891,12 @@ def build_tools(
                 "shell_run skipped because the run deadline is exhausted or too close."
             )
         cmd = str(args.get("cmd", ""))
+        access_grant = scoped_access.prepare(
+            args.get("permissions"), command=cmd, tool="shell_run", cwd=_shell_review_cwd(args)
+        )
+        has_scoped_access = (
+            args.get("permissions") is not None or access_grant.settings != host_file_settings
+        )
         effective_cwd = _resolve_workspace_relative_path(
             tool_name="shell_run",
             raw_path=args.get("cwd"),
@@ -4031,28 +4904,81 @@ def build_tools(
             field_name="cwd",
             base_field_name="cwd_base",
             allow_empty=True,
+            approved_roots=(
+                (
+                    *access_grant.settings.additional_workspace_roots,
+                    *access_grant.settings.additional_read_roots,
+                )
+                if has_scoped_access
+                else None
+            ),
         )
-        guard_shell(cmd, cwd=effective_cwd)
+        write_directory = guard_shell(
+            cmd,
+            cwd=effective_cwd,
+            access_grant=access_grant,
+            scoped_execution=has_scoped_access,
+        )
+        operation_runner = shell_runner
+        if has_scoped_access:
+            from ..sandbox_runner import build_shell_runner_from_settings, with_closed_stdin
+
+            operation_runner = with_closed_stdin(
+                build_shell_runner_from_settings(
+                    access_grant.settings,
+                    root,
+                    process_group_registry=process_group_registry,
+                )
+            )
         store.append("cmd", {"cmd": cmd, "cwd": effective_cwd})
         started = perf_counter()
         result: dict[str, Any] | None = None
+        command_error: ShellError | None = None
         command_seconds = 0.0
         cancel_check = _cancellation_probe(args.get(_SHELL_CANCELLATION_TOKEN_ARG))
+        execution_root = (root / (effective_cwd or ".")).resolve()
+        external_snapshot = None
+        external_before: dict[str, str] | None = None
+        external_tracking_unavailable = False
+        if (
+            command_mutation_tracking_enabled
+            and not execution_root.is_relative_to(root)
+            and any(
+                execution_root.is_relative_to(Path(path).resolve())
+                for path in access_grant.settings.additional_workspace_roots
+            )
+        ):
+            # Observe the authorized working directory in the same native
+            # boundary. Never scan an external repository with host-side Git.
+            external_snapshot = ContainedReadTools.for_settings(
+                access_grant.settings, execution_root
+            )
+            if external_snapshot is not None:
+                try:
+                    access_grant.check()
+                    external_before = external_snapshot.run(
+                        "mutation_snapshot", {}, cancel_check=cancel_check, timeout_s=5
+                    )["signatures"]
+                except Exception:  # noqa: BLE001
+                    external_tracking_unavailable = True
 
         def _run_shell_command() -> Any:
             # Timed on its own so that the workspace walks mutation detection
             # performs on either side of it are attributable to the dispatch
             # path rather than to the command the model asked for.
-            nonlocal command_seconds
+            nonlocal command_seconds, command_error
             command_started = perf_counter()
             try:
+                access_grant.check()
+                if write_directory is not None:
+                    write_directory.check()
                 return _call_with_optional_kwargs(
-                    _patchable("shell_run", shell_run),
+                    _patchable("shell_run", _execution_dependency("shell_run")),
                     required_kwargs={
                         "root": root,
                         "cmd": cmd,
                         "cwd": effective_cwd,
-                        "runner": shell_runner,
+                        "runner": operation_runner,
                     },
                     optional_kwargs={
                         "timeout_s": shell_timeout_s,
@@ -4060,6 +4986,11 @@ def build_tools(
                         "cancel_check": cancel_check,
                     },
                 )
+            except ShellError as exc:
+                # A stopped/failed command may have already changed files. Let
+                # mutation tracking finish before propagating the same failure.
+                command_error = exc
+                return {**(exc.result_payload or {}), "error": str(exc)}
             finally:
                 command_seconds += perf_counter() - command_started
 
@@ -4096,6 +5027,24 @@ def build_tools(
                     command_was_verification=False,
                 )
             )
+        if external_snapshot is not None and external_before is not None:
+            try:
+                access_grant.check()
+                external_after = external_snapshot.run("mutation_snapshot", {}, timeout_s=5)[
+                    "signatures"
+                ]
+                changed = _detect_command_mutation_paths(
+                    before=external_before, after=external_after
+                )
+                result["touched_external_paths"] = [str(execution_root / path) for path in changed]
+                result["external_mutation_scope"] = str(execution_root)
+            except Exception:  # noqa: BLE001
+                external_tracking_unavailable = True
+        if external_tracking_unavailable:
+            result["external_mutation_tracking_unavailable"] = True
+        if command_error is not None:
+            command_error.result_payload = result
+            raise command_error
         current_selection, current_required_verification_commands = _current_verify_selection()
         current_effective_verification_commands = _normalized_verify_commands(
             list(current_selection.commands) if current_selection is not None else []
@@ -4115,7 +5064,7 @@ def build_tools(
             rerun_started = perf_counter()
             try:
                 rerun = _call_with_optional_kwargs(
-                    _patchable("shell_run", shell_run),
+                    _patchable("shell_run", _execution_dependency("shell_run")),
                     required_kwargs={
                         "root": root,
                         "cmd": stage,
@@ -4221,18 +5170,21 @@ def build_tools(
             "startup_error": payload.get("startup_error"),
         }
 
-    def _guard_service_readiness_spec(raw_readiness: Any) -> dict[str, Any] | None:
+    def _guard_service_readiness_spec(
+        raw_readiness: Any, *, cwd: str
+    ) -> tuple[dict[str, Any] | None, ExecutionDirectoryIdentity | None]:
         if raw_readiness is None:
-            return None
+            return None, None
         if not isinstance(raw_readiness, dict):
             raise AgentRuntimeError("readiness must be an object when provided")
         readiness = dict(raw_readiness)
+        directory = None
         if str(readiness.get("type") or "").strip().lower() == "command":
             command = str(readiness.get("command") or "").strip()
             if not command:
                 raise AgentRuntimeError("readiness.command is required for command readiness")
-            guard_shell(command, tool_name="shell_service_start")
-        return readiness
+            directory = guard_shell(command, tool_name="shell_service_start", cwd=cwd)
+        return readiness, directory
 
     def _format_bg_snapshot(
         *,
@@ -4516,6 +5468,7 @@ def build_tools(
         effective_cwd_relpath: str,
         probe_port: int | None,
         deadline_warning: dict[str, Any] | None,
+        write_directory: ExecutionDirectoryIdentity | None,
     ) -> dict[str, Any]:
         """Route a persist=true background start to the durable-service manager.
 
@@ -4529,10 +5482,13 @@ def build_tools(
         manager = _require_durable_service_manager()
         readiness = readiness_spec_for_port(probe_port) if probe_port is not None else None
         try:
+            if write_directory is not None:
+                write_directory.check()
             started = manager.start(
                 cmd=cmd,
                 cwd=cwd_path,
                 readiness=readiness,
+                **({"execution_directory": write_directory} if write_directory else {}),
                 **(
                     {"execution_deadline": execution_deadline}
                     if execution_deadline is not None
@@ -4590,6 +5546,23 @@ def build_tools(
             )
         manager = _require_terminal_manager()
         cmd = str(args.get("cmd", ""))
+        if args.get("permissions") is not None and bool(args.get("persist")):
+            raise AgentRuntimeError(
+                "Scoped preview/access grants require persist=false; they cannot create durable services."
+            )
+        access_grant = scoped_access.prepare(
+            args.get("permissions"),
+            command=cmd,
+            tool="shell_background",
+            cwd=_shell_review_cwd(args),
+        )
+        has_scoped_access = (
+            args.get("permissions") is not None or access_grant.settings != host_file_settings
+        )
+        if has_scoped_access and bool(args.get("persist")):
+            raise AgentRuntimeError(
+                "Turn/operation access grants cannot create durable services; use persist=false."
+            )
         effective_cwd_relpath = _resolve_workspace_relative_path(
             tool_name="shell_background",
             raw_path=args.get("cwd"),
@@ -4597,8 +5570,23 @@ def build_tools(
             field_name="cwd",
             base_field_name="cwd_base",
             allow_empty=True,
+            approved_roots=(
+                (
+                    *access_grant.settings.additional_workspace_roots,
+                    *access_grant.settings.additional_read_roots,
+                )
+                if has_scoped_access
+                else None
+            ),
         )
-        guard_shell(cmd, tool_name="shell_background", cwd=effective_cwd_relpath)
+        write_directory = guard_shell(
+            cmd,
+            tool_name="shell_background",
+            cwd=effective_cwd_relpath,
+            access_grant=access_grant,
+            scoped_execution=has_scoped_access,
+            durable_execution=bool(args.get("persist")),
+        )
         cwd_path = root if not effective_cwd_relpath else (root / effective_cwd_relpath).resolve()
         try:
             probe_port = resolve_probe_port(requested=args.get("probe_port"), cmd=cmd)
@@ -4611,16 +5599,31 @@ def build_tools(
                 effective_cwd_relpath=effective_cwd_relpath,
                 probe_port=probe_port,
                 deadline_warning=deadline_warning,
+                write_directory=write_directory,
             )
         store.append("bg_start", {"cmd": cmd, "cwd": effective_cwd_relpath})
+        scoped_start: dict[str, Any] = {}
+        if has_scoped_access:
+            from ..background_runner import build_background_shell_runner_from_settings
+
+            scoped_start = {
+                "scoped_runner": build_background_shell_runner_from_settings(
+                    access_grant.settings, root
+                ),
+                "scoped_settings": access_grant.settings,
+            }
         started = perf_counter()
         snapshot: ProcessOutputSnapshot | None = None
         try:
             try:
+                access_grant.check()
+                if write_directory is not None:
+                    write_directory.check()
                 process_id = manager.start(
                     cmd=cmd,
                     cwd=cwd_path,
                     root=root,
+                    **scoped_start,
                 )
             except TerminalLimitError as exc:
                 raise AgentRuntimeError(str(exc)) from exc
@@ -4818,8 +5821,6 @@ def build_tools(
             )
         manager = _require_durable_service_manager()
         cmd = str(args.get("cmd", ""))
-        guard_shell(cmd, tool_name="shell_service_start")
-        readiness = _guard_service_readiness_spec(args.get("readiness"))
         effective_cwd_relpath = _resolve_workspace_relative_path(
             tool_name="shell_service_start",
             raw_path=args.get("cwd"),
@@ -4829,12 +5830,24 @@ def build_tools(
             allow_empty=True,
         )
         cwd_path = root if not effective_cwd_relpath else (root / effective_cwd_relpath).resolve()
+        write_directory = guard_shell(cmd, tool_name="shell_service_start", cwd=str(cwd_path))
+        readiness, readiness_directory = _guard_service_readiness_spec(
+            args.get("readiness"), cwd=str(cwd_path)
+        )
         try:
+            for directory in (write_directory, readiness_directory):
+                if directory is not None:
+                    directory.check()
             started = manager.start(
                 cmd=cmd,
                 cwd=cwd_path,
                 readiness=readiness,
                 replace_service_id=args.get("replace_service_id"),
+                **(
+                    {"execution_directory": write_directory or readiness_directory}
+                    if write_directory or readiness_directory
+                    else {}
+                ),
                 **(
                     {"execution_deadline": execution_deadline}
                     if execution_deadline is not None
@@ -5000,6 +6013,8 @@ def build_tools(
                 f"{tool_name} is unavailable because the IDE host did not advertise this capability."
             )
         try:
+            if github_repository_policy is not None:
+                args = github_policy.guard_arguments(github_repository_policy, action, args, None)
             normalized = normalize_host_action_arguments(action, args)
             if action in BROWSER_WRITE_ACTIONS and (
                 mode == "readonly" or persona_write_scope_active
@@ -5013,6 +6028,16 @@ def build_tools(
                 raise AgentRuntimeError(
                     "Interactive host terminal input requires Full access for this chat."
                 )
+            if action in TERMINAL_WRITE_ACTIONS and is_full_access_mode:
+                # An explicitly retained strict sandbox still applies in Full access.
+                terminal_sandbox = resolve_shell_sandbox_settings(cfg or AppConfig())
+                if terminal_sandbox.mode != "off":
+                    raise AgentRuntimeError(
+                        "Interactive host terminals require shell sandbox mode off. "
+                        f"The effective mode is {terminal_sandbox.mode}. Use shell_run or "
+                        "shell_background with the configured sandbox, or explicitly disable "
+                        "the sandbox while keeping Full access."
+                    )
             if action in GITHUB_WRITE_ACTIONS:
                 if persona_write_scope_active or mode == "readonly":
                     raise AgentRuntimeError(f"Blocked by the current write scope: {tool_name}")
@@ -5067,6 +6092,13 @@ def build_tools(
                         )
             return host_action_handler(action, normalized)
         except HostActionError as exc:
+            if exc.code == "approval_denied" and exc.dispatch_state == "not_dispatched":
+                # The host's exact user decision has the same terminal meaning as
+                # a local denial. Ordinary failures/unknown dispatch must not be
+                # reclassified, and a reviewer denial retains its separate flow.
+                raise ApprovalDeclinedError(
+                    tool_name, message=exc.message, result_payload=exc.to_result_payload()
+                ) from exc
             raise AgentRuntimeError(exc.message, result_payload=exc.to_result_payload()) from exc
 
     host_tool_actions = {tool_name: action for action, tool_name in HOST_ACTION_TOOL_NAMES.items()}
@@ -5124,21 +6156,35 @@ def build_tools(
                 else None
             ),
         )
+        if (
+            tool_name == "github_repositories"
+            and github_repository_policy is not None
+            and github_repository_policy.mode == "allow_list"
+            and tools[-1].name == tool_name
+        ):
+            tools[-1] = replace(
+                tools[-1],
+                description=(
+                    "Read one page of at most 100 repositories allowed by the GitHub plugin policy. "
+                    "Only exact allowed repository metadata is requested. An empty list grants no access. "
+                    "Use next_page only in this operation. This does not clone or change repositories."
+                ),
+            )
 
     _append_builtin_tool(
         "git_status",
-        run=lambda _args: git_status(root=root),
+        run=lambda _args: _execution_dependency("git_status")(root=root),
     )
 
     _append_builtin_tool(
         "git_diff",
-        run=lambda args: git_diff(root=root, **args),
+        run=lambda args: _execution_dependency("git_diff")(root=root, **args),
     )
 
     if git_backed_workspace:
         _append_builtin_tool(
             "git_history",
-            run=lambda args: git_history(
+            run=lambda args: _execution_dependency("git_history")(
                 root=root,
                 mode=str(args.get("mode", "")),
                 path=str(args["path"]) if args.get("path") is not None else None,
@@ -5176,8 +6222,17 @@ def build_tools(
             guard_write("git_apply_patch", preview or "(empty patch)", files=patch_paths)
         try:
             for precondition in preconditions:
+                _guard_host_file_path(precondition.path, write=True)
                 assert_file_precondition(root=root, precondition=precondition)
-            result = git_apply_patch(root=root, patch=patch)
+            result = _run_file_mutation(
+                "git_apply_patch",
+                {
+                    "patch": patch,
+                    "preconditions": [asdict(item) for item in preconditions],
+                },
+                lambda: _execution_dependency("git_apply_patch")(root=root, patch=patch),
+                args,
+            )
         except StaleFileError as error:
             return _stale_file_result(error)
         if not sensitive and result.get("applied"):
@@ -5495,12 +6550,51 @@ def build_tools(
         and GITHUB_DISCOVERY_ACTIONS <= effective_host_actions
     ):
         discovery_state = GitHubDiscoveryState()
+        # As in the bridge's broker, discovered and loaded definitions last one host operation
+        # (a chat turn), so a kept chat does not fill the discovery limits turn after turn.
+        host_operation = getattr(host_action_handler, "operation_id", None)
         for action, name, description, parameters in GITHUB_DISCOVERY_TOOL_SPECS:
+            if (
+                github_repository_policy is not None
+                and github_repository_policy.mode == "allow_list"
+            ):
+                parameters = copy.deepcopy(parameters)
+                available_names = (
+                    ["github_api_read"]
+                    if mode == "readonly" or persona_write_scope_active
+                    else list(github_policy.EFFECTIVE_PINS)
+                )
+                if action == "mcp.github.describe":
+                    parameters["properties"]["names"]["items"]["enum"] = available_names
+                    target_properties = parameters["properties"]["target"]["properties"]
+                    target_properties["scope"]["enum"] = ["repository", "workspace"]
+                    target_properties.pop("organization", None)
+                elif action == "mcp.github.call":
+                    parameters["properties"]["name"]["enum"] = available_names
+                description = (
+                    "GitHub repository policy is restricted. Discover and describe only the local "
+                    "github_api_read (repository root or branches) and github_api_write "
+                    "(same-repository pull request creation) definitions, then call the exact loaded "
+                    "definition and target. Only allowed repository or workspace targets are available. "
+                    "Other routes, search, GraphQL, account and organization targets are unavailable. "
+                    "Every write requires person approval; approval cannot override repository policy."
+                    + (
+                        " Write definitions are unavailable in this read-only scope."
+                        if mode == "readonly" or persona_write_scope_active
+                        else ""
+                    )
+                )
 
             def _run_github_discovery(args: dict[str, Any], *, _action=action) -> dict[str, Any]:
                 try:
                     assert_host_mcp_current(root, host_mcp)
+                    if callable(host_operation):
+                        discovery_state.begin(host_operation() or "")
                     normalized = normalize_host_action_arguments(_action, args)
+                    if github_repository_policy is not None:
+                        normalized = github_policy.guard_arguments(
+                            github_repository_policy, _action, normalized, discovery_state
+                        )
                     restricted = mode == "readonly" or persona_write_scope_active
                     discovery_state.check(
                         _action,
@@ -5521,6 +6615,7 @@ def build_tools(
                         )
                         return wrap_mcp_result(normalized["name"], result)
                     result = discovery_result(_action, result)
+                    github_policy.guard_result(github_repository_policy, _action, result)
                     if persona_write_scope_active and mode != "readonly":
                         result = {**result, "tools": [t for t in result["tools"] if t["readOnly"]]}
                     discovery_state.record(_action, normalized, result, readonly=restricted)
@@ -5539,6 +6634,7 @@ def build_tools(
                     metadata={
                         "tool_type": "mcp",
                         "plugin_id": "alysis.github",
+                        "tool_discovery_entrypoint": True,
                         "compact_parameters_for_model": True,
                     },
                 )
@@ -5657,16 +6753,87 @@ def build_tools(
                     )
                 )
 
+    # The user's own online plugins (Plugins M2d) and Alysis-verified ones: a tool not marked
+    # "only reads" is a write, so every call to it asks a person (REMOTE_CONNECTOR_WRITE_ACTIONS).
+    if (
+        connector_mcp
+        and CONNECTOR_MCP_ACTION in effective_host_actions
+        and host_action_handler is not None
+    ):
+        for catalog in connector_mcp:
+            for connector_tool in catalog["tools"]:
+                if not connector_tool["readOnly"] and (
+                    mode == "readonly" or persona_write_scope_active
+                ):
+                    continue
+
+                def _run_connector(
+                    args: dict[str, Any], *, _tool=connector_tool, _catalog=catalog
+                ) -> dict[str, Any]:
+                    try:
+                        assert_connector_current(root, _catalog)
+                        if not _tool["readOnly"] and (
+                            mode == "readonly"
+                            or persona_write_scope_active
+                            or not host_managed_approvals
+                        ):
+                            raise AgentRuntimeError(
+                                "Host-managed approval is required for custom plugin calls."
+                            )
+                        normalized = normalize_host_action_arguments(
+                            CONNECTOR_MCP_ACTION,
+                            {
+                                "plugin_id": _catalog["plugin_id"],
+                                "name": _tool["name"],
+                                "arguments": args,
+                            },
+                        )
+                        check_connector_call(_catalog, normalized)
+                        result = host_action_handler(CONNECTOR_MCP_ACTION, normalized)
+                        assert_connector_current(root, _catalog)
+                        return wrap_connector_result(_catalog, _tool["name"], result)
+                    except HostActionError as exc:
+                        raise AgentRuntimeError(
+                            exc.message, result_payload=exc.to_result_payload()
+                        ) from exc
+
+                tools.append(
+                    ToolDef(
+                        name=connector_tool_name(catalog["plugin_id"], connector_tool["name"]),
+                        description=build_host_owned_mcp_tool_description(
+                            server_id=catalog["server_id"],
+                            tool_name=connector_tool["name"],
+                            server_description=connector_tool["description"],
+                        ),
+                        parameters=tool_parameters(connector_tool),
+                        run=_run_connector,
+                        metadata={
+                            "tool_type": "mcp",
+                            "plugin_id": catalog["plugin_id"],
+                            "compact_parameters_for_model": True,
+                            "model_description_max_chars": 1000,
+                        },
+                    )
+                )
+
     if mcp_manager is not None and _mcp_tool_exposed_in_mode(
         mode=mode,
         write_scope_restricted=persona_write_scope_active,
     ):
         for binding in mcp_manager.tool_bindings:
+            if connector_mcp and any(
+                binding.tool_alias.startswith(connector_tool_prefix(c["plugin_id"]))
+                for c in connector_mcp
+            ):
+                # A user-configured server cannot impersonate a custom or verified plugin's tools.
+                continue
             if google_mcp and any(
                 binding.tool_alias.startswith(f"mcp__google_{c['service']}__") for c in google_mcp
             ):
                 continue
-            if host_mcp is not None and binding.tool_alias.startswith("mcp__github__"):
+            if (
+                host_mcp is not None or github_restricted or github_unavailable
+            ) and binding.tool_alias.startswith("mcp__github__"):
                 # A user-configured server cannot impersonate the selected plugin's tools.
                 continue
             bound_binding = binding.bind_session_mode(mode)
@@ -5676,23 +6843,69 @@ def build_tools(
 
             def run_bound_mcp(args: dict[str, Any], *, binding=bound_binding) -> dict[str, Any]:
                 read_only = getattr(binding, "read_only_hint", False) is True
+                server_id = getattr(binding, "server_id", None)
+                # The desktop user's rule: every call to their own tool server asks a person,
+                # whatever the server claims, except tools the person marked "only reads".
+                # Resource reads and the app's own Computer Use server keep the mode rules.
+                rule = (
+                    call_approval(
+                        tool_server_approval(),
+                        next(
+                            (
+                                server
+                                for server in getattr(mcp_manager, "active_servers", ())
+                                if server.id == server_id
+                            ),
+                            None,
+                        ),
+                        binding.tool_name,
+                    )
+                    if server_id is not None
+                    else "permission_mode"
+                )
+                every_call = rule == "every_call"
+                arguments = json.dumps(redact_secrets(args), ensure_ascii=True, sort_keys=True)
                 decision = _request_action_approval(
                     ApprovalRequest(
                         kind="mcp",
-                        reason="This configured MCP tool can act outside the project sandbox.",
-                        preview=f"{binding.tool_alias}\n"
-                        + json.dumps(redact_secrets(args), ensure_ascii=True, sort_keys=True),
+                        reason=(
+                            "Your own tool servers ask you before every call, also in Full access."
+                            if every_call
+                            else "This configured MCP tool can act outside the project sandbox."
+                        ),
+                        preview=(
+                            f"Run MCP tool\nserver: {server_id}\ntool: {binding.tool_name}\n"
+                            f"args:\n{arguments}"
+                            if every_call
+                            else f"{binding.tool_alias}\n{arguments}"
+                        ),
                         command=binding.tool_alias,
                         metadata={
-                            "access": "read" if read_only else "write",
+                            "access": "read"
+                            if (read_only if rule == "permission_mode" else rule == "marked_read")
+                            else "write",
                             "mcp_server": getattr(binding, "server_id", binding.tool_alias),
                             "mcp_tool": binding.tool_name,
                             "mcp_server_id": getattr(binding, "server_id", binding.tool_alias),
                             "mcp_tool_id": binding.tool_name,
                             "destructive": getattr(binding, "destructive_hint", False),
+                            **(
+                                {
+                                    "mandatory_explicit_approval": True,
+                                    "always_ask_person": True,
+                                    "tool_server_rule": "ask_every_call",
+                                    "server_says_read_only": read_only,
+                                }
+                                if every_call
+                                else {"tool_server_rule": "marked_read"}
+                                if rule == "marked_read"
+                                else {}
+                            ),
                         },
                     ),
-                    requires_authorization=not read_only,
+                    requires_authorization=(
+                        not read_only if rule == "permission_mode" else every_call
+                    ),
                 )
                 if not decision.allow:
                     raise AgentRuntimeError(
@@ -5705,6 +6918,14 @@ def build_tools(
                     )
                 return binding.run(args)
 
+            # The app's own Windows CU helper gets a wider, still finite budget so its
+            # full calling contract (and the host note ahead of it) stays visible.
+            description_max_chars = (
+                legacy_windows_description_max_chars(
+                    getattr(bound_binding, "server_id", None), bound_binding.tool_name
+                )
+                or 1000
+            )
             tools.append(
                 ToolDef(
                     name=bound_binding.tool_alias,
@@ -5714,15 +6935,20 @@ def build_tools(
                     visual_delivery=channel,
                     metadata={
                         "tool_type": "mcp",
+                        COMPUTER_USE_OBSERVATION_METADATA_KEY: legacy_windows_observation_tool(
+                            getattr(bound_binding, "server_id", None), bound_binding.tool_name
+                        ),
                         "ephemeral_io": getattr(bound_binding, "ephemeral_io", False),
                         "requested_result_summary": getattr(
                             bound_binding, "requested_result_summary", False
                         ),
                         "compact_parameters_for_model": True,
-                        "model_description_max_chars": 1000,
+                        "model_description_max_chars": description_max_chars,
                     },
                 )
             )
+    if scoped_access.enabled and scoped_access.access_store is not None:
+        _append_builtin_tool("sandbox_permissions", run=scoped_access.manage)
     active_tools = {t.name: t for t in tools}
     if tool_dispatch_guard is not None:
 
@@ -5818,3 +7044,11 @@ def build_tools(
         # compatibility registry, but only after the entire build validates.
         publish_tool_availability_snapshot(committed_tool_availability)
     return active_tools
+
+
+# Retain the previously eager Python star-export surface.
+__all__ = (
+    [name for name in globals() if not name.startswith("_")]
+    + list(_EXECUTION_IMPORTS)
+    + sorted(_MANAGED_BROWSER_EXPORTS)
+)

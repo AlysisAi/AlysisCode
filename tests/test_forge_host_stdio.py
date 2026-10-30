@@ -29,7 +29,7 @@ from alysis_code.forge_host_stdio import (
 )
 
 NOW = datetime(2026, 8, 21, 9, 0, tzinfo=UTC)
-FIXTURES = Path(__file__).parents[1] / "schemas" / "forge-host-v2" / "fixtures" / "valid"
+FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures" / "forge_host_v2" / "valid"
 
 
 def _fixture_mapping(name: str) -> dict[str, Any]:

@@ -1,0 +1,72 @@
+{
+  "codec": "alysis-canonical-json-v1",
+  "description": "Shared by app tests/fixtures/computer-use-canonical-json-v1.json and engine tests/fixtures/computer_use_canonical_json_v1.json; keep the two files identical. input is wire JSON text; canonical is JSON.stringify of JSON.parse(input) with object keys in Unicode code-point order; fingerprint is sha256 over its UTF-8 bytes.",
+  "vectors": [
+    {
+      "name": "integral_floats",
+      "input": "{\"x\":512.0,\"y\":-3.0,\"z\":100.0,\"w\":1.0}",
+      "canonical": "{\"w\":1,\"x\":512,\"y\":-3,\"z\":100}",
+      "fingerprint": "sha256:153a082a8c88d29094db76402e2eebdbe42027c7693de0e7b8ccd372ca9edc35"
+    },
+    {
+      "name": "exponent_thresholds",
+      "input": "{\"a\":1e-06,\"b\":1e-07,\"c\":1.5e-07,\"d\":1e+20,\"e\":1e+21,\"f\":9.999999999999999e+20,\"g\":1.23e-18,\"h\":1e+300}",
+      "canonical": "{\"a\":0.000001,\"b\":1e-7,\"c\":1.5e-7,\"d\":100000000000000000000,\"e\":1e+21,\"f\":999999999999999900000,\"g\":1.23e-18,\"h\":1e+300}",
+      "fingerprint": "sha256:81a3a216803378fcfd807c68509de842683af3e0d33654ceb212a6a8ba48fda2"
+    },
+    {
+      "name": "negative_zero",
+      "input": "{\"n\":-0.0,\"m\":-0,\"p\":0.0,\"q\":[-0.0]}",
+      "canonical": "{\"m\":0,\"n\":0,\"p\":0,\"q\":[0]}",
+      "fingerprint": "sha256:13437a5930551eefe9c5a9ad46e41c713917a91a2535c0bcf050bbb07155d5c5"
+    },
+    {
+      "name": "binary64_boundaries",
+      "input": "{\"max\":1.7976931348623157e+308,\"min_normal\":2.2250738585072014e-308,\"min_subnormal\":5e-324,\"safe\":9007199254740991,\"unsafe\":9007199254740993,\"big\":12345678901234567890,\"neg_max\":-1.7976931348623157e+308}",
+      "canonical": "{\"big\":12345678901234567000,\"max\":1.7976931348623157e+308,\"min_normal\":2.2250738585072014e-308,\"min_subnormal\":5e-324,\"neg_max\":-1.7976931348623157e+308,\"safe\":9007199254740991,\"unsafe\":9007199254740992}",
+      "fingerprint": "sha256:a6dc074bbe5df6c2edb0d3284ca918be0d275598a6638f24547c53399fe7e7f0"
+    },
+    {
+      "name": "decimals",
+      "input": "{\"a\":0.1,\"b\":0.30000000000000004,\"c\":123456789012345.6,\"d\":-1.5,\"e\":4.35,\"f\":0.000123}",
+      "canonical": "{\"a\":0.1,\"b\":0.30000000000000004,\"c\":123456789012345.6,\"d\":-1.5,\"e\":4.35,\"f\":0.000123}",
+      "fingerprint": "sha256:88cd063d49126e8bfa75227f9390b3a93599e71010022f22d908a32d8d0cf85c"
+    },
+    {
+      "name": "escapes",
+      "input": "{\"s\":\"\\u0000\\u001f\\b\\t\\n\\f\\r\\\"\\\\/\\u007f\u2028\u00e9\"}",
+      "canonical": "{\"s\":\"\\u0000\\u001f\\b\\t\\n\\f\\r\\\"\\\\/\u007f\u2028\u00e9\"}",
+      "fingerprint": "sha256:b5a313f468a43d908259afaaf4ac436f4dbf1f75a244a5dcb3661d60941bb665"
+    },
+    {
+      "name": "lone_surrogates",
+      "input": "{\"s\":\"\\ud800x\\udfff\",\"t\":\"\ud83d\ude00\"}",
+      "canonical": "{\"s\":\"\\ud800x\\udfff\",\"t\":\"\ud83d\ude00\"}",
+      "fingerprint": "sha256:6f89257d526d20a5796bcedace5c9503c000cff020a0e1a1baf61eb5f8e0c827"
+    },
+    {
+      "name": "ascii_key_order",
+      "input": "{\"a\":1,\"Z\":2,\"_\":3,\"a1\":4,\"a_1\":5,\"aB\":6,\"a_b\":7,\"e\":8,\"\u00e9\":9,\"\":10}",
+      "canonical": "{\"\":10,\"Z\":2,\"_\":3,\"a\":1,\"a1\":4,\"aB\":6,\"a_1\":5,\"a_b\":7,\"e\":8,\"\u00e9\":9}",
+      "fingerprint": "sha256:7ed4d92fc4facf13ca5c125ed165cc9e4e4745fde0b2927d1bb4d92701087b3f"
+    },
+    {
+      "name": "bmp_vs_astral_key_order",
+      "input": "{\"\uff61\":1,\"\ud83d\ude00\":2,\"\ud800\udc00\":3,\"\ue000\":4,\"\ud7ff\":5}",
+      "canonical": "{\"\ud7ff\":5,\"\ue000\":4,\"\uff61\":1,\"\ud800\udc00\":3,\"\ud83d\ude00\":2}",
+      "fingerprint": "sha256:b49ece86aca0a735bb1433332b0a4f407fb32787ee6934f898d58fae63afad2f"
+    },
+    {
+      "name": "nested",
+      "input": "{\"b\":[{\"y\":2.0,\"x\":[1.0,\"\u00e9\",null,true,false]}],\"a\":{}}",
+      "canonical": "{\"a\":{},\"b\":[{\"x\":[1,\"\u00e9\",null,true,false],\"y\":2}]}",
+      "fingerprint": "sha256:c53b8e791f45aba29b510fb2d44a1e03aa8f8a7f795662e60a3ba655892e7872"
+    },
+    {
+      "name": "computer_action_drag",
+      "input": "{\"action\":\"drag\",\"path\":[{\"x\":512.0,\"y\":384.5},{\"x\":1e-05,\"y\":2.5e+3}],\"duration\":0.25,\"snapshot_id\":\"snapshot-1\"}",
+      "canonical": "{\"action\":\"drag\",\"duration\":0.25,\"path\":[{\"x\":512,\"y\":384.5},{\"x\":0.00001,\"y\":2500}],\"snapshot_id\":\"snapshot-1\"}",
+      "fingerprint": "sha256:2f9a9df33338a11a233fe57b8269f19635ead994f9b1e18c43844ebad9d9e378"
+    }
+  ]
+}

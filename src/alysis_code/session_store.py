@@ -15,7 +15,7 @@ from typing import Any
 
 from .config import AppConfig, default_sessions_dir
 from .logging_redaction import redact_log_text
-from .managed_session import ManagedSessionPersistence
+from .managed_session import ManagedSessionError, ManagedSessionPersistence
 from .session_artifacts import SessionArtifactLayout
 from .web_research import SessionWebResearchTracker
 
@@ -373,9 +373,12 @@ class SessionStore:
 
     def _reopen_log(self) -> Any | None:
         try:
-            self.sessions_dir.mkdir(parents=True, exist_ok=True)
-            self._fh = self.path.open("a", encoding="utf-8")
-        except OSError:
+            if self._managed_session_persistence is not None:
+                self._fh = self._managed_session_persistence.reopen_text_writer()
+            else:
+                self.sessions_dir.mkdir(parents=True, exist_ok=True)
+                self._fh = self.path.open("a", encoding="utf-8")
+        except (OSError, ManagedSessionError):
             self._fh = None
         return self._fh
 
@@ -396,6 +399,11 @@ class SessionStore:
         may have to disown later (:meth:`_discard_partial_record`).
         """
 
+        if self._managed_session_persistence is not None:
+            try:
+                return self._managed_session_persistence.retained_log_size()
+            except (OSError, ManagedSessionError):
+                return None
         try:
             return int(os.fstat(fh.fileno()).st_size)
         except (OSError, ValueError, AttributeError, TypeError):
@@ -428,16 +436,22 @@ class SessionStore:
         self._close_log_handle()
         end: int | None = None
         try:
-            end = self.path.stat().st_size if self.path.exists() else 0
-        except OSError:
+            if self._managed_session_persistence is not None:
+                end = self._managed_session_persistence.retained_log_size()
+            else:
+                end = self.path.stat().st_size if self.path.exists() else 0
+        except (OSError, ManagedSessionError):
             end = None
         if end is not None and end <= start:
             # Nothing reached the file.
             return "refused"
         try:
-            os.truncate(self.path, start)
+            if self._managed_session_persistence is not None:
+                self._managed_session_persistence.truncate_retained_log(start)
+            else:
+                os.truncate(self.path, start)
             return "refused"
-        except OSError:
+        except (OSError, ManagedSessionError):
             pass
         boundary = {
             "from_offset": start,
@@ -468,15 +482,25 @@ class SessionStore:
 
     def _write_uncommitted_marker(self, boundary: dict[str, Any]) -> bool:
         try:
-            with self.path.open("a", encoding="utf-8") as marker_fh:
-                marker_fh.write(self._uncommitted_marker_line(boundary))
-                marker_fh.flush()
-        except OSError:
+            if self._managed_session_persistence is not None:
+                self._managed_session_persistence.append_recovery_marker(
+                    self._uncommitted_marker_line(boundary)
+                )
+            else:
+                with self.path.open("a", encoding="utf-8") as marker_fh:
+                    marker_fh.write(self._uncommitted_marker_line(boundary))
+                    marker_fh.flush()
+        except (OSError, ManagedSessionError):
             return False
         self._remove_uncommitted_sidecar()
         return True
 
     def _write_uncommitted_sidecar(self, boundary: dict[str, Any]) -> bool:
+        # No sidecar was admitted as a managed capability. An unavailable
+        # in-log marker therefore leaves an explicit indeterminate outcome;
+        # it must never trigger a pathname-based fallback write.
+        if self._managed_session_persistence is not None:
+            return False
         try:
             self._uncommitted_sidecar_path.write_text(
                 json.dumps(boundary, ensure_ascii=True), encoding="utf-8"
@@ -506,6 +530,8 @@ class SessionStore:
         return self.path.with_name(self.path.name + _UNCOMMITTED_SIDECAR_SUFFIX)
 
     def _remove_uncommitted_sidecar(self) -> None:
+        if self._managed_session_persistence is not None:
+            return
         try:
             self._uncommitted_sidecar_path.unlink()
         except OSError:
@@ -515,6 +541,10 @@ class SessionStore:
         """At open: fold a sidecar boundary left by an earlier process into the
         log as a marker (or keep it pending, refusing records, if that fails)."""
 
+        if self._managed_session_persistence is not None:
+            # Legacy sidecars are refused before managed admission. Later
+            # pathname substitutions cannot become recovery authority.
+            return
         boundary = _read_uncommitted_sidecar(self.path)
         if boundary is None:
             return

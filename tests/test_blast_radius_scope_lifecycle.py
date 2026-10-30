@@ -22,6 +22,7 @@ from alysis_code.agent.blast_radius import RepoTestIndex, absent_agent_created_t
 from alysis_code.config import AppConfig
 from alysis_code.llm.types import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 
 _TEMPORARY = "tests/test_repro.py"
@@ -62,6 +63,11 @@ def _exercise(
         for suffix in ("VERIFY_SANDBOX_MODE", "SHELL_SANDBOX_MODE"):
             monkeypatch.delenv(f"{prefix}_{suffix}", raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind == "verify_run"),
+    )
     root = tmp_path / "repo"
     (root / "tests").mkdir(parents=True)
     (root / "tests/__init__.py").write_text("")

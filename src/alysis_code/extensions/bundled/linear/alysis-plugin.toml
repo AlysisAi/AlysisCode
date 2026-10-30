@@ -1,0 +1,150 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.linear"
+name = "Linear"
+version = "1.0.0"
+description = "Linear's official remote MCP tools: find and read issues, projects and documents; every change asks you first."
+author = "Alysis AI (integration); Linear (MCP server)"
+license = "MIT"
+homepage = "https://linear.app/docs/mcp"
+keywords = ["linear", "mcp", "issues", "projects", "tasks"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Linear's official remote MCP server. The app keeps the sign-in; only the reviewed tools
+# below are offered, and every tool not marked reads_only asks a person before each call.
+[[components.verified_connector]]
+id = "linear"
+url = "https://mcp.linear.app/mcp"
+resource = "https://mcp.linear.app/mcp"
+oauth_issuer = "https://mcp.linear.app"
+oauth_sign_in_origins = []
+oauth_client = "dynamic"
+oauth_scopes = ["read", "write"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "list_issues"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_issue"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_issue_statuses"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_issue_status"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_issue_labels"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_comments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_cycles"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_documents"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_document"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_projects"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_project"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_project_labels"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_milestones"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_milestone"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_teams"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_team"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_users"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_user"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_attachment"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_documentation"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_customer_needs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "save_issue"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "save_comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "delete_comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "save_document"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_document"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "update_document"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "create_issue_label"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "save_project"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "save_milestone"
+reads_only = false
+
+[security]
+contact = "https://linear.app/security"

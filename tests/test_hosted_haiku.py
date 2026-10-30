@@ -17,7 +17,7 @@ from alysis_code.reasoning_contracts import reasoning_contract_for
 from alysis_code.tools.registry import iter_builtin_tool_metadata
 
 MODEL = "claude-haiku-5-5"
-pytestmark = pytest.mark.usefixtures("configured_hosted_api")
+pytestmark = pytest.mark.usefixtures("configured_hosted_api", "authorized_hosted_models")
 
 
 def config(provider="alysis"):
@@ -28,7 +28,7 @@ def config(provider="alysis"):
     return cfg
 
 
-def test_free_picker_metadata_and_efforts():
+def test_authorized_picker_metadata_and_efforts():
     cfg = config()
     flow = ConfigFlow(cfg=cfg)
     flow.choose("default")

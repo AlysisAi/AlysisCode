@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import ctypes
 import errno
 import hashlib
 import io
@@ -9,6 +10,7 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -16,7 +18,18 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from ..file_classification import derived_artifact_reason
+from ..host_file_handles import (
+    admit_host_path,
+    chmod_host_fd,
+    guard_host_mutation,
+    guard_host_resolved_read,
+    mkdir_host_path,
+    open_host_file_read,
+    rename_host_file_no_replace,
+)
+from ..project_folders import containing_root
 from ..runtime_artifacts import RUNTIME_ARTIFACT_DIR_NAMES
+from ..sensitive_paths import sensitive_path_category
 
 
 class FsError(RuntimeError):
@@ -75,52 +88,18 @@ _FS_EDIT_OPERATION_ALIASES = {
 _DEFAULT_FS_READ_MAX_BYTES = 12_000
 _DEFAULT_FS_LIST_MAX_RESULTS = 150
 _GIT_PROBE_TIMEOUT_S = 2.0
-_SAFE_ENV_TEMPLATE_SUFFIXES = (
-    ".example",
-    ".sample",
-    ".template",
-    ".dist",
-    ".defaults",
-)
-_PRIVATE_KEY_SUFFIXES = (".key", ".pem", ".p12", ".pfx", ".ppk", ".jks", ".keystore")
-_PRIVATE_KEY_NAMES = {
-    "id_dsa",
-    "id_ecdsa",
-    "id_ed25519",
-    "id_rsa",
-}
-_CREDENTIAL_FILE_NAMES = {
-    ".git-credentials",
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    "application_default_credentials.json",
-    "auth.json",
-    "credentials",
-    "credentials.json",
-    "credentials.tfrc.json",
-    "dockerconfigjson",
-    "kubeconfig",
-    "netrc",
-    "service-account.json",
-    "service_account.json",
-}
-_SENSITIVE_DIRECTORY_NAMES = {
-    ".aws",
-    ".azure",
-    ".docker",
-    ".git",
-    ".gnupg",
-    ".kube",
-    ".ssh",
-    ".alysis",
-}
 
 
 @dataclass(frozen=True, slots=True)
 class SensitivePathClassification:
     sensitive: bool
     category: str | None = None
+
+
+def classify_sensitive_path(path: str | os.PathLike[str]) -> SensitivePathClassification:
+    """Classify credential-bearing paths without opening or inspecting their content."""
+    category = sensitive_path_category(path)
+    return SensitivePathClassification(category is not None, category)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,49 +139,6 @@ class PreparedFsEdit:
         return str(self.precondition.identity_sha256 or "")
 
 
-def classify_sensitive_path(path: str | os.PathLike[str]) -> SensitivePathClassification:
-    """Classify credential-bearing paths without opening or inspecting their content."""
-
-    normalized = os.fspath(path).replace("\\", "/").strip("/")
-    parts = [part.casefold() for part in normalized.split("/") if part]
-    if not parts:
-        return SensitivePathClassification(False)
-    name = parts[-1]
-
-    if any(part in _SENSITIVE_DIRECTORY_NAMES for part in parts):
-        return SensitivePathClassification(True, "credential_directory")
-
-    if name == ".env" or name.startswith(".env."):
-        if name.endswith(_SAFE_ENV_TEMPLATE_SUFFIXES):
-            return SensitivePathClassification(False)
-        return SensitivePathClassification(True, "environment_file")
-
-    if name in _PRIVATE_KEY_NAMES or (
-        name.endswith(_PRIVATE_KEY_SUFFIXES) and not name.endswith(".pub")
-    ):
-        return SensitivePathClassification(True, "private_key")
-
-    if name in _CREDENTIAL_FILE_NAMES:
-        return SensitivePathClassification(True, "credential_file")
-    if name.startswith(("service-account-", "service_account_")) and name.endswith(".json"):
-        return SensitivePathClassification(True, "credential_file")
-    if name.startswith(("secret.", "secrets.")) or name in {
-        "secret",
-        "secrets",
-        "secrets.json",
-        "secrets.yaml",
-        "secrets.yml",
-    }:
-        return SensitivePathClassification(True, "secret_file")
-    if len(parts) >= 2 and parts[-2:] == [".aws", "credentials"]:
-        return SensitivePathClassification(True, "credential_file")
-    if len(parts) >= 2 and parts[-2:] == [".docker", "config.json"]:
-        return SensitivePathClassification(True, "credential_file")
-    if len(parts) >= 2 and parts[-2:] == [".azure", "accesstokens.json"]:
-        return SensitivePathClassification(True, "credential_file")
-    return SensitivePathClassification(False)
-
-
 def _content_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -223,7 +159,7 @@ def _identity_sha256(path_stat: os.stat_result) -> str:
 
 def _snapshot_existing_file(path_obj: Path, user_path: str) -> tuple[bytes, FilePrecondition]:
     try:
-        with path_obj.open("rb") as handle:
+        with open_host_file_read(path_obj) as handle:
             before = os.fstat(handle.fileno())
             if not stat.S_ISREG(before.st_mode):
                 raise FsError(f"Is not a regular file: {user_path}")
@@ -280,12 +216,14 @@ def assert_file_precondition(*, root: Path, precondition: FilePrecondition) -> N
 
 
 def _resolve_under_root(root: Path, user_path: str) -> Path:
+    admit_host_path(root / user_path)
     root_abs = root.resolve()
     p = (root_abs / user_path).resolve()
     try:
-        p.relative_to(root_abs)
+        containing_root(root_abs, p)
     except ValueError as e:
         raise FsError(f"Path escapes root: {user_path}") from e
+    guard_host_resolved_read(p)
     return p
 
 
@@ -404,7 +342,7 @@ def fs_read(
             if size_bytes is None or size_bytes > _DERIVED_ARTIFACT_STUB_MIN_BYTES:
                 # The head sample honors an explicit smaller max_bytes: the
                 # caller's ceiling bounds every read shape, stub included.
-                with p.open("rb") as fh:
+                with open_host_file_read(p) as fh:
                     head = fh.read(min(_DERIVED_ARTIFACT_HEAD_BYTES, max(0, max_bytes)))
                 content = head.decode("utf-8", errors="ignore")
                 returned_end_line, line_clipped = _head_line_metadata(content)
@@ -435,7 +373,7 @@ def fs_read(
                 return result
 
     # Read only what we need (+1 byte lookahead for truncation detection).
-    with p.open("rb") as fh:
+    with open_host_file_read(p) as fh:
         data = fh.read(max_bytes + 1)
     truncated = len(data) > max_bytes
     if truncated:
@@ -519,7 +457,7 @@ def _read_line_window(
     # Locating a later line still scans its prefix, but skipped and minified
     # lines never grow memory beyond a chunk. Selected lines are accumulated
     # only up to the remaining output budget. At most one chunk is read ahead.
-    with p.open("rb") as fh:
+    with open_host_file_read(p) as fh:
         for fragment, ends_line in _physical_line_chunks(fh):
             if lineno > effective_end_line:
                 truncated = requested_end_line is None or lineno <= requested_end_line
@@ -605,11 +543,12 @@ def _atomic_replace_text(
     change the destination after our final comparison and before the replace.
     For an existing file we therefore move the destination to a private sibling,
     verify the *displaced* bytes, and install the staged inode with a no-clobber
-    hard link.  A racing version is either restored or left at the public path;
+    publication. A racing version is either restored or left at the public path;
     it is never overwritten by the prepared content.
     """
 
-    path_obj.parent.mkdir(parents=True, exist_ok=True)
+    guard_host_mutation(path_obj)
+    mkdir_host_path(path_obj.parent)
     fd = -1
     temp_path: Path | None = None
     for _attempt in range(20):
@@ -625,7 +564,7 @@ def _atomic_replace_text(
 
     try:
         if precondition.mode is not None:
-            os.chmod(temp_path, precondition.mode)
+            chmod_host_fd(fd, precondition.mode)
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             fd = -1
             handle.write(content)
@@ -668,14 +607,13 @@ def _commit_staged_regular_file(
     )
     if displaced_path is None:
         try:
-            _link_regular_file_no_replace(staged_path, target_path)
+            _publish_regular_file_no_replace(staged_path, target_path)
         except FileExistsError as exc:
             raise StaleFileError(precondition.path) from exc
-        staged_path.unlink()
         return
 
     try:
-        _link_regular_file_no_replace(staged_path, target_path)
+        _publish_regular_file_no_replace(staged_path, target_path)
     except FileExistsError as exc:
         # Another writer claimed the public name after we moved aside the
         # expected version.  Their version wins; the prepared write fails.
@@ -688,7 +626,6 @@ def _commit_staged_regular_file(
                 f"the previous version remains at {displaced_path.name}"
             ) from None
         raise
-    staged_path.unlink()
     displaced_path.unlink()
 
 
@@ -702,11 +639,28 @@ def _displace_regular_file_if_matches(
             raise StaleFileError(precondition.path)
         return None
 
-    displaced_path = _reserve_displaced_path(target_path)
+    displaced_path: Path | None = None
     target_was_displaced = False
     try:
         try:
-            os.replace(target_path, displaced_path)
+            if os.name == "nt":
+                # A sibling rename through the opened source preserves MXC's
+                # directory pins. Never replace or remove a colliding name.
+                for _attempt in range(20):
+                    candidate = target_path.parent / (
+                        f".{target_path.name}.{secrets.token_hex(8)}.displaced"
+                    )
+                    try:
+                        rename_host_file_no_replace(target_path, candidate)
+                    except FileExistsError:
+                        continue
+                    displaced_path = candidate
+                    break
+                if displaced_path is None:
+                    raise FsError(f"Could not displace file safely: {precondition.path}")
+            else:
+                displaced_path = _reserve_displaced_path(target_path)
+                os.replace(target_path, displaced_path)
             target_was_displaced = True
         except (FileNotFoundError, IsADirectoryError, NotADirectoryError) as exc:
             raise StaleFileError(precondition.path) from exc
@@ -719,7 +673,7 @@ def _displace_regular_file_if_matches(
             )
         raise StaleFileError(precondition.path)
     finally:
-        if not target_was_displaced:
+        if not target_was_displaced and displaced_path is not None:
             displaced_path.unlink(missing_ok=True)
 
 
@@ -749,14 +703,30 @@ def _displaced_file_matches(path: Path, precondition: FilePrecondition) -> bool:
     )
 
 
-def _link_regular_file_no_replace(source: Path, destination: Path) -> None:
-    """Atomically publish a same-directory regular inode without replacement."""
+def _publish_regular_file_no_replace(source: Path, destination: Path) -> None:
+    """Publish without replacement, consuming the staged source on success."""
 
-    os.link(source, destination, follow_symlinks=False)
+    if os.name == "nt":
+        # Use the opened source's parent, retaining MXC's directory protections.
+        rename_host_file_no_replace(source, destination)
+    elif sys.platform == "darwin":
+        # Seatbelt can refuse cross-directory hardlinks even when both folders
+        # permit writes. Use macOS's atomic no-replace rename instead of a
+        # link/unlink publication; collisions still preserve both files.
+        rename = ctypes.CDLL(None, use_errno=True).renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(os.fsencode(source), os.fsencode(destination), 4):  # RENAME_EXCL
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), str(source), None, str(destination))
+    else:
+        os.link(source, destination, follow_symlinks=False)
+        source.unlink()
 
 
 def _stage_bytes_sibling(target: Path, data: bytes, *, mode: int | None) -> Path:
-    target.parent.mkdir(parents=True, exist_ok=True)
+    guard_host_mutation(target)
+    mkdir_host_path(target.parent)
     fd = -1
     staged: Path | None = None
     for _attempt in range(20):
@@ -771,7 +741,7 @@ def _stage_bytes_sibling(target: Path, data: bytes, *, mode: int | None) -> Path
         raise FsError(f"Could not create temporary file for: {target.name}")
     try:
         if mode is not None:
-            os.chmod(staged, mode)
+            chmod_host_fd(fd, mode)
         with os.fdopen(fd, "wb") as stream:
             fd = -1
             stream.write(data)
@@ -787,18 +757,20 @@ def _stage_bytes_sibling(target: Path, data: bytes, *, mode: int | None) -> Path
 
 def _publish_regular_move_no_replace(source: Path, destination: Path, *, mode: int | None) -> None:
     try:
-        _link_regular_file_no_replace(source, destination)
+        _publish_regular_file_no_replace(source, destination)
+        return
     except FileExistsError:
         raise
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
-        # A cross-device move cannot share an inode. Stage a verified byte copy
-        # on the destination filesystem and publish that name without clobber.
-        data = source.read_bytes()
+        # Cross-device moves, and Windows moves between pinned directories,
+        # stage a verified byte copy beside the destination before publication.
+        with open_host_file_read(source) as stream:
+            data = stream.read()
         staged = _stage_bytes_sibling(destination, data, mode=mode)
         try:
-            _link_regular_file_no_replace(staged, destination)
+            _publish_regular_file_no_replace(staged, destination)
         finally:
             staged.unlink(missing_ok=True)
     source.unlink()
@@ -810,16 +782,16 @@ def _restore_displaced_no_replace(displaced: Path, target: Path) -> bool:
     try:
         info = displaced.lstat()
         if stat.S_ISREG(info.st_mode):
-            _link_regular_file_no_replace(displaced, target)
+            _publish_regular_file_no_replace(displaced, target)
         elif stat.S_ISLNK(info.st_mode):
             os.symlink(os.readlink(displaced), target)
+            displaced.unlink()
         else:
             return False
     except FileExistsError:
         return False
     except OSError:
         return False
-    displaced.unlink()
     return True
 
 
@@ -867,6 +839,7 @@ def fs_mkdir(
     exist_ok: bool = True,
 ) -> dict[str, Any]:
     p = _resolve_under_root(root, path)
+    guard_host_mutation(p)
     if p.exists():
         if not p.is_dir():
             raise FsError(f"Target exists as a file: {path}")
@@ -881,7 +854,7 @@ def fs_mkdir(
         }
 
     try:
-        p.mkdir(parents=bool(parents), exist_ok=bool(exist_ok))
+        mkdir_host_path(p, parents=bool(parents), exist_ok=bool(exist_ok))
     except FileExistsError as e:
         raise FsError(f"Directory already exists and exist_ok is false: {path}") from e
     except OSError as e:
@@ -1145,7 +1118,7 @@ def _prepare_destination_file(
         if not overwrite:
             raise FsError(f"Destination exists and overwrite is false: {destination_path}")
         overwritten = True
-    destination_obj.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_host_path(destination_obj.parent)
     return overwritten
 
 
@@ -1160,6 +1133,8 @@ def fs_move(
 ) -> dict[str, Any]:
     source_obj = _resolve_under_root(root, source_path)
     destination_obj = _resolve_under_root(root, destination_path)
+    guard_host_mutation(source_obj)
+    guard_host_mutation(destination_obj)
     if source_obj == destination_obj:
         raise FsError(f"Source and destination are the same: {source_path}")
     if source_precondition is not None:
@@ -1239,6 +1214,7 @@ def fs_copy(
 ) -> dict[str, Any]:
     source_obj = _resolve_under_root(root, source_path)
     destination_obj = _resolve_under_root(root, destination_path)
+    guard_host_mutation(destination_obj)
     if source_obj == destination_obj:
         raise FsError(f"Source and destination are the same: {source_path}")
     if source_precondition is not None:
@@ -1296,6 +1272,7 @@ def fs_delete(
     precondition: FilePrecondition | None = None,
 ) -> dict[str, Any]:
     path_obj = _resolve_under_root(root, path)
+    guard_host_mutation(path_obj)
     if precondition is not None:
         assert_file_precondition(root=root, precondition=precondition)
     _require_existing_file(path_obj, path)

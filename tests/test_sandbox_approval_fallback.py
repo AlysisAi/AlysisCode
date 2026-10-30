@@ -38,6 +38,7 @@ from alysis_code.sandbox_settings import ShellSandboxSettings, resolve_shell_san
 from alysis_code.session_store import SessionStore
 from alysis_code.surface import ApprovalDecision, ApprovalRequest
 from alysis_code.surface.noop_surface import NoopSurface
+from alysis_code.terminal_manager import ProcessOutputSnapshot
 
 STRICT = ShellSandboxSettings(mode="strict")
 ASK = replace(STRICT, unavailable_fallback="ask")
@@ -58,27 +59,23 @@ def _choose(settings, system, tools=(), seatbelt=False):  # type: ignore[no-unty
         (STRICT, "Linux", ("bwrap", "docker"), False, SandboxBackendChoice("bwrap")),
         (STRICT, "Linux", ("docker",), False, SandboxBackendChoice("docker")),
         # macOS keeps Docker when it is installed; Seatbelt fills the gap when it is not.
-        (STRICT, "Darwin", ("docker",), True, SandboxBackendChoice("docker")),
+        (STRICT, "Darwin", ("docker",), True, SandboxBackendChoice("seatbelt")),
         (STRICT, "Darwin", (), True, SandboxBackendChoice("seatbelt")),
         (
             STRICT,
             "Windows",
             (),
             False,
-            SandboxBackendChoice(None, "auto backend could not find bwrap or docker"),
+            SandboxBackendChoice("windows-mxc"),
         ),
         (
             ASK,
             "Windows",
             (),
             False,
-            SandboxBackendChoice(
-                "host",
-                "auto backend could not find bwrap or docker",
-                requires_command_approval=True,
-            ),
+            SandboxBackendChoice("windows-mxc"),
         ),
-        (ASK, "Windows", ("docker",), False, SandboxBackendChoice("docker")),
+        (ASK, "Windows", ("docker",), False, SandboxBackendChoice("windows-mxc")),
         (replace(ASK, mode="off"), "Windows", (), False, SandboxBackendChoice("host")),
         (
             replace(STRICT, backend="seatbelt"),
@@ -110,7 +107,8 @@ def test_the_fallback_is_read_from_config_and_environment(monkeypatch) -> None: 
 
 @pytest.fixture
 def no_sandbox_here(monkeypatch):  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Windows")
+    # Windows now always selects its bundled backend and cannot use this fallback.
+    monkeypatch.setattr(sandbox_runner_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(sandbox_runner_mod.shutil, "which", lambda _name: None)
 
 
@@ -162,7 +160,16 @@ class _ApprovalSurface(NoopSurface):
         return ApprovalDecision(allow=self.allow)
 
 
-def _tools(tmp_path: Path, surface, *, mode: str = "auto", cfg=None):  # type: ignore[no-untyped-def]
+def _tools(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    surface,
+    *,
+    mode: str = "auto",
+    cfg=None,
+    shell_runner=None,
+    terminal_manager=None,
+    persona_allow_write_globs=None,
+):
     return build_tools(
         root=tmp_path,
         console=Console(file=io.StringIO()),
@@ -178,7 +185,11 @@ def _tools(tmp_path: Path, surface, *, mode: str = "auto", cfg=None):  # type: i
         yes=True,  # auto-confirm does not skip the approval that replaces a sandbox
         non_interactive=True,
         cfg=cfg,
-        shell_runner=HostShellRunner(requires_command_approval=True),
+        shell_runner=shell_runner
+        if shell_runner is not None
+        else HostShellRunner(requires_command_approval=True),
+        terminal_manager=terminal_manager,
+        persona_allow_write_globs=persona_allow_write_globs,
     )
 
 
@@ -189,17 +200,113 @@ def _python_command(code: str) -> str:
 
 def test_each_command_runs_only_after_approval(tmp_path: Path) -> None:
     surface = _ApprovalSurface(allow=True)
-    command = _python_command("print('approved')")
+    command = "echo approved"
     result = _tools(tmp_path, surface)["shell_run"].run({"cmd": command})
     assert "approved" in str(result.get("stdout"))
     assert [r.command for r in surface.requests] == [command]
     assert "No sandbox is available on this computer" in surface.requests[0].reason
 
 
-def test_read_only_commands_need_no_approval_even_without_a_sandbox(tmp_path: Path) -> None:
+class _RecordingCommands(HostShellRunner):
+    """Record foreground/background starts without launching a shell or sandbox."""
+
+    def __init__(self, *, requires_command_approval: bool = True) -> None:
+        super().__init__(requires_command_approval=requires_command_approval)
+        self._runner = self
+        self.starts: list[tuple[str, str]] = []
+
+    def run(self, *, cmd: str, **kwargs) -> subprocess.CompletedProcess[str]:  # type: ignore[no-untyped-def]
+        self.starts.append(("shell_run", cmd))
+        return subprocess.CompletedProcess(cmd, 0, "recorded", "")
+
+    def start(self, *, cmd: str, **kwargs) -> str:  # type: ignore[no-untyped-def]
+        self.starts.append(("shell_background", cmd))
+        return "recorded-process"
+
+    def read(self, process_id: str) -> ProcessOutputSnapshot:
+        return ProcessOutputSnapshot(process_id, "exited", 0, None, (), 0, 0, 0.0, 0.0, 0)
+
+
+@pytest.mark.parametrize("tool_name", ["shell_run", "shell_background"])
+@pytest.mark.parametrize("mode", ["review", "auto"])
+@pytest.mark.parametrize("allow", [False, True])
+def test_host_fallback_read_only_commands_require_approval_before_start(
+    tmp_path: Path, tool_name: str, mode: str, allow: bool
+) -> None:
+    surface = _ApprovalSurface(allow=allow)
+    commands = _RecordingCommands()
+    tools = _tools(tmp_path, surface, mode=mode, shell_runner=commands, terminal_manager=commands)
+    command = "echo fixture"
+
+    if allow:
+        tools[tool_name].run({"cmd": command})
+    else:
+        with pytest.raises(AgentRuntimeError, match=f"User declined: {tool_name}"):
+            tools[tool_name].run({"cmd": command})
+
+    assert commands.starts == ([(tool_name, command)] if allow else [])
+    assert [(r.kind, r.command) for r in surface.requests] == [(tool_name, command)]
+    assert "No sandbox is available" in surface.requests[0].reason
+
+
+@pytest.mark.parametrize("tool_name", ["shell_run", "shell_background"])
+def test_host_fallback_read_only_command_cannot_start_without_an_approver(
+    tmp_path: Path, tool_name: str
+) -> None:
+    surface = _ApprovalSurface(allow=True)
+    surface.host_managed_approvals = False
+    commands = _RecordingCommands()
+    tools = _tools(tmp_path, surface, shell_runner=commands, terminal_manager=commands)
+
+    with pytest.raises(AgentRuntimeError, match="cannot ask for it"):
+        tools[tool_name].run({"cmd": "echo fixture"})
+
+    assert commands.starts == []
+    assert surface.requests == []
+
+
+@pytest.mark.parametrize("tool_name", ["shell_run", "shell_background"])
+@pytest.mark.parametrize(
+    ("mode", "requires_command_approval"),
+    [("review", False), ("auto", False), ("fullaccess", True)],
+)
+def test_read_only_shortcut_preserves_contained_and_full_access_execution(
+    tmp_path: Path, tool_name: str, mode: str, requires_command_approval: bool
+) -> None:
     surface = _ApprovalSurface(allow=False)
-    result = _tools(tmp_path, surface)["shell_run"].run({"cmd": "echo read-only"})
-    assert "read-only" in str(result.get("stdout"))
+    commands = _RecordingCommands(requires_command_approval=requires_command_approval)
+    tools = _tools(tmp_path, surface, mode=mode, shell_runner=commands, terminal_manager=commands)
+
+    tools[tool_name].run({"cmd": "echo fixture"})
+
+    assert commands.starts == [(tool_name, "echo fixture")]
+    assert surface.requests == []
+
+
+@pytest.mark.parametrize("tool_name", ["shell_run", "shell_background"])
+@pytest.mark.parametrize("boundary", ["readonly", "persona", "denylist"])
+def test_host_fallback_does_not_relax_existing_shell_boundaries(
+    tmp_path: Path, tool_name: str, boundary: str
+) -> None:
+    surface = _ApprovalSurface(allow=True)
+    commands = _RecordingCommands()
+    tools = _tools(
+        tmp_path,
+        surface,
+        mode="readonly" if boundary == "readonly" else "auto",
+        shell_runner=commands,
+        terminal_manager=commands,
+        persona_allow_write_globs=["docs/**"] if boundary == "persona" else None,
+    )
+
+    if boundary == "readonly":
+        assert tool_name not in tools
+    else:
+        command = "sudo ls" if boundary == "denylist" else "echo fixture"
+        with pytest.raises(AgentRuntimeError, match="Blocked"):
+            tools[tool_name].run({"cmd": command})
+
+    assert commands.starts == []
     assert surface.requests == []
 
 
@@ -212,11 +319,9 @@ def test_a_declined_command_does_not_run(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
-def test_full_access_never_asks(tmp_path: Path) -> None:
+def test_full_access_literal_data_needs_no_extra_card(tmp_path: Path) -> None:
     surface = _ApprovalSurface(allow=False)
-    _tools(tmp_path, surface, mode="fullaccess")["shell_run"].run(
-        {"cmd": _python_command("print('ok')")}
-    )
+    _tools(tmp_path, surface, mode="fullaccess")["shell_run"].run({"cmd": "echo ok"})
     assert surface.requests == []
 
 
@@ -235,14 +340,24 @@ def test_verification_asks_once_for_its_commands(
 
 def test_seatbelt_profile_limits_writes_and_network() -> None:
     closed = seatbelt_profile(network="off", protected_path_count=2)
-    assert closed.splitlines()[:3] == ["(version 1)", "(allow default)", "(deny file-write*)"]
+    assert closed.splitlines()[:2] == ["(version 1)", "(deny default)"]
+    assert "(deny file-write*)" in closed.splitlines()
+    assert "(deny signal)" in closed.splitlines()
+    assert (
+        "(allow signal (target self) (target children) (target same-sandbox))"
+        in closed.splitlines()
+    )
+    assert "(deny mach-priv-task-port)" in closed.splitlines()
     assert '(subpath (param "WORKSPACE"))' in closed
-    assert '(deny file-write* (subpath (param "PROTECTED_1")))' in closed
-    assert '(deny network-outbound (remote ip "*:*"))' in closed
-    assert "network" not in seatbelt_profile(network="on", protected_path_count=0)
+    assert '(deny file-write* file-link (subpath (param "PROTECTED_1")))' in closed
+    assert "(deny network-outbound)" in closed
+    assert '(allow network-outbound (remote ip "*:*"))' not in closed
+    opened = seatbelt_profile(network="on", protected_path_count=0)
+    assert '(allow network-outbound (remote ip "*:*"))' in opened
+    assert '(deny network-outbound (remote ip "localhost:*"))' in opened
 
 
-def test_seatbelt_command_protects_repository_metadata_except_for_plain_commits(
+def test_seatbelt_command_grants_git_metadata_without_unprotecting_app_state(
     tmp_path: Path,
 ) -> None:
     (tmp_path / ".git").mkdir()
@@ -253,6 +368,7 @@ def test_seatbelt_command_protects_repository_metadata_except_for_plain_commits(
             network="off",
             protect_repo_meta=True,
             safe_git_writes=True,
+            runtime_paths=(),
         )
     )
     commit = shlex.split(
@@ -262,13 +378,16 @@ def test_seatbelt_command_protects_repository_metadata_except_for_plain_commits(
             network="off",
             protect_repo_meta=True,
             safe_git_writes=True,
+            runtime_paths=(),
         )
     )
     assert edit[0] == "/usr/bin/sandbox-exec"
     assert f"WORKSPACE={os.path.realpath(tmp_path)}" in edit
     assert f"PROTECTED_0={os.path.realpath(tmp_path / '.git')}" in edit
     assert edit[-3:] == ["/bin/sh", "-c", "rm -rf .git"]
-    assert not any(part.startswith("PROTECTED_") for part in commit)
+    assert not any(part.endswith(f"={tmp_path / '.git'}") for part in commit)
+    assert any(part.endswith(f"={tmp_path / '.alysis'}") for part in commit)
+    assert commit[-4:] == ["/usr/bin/git", "commit", "-m", "x"]
 
 
 macos_only = pytest.mark.skipif(
@@ -302,7 +421,7 @@ def test_macos_seatbelt_allows_workspace_writes_and_blocks_others(tmp_path: Path
 
 
 @macos_only
-def test_macos_seatbelt_without_network_still_reaches_this_machine(tmp_path: Path) -> None:
+def test_macos_seatbelt_without_network_cannot_reach_this_machine(tmp_path: Path) -> None:
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(1)
@@ -311,7 +430,7 @@ def test_macos_seatbelt_without_network_still_reaches_this_machine(tmp_path: Pat
         local = _run_in_seatbelt(
             tmp_path, f"import socket; socket.create_connection(('127.0.0.1', {port}), 5).close()"
         )
-        assert local.returncode == 0, local.stderr
+        assert local.returncode != 0
         remote = _run_in_seatbelt(
             tmp_path, "import socket; socket.create_connection(('1.1.1.1', 80), 5).close()"
         )

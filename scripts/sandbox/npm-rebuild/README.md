@@ -1,14 +1,11 @@
 # Sandbox npm runtime rebuild
 
-This is a complete sandbox-only rebuild of npm `11.20.0` as
-`11.20.0-alysis.1`. It is used by the sandbox Dockerfile after six-image private
-qualification. It is not published to the npm registry. Production image
-promotion still requires the public workflow's scans, qualification and signatures.
+This is a sandbox-only rebuild of npm `11.20.0` as
+`11.20.0-alysis.1`, used by the sandbox Dockerfile. It is not published to the
+npm registry. Image promotion requires the public workflow's scans,
+qualification and signatures.
 
-The owner approved this rebuild on 4 October 2026 after the private six-image
-trial remained blocked by three HIGH findings in npm. A fresh registry audit
-also identified subsequent advisories; the reviewed rebuild addresses all of
-them with these four dependency updates:
+The rebuild updates four runtime dependencies:
 
 | Runtime dependency | Upstream bundle | Rebuild | Findings addressed |
 | --- | --- | --- | --- |
@@ -46,7 +43,7 @@ to the scanner or proof that the entire image is vulnerability-free.
 exact npm CLI as the bootstrap. It copies upstream CLI code, generated docs,
 and licenses, omitting the entire upstream `node_modules` tree from the runtime.
 The reviewed manifest removes build-only workspaces, development dependencies,
-and lifecycle scripts, and identifies the private rebuild version.
+and lifecycle scripts, and identifies the sandbox rebuild version.
 
 The builder runs `npm ci --ignore-scripts`, verifies every installed dependency,
 then runs a second clean `npm ci --offline --ignore-scripts` against its isolated
@@ -74,12 +71,12 @@ and dependency bin execution. CI runs it with Docker networking disabled.
 node scripts/sandbox/npm-rebuild/smoke.cjs /path/to/unpacked/package
 ```
 
-Each dev/server trial retains the rebuilt tarball, original upstream tarball,
+Each dev/server build retains the rebuilt tarball, original upstream tarball,
 content-addressed dependency cache, lock, package inventory, dependency-tree
 validation, current dependency audit, and build receipt. The receipt binds the builder, manifest, lock,
 archive, and cache by hash and records bootstrap/Node versions. Original inputs
-are retained as CI artifacts, not in the runtime image. Do not treat private
-trial artifacts as production signing or Marketplace publication evidence.
+are retained as CI artifacts, not in the runtime image. Build artifacts do not replace production signing or Marketplace publication
+evidence.
 
 Production adoption still requires review of the Wolfi package graph and input
 retention, all six passing image scans and smoke tests, and the existing public

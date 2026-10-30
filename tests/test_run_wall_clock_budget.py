@@ -544,7 +544,12 @@ def _session_with_budget(
     max_steps: int = 12,
 ) -> Any:
     return create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only", stream=False),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            stream=False,
+            extra_fields={"shell_sandbox": {"mode": "off"}},
+        ),
         root=tmp_path,
         mode="auto",
         yes=True,

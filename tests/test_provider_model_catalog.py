@@ -652,7 +652,7 @@ def test_response_bound_is_enforced_for_declared_and_chunked_bodies(
         ),
         ({"supported_efforts": ["none", "low", "low", "high"], "mandatory": True}, ("low", "high")),
         ({"supported_efforts": [], "mandatory": False}, ()),
-        ({"mandatory": False}, ()),
+        ({"mandatory": False}, None),
         ({"supported_efforts": "high", "mandatory": False}, None),
         ({"supported_efforts": [False], "mandatory": False}, None),
         (None, None),

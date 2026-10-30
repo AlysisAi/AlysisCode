@@ -185,3 +185,33 @@ def test_uncached_tokens_computed_from_cache_counts_are_marked_derived() -> None
     # provider never sent an uncached figure, so it is not reported.
     assert usage.input_tokens_uncached == 10
     assert usage.input_tokens_uncached_derived is True
+
+
+@pytest.mark.parametrize("invalid", [True, False, -1, 1.5, float("nan"), float("inf"), [], {}])
+def test_malformed_provider_counts_are_missing_not_truncated(invalid):
+    from alysis_code.llm.anthropic_messages import _parse_usage as anthropic_usage
+    from alysis_code.llm.gemini_generate_content import _parse_usage as gemini_usage
+    from alysis_code.llm.types import parse_token_count
+
+    assert parse_token_count(invalid) is None
+    compatible = parse_compatible_usage({"prompt_tokens": invalid, "completion_tokens": 7})
+    assert compatible.prompt_tokens is None
+    assert compatible.completion_tokens == 7
+    anthropic = anthropic_usage(
+        {"input_tokens": invalid, "cache_read_input_tokens": 10, "output_tokens": 7}
+    )
+    assert anthropic.prompt_tokens is None
+    assert anthropic.completion_tokens == 7
+    gemini = gemini_usage({"promptTokenCount": invalid, "candidatesTokenCount": 7})
+    assert gemini.prompt_tokens is None
+    assert gemini.completion_tokens == 7
+
+
+def test_invalid_cache_subtraction_is_not_a_reported_zero():
+    usage = parse_compatible_usage(
+        {"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 20}}
+    )
+    assert usage.prompt_tokens == 10
+    assert usage.cached_prompt_tokens == 20
+    assert usage.input_tokens_uncached is None
+    assert not usage.input_tokens_uncached_derived

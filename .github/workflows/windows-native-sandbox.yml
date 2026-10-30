@@ -1,0 +1,177 @@
+name: Windows native sandbox preview
+
+defaults:
+  run:
+    shell: pwsh
+
+on:
+  pull_request:
+    paths:
+      - 'native/windows-sandbox/**'
+      - 'src/alysis_code/windows_sandbox.py'
+      - 'src/alysis_code/_windows_sandbox_bookkeeping.py'
+      - 'src/alysis_code/_windows_managed_session.py'
+      - 'src/alysis_code/_windows_session_files.py'
+      - 'src/alysis_code/managed_session.py'
+      - 'src/alysis_code/session_store.py'
+      - 'src/alysis_code/sandbox_bookkeeping.py'
+      - 'src/alysis_code/bounded_capture.py'
+      - 'src/alysis_code/task_scope.py'
+      - 'src/alysis_code/run_outcome.py'
+      - 'src/alysis_code/agent/turn/snapshot.py'
+      - 'src/alysis_code/agent/tools_assembly.py'
+      - 'src/alysis_code/agent/approval_review.py'
+      - 'src/alysis_code/desktop_terminal.py'
+      - 'src/alysis_code/cli_impl/commands/sandbox.py'
+      - 'src/alysis_code/sandbox_*.py'
+      - 'src/alysis_code/background_runner.py'
+      - 'src/alysis_code/durable_service_manager.py'
+      - 'scripts/*windows_sandbox*'
+      - 'scripts/windows_test_owner_scope.ps1'
+      - 'tests/test_windows_sandbox*.py'
+      - 'tests/fixtures/windows_native_https_probe*.cjs'
+      - 'tests/test_windows_managed_session.py'
+      - 'tests/test_managed_session_persistence.py'
+      - 'tests/test_managed_session_recovery.py'
+      - 'tests/test_managed_session_windows.py'
+      - 'tests/test_native_approval_routing.py'
+      - 'tests/test_host_actions.py'
+      - 'tests/test_approval_review.py'
+      - 'tests/test_ide_permission_bridge.py'
+      - 'tests/test_ide_protocol.py'
+      - 'tests/test_sandbox_cli.py'
+      - 'tests/test_sandbox_bookkeeping.py'
+      - 'tests/test_sandbox_filesystem_policy.py'
+      - 'tests/test_wsl_sandbox_installed.py'
+      - 'tests/test_bounded_capture.py'
+      - 'tests/test_task_scope.py'
+      - 'tests/test_execution_shared_snapshot.py'
+      - 'tests/test_task_outcome_authority.py'
+      - 'tests/test_shell_verification_recovery.py'
+      - 'tests/test_verification_batch_recovery.py'
+      - '.github/workflows/windows-native-sandbox.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  workflow_dispatch:
+    inputs:
+      installed:
+        description: Provision and test on disposable Windows runners
+        type: boolean
+        default: false
+      internet:
+        description: Also fetch fixed public metadata to qualify outbound HTTPS (requires installed)
+        type: boolean
+        default: false
+      require_all_checks:
+        description: Fail on any installed skip or expected failure (requires installed and internet)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  native-build:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Validate qualification inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          QUALIFY_INSTALLED: ${{ inputs.installed }}
+          QUALIFY_INTERNET: ${{ inputs.internet }}
+          REQUIRE_ALL_CHECKS: ${{ inputs.require_all_checks }}
+        run: |
+          if ($env:QUALIFY_INTERNET -eq 'true' -and $env:QUALIFY_INSTALLED -ne 'true') {
+            throw 'Internet qualification requires installed tests.'
+          }
+          if ($env:REQUIRE_ALL_CHECKS -eq 'true' -and
+              ($env:QUALIFY_INSTALLED -ne 'true' -or $env:QUALIFY_INTERNET -ne 'true')) {
+            throw 'Strict qualification requires installed and internet tests; skipped jobs are not release evidence.'
+          }
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Test native and disabled candidate primitives without provisioning
+        run: ./scripts/test_windows_sandbox_native.ps1
+      - name: Build helper
+        run: cargo +1.90.0 build --manifest-path native/windows-sandbox/Cargo.toml --release --locked
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - name: Install locked engine test dependencies
+        run: uv sync --locked --python 3.13 --extra dev
+      - name: Test native engine integration without provisioning
+        run: ./scripts/test_windows_sandbox.ps1 -Python (Resolve-Path .venv/Scripts/python.exe).Path
+      - name: Test sanitized policy diagnostics
+        run: uv run --no-sync python -m pytest tests/test_windows_sandbox_policy_diagnostics.py -q
+
+  installed-qualification:
+    # Every preview PR exercises a fresh installation on disposable runners.
+    # Strict release qualification additionally rejects known failures/skips.
+    if: github.event_name == 'pull_request' || inputs.installed
+    needs: native-build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - name: Install locked test dependencies
+        run: uv sync --locked --python 3.13 --extra dev
+      - name: Build release helper with pinned Rust
+        # The bundler must consume the exact Cargo output it just built, even
+        # when the invoking environment points Cargo at a different directory.
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/caller-cargo-target
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal
+          $env:RUSTUP_TOOLCHAIN = '1.90.0'
+          uv run --no-sync python scripts/build_windows_sandbox.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Provision disposable runner only
+        run: |
+          & ./native/windows-sandbox/target/bundle/release/alysis-sandbox.exe install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify installed boundary and CLI diagnostics
+        id: boundary_qualification
+        env:
+          QUALIFY_INTERNET: ${{ github.event_name == 'pull_request' || inputs.internet }}
+          REQUIRE_ALL_CHECKS: ${{ inputs.require_all_checks }}
+          SANDBOX_RUNTIME_WIN_DEBUG: '1'
+        run: |
+          ./scripts/test_windows_sandbox.ps1 -Installed -HostDiagnostics -Internet:($env:QUALIFY_INTERNET -eq 'true') -RequireAllChecks:($env:REQUIRE_ALL_CHECKS -eq 'true') -Python (Resolve-Path .venv/Scripts/python.exe).Path
+      - name: Diagnose host PowerShell startup after boundary failure
+        if: failure() && steps.boundary_qualification.outcome == 'failure'
+        run: uv run --no-sync python scripts/windows_sandbox_policy_diagnostics.py --output native/windows-sandbox/target/policy-startup-diagnostics.json
+      - name: Recover and remove test installation
+        if: always()
+        run: |
+          $helper = './native/windows-sandbox/target/bundle/release/alysis-sandbox.exe'
+          if (Test-Path -LiteralPath $helper) {
+            & $helper status
+            & $helper recover
+            if ($LASTEXITCODE -ne 0) { throw 'Recovery failed; installation retained for diagnosis on disposable runner.' }
+            & $helper uninstall
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: native-sandbox-qualification-${{ matrix.os }}
+          path: |
+            native/windows-sandbox/target/installed-release-tests.xml
+            native/windows-sandbox/target/policy-startup-diagnostics.json
+            native/windows-sandbox/target/bundle/release/manifest.json
+          if-no-files-found: warn

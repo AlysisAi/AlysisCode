@@ -35,9 +35,18 @@ from alysis_code.skills.validation import (
 
 _BUNDLED_SKILL_NAMES = {
     "alysis-docs",
+    "documents",
+    "spreadsheets",
+    "presentations",
+    "pdf",
+    "research",
     "address-pr-comments",
     "code-review",
     "commit",
+    "computer-use",
+    "image-pdf-files",
+    "office-files",
+    "local-files",
     "debug",
     "fix-ci",
     "release-notes",
@@ -289,7 +298,9 @@ def test_discover_skills_project_beats_user_and_user_precedence_is_deterministic
     assert research.source_family == ".claude/skills"
 
 
-def test_discover_skills_includes_bundled_pack_by_default(tmp_path: Path) -> None:
+def test_discover_skills_includes_bundled_pack_by_default(
+    tmp_path: Path, mac_computer_use_protocol
+) -> None:
     discovered = discover_skills(
         focus_path=tmp_path,
         workspace_root=tmp_path,
@@ -302,7 +313,37 @@ def test_discover_skills_includes_bundled_pack_by_default(tmp_path: Path) -> Non
     assert all(skill.source_kind == "bundled" for skill in bundled.values())
 
 
-def test_discover_skills_bundled_kill_switch_removes_exactly_the_pack(tmp_path: Path) -> None:
+def test_skill_catalog_advertises_every_bundled_skill_beside_project_skills(
+    tmp_path: Path, mac_computer_use_protocol
+) -> None:
+    for number in range(8):
+        folder = tmp_path / ".alysis_skills" / f"project-{number}"
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(
+            f"---\nname: project-{number}\ndescription: Project workflow {number}\n---\nInstructions.\n",
+            encoding="utf-8",
+        )
+    discovered = discover_skills(
+        focus_path=tmp_path,
+        workspace_root=tmp_path,
+        user_config_dir=tmp_path / "empty-user-config",
+        home_dir=tmp_path / "empty-home",
+    )
+
+    catalog = build_skill_advertise_block(skills=discovered.ordered, skills_auto_invoke=True)
+
+    assert catalog is not None
+    assert "...(truncated)" not in catalog
+    advertised = {
+        line.split(" | ", 1)[0].removeprefix("- ") for line in catalog.splitlines() if " | " in line
+    }
+    assert advertised == {skill.name for skill in discovered.ordered}
+    assert _BUNDLED_SKILL_NAMES | {f"project-{number}" for number in range(8)} <= advertised
+
+
+def test_discover_skills_bundled_kill_switch_removes_exactly_the_pack(
+    tmp_path: Path, mac_computer_use_protocol
+) -> None:
     enabled = discover_skills(
         focus_path=tmp_path,
         workspace_root=tmp_path,

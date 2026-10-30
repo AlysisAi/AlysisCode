@@ -4,14 +4,24 @@ import copy
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from test_computer_use_approval import challenge
 from test_ide_computer_use_host import _bridge_session, _lines, _request, _wait_for_event
 
+from alysis_code import computer_use_platform_policy
 from alysis_code.agent.computer_use_tools import COMPUTER_USE_SYSTEM_PROMPT
 from alysis_code.ide.stdio_bridge import PendingComputerUseRequest
+from alysis_code.task_budget import iso as budget_iso
+from alysis_code.task_budget import stamp as budget_stamp
+
+
+@pytest.fixture(autouse=True)
+def legacy_mac_host_contract(monkeypatch):
+    """Legacy Mac inert host contract; Windows/new-route denials stay separate."""
+    monkeypatch.setattr(computer_use_platform_policy, "sys", SimpleNamespace(platform="darwin"))
 
 
 def _respond_params(session: Any, event: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +142,7 @@ def test_real_dispatch_accepts_bound_host_preflight_then_approves_and_executes(
 
 def _pending_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
     bridge, out, session, job = _bridge_session(tmp_path)
+    expires_at = budget_iso(time.time() + 30)
     pending = PendingComputerUseRequest(
         request_id="fixture-request",
         response_nonce="nonce",
@@ -141,8 +152,8 @@ def _pending_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, dict[str, Any]
         tool_call_id="call",
         tool_name="computer_action",
         arguments_fingerprint="sha256:" + "c" * 64,
-        expires_at="2026-09-08T12:00:00.000Z",
-        deadline=time.monotonic() + 30,
+        expires_at=expires_at,
+        deadline=time.monotonic() + max(0, budget_stamp(expires_at) - time.time()),
         approval_preflight_expected=True,
     )
     session.pending_computer_use[pending.request_id] = pending
@@ -249,14 +260,8 @@ def test_preflight_token_cannot_bypass_pending_request_authority(
     assert pending.response is None or pending.response.get("error") == "computer_use_timeout"
 
 
-def test_computer_use_prompt_allows_read_only_record_navigation_without_setting_changes() -> None:
-    assert (
-        "observed same-origin account-settings or purchase-history navigation link solely"
-        in COMPUTER_USE_SYSTEM_PROMPT
-    )
-    assert "to read the records the user requested" in COMPUTER_USE_SYSTEM_PROMPT
-    assert (
-        "Never change security/privacy settings or payment/subscription details"
-        in COMPUTER_USE_SYSTEM_PROMPT
-    )
-    assert "authentication bypass" in COMPUTER_USE_SYSTEM_PROMPT
+def test_computer_use_prompt_respects_authorized_task_without_subject_matter_veto() -> None:
+    assert "Follow the user-authorized task" in COMPUTER_USE_SYSTEM_PROMPT
+    assert "Never change security/privacy settings" not in COMPUTER_USE_SYSTEM_PROMPT
+    assert "Never attempt passwords" not in COMPUTER_USE_SYSTEM_PROMPT
+    assert "Never bypass an OS or" in COMPUTER_USE_SYSTEM_PROMPT

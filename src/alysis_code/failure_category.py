@@ -4,8 +4,6 @@ import re
 from enum import StrEnum
 from typing import Any
 
-import httpx
-
 from .run_outcome import AGENT_FAILURE_EXIT_CODE, INFRASTRUCTURE_FAILURE_EXIT_CODE
 
 
@@ -134,7 +132,7 @@ def increment_failure_category_count(
 
 
 def is_provider_throttling_error(error: Any) -> bool:
-    status_code = _extract_status_code(error)
+    status_code = _extract_status_code_from_chain(error)
     if status_code == 429:
         return True
 
@@ -157,6 +155,8 @@ def is_provider_unavailable_error(error: Any) -> bool:
 
 
 def provider_unavailable_retry_reason(error: Any) -> str | None:
+    import httpx
+
     status_code = _extract_status_code_from_chain(error)
     if status_code in _PROVIDER_PERMANENT_4XX_STATUS_CODES:
         return None

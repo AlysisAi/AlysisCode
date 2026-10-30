@@ -40,6 +40,19 @@ Run either installer again to upgrade. Optional environment variables:
 - `ALYSIS_NO_MODIFY_PATH=1` skips persistent PATH changes. The PowerShell installer
   still updates the current process so you can use the CLI immediately.
 
+Native Windows x64 releases include the signed native sandbox and select it by
+default. Neither Docker nor the Desktop app is required. Install a release
+containing this change with `uv tool install --python 3.12 --link-mode copy
+alysis-code`, or use pipx or the standalone executable. The copy option avoids
+shared package-cache hardlinks in the contained Python worker. See
+[Windows CLI installation and limits](windows-cli-sandbox.md), then run
+`alysis sandbox doctor --smoke` in the installed environment.
+
+The native sandbox runs PowerShell commands. Explicit Full access uses the
+Windows host runner with `cmd.exe` semantics. WSL uses Linux Bubblewrap or a
+configured Docker integration; keep Windows and Linux environments separate.
+Provider login and clipboard adapters use the environment where Alysis runs.
+
 ### Existing pipx users and manual installation
 
 Python 3.11 or newer is required for manual installation. If pipx already manages
@@ -126,14 +139,13 @@ alysis setup
 ```
 
 After choosing **Use an AI subscription**, the built-in connection currently
-supports ChatGPT Codex account sign-in. Connect and select it directly with:
+supports ChatGPT subscription sign-in. Connect and select it directly with:
 
 ```bash
 alysis auth login openai-codex
 ```
 
-Use `alysis auth login openai-codex --device-code` when a browser callback is
-not practical. Alysis Code stores refreshable credentials in its encrypted
+Complete sign-in in the browser. Alysis Code stores refreshable credentials in its encrypted
 provider vault and keeps tokens out of `config.json`. Choose the account model
 and its supported reasoning effort together in `/config → Default Model`. Inside
 the TUI, `/login` presents both the Alysis Code account and AI subscription choices.
@@ -270,8 +282,10 @@ alysis tool list --path .
 
 ## Updates
 
-Alysis Code checks for newer releases in the background at most once per configured interval, then
-shows cached notices in home/status surfaces. It never installs updates silently. When a newer
+Alysis Code checks for newer releases in the background during interactive terminal launches,
+at most once per configured interval, then shows cached notices in home/status surfaces.
+Piped and managed invocations do not start automatic update checks. It never installs updates
+silently. When a newer
 release is known, interactive launches also show a one-time popup before the setup and workspace
 screens offering to update now, remind you later (24-hour snooze), or skip that version; disable it
 with `alysis config set update_prompt_enabled false` or `ALYSIS_UPDATE_PROMPT_ENABLED=0`. To

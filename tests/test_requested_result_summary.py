@@ -159,6 +159,7 @@ def test_requested_summary_preserves_raw_retention_and_public_tool_guard(
         enable_compaction=False,
         session_log_dir_override=tmp_path / "logs",
     )
+    session.tools["tool_search"].run({"names": [NAME]})
     surface, hooks = _RecordingSurface(), _RecordingHooks()
     session.surface, session.hook_dispatcher = surface, hooks
     public = []

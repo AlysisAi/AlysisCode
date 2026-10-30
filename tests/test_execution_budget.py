@@ -19,6 +19,12 @@ from alysis_code.request_estimation import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_user_config(tmp_path, monkeypatch):
+    # Prefix comparisons must not connect to a developer's personal MCP servers.
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+
+
 def _dense_execution_plan() -> dict:
     return {
         "project_goal": "Ship a production-safe managed execution startup budget",
@@ -64,9 +70,7 @@ def test_compute_execution_prompt_budget_matches_real_session_prefix_and_tools(
         "model_metadata_overrides": {
             "models": {
                 "budget-model": {
-                    # Leave room for the bundled document skill and full reserves;
-                    # the floor-reclamation cases are exercised separately below.
-                    "context_window_tokens": 13000,
+                    "context_window_tokens": 18000,
                     "max_output_tokens": 1500,
                     "supports_vision": False,
                 }
@@ -86,6 +90,7 @@ def test_compute_execution_prompt_budget_matches_real_session_prefix_and_tools(
         verification_enabled=True,
         authoritative_verification_commands=["pytest -q"],
         subagents_enabled=False,
+        session_id="budget-prefix-comparison",
     )
 
     session = create_session(
@@ -102,10 +107,11 @@ def test_compute_execution_prompt_budget_matches_real_session_prefix_and_tools(
         verification_enabled=True,
         authoritative_verification_commands=["pytest -q"],
         subagents_enabled=False,
+        session_id_override="budget-prefix-comparison",
     )
     try:
         assert budget.model == "budget-model"
-        assert budget.context_window_tokens == 13000
+        assert budget.context_window_tokens == 18000
         assert budget.max_output_tokens == 1500
         assert budget.safety_margin_tokens == DEFAULT_EXECUTION_SAFETY_MARGIN_TOKENS
         assert budget.trusted_system_prompt_override_applied is False
@@ -165,7 +171,7 @@ def test_compute_execution_prompt_budget_reserves_tokens_for_attached_images(
                 "budget-model": {
                     # Room for the real prompt prefix plus two image reserves without
                     # hitting the allocator's floors, with some slack for prompt growth.
-                    "context_window_tokens": 12_200,
+                    "context_window_tokens": 18_200,
                     "max_output_tokens": 1500,
                     "supports_vision": True,
                 }
@@ -229,15 +235,31 @@ def test_compute_execution_prompt_budget_reduces_reserves_to_preserve_instructio
         "model_metadata_overrides": {
             "models": {
                 "budget-model": {
-                    # Extra schema semantics must fit, while the requested
-                    # reserves still force reduction to reach the 4k floor.
-                    "context_window_tokens": 14_500,
+                    "context_window_tokens": 64_000,
                     "max_output_tokens": 4096,
                     "supports_vision": False,
                 }
             }
         }
     }
+
+    baseline = compute_execution_prompt_budget(
+        cfg=cfg,
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        subagents_enabled=False,
+    )
+    # Platform prompts differ. Leave 6k after the real prefix and tool schemas,
+    # so the requested 5k reserves must shrink to preserve 4k for instructions.
+    cfg.extra_fields["model_metadata_overrides"]["models"]["budget-model"][
+        "context_window_tokens"
+    ] = (
+        baseline.safety_margin_tokens
+        + baseline.pinned_prefix_token_estimate
+        + baseline.tool_schema_token_estimate
+        + 6000
+    )
 
     budget = compute_execution_prompt_budget(
         cfg=cfg,
@@ -435,6 +457,8 @@ def test_authoritative_verification_context_adds_docs_and_packaging_guidance(tmp
 def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
     tmp_path,
 ) -> None:
+    from math import ceil
+
     cfg = AppConfig(model="managed-8k")
     cfg.extra_fields = {
         "compaction": {
@@ -446,7 +470,7 @@ def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
                 "managed-8k": {
                     # Enough for the complete task and required context at the
                     # soft target; only the deliberately dense plan may shrink.
-                    "context_window_tokens": 14_000,
+                    "context_window_tokens": 20_000,
                     "max_output_tokens": 1024,
                     "supports_vision": False,
                 }
@@ -481,7 +505,7 @@ def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
         "status": "planned",
     }
 
-    bundle = build_task_execution_instruction_bundle(
+    bundle_args = dict(
         plan=plan,
         task=task,
         root=tmp_path,
@@ -498,6 +522,17 @@ def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
         ],
     )
 
+    baseline = build_task_execution_instruction_bundle(**bundle_args).to_budget_artifact_payload()
+    # Choose a window that needs a little optional-context trimming. Native
+    # tool schemas differ by host; the required instructions must still fit.
+    reduction = ceil(
+        (baseline["startup_target_tokens"] - baseline["initial_request_token_estimate"] + 100)
+        / 0.85
+    )
+    cfg.extra_fields["model_metadata_overrides"]["models"]["managed-8k"][
+        "context_window_tokens"
+    ] -= reduction
+    bundle = build_task_execution_instruction_bundle(**bundle_args)
     payload = bundle.to_budget_artifact_payload()
 
     assert payload["startup_headroom_adjustment_applied"] is True, {

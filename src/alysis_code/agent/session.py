@@ -9,6 +9,7 @@ import subprocess
 import threading
 import traceback
 import warnings
+from _thread import LockType
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field, replace
@@ -39,10 +40,17 @@ from ..cancellation import (
     InteractiveCancellationToken,
 )
 from ..command_text import command_text
+from ..compaction.call_policy import compaction_provider_call
 from ..compaction.conversation_compactor import ConversationCompactor
 from ..compaction.settings import resolve_compaction_settings
 from ..compaction.tool_output_offload import ToolOutputOffloader
+from ..computer_use_attribution import measured
 from ..computer_use_diagnostics import DIAGNOSTIC_ATTRIBUTE, computer_use_provider_diagnostic
+from ..computer_use_platform_policy import (
+    UNAVAILABLE_MESSAGE,
+    computer_use_blocked,
+    mac_w7_computer_use_available,
+)
 from ..config import (
     AppConfig,
     ConfigError,
@@ -83,6 +91,7 @@ from ..extensions.activation import (
     WorkspaceTrustPromptFn,
     WorkspaceTrustPromptRequest,
 )
+from ..extensions.plugin_skills import PluginSkill, active_plugin_skills
 from ..failure_category import FailureCategory, classify_failure_category
 from ..hooks import (
     HOOK_AUDIT_ARTIFACT_PARTS,
@@ -119,6 +128,7 @@ from ..llm.openai_compat import OpenAICompatClient as _OpenAICompatClient
 from ..llm.protocols import OPENAI_COMPAT_PROTOCOL, get_provider_protocol_capabilities
 from ..llm.provider_limits import provider_retry_snapshot_values
 from ..llm.types import LLMUsage, UsageConfidence, UsageSource
+from ..mcp import github_repository_policy as github_policy
 from ..mcp.config import load_resolved_mcp_config
 from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager, create_mcp_manager
 from ..model_metadata_policy import ActiveModelRef, evaluate_active_model_metadata_policy
@@ -148,6 +158,8 @@ from ..provider_telemetry import (
     provider_telemetry_record_count,
     set_provider_telemetry_sink,
 )
+from ..provider_url import is_loopback_endpoint
+from ..provider_usage import capture_provider_usage
 from ..repo_scan import scan_workspace as scan_workspace
 from ..request_estimation import (
     estimate_request_token_breakdown,
@@ -257,6 +269,7 @@ from .prompt_context import (
     set_session_active_workdir,
 )
 from .read_ledger import SessionReadLedger
+from .task_relation import new_task_instruction
 from .tools_assembly import (
     ToolDef,
     ToolDispatchGuard,
@@ -1057,6 +1070,8 @@ class AgentSession:
     # conversation. This identity is never inherited from a parent or sibling.
     provider_session_id: str | None = None
     prompt_guidance_profile: str | None = None
+    project_folders: list[str] = field(default_factory=list, init=False, repr=False)
+    memory_scope: dict[str, Any] | None = field(default=None, init=False, repr=False)
     runtime_kind: RuntimeKind = RuntimeKind.INTERACTIVE_CHAT
     prompt_cache_stream_key: str | None = None
     mcp_manager: McpManager | ForgeTaskScopedMcpManager | None = None
@@ -1125,6 +1140,7 @@ class AgentSession:
     skills_ordered: tuple[SkillBundle, ...] = ()
     skill_discovery_issues: tuple[Any, ...] = ()
     skill_catalog_entries: tuple[SkillCatalogEntry, ...] = ()
+    plugin_skills: tuple[PluginSkill, ...] = ()
     repo_conventions: tuple[ConventionDocument, ...] = ()
     subagents_enabled: bool = False
     enforce_explicit_subagent_requests: bool = True
@@ -1137,6 +1153,7 @@ class AgentSession:
     steer_inbox: SteerInbox = field(default_factory=SteerInbox)
     child_repetition_signal: Callable[[dict[str, Any]], bool] | None = None
     read_ledger: SessionReadLedger | None = None
+    artifact_output_access: Callable[[str, bool], bool] | None = None
     step_system_message_provider: Callable[[], list[str]] | None = None
     step_system_message_delivery_observer: Callable[[int], None] | None = None
     step_budget_runtime: StepBudgetRuntime | None = None
@@ -1154,12 +1171,20 @@ class AgentSession:
     session_source_metadata: dict[str, Any] = field(default_factory=dict)
     evidence_parent_session_id: str | None = None
     pinned_prefix_len: int = 0
+    # Compatibility fallback for sessions without a retained startup message
+    # snapshot. Normal sessions calculate the current baseline in context_left.
     startup_context_baseline_tokens: int = 0
     request_context_measurement: RequestContextMeasurement | None = None
+    last_provider_usage: dict[str, Any] | None = None
     workspace_touched_paths: set[str] = field(default_factory=set)
     workspace_writes_allowed: bool | None = None
     custom_tool_session_state: CustomToolSessionState | None = None
     hook_dispatcher: HookDispatcher | None = None
+    # An attempt is not proof of hook effects or successful resource cleanup.
+    _session_end_attempted: bool = field(default=False, init=False, repr=False, compare=False)
+    _session_end_attempt_lock: LockType = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
     execution_deadline: ExecutionDeadline | None = None
     cache_keepalive: ParentCacheKeepalive | None = None
     crash_diagnostics: CrashDiagnosticLogger | None = None
@@ -1169,6 +1194,9 @@ class AgentSession:
     host_screen_redactor: HostScreenRedactor | None = None
     host_screen_client_cache_state: tuple[Any, dict[str, Any]] | None = None
     sensitive_media: bool = False
+    # Retain the original distinction between answer-only host context and an
+    # installed protected tool surface; losing all tools must not downgrade CU.
+    _sensitive_tool_surface_required: bool = field(default=False, init=False, repr=False)
     sensitive_session_poisoned: bool = False
     # Empty-response handling is budgeted per session, not per turn: two failed
     # recovery cycles mean the endpoint is not answering, and re-spending the
@@ -1192,6 +1220,7 @@ class AgentSession:
         return "deliver the requested analysis or report"
 
     def __post_init__(self) -> None:
+        self._sensitive_tool_surface_required = self.sensitive_media and bool(self.tools)
         self._bind_provider_retry_observer(self.client)
         if self.subagent_coordinator is None and self.child_scheduler is None:
             # Compatibility for callers that construct AgentSession directly
@@ -1403,6 +1432,14 @@ class AgentSession:
                 pass
 
     def close(self, *, reason: str = "session_close") -> None:
+        entry = getattr(self, "resolved_entry", None)
+        if entry is not None:
+            entry.retire("computer_start_owner_invalid")
+        if any(
+            tool.metadata.get("computer_window_selection_v1") is True
+            for tool in self.tools.values()
+        ):
+            reset_computer_use_snapshot_binding(self.tools)
         self._reap_tracked_process_groups(event=ReapEvent.SESSION_CLOSE)
         if self.cache_keepalive is not None:
             self.cache_keepalive.close()
@@ -1479,32 +1516,39 @@ class AgentSession:
                     run_finished_payload,
                     durable=True,
                 )
-            cwd, active_workdir_relpath = self._hook_runtime_context()
-            self._safe_dispatch_hooks(
-                lambda: self.hook_dispatcher.fire_session_end(
-                    cwd=cwd,
-                    active_workdir_relpath=active_workdir_relpath,
-                    payload={
-                        "reason": reason,
-                        "mode": self.mode,
-                        "runtime_kind": self.runtime_kind.value,
-                        "session_source": self.session_source,
-                        "session_source_metadata": copy.deepcopy(self.session_source_metadata),
-                        "workspace_root": os.fspath(self.root),
-                        "focus_dir": os.fspath(self.focus_dir or self.root),
-                        "focus_relpath": self.focus_relpath,
-                        "active_workdir": os.fspath(cwd),
-                        "active_workdir_relpath": active_workdir_relpath,
-                        "workspace_kind": self.workspace_kind,
-                        "usage_role": self.usage_role,
-                        "message_count": len(self.messages),
-                        "pinned_prefix_len": self.pinned_prefix_len,
-                        "subagent_depth": self.subagent_depth,
-                        "skills_enabled": self.skills_enabled,
-                        "subagents_enabled": self.subagents_enabled,
-                    },
+            with self._session_end_attempt_lock:
+                attempt_session_end = not self._session_end_attempted
+                self._session_end_attempted = True
+            # Hooks can re-enter close or have effects before raising/timeout.
+            # Consume the attempt before context/dispatch; never hold this lock
+            # over hook execution, and never clear it on a later cleanup error.
+            if attempt_session_end:
+                cwd, active_workdir_relpath = self._hook_runtime_context()
+                self._safe_dispatch_hooks(
+                    lambda: self.hook_dispatcher.fire_session_end(
+                        cwd=cwd,
+                        active_workdir_relpath=active_workdir_relpath,
+                        payload={
+                            "reason": reason,
+                            "mode": self.mode,
+                            "runtime_kind": self.runtime_kind.value,
+                            "session_source": self.session_source,
+                            "session_source_metadata": copy.deepcopy(self.session_source_metadata),
+                            "workspace_root": os.fspath(self.root),
+                            "focus_dir": os.fspath(self.focus_dir or self.root),
+                            "focus_relpath": self.focus_relpath,
+                            "active_workdir": os.fspath(cwd),
+                            "active_workdir_relpath": active_workdir_relpath,
+                            "workspace_kind": self.workspace_kind,
+                            "usage_role": self.usage_role,
+                            "message_count": len(self.messages),
+                            "pinned_prefix_len": self.pinned_prefix_len,
+                            "subagent_depth": self.subagent_depth,
+                            "skills_enabled": self.skills_enabled,
+                            "subagents_enabled": self.subagents_enabled,
+                        },
+                    )
                 )
-            )
             if self.mcp_manager is not None:
                 self.mcp_manager.close()
         finally:
@@ -1783,7 +1827,13 @@ class AgentSession:
                         getattr(usage, "output_includes_reasoning", True)
                     ),
                     total_includes_reasoning=bool(getattr(usage, "total_includes_reasoning", True)),
+                    input_tokens_scope=getattr(usage, "input_tokens_scope", "request"),
                 )
+            provider_reading = None
+            if operation in {"main_llm", "context_overflow_retry", "forced_final_summary_llm"}:
+                provider_reading = capture_provider_usage(usage, client=client)
+                if provider_reading is not None:
+                    self.last_provider_usage = provider_reading
             prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
             usage_context = usage_context_from_client_response(
                 client=client,
@@ -1862,6 +1912,11 @@ class AgentSession:
             )
             self.usage_summary.add_record(usage_record)
             if operation in {"main_llm", "context_overflow_retry"}:
+                self.request_context_measurement = None
+            if (
+                operation in {"main_llm", "context_overflow_retry"}
+                and usage_record.input_tokens_scope == "request"
+            ):
                 if prompt_tokens is None or usage_record.prompt_tokens != prompt_tokens:
                     prompt_token_source = UsageSource.LOCAL_ESTIMATE.value
                     prompt_token_confidence = UsageConfidence.ESTIMATED.value
@@ -1895,10 +1950,13 @@ class AgentSession:
                     request_message_signatures=request_message_signatures(list(messages or [])),
                     persistent_message_signatures=request_message_signatures(self.messages),
                     tool_schema_signature=tool_schema_signature(measurement_tools),
-                    request_has_media=request_contains_media(list(messages or [])),
+                    request_has_media=usage_record.request_has_media,
                     persistent_has_media=request_contains_media(self.messages),
                 )
-            self.store.append("llm_usage", usage_record.to_payload())
+            payload = usage_record.to_payload()
+            if provider_reading is not None:
+                payload["provider_context"] = provider_reading
+            self.store.append("llm_usage", payload)
             if self.agentbox_telemetry is not None:
                 self.agentbox_telemetry.record_usage(usage_record)
             return usage_record
@@ -2032,6 +2090,7 @@ class AgentSession:
         internal_fallback: bool = False,
         internal_fallback_kind: str = "",
         allow_language_rewrite: bool = True,
+        finalization_notes: tuple[str, ...] = (),
     ) -> str:
         emitted_text = str(final_text or "").strip()
         rewrite_payload = None
@@ -2052,7 +2111,12 @@ class AgentSession:
         # Host verdicts and artifact identity are appended after any model
         # translation, so a rewrite cannot alter them or trigger an extra call.
         if (final_event_payload or {}).get("verification_notice") is True:
-            emitted_text += task_outcome_notice(final_event_payload["task_outcome"])
+            notice = task_outcome_notice(final_event_payload["task_outcome"])
+            final_event_payload = {**final_event_payload, "verification_notice": bool(notice)}
+            emitted_text += notice
+        # Keep the verdict in the main reply, before secondary host footers.
+        # These notes are host-owned and must not pass through model rewriting.
+        emitted_text += "".join(finalization_notes)
         checkpoint = getattr(self._anytime_checkpoints, "best", None)
         contract = getattr(self._turn_execution_state, "acceptance_contract", None)
         if (
@@ -2147,7 +2211,7 @@ class AgentSession:
                 items.append(clean)
 
         def _path_arg(args: dict[str, Any]) -> str:
-            for key in ("path", "file", "target", "target_path"):
+            for key in ("path", "root_path", "file", "target", "target_path"):
                 value = args.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
@@ -2517,7 +2581,12 @@ class AgentSession:
         return emitted_text
 
     def _record_task_outcome(
-        self, *, exit_code: int | None, reason: str, terminal: bool = True
+        self,
+        *,
+        exit_code: int | None,
+        reason: str,
+        terminal: bool = True,
+        trusted_entry_blocked: bool = False,
     ) -> dict[str, Any]:
         state = self._turn_execution_state
         task_id = getattr(self._task_evidence_state, "task_id", "")
@@ -2536,6 +2605,7 @@ class AgentSession:
             task_id=task_id,
             state=state_payload,
             terminal=terminal,
+            trusted_entry_blocked=trusted_entry_blocked,
         )
         record["session_id"] = self.store.session_id
         record["runtime_kind"] = self.runtime_kind.value
@@ -2575,7 +2645,27 @@ class AgentSession:
         ephemeral_user_messages: list[str] | tuple[str, ...] | None = None,
         cancellation_token: Any | None = None,
         chat_only: bool = False,
+        task_relation: str | None = None,
     ) -> int:
+        new_task_instruction(self, instruction, task_relation, chat_only=chat_only)
+
+        def _terminal_evidence(origin: str, outcome: str) -> None:
+            from .turn.core import _finish_computer_use_evidence
+
+            _finish_computer_use_evidence(self, origin=origin, outcome=outcome)
+
+        entry = getattr(self, "resolved_entry", None)
+        if entry is not None and entry.retired is not None:
+            # A capture belongs to one turn. Later ordinary work keeps its
+            # normal client, but cannot reuse or advertise the retired V tool.
+            self.tools.pop("computer_start_resolved_v1", None)
+            self.tool_list = [
+                tool
+                for tool in self.tool_list
+                if (tool.get("name") or tool.get("function", {}).get("name"))
+                != "computer_start_resolved_v1"
+            ]
+
         self._turn_execution_state = None
         self.stop_reason = None
         self.last_turn_outcome = {}
@@ -2680,6 +2770,7 @@ class AgentSession:
                         cancellation_token=cancellation_token,
                         record_cancellation_request=record_cancellation_request,
                         chat_only=chat_only,
+                        **({"task_relation": task_relation} if task_relation is not None else {}),
                     )
                 self.agentbox_telemetry.task(instruction)
                 with self.agentbox_telemetry.turn():
@@ -2693,8 +2784,10 @@ class AgentSession:
                         cancellation_token=cancellation_token,
                         record_cancellation_request=record_cancellation_request,
                         chat_only=chat_only,
+                        **({"task_relation": task_relation} if task_relation is not None else {}),
                     )
             except KeyboardInterrupt:
+                _terminal_evidence("cancel", "cancelled")
                 interrupted = True
                 self._record_task_outcome(exit_code=130, reason="cancelled_by_user")
                 # Interactive Esc/Ctrl-C uses KeyboardInterrupt for its established
@@ -2723,6 +2816,9 @@ class AgentSession:
                 )
                 raise
             except CooperativeCancellationError as exc:
+                _terminal_evidence(
+                    "deadline" if is_budget_cancellation(exc) else "cancel", "cancelled"
+                )
                 interrupted = True
                 # The budget watchdog cancels through the same cooperative channel a
                 # user does, so the two are told apart by reason. A budget stop is a
@@ -2741,6 +2837,7 @@ class AgentSession:
                     raise
                 return self._finalize_run_budget_stop()
             except Exception as exc:
+                _terminal_evidence("unknown", "failed")
                 # Single authoritative terminal-failure boundary: every caller (one-shot
                 # run, interactive chat, Forge workers, subagents) routes turns through
                 # here, so one durable, redacted record makes a crashed build
@@ -2766,6 +2863,7 @@ class AgentSession:
                     self._emit_terminal_error(exc)
                 raise
             finally:
+                self.__dict__.pop("_computer_use_evidence_state", None)
                 # Same reasoning as the boundary above: this is the only per-turn point
                 # that sees normal returns, exceptions, and cancellation, so turn-level
                 # process hygiene belongs here rather than in the loop's success path.
@@ -2896,6 +2994,9 @@ class AgentSession:
             else:
                 raise
         finally:
+            entry = getattr(self, "resolved_entry", None)
+            if entry is not None:
+                entry.retire(entry.retired or "computer_start_owner_invalid")
             cleanup_redactor = self.host_screen_redactor if self.sensitive_media else None
             cleanup_failures: list[BaseException] = []
             cleanup_steps = (
@@ -3206,15 +3307,23 @@ def create_session(
     host_action_handler: HostActionHandler | None = None,
     host_action_capabilities: Collection[str] | None = None,
     host_mcp: dict[str, Any] | None = None,
+    github_repository_policy: github_policy.RepositoryPolicy | None = None,
+    github_repository_policy_required: bool = False,
     google_mcp: list[dict[str, Any]] | None = None,
+    connector_mcp: list[dict[str, Any]] | None = None,
     readonly_child_web_tool_names: Collection[str] | None = None,
     child_managed_browser_tool_names: Collection[str] | None = None,
     sensitive_media: bool = False,
     browser_start_host_request: Callable[[Any], Any] | None = None,
     computer_discovery: dict[str, Any] | None = None,
+    computer_start_resolved_host: dict[str, Any] | None = None,
+    computer_start_resolved_request: Callable[..., Any] | None = None,
     computer_use_host_request: ComputerUseHostRequest | None = None,
     computer_use_response_mode: str = "status_only",
     computer_observation_available: bool = False,
+    computer_interaction_v2: bool = False,
+    computer_application_lifecycle_v1: bool = False,
+    computer_window_selection_v1: bool = False,
     computer_use_verification_available: bool = False,
     computer_use_files_available: bool = False,
     computer_use_uploads_available: bool = False,
@@ -3222,6 +3331,31 @@ def create_session(
     managed_session_persistence: Any | None = None,
     approval_reviewer: ApprovalReviewer | None = None,
 ) -> AgentSession:
+    if not mac_w7_computer_use_available() and (
+        computer_start_resolved_host is not None
+        or computer_start_resolved_request is not None
+        or computer_interaction_v2
+        or computer_application_lifecycle_v1
+        or computer_window_selection_v1
+    ):
+        raise ConfigError("This Computer Use route is not qualified.")
+    if computer_use_blocked() and (
+        sensitive_media
+        or browser_start_host_request is not None
+        or computer_discovery is not None
+        or computer_start_resolved_host is not None
+        or computer_start_resolved_request is not None
+        or computer_use_host_request is not None
+        or computer_observation_available
+        or computer_interaction_v2
+        or computer_application_lifecycle_v1
+        or computer_window_selection_v1
+        or computer_use_verification_available
+        or computer_use_files_available
+        or computer_use_uploads_available
+        or computer_use_upload_objective is not None
+    ):
+        raise ConfigError(UNAVAILABLE_MESSAGE)
     # Copy the trusted original scope before any workspace/provider callback.
     computer_use_upload_objective = capture_upload_objective(computer_use_upload_objective)
     if computer_use_upload_objective is not None and not (
@@ -3245,7 +3379,37 @@ def create_session(
         surface=surface,
         non_interactive=non_interactive,
     )
-    prompt_context = prepare_session_prompt_context(
+    # Plugins M2b: skills of the host plugins bound in this session, from their verified
+    # descriptors. Protected Computer Use sessions keep their fixed prompt.
+    plugin_skills = (
+        active_plugin_skills(
+            root, host_mcp=host_mcp, google_mcp=google_mcp, connector_mcp=connector_mcp
+        )
+        if (host_mcp is not None or google_mcp or connector_mcp)
+        and trusted_system_prompt_override is None
+        and not sensitive_media
+        else ()
+    )
+    if (
+        github_repository_policy_required
+        and (github_repository_policy is None or github_repository_policy.mode == "allow_list")
+        and not sensitive_media
+        and trusted_system_prompt_override is None
+    ):
+        policy_guidance = (
+            "GitHub plugin repository access is limited to the negotiated repository policy. "
+            "Use only the GitHub tools and definitions actually offered for this session. "
+            "If those tools are unavailable or a repository/route is refused, explain the limitation. "
+            "Do not bypass the GitHub plugin policy with shell commands, direct MCP, native "
+            "fallbacks, other connectors or the human repository picker. A person's write approval "
+            "does not override the repository policy."
+        )
+        trusted_system_prompt_append = "\n\n".join(
+            part for part in (trusted_system_prompt_append, policy_guidance) if part
+        )
+    prompt_context = measured(
+        "prompt_assembly",
+        prepare_session_prompt_context,
         cfg=cfg,
         root=root,
         mode=mode,
@@ -3267,6 +3431,7 @@ def create_session(
         workspace_binding=workspace_binding,
         workspace_trust_prompt=workspace_trust_prompt,
         sensitive_media=sensitive_media,
+        plugin_skills=plugin_skills,
     )
     root = prompt_context.root
     workspace_context = prompt_context.workspace_context
@@ -3313,7 +3478,14 @@ def create_session(
         else:
             api_key_resolution = resolve_api_key(session_cfg)
             if api_key_resolution.key is None:
-                api_key = get_api_key(session_cfg)
+                # Local runtimes accept an unkeyed request. Keep the configured route and
+                # let its client report reachability, rather than requiring a dummy key.
+                if is_loopback_endpoint(
+                    resolve_effective_base_url(cfg=session_cfg, profile=active_profile)
+                ):
+                    api_key = ""
+                else:
+                    api_key = get_api_key(session_cfg)
                 api_key_source = "missing"
             else:
                 api_key = api_key_resolution.key
@@ -3338,7 +3510,13 @@ def create_session(
         profile=active_profile,
     )
     cache_affinity_preset = find_preset_for_profile(active_profile)
-    session_scoped_cache_affinity = (
+    # The ChatGPT subscription route sends only a hashed digest of this key
+    # (provider_auth/openai_codex.py), so it also gets session-scoped affinity,
+    # including in protected Computer Use sessions and in Manual cache mode.
+    subscription_cache_affinity = (
+        str(active_profile.auth_provider or "").strip().lower() == "openai-codex"
+    )
+    session_scoped_cache_affinity = subscription_cache_affinity or (
         cache_affinity_preset is not None
         and str(cache_affinity_preset.provider_key or "").strip().lower() == "moonshot"
     )
@@ -3384,12 +3562,15 @@ def create_session(
     prompt_cache_stream_key = None if sensitive_media else resolve_prompt_cache_key(session_cfg)
     if (
         prompt_cache_stream_key is None
-        and not sensitive_media
+        and (not sensitive_media or subscription_cache_affinity)
         and session_cfg.cache.prompt_cache_key_enabled
     ):
         prompt_cache_stream_key = derive_prompt_cache_stream_key(
             session_id=provider_session_id,
             parent_session_id=prompt_cache_parent_session_id,
+            # A protected session never exposes its raw id as a routing hint,
+            # even if a later model switch leaves the subscription route.
+            digest_only=sensitive_media,
         )
     if sensitive_media and mcp_manager is not None:
         mcp_manager.close()
@@ -3443,12 +3624,16 @@ def create_session(
         active_model_refs.append(
             ActiveModelRef(role=ROLE_COMPACTOR, model_name=compactor_model_name)
         )
-    model_metadata_policy_result = evaluate_active_model_metadata_policy(
+    model_metadata_policy_result = measured(
+        "model_metadata",
+        evaluate_active_model_metadata_policy,
         cfg=session_cfg,
         registry=registry,
         active_models=active_model_refs,
     )
-    client = _make_session_llm_client(
+    client = measured(
+        "client_construction",
+        _make_session_llm_client,
         cfg=session_cfg,
         api_key=api_key,
         model=session_cfg.model,
@@ -3463,6 +3648,23 @@ def create_session(
         reasoning_effort=llm_reasoning_effort,
         session_id=provider_session_id,
     )
+    resolved_entry = None
+    if computer_start_resolved_host is not None:
+        from .computer_start_resolved import Entry
+
+        if (
+            sensitive_media
+            or computer_discovery is not None
+            or computer_start_resolved_request is None
+        ):
+            raise ValueError("Invalid resolved Computer Use route")
+        resolved_entry = Entry(
+            computer_start_resolved_host,
+            computer_start_resolved_request,
+            client,
+            session_cfg.stream,
+            session_cfg,
+        )
     if sensitive_media and computer_use_host_request is not None:
         require_tool_calling(
             client,
@@ -3941,7 +4143,9 @@ def create_session(
             )
         )
     else:
-        runner = LazyShellRunner(_load_shell_runner_from_resolved_settings)
+        runner = LazyShellRunner(
+            _load_shell_runner_from_resolved_settings, settings=resolved_sandbox_settings
+        )
         bg_runner = LazyBackgroundShellRunner(
             lambda: _patchable(
                 "build_background_shell_runner_from_settings",
@@ -4078,6 +4282,7 @@ def create_session(
         # an empty availability snapshot, isolated from the global registry.
         tool_availability_holder: dict[str, ToolAvailabilitySnapshot] = {"snapshot": {}}
         read_ledger_holder: dict[str, SessionReadLedger] = {}
+        artifact_output_access_holder: dict[str, Callable[[str, bool], bool]] = {}
         session_approval_reviewer = approval_reviewer or ApprovalReviewer()
 
         def _capture_subagent_coordinator(coordinator: SubagentCoordinator) -> None:
@@ -4092,12 +4297,20 @@ def create_session(
         def _capture_read_ledger(ledger: SessionReadLedger) -> None:
             read_ledger_holder["ledger"] = ledger
 
+        def _capture_artifact_output_access(access: Callable[[str, bool], bool]) -> None:
+            artifact_output_access_holder["access"] = access
+
         tools = (
             (
-                build_computer_use_tools(
+                measured(
+                    "fixed_tools",
+                    build_computer_use_tools,
                     computer_use_host_request,
                     response_mode=computer_use_response_mode,
                     observation_available=computer_observation_available,
+                    interaction_v2=computer_interaction_v2,
+                    application_lifecycle_v1=computer_application_lifecycle_v1,
+                    window_selection_v1=computer_window_selection_v1,
                     viewer=ComputerUseViewer(root=root, cfg=session_cfg)
                     if computer_observation_available
                     else None,
@@ -4148,6 +4361,7 @@ def create_session(
                 completion_gate_tools_enabled=completion_gate_tools_enabled,
                 skills_enabled=resolved_skills_enabled,
                 skill_registry=discovered_skills.skills,
+                plugin_skills=prompt_context.plugin_skills,
                 subagents_enabled=resolved_subagents_enabled,
                 helper_subagents_enabled=helper_subagents_enabled,
                 subagent_depth=subagent_depth,
@@ -4169,12 +4383,16 @@ def create_session(
                 host_action_handler=host_action_handler,
                 host_action_capabilities=host_action_capabilities,
                 host_mcp=host_mcp,
+                github_repository_policy=github_repository_policy,
+                github_repository_policy_required=github_repository_policy_required,
                 google_mcp=google_mcp,
+                connector_mcp=connector_mcp,
                 subagent_coordinator_sink=_capture_subagent_coordinator,
                 child_scheduler_sink=_capture_child_scheduler,
                 tool_availability_sink=_capture_tool_availability,
                 parent_steer_inbox=parent_steer_inbox,
                 read_ledger_sink=_capture_read_ledger,
+                artifact_output_access_sink=_capture_artifact_output_access,
                 readonly_child_web_tool_names=readonly_child_web_tool_names,
                 child_managed_browser_tool_names=child_managed_browser_tool_names,
                 approval_reviewer=session_approval_reviewer,
@@ -4186,9 +4404,20 @@ def create_session(
                 tools.update(
                     build_computer_start_tools(browser_start_host_request, computer_discovery)
                 )
+        if resolved_entry is not None:
+            tools["computer_start_resolved_v1"] = resolved_entry.tool()
         if mcp_manager is not None and mcp_manager.resolved_config.has_any_config:
             store.append("mcp_catalog_snapshot", mcp_manager.catalog_snapshot_metadata())
-        tool_list = [tool.as_openai_tool() for tool in tools.values()]
+        from .tool_discovery import install_tool_discovery, model_visible
+
+        if not sensitive_media:
+            install_tool_discovery(
+                tools,
+                defer_builtin_schemas=(
+                    getattr(client, "prefers_deferred_tool_schemas", False) is True
+                ),
+            )
+        tool_list = [tool.as_openai_tool() for tool in tools.values() if model_visible(tool)]
         messages: list[dict[str, Any]] = list(prompt_context.messages)
         if active_workdir_relpath_override is not None:
             binding_context = _workspace_binding_context_message(
@@ -4215,6 +4444,43 @@ def create_session(
                 messages[index] = {**message, "content": binding_context}
                 break
         pinned_prefix_len = prompt_context.pinned_prefix_len
+        if not sensitive_media:
+            from ..mcp.untrusted_content import server_instructions_context
+
+            host_guidance = server_instructions_context(
+                {
+                    catalog["server_id"]: catalog["instructions"]
+                    for catalog in ([host_mcp] if host_mcp else []) + (google_mcp or [])
+                    if isinstance(catalog.get("instructions"), str)
+                }
+            )
+            if host_guidance:
+                messages.insert(pinned_prefix_len, {"role": "user", "content": host_guidance})
+                pinned_prefix_len += 1
+        if not sensitive_media and mcp_manager is not None:
+            instructions_builder = getattr(mcp_manager, "server_instructions_context", None)
+            instructions_context = (
+                instructions_builder() if callable(instructions_builder) else None
+            )
+            if instructions_context:
+                messages.insert(
+                    pinned_prefix_len, {"role": "user", "content": instructions_context}
+                )
+                pinned_prefix_len += 1
+        from .task_notes import task_notes_context, task_notes_enabled
+
+        if task_notes_enabled(
+            runtime_kind=resolved_runtime_kind,
+            subagent_depth=subagent_depth,
+            sensitive_media=sensitive_media,
+        ):
+            # Protect the notebook entry point through within-turn compaction.
+            # Its contents stay on disk and are read on demand with normal tools.
+            messages.insert(
+                pinned_prefix_len,
+                {"role": "user", "content": task_notes_context(session_id)},
+            )
+            pinned_prefix_len += 1
         if resolved_subagents_enabled and subagent_depth == 0:
             effective_subagent_context = _subagent_context_message(
                 subagent_registry=resolved_subagent_registry,
@@ -4384,7 +4650,9 @@ def create_session(
 
         conversation_compactor: ConversationCompactor | None = None
         if conversation_summarization_enabled and compactor_model_name:
-            compactor_client = _make_session_llm_client(
+            compactor_client = measured(
+                "client_construction",
+                _make_session_llm_client,
                 cfg=session_cfg,
                 api_key=api_key,
                 model=compactor_model_name,
@@ -4414,6 +4682,7 @@ def create_session(
                         client=client,
                         messages=count_messages,
                         tools=effective_tools_for_client(client, count_tools),
+                        request_context=lambda: compaction_provider_call(client),
                     )
                 ),
                 calibration_filters=usage_context_from_client_response(
@@ -4431,12 +4700,6 @@ def create_session(
         else:
             startup_branch = "-"
             startup_dirty = False
-
-        startup_context_baseline_tokens = estimate_request_token_breakdown(
-            messages=messages,
-            tool_list=effective_tools_for_client(client, tool_list),
-            pinned_prefix_len=pinned_prefix_len,
-        ).total_tokens
 
         surface.on_status_update(
             StatusEvent(
@@ -4510,6 +4773,7 @@ def create_session(
             skills_ordered=tuple(discovered_skills.ordered),
             skill_discovery_issues=tuple(discovered_skills.issues),
             skill_catalog_entries=tuple(prompt_context.skill_catalog_entries),
+            plugin_skills=prompt_context.plugin_skills,
             repo_conventions=tuple(repo_conventions),
             console=console,
             surface=surface,
@@ -4547,6 +4811,7 @@ def create_session(
             child_scheduler=child_scheduler_holder.get("scheduler"),
             steer_inbox=parent_steer_inbox,
             read_ledger=read_ledger_holder.get("ledger"),
+            artifact_output_access=artifact_output_access_holder.get("access"),
             shell_runner=runner,
             shell_environment=prompt_context.shell_environment,
             step_budget_runtime=step_budget_runtime,
@@ -4563,7 +4828,6 @@ def create_session(
             session_source=normalized_session_source,
             session_source_metadata=copy.deepcopy(normalized_session_source_metadata),
             pinned_prefix_len=pinned_prefix_len,
-            startup_context_baseline_tokens=startup_context_baseline_tokens,
             custom_tool_session_state=custom_tool_session_state,
             hook_dispatcher=hook_dispatcher,
             execution_deadline=execution_deadline,
@@ -4587,6 +4851,7 @@ def create_session(
             set_provider_telemetry_sink(
                 store.runtime_artifact_path("diagnostics", "provider_telemetry.jsonl")
             )
+        session.resolved_entry = resolved_entry
         active_workdir_state["session"] = session
         return session
     except Exception:

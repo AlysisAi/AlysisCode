@@ -158,7 +158,13 @@ def test_invalid_switch_is_rejected_before_mutation(conversation, case):
     client = session.agent_session.client
     params = {}
     if case == "busy":
-        session.active_job = SimpleNamespace(status="running")
+        session.active_job = stdio_bridge.BridgeJob(
+            job_id="busy-original",
+            session_id=session.session_id,
+            created_at="2026-10-26T00:00:00Z",
+            status="running",
+            worker_reserved=True,
+        )
     elif case == "untrusted":
         params["workspace_trusted"] = False
     else:

@@ -7,6 +7,7 @@ checkpoint manager's snapshot/metadata operation. Its parent owns its lifetime.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -19,6 +20,7 @@ from typing import Any
 import psutil
 
 from ..command_text import command_text
+from ..process_reaping import start_windows_command_cleanup
 
 
 class CheckpointWorkerExpired(TimeoutError):
@@ -28,17 +30,29 @@ class CheckpointWorkerExpired(TimeoutError):
 
 
 def worker_command() -> list[str]:
-    # -I excludes workspace/sitecustomize/PYTHONPATH injection. Explicitly select
-    # this installation (also works with a source checkout or fresh wheel target).
+    # This child needs only the standard library and this exact installation.
+    # Use the running interpreter's base executable to avoid a Windows venv
+    # redirector process, and disable site initialization with -S. -I also
+    # excludes workspace/PYTHONPATH injection. No PATH lookup or user-selected
+    # interpreter participates in the worker's bootstrap.
     source = str(Path(__file__).resolve().parents[2])
     bootstrap = (
         "import sys; sys.path.insert(0, sys.argv[1]); "
-        "from alysis_code.agent.checkpoint_worker import main; main()"
+        "from alysis_code.agent.checkpoint_io import main; main()"
     )
-    return [sys.executable, "-I", "-c", bootstrap, source]
+    executable = getattr(sys, "_base_executable", None) or sys.executable
+    return [executable, "-I", "-S", "-c", bootstrap, source]
 
 
 def _kill_owned_worker(process: subprocess.Popen[str], *, stop_at: float) -> bool:
+    if os.name == "nt":
+        cleanup = start_windows_command_cleanup(process)
+        # The shared owner also closes reader-held pipes. Avoid competing with
+        # it below, including when a failed thread start leaves cleanup pending.
+        process._alysis_checkpoint_cleanup = cleanup
+        if not cleanup.thread_started:
+            return False
+        return cleanup.finished.wait(max(0.0, stop_at - time.monotonic())) and cleanup.clean
     children: list[psutil.Process] = []
     inventory_complete = True
     try:
@@ -79,6 +93,9 @@ def _kill_owned_worker(process: subprocess.Popen[str], *, stop_at: float) -> boo
 
 
 def _close_worker_streams(process: subprocess.Popen[str], *, deferred: bool) -> None:
+    if getattr(process, "_alysis_checkpoint_cleanup", None) is not None:
+        return  # Ownership has transferred to the retained Windows cleanup task.
+
     def close() -> None:
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None:
@@ -95,6 +112,55 @@ def _close_worker_streams(process: subprocess.Popen[str], *, deferred: bool) -> 
         threading.Thread(target=close, name="alysis-checkpoint-pipes", daemon=True).start()
     else:
         close()
+
+
+def _communicate_worker(
+    process: subprocess.Popen[str], payload: str, *, work_stop_at: float
+) -> tuple[str, str]:
+    if os.name != "nt":
+        return process.communicate(payload, timeout=max(0.001, work_stop_at - time.monotonic()))
+
+    # Windows communicate() writes stdin synchronously before checking its
+    # timeout. A child stalled before reading a full pipe would therefore block
+    # the caller and prevent deadline cleanup. Transfer this stream to an owned
+    # writer while communicate manages only the output readers. The writer
+    # retains and closes its stream even if cancellation outlives this call.
+    stream = process.stdin
+    if stream is None:
+        raise ValueError("checkpoint_worker_missing_input_stream")
+    finished = threading.Event()
+    errors: list[BaseException] = []
+
+    def write_input() -> None:
+        try:
+            for operation in (lambda: stream.write(payload), stream.close):
+                try:
+                    operation()
+                except BrokenPipeError:
+                    pass  # communicate tolerates an early closed child stdin.
+                except OSError as exc:
+                    if exc.errno != errno.EINVAL:
+                        errors.append(exc)
+                except BaseException as exc:
+                    errors.append(exc)
+        finally:
+            finished.set()
+
+    writer = threading.Thread(target=write_input, name="alysis-checkpoint-input", daemon=True)
+    process.stdin = None
+    try:
+        writer.start()
+    except BaseException:
+        process.stdin = stream
+        raise
+    output, error = process.communicate(timeout=max(0.001, work_stop_at - time.monotonic()))
+    # A real successful worker reads JSON through EOF before responding. Keep
+    # this invariant explicit and bound even the writer's final scheduling delay.
+    if not finished.wait(timeout=max(0.0, work_stop_at - time.monotonic())):
+        raise subprocess.TimeoutExpired(process.args, timeout=0)
+    if errors and process.returncode == 0:
+        raise errors[0]
+    return output, error
 
 
 def run_checkpoint_worker(payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
@@ -121,9 +187,10 @@ def run_checkpoint_worker(payload: dict[str, Any], *, timeout: float) -> dict[st
     )
     communication_finished = False
     try:
-        output, error = process.communicate(
+        output, error = _communicate_worker(
+            process,
             json.dumps(payload, ensure_ascii=True),
-            timeout=max(0.001, work_stop_at - time.monotonic()),
+            work_stop_at=work_stop_at,
         )
         communication_finished = True
         if time.monotonic() >= work_stop_at:
@@ -148,33 +215,10 @@ def run_checkpoint_worker(payload: dict[str, Any], *, timeout: float) -> dict[st
 
 
 def main() -> None:
-    # The JSON command comes only from the owning host process. Never accept a
-    # function/module name or executable supplied by a task or workspace file.
-    from ..checkpoint_settings import CheckpointSettings
-    from ..session_artifacts import SessionArtifactLayout
-    from .anytime_checkpoint import AnytimeCheckpointManager
+    # Compatibility entrypoint; the owned child imports only the I/O module.
+    from .checkpoint_io import main as run
 
-    payload = json.load(sys.stdin)
-    manager = AnytimeCheckpointManager(
-        root=Path(payload["root"]),
-        layout=SessionArtifactLayout(Path(payload["artifact_root"]), payload["locator_prefix"]),
-        config=CheckpointSettings(**payload["config"]),
-        excluded_paths=tuple(Path(item) for item in payload["excluded_paths"]),
-    )
-    manager._restore_worker_state(payload["state"])
-    manager._io_stop_at = float(payload["stop_at"])
-    manager._check_io_deadline()
-    action = payload["action"]
-    if action == "select_task":
-        event = manager._select_task_inline(**payload["arguments"])
-    elif action == "consider":
-        arguments = payload["arguments"]
-        arguments["accepted_commands"] = set(arguments["accepted_commands"])
-        event = manager._consider_inline(**arguments)
-    else:
-        raise ValueError("unsupported_checkpoint_operation")
-    manager._check_io_deadline()
-    print(json.dumps({"state": manager._worker_state(), "event": event}, ensure_ascii=True))
+    run()
 
 
 if __name__ == "__main__":

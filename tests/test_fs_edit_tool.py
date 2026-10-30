@@ -339,3 +339,10 @@ def test_build_tools_registers_fs_edit_and_emits_diff_preview(tmp_path: Path) ->
     assert event.summary == "1 file changed via fs_edit (demo.txt)"
     assert "-before" in event.diff
     assert "+after" in event.diff
+
+
+@pytest.fixture(autouse=True)
+def file_semantics_without_os_backend(monkeypatch):
+    # These unit tests isolate approval, stale-file and ledger behavior.
+    # Native/WSL containment is exercised by the installed-runtime qualifier.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")

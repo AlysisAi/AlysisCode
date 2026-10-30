@@ -16,6 +16,10 @@ from alysis_code.sandbox_settings import resolve_shell_sandbox_settings
 def test_session_create_applies_sandbox_profile_without_mutating_shared_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     monkeypatch.delenv("ALYSIS_SHELL_SANDBOX_MODE", raising=False)
     monkeypatch.delenv("ALYSIS_SHELL_SANDBOX_MODE", raising=False)
     source = AppConfig(model="test-model")
@@ -32,7 +36,7 @@ def test_session_create_applies_sandbox_profile_without_mutating_shared_config(
             "create",
             "session.create",
             {
-                "workspace": str(tmp_path),
+                "workspace": str(workspace),
                 "mode": "readonly",
                 "sandbox_profile": profile,
             },

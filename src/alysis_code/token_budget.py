@@ -4,6 +4,8 @@ import math
 import re
 from functools import lru_cache
 
+from .computer_use_attribution import encoder_acquisition
+
 _TOKEN_ENCODING_NAME = "cl100k_base"
 _TOKEN_LIKE_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
@@ -11,12 +13,18 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 @lru_cache(maxsize=1)
 def _token_encoder() -> object | None:
-    try:
-        import tiktoken  # type: ignore[import-not-found]
+    with encoder_acquisition() as span:
+        try:
+            import tiktoken  # type: ignore[import-not-found]
 
-        return tiktoken.get_encoding(_TOKEN_ENCODING_NAME)
-    except Exception:
-        return None
+            encoder = tiktoken.get_encoding(_TOKEN_ENCODING_NAME)
+            if span is not None:
+                span.acquisition = "acquired" if encoder is not None else "unknown"
+            return encoder
+        except Exception:
+            if span is not None:
+                span.acquisition = "fallback"
+            return None
 
 
 def _fallback_estimate_tokens(text: str) -> int:

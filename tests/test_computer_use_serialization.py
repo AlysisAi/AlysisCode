@@ -25,6 +25,8 @@ from alysis_code.provider_auth import ProviderRequestAuthorization
 from alysis_code.provider_auth.openai_codex import OpenAICodexSubscriptionAuth
 from alysis_code.surface.noop_surface import NoopSurface
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 class _SyntheticSubscriptionAuth:
     requires_streaming = True

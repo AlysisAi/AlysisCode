@@ -19,9 +19,12 @@ class ApprovalDeclinedError(AgentRuntimeError):
         approval_kind: str,
         *,
         message: str | None = None,
+        result_payload: dict[str, Any] | None = None,
     ) -> None:
         self.approval_kind = str(approval_kind or "approval").strip() or "approval"
-        super().__init__(message or f"User declined: {self.approval_kind}")
+        super().__init__(
+            message or f"User declined: {self.approval_kind}", result_payload=result_payload
+        )
 
 
 class ApprovalReviewDeniedError(AgentRuntimeError):

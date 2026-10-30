@@ -8,16 +8,20 @@ from typing import Any
 import httpx
 import pytest
 from test_openai_codex_instruction_prefix import _OfflineSubscriptionAuth
+from test_usage_tracker import _FakeRegistry
 
 from alysis_code.agent.llm_calls import _request_messages_with_volatile_suffix
 from alysis_code.llm.anthropic_messages import AnthropicMessagesClient
 from alysis_code.llm.openai_compat import OpenAICompatClient
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
 from alysis_code.llm.request_plan import WireRequestDiagnostics
+from alysis_code.model_registry import ModelMeta
 from alysis_code.provider_telemetry import (
+    _safe_request_plan,
     last_provider_call_summary,
     reset_provider_telemetry_for_tests,
 )
+from alysis_code.usage_tracker import _safe_request_plan_payload, build_usage_record
 
 
 @pytest.fixture(autouse=True)
@@ -134,6 +138,85 @@ def _capturing_client(protocol: str, requests: list[dict[str, Any]]) -> Any:
     if protocol == "anthropic":
         return AnthropicMessagesClient(base_url="https://example.test/v1", **common)
     return OpenAICompatClient(base_url="https://example.test/v1", **common)
+
+
+def test_subscription_wire_shape_survives_scrubbing_and_usage_persistence():
+    requests: list[dict[str, Any]] = []
+    client = _capturing_client("responses", requests)
+    client.reasoning_effort = "medium"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "PRIVATE observation"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,PRIVATE_PIXELS"}},
+            ],
+        }
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "private_observe",
+                "description": "Observe",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    response = client.chat(
+        messages=messages,
+        tools=tools,
+        tool_choice={"type": "function", "function": {"name": "private_observe"}},
+    )
+    # Subscription adaptation turns a selected function into a required namespace.
+    assert requests[-1]["tool_choice"] == "required"
+    metadata = response.provider_metadata["openai_responses"]["request_plan"]
+    safe = _safe_request_plan_payload(metadata)
+    assert safe["wire_tool_choice"] == "required"
+    assert safe["wire_tool_count"] == 1
+    assert safe["wire_reasoning_effort"] == "medium"
+    assert safe["wire_image_parts"] == safe["wire_media_parts"] == 1
+    assert safe["wire_text_parts"] == 1
+    assert safe["wire_history_sha256"] == _digest(requests[-1]["input"])
+    # Simulate the turn loop's one-request screenshot cleanup before accounting.
+    messages.clear()
+    record = build_usage_record(
+        role="main",
+        requested_model="test-model",
+        response_model="test-model",
+        messages=messages,
+        response_content="",
+        response_tool_calls=[],
+        api_prompt_tokens=None,
+        api_completion_tokens=None,
+        api_total_tokens=None,
+        registry=_FakeRegistry({"test-model": ModelMeta("test-model", 128000, 32000)}),
+        request_plan=metadata,
+    )
+    assert record.request_has_media is True
+    assert record.to_payload()["request_plan"]["wire_image_parts"] == 1
+    serialized = json.dumps(record.to_payload())
+    for forbidden in ("PRIVATE", "private_observe", "data:image"):
+        assert forbidden not in serialized
+    client.chat(messages=[{"role": "user", "content": "Status only."}], tools=tools)
+    assert last_provider_call_summary()["request_plan"]["wire_image_parts"] == 0
+
+
+@pytest.mark.parametrize("sanitize", [_safe_request_plan_payload, _safe_request_plan])
+def test_wire_metadata_rejects_content_disguised_as_diagnostics(sanitize):
+    safe = sanitize(
+        {
+            "wire_history_sha256": "private screenshot",
+            "wire_tool_choice": "private_tool",
+            "wire_reasoning_effort": "private instructions",
+            "wire_tools_bytes": "private tools",
+            "wire_image_parts": {"private": "pixels"},
+            "wire_previous_tools_unchanged": "private",
+            "wire_unknown": "private",
+            "wire_tool_count": 2,
+        }
+    )
+    assert safe == {"wire_tool_count": 2}
 
 
 @pytest.mark.parametrize("protocol", ["responses", "anthropic", "compat"])

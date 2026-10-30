@@ -52,6 +52,7 @@ class TuiState:
     # example, a selected subscription still needs browser authentication).
     connection_status: str = ""
     tokens: int = 0
+    tokens_estimated: bool = False
     # Session cost. ``None`` means pricing is unknown (an unmetered/free model with
     # real usage) — the footer renders that as "n/a" rather than a misleading
     # "$0.0000". A literal 0.0 means nothing has been spent yet.

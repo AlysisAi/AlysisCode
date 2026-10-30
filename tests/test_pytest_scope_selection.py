@@ -357,7 +357,8 @@ def test_real_failing_scope_remains_failed_and_regression_is_not_suppressed(repo
     assert assessment.new_failures == ("integration/test_beta.py::test_beta",)
 
 
-def test_native_shell_cwd_is_used_by_actual_effect_recorder(repo: Path):
+def test_subdirectory_shell_run_does_not_seed_project_baseline(repo: Path):
     state = _state()
-    _record(state, repo, "-q", "shell_run", cwd="unit")
-    assert state.blast_radius_baseline_covered_paths() == ("unit/test_alpha.py",)
+    assert _record(state, repo, "-q", "shell_run", cwd="unit").returncode == 0
+    assert state.blast_radius_baseline_covered_paths() == ()
+    assert not state.blast_radius_runs

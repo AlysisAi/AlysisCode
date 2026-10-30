@@ -18,7 +18,7 @@ Clients keep their own payload shaping (e.g. ``anthropic_messages`` builds the
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Reasoning modes.
 ALWAYS_ON = "always-on"
@@ -76,6 +76,47 @@ class ReasoningContract:
 
 UNKNOWN_CONTRACT = ReasoningContract()
 
+# Sources of model-native contracts. Hosted gateways and subscription plans
+# deliberately stay out: their routing overrides are not portable model facts.
+_MODEL_NATIVE_PROVIDERS = (
+    "openai",
+    "anthropic",
+    "gemini",
+    "deepseek",
+    "qwen",
+    "zhipu",
+    "moonshot",
+    "minimax",
+    "bytedance",
+    "mistral",
+    "xai",
+    "cohere",
+)
+
+
+def model_reasoning_source(model: str | None) -> tuple[str, str] | None:
+    """Reuse a recognized model's originating catalog record and wire definition."""
+    from .model_registry import catalog_model_for_provider
+
+    for provider in _MODEL_NATIVE_PROVIDERS:
+        model_id = catalog_model_for_provider(str(model or ""), provider)
+        if model_id is not None:
+            return provider, model_id
+    return None
+
+
+def model_reasoning_contract(model: str | None) -> ReasoningContract:
+    source = model_reasoning_source(model)
+    return reasoning_contract_for(*source) if source else UNKNOWN_CONTRACT
+
+
+def resolve_reasoning_provider(provider: str | None, model: str | None) -> str | None:
+    """Keep known route dialects; otherwise use the recognized model's dialect."""
+    if provider in _CONTRACTS:
+        return provider
+    source = model_reasoning_source(model)
+    return source[0] if source else provider
+
 
 def reasoning_labels_allowed_by_contract(
     contract: ReasoningContract,
@@ -122,8 +163,77 @@ def reasoning_labels_allowed_by_contract(
 # Per provider_key: ordered (prefix, contract) rules; first match wins. Exact
 # ids sort naturally before shorter prefixes where it matters.
 _C = ReasoningContract
+
+# October 2026 releases. Keep exact model rules ahead of older family prefixes.
+# https://platform.minimax.io/docs/api-reference/text-openai-api
+# https://www.together.ai/models/minimax-m3-1-flash
+_MINIMAX_M31_FLASH_REASONING = _C(
+    mode=ALWAYS_ON,
+    wire=WIRE_REASONING_EFFORT,
+    values=("low", "medium", "high", "xhigh", "max"),
+    default="max",
+    off=OFF_IMPOSSIBLE,
+    replay_reasoning_content=True,
+    emits_flat_reasoning_effort=True,
+    notes="M3.1 Flash always reasons; replay the complete reasoning_content after tool calls",
+)
+_HOSTED_MINIMAX_M31_FLASH_REASONING = replace(_MINIMAX_M31_FLASH_REASONING, default="")
+# https://developers.reflection.ai/reasoning
+_BEAM_REASONING = _C(
+    mode=ALWAYS_ON,
+    wire=WIRE_REASONING_EFFORT,
+    values=("low", "medium", "high", "xhigh", "max"),
+    off=OFF_IMPOSSIBLE,
+    replay_reasoning_content=True,
+    emits_flat_reasoning_effort=True,
+    notes="Beam always reasons; Auto omits effort because the default can vary by organization",
+)
+# https://docs.nvidia.com/nim/large-language-models/2.0.13/get-started/advanced/get-started-nemotron-3.5-super-vl.html
+_HOSTED_NEMOTRON_35_SUPER_VL_REASONING = _C(
+    mode=ALWAYS_ON,
+    wire=WIRE_REASONING_EFFORT,
+    values=("low", "medium", "high"),
+    off=OFF_IMPOSSIBLE,
+    replay_reasoning_content=True,
+    emits_flat_reasoning_effort=True,
+    notes="Native flat effort levels; the hosted route does not advertise a reasoning-off toggle",
+)
+# https://www.together.ai/models/glm-5-3
+# https://docs.z.ai/guides/llm/glm-5.3
+_TOGETHER_GLM_53_REASONING = _C(
+    mode=ALWAYS_ON,
+    wire=WIRE_REASONING_EFFORT,
+    values=("low", "high", "max"),
+    default="max",
+    off=OFF_IMPOSSIBLE,
+    replay_reasoning_content=True,
+    emits_flat_reasoning_effort=True,
+    notes="GLM 5.3 always reasons; Together supports low/high/max with max as its default",
+)
+# https://docs.mistral.ai/studio/conversations/reasoning (2026-10-30):
+# Large 4 / 4-0 accepts low, medium and high; High is the recommended setting.
+# Older Large models have no effort control and retain their separate rule.
+_MISTRAL_LARGE_4_REASONING = _C(
+    mode=ALWAYS_ON,
+    wire=WIRE_REASONING_EFFORT,
+    values=("low", "medium", "high"),
+    off=OFF_IMPOSSIBLE,
+    emits_flat_reasoning_effort=True,
+    notes="Large 4 supports low/medium/high; High is recommended. Auto uses the provider default.",
+)
 _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     "openai": (
+        (
+            "gpt-6.1-terra",
+            _C(
+                mode=OPTIONAL,
+                wire=WIRE_REASONING_EFFORT,
+                values=("none", "low", "medium", "high", "xhigh", "max"),
+                default="medium",
+                off=OFF_EXPLICIT,
+                notes="GPT-6.1 Terra supports Off through Max; function tools require Responses",
+            ),
+        ),
         (
             "gpt-6.1-sol",
             _C(
@@ -395,6 +505,62 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     ),
     # Hosted models retain their upstream reasoning and replay contracts.
     "alysis": (
+        ("mistral-large-4", _MISTRAL_LARGE_4_REASONING),
+        ("minimax-m3.1-flash", _HOSTED_MINIMAX_M31_FLASH_REASONING),
+        (
+            "gpt-oss-120b",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        ("reflection-beam", _BEAM_REASONING),
+        ("nemotron-3.5-super-vl", _HOSTED_NEMOTRON_35_SUPER_VL_REASONING),
+        (
+            "qwen3.8-2.4t",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "kimi-k3",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
+        (
+            "muse-spark-open",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low",),
+                default="low",
+                off=OFF_IMPOSSIBLE,
+                replay_reasoning_content=True,
+                emits_flat_reasoning_effort=True,
+                notes="Together hosted: tested text/tool contract; higher effort settings remain unverified",
+            ),
+        ),
         (
             "claude-haiku-5-5",
             _C(
@@ -404,6 +570,17 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 default="medium",
                 off=OFF_EXPLICIT,
                 notes="native Messages; disabled only at high or below; shared Free credits",
+            ),
+        ),
+        (
+            "gpt-6.1-terra",
+            _C(
+                mode=OPTIONAL,
+                wire=WIRE_REASONING_OBJECT,
+                values=("none", "low", "medium", "high", "xhigh", "max"),
+                default="medium",
+                off=OFF_EXPLICIT,
+                notes="hosted Terra Responses; text/function tools with stateless reasoning replay",
             ),
         ),
         (
@@ -450,8 +627,8 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 off=OFF_EXPLICIT,
                 replay_reasoning_content=True,
                 accepts_tool_choice_while_reasoning=False,
-                notes="hosted proxy passes reasoning fields through to DeepSeek unchanged; "
-                "mirrors the deepseek provider contract",
+                notes="hosted proxy passes reasoning fields through to Together AI's DeepSeek "
+                "unchanged (route drop/extra adapt them); mirrors the deepseek provider contract",
             ),
         ),
         (
@@ -467,6 +644,8 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 notes="Z.ai hosted pay-as-you-go; preserved thinking requires complete reasoning replay",
             ),
         ),
+        # Specific Flash must precede the base model: rules match prefixes.
+        ("glm-5.3", _TOGETHER_GLM_53_REASONING),
     ),
     "nvidia": (
         (
@@ -743,17 +922,7 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     ),
     "minimax": (
         # https://platform.minimax.io/docs/api-reference/text-openai-api
-        (
-            "MiniMax-M3.1-Flash-Preview",
-            _C(
-                mode=ALWAYS_ON,
-                wire=WIRE_REASONING_EFFORT,
-                values=("low", "medium", "high", "xhigh", "max"),
-                default="max",
-                off=OFF_IMPOSSIBLE,
-                emits_flat_reasoning_effort=True,
-            ),
-        ),
+        ("MiniMax-M3.1-Flash", _MINIMAX_M31_FLASH_REASONING),
         (
             "MiniMax-M3",
             _C(
@@ -876,6 +1045,7 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ),
     ),
     "mistral": (
+        ("mistral-large-4", _MISTRAL_LARGE_4_REASONING),
         (
             "mistral-medium-",
             _C(
@@ -1052,6 +1222,11 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ),
     ),
     "together": (
+        ("zai-org/GLM-5.3-Flash", UNKNOWN_CONTRACT),
+        ("zai-org/GLM-5.3", _TOGETHER_GLM_53_REASONING),
+        ("MiniMaxAI/MiniMax-M3.1-Flash", _HOSTED_MINIMAX_M31_FLASH_REASONING),
+        ("reflection/Beam-1.0-501B-A23B", _BEAM_REASONING),
+        ("nvidia/NVIDIA-Nemotron-3.5-Super-VL", _HOSTED_NEMOTRON_35_SUPER_VL_REASONING),
         (
             "deepseek-ai/DeepSeek-V4-Pro",
             _C(
@@ -1180,12 +1355,17 @@ def reasoning_contract_for(
     ``kimi-code`` preset carries ``provider_key="moonshot"``, but the membership
     endpoint's contracts differ from the platform's (same vendor, different
     rules; "off" even means different things). First matching prefix rule wins;
-    anything unmatched returns :data:`UNKNOWN_CONTRACT` — and per the allowlist
-    emission rule, unknown means *send no reasoning parameter at all*.
+    Unconfigured endpoints inherit the recognized model's native contract.
+    Known provider contracts remain authoritative, including unknown models.
     """
     name = str(model or "").strip()
     if not name:
         return UNKNOWN_CONTRACT
+    # A custom route can use a namespaced catalog alias with a native dialect.
+    if provider_key in _MODEL_NATIVE_PROVIDERS:
+        from .model_registry import catalog_model_for_provider
+
+        name = catalog_model_for_provider(name, provider_key) or name
     folded = name.casefold()
     for key in (preset_key, provider_key):
         rules = _CONTRACTS.get(str(key or "").strip())
@@ -1194,6 +1374,10 @@ def reasoning_contract_for(
         for prefix, contract in rules:
             if folded.startswith(prefix.casefold()):
                 return contract
+    if provider_key is not None and not any(
+        str(key or "").strip() in _CONTRACTS for key in (preset_key, provider_key)
+    ):
+        return model_reasoning_contract(model)
     return UNKNOWN_CONTRACT
 
 

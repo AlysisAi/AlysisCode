@@ -173,11 +173,12 @@ def test_symlink_parents_are_rejected(tmp_path, field):
         run(args)
 
 
-def test_hardlinked_source_is_rejected(tmp_path):
-    (tmp_path / "original.md").write_text("Private")
+def test_reading_hardlinked_source_preserves_both_names(tmp_path):
+    (tmp_path / "original.md").write_text("Checkpointed source")
     os.link(tmp_path / "original.md", tmp_path / "draft.md")
-    with pytest.raises(ValueError, match="hard link"):
-        create(tmp_path, "Private")
+    result = create(tmp_path, "Checkpointed source")
+    assert result["status"] == "created"
+    assert (tmp_path / "original.md").read_text() == "Checkpointed source"
 
 
 def test_page_and_source_limits_publish_nothing(tmp_path, monkeypatch):

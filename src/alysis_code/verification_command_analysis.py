@@ -14,6 +14,10 @@ from .config import (
     split_verify_command_parts,
     strip_verify_runner_prefix,
 )
+from .windows_verification_command import (
+    is_windows_verifier_command,
+    split_windows_verifier_command,
+)
 
 
 class VerificationCommandEvidentiaryCapability(StrEnum):
@@ -668,6 +672,8 @@ def _normalize_command(command: str) -> str:
 
 
 def _shell_tokens(command: str) -> list[str] | None:
+    if is_windows_verifier_command(command):
+        return split_windows_verifier_command(command)
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;")
         lexer.whitespace_split = True
@@ -762,7 +768,7 @@ def _strip_env_prefix(parts: list[str]) -> list[str] | None:
 
 def _command_head(token: str) -> str:
     head = Path(str(token).replace("\\", "/")).name.casefold()
-    if head.endswith(".exe"):
+    if head.endswith((".exe", ".cmd")):
         head = head[:-4]
     return head
 

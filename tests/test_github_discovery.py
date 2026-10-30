@@ -10,7 +10,11 @@ from alysis_code.agent.errors import AgentRuntimeError
 from alysis_code.agent.tools_assembly import build_tools
 from alysis_code.config import AppConfig
 from alysis_code.extensions.install import disable_plugin, uninstall_plugin
-from alysis_code.host_actions import HostActionError, normalize_host_action_result
+from alysis_code.host_actions import (
+    HostActionError,
+    OperationScopedHostActionHandler,
+    normalize_host_action_result,
+)
 from alysis_code.ide import stdio_bridge
 from alysis_code.ide.health import capabilities_payload
 from alysis_code.mcp.github_discovery import (
@@ -30,6 +34,7 @@ from alysis_code.mcp.github_host import (
 )
 from alysis_code.surface import ApprovalDecision
 from tests.fixtures.github_host.bridge import FixtureSession
+from tests.fixtures.github_repository_policy import explicit_all
 from tests.test_github_mcp_plugin import RESULT
 from tests.test_host_actions import _ApprovalSurface, _build_tools, _store
 from tests.test_ide_host_actions import _request, _respond, _response_for, _wait_for
@@ -545,6 +550,7 @@ def make_bridge(root, monkeypatch, *, factory=SequenceSession, timeout=120):
                 "mode": "auto",
                 "workspace_trusted": True,
                 "host_capabilities": {"protocol_version": "1", "actions": sorted(ACTIONS)},
+                "github_repository_policy": explicit_all(root),
                 "host_mcp": BOOTSTRAP,
             },
             "create",
@@ -690,5 +696,64 @@ def test_production_broker_late_cancelled_and_changed_bindings(installed, monkey
         _respond(bridge, event, result=discovered(), request_id="late", **response_options)
         assert not _response_for(out, "late")["ok"]
         assert not bridge._sessions[session_id].github_discovery.summaries
+    finally:
+        bridge.close()
+
+
+def test_discovered_definitions_last_one_host_operation(installed):
+    """A kept chat must not fill the discovery limits turn after turn (PLUGINS-CHECK #8)."""
+    operation = ["job_1"]
+    targets = iter(range(100))
+
+    def request(action, args):
+        if action == DISCOVER:
+            return discovered()
+        return described(target_id=f"target_{next(targets)}")
+
+    handler = OperationScopedHostActionHandler(request, lambda: operation[0])
+    tools = _build_tools(
+        installed, actions=tuple(ACTIONS), host_mcp=bound(installed), handler=handler
+    )
+    tools["github_discover"].run({})
+    for _ in range(32):
+        tools["github_describe"].run(describe_args())
+    with pytest.raises(AgentRuntimeError, match="limit"):
+        tools["github_describe"].run(describe_args())
+
+    operation[0] = "job_2"
+    # Like the bridge's broker, a new operation starts empty: discover again first.
+    with pytest.raises(AgentRuntimeError, match="not discovered in this operation"):
+        tools["github_describe"].run(describe_args())
+    tools["github_discover"].run({})
+    assert "target_" in tools["github_describe"].run(describe_args())["target_id"]
+
+
+class _OperationProbeSession(SequenceSession):
+    seen: list = []
+
+    def run_turn(self, message):
+        _OperationProbeSession.seen.append(self.host_action_handler.operation_id())
+        return 0
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.host_action_handler = kwargs["host_action_handler"]
+
+
+def test_the_bridge_names_the_running_job_to_the_tools(installed, monkeypatch):
+    _OperationProbeSession.seen = []
+    bridge, out, session_id = make_bridge(installed, monkeypatch, factory=_OperationProbeSession)
+    try:
+        jobs = []
+        for index in range(2):
+            bridge.process_line(
+                _request("chat.send", {"session_id": session_id, "message": "[]"}, f"send{index}")
+            )
+            sent = _response_for(out, f"send{index}")
+            assert sent["ok"], sent
+            jobs.append(sent["result"]["job_id"])
+            _wait_for(out, lambda _: bridge._sessions[session_id].active_job is None)
+        assert _OperationProbeSession.seen == jobs
+        assert jobs[0] != jobs[1]
     finally:
         bridge.close()

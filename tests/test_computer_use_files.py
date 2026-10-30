@@ -24,6 +24,8 @@ from alysis_code.ide.protocol import ProtocolError
 from alysis_code.ide.stdio_bridge import ComputerUseHostBinding, _computer_use_host_param
 from alysis_code.provider_auth.openai_codex import _sanitize_openai_tool_schema
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 def artifact(delivered=False, identifier="artifact-1"):
     return {

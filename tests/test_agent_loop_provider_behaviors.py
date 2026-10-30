@@ -1626,3 +1626,101 @@ def test_empty_skill_registry_does_not_provision_selector_client(
         assert session.router_client is None
     finally:
         session.close()
+
+
+def test_provider_context_and_accounting_agree_and_ignore_auxiliary_calls(tmp_path):
+    from alysis_code.llm.types import LLMUsage
+    from alysis_code.provider_usage import restore_provider_usage, session_provider_usage
+
+    session = _session(tmp_path)
+    try:
+        response = LLMResponse(
+            content="done",
+            tool_calls=[],
+            raw={},
+            usage=LLMUsage(4000, 4, 4004, cached_prompt_tokens=3000),
+        )
+        record = session._record_llm_usage(
+            client=session.client,
+            response=response,
+            messages=[{"role": "user", "content": "x" * 4000}],
+            tool_list=None,
+            operation="main_llm",
+        )
+        assert record is not None
+        reading = session_provider_usage(session)
+        assert reading["input_tokens"] == 4000
+        assert reading["cached_tokens"] == 3000
+        assert record.prompt_tokens == reading["input_tokens"]
+        assert record.cached_prompt_tokens == reading["cached_tokens"]
+        assert record.total_tokens == reading["total_tokens"]
+        assert record.usage_source == "api"
+        for operation in ("compaction", "cache_keepalive", "subagent_llm"):
+            session._record_llm_usage(
+                client=session.client,
+                response=LLMResponse(
+                    content="done", tool_calls=[], raw={}, usage=LLMUsage(42, 4, 46)
+                ),
+                messages=[],
+                tool_list=None,
+                operation=operation,
+            )
+            assert session_provider_usage(session) == reading
+        session._record_llm_usage(
+            client=session.client,
+            response=LLMResponse(content="done", tool_calls=[], raw={}),
+            messages=[],
+            tool_list=None,
+            operation="main_llm",
+        )
+        assert session_provider_usage(session) == reading
+        session.last_provider_usage = None
+        restore_provider_usage(session, session.store.path)
+        assert session_provider_usage(session) == reading
+    finally:
+        session.close()
+
+
+def test_aggregate_input_usage_never_anchors_or_calibrates_context_after_resume(tmp_path):
+    from dataclasses import replace
+
+    from alysis_code.llm.types import LLMUsage
+    from alysis_code.provider_usage import session_provider_usage
+    from alysis_code.usage_tracker import UsageSummary
+
+    session = _session(tmp_path)
+    try:
+        response = LLMResponse(content="done", tool_calls=[], raw={}, usage=LLMUsage(4000, 4, 4004))
+        session._record_llm_usage(
+            client=session.client,
+            response=response,
+            messages=list(session.messages),
+            tool_list=session.tool_list,
+            operation="main_llm",
+        )
+        assert session.request_context_measurement is not None
+        summary = UsageSummary()
+        for _ in range(3):
+            record = session._record_llm_usage(
+                client=session.client,
+                response=replace(
+                    response, usage=LLMUsage(90000, 400, 90400, input_tokens_scope="interaction")
+                ),
+                messages=list(session.messages),
+                tool_list=session.tool_list,
+                operation="main_llm",
+            )
+            assert record.prompt_tokens == 90000
+            assert record.input_tokens_scope == "interaction"
+            assert record.prompt_estimate_error_ratio is None
+            summary.add_event_payload(record.to_payload())
+        assert session.request_context_measurement is None
+        assert session.context_left().token_count_source == "local_estimate"
+        assert session_provider_usage(session)["input_scope"] == "interaction"
+        assert summary.records()[0].input_tokens_scope == "interaction"
+        snapshot = summary._calibration_snapshot_from_records(summary.records())
+        assert snapshot["calibration_usable_calls"] == 0
+        assert snapshot["calibration_excluded_aggregate_calls"] == 3
+        assert summary.totals()["prompt_tokens"] == 270000
+    finally:
+        session.close()

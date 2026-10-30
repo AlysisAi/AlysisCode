@@ -1,4 +1,8 @@
-from .client import MCP_PROTOCOL_VERSION, McpHttpClient, McpStdioClient
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .client import MCP_PROTOCOL_VERSION, McpHttpClient, McpStdioClient
+
 from .config import (
     load_resolved_mcp_config,
     project_mcp_config_path,
@@ -7,6 +11,21 @@ from .config import (
 )
 from .manager import McpManager, McpToolBinding, create_mcp_manager
 from .models import ResolvedMcpConfig, ResolvedMcpServer
+
+
+def __getattr__(name: str) -> Any:
+    if name not in {"MCP_PROTOCOL_VERSION", "McpHttpClient", "McpStdioClient"}:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import client
+
+    value = getattr(client, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
     "MCP_PROTOCOL_VERSION",

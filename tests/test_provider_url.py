@@ -13,8 +13,51 @@ from alysis_code.provider_url import (
     display_endpoint,
     display_host,
     is_alysis_gateway_url,
+    is_loopback_endpoint,
     known_provider_key_from_base_url,
 )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:11434/v1",
+        "https://MODEL.localhost.:9137/v1",
+        "http://127.0.0.1/v1",
+        "http://127.42.9.7/v1",
+        "http://127.255.255.254/v1",
+        "http://[::1]:8123/v1",
+        "http://[0:0:0:0:0:0:0:1]/v1",
+        "http://[::ffff:127.42.0.9]/v1",
+    ],
+)
+def test_loopback_endpoint_uses_address_identity(url: str) -> None:
+    assert is_loopback_endpoint(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "",
+        "localhost:11434/v1",
+        "file://localhost/v1",
+        "ftp://127.0.0.1/v1",
+        "http://localhost:99999/v1",
+        "http://[::1/v1",
+        "http://0.0.0.0/v1",
+        "http://[::]/v1",
+        "http://192.168.1.2/v1",
+        "http://169.254.169.254/v1",
+        "http://[::ffff:192.168.1.2]/v1",
+        "https://localhost.example.test/v1",
+        "https://127.0.0.1.example.test/v1",
+        "https://localhost@models.example.test/v1",
+        "https://models.example.test/v1",
+    ],
+)
+def test_remote_or_invalid_endpoint_is_not_loopback(url: str | None) -> None:
+    assert not is_loopback_endpoint(url)
 
 
 @pytest.mark.parametrize(
@@ -54,7 +97,6 @@ def test_display_host_is_the_host_and_port_only(url: str | None, expected: str) 
 @pytest.mark.parametrize(
     "url",
     [
-        "https://api.alysiscode.com/v1",
         "https://api.alysiscode.com/v1",
     ],
 )

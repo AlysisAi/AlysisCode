@@ -134,8 +134,8 @@ or `vscode-marketplace-stable` environment as protected
 GitHub environments. Every environment must have a required reviewer, disable administrator
 bypass, and allow only the custom deployment tag pattern `v*`; the workflows audit those
 settings through the versioned GitHub API before entering a protected job. Self-review is allowed
-only when the sole required reviewer is the source-pinned maintainer `Perdikis10` (GitHub user ID
-`190930654`). That maintainer can fill all three signoff roles and must approve each actual gate.
+only under the single-maintainer exception enforced by `scripts/release/vscode_approval_policy.py`.
+That maintainer can fill all three signoff roles and must approve each actual gate.
 Other reviewer configurations require self-review prevention and distinct signoff identities.
 Keep `VSCE_PAT` scoped only to
 the selected Marketplace environment.

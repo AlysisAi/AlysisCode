@@ -27,6 +27,8 @@ from alysis_code.llm.metadata import OPENAI_RESPONSES_PROVIDER_METADATA_KEY
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
 from alysis_code.llm.types import LLMError, LLMResponse, ToolCall
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 @pytest.mark.parametrize(
     "reason, expected",
@@ -35,6 +37,9 @@ from alysis_code.llm.types import LLMError, LLMResponse, ToolCall
         ("computer_use_transition_unobserved", "computer_use_transition_unobserved"),
         ("computer_use_itinerary_incomplete", "computer_use_itinerary_incomplete"),
         ("max_steps_exceeded", "computer_use_step_limit"),
+        ("computer_use_action_budget_exhausted", "computer_use_action_budget_exhausted"),
+        ("computer_use_window_selection_exhausted", "computer_use_window_selection_exhausted"),
+        ("computer_use_window_selection_exhausted PRIVATE_CANARY", "computer_use_turn_failed"),
         ("computer_use_host_failure", None),
         ("approval_declined", None),
         ("private page data sk-test-secret", "computer_use_turn_failed"),
@@ -281,3 +286,17 @@ def test_owned_source_site_survives_full_session_failure_cleanup(
     assert rejected.value.__cause__ is None
     assert rejected.value.__context__ is None
     assert "private" not in protected_provider_diagnostic_marker(rejected.value)
+
+
+def test_unknown_responses_sse_error_retains_provider_origin_without_payload():
+    from alysis_code.llm.openai_responses import _responses_stream_error
+
+    original = _responses_stream_error(
+        {"type": "error", "message": "PRIVATE_PAGE_CANARY", "code": "PRIVATE_CODE_CANARY"}, "error"
+    )
+    protected = _protected_computer_use_failure(original)
+    _scrub_sensitive_exception_chain(original)
+    diagnostic = computer_use_provider_diagnostic(protected)
+    assert diagnostic.category == "provider_error"
+    assert diagnostic.status == 0 and diagnostic.code == "none"
+    assert "PRIVATE" not in repr(vars(protected))

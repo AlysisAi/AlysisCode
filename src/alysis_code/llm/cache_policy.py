@@ -128,8 +128,12 @@ def derive_prompt_cache_stream_key(
     *,
     session_id: str,
     parent_session_id: str | None = None,
+    digest_only: bool = False,
 ) -> str | None:
-    """Return one stable cache-affinity key for a parent or its child stream."""
+    """Return one stable cache-affinity key for a parent or its child stream.
+
+    ``digest_only`` returns a blake2s digest for a parent too, never the raw id.
+    """
     normalized_parent = str(parent_session_id or "").strip()
     if normalized_parent:
         digest = hashlib.blake2s(
@@ -138,6 +142,12 @@ def derive_prompt_cache_stream_key(
         ).hexdigest()
         return f"alysis:children:{digest}"
     normalized_session = str(session_id or "").strip()
+    if normalized_session and digest_only:
+        digest = hashlib.blake2s(
+            f"{normalized_session}:session".encode(),
+            digest_size=12,
+        ).hexdigest()
+        return f"alysis:session:{digest}"
     return normalized_session or None
 
 

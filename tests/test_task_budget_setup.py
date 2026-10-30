@@ -16,6 +16,8 @@ from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
 from alysis_code.provider_auth.store import ProviderTokenRecord
 from alysis_code.task_budget import TaskBudgetRefused, iso, task_budget_setup
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 @pytest.mark.parametrize("expired", [False, True])
 def test_actual_budget_session_create_and_later_model_info_never_use_auth_http(

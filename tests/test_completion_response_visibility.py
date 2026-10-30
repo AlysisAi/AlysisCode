@@ -201,7 +201,7 @@ def test_gate_repeated_answers_are_visible_once_across_adapters(
         for e in read_session_events(session.store.path)
         if e["type"] == "final"
     )
-    assert "Not verified: required checks failed or could not be confirmed." in final
+    assert "Not verified: some task requirements or checks remain unconfirmed." in final
     assert views[-1] == [final]
 
 

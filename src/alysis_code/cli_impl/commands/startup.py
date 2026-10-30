@@ -2,25 +2,23 @@
 # Legacy split module: dependencies are synced by cli_surface.py.
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..execution_admission import (
+    _apply_temperature_override,
+    _SubscriptionAvailability,
+    _subscription_availability,
+    _provider_auth_ready_for_chat,
+    _require_active_subscription_ready,
+    _resolve_api_key_override,
+)
 
 from .cli_common import *
 from .update import _cached_update_notice
 from ...command_text import command_text
+from ...provider_usage import session_provider_usage
 
 
 def _is_narrow_terminal() -> bool:
     return _terminal_width() < 88
-
-
-def _apply_temperature_override(cfg: AppConfig, temperature: float) -> None:
-    cfg.temperature = temperature
-    cfg.coding_temperature = temperature
-    cfg.review_temperature = temperature
-    cfg.planner_temperature = temperature
-    cfg.conflict_review_temperature = temperature
-    cfg.compactor_temperature = temperature
-    cfg.chat_temperature = temperature
 
 
 def _home_panel() -> Panel:
@@ -108,144 +106,6 @@ def _run_chat_after_setup() -> None:
     """
     workspace = _configured_default_workspace()
     _run_default_chat_action(path=workspace, allow_broad_workspace=workspace is not None)
-
-
-@dataclass(frozen=True)
-class _SubscriptionAvailability:
-    active: bool = False
-    ready: bool = True
-    provider_id: str = ""
-    message: str = ""
-    is_error: bool = False
-    selection_required: bool = False
-
-
-def _subscription_availability(cfg: AppConfig) -> _SubscriptionAvailability:
-    """Return subscription readiness without deciding whether the UI may open."""
-
-    try:
-        from ...profiles import active_subscription_selection_ready, get_active_profile
-
-        active_profile = get_active_profile(cfg)
-        provider_id = str(active_profile.auth_provider or "").strip()
-    except Exception as exc:
-        return _SubscriptionAvailability(
-            active=True,
-            ready=False,
-            message=f"Model access configuration is invalid: {exc}",
-            is_error=True,
-        )
-    if not provider_id:
-        return _SubscriptionAvailability()
-    try:
-        from ...provider_auth import create_provider_auth
-
-        adapter = create_provider_auth(provider_id)
-        if active_profile.protocol != adapter.protocol or active_profile.base_url.rstrip(
-            "/"
-        ) != adapter.base_url.rstrip("/"):
-            return _SubscriptionAvailability(
-                active=True,
-                ready=False,
-                provider_id=provider_id,
-                message=(
-                    "The subscription connection profile is incompatible with its provider "
-                    "adapter. Reconnect it through `alysis setup`."
-                ),
-                is_error=True,
-            )
-        status = adapter.account_status()
-    except Exception as exc:  # noqa: BLE001
-        return _SubscriptionAvailability(
-            active=True,
-            ready=False,
-            provider_id=provider_id,
-            message=f"Subscription status check failed: {exc}",
-            is_error=True,
-        )
-    if status.connected:
-        if active_subscription_selection_ready(cfg):
-            return _SubscriptionAvailability(
-                active=True,
-                ready=True,
-                provider_id=provider_id,
-            )
-        return _SubscriptionAvailability(
-            active=True,
-            ready=False,
-            provider_id=provider_id,
-            message=(
-                "Choose the subscription model and reasoning effort in "
-                "/config → Default Model before sending a message."
-            ),
-            selection_required=True,
-        )
-    detail = f" ({status.detail})" if status.detail else ""
-    if not status.verified:
-        return _SubscriptionAvailability(
-            active=True,
-            ready=False,
-            provider_id=provider_id,
-            message=(
-                "The AI subscription status is temporarily unavailable"
-                f"{detail}. Try again shortly; your saved connection was not removed."
-            ),
-        )
-    return _SubscriptionAvailability(
-        active=True,
-        ready=False,
-        provider_id=provider_id,
-        message=(
-            "The selected AI subscription is not connected"
-            f"{detail}. Type /login in the TUI and choose the connection, or run "
-            f"`alysis auth login {provider_id}`; use /config to change model access."
-        ),
-    )
-
-
-def _provider_auth_ready_for_chat() -> bool:
-    """Report whether a model call can start; this must not gate opening the TUI."""
-
-    try:
-        availability = _subscription_availability(_patchable("load_config", load_config)())
-    except Exception as exc:
-        _console().print(f"[red]Model access configuration is invalid:[/red] {exc}")
-        return False
-    if availability.ready:
-        return True
-    style = "red" if availability.is_error else "yellow"
-    _console().print(f"[{style}]{availability.message}[/{style}]")
-    return False
-
-
-def _require_active_subscription_ready(
-    *,
-    model: str | None,
-    base_url: str | None,
-    require_ready: bool = True,
-) -> None:
-    """Apply the subscription selection/account gate to any LLM-facing command."""
-
-    try:
-        from ...profiles import get_active_profile
-
-        auth_profile = get_active_profile(_patchable("load_config", load_config)())
-    except Exception:
-        auth_profile = None
-    if auth_profile is None or not auth_profile.auth_provider:
-        return
-    model_is_override = model is not None and str(model).strip() != auth_profile.default_model
-    base_url_is_override = base_url is not None and (
-        str(base_url).strip().rstrip("/") != auth_profile.base_url.rstrip("/")
-    )
-    if model_is_override or base_url_is_override:
-        _console().print(
-            "[red]Subscription model and endpoint overrides are managed in "
-            "`/config` so model and reasoning stay compatible.[/red]"
-        )
-        raise typer.Exit(code=2)
-    if require_ready and not _provider_auth_ready_for_chat():
-        raise typer.Exit(code=1)
 
 
 def _maybe_run_startup_config_menu() -> None:
@@ -433,42 +293,6 @@ def _is_non_interactive_terminal() -> bool:
     return not _is_interactive_terminal()
 
 
-def _resolve_api_key_override(
-    *,
-    api_key: str | None,
-    api_key_env: str | None,
-    api_key_stdin: bool,
-) -> str | None:
-    # Per-command overrides stay in-memory; persistent storage is handled only
-    # by explicit config credentials commands / setup flow.
-    selected = sum(bool(x) for x in [api_key is not None, api_key_env is not None, api_key_stdin])
-    if selected > 1:
-        raise ConfigError("Use only one of: --api-key, --api-key-env, --api-key-stdin")
-
-    if api_key is not None:
-        v = api_key.strip()
-        if not v:
-            raise ConfigError("API key is empty.")
-        return v
-
-    if api_key_env is not None:
-        name = api_key_env.strip()
-        if not name:
-            raise ConfigError("--api-key-env must be non-empty.")
-        v = (env_get(name) or "").strip()
-        if not v:
-            raise ConfigError(f"Environment variable {name} is not set.")
-        return v
-
-    if api_key_stdin:
-        v = typer.prompt("API key", hide_input=True).strip()
-        if not v:
-            raise ConfigError("API key is empty.")
-        return v
-
-    return None
-
-
 def _api_key_source_label(source: str) -> str:
     normalized = str(source or "").strip()
     if normalized == "env:ALYSIS_API_KEY":
@@ -600,22 +424,42 @@ def _chat_context_percent_value(session: Any) -> float | None:
     ctx = getattr(session, "_hud_context_cache", None)
     if ctx is None:
         return None
-    # Show the conversation space remaining after startup prompts and tools,
-    # so a fresh session starts at 100%. Capacity warnings still use the full
-    # request through _chat_effective_budget_percent_value.
-    percent = getattr(ctx, "dynamic_context_percent_left", None)
-    if percent is None:
-        percent = getattr(ctx, "effective_percent_left", None)
-    if percent is None:
-        percent = getattr(ctx, "context_window_percent_left", None)
-    if percent is None:
-        percent = getattr(ctx, "percent_left", None)
-    if percent is None:
+    reading = session_provider_usage(session)
+    if reading is None or reading["input_scope"] != "request":
         return None
-    try:
-        return float(percent)
-    except (TypeError, ValueError):
+    used = reading["input_tokens"]
+    capacity = getattr(ctx, "context_window_tokens", None)
+    if used is None or not isinstance(capacity, int) or capacity <= 0:
         return None
+    return max(0.0, min(100.0, (capacity - used) / capacity * 100))
+
+
+def _chat_provider_usage_rows(session: Any) -> list[tuple[str, str, str]]:
+    reading = session_provider_usage(session)
+    if reading is None:
+        return [("status", "Awaiting provider usage", "dim")]
+    rows = [
+        ("model", reading["model"], "plain"),
+        ("measured at", reading["measured_at"], "dim"),
+        ("scope", reading["input_scope"], "dim"),
+    ]
+    for label, field in (
+        ("input (includes cache)", "input_tokens"),
+        ("cache read", "cached_tokens"),
+        ("cache write", "cache_write_tokens"),
+        ("uncached" + (" (derived)" if reading["uncached_derived"] else ""), "uncached_tokens"),
+        ("output (includes reasoning)", "output_tokens"),
+        ("reasoning", "reasoning_tokens"),
+        ("total", "total_tokens"),
+    ):
+        count = reading[field]
+        rows.append((label, f"{count:,}" if count is not None else "Not reported", "plain"))
+    for name, count in reading.get("input_breakdown", {}).items():
+        rows.append((f"input / {name} (provider)", f"{count:,}", "plain"))
+    pct = _chat_context_percent_value(session)
+    if pct is not None:
+        rows.append(("window left % (last request)", f"{pct:.1f}%", "plain"))
+    return rows
 
 
 def _chat_effective_budget_percent_value(session: Any) -> float | None:

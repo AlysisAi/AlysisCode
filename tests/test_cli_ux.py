@@ -19,7 +19,8 @@ from alysis_code.cli_impl import chat as chat_facade
 from alysis_code.cli_impl import setup_wizard as setup_wizard_mod
 from alysis_code.cli_impl.commands import welcome as welcome_mod
 from alysis_code.compaction.conversation_compactor import CompactionState
-from alysis_code.config import AppConfig, ConfigError, load_config, save_config
+from alysis_code.config import ApiKeyResolution, AppConfig, ConfigError, load_config, save_config
+from alysis_code.llm.metadata import credential_scope_fingerprint
 from alysis_code.profile_presets import get_preset
 from alysis_code.profiles import ProfileSpec
 
@@ -64,7 +65,7 @@ def _patch_setup_wizard_dependencies(monkeypatch) -> None:
     )
 
 
-def test_forge_llm_commands_use_subscription_readiness_gate(monkeypatch) -> None:
+def test_legacy_forge_llm_commands_use_subscription_readiness_gate(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
     def _gate(**kwargs: object) -> None:
@@ -74,7 +75,6 @@ def test_forge_llm_commands_use_subscription_readiness_gate(monkeypatch) -> None
     monkeypatch.setattr(cli_mod, "_require_active_subscription_ready", _gate)
     runner = CliRunner()
     cases = [
-        (["forge", "plan"], {"model": None, "base_url": None}),
         (
             ["forge", "review", "T01", "--model", "override"],
             {"model": "override", "base_url": None},
@@ -293,7 +293,7 @@ def test_chat_bottom_toolbar_contains_status_fields(monkeypatch) -> None:
     assert "trace=compact" not in toolbar
     assert "1 image" in toolbar
     assert "temp 1.0" in toolbar
-    assert "context left: 87.5%" in toolbar
+    assert "context left: n/a" in toolbar
     assert "subagents off" in toolbar
     assert "42 tok" in toolbar
 
@@ -415,7 +415,7 @@ def test_chat_bottom_toolbar_hides_default_optional_fields(monkeypatch) -> None:
     )
     assert "auto" in toolbar
     assert "gpt-test" in toolbar
-    assert "context left: 91.0%" in toolbar
+    assert "context left: n/a" in toolbar
     assert "subagents on" in toolbar
     assert "plan off" not in toolbar
     assert "no-stream" not in toolbar
@@ -3146,3 +3146,38 @@ def test_chat_interactive_path_skips_model_session_summary_generation(
     assert result.exit_code == 0
     assert run_turn_calls == ["hello"]
     assert captured_flags == [False, False]
+
+
+def test_config_show_uses_an_empty_credential_id_without_an_api_key(tmp_path: Path) -> None:
+    result = CliRunner().invoke(alysis_app, ["config", "show"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["api_key_set"] is False
+    assert payload["credential_id"] == ""
+
+
+def test_config_show_fingerprints_the_key_from_its_loaded_config_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(model="snapshot-model")
+    secret = "snapshot-key-must-not-leak"
+    resolved_from: list[AppConfig] = []
+    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        cli_mod,
+        "resolve_api_key",
+        lambda value: (
+            resolved_from.append(value) or ApiKeyResolution(key=secret, source="stored:legacy")
+        ),
+    )
+
+    result = CliRunner().invoke(alysis_app, ["config", "show"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert resolved_from == [cfg]
+    assert payload["api_key_source"] == "stored:legacy"
+    assert payload["credential_id"] == credential_scope_fingerprint(secret)
+    assert secret not in result.stdout

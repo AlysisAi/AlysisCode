@@ -1,0 +1,7 @@
+{
+  "purpose": "Frozen source declaration correspondence, not an executed APP admission or artifact qualification",
+  "app_commit": "2bf8f78c1145daca412780721e71858b396738bf",
+  "path": "scripts/windows-mxc-bundle.mjs",
+  "git_blob": "ac01174d291996c5870969d18f145692905f78c6",
+  "source_line": "const sourcePaths = [\"native/windows-sandbox\", \"native/git-ssh-sign\", \"src/alysis_code\", \"pyproject.toml\", \"uv.lock\", \"scripts/build_windows_mxc.py\", \"scripts/prepare_windows_git.py\"];"
+}

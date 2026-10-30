@@ -110,7 +110,16 @@ def _print_chat_context(*, console: Console, session: Any) -> None:
         "context_window_percent_left",
         getattr(ctx, "percent_left", None),
     )
-    table = _Table(title="Context Window Left")
+    from ..commands.startup import _chat_provider_usage_rows
+
+    provider_table = _Table(title="Provider Usage · Last Response")
+    provider_table.add_column("field")
+    provider_table.add_column("value")
+    for label, value, _tone in _chat_provider_usage_rows(session):
+        provider_table.add_row(label, value)
+    console.print(provider_table)
+
+    table = _Table(title="Context Window Projection")
     table.add_column("field")
     table.add_column("value")
     table.add_row("model", str(getattr(ctx, "model_name", "-")))

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from rich.markdown import Markdown
 from rich.text import Text
 
 from ...agent.llm_calls import _request_messages_with_volatile_suffix
@@ -24,7 +23,6 @@ from ...surface.styles import (
     STYLE_SUCCESS,
     STYLE_WARN,
 )
-from ...swarm_orchestrator import acquire_swarm_mutation_guard
 from ...usage_tracker import UsageRecord, aggregate_usage_from_session_logs
 from .forge_visibility import command_visible
 from .state import _ChatExecutionRequest, _ForgeChatState
@@ -46,6 +44,12 @@ _TERMINALS_USAGE_LINES = (
     "       /terminals kill <process_id>",
     "       /terminals help",
 )
+
+
+def acquire_swarm_mutation_guard(*args: Any, **kwargs: Any) -> Any:
+    from ...swarm_orchestrator import acquire_swarm_mutation_guard as acquire
+
+    return acquire(*args, **kwargs)
 
 
 def _record_chat_local_command(*, session: Any, command_token: str, has_argument: bool) -> None:
@@ -172,10 +176,10 @@ def _merge_forge_execution_usage_into_session(*, session: Any, paths: Any) -> in
 
 
 def _print_alysis_trial_models(console: Console, session: Any, *, current: str) -> None:
-    """List the models the hosted Alysis Code trial serves, when on that profile.
+    """List the models the hosted Alysis account serves, when on that profile.
 
     Best-effort and silent otherwise: only runs when the active profile is the
-    hosted `alysis` trial, discovers the live allowlist via the proxy, and
+    hosted `alysis` account, discovers the live allowlist via the proxy, and
     never raises into the chat loop.
     """
     cfg = getattr(session, "cfg", None)
@@ -194,10 +198,15 @@ def _print_alysis_trial_models(console: Console, session: Any, *, current: str) 
         return
     if not models:
         return
-    console.print("Models on your Alysis Code trial:")
+    from ...model_reasoning import hosted_model_capabilities
+
+    console.print("Models on your Alysis account:")
     for model_id in models:
         marker = "  (current)" if model_id == current else ""
-        console.print(f"  • {model_id}{marker}")
+        capabilities = hosted_model_capabilities(model_id)
+        efforts = ", ".join(item["label"] for item in capabilities["reasoning_efforts"])
+        detail = f"Auto, {efforts}" if efforts else "Auto (provider default)"
+        console.print(f"  • {model_id}{marker} · effort: {detail}", markup=False)
     console.print("[dim]Switch with: /model <name>[/dim]")
 
 
@@ -2302,6 +2311,8 @@ def _handle_forge_chat_command(
                     except Exception:  # noqa: BLE001
                         pass
                 else:
+                    from rich.markdown import Markdown
+
                     console.print()
                     console.print(Markdown(completion_report), highlight=False)
 

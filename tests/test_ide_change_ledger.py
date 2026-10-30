@@ -19,6 +19,36 @@ def _ledger(workspace: Path, storage: Path, **kwargs: object) -> ChangeLedger:
     return ChangeLedger(workspace, storage_root=storage, **kwargs)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Git MAX_PATH regression")
+def test_deep_checkpoint_storage_keeps_snapshot_and_restore_working(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    file = workspace / "sample.txt"
+    file.write_text("before", encoding="utf-8")
+    # Keep Python's directories and atomic-write names below the legacy path
+    # limits while Git object filenames still exceed MAX_PATH.
+    storage = tmp_path / ("a" * max(1, 190 - len(str(tmp_path))))
+    ledger = _ledger(workspace, storage)
+    assert len(str(ledger.git_dir)) < 260
+    assert len(str(ledger.git_dir / "objects" / "aa" / ("b" * 38))) >= 260
+    ledger.ensure_baseline("long-path")
+    file.write_text("after", encoding="utf-8")
+    turn = ledger.capture("long-path", turn_id="turn-1", paths=["sample.txt"])
+    ledger.revert("long-path", turn.checkpoint_id)
+    assert file.read_text(encoding="utf-8") == "before"
+    ledger.redo("long-path")
+    assert file.read_text(encoding="utf-8") == "after"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Git repository path limit")
+def test_oversized_git_storage_path_refuses_with_actionable_error(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    storage = tmp_path / ("a" * 60) / ("b" * 60) / ("c" * 60)
+    with pytest.raises(ChangeLedgerError, match="Choose a shorter Alysis data directory"):
+        _ledger(workspace, storage)
+
+
 def test_checkpoint_presence_probe_is_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

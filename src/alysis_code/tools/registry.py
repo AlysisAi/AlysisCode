@@ -887,7 +887,7 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
     ),
     BuiltinToolMetadata(
         name="capability_status",
-        description="Inspect current-session web, visual and local PDF readiness without network requests. For PDF tasks, get the exact managed-interpreter creation and page-preview command here before probing converters.",
+        description="Inspect current-session web, visual, PDF and Office readiness without network requests. Get available creation, editing, recalculation and preview routes here before probing converters.",
         parameters={"type": "object", "properties": {}, "required": []},
         categories=("read", "session"),
         rich=RichToolMetadata(
@@ -897,6 +897,64 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
             fallback_hint="Follow the returned configuration guidance.",
         ),
         built_in_subagent_exposure="readonly",
+    ),
+    BuiltinToolMetadata(
+        name="document_operation",
+        description="Create, inspect, edit or recalculate bounded local DOCX/XLSX/PPTX files, or create a PDF from Markdown, using the engine's installed libraries even when shell_run is containerized. Start with describe for the format's exact JSON spec. Paths use path_base; image paths inside PPTX specs are workspace-relative. Existing outputs are never overwritten. Use artifact_check and asset_view for final checks.",
+        parameters={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["describe", "create", "inspect", "edit", "recalculate"],
+                },
+                "format": {"type": "string", "enum": ["docx", "xlsx", "pptx", "pdf"]},
+                "source": {
+                    "type": "string",
+                    "description": "Existing document path, or Markdown source path for PDF creation.",
+                },
+                "spec": {
+                    "type": "string",
+                    "description": "Path to an existing JSON spec file. Write the described spec with fs_write first; do not pass JSON text here.",
+                },
+                "output": {
+                    "type": "string",
+                    "description": "New output file path; existing files are never overwritten.",
+                },
+                "title": {"type": "string"},
+                "path_base": _path_base_property(),
+            },
+            "required": ["action"],
+        },
+        categories=("write", "asset"),
+        rich=RichToolMetadata(
+            display_name="Work on Document",
+            reasoning_hint="Use installed document capabilities without shell environment assumptions.",
+            action_hint="Run a bounded workspace document operation.",
+            fallback_hint="Inspect errors and capabilities; preserve originals and disclose unsupported operations.",
+        ),
+    ),
+    BuiltinToolMetadata(
+        name="artifact_check",
+        description="Check a finished DOCX, XLSX, PPTX or PDF against its exact bytes. Reopens structure, checks formula caches against real recalculation when available, and renders page images. Inspect every returned image with asset_view. This does not prove source accuracy or task completeness. It preserves the file and writes only review previews under Task reviews.",
+        parameters={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "path": {"type": "string"},
+                "path_base": _path_base_property(),
+                "expected_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            },
+            "required": ["path"],
+        },
+        categories=("read", "write", "asset"),
+        rich=RichToolMetadata(
+            display_name="Check Artifact",
+            reasoning_hint="Validate the exact deliverable version.",
+            action_hint="Check structure, formula results and rendered pages.",
+            fallback_hint="Read failed or unavailable checks; repair the file or disclose the limitation.",
+        ),
     ),
     BuiltinToolMetadata(
         name="asset_view",
@@ -1307,7 +1365,11 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
                 display_name=name.replace("_", " ").title(),
                 reasoning_hint=description,
                 action_hint=description,
-                fallback_hint="Ask the user to open the file in Results and send their request again. Do not guess a file or version.",
+                fallback_hint=(
+                    "Explain the file error and ask the user to choose the correct task folder or attach the document. Do not use terminal commands to evade a folder-access refusal."
+                    if action == "panels.open"
+                    else "Ask the user to open the file in Results and send their request again. Do not guess a file or version."
+                ),
             ),
             built_in_subagent_exposure="hidden",
             optional=True,
@@ -1658,15 +1720,20 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
     ),
     BuiltinToolMetadata(
         name="github_git_push",
-        description="Push one explicitly named local branch to the same origin branch through the selected GitHub account. Requires desktop approval; force and deletion are unavailable.",
+        description="Push the current branch to the same origin branch through the selected GitHub account. A normal push rejects rewritten history. Only when the user explicitly requests a history rewrite, supply expected_remote_head for an exact force-with-lease comparison. Unconditional force and deletion are unavailable.",
         parameters={
             "type": "object",
             "properties": {
                 "branch": {
                     "type": "string",
                     "maxLength": 256,
-                    "description": "Explicit branch name; no refspec, option, force, or deletion.",
-                }
+                    "description": "Explicit branch name; no refspec, option, or deletion.",
+                },
+                "expected_remote_head": {
+                    "type": "string",
+                    "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$",
+                    "description": "Only for an explicitly authorized history rewrite: exact expected current commit on the remote branch. The push refuses if the remote has changed. Omit for a normal push.",
+                },
             },
             "required": ["branch"],
             "additionalProperties": False,
@@ -1675,7 +1742,7 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
         rich=RichToolMetadata(
             display_name="Push GitHub Branch",
             reasoning_hint="Use the linked desktop account and selected workspace repository.",
-            action_hint="Push one explicitly named local branch to the same origin branch through the selected GitHub account. Requires desktop approval; force and deletion are unavailable.",
+            action_hint="Push the current branch to origin with desktop approval. Only an explicitly authorized history rewrite may use expected_remote_head for force-with-lease. Never use unconditional force or delete a branch.",
             fallback_hint="If unavailable, link GitHub in the desktop app and start a new chat. Do not bypass with gh or raw remote Git commands.",
         ),
         optional=True,
@@ -2086,6 +2153,7 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
         description=(
             "Read a bounded, redacted artifact from the current session using an exact "
             "artifact: handle or session_artifacts/... locator returned by another tool. "
+            "If both are supplied, they must identify the same result. "
             "Use list_handles=true to discover available references. Filesystem paths are not accepted."
         ),
         parameters={
@@ -2292,17 +2360,20 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
         ),
         parameters={
             "type": "object",
+            "additionalProperties": False,
+            "maxProperties": 1,
             "properties": {
                 "commands": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
+                        "For tests/lint/build, use this field alone; do not include consumer_profile. "
                         "Preserve supplied command arguments, working directory and environment."
                     ),
                 },
                 "consumer_profile": {
                     "type": "object",
-                    "description": "Run actual public-interface checks in a fresh directory containing only declared artifacts. Preserve artifact inputs. Never use hidden verifier artifacts or treat self-authored assertions as authoritative.",
+                    "description": "Alternative to commands: use this field alone for public-interface checks in a fresh directory containing only declared artifacts. The library profile's python_module checks Python imports. Preserve artifact inputs. Never use hidden verifier artifacts or treat self-authored assertions as authoritative.",
                     "properties": {
                         "profile": {
                             "type": "string",
@@ -2417,8 +2488,49 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
         ),
     ),
     BuiltinToolMetadata(
+        name="sandbox_permissions",
+        description="List retained sandbox access and saved permission profiles for this workspace, or revoke them. Revocation affects future commands; stop existing background processes separately. To request or save access, use the permissions field on shell_run/shell_background.",
+        parameters={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "revoke"]},
+                "profile": {
+                    "type": "string",
+                    "description": "For revoke, also remove this saved profile. Omit to clear only current chat/turn grants.",
+                },
+            },
+            "required": ["action"],
+        },
+        categories=("shell",),
+        rich=RichToolMetadata(
+            display_name="Sandbox permissions",
+            reasoning_hint="Inspect or revoke retained sandbox access.",
+            action_hint="List access or revoke an approved scope.",
+            fallback_hint="Request new access through shell permissions when no saved profile applies.",
+        ),
+        optional=True,
+    ),
+    BuiltinToolMetadata(
         name="shell_run",
-        description="Run a shell command under the working root (policy-checked).",
+        description=(
+            "Run a non-interactive shell command under the working root (policy-checked). "
+            "Use the shell syntax reported in the environment context and the cwd argument "
+            "to select a workspace directory. Each call defaults to active_workdir; "
+            "cwd and shell cd commands do not change the directory of later calls. "
+            "Pass cwd again for each command in a nested repository or directory. "
+            "Prefer git_status, git_diff and git_history "
+            "for read-only repository inspection; these do not require a writable shell. "
+            "For other Git commands use git --no-pager. "
+            "On macOS, use cwd instead of a leading cd for literal Git commands. "
+            "Scripts mixing Git with shell builtins or other programs need operation-only "
+            "permissions.git_metadata=true to write Git metadata; write_folders alone "
+            "does not grant this. The entire script is reviewed and remains sandboxed. "
+            "Run dependent Git operations in separate calls, checking exit_code and stderr "
+            "before the next operation; do not assume a later successful command means an "
+            "earlier command succeeded. Use the dedicated GitHub tools for linked-account "
+            "remote operations when available."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -2741,7 +2853,7 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
     ),
     BuiltinToolMetadata(
         name="git_status",
-        description="Git status (porcelain) for the working root.",
+        description="Read-only Git status for the working root; does not refresh the index or create files. Prefer this to shell_run for repository inspection.",
         parameters={"type": "object", "properties": {}, "required": []},
         categories=("read", "git"),
         rich=RichToolMetadata(

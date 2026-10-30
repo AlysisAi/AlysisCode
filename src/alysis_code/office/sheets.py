@@ -28,13 +28,6 @@ MAX_PREVIEW_TEXT = 64 * 1024
 _CELL = re.compile(r"([A-Z]{1,3})([1-9][0-9]{0,4})\Z")
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
 _BAD_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]|[\ud800-\udfff]")
-_FUNCTIONS = frozenset(
-    "SUM AVERAGE MIN MAX COUNT COUNTA COUNTBLANK COUNTIF COUNTIFS SUMIF SUMIFS "
-    "AVERAGEIF AVERAGEIFS SUMPRODUCT ROUND ROUNDUP ROUNDDOWN ABS MOD POWER SQRT "
-    "IF IFERROR IFNA AND OR NOT TRUE FALSE CONCAT CONCATENATE LEFT RIGHT MID LEN "
-    "TRIM LOWER UPPER DATE YEAR MONTH DAY TODAY INDEX MATCH VLOOKUP HLOOKUP "
-    "ISNUMBER ISTEXT ISBLANK ISERROR VALUE TEXT INT CEILING FLOOR".split()
-)
 _FORMAT_KEYS = {"bold", "italic", "font_color", "fill", "number_format", "align", "wrap"}
 _PARTS = re.compile(
     r"(?:\[Content_Types\]\.xml|_rels/\.rels|docProps/(?:app|core)\.xml|"
@@ -92,10 +85,11 @@ _ROOT_CHILDREN = {
 }
 
 GUIDE = {
-    "create": "sheets: list of {name, rows, cells?, header_row?, column_widths?, freeze_panes?, tables?}",
+    "create": "sheets: list of {name, rows, cells?, header_row?, column_widths?, freeze_panes?, tables?, page_setup?}",
     "cell": "JSON scalar is literal; {value: scalar, format?: {...}} or {formula: '=SUM(B2:B3)', format?: {...}}",
     "format": "bold/italic/wrap booleans; font_color/fill #RRGGBB; number_format text; align left/center/right",
     "table": "{range: 'A1:B3', name: 'Revenue', style?: 'Table Style Medium 2'}; first row must be distinct literal text headers",
+    "page_setup": "{orientation?: 'portrait'|'landscape', fit_to_pages?: [width, height], print_area?: 'A1:J20'}; 0 means unlimited pages on that axis, 1..10 limits pages. Wrap long notes and inspect rendered pages; scaling alone does not prove legibility.",
     "edit": "{expected_source_sha256: inspect.source_sha256, changes: [{sheet, cell: 'B2', value OR formula, format?}]}",
     "limits": {
         "sheets": MAX_SHEETS,
@@ -105,9 +99,10 @@ GUIDE = {
         "text_bytes": MAX_TEXT,
         "inspection_preview_cells": MAX_PREVIEW_CELLS,
     },
-    "formula_functions": sorted(_FUNCTIONS),
+    "formula_functions": "Function names are preserved; the installed calculation engine determines support. Writing a formula does not prove it calculates.",
+    "delivery_workflow": "Create, recalculate, check and visually review working copies outside final deliverables. Repair layout and formulas there, then use fs_copy to copy the reviewed workbook to the requested new final filename and check that exact delivered file. Every operation requires a new output path. Reserve the final name until review is complete; do not delete a draft to replace it. Keep specifications and drafts separate from delivered workbooks.",
     "limitations": [
-        "No formula calculation, trusted caches, rendering, macros, external links or remote assets.",
+        "Use the separate recalculate command for real calculation when LibreOffice is available. Inspection alone does not trust caches. No macros or external workbook references.",
         "Formula references use local A1 ranges and English functions; named/structured/array formulas are unsupported.",
         "Edit only simple XLSX workbooks. Unsupported parts, rich text, protected sheets, validation and conditional formatting are rejected.",
         "Edits change existing sheet cells; no row/column insertion, renaming or formula-reference rewriting.",
@@ -180,22 +175,51 @@ def _range(value: str) -> tuple[int, int, int, int]:
     return r1, c1, r2, c2
 
 
+def _print_range(value: str) -> tuple[int, int, int, int]:
+    if not isinstance(value, str) or len(value.split(":")) != 2:
+        raise ValueError("Print area must use A1:B3 notation")
+    first, last = value.split(":")
+    r1, c1 = _position(first)
+    r2, c2 = _position(last)
+    if r2 < r1 or c2 < c1 or (r2 - r1 + 1) * (c2 - c1 + 1) > MAX_CELLS:
+        raise ValueError("Print area must be a bounded increasing range")
+    return r1, c1, r2, c2
+
+
+def _is_local_print_area(element, workbook) -> bool:
+    # Print areas are workbook-defined names, but are layout metadata, not
+    # named formula operands. Admit only a bounded range on its owning sheet.
+    if element.get("name") != "_xlnm.Print_Area" or set(element.attrib) != {"name", "localSheetId"}:
+        return False
+    try:
+        index = int(element.get("localSheetId", ""))
+        names = [sheet.get("name") for sheet in workbook.findall("{*}sheets/{*}sheet")]
+        sheet, reference = (element.text or "").rsplit("!", 1)
+        if sheet.startswith("'") and sheet.endswith("'"):
+            sheet = sheet[1:-1].replace("''", "'")
+        if not 0 <= index < len(names) or sheet != names[index]:
+            return False
+        if not re.fullmatch(r"\$?[A-Z]+\$?[1-9][0-9]*:\$?[A-Z]+\$?[1-9][0-9]*", reference):
+            return False
+        _print_range(reference.replace("$", ""))
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def _formula(value: str) -> str:
     from openpyxl.formula import Tokenizer
 
     _text(value, "Formula", 8192)
     if not value.startswith("=") or value == "=":
         raise ValueError("Explicit formula must begin with = and contain an expression")
-    # A deliberately small local formula surface: no workbook links, DDE, names,
-    # structured references, spill/array formulas or functions that contact services.
+    # Validate local references structurally. Function support belongs to the
+    # calculation engine, not an incomplete hand-maintained function whitelist.
     try:
         tokens = Tokenizer(value).items
     except Exception as exc:
         raise ValueError("Invalid formula syntax") from exc
     for token in tokens:
-        if token.type == "FUNC" and token.subtype == "OPEN":
-            if token.value[:-1].upper().removeprefix("_XLFN.") not in _FUNCTIONS:
-                raise ValueError("Unsupported formula function; use the documented local functions")
         if token.type == "ARRAY" or token.subtype == "ROW":
             raise ValueError("Array formulas are unsupported")
         if token.type == "OPERAND" and token.subtype == "RANGE":
@@ -294,7 +318,16 @@ def _create_spec(spec: dict) -> list[dict]:
     for sheet in sheets:
         _object(
             sheet,
-            {"name", "rows", "cells", "header_row", "column_widths", "freeze_panes", "tables"},
+            {
+                "name",
+                "rows",
+                "cells",
+                "header_row",
+                "column_widths",
+                "freeze_panes",
+                "tables",
+                "page_setup",
+            },
             "sheet",
         )
         name = _sheet_name(sheet.get("name"))
@@ -339,6 +372,26 @@ def _create_spec(spec: dict) -> list[dict]:
         ):
             raise ValueError("column_widths must be a list of widths from 1 to 100")
         freeze = _position(sheet["freeze_panes"]) if "freeze_panes" in sheet else None
+        page_setup = _object(
+            sheet.get("page_setup", {}), {"orientation", "fit_to_pages", "print_area"}, "page_setup"
+        )
+        if "orientation" in page_setup and (
+            not isinstance(page_setup["orientation"], str)
+            or page_setup["orientation"] not in {"portrait", "landscape"}
+        ):
+            raise ValueError("page_setup.orientation must be portrait or landscape")
+        fit = page_setup.get("fit_to_pages")
+        if "fit_to_pages" in page_setup and (
+            not isinstance(fit, list)
+            or len(fit) != 2
+            or any(type(value) is not int or not 0 <= value <= 10 for value in fit)
+        ):
+            raise ValueError("page_setup.fit_to_pages must be [width, height] with integers 0..10")
+        print_bounds = (
+            _print_range(page_setup["print_area"]) if "print_area" in page_setup else None
+        )
+        if print_bounds and (print_bounds[2] > area[0] or print_bounds[3] > area[1]):
+            raise ValueError("page_setup.print_area must fit existing cells")
         tables = sheet.get("tables", [])
         if not isinstance(tables, list) or len(tables) > 32:
             raise ValueError("tables must be a list of at most 32 tables")
@@ -393,6 +446,7 @@ def _create_spec(spec: dict) -> list[dict]:
                 "freeze": freeze,
                 "header": header,
                 "tables": normalized_tables,
+                "page_setup": page_setup,
             }
         )
     for sheet in result:
@@ -431,6 +485,15 @@ def create(spec: dict, output: Path, workspace: Path) -> dict:
             book.set_calc_mode("auto")
             for sheet in sheets:
                 ws = book.add_worksheet(sheet["name"])
+                page_setup = sheet["page_setup"]
+                if page_setup.get("orientation") == "landscape":
+                    ws.set_landscape()
+                elif page_setup.get("orientation") == "portrait":
+                    ws.set_portrait()
+                if "fit_to_pages" in page_setup:
+                    ws.fit_to_pages(*page_setup["fit_to_pages"])
+                if "print_area" in page_setup:
+                    ws.print_area(page_setup["print_area"])
                 for index, width in enumerate(sheet["widths"]):
                     ws.set_column(index, index, width)
                 if sheet["freeze"]:
@@ -549,8 +612,10 @@ def _package(data: bytes) -> list[str]:
                         and element.get("TargetMode", "").lower() == "external"
                     ):
                         blockers.add("External relationships are unsupported")
-                    if tag == "definedName":
-                        blockers.add("Defined names are unsupported for editing")
+                    if tag == "definedName" and not _is_local_print_area(element, root):
+                        blockers.add(
+                            "Defined names other than local print areas are unsupported for editing"
+                        )
                     if tag == "r" and name == "xl/sharedStrings.xml":
                         blockers.add("Rich cell text is unsupported for editing")
                     if tag in {"t", "f", "v"}:

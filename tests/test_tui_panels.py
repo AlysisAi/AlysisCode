@@ -123,6 +123,7 @@ def test_context_panel_surfaces_effective_budget_separately_from_window_percent(
     spec = panels._chat_context_panel_spec(session=sess)
 
     assert [name for name, _rows in spec["sections"]] == [
+        "Provider Usage · Last Response",
         "Context",
         "Effective Input Budget",
         "Conversation Context",

@@ -60,6 +60,10 @@ def test_harbor_install_executes_setup_script_in_uploaded_snapshot(
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text("[project]\nname = 'fixture'\n", encoding="utf-8")
+    (repo / "hatch_build.py").write_text("# fixture build hook\n", encoding="utf-8")
+    schema = Path("src/alysis_code/forge_host_protocol/alysis-code.schema.json")
+    (repo / schema).parent.mkdir(parents=True)
+    (repo / schema).write_text('{"type":"object"}', encoding="utf-8")
     monkeypatch.setattr(harbor_adapter_mod, "_REPO_ROOT", repo)
     uploaded_files: dict[str, bytes] = {}
     executed: list[str] = []
@@ -86,6 +90,8 @@ def test_harbor_install_executes_setup_script_in_uploaded_snapshot(
     assert executed == ["/installed-agent/alysis-source/scripts/benchmarks/terminal_bench/setup.sh"]
     assert "/installed-agent/alysis-source/src/module.py" in uploaded_files
     assert "/installed-agent/alysis-source/pyproject.toml" in uploaded_files
+    assert "/installed-agent/alysis-source/hatch_build.py" in uploaded_files
+    assert f"/installed-agent/alysis-source/{schema.as_posix()}" in uploaded_files
 
 
 def test_harbor_runtime_env_uses_dashscope_key_without_putting_it_in_command(

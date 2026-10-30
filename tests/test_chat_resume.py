@@ -1014,7 +1014,7 @@ def test_chat_resume_panel_scroll_indicators_and_sticky_group(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    now = datetime.now()
+    now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
     sessions: list[SessionInfo] = []
     for idx in range(8):
         path = tmp_path / f"today-{idx}.jsonl"

@@ -4,7 +4,7 @@ import json
 import threading
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -143,9 +143,17 @@ class ProtocolEventSurface(NoopSurface):
         standing_approval_handler: StandingApprovalHandler | None = None,
         semantic_activity_events: bool = False,
         reasoning_trace_events: bool = False,
+        emit_transient: Callable[[dict[str, Any]], None] | None = None,
+        computer_use_evidence_version: int | None = None,
     ) -> None:
         self._base_context = context
         self._emit_message = emit
+        self._emit_transient = emit_transient
+        self.computer_use_evidence_version = (
+            1
+            if type(computer_use_evidence_version) is int and computer_use_evidence_version == 1
+            else None
+        )
         self._sequencer = sequencer or EventSequencer()
         self._approval_handler = approval_handler
         self._standing_approval_handler = standing_approval_handler
@@ -154,7 +162,7 @@ class ProtocolEventSurface(NoopSurface):
         self._trace_level = "compact"
         # Tool names by call id for calls whose start we announced as a semantic activity, so the
         # canonical completion (which carries no tool name) can close the same activity row.
-        self._activity_tool_names: dict[str, str] = {}
+        self._activity_tool_names: dict[str, tuple[str, ActivityEvent]] = {}
         self._activity_tool_names_lock = threading.Lock()
         # Provider reasoning reaches the wire only for hosts that asked for it at
         # session.create; other IDE clients keep today's behaviour and request no summaries.
@@ -252,7 +260,9 @@ class ProtocolEventSurface(NoopSurface):
     def _emit_event(self, event: Event) -> None:
         self._emit_message(self._sequencer.envelope(event, context=self.context))
 
-    def transient_envelope(self, event: Event) -> dict[str, Any]:
+    def transient_envelope(
+        self, event: Event, *, context: EventContext | None = None
+    ) -> dict[str, Any]:
         """Build a sequenced event without sending it through the replay sink.
 
         Computer Use requests can contain typed text or target labels. They must travel to the
@@ -262,9 +272,40 @@ class ProtocolEventSurface(NoopSurface):
 
         return self._sequencer.envelope(
             event,
-            context=self.context,
+            context=context if context is not None else self.context,
             redact_payload=False,
         )
+
+    def bind_computer_use_evidence_emitter(self) -> Callable[[dict[str, object]], None]:
+        # Capture on the owning thread. Provider transport runs in a joined worker;
+        # looking up self.context there would lose the thread-local job/run binding.
+        context = self.context
+        if self.computer_use_evidence_version != 1 or self._emit_transient is None:
+            return lambda payload: None
+
+        def emit(payload: dict[str, object]) -> None:
+            try:
+                from ..computer_use_call_diagnostics import sanitize_computer_use_evidence
+
+                safe = sanitize_computer_use_evidence(payload)
+                if safe is not None and self._emit_transient is not None:
+                    self._emit_transient(
+                        self.transient_envelope(
+                            ProtocolPayloadEvent("computer_use_evidence", safe),
+                            context=context,
+                        )
+                    )
+            except Exception:
+                # Optional diagnostics must never change execution or log raw data.
+                pass
+
+        return emit
+
+    def emit_computer_use_evidence(self, payload: Mapping[str, object]) -> None:
+        try:
+            self.bind_computer_use_evidence_emitter()(dict(payload))
+        except Exception:
+            pass
 
     def emit(self, event: Event) -> None:
         self._emit_event(event)
@@ -314,20 +355,34 @@ class ProtocolEventSurface(NoopSurface):
         # advertised semantic activity while emitting it for patches and prompts alone, and every
         # verify_run/shell_run silently disappeared from the transcript.
         if self._semantic_activity_events:
+            activity = tool_activity(
+                call_id=call_id,
+                name=name,
+                arguments=(
+                    arguments
+                    if arguments is not None
+                    else _arguments_from_preview(arguments_preview)
+                ),
+                status="running",
+                metadata={**dict(activity_metadata or {}), "worker_id": worker_id},
+            )
             with self._activity_tool_names_lock:
-                self._activity_tool_names[call_id] = name
-            self.emit_activity(
-                tool_activity(
-                    call_id=call_id,
-                    name=name,
-                    arguments=(
-                        arguments
-                        if arguments is not None
-                        else _arguments_from_preview(arguments_preview)
-                    ),
-                    status="running",
-                    metadata={**dict(activity_metadata or {}), "worker_id": worker_id},
-                )
+                self._activity_tool_names[call_id] = (name, activity)
+            self.emit_activity(activity)
+
+    def emit_computer_use_call_diagnostic(self, payload: dict[str, Any]) -> None:
+        from ..computer_use_call_diagnostics import sanitize_call_diagnostic
+
+        safe = sanitize_call_diagnostic(payload)
+        # Bind to the current local call. The ID travels only for the app's in-memory
+        # correlation; its stage ledger must never retain it.
+        call_id = self.current_tool_call_id()
+        if safe is not None and safe["callPhase"] == "turn_failure":
+            call_id = getattr(self._thread_context, "last_computer_use_diagnostic_call", None)
+        if safe is not None and call_id and payload.get("call_id") == call_id:
+            self._thread_context.last_computer_use_diagnostic_call = call_id
+            self._emit_event(
+                ProtocolPayloadEvent("computer_use_call_diagnostic", {**safe, "call_id": call_id})
             )
 
     def emit_activity(self, event: ActivityEvent) -> None:
@@ -369,18 +424,28 @@ class ProtocolEventSurface(NoopSurface):
             )
             if self._semantic_activity_events:
                 with self._activity_tool_names_lock:
-                    name = self._activity_tool_names.pop(call_id, None)
-                if name is None:
+                    started = self._activity_tool_names.pop(call_id, None)
+                if started is None:
                     # No activity row was opened for this call (start predates this surface, or the
                     # start was never announced); do not invent a terminal row without a kind.
                     return
+                name, activity = started
+                terminal = tool_activity(
+                    call_id=call_id,
+                    name=name,
+                    status=status or ("done" if success else "failed"),
+                    duration_ms=duration_ms,
+                    metadata={**dict(activity_metadata or {}), "worker_id": worker_id},
+                )
+                # Keep the exact declared action and safe target from the start.
+                # Completion has no arguments and must not turn a create into a
+                # generic operation. Raw tool arguments are never retained here.
                 self.emit_activity(
-                    tool_activity(
-                        call_id=call_id,
-                        name=name,
-                        status=status or ("done" if success else "failed"),
-                        duration_ms=duration_ms,
-                        metadata={**dict(activity_metadata or {}), "worker_id": worker_id},
+                    replace(
+                        activity,
+                        status=terminal.status,
+                        duration_ms=terminal.duration_ms,
+                        metadata=terminal.metadata,
                     )
                 )
         finally:
@@ -624,7 +689,10 @@ class ProtocolEventSurface(NoopSurface):
         # so the completion can close it.
         if self._semantic_activity_events:
             with self._activity_tool_names_lock:
-                self._activity_tool_names.setdefault(event.tool_call_id, event.name)
+                self._activity_tool_names.setdefault(
+                    event.tool_call_id,
+                    (event.name, tool_activity(call_id=event.tool_call_id, name=event.name)),
+                )
         self.emit_tool_call_completed(
             event.tool_call_id,
             str(event.status).strip().lower() in {"completed", "done", "success"},

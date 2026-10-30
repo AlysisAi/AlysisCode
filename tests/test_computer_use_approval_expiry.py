@@ -11,6 +11,8 @@ from test_ide_computer_use_host import _bridge_session
 
 from alysis_code.ide import stdio_bridge as module
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 BASE = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
 TOKEN = "a" * 64
 ARGS = {"action": "press", "element_id": "save", "snapshot_id": "original"}

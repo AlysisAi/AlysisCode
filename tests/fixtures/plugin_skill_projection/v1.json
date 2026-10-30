@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "vectors": [
+    {
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "plugin_id": "custom.tools",
+      "skill_name": "notes",
+      "descriptor_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "Plain text.",
+      "text_sha256": "92e0a996bcb799ea79e1d0842d81abe8c12fe5e0b36270052869e7668d7fc46d",
+      "lifecycle_revision": 0,
+      "selection_id": "a2dc0e41fb412e3cd4b4588a48b4612b"
+    },
+    {
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "plugin_id": "custom.tools",
+      "skill_name": "notes",
+      "descriptor_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "Read 😀 and 𐐀.",
+      "text_sha256": "c0aceada66927dfcb4f136096b4c3f2023fd975fcdb0a82bb30d61d50ef51258",
+      "lifecycle_revision": 1,
+      "selection_id": "0581f970c71542ab4a3d9ee54706bd14"
+    },
+    {
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "plugin_id": "custom.tools",
+      "skill_name": "notes",
+      "descriptor_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "Quote \" and backslash \\.\n",
+      "text_sha256": "2283a1ffcfec17ded4a98be53d92dbb971c94a66e822f922a58f647b46ee2b62",
+      "lifecycle_revision": 2,
+      "selection_id": "ec99ba10c86f9d7dcaa3cb7a1c487df9"
+    },
+    {
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "plugin_id": "custom.tools",
+      "skill_name": "notes",
+      "descriptor_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "Trailing newline.\n\n",
+      "text_sha256": "f5f3992e52de997ddfcb5d09a44e00f41a211c3745fda40096853e80babb85d6",
+      "lifecycle_revision": 3,
+      "selection_id": "03316eab68e8cdaf94357ce7450f0251"
+    },
+    {
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "plugin_id": "custom.tools",
+      "skill_name": "notes",
+      "descriptor_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "Café",
+      "text_sha256": "c42cc7a1ca08364b6fd859fa50d2454730a8236290a423373cc630da77c6d711",
+      "lifecycle_revision": 4,
+      "selection_id": "6b205f1a1b501b27ae3a7b050d4e1459"
+    },
+    {
+      "epoch": "00000000-0000-4000-8000-000000000001",
+      "plugin_id": "custom.tools",
+      "skill_name": "notes",
+      "descriptor_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "Café",
+      "text_sha256": "73473dcc12b763085904a5279d048c4d5b3b008c46f1f32443b99de04aa83a14",
+      "lifecycle_revision": 5,
+      "selection_id": "e3d849bfbdde426dfd235c1240e93d8c"
+    }
+  ]
+}

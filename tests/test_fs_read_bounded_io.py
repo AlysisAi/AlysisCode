@@ -161,7 +161,7 @@ def test_observed_eof_and_out_of_range_are_exact(tmp_path: Path, text: str) -> N
 
 
 def test_continuation_is_a_bounded_suggestion_until_eof(tmp_path: Path) -> None:
-    (tmp_path / "lines.txt").write_text("one\ntwo\nthree\n")
+    (tmp_path / "lines.txt").write_bytes(b"one\ntwo\nthree\n")
     first = fs_read(root=tmp_path, path="lines.txt", max_bytes=4)
     assert first["total_lines"] is None
     assert first["next_range"] == {"start_line": 2, "end_line": 201}
@@ -190,6 +190,12 @@ def test_empty_utf8_prefix_still_continues_at_first_line(tmp_path: Path) -> None
     assert result["next_range"]["start_line"] == 1
 
 
+@pytest.fixture
+def in_process_file_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Use direct I/O: the meter cannot observe descriptor-based or child reads.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+
+
 def _tools(root: Path):
     store = SessionStore(
         enabled=False,
@@ -203,9 +209,11 @@ def _tools(root: Path):
         root=root,
         console=None,
         store=store,
-        mode="readonly",
+        mode="fullaccess",
         yes=True,
-        cfg=AppConfig(model="offline"),
+        # Measure this process's reads; contained worker transport is covered
+        # separately and cannot expose its file handles to the meter.
+        cfg=AppConfig(model="offline", extra_fields={"shell_sandbox": {"mode": "off"}}),
         subagents_enabled=False,
         read_ledger_sink=ledgers.append,
     )
@@ -213,6 +221,7 @@ def _tools(root: Path):
 
 
 @pytest.mark.parametrize("options", [{}, {"start_line": 1, "end_line": 1}])
+@pytest.mark.usefixtures("in_process_file_reads")
 def test_actual_tool_large_file_does_not_add_full_ledger_hashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict
 ) -> None:
@@ -232,6 +241,7 @@ def test_actual_tool_large_file_does_not_add_full_ledger_hashes(
     assert "read_ledger_skipped" not in repeated
 
 
+@pytest.mark.usefixtures("in_process_file_reads")
 def test_small_file_tool_keeps_bounded_hashing_and_partial_ledger_semantics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

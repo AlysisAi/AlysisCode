@@ -2965,3 +2965,21 @@ def test_gemini_extra_headers_override_defaults_case_insensitively() -> None:
     assert headers["x-goog-api-key"] == "override-key"
     assert headers["content-type"] == "application/custom+json"
     assert len({name.casefold() for name in headers}) == len(headers)
+
+
+def test_internal_tool_usage_does_not_claim_a_single_context_size():
+    from alysis_code.llm.gemini_generate_content import _parse_usage
+
+    usage = _parse_usage(
+        {
+            "promptTokenCount": 100,
+            "toolUsePromptTokenCount": 200,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 320,
+            "cachedContentTokenCount": 80,
+        }
+    )
+    assert usage.prompt_tokens == 300
+    assert usage.input_tokens_scope == "interaction"
+    assert usage.input_tokens_uncached == 220
+    assert usage.input_tokens_uncached_derived is True

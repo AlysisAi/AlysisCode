@@ -22,8 +22,12 @@ from .reasoning_contracts import (
     OFF_EXPLICIT,
     OFF_IMPOSSIBLE,
     OPTIONAL,
+    WIRE_REASONING_EFFORT,
     WIRE_REASONING_OBJECT,
+    WIRE_THINKING_ADAPTIVE,
+    WIRE_THINKING_LEVEL,
     ReasoningContract,
+    model_reasoning_contract,
 )
 
 ProviderModelCatalogStrategy = Literal["gemini", "anthropic", "openai"]
@@ -87,15 +91,35 @@ class ProviderModelOption:
     reasoning_contract: ReasoningContract | None = None
 
 
-def _openrouter_reasoning_contract(raw: Any) -> ReasoningContract | None:
+def openrouter_reasoning_contract(raw: Any, *, model: str = "") -> ReasoningContract | None:
     """Decode the gateway's documented per-model reasoning metadata.
 
     https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
     Missing, null and empty supported_efforts have different meanings.
     """
     if not isinstance(raw, dict):
-        return None
-    values = raw.get("supported_efforts", [])
+        raw = {}
+    if "supported_efforts" not in raw:
+        contract = model_reasoning_contract(model)
+        if (
+            contract.wire
+            not in {
+                WIRE_REASONING_EFFORT,
+                WIRE_REASONING_OBJECT,
+                WIRE_THINKING_ADAPTIVE,
+                WIRE_THINKING_LEVEL,
+            }
+            or not contract.values
+        ):
+            return None
+        # Fill only absent fields; partial gateway restrictions remain authoritative.
+        raw = {
+            "supported_efforts": list(contract.values),
+            "mandatory": not contract.toggleable,
+            "default_effort": contract.default,
+            **raw,
+        }
+    values = raw["supported_efforts"]
     if values is None:
         values = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     if not isinstance(values, list) or any(
@@ -424,7 +448,9 @@ def _discover_openai_models(
                 description=_clean_text(raw.get("description")),
                 chat_compatibility=("chat" if _has_explicit_chat_capability(raw) else "unknown"),
                 reasoning_contract=(
-                    _openrouter_reasoning_contract(raw.get("reasoning")) if is_openrouter else None
+                    openrouter_reasoning_contract(raw.get("reasoning"), model=model_id)
+                    if is_openrouter
+                    else None
                 ),
             ),
         )

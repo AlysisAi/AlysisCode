@@ -121,7 +121,11 @@ def _line1(state: TuiState) -> tuple[Fragments, Fragments]:
             [
                 ("class:tui.footer.context", _format_context_left(state.context_pct)),
                 ("class:tui.footer.dim", _DOT),
-                ("class:tui.footer.value", f"{state.tokens:,} processed"),
+                (
+                    "class:tui.footer.value",
+                    f"{state.tokens:,} processed"
+                    + (" (includes estimates)" if state.tokens_estimated else ""),
+                ),
                 ("class:tui.footer.dim", _DOT),
                 ("class:tui.footer.value", _format_cost(state)),
             ]

@@ -932,6 +932,7 @@ def test_chat_maps_messages_tools_response_format_and_reasoning() -> None:
         {
             "type": "function",
             "name": "fs_read",
+            "strict": False,
             "description": "Read a file.",
             "parameters": {
                 "type": "object",
@@ -1456,6 +1457,7 @@ def test_chat_external_mode_uses_only_alysis_web_search_function() -> None:
         {
             "type": "function",
             "name": "web_search",
+            "strict": False,
             "description": "Standalone Alysis Code web search.",
             "parameters": {"type": "object"},
         }
@@ -1526,6 +1528,7 @@ def test_chat_auto_mode_with_external_adapter_uses_alysis_web_search_function() 
         {
             "type": "function",
             "name": "web_search",
+            "strict": False,
             "description": "Standalone Alysis Code web search.",
             "parameters": {"type": "object"},
         }
@@ -2200,7 +2203,14 @@ def test_chat_streaming_preserves_hosted_web_search_citations_and_sources() -> N
     assert metadata["queries"] == ["current docs"]
 
 
-def test_chat_streaming_error_event_is_clear() -> None:
+def test_chat_streaming_error_event_is_clear(tmp_path, monkeypatch) -> None:
+    import time
+
+    from alysis_code.llm import focused_input_diagnostic
+
+    monkeypatch.setattr(focused_input_diagnostic, "diagnostic_root", lambda: tmp_path)
+    (tmp_path / "enabled-until.txt").write_text(str(time.time() + 300))
+
     def handler(_request: httpx.Request) -> httpx.Response:
         return _sse_response(
             [
@@ -2219,6 +2229,10 @@ def test_chat_streaming_error_event_is_clear() -> None:
             messages=[{"role": "user", "content": "hello"}],
             stream=True,
         )
+    rows = [json.loads(line) for line in (tmp_path / "provider.jsonl").read_text().splitlines()]
+    assert [row["phase"] for row in rows] == ["stream_open", "stream_error"]
+    assert rows[1]["error_message"] == "stream exploded"
+    assert "hello" not in (tmp_path / "provider.jsonl").read_text()
 
 
 def test_chat_streaming_malformed_event_is_clear() -> None:

@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from ..command_text import command_text
-from ..diff_paths import iter_patch_paths
+from ..diff_paths import iter_patch_paths, parse_diff_git_line
+from ..git_safe import build_git_process_env
+from ..host_file_handles import open_host_file_read
+from .errors import GitDirectoryAccessError, GitError
 from .fs import (
     FilePrecondition,
     FsError,
@@ -18,10 +21,6 @@ from .fs import (
     assert_file_precondition,
     capture_file_precondition,
 )
-
-
-class GitError(RuntimeError):
-    pass
 
 
 class GitStaleFileError(GitError, StaleFileError):
@@ -32,6 +31,7 @@ class GitStaleFileError(GitError, StaleFileError):
 
 
 _GIT_HISTORY_DEFAULT_LOG_LIMIT = 10
+_GIT_COMMAND_TIMEOUT_S = 30
 _GIT_HISTORY_MAX_LOG_LIMIT = 50
 _GIT_HISTORY_LOG_BODY_MAX_CHARS = 240
 _GIT_HISTORY_SHOW_BODY_MAX_CHARS = 1200
@@ -51,14 +51,61 @@ def _run_git(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            ["git", "-C", str(root), *args],
-            input=input_s,
+        completed = subprocess.run(
+            ["git", "--no-pager", "-C", str(root), *args],
+            cwd=os.fspath(root),
+            input=input_s.encode("utf-8") if input_s is not None else None,
+            **({} if input_s is not None else {"stdin": subprocess.DEVNULL}),
             check=False,
             capture_output=True,
-            **command_text(),
-            env=env,
+            **({} if input_s is not None else command_text()),
+            env=build_git_process_env(env),
+            timeout=_GIT_COMMAND_TIMEOUT_S,
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
         )
+        stderr = (
+            completed.stderr.decode("utf-8", errors="replace")
+            if isinstance(completed.stderr, bytes)
+            else completed.stderr
+        )
+        error = stderr.strip().lower()
+        if (
+            completed.returncode != 0
+            and error.endswith(": permission denied")
+            and (
+                error.startswith("fatal: cannot change to ")
+                or error.startswith("fatal: unable to read current working directory:")
+            )
+        ):
+            # Preserve this before filter/config inspection replaces it with a
+            # generic error. In particular, native Windows MXC can deny valid
+            # directory opens in a read-only workspace. Do not retry with broader
+            # grants here: shell_run has its own permission/approval boundary.
+            raise GitDirectoryAccessError(
+                "git_directory_access_denied: Git could not enter or resolve the project "
+                "directory under the current permissions. For a workspace already approved "
+                "for writes, retry the Git command through shell_run using the configured "
+                "approval policy. Read-only sessions need a compatible sandbox backend. "
+                f"Original Git error: {stderr.strip()}"
+            )
+        if input_s is not None:
+            # Windows TextIOWrapper translates LF on stdin. Patch and NUL-delimited
+            # Git protocols must retain the exact bytes chosen by this caller.
+            return subprocess.CompletedProcess(
+                completed.args,
+                completed.returncode,
+                completed.stdout.decode("utf-8", errors="replace"),
+                completed.stderr.decode("utf-8", errors="replace"),
+            )
+        return completed
+    except subprocess.TimeoutExpired as e:
+        detail = e.stderr or e.stdout or ""
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        raise GitError(
+            f"git command timed out after {_GIT_COMMAND_TIMEOUT_S}s"
+            + (f": {detail.strip()[-2000:]}" if detail else "")
+        ) from e
     except OSError as e:
         raise GitError("git not available") from e
 
@@ -353,7 +400,12 @@ def git_history(
     if normalized_mode == "log":
         safe_limit = max(1, min(int(limit), _GIT_HISTORY_MAX_LOG_LIMIT))
         ref_value = str(ref or "HEAD").strip() or "HEAD"
+        if ref_value.startswith("-") or "\x00" in ref_value:
+            raise GitError("invalid revision")
         args = [
+            "--literal-pathspecs",
+            "-c",
+            "i18n.logOutputEncoding=utf-8",
             "log",
             f"-n{safe_limit + 1}",
             "--date=iso-strict",
@@ -363,11 +415,25 @@ def git_history(
             args.extend(["--grep", str(grep)])
         if author:
             args.extend(["--author", str(author)])
-        args.append(ref_value)
+        args.extend(["--end-of-options", ref_value, "--"])
         if normalized_path is not None:
-            args.extend(["--", normalized_path])
-        cp = _run_git_checked(root=root, args=args, fallback="git log failed")
-        commits = _parse_log_records(cp.stdout)
+            args.append(normalized_path)
+        cp = _run_git(root, args)
+        if cp.returncode != 0:
+            # An unborn branch has no history yet. Missing refs in an existing
+            # repository and repositories we cannot read must still fail.
+            branch = _run_git(root, ["symbolic-ref", "-q", "HEAD"]) if ref_value == "HEAD" else None
+            unborn = (
+                branch is not None
+                and branch.returncode == 0
+                and _run_git(
+                    root, ["show-ref", "--verify", "--quiet", branch.stdout.strip()]
+                ).returncode
+                == 1
+            )
+            if not unborn:
+                raise GitError(_normalize_git_error(cp.stderr, fallback="git log failed"))
+        commits = _parse_log_records(cp.stdout) if cp.returncode == 0 else []
         truncated = len(commits) > safe_limit
         return {
             "mode": "log",
@@ -388,15 +454,21 @@ def git_history(
         commit_value = explicit_commit or explicit_ref
         if not commit_value:
             raise GitError("show mode requires commit or ref")
+        if commit_value.startswith("-") or "\x00" in commit_value:
+            raise GitError("invalid revision")
         meta_cp = _run_git_checked(
             root=root,
             args=[
+                "-c",
+                "i18n.logOutputEncoding=utf-8",
                 "show",
                 "--quiet",
                 "--no-patch",
                 "--date=iso-strict",
                 "--format=format:%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%b",
+                "--end-of-options",
                 commit_value,
+                "--",
             ],
             fallback="git show failed",
         )
@@ -407,9 +479,20 @@ def git_history(
             fields[6], max_chars=_GIT_HISTORY_SHOW_BODY_MAX_CHARS
         )
 
-        patch_args = ["show", "--format=", "--patch", "--no-ext-diff", "--no-color", commit_value]
+        patch_args = [
+            "--literal-pathspecs",
+            "show",
+            "--format=",
+            "--patch",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--end-of-options",
+            commit_value,
+            "--",
+        ]
         if normalized_path is not None:
-            patch_args.extend(["--", normalized_path])
+            patch_args.append(normalized_path)
         patch_cp = _run_git_checked(root=root, args=patch_args, fallback="git show failed")
         patch_excerpt, patch_truncated = _clip_text(
             patch_cp.stdout, max_chars=_GIT_HISTORY_SHOW_PATCH_MAX_CHARS
@@ -510,14 +593,57 @@ def git_history(
     }
 
 
-def git_apply_patch(*, root: Path, patch: str) -> dict[str, Any]:
+def _patch_with_worktree_endings(
+    root: Path, patch: str, preconditions: list[FilePrecondition]
+) -> str:
+    crlf = set()
+    for item in preconditions:
+        if not item.exists:
+            continue
+        with open_host_file_read(root / item.path) as stream:
+            data = stream.read()
+        if b"\r\n" in data and b"\n" not in data.replace(b"\r\n", b""):
+            crlf.add(item.path)
+    current = None
+    in_hunk = False
+    output = []
+    for line in patch.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            current, _ = parse_diff_git_line(line)
+            in_hunk = False
+        elif not in_hunk and line.startswith("--- "):
+            paths = iter_patch_paths(line)
+            current = paths[0] if paths else None
+        elif line.startswith("@@ "):
+            in_hunk = True
+        elif in_hunk and current in crlf and line.startswith((" ", "+", "-")):
+            line = line.removesuffix("\n") + "\r\n"
+        output.append(line)
+    return "".join(output)
+
+
+def git_apply_patch(
+    *, root: Path, patch: str, isolated_object_store: bool = False
+) -> dict[str, Any]:
     normalized_patch = _normalize_patch_text(patch)
     _validate_patch_shape(normalized_patch)
     with _patch_lock(root):
         preconditions = _capture_patch_preconditions(root, normalized_patch)
-        with tempfile.TemporaryDirectory(prefix="alysis-patch-index-") as temporary:
+        normalized_patch = _patch_with_worktree_endings(root, normalized_patch, preconditions)
+        # A native container can replace TEMP with its private profile location,
+        # which our filesystem policy does not grant. Keep contained scratch
+        # objects inside the already writable workspace and clean them on exit.
+        with tempfile.TemporaryDirectory(
+            prefix="alysis-patch-index-", dir=root if isolated_object_store else None
+        ) as temporary:
             patch_env = dict(os.environ)
             patch_env["GIT_INDEX_FILE"] = os.fspath(Path(temporary) / "index")
+            if isolated_object_store:
+                # Native containment keeps the real .git read-only. All blobs
+                # used for patch preconditions belong to this temporary index.
+                objects = Path(temporary) / "objects"
+                objects.mkdir()
+                patch_env["GIT_OBJECT_DIRECTORY"] = os.fspath(objects)
             no_filters = ["-c", "core.autocrlf=false"]
             _run_git_checked(
                 root=root,

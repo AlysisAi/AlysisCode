@@ -16,7 +16,14 @@ from alysis_code.config import AppConfig
 from alysis_code.execution_deadline import ExecutionDeadline
 from alysis_code.runtime_kind import RuntimeKind
 from alysis_code.sandbox_settings import ShellSandboxSettings
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.terminal_manager import TerminalManager
+
+
+class _BackgroundFixtureSurface(NoopSurface):
+    def request_approval(self, request):
+        return ApprovalDecision(request.kind == "shell_background")
 
 
 class _FakeBackgroundPopen:
@@ -123,7 +130,8 @@ def _session_with_runner(
         max_steps=1,
         no_log=True,
         api_key_override="override-key",
-        non_interactive=True,
+        non_interactive=False,
+        surface=_BackgroundFixtureSurface(),
         execution_deadline=deadline,
         runtime_kind=runtime_kind,
     )
@@ -397,15 +405,16 @@ def test_shell_output_existing_callers_remain_immediate(
     )
     try:
         started = session.tools["shell_background"].run({"cmd": "fake"})
+        # Let the fixture's reader publish its output before checking the
+        # immediate snapshot API, which deliberately does not wait for bytes.
+        assert session.terminal_manager is not None
+        _, timed_out = session.terminal_manager.wait_for_output(
+            started["process_id"], since=0, timeout_s=2.0, until="output_available"
+        )
+        assert timed_out is False
         result = session.tools["shell_output"].run({"process_id": started["process_id"]})
 
         assert "waited" not in result
-        # The immediate snapshot can race the output reader. Wait separately
-        # for the line without changing shell_output's nonblocking behavior.
-        if not result["lines"]:
-            result = session.tools["shell_wait"].run(
-                {"process_id": started["process_id"], "since": 0, "wait_seconds": 1}
-            )
         assert [line["text"] for line in result["lines"]] == ["one\n"]
     finally:
         session.close()

@@ -24,6 +24,7 @@ Two strengths:
 from __future__ import annotations
 
 import os
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -33,6 +34,16 @@ _SEPARATORS = ("&&", "||", "|", ";", "&", "\r\n", "\n", "\r")
 # Text that runs or expands code the lexer cannot see.
 _OPAQUE_FRAGMENTS = ("`", "$(", "${", "<(", ">(", "<<", "@(", "@{", "@'", '@"', "--%")
 _MAX_COMMAND_CHARS = 8_000
+
+
+def _word_blank(char: str, dialect: ShellDialect) -> bool:
+    # POSIX and the supported cmd grammar separate words with ASCII blanks,
+    # not Python's Unicode whitespace set. PowerShell's lexical grammar also
+    # admits VT/FF and Unicode separator categories (language spec 2.2.4).
+    return char in " \t" or (
+        dialect == "powershell"
+        and (char in "\v\f" or unicodedata.category(char) in {"Zs", "Zl", "Zp"})
+    )
 
 
 def host_dialect() -> ShellDialect:
@@ -69,6 +80,30 @@ class _Unsupported(Exception):
     pass
 
 
+def _posix_continuations(text: str) -> str:
+    """Remove escaped LF before tokenization, except inside literal single quotes.
+
+    Preserve all other bytes, including CR: backslash-CRLF is not a POSIX
+    continuation. Nested shell payloads are normalized when that shell is parsed.
+    """
+    result: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and quote != "'" and index + 1 < len(text):
+            following = text[index + 1]
+            if following != "\n":
+                result.extend((char, following))
+            index += 2
+            continue
+        if char in "\"'" and (not quote or quote == char):
+            quote = "" if quote else char
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
 def split_simple_commands(
     command: str,
     *,
@@ -76,10 +111,12 @@ def split_simple_commands(
     strict: bool = True,
 ) -> list[SimpleCommand] | None:
     text = str(command or "")
+    if strict and len(text) > _MAX_COMMAND_CHARS:
+        return None
+    if dialect == "posix":
+        text = _posix_continuations(text)
     if strict:
-        if len(text) > _MAX_COMMAND_CHARS:
-            return None
-        if any(fragment in text for fragment in _OPAQUE_FRAGMENTS):
+        if dialect != "posix" and any(fragment in text for fragment in _OPAQUE_FRAGMENTS):
             return None
     try:
         return _lex(text, dialect=dialect, strict=strict)
@@ -128,6 +165,10 @@ def _lex(text: str, *, dialect: ShellDialect, strict: bool) -> list[SimpleComman
 
     while i < n:
         ch = text[i]
+        if strict and dialect == "posix" and quote != "'":
+            fragments = ("`", "$(", "${") if quote == '"' else _OPAQUE_FRAGMENTS
+            if any(text.startswith(fragment, i) for fragment in fragments):
+                raise _Unsupported("opaque shell expansion or syntax")
         if quote:
             if ch == quote:
                 # PowerShell doubles a quote to embed it.
@@ -148,6 +189,12 @@ def _lex(text: str, *, dialect: ShellDialect, strict: bool) -> list[SimpleComman
             i += 1
             continue
 
+        if dialect == "posix" and strict and ch == "#" and not state.started:
+            # Comments can contain unmatched quotes and hide grammar from this
+            # bounded lexer. Require a person instead of treating them as words.
+            raise _Unsupported("POSIX comment requires full shell parsing")
+        if dialect == "posix" and strict and ch == "\r":
+            raise _Unsupported("carriage return is not POSIX shell whitespace")
         if ch in quote_chars:
             quote = ch
             state.started = True
@@ -155,6 +202,8 @@ def _lex(text: str, *, dialect: ShellDialect, strict: bool) -> list[SimpleComman
             i += 1
             continue
         if dialect == "posix" and ch == "\\":
+            if strict and i + 1 < n and text[i + 1] == "\r":
+                raise _Unsupported("backslash-CRLF is not a POSIX continuation")
             if i + 1 < n:
                 state.chars.append(text[i + 1])
                 state.started = True
@@ -197,16 +246,28 @@ def _lex(text: str, *, dialect: ShellDialect, strict: bool) -> list[SimpleComman
             operator, i = _redirect_operator(text, i)
             i = _redirect_target(text, i, state, operator, stream)
             continue
-        separator = next((s for s in _SEPARATORS if text.startswith(s, i)), None)
+        separator = next(
+            (
+                s
+                for s in _SEPARATORS
+                if not (dialect == "cmd" and s == ";") and text.startswith(s, i)
+            ),
+            None,
+        )
         if separator is not None:
             normalized = "\n" if separator in {"\r\n", "\r"} else separator
             end_command(normalized)
             i += len(separator)
             continue
-        if ch.isspace():
+        if _word_blank(ch, dialect):
             end_word()
             i += 1
             continue
+        if strict and (ch.isspace() or unicodedata.category(ch) == "Cc"):
+            # Unsupported unquoted control/whitespace syntax is unresolved.
+            # Never split it into an apparently safe executable. Quoted data
+            # reaches the quote branch above and is preserved byte-for-byte.
+            raise _Unsupported("unsupported shell whitespace or control character")
         state.chars.append(ch)
         state.started = True
         i += 1

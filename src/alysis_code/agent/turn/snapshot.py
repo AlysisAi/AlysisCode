@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ...runtime_artifacts import is_runtime_artifact_path
+from ...sandbox_bookkeeping import capture_instruction_creations, command_file_signature
 from ..prompt_context import _normalize_repo_relative_hint_path
 
 _SHELL_MUTATION_SNAPSHOT_METADATA_PREFIX = "meta"
@@ -93,10 +94,7 @@ def _workspace_snapshot_signature(path: Path) -> str | None:
         return None
     if not path.is_file():
         return None
-    ctime_ns = getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000))
-    return (
-        f"{_SHELL_MUTATION_SNAPSHOT_METADATA_PREFIX}:{stat.st_size}:{stat.st_mtime_ns}:{ctime_ns}"
-    )
+    return command_file_signature(stat)
 
 
 def _snapshot_workspace_for_command_mutation_detection(root: Path) -> dict[str, str]:
@@ -164,7 +162,13 @@ def _run_with_command_mutation_detection(
         for rel_path, signature in _snapshot_workspace_for_command_mutation_detection(root).items()
         if not _path_matches_snapshot_ignore(rel_path, ignored_paths=ignored)
     }
-    result = operation()
+    with capture_instruction_creations(root) as created:
+        result = operation()
+    for receipt in created:
+        # Existing baseline paths are never rewritten. Signatures come from the
+        # retained exclusive-creation handle, before the native child runs.
+        if not _path_matches_snapshot_ignore(receipt.relative_path, ignored_paths=ignored):
+            before_snapshot.setdefault(receipt.relative_path, receipt.signature)
     after_snapshot = {
         rel_path: signature
         for rel_path, signature in _snapshot_workspace_for_command_mutation_detection(root).items()

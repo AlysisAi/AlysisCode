@@ -45,6 +45,25 @@ def _split_command(agent: AlysisSimpleAgent, instruction: str) -> tuple[list[str
     return shlex.split(command.command, posix=True), command
 
 
+def test_source_snapshot_retains_build_hook_and_protocol_resource(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    files = {
+        "pyproject.toml": '[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"\n',
+        "hatch_build.py": "# custom build hook\n",
+        "src/alysis_code/__init__.py": "",
+        "src/alysis_code/forge_host_protocol/alysis-code.schema.json": '{"type":"object"}',
+    }
+    for name, content in files.items():
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(adapter_mod, "_REPO_ROOT", source)
+    snapshot = tmp_path / "uploaded"
+    _agent()._copy_source_snapshot(snapshot)
+    for name, content in files.items():
+        assert (snapshot / name).read_text(encoding="utf-8") == content
+
+
 def test_adapter_command_includes_required_deadline_flags_and_separator() -> None:
     instruction = "--starts-with-dash\nquote 'x' and shell $(echo nope) unicode: Δοκιμή"
     parts, command = _split_command(_agent(), instruction)

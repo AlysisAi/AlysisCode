@@ -5627,3 +5627,44 @@ def test_openai_compat_extra_headers_use_same_canonical_form_on_wire_and_route()
             model="route-model",
             extra_headers={"X-Tenant-ID": "tenant-a", "x-tenant-id": "tenant-b"},
         )
+
+
+def test_required_computer_use_tools_never_retry_as_text_only() -> None:
+    from alysis_code.agent.computer_use_tools import COMPUTER_USE_TOOL_NAMES
+    from alysis_code.llm.base import require_tool_calling
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for name in COMPUTER_USE_TOOL_NAMES
+    ]
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            400,
+            json={"error": {"message": "tools are not supported by this model"}},
+        )
+
+    client = OpenAICompatClient(
+        base_url="https://example.com/v1",
+        api_key="test",
+        model="text-only-model",
+        transport=httpx.MockTransport(handler),
+    )
+    require_tool_calling(client, COMPUTER_USE_TOOL_NAMES)
+
+    with pytest.raises(LLMError, match="rejected the required Computer Use tools"):
+        client.chat(messages=[{"role": "user", "content": "use the app"}], tools=tools)
+
+    assert len(requests) == 1
+    assert "tools" in requests[0]
+    assert client.supports_tool_calling is False
+    with pytest.raises(LLMError, match="does not support the required Computer Use tools"):
+        effective_tools_for_client(client, tools)

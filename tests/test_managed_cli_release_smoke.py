@@ -460,8 +460,21 @@ def test_ci_python_jobs_use_the_frozen_release_toolchain() -> None:
     assert "scripts/qa/qualify_production_reliability.py --require-clean" in " ".join(
         workflow.split()
     )
-    assert 'uv sync --frozen --python "${{ matrix.python-version }}" --extra dev' in workflow
-    assert 'uv sync --frozen --python "3.12" --extra dev' in workflow
+    assert (
+        'uv sync --frozen --no-editable --python "${{ matrix.python-version }}" --extra dev'
+        in workflow
+    )
+    jobs = yaml.safe_load(workflow)["jobs"]
+    for job_id in ("reliability-qualification", "macos-smoke", "vscode-extension"):
+        sync_commands = [
+            step["run"]
+            for step in jobs[job_id]["steps"]
+            if step.get("name", "").startswith("Sync locked")
+        ]
+        assert len(sync_commands) == 1, job_id
+        assert sync_commands[0].startswith(
+            'uv sync --frozen --no-editable --managed-python --python "3.12" --extra dev'
+        ), job_id
     assert "uv run --frozen --no-sync pytest -q" in workflow
     assert "uv sync --frozen --no-editable --extra dev" in workflow
     assert "uv build --clear --no-create-gitignore --no-build-isolation --no-sources" in workflow

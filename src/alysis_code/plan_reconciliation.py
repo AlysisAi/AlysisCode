@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -1005,25 +1006,39 @@ def _task_filename_candidates(
 
 def _iter_symbol_scan_files(workspace_root: Path) -> list[Path]:
     files: list[Path] = []
-    try:
-        iterator = workspace_root.rglob("*")
-    except OSError:
-        return files
-    for path in iterator:
+
+    def relative_parts(path: Path) -> tuple[str, ...] | None:
+        try:
+            parts = path.resolve().relative_to(workspace_root).parts
+        except (OSError, ValueError):
+            return None
+        if any(part.casefold() in CODE_SCAN_SKIP_DIR_NAMES for part in parts):
+            return None
+        return parts
+
+    # Filter before descent: post-filtering rglob still walks every generated
+    # artifact and dependency tree. Resolve retained directories as well as
+    # files so junctions cannot turn a permitted name into an outside scan.
+    for directory_name, directory_names, file_names in os.walk(workspace_root, followlinks=False):
+        directory = Path(directory_name)
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if name.casefold() not in CODE_SCAN_SKIP_DIR_NAMES
+            and relative_parts(directory / name) is not None
+        ]
+        for name in file_names:
+            if len(files) >= _MAX_SYMBOL_SCAN_FILES:
+                return files
+            path = directory / name
+            parts = relative_parts(path)
+            if parts is None or not path.is_file():
+                continue
+            if not is_symbol_scannable_path("/".join(parts)):
+                continue
+            files.append(path)
         if len(files) >= _MAX_SYMBOL_SCAN_FILES:
             break
-        try:
-            rel_parts = path.resolve().relative_to(workspace_root).parts
-        except (OSError, ValueError):
-            continue
-        if any(part.casefold() in CODE_SCAN_SKIP_DIR_NAMES for part in rel_parts):
-            continue
-        if not path.is_file():
-            continue
-        rel_path = "/".join(part for part in rel_parts if part)
-        if not is_symbol_scannable_path(rel_path):
-            continue
-        files.append(path)
     return files
 
 

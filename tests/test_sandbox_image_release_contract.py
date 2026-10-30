@@ -229,3 +229,8 @@ def test_server_image_installs_the_exact_python_lock() -> None:
     assert "UV_PYTHON_DOWNLOADS=never" in dockerfile
     assert "python -m pip install" not in dockerfile
     assert "!uv.lock" in dockerignore
+    assert "!hatch_build.py" in dockerignore
+    assert (
+        "COPY pyproject.toml uv.lock README.md LICENSE NOTICE hatch_build.py /opt/alysis/"
+        in dockerfile
+    )

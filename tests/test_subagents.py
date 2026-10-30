@@ -111,6 +111,13 @@ class _RecordingStore:
         with self._lock:
             self.events.append((event_type, payload))
 
+    def events_since(self, cursor: int) -> tuple[list[dict[str, Any]], int]:
+        with self._lock:
+            return [
+                {"type": kind, "payload": payload}
+                for kind, payload in self.events[max(0, int(cursor)) :]
+            ], len(self.events)
+
     def configure_web_fetch_trusted_domains(self, domains: Any) -> tuple[str, ...]:
         return tuple(domains or ())
 
@@ -1508,6 +1515,8 @@ def test_child_repetition_sensor_wakes_parent_once_and_child_keeps_running(
     )
     waiter.start()
     try:
+        # Probe execution is separate from the scheduler notification bound.
+        assert client.final_request_started.wait(timeout=20.0)
         waiter.join(timeout=2.0)
         assert not waiter.is_alive()
         assert wait_result[0]["status"] == "running"
@@ -2041,6 +2050,8 @@ def test_runtime_search_rg_repetition_wakes_parent_and_changed_pattern_resets(
     )
     waiter.start()
     try:
+        # Probe execution is separate from the scheduler notification bound.
+        assert client.final_request_started.wait(timeout=20.0)
         waiter.join(timeout=3.0)
         assert not waiter.is_alive()
         assert wait_result[0]["status"] == "running"
@@ -2136,8 +2147,9 @@ def test_runtime_search_rg_alternation_nudges_child_and_wakes_parent(
     )
     waiter.start()
     try:
-        # The child runs nine searches before it can signal the parent.
-        waiter.join(timeout=10.0)
+        # Probe execution is separate from the scheduler notification bound.
+        assert client.final_request_started.wait(timeout=20.0)
+        waiter.join(timeout=2.0)
         assert not waiter.is_alive()
         assert wait_result[0]["status"] == "running"
         assert wait_result[0]["wait_interrupted"] is True
@@ -2878,15 +2890,14 @@ def test_background_spawn_summaries_track_default_cap_burst(
     ]
 
     try:
-        assert [result["summary"].split(":", 1)[0] for result in spawned] == [
-            "1 child",
-            "2 children",
-            "3 children",
-            "4 children",
-        ]
+        # spawn returns a truthful snapshot before the worker thread necessarily
+        # enters run_turn. "spawned" is valid until that transition occurs.
+        for count, result in enumerate(spawned, 1):
+            noun = "child" if count == 1 else "children"
+            assert result["summary"].startswith(f"{count} {noun}: ")
         assert all(result["state"] in {"spawned", "running"} for result in spawned[:cap])
         assert spawned[-1]["state"] == "queued"
-        assert all_active_started.wait(timeout=5.0)
+        assert all_active_started.wait(timeout=2.0)
         assert tools["subagent_status"].run({"run_id": "all"})["summary"] == (
             "4 children: 3 running, 1 queued"
         )
@@ -5935,6 +5946,12 @@ def test_subagent_runtime_shell_mutations_are_reported_to_the_child_turn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind == "shell_run"),
+    )
+
     def _fake_shell_run(**kwargs: Any) -> dict[str, Any]:
         (tmp_path / "shell-created.txt").write_text("created\n", encoding="utf-8")
         return {

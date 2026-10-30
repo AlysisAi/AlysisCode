@@ -26,6 +26,8 @@ from alysis_code.config import AppConfig
 from alysis_code.session_store import SessionStore
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 
 def _tools(root: Path, commands: list[str]):
     cfg = AppConfig(model="test-model", skills_enabled=False, verify_commands=commands)

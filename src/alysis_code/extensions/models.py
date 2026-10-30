@@ -36,6 +36,10 @@ class RegistryEntry(BaseModel):
     bundled_path: str | None = None
     package_sha256: str | None = None
     upstream_commit: str | None = None
+    # Display only (Marketplace): category ids, who publishes it, and its review tier.
+    categories: list[str] = Field(default_factory=list)
+    publisher: str | None = None
+    tier: Literal["alysis", "verified"] | None = None
 
 
 class RegistryFile(BaseModel):
@@ -59,7 +63,8 @@ class InstalledExtensionState(BaseModel):
     source_url: str | None = None
     scope: Literal["user", "project"] | None = None
     component_ids: dict[str, list[str]] = Field(default_factory=dict)
-    source_kind: Literal["git", "bundled"] = "git"
+    #: "custom": the user's own online plugin, whose descriptor the desktop app supplied.
+    source_kind: Literal["git", "bundled", "custom", "snapshot"] = "git"
     package_sha256: str | None = None
     upstream_commit: str | None = None
 

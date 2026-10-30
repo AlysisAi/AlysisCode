@@ -139,6 +139,8 @@ class ToolSemantic:
 
 
 _TOOL_SEMANTICS: dict[str, ToolSemantic] = {
+    "task_artifacts": ToolSemantic("plan", "check_requested_files", "Check requested files"),
+    "open_file_preview": ToolSemantic("read", "read_file", "Read file", ("path",)),
     "fs_read": ToolSemantic("read", "read_file", "Read file", ("path", "file")),
     "fs_read_lines": ToolSemantic("read", "read_file_range", "Read file lines", ("path",)),
     "fs_list": ToolSemantic("read", "list_directory", "List directory", ("path",)),
@@ -161,6 +163,20 @@ _TOOL_SEMANTICS: dict[str, ToolSemantic] = {
     "shell_wait": ToolSemantic("command", "wait_for_command", "Wait for command"),
     "shell_kill": ToolSemantic("command", "stop_command", "Stop command"),
     "shell_list": ToolSemantic("command", "list_commands", "List running commands"),
+    "desktop_terminal_list": ToolSemantic("command", "list_terminals", "List command windows"),
+    "desktop_terminal_open": ToolSemantic("command", "open_terminal", "Open command window"),
+    "desktop_terminal_read": ToolSemantic(
+        "command", "read_terminal", "Read command window", ("terminal_id",)
+    ),
+    "desktop_terminal_write": ToolSemantic(
+        "command", "write_terminal", "Send terminal input", ("terminal_id",)
+    ),
+    "desktop_terminal_close": ToolSemantic(
+        "command", "close_terminal", "Close command window", ("terminal_id",)
+    ),
+    "session_set_workdir": ToolSemantic(
+        "plan", "select_working_folder", "Select working folder", ("path",)
+    ),
     "verify_run": ToolSemantic("test", "verify_changes", "Verify changes", ("command",)),
     "test_discover": ToolSemantic("test", "discover_tests", "Discover tests", ("path",)),
     "git_status": ToolSemantic("git", "git_status", "Inspect Git status"),
@@ -181,6 +197,26 @@ _TOOL_SEMANTICS: dict[str, ToolSemantic] = {
     "shell_service_stop": ToolSemantic("service", "stop_service", "Stop development service"),
     "subagent_run": ToolSemantic("subagent", "delegate_task", "Delegate task", ("task",)),
     "skill_read": ToolSemantic("read", "read_skill", "Read skill guidance", ("name", "path")),
+    "document_operation": ToolSemantic(
+        "other", "document_operation", "Work with document", ("output", "source")
+    ),
+    "artifact_check": ToolSemantic("test", "check_artifact", "Check file", ("path",)),
+    "asset_view": ToolSemantic("read", "view_asset", "Inspect image or video", ("path",)),
+    "tool_search": ToolSemantic("search", "discover_tools", "Search connected tools", ("query",)),
+}
+
+# These are the document tool's declared API actions, not guesses from filenames
+# or model prose. They also keep read-only operations out of the edit category.
+_DOCUMENT_ACTION_SEMANTICS = {
+    "describe": ToolSemantic(
+        "read", "describe_document_tools", "Inspect document tools", ("format",)
+    ),
+    "inspect": ToolSemantic("read", "inspect_document", "Inspect document", ("source",)),
+    "create": ToolSemantic("edit", "create_document", "Create document", ("output",)),
+    "edit": ToolSemantic("edit", "edit_document", "Edit document", ("output", "source")),
+    "recalculate": ToolSemantic(
+        "edit", "recalculate_spreadsheet", "Recalculate spreadsheet", ("output", "source")
+    ),
 }
 
 _ALIASES = {
@@ -243,6 +279,10 @@ def tool_activity(
     semantic = _TOOL_SEMANTICS.get(public_name) or _infer_semantic(public_name)
     safe_status = _normalize_status(status)
     safe_arguments = redact_secrets(dict(arguments or {}))
+    if public_name == "document_operation":
+        action = safe_arguments.get("action")
+        if isinstance(action, str):
+            semantic = _DOCUMENT_ACTION_SEMANTICS.get(action, semantic)
     target = _target_from_arguments(safe_arguments, semantic.target_fields)
     return ActivityEvent(
         activity_id=call_id,

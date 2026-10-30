@@ -17,9 +17,11 @@ from alysis_code.tools.git import GitError, git_diff, git_status
 
 
 @pytest.fixture(autouse=True)
-def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
+def isolated_environment(tmp_path: Path, tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    private = tmp_path_factory.mktemp("git-diff-private")
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(private / "config"))
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(private / "data"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 

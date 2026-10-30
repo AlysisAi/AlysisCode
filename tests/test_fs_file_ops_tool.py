@@ -87,7 +87,7 @@ def test_fs_mkdir_nested_creation_with_parents_true(tmp_path: Path) -> None:
     result = tools["fs_mkdir"].run({"path": "a/b/c", "parents": True})
 
     assert result == {
-        "path": "a/b/c",
+        "path": str(Path("a/b/c")),
         "created": True,
         "already_exists": False,
         "parents": True,
@@ -145,7 +145,7 @@ def test_fs_move_success(tmp_path: Path) -> None:
 
     assert result == {
         "source_path": "old.txt",
-        "destination_path": "nested/new.txt",
+        "destination_path": str(Path("nested/new.txt")),
         "moved": True,
         "overwritten": False,
         "bytes": expected_size,
@@ -169,7 +169,7 @@ def test_fs_copy_success(tmp_path: Path) -> None:
 
     assert result == {
         "source_path": "old.txt",
-        "destination_path": "nested/new.txt",
+        "destination_path": str(Path("nested/new.txt")),
         "copied": True,
         "overwritten": False,
         "bytes": expected_size,
@@ -232,14 +232,19 @@ def test_fs_delete_in_use_permission_error_preserves_file(
     target = tmp_path / "in-use.txt"
     target.write_text("busy\n", encoding="utf-8")
     tools = _build_tools(tmp_path)
-    original_replace = os.replace
+    import alysis_code.tools.fs as fs_module
+
+    original_replace = fs_module.rename_host_file_no_replace if os.name == "nt" else os.replace
 
     def locked_replace(source: object, destination: object) -> None:
         if Path(source).resolve() == target.resolve():
             raise PermissionError("file is in use")
         original_replace(source, destination)
 
-    monkeypatch.setattr(os, "replace", locked_replace)
+    if os.name == "nt":
+        monkeypatch.setattr(fs_module, "rename_host_file_no_replace", locked_replace)
+    else:
+        monkeypatch.setattr(os, "replace", locked_replace)
 
     with pytest.raises(PermissionError, match="file is in use"):
         tools["fs_delete"].run({"path": "in-use.txt"})
@@ -376,3 +381,10 @@ def test_file_ops_block_in_readonly_mode(
     _ = arguments
 
     assert tool_name not in tools
+
+
+@pytest.fixture(autouse=True)
+def file_semantics_without_os_backend(monkeypatch):
+    # These unit tests isolate approval, stale-file and ledger behavior.
+    # Native/WSL containment is exercised by the installed-runtime qualifier.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")

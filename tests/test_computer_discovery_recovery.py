@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator
 from test_computer_use_recovery import _ScriptedComputerUseClient
 
 from alysis_code.agent.browser_start import (
+    COMPUTER_ACTIONS,
     COMPUTER_START_REFUSALS,
     BrowserStartHandoff,
     ComputerDiscoveryTerminal,
@@ -26,6 +27,23 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.surface.noop_surface import NoopSurface
+
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
+
+def _results_for_tool(messages, name):
+    # Production replaces provider-chosen Computer Use call IDs with opaque host IDs.
+    # Match the actual assistant/result pairs, preserving that privacy boundary.
+    calls = {
+        call["id"]: call["function"]["name"]
+        for message in messages
+        for call in message.get("tool_calls", [])
+    }
+    return [
+        json.loads(message["content"])
+        for message in messages
+        if message.get("role") == "tool" and calls.get(message.get("tool_call_id")) == name
+    ]
 
 
 def _inventory(count: int = 2) -> dict[str, Any]:
@@ -44,14 +62,60 @@ def _inventory(count: int = 2) -> dict[str, Any]:
     }
 
 
+def _discovered(inventory: dict[str, Any]) -> dict[str, Any]:
+    """Exact labels and read-only host-issued identity references, without authority."""
+    return {
+        "version": 1,
+        "targets": [
+            {
+                "app": t["name"],
+                "application_ref": t["target_id"],
+                "route": t["route"],
+                **({"availability": t["availability"]} if t.get("availability") else {}),
+            }
+            for t in inventory["targets"]
+        ],
+    }
+
+
+def _host(selection: dict[str, Any], inventory: dict[str, Any]) -> dict[str, Any]:
+    """The exact host selection a plan implies: its apps' IDs in first-use order and its actions."""
+    ids = {t["name"]: t["target_id"] for t in inventory["targets"]}
+    steps = selection["app_steps"]
+    return {
+        "target_ids": [ids[app] for app in dict.fromkeys(step["app"] for step in steps)],
+        "allowed_actions": [
+            a for a in COMPUTER_ACTIONS if any(a in step["actions"] for step in steps)
+        ],
+        "goal": selection["goal"],
+        "constraints": selection["constraints"],
+    }
+
+
 def _selection(
     inventory: dict[str, Any], index: int = 0, actions: list[str] | None = None
 ) -> dict[str, Any]:
+    target = inventory["targets"][index]
+    if actions is None:
+        # An installed app must be opened by the step that uses it.
+        actions = (
+            ["activate_application", "press"]
+            if target.get("availability") == "installed"
+            else ["press"]
+        )
     return {
-        "target_ids": [inventory["targets"][index]["target_id"]],
-        "allowed_actions": actions if actions is not None else ["press"],
         "goal": "Read the current value.",
         "constraints": ["Do not change anything else."],
+        "operates_apps": bool(set(actions) - {"activate_application"}),
+        "app_steps": [{"app": target["name"], "actions": list(actions)}],
+    }
+
+
+def _naming(selection: dict[str, Any], app: str) -> dict[str, Any]:
+    """The same plan referring to a different app label."""
+    return {
+        **selection,
+        "app_steps": [{**selection["app_steps"][0], "app": app}, *selection["app_steps"][1:]],
     }
 
 
@@ -126,7 +190,7 @@ def test_a_target_that_changed_after_discovery_requires_a_fresh_request_without_
         return {"error": "computer_use_target_stale"}
 
     tools = build_computer_start_tools(host, inventory)
-    assert tools["computer_discover"].run({}) == inventory
+    assert tools["computer_discover"].run({}) == _discovered(inventory)
 
     refused = tools["computer_start"].run(_selection(inventory))
     assert refused["error"] == "computer_use_target_stale"
@@ -140,7 +204,7 @@ def test_a_target_that_changed_after_discovery_requires_a_fresh_request_without_
     assert rediscovered["error"] == "computer_discovery_stale"
     assert rediscovered["fresh_turn_required"] is True
     assert "targets" not in rediscovered
-    assert inventory["targets"][0]["target_id"] not in json.dumps(rediscovered)
+    assert inventory["targets"][0]["name"] not in json.dumps(rediscovered)
 
     # No further selection reaches the host in this request, for any captured target.
     for index in range(len(inventory["targets"])):
@@ -166,24 +230,30 @@ def test_correctable_refusals_explain_the_fix_and_keep_the_inventory_usable():
     answers = iter([{"error": "computer_use_activation_required"}, BrowserStartHandoff("bound")])
     calls: list[dict[str, Any]] = []
     tools = build_computer_start_tools(lambda s: calls.append(s) or next(answers), inventory)
-    refused = tools["computer_start"].run(_selection(inventory, 1, ["press"]))
+    # A plan that uses an installed app without opening it is corrected before the host.
+    unopened = tools["computer_start"].run(_selection(inventory, 1, ["press"]))
+    assert (
+        unopened["error"] == "computer_start_scope_inconsistent"
+        and "activate_application" in unopened["message"]
+    )
+    assert calls == []
+    # The host's own refusal codes still map to the same explanation.
+    refused = tools["computer_start"].run(_selection(inventory, 1))
     assert refused == {
         "error": "computer_use_activation_required",
         "message": COMPUTER_START_REFUSALS["computer_use_activation_required"],
     }
     assert "activate_application" in refused["message"]
-    assert tools["computer_discover"].run({}) == inventory
+    assert tools["computer_discover"].run({}) == _discovered(inventory)
     assert isinstance(
         tools["computer_start"].run(_selection(inventory, 1, ["activate_application", "press"])),
         BrowserStartHandoff,
     )
     assert len(calls) == 2
 
-    invalid = tools["computer_start"].run(
-        {**_selection(inventory), "target_ids": ["com.example.app"]}
-    )
+    invalid = tools["computer_start"].run(_naming(_selection(inventory), "com.example.app"))
     assert invalid["error"] == "computer_start_invalid_selection"
-    assert "earlier request" in invalid["message"]
+    assert "copied exactly" in invalid["message"]
     assert len(calls) == 2, "an invalid selection never reaches the host"
 
     # Unknown host codes pass through unchanged and never gain recovery text.
@@ -201,7 +271,7 @@ def test_the_whole_host_bounded_inventory_reaches_the_model_without_a_truncated_
     inventory = _inventory(
         128
     )  # the host's cap; the last target sits far beyond a 2000-char preview
-    last_id = inventory["targets"][-1]["target_id"]
+    last_app = inventory["targets"][-1]["name"]
     assert len(json.dumps(inventory)) > 6000
     client = _ScriptedComputerUseClient(
         [
@@ -235,12 +305,17 @@ def test_the_whole_host_bounded_inventory_reaches_the_model_without_a_truncated_
     ]
     assert tool_messages, "the discovery result was returned to the model"
     content = str(tool_messages[-1]["content"])
-    assert last_id in content, "the last selectable target is not lost to a preview"
+    assert last_app in content, "the last selectable target is not lost to a preview"
     assert "artifact" not in content and "Truncated" not in content
-    assert json.loads(content) == inventory
+    assert json.loads(content) == _discovered(inventory)
+    assert [t["application_ref"] for t in json.loads(content)["targets"]] == [
+        t["target_id"] for t in inventory["targets"]
+    ], "identity references are read-only; the host selection still derives IDs from exact labels"
 
 
-def test_background_input_refusal_reobserves_then_continues_with_a_semantic_action(tmp_path: Path):
+def test_local_background_input_refusal_reobserves_then_continues_with_a_semantic_action(
+    tmp_path: Path,
+):
     host_calls: list[tuple[str, dict[str, Any]]] = []
 
     def host_request(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -327,7 +402,6 @@ def test_background_input_refusal_reobserves_then_continues_with_a_semantic_acti
         session.close()
     assert [name for name, _ in host_calls] == [
         "computer_state",
-        "computer_action",
         "computer_state",
         "computer_action",
     ]
@@ -337,11 +411,17 @@ def test_background_input_refusal_reobserves_then_continues_with_a_semantic_acti
         for m in client.call_records[2]["messages"]
         if m.get("role") == "system"
     ]
-    assert any("not delivered to native apps" in text and "set_value" in text for text in recovery)
+    assert any(
+        "unavailable for the current observation" in text
+        and "set_value" in text
+        and "hand off the desktop" in text
+        and "Never silently switch" in text
+        for text in recovery
+    )
     assert client.call_records[2]["tool_choice"]["function"]["name"] == "computer_state"
 
 
-def test_refused_background_input_recovery_is_bounded_and_fails_closed(tmp_path: Path):
+def test_local_background_input_refusals_are_bounded_and_never_dispatch(tmp_path: Path):
     host_calls: list[str] = []
 
     def host_request(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -389,23 +469,23 @@ def test_refused_background_input_recovery_is_bounded_and_fails_closed(tmp_path:
         assert session.run_turn("Enter 3.") == 1
     finally:
         session.close()
-    assert host_calls.count("computer_action") == 3
+    assert host_calls == ["computer_state"] * 3
 
 
 def test_native_guidance_steers_to_semantic_background_actions():
     prompt = " ".join(COMPUTER_USE_SYSTEM_PROMPT.split())
-    assert "delivers only semantic Accessibility actions" in prompt
-    assert (
-        "Keyboard keys, typed text, scrolling, dragging and pointer-only clicks are not delivered to native apps"
-        in prompt
-    )
+    assert "defaults to background semantic Accessibility actions" in prompt
+    assert "no verified host-owned foreground handoff" in prompt
+    assert "Human input in the controlled application yields control" in prompt
+    assert "unrelated-app work may continue" in prompt
     assert 'Use action "key" only' not in prompt
     assert "Calculator" not in prompt, "guidance stays app-agnostic"
     action = build_computer_use_tools(lambda _name, _args: {})["computer_action"]
     description = " ".join(action.description.split())
-    assert "refused for native targets before anything is sent" in description
+    assert "Native legacy background supports semantic press, focus, set_value" in description
+    assert "No focused-target, input_mode, v2, quit or reopen route is available" in description
     start = build_computer_start_tools(lambda _s: None, _inventory())["computer_start"]
-    assert "set_value" in start.description and "not delivered to native apps" in start.description
+    assert "set_value" in start.description and "host-owned human handoff" in start.description
 
 
 @pytest.mark.parametrize(
@@ -434,7 +514,7 @@ def test_unrecoverable_discovery_settles_without_retry_even_after_selection_corr
                     ToolCall(
                         id="bad",
                         name="computer_start",
-                        arguments={**selection, "target_ids": [str(uuid.uuid4())]},
+                        arguments=_naming(selection, "Unlisted App"),
                     )
                 ],
             )
@@ -483,12 +563,16 @@ def test_unrecoverable_discovery_settles_without_retry_even_after_selection_corr
         assert session.run_turn("Read the value in the requested app.") == 1
     finally:
         session.close()
-    assert host_calls == [selection]
+    assert host_calls == [_host(selection, inventory)]
     assert len(client.call_records) == 2 + int(correct_bad_id_first)
     if extra_selection_in_batch:
-        skipped = [m for m in session.messages if m.get("tool_call_id") == "c2"]
+        skipped = [
+            result
+            for result in _results_for_tool(session.messages, "computer_start")
+            if result.get("error") == "computer_discovery_batch_stopped"
+        ]
         assert len(skipped) == 1
-        assert json.loads(skipped[0]["content"])["dispatch"] == "not_dispatched"
+        assert skipped[0]["dispatch"] == "not_dispatched"
     final = session.messages[-1]["content"]
     assert "No Computer Use session was started" in final
     assert "send your request again" in final
@@ -496,60 +580,96 @@ def test_unrecoverable_discovery_settles_without_retry_even_after_selection_corr
     assert not any(t["target_id"] in final for t in inventory["targets"])
 
 
-def test_selection_schema_rejects_old_and_one_character_wrong_ids_without_fuzzy_selection():
+def test_selection_schema_rejects_unlisted_and_near_miss_labels_without_fuzzy_selection():
     inventory = _inventory(128)
     calls: list[dict[str, Any]] = []
     start = build_computer_start_tools(lambda args: calls.append(args), inventory)["computer_start"]
     schema = start.parameters
-    assert set(schema["properties"]["allowed_actions"]["items"]["enum"]) == {
+    step = schema["properties"]["app_steps"]["items"]["properties"]
+    assert set(step["actions"]["items"]["enum"]) == {
         "press",
         "focus",
         "set_value",
         "click",
+        "type",
+        "key",
+        "scroll",
+        "drag",
         "activate_application",
     }
     validator = Draft202012Validator(schema)
     validator.check_schema(schema)
-    assert schema["properties"]["target_ids"]["items"]["enum"] == [
-        t["target_id"] for t in inventory["targets"]
-    ]
+    assert step["app"]["enum"] == [t["name"] for t in inventory["targets"]]
     assert (
         "enum"
-        not in start.as_openai_tool()["function"]["parameters"]["properties"]["target_ids"]["items"]
+        not in start.as_openai_tool()["function"]["parameters"]["properties"]["app_steps"]["items"][
+            "properties"
+        ]["app"]
+    )
+    assert set(schema["properties"]) == {"goal", "constraints", "operates_apps", "app_steps"}, (
+        "no duplicate IDs or actions"
     )
     good = _selection(inventory, 127)
     assert validator.is_valid(good)
-    for wrong in [str(uuid.uuid4()), good["target_ids"][0][:-1] + "f"]:
-        bad = {**good, "target_ids": [wrong]}
+    label = good["app_steps"][0]["app"]
+    near_misses = [
+        label.lower(),
+        label.upper(),
+        label + " ",
+        " " + label,
+        label[:-1],
+        label.replace(" ", ""),
+        inventory["targets"][127]["target_id"],
+        "Unlisted App",
+    ]
+    for wrong in near_misses:
+        bad = _naming(good, wrong)
         assert not validator.is_valid(bad)
         result = start.run(bad)
+        assert result["error"] == "computer_start_invalid_selection", wrong
         assert result["recovery"] == "correct_selection_not_dispatched"
-        assert result["available_targets"] == inventory["targets"]
+        assert result["available_targets"] == _discovered(inventory)["targets"]
+    # The retired contract (host IDs and duplicate declarations) is a bounded correction, never an admission.
+    legacy = {
+        **_host(good, inventory),
+        "operates_apps": True,
+        "app_steps": [
+            {
+                "target_id": inventory["targets"][127]["target_id"],
+                "actions": ["activate_application", "press"],
+            }
+        ],
+    }
+    assert start.run(legacy)["error"] == "computer_start_invalid_selection"
+    assert (
+        start.run({**good, "target_ids": [inventory["targets"][127]["target_id"]]})["error"]
+        == "computer_start_invalid_selection"
+    )
     assert calls == [], (
-        "neither wrong target reaches the desktop, even without strict provider validation"
+        "no wrong or legacy selection reaches the desktop, even without strict provider validation"
     )
     start.run(good)
-    assert calls == [good]
+    assert calls == [_host(good, inventory)]
 
 
-@pytest.mark.parametrize("action", ["type", "key", "scroll", "drag", "history_back"])
+@pytest.mark.parametrize("action", ["history_back"])
 def test_native_input_scopes_are_corrected_before_handoff_but_browser_scopes_are_preserved(action):
     inventory = _inventory()
     calls: list[dict[str, Any]] = []
     tools = build_computer_start_tools(lambda args: calls.append(args), inventory)
     result = tools["computer_start"].run(_selection(inventory, actions=[action]))
     assert result["error"] == "computer_start_unsupported_native_actions"
-    assert "press" in result["message"]
+    assert action in result["message"]
     assert calls == []
     corrected = _selection(inventory, actions=["press", "focus", "set_value", "click"])
     tools["computer_start"].run(corrected)
-    assert calls == [corrected]
+    assert calls == [_host(corrected, inventory)]
     inventory["targets"][0]["route"] = "chrome"
     browser = _selection(inventory, actions=[action])
     build_computer_start_tools(lambda args: calls.append(args), inventory)["computer_start"].run(
         browser
     )
-    assert calls[-1] == browser
+    assert calls[-1] == _host(browser, inventory)
 
 
 def _selection_session(tmp_path, inventory, responses, host):
@@ -570,13 +690,21 @@ def _selection_session(tmp_path, inventory, responses, host):
     return session, client
 
 
-def test_wrong_id_then_unsupported_scope_is_corrected_with_original_constraints_and_one_handoff(
+def test_wrong_label_then_unsupported_scope_is_corrected_with_original_constraints_and_one_handoff(
     tmp_path,
 ):
     inventory = _inventory(128)
     good = _selection(inventory, 127, ["activate_application", "press"])
-    bad_id = {**good, "target_ids": [str(uuid.uuid4())]}
-    bad_scope = {**good, "allowed_actions": ["activate_application", "type", "key"]}
+    bad_label = _naming(good, "Unlisted App")
+    bad_scope = {
+        **good,
+        "app_steps": [
+            {
+                "app": good["app_steps"][0]["app"],
+                "actions": ["activate_application", "history_back"],
+            }
+        ],
+    }
     calls: list[dict[str, Any]] = []
     responses = [
         LLMResponse(
@@ -584,7 +712,7 @@ def test_wrong_id_then_unsupported_scope_is_corrected_with_original_constraints_
             raw={},
             tool_calls=[ToolCall(id=f"s{i}", name="computer_start", arguments=args)],
         )
-        for i, args in enumerate([bad_id, bad_scope, good])
+        for i, args in enumerate([bad_label, bad_scope, good])
     ]
     responses.insert(
         1,
@@ -609,8 +737,8 @@ def test_wrong_id_then_unsupported_scope_is_corrected_with_original_constraints_
         )
     finally:
         session.close()
-    assert calls == [good], (
-        "correction never dispatches old IDs, unsupported input or broadened constraints"
+    assert calls == [_host(good, inventory)], (
+        "correction never dispatches unlisted apps, unsupported input or broadened constraints"
     )
     assert len(client.call_records) == 4
     for index, tool_name in [(1, "computer_discover"), (3, "computer_start")]:
@@ -619,7 +747,7 @@ def test_wrong_id_then_unsupported_scope_is_corrected_with_original_constraints_
         tool_result = [
             json.loads(m["content"]) for m in record["messages"] if m.get("role") == "tool"
         ][-1]
-        assert tool_result["available_targets"] == inventory["targets"], (
+        assert tool_result["available_targets"] == _discovered(inventory)["targets"], (
             "retry choices cannot be offloaded to a truncated preview"
         )
         assert any(
@@ -632,7 +760,7 @@ def test_wrong_id_then_unsupported_scope_is_corrected_with_original_constraints_
         for m in client.call_records[2]["messages"]
         if m.get("role") == "tool"
     ][-1]
-    assert discovery_result == inventory
+    assert discovery_result == _discovered(inventory)
 
 
 @pytest.mark.parametrize("ignores_retry", [False, True])
@@ -640,7 +768,7 @@ def test_selection_correction_is_bounded_and_cannot_complete_with_a_substitute_a
     tmp_path, ignores_retry
 ):
     inventory = _inventory()
-    bad = {**_selection(inventory), "target_ids": [str(uuid.uuid4())]}
+    bad = _naming(_selection(inventory), "Unlisted App")
 
     def failed_start(i):
         return LLMResponse(
@@ -680,7 +808,7 @@ def test_transient_empty_response_during_selection_correction_keeps_discovery_re
 ):
     inventory = _inventory()
     good = _selection(inventory)
-    bad = {**good, "target_ids": [str(uuid.uuid4())]}
+    bad = _naming(good, "Unlisted App")
     responses = [
         LLMResponse(
             content="",
@@ -728,7 +856,7 @@ def test_transient_empty_response_during_selection_correction_keeps_discovery_re
         assert session.run_turn("Read the app value.") == 0
     finally:
         session.close()
-    assert calls == [good] and client.calls == len(responses)
+    assert calls == [_host(good, inventory)] and client.calls == len(responses)
     expected_choice = (
         {"type": "function", "function": {"name": "computer_discover"}} if supports_forced else None
     )
@@ -739,24 +867,29 @@ def test_transient_empty_response_during_selection_correction_keeps_discovery_re
             for m in record["messages"]
             if m.get("role") == "system"
         )
-    assert client.call_records[-1]["tool_choice"] is None, (
-        "only successful discovery clears the requirement"
+    # Only successful discovery clears the discovery requirement; after that delivery only a corrected
+    # selection is asked for, and the stale "discover now" directive is gone.
+    assert client.call_records[-1]["tool_choice"] == (
+        {"type": "function", "function": {"name": "computer_start"}} if supports_forced else None
     )
+    final_prompts = [
+        str(m.get("content"))
+        for m in client.call_records[-1]["messages"]
+        if m.get("role") == "system"
+    ]
+    assert not any("computer_discover now" in prompt for prompt in final_prompts)
+    assert any("Call computer_start now" in prompt for prompt in final_prompts)
     # Stall recovery may compact older results. The newly delivered inventory
     # must still arrive intact and be the result that clears the requirement.
-    results = {
-        m["tool_call_id"]: m["content"]
-        for m in client.call_records[-1]["messages"]
-        if m.get("role") == "tool"
-    }
-    assert json.loads(results["discovered"]) == inventory
+    results = _results_for_tool(client.call_records[-1]["messages"], "computer_discover")
+    assert results.count(_discovered(inventory)) == 1
     if failed_discovery:
-        assert json.loads(results["invalid-discovery"]) == {"error": "invalid_arguments"}
+        assert {"error": "invalid_arguments"} in results
 
 
 def test_pending_discovery_does_not_extend_the_step_budget(tmp_path):
     inventory = _inventory()
-    bad = {**_selection(inventory), "target_ids": [str(uuid.uuid4())]}
+    bad = _naming(_selection(inventory), "Unlisted App")
     responses = [
         LLMResponse(
             content="",
@@ -807,7 +940,7 @@ def test_host_json_cannot_mint_local_correction_authority(tmp_path):
         session.run_turn("Read the app value.")
     finally:
         session.close()
-    assert calls == [good]
+    assert calls == [_host(good, inventory)]
     assert client.call_records[1]["tool_choice"] is None
 
 
@@ -872,6 +1005,9 @@ def test_current_selection_enum_round_trips_through_provider_adapters(provider):
     assert len(requests) == 2
     for request in requests:
         assert request["tools"] == _expected_wire_tools(provider, tools)
+        # The required nested plan survives each provider's schema normalization.
+        wire = json.dumps(request["tools"])
+        assert '"operates_apps"' in wire and '"app_steps"' in wire and '"actions"' in wire, provider
 
 
 def test_a_json_fresh_turn_flag_cannot_mint_local_terminal_authority():
@@ -885,3 +1021,13 @@ def test_a_json_fresh_turn_flag_cannot_mint_local_terminal_authority():
     tool = build_computer_start_tools(lambda _selection: fake, inventory)["computer_start"]
     assert tool.run(_selection(inventory)) is fake
     assert not isinstance(fake, ComputerDiscoveryTerminal)
+
+
+@pytest.mark.parametrize("action", ["type", "key", "scroll", "drag"])
+def test_native_foreground_action_scope_survives_exact_selection(action):
+    inventory = _inventory()
+    calls = []
+    selection = _selection(inventory, actions=[action])
+    tools = build_computer_start_tools(lambda args: calls.append(args), inventory)
+    tools["computer_start"].run(selection)
+    assert calls == [_host(selection, inventory)]

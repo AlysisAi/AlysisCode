@@ -15,7 +15,7 @@ from alysis_code.model_registry import ModelRegistry
 from alysis_code.profile_presets import get_preset, make_profile_from_preset
 from alysis_code.profiles import add_profile, set_active_profile
 
-pytestmark = pytest.mark.usefixtures("configured_hosted_api")
+pytestmark = pytest.mark.usefixtures("configured_hosted_api", "authorized_hosted_models")
 
 
 def hosted_config():
@@ -27,7 +27,7 @@ def hosted_config():
     return cfg
 
 
-def test_luna_free_picker_and_metadata():
+def test_luna_authorized_picker_and_metadata():
     cfg = hosted_config()
     flow = ConfigFlow(cfg=cfg)
     flow.choose("default")

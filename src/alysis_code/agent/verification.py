@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from ..diff_paths import iter_patch_paths
 from ..failure_category import FailureCategory, is_infra_unavailable_error
 from ..language_policy import normalize_language_name
+from ..project_folders import allowed_roots
 from ..runtime_kind import RuntimeKind
 from ..sandbox_runner import HostShellRunner, LazyShellRunner
 from ..tools.availability import is_tool_unavailable_result
@@ -102,8 +103,10 @@ from .turn_contract import (
     Expectation,
     ExpectationAssessment,
     ExpectationEvidence,
+    ExpectationKind,
     assess_expectations,
     match_expectation_evidence,
+    normalize_locus_path,
 )
 from .turn_path import greenfield_verification_bootstrap_enabled
 from .verification_commands import (
@@ -454,11 +457,15 @@ class _ObservedVerificationFailure:
     reported_category: str = ""
     provenance: str = ""
     requirement: str = ""
+    host_launcher_unavailable: bool = False
 
 
 @dataclass
 class TurnExecutionState:
     execution_requested: bool
+    # Applicability used by the latest host completion certificate, never
+    # restored across turns. None keeps early/legacy outcome accounting strict.
+    verification_expected: bool | None = field(default=None, kw_only=True)
     expected_verification_commands: set[str] = field(default_factory=set)
     covered_verification_commands: set[str] = field(default_factory=set)
     covered_verification_command_generations: dict[str, int] = field(default_factory=dict)
@@ -466,9 +473,17 @@ class TurnExecutionState:
     material_edit_generation: int = 0
     material_edit_tools: set[str] = field(default_factory=set)
     touched_repo_paths: set[str] = field(default_factory=set)
+    # Current live turn only. Task continuation seeding deliberately does not
+    # restore this set: earlier edits cannot enroll this reply's attachments or
+    # make inferred repository verification apply to unrelated current effects.
+    turn_touched_repo_paths: set[str] = field(default_factory=set, repr=False)
+    # Exact scoped file-tool effects can confirm a named external output, but
+    # must not masquerade as project files or broaden repo test/diff scopes.
+    touched_external_paths: set[str] = field(default_factory=set)
     last_diff_review_generation: int | None = None
     verification_attempt_count: int = 0
     consumer_profile_observations: list[dict[str, Any]] = field(default_factory=list)
+    artifact_check_observations: list[dict[str, Any]] = field(default_factory=list)
     verification_tools: set[str] = field(default_factory=set)
     last_verification_passed: bool | None = None
     last_verification_failure_snippet: str = ""
@@ -871,7 +886,23 @@ class TurnExecutionState:
             for run in self.post_edit_run_outputs
             if int(run.get("generation") or 0) >= generation
         ]
-        return match_expectation_evidence(expectations, runs)
+        evidence = match_expectation_evidence(expectations, runs)
+        contract = self.acceptance_contract
+        observer = contract.artifact_output_observer if contract is not None else None
+        if observer is not None and observer.current_for(contract):
+            changed = {normalize_locus_path(path) for path in observer.changed_loci}
+            evidence.extend(
+                ExpectationEvidence(
+                    expectation_id=item.expectation_id,
+                    normalized_command="",
+                    generation=contract.generation,
+                    source="host_file_metadata",
+                )
+                for item in expectations
+                if item.kind == ExpectationKind.NAMED_LOCUS
+                and normalize_locus_path(item.text) in changed
+            )
+        return evidence
 
     def note_repro_run(
         self,
@@ -1081,7 +1112,11 @@ class TurnExecutionState:
         assessment = assess_expectations(
             expectations=expectations,
             evidence=evidence,
-            edited_loci=self.touched_repo_paths,
+            edited_loci=(
+                self.touched_repo_paths
+                | self.touched_external_paths
+                | set(contract.external_path_observations)
+            ),
             dispositions=self.recorded_expectation_dispositions,
         )
         self.latest_expectation_assessment = assessment.as_payload()
@@ -1157,6 +1192,7 @@ class TurnExecutionState:
     def as_payload(self) -> dict[str, Any]:
         return {
             "execution_requested": self.execution_requested,
+            "verification_expected": self.verification_expected,
             "connector_link_evidence": dict(self.connector_link_evidence),
             "expected_verification_commands": sorted(self.expected_verification_commands),
             "covered_verification_commands": sorted(self.covered_verification_commands),
@@ -1165,9 +1201,11 @@ class TurnExecutionState:
             "material_edit_generation": self.material_edit_generation,
             "material_edit_tools": sorted(self.material_edit_tools),
             "touched_repo_paths": sorted(self.touched_repo_paths),
+            "touched_external_paths": sorted(self.touched_external_paths),
             "last_diff_review_generation": self.last_diff_review_generation,
             "diff_review_stale": self.diff_review_is_stale(),
             "verification_attempt_count": self.verification_attempt_count,
+            "artifact_checks": list(self.artifact_check_observations),
             "verification_tools": sorted(self.verification_tools),
             "last_verification_passed": self.last_verification_passed,
             "last_verification_failure_snippet": self.last_verification_failure_snippet,
@@ -1337,6 +1375,44 @@ def _runtime_message(
         return template
 
 
+def _extract_scoped_external_edits(
+    *, root: Path, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]
+) -> dict[str, str]:
+    fields = {
+        "fs_write": ("path",),
+        "fs_edit": ("path",),
+        "fs_delete": ("path",),
+        "fs_mkdir": ("path",),
+        "fs_move": ("source_path", "destination_path"),
+        "fs_copy": ("destination_path",),
+    }.get(tool_name, ())
+    scoped = result.get("scoped_workspace")
+    if not fields:
+        return {}
+    project = root.resolve()
+    scopes = list(allowed_roots(project)[1:])
+    if isinstance(scoped, str) and Path(scoped).is_absolute():
+        scopes.append(Path(scoped).resolve())
+    scopes = [scope for scope in scopes if not scope.is_relative_to(project)]
+    if not scopes:
+        return {}
+    edited: dict[str, str] = {}
+    for key in fields:
+        value, proposed = result.get(key), arguments.get(key)
+        if not isinstance(value, str) or not isinstance(proposed, str):
+            continue
+        path = Path(value)
+        if (
+            path.is_absolute()
+            and any(path.resolve().is_relative_to(scope) for scope in scopes)
+            and path.resolve() == (project / proposed).resolve()
+        ):
+            # Preserve the exact requested alias as well as its observed target.
+            # This is identity evidence, not another filesystem permission.
+            edited[str(project / proposed)] = str(path.resolve())
+    return edited
+
+
 def _extract_touched_repo_paths(
     *,
     root: Path,
@@ -1349,6 +1425,14 @@ def _extract_touched_repo_paths(
 
     if normalized_tool in {"fs_write", "fs_edit", "fs_delete", "fs_mkdir"}:
         raw_path = result.get("path", arguments.get("path"))
+        if isinstance(raw_path, str):
+            raw_paths.append(raw_path)
+    elif normalized_tool == "document_operation" and result.get("status") in {
+        "created",
+        "edited",
+        "recalculated",
+    }:
+        raw_path = result.get("output", result.get("pdf"))
         if isinstance(raw_path, str):
             raw_paths.append(raw_path)
     elif normalized_tool in {"fs_move", "fs_copy"}:
@@ -1585,6 +1669,7 @@ def _record_verify_run_command_outcomes(
 
 def _record_shell_verification_command_outcome(
     *,
+    root: Path,
     state: TurnExecutionState,
     arguments: dict[str, Any],
     result: dict[str, Any],
@@ -1592,6 +1677,10 @@ def _record_shell_verification_command_outcome(
     passed: bool,
     evidence: VerificationEvidence | None = None,
 ) -> None:
+    # The same command text in another folder is a different check. Its actual
+    # outcome is recorded separately, keyed by command and working directory.
+    if evidence is not None and evidence.working_directory != str(root.resolve()):
+        return
     allowed_matches = (
         set(evidence.covered_verification_commands)
         if evidence is not None and evidence.allowed_to_satisfy_contract
@@ -1734,13 +1823,29 @@ def _verification_outcome_key(
     command: str,
     working_directory: object,
     environment_known: bool,
+    execution_context: object = None,
+    execution_scope: object = None,
 ) -> str | None:
     """Identify the actual execution, without equating different selections.
 
     Keep argv spelling/assignments intact and never export environment values.
-    A custom/sandbox environment or opaque shell wrapper has no comparable key.
+    A native runner can supply a digest of its admitted environment and policy.
+    Unknown/custom environments and opaque shell wrappers remain incomparable.
     """
-    if not environment_known or not command.strip() or not isinstance(working_directory, str):
+    native_context = (
+        execution_context
+        if isinstance(execution_context, str)
+        and re.fullmatch(r"windows-mxc-v1:[0-9a-f]{64}", execution_context)
+        else None
+    )
+    scope_known = isinstance(execution_scope, str) and re.fullmatch(
+        r"[0-9a-f]{64}", execution_scope
+    )
+    if (
+        (not environment_known and native_context is None and not scope_known)
+        or not command.strip()
+        or not isinstance(working_directory, str)
+    ):
         return None
     analysis = analyze_verification_command(command, trusted=True, workspace_root=root)
     if (
@@ -1753,7 +1858,15 @@ def _verification_outcome_key(
         cwd = (root / working_directory).resolve()
         if analysis.cd_target is not None:
             cwd = (cwd / analysis.cd_target).resolve()
-        context = (command.strip(), str(cwd), sorted(os.environ.items()))
+        context = (
+            command.strip(),
+            str(cwd),
+            native_context,
+            execution_scope if scope_known else None,
+            sorted(os.environ.items())
+            if environment_known and native_context is None and not scope_known
+            else None,
+        )
         return hashlib.sha256(json.dumps(context, ensure_ascii=True).encode()).hexdigest()
     except (OSError, RuntimeError, ValueError):
         return None
@@ -1812,6 +1925,8 @@ def _record_observed_verification_outcomes(
                 command=command,
                 working_directory=cwd,
                 environment_known=environment_known,
+                execution_context=item.get("execution_context"),
+                execution_scope=item.get("verification_execution_scope"),
             )
             if bound_to_execution
             else None
@@ -1892,6 +2007,11 @@ def _record_observed_verification_outcomes(
                 generation=state.verification_relevant_edit_generation,
                 provenance=provenance,
                 requirement=requirement,
+                host_launcher_unavailable=(
+                    item.get("host_launcher_unavailable") is True
+                    and evidence.real_execution is False
+                    and code == 127
+                ),
             )
     # No execution/exit observation is not a failed execution. It also cannot
     # retire an older failure or establish a passing attempt.
@@ -1911,22 +2031,35 @@ def _verification_evidence_in_workspace(
     coverage without an explicit equivalent command rooted there.
     """
 
-    if cwd is None or cwd == "":
-        return evidence
     try:
-        actual = Path(cwd)
+        actual = Path(cwd or root)
         if not actual.is_absolute():
             actual = root / actual
-        matches = actual.resolve() == root.resolve()
+        actual = actual.resolve()
     except (OSError, TypeError, ValueError):
-        matches = False
-    if matches:
-        return evidence
+        return replace(
+            evidence,
+            allowed_to_satisfy_contract=False,
+            covered_verification_commands=(),
+            reason="verification_cwd_invalid",
+        )
+    if actual == root.resolve():
+        return replace(evidence, working_directory=str(actual))
     return replace(
         evidence,
         allowed_to_satisfy_contract=False,
         covered_verification_commands=(),
-        reason="verification_cwd_mismatch",
+        matched_command=None,
+        supplemental_only=True,
+        working_directory=str(actual),
+        reason=(
+            "supplemental_working_directory"
+            if evidence.category != VerificationEvidenceCategory.NOT_VERIFICATION
+            and evidence.real_execution is True
+            and evidence.reason
+            not in {"mutated_material_paths", "external_mutation_tracking_unavailable"}
+            else evidence.reason
+        ),
     )
 
 
@@ -2099,6 +2232,12 @@ def _shell_verification_evidence(
     exit_code_raw = result.get("exit_code")
     exit_code = exit_code_raw if isinstance(exit_code_raw, int) else None
     command = str(result.get("effective_cmd") or result.get("cmd") or arguments.get("cmd") or "")
+    cwd = result.get("cwd", arguments.get("cwd")) or root
+    try:
+        execution_root = (root / cwd).resolve()
+    except (OSError, TypeError, ValueError):
+        execution_root = root
+    in_project = execution_root == root.resolve()
     stage_status_raw = result.get("pipeline_stage_status")
     stage_status = (
         [int(item) for item in stage_status_raw]
@@ -2108,26 +2247,44 @@ def _shell_verification_evidence(
     )
     evidence = _classify_acceptance_aware_verification_evidence(
         command,
-        acceptance_contract=state.acceptance_contract,
-        known_verification_commands=known_verification_commands,
-        required_verification_commands=state.expected_verification_commands,
-        authoritative=verification_authoritative,
-        changed_paths=state.touched_repo_paths,
-        material_touched_paths=_verification_relevant_material_paths(
+        acceptance_contract=state.acceptance_contract if in_project else None,
+        known_verification_commands=known_verification_commands if in_project else [],
+        required_verification_commands=state.expected_verification_commands
+        if in_project
+        else set(),
+        authoritative=verification_authoritative and in_project,
+        changed_paths=state.touched_repo_paths
+        if in_project
+        else {
+            str(Path(path).relative_to(execution_root))
+            for path in state.touched_external_paths
+            if Path(path).is_relative_to(execution_root)
+        },
+        material_touched_paths=material_touched_paths
+        if not in_project
+        else _verification_relevant_material_paths(
             material_touched_paths, root=root, contract=state.acceptance_contract
         ),
         exit_code=exit_code,
         output=_verification_output_text(result),
-        root=root,
+        root=execution_root,
         stage_status=stage_status,
         evidence_v2=evidence_v2,
-        working_directory=str(
-            result.get("verification_working_directory")
-            or result.get("cwd")
-            or arguments.get("cwd")
-            or "."
-        ),
+        working_directory=".",
     )
+    if result.get("host_launcher_unavailable") is True and exit_code == 127:
+        evidence = replace(
+            evidence,
+            real_execution=False,
+            allowed_to_satisfy_contract=False,
+            reason="host_launcher_unavailable",
+        )
+    if result.get("external_mutation_tracking_unavailable") is True:
+        evidence = replace(
+            evidence,
+            allowed_to_satisfy_contract=False,
+            reason="external_mutation_tracking_unavailable",
+        )
     return _verification_evidence_in_workspace(
         evidence, root=root, cwd=result.get("cwd", arguments.get("cwd"))
     )
@@ -2212,6 +2369,8 @@ def _tool_effect_has_qualifying_execution(
     """
     for observation in observations:
         record = observation.evidence
+        if record.reason in {"mutated_material_paths", "external_mutation_tracking_unavailable"}:
+            continue
         if record.category == VerificationEvidenceCategory.NOT_VERIFICATION:
             continue
         if record.real_execution is False:
@@ -2407,6 +2566,16 @@ def _capture_regression_test_runs(
     elapsed_ms: int | None = None,
     environment_known: bool = True,
 ) -> None:
+    if tool_name == "shell_run":
+        try:
+            if (
+                root / (result.get("cwd") or arguments.get("cwd") or ".")
+            ).resolve() != root.resolve():
+                # Project baselines describe that project's files and test IDs.
+                # External outcomes have their own cwd-bound observation ledger.
+                return
+        except (OSError, TypeError, ValueError):
+            return
     timestamp = _regression_capture_timestamp()
     pairs = _iter_executed_test_command_results(
         tool_name=tool_name,
@@ -2598,6 +2767,50 @@ def _record_tool_effect(
             )
         )
     normalized_tool = tool_name.strip().lower()
+    external_edits: dict[str, str] = {}
+    external_command_paths: set[str] = set()
+    if normalized_tool == "shell_run":
+        scope = result.get("external_mutation_scope")
+        paths = result.get("touched_external_paths")
+        if isinstance(scope, str) and Path(scope).is_absolute() and isinstance(paths, list):
+            scope_path = Path(scope)
+            if not scope_path.is_relative_to(root.resolve()):
+                external_command_paths = {
+                    item.path
+                    for item in classify_mutation_paths(
+                        [
+                            path
+                            for path in paths
+                            if isinstance(path, str)
+                            and Path(path).is_absolute()
+                            and Path(path).is_relative_to(scope_path)
+                            and ".." not in Path(path).parts
+                        ],
+                        root=scope_path,
+                        command_was_verification=False,
+                    )
+                    if item.is_material
+                }
+                external_command_paths = {str(scope_path / path) for path in external_command_paths}
+                state.touched_external_paths.update(external_command_paths)
+    if status != "failed" and not result.get("error"):
+        external_edits = _extract_scoped_external_edits(
+            root=root, tool_name=normalized_tool, arguments=arguments, result=result
+        )
+        state.touched_external_paths.update(external_edits)
+        state.touched_external_paths.update(external_edits.values())
+    if (
+        normalized_tool == "artifact_check"
+        and status != "failed"
+        and isinstance(result.get("items"), list)
+    ):
+        # These are engine observations about exact file bytes, not a certificate
+        # that every user requirement or business assertion has been satisfied.
+        state.artifact_check_observations.append(
+            {key: result[key] for key in ("path", "documentSha256", "items") if key in result}
+        )
+        state.artifact_check_observations[:] = state.artifact_check_observations[-50:]
+        return
     touched_paths: set[str] = set()
     benign_runtime_paths: set[str] = set()
     if normalized_tool in _COMMAND_LIKE_MUTATION_TOOL_NAMES:
@@ -2621,7 +2834,9 @@ def _record_tool_effect(
                 arguments=arguments,
                 result=result,
             )
-    elif status != "failed" and normalized_tool in _MATERIAL_EDIT_TOOL_NAMES:
+    elif status != "failed" and (
+        normalized_tool in _MATERIAL_EDIT_TOOL_NAMES or normalized_tool == "document_operation"
+    ):
         touched_paths = _extract_touched_repo_paths(
             root=root,
             tool_name=normalized_tool,
@@ -2649,31 +2864,45 @@ def _record_tool_effect(
             ):
                 state.note_agent_created_path(created_path)
 
+    material_edit = normalized_tool in _MATERIAL_EDIT_TOOL_NAMES or (
+        normalized_tool == "document_operation" and bool(touched_paths)
+    )
     # Reproduction-first guardrail (step 5): the reproduction is only evidence
     # while it stays the one that failed before the fix. Editing a recorded
     # artifact once product code has already changed is recorded and surfaced.
     if status != "failed" and (
-        normalized_tool in _MATERIAL_EDIT_TOOL_NAMES
-        or normalized_tool in {"subagent_wait", "subagent_apply"}
+        material_edit or normalized_tool in {"subagent_wait", "subagent_apply"}
     ):
         _capture_repro_artifact_edits(state=state, touched_paths=touched_paths)
 
-    if (status != "failed" and normalized_tool in _MATERIAL_EDIT_TOOL_NAMES) or (
+    if (status != "failed" and material_edit) or (
         normalized_tool in {"subagent_run", "subagent_wait", "subagent_apply"} and touched_paths
     ):
         state.note_material_edit()
         state.material_edit_tools.add(normalized_tool)
         state.touched_repo_paths.update(touched_paths)
-        if _paths_require_verification(touched_paths) or _acceptance_artifact_changed(
-            root=root, contract=state.acceptance_contract, touched_paths=touched_paths
+        state.turn_touched_repo_paths.update(touched_paths)
+        if (
+            external_edits
+            or _paths_require_verification(touched_paths)
+            or _acceptance_artifact_changed(
+                root=root, contract=state.acceptance_contract, touched_paths=touched_paths
+            )
         ):
             state.note_verification_relevant_edit()
-    elif normalized_tool in _COMMAND_LIKE_MUTATION_TOOL_NAMES and touched_paths:
+    elif normalized_tool in _COMMAND_LIKE_MUTATION_TOOL_NAMES and (
+        touched_paths or external_command_paths
+    ):
         state.note_material_edit()
         state.material_edit_tools.add(normalized_tool)
         state.touched_repo_paths.update(touched_paths)
-        if _paths_require_verification(touched_paths) or _acceptance_artifact_changed(
-            root=root, contract=state.acceptance_contract, touched_paths=touched_paths
+        state.turn_touched_repo_paths.update(touched_paths)
+        if (
+            external_command_paths
+            or _paths_require_verification(touched_paths)
+            or _acceptance_artifact_changed(
+                root=root, contract=state.acceptance_contract, touched_paths=touched_paths
+            )
         ):
             state.note_verification_relevant_edit()
     elif status != "failed" and normalized_tool == "git_diff":
@@ -2732,7 +2961,7 @@ def _record_tool_effect(
             result=result,
             known_verification_commands=known_verification_commands,
             verification_authoritative=verification_authoritative,
-            material_touched_paths=touched_paths,
+            material_touched_paths=touched_paths | external_command_paths,
             evidence_v2=evidence_v2,
         )
         evidence_records = [evidence]
@@ -2764,6 +2993,7 @@ def _record_tool_effect(
         status=status,
         result=result,
         touched_paths=touched_paths,
+        external_edits=external_edits,
         known_verification_commands=known_verification_commands,
         verification_authoritative=verification_authoritative,
         evidence_category=evidence.category.value,
@@ -2799,13 +3029,14 @@ def _record_tool_effect(
     # the agent created this turn, phase-classified against the product edits
     # recorded so far. Unconditional telemetry, like the captures above — only the
     # gate policy and the turn directives are kill-switched.
-    _capture_repro_runs(
-        state=state,
-        tool_name=normalized_tool,
-        arguments=arguments,
-        status=status,
-        result=result,
-    )
+    if normalized_tool != "shell_run" or evidence.working_directory == str(root.resolve()):
+        _capture_repro_runs(
+            state=state,
+            tool_name=normalized_tool,
+            arguments=arguments,
+            status=status,
+            result=result,
+        )
     if normalized_tool == "shell_run" and not verification_attempt:
         raw_command = str(
             result.get("effective_cmd") or result.get("cmd") or arguments.get("cmd") or ""
@@ -2890,6 +3121,7 @@ def _record_tool_effect(
         )
     elif normalized_tool == "shell_run":
         _record_shell_verification_command_outcome(
+            root=root,
             state=state,
             arguments=arguments,
             result=result,
@@ -2924,6 +3156,21 @@ def _record_tool_effect(
             and len(commands) == len(command_results) == len(evidence_observations)
             and all(item.command_result_index is not None for item in evidence_observations)
         )
+    if (
+        attempt_physically_passed
+        and complete_execution_observations
+        and any(item.evidence.allowed_to_satisfy_contract for item in evidence_observations)
+    ):
+        for key, failure in tuple(state.observed_verification_failures.items()):
+            if (
+                failure.host_launcher_unavailable
+                and failure.requirement != VerificationCommandRequirement.REQUIRED.value
+            ):
+                # This attempted optional launcher never supplied a test result.
+                # Keep its rejected evidence in history, but let a real accepted
+                # check recover. Required commands remain in their separate map.
+                del state.observed_verification_failures[key]
+                resolved_observed_failure = True
     if (
         attempt_physically_passed
         and complete_execution_observations
@@ -3211,6 +3458,7 @@ def _completion_gate_problems(
         )
     )
     state.latest_completion_certificate = certificate.as_payload()
+    state.verification_expected = verification_expected
     return list(certificate.problems)
 
 

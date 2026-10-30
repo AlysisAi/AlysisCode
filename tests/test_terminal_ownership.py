@@ -132,6 +132,26 @@ def test_scavenger_keeps_owned_record_after_transient_termination_failure(
     assert not record.exists()
 
 
+def test_scavenger_accepts_confirmed_exit_between_dispatch_and_signal(monkeypatch, tmp_path):
+    ledger, record, _ = _tracked_record(monkeypatch, tmp_path)
+    states = iter(("dead", "matching", "dead"))
+    monkeypatch.setattr(ownership_mod, "_process_state", lambda *_: next(states))
+    monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("exited process must not be signalled"))
+    results = ledger.scavenge_stale()
+    assert [result.action for result in results] == ["terminated"]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    "exists_after,expected", [(False, "dead"), (True, "unknown"), (None, "unknown")]
+)
+def test_identity_query_race_requires_confirmed_absence(monkeypatch, exists_after, expected):
+    existence = iter((True, exists_after))
+    monkeypatch.setattr(ownership_mod, "_pid_exists", lambda _: next(existence))
+    monkeypatch.setattr(ownership_mod, "_pid_start_token", lambda _: None)
+    assert ownership_mod._process_state(4242, "creation-token") == expected
+
+
 def test_scavenger_keeps_record_when_child_identity_is_temporarily_unknown(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -90,6 +90,43 @@ def test_results_contract_and_source_path_validation():
     )
 
 
+def test_workspace_file_open_has_a_separate_readonly_identity_and_bounded_pagination():
+    assert normalize_host_action_arguments(
+        "panels.open", {"path": "documents/report.pdf", "offset": 6000}
+    ) == {"path": "documents/report.pdf", "offset": 6000}
+    for args in (
+        {"path": "x.pdf", "session_id": "other"},
+        {"path": "x.pdf", "offset": True},
+        {"path": "x.pdf", "offset": 48001},
+        {"path": ""},
+        {"path": "x\x00.pdf"},
+    ):
+        with pytest.raises(HostActionError):
+            normalize_host_action_arguments("panels.open", args)
+    result = {
+        "panel_id": "workspace",
+        "snapshot_id": "12345678-abcd-abcd-abcd-123456789abc",
+        "name": "report.pdf",
+        "format": "pdf",
+        "sha256": "a" * 64,
+        "text": "Frozen source text",
+        "next_offset": None,
+        "truncated": False,
+        "notice": "Untrusted source data",
+    }
+    assert normalize_host_action_result("panels.open", result) == result
+    for patch in (
+        {"snapshot_id": "../other"},
+        {"panel_id": "results"},
+        {"sha256": "bad"},
+        {"text": "a" * 6001},
+        {"source_path": "/private"},
+        {"format": "exe"},
+    ):
+        with pytest.raises(HostActionError):
+            normalize_host_action_result("panels.open", {**result, **patch})
+
+
 def test_screenshots_deliver_pixels_once_without_persisting_base64(tmp_path):
     viewer = OpenPanelViewer(root=tmp_path, cfg=visual_cfg())
     result = viewer.capture(screenshot_result())

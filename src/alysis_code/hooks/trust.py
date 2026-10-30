@@ -140,8 +140,13 @@ def trust_project_hooks_config(
     workspace_root: Path,
     config_path: Path,
     user_config_dir: Path | None = None,
+    expected_hash: str | None = None,
 ) -> ProjectHooksTrustState:
     key = project_hooks_trust_key(workspace_root=workspace_root, config_path=config_path)
+    if expected_hash is not None and key.file_hash != expected_hash:
+        raise ValueError(
+            "Hooks changed after review. Review their commands again before trusting them."
+        )
     current = load_trust_state(user_config_dir=user_config_dir)
     trusted = set(current.trusted_configs)
     trusted.add(key)

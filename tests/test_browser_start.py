@@ -13,6 +13,7 @@ from test_ide_computer_use_host import (
     _wait_for_event,
 )
 
+from alysis_code import computer_use_platform_policy
 from alysis_code.agent.browser_start import (
     BrowserStartHandoff,
     build_browser_start_tool,
@@ -22,8 +23,18 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.ide.health import capabilities_payload
 from alysis_code.ide.protocol import ProtocolError, ProtocolRequest
-from alysis_code.ide.stdio_bridge import BridgeCancellationError, _browser_start_host_param
+from alysis_code.ide.stdio_bridge import (
+    BridgeCancellationError,
+    _browser_start_host_param,
+    _prepare_change_ledger_with_deadline,
+)
 from alysis_code.llm.types import LLMResponse, ToolCall
+
+
+@pytest.fixture(autouse=True)
+def mac_browser_protocol(monkeypatch):
+    """Exercise the inert Mac host exchange on each CI platform."""
+    monkeypatch.setattr(computer_use_platform_policy, "sys", SimpleNamespace(platform="darwin"))
 
 
 def binding():
@@ -343,6 +354,10 @@ def test_real_turn_emits_only_authenticated_transient_handoff(tmp_path):
     session.browser_start_host = binding()
     # An ordinary (non-sensitive) chat turn always carries its durable prompt id.
     job.prompt_id = "prompt-browser-start"
+    # This manually constructed session uses the eager checkpoint fallback. Prepare
+    # its real Git baseline before timing the browser protocol exchange; production
+    # sessions install a lazy tool-dispatch guard during session creation.
+    assert _prepare_change_ledger_with_deadline(session)
     agent = create_session(
         cfg=AppConfig(model="computer-use-test-model", routing_mode="code_only"),
         root=tmp_path,

@@ -34,6 +34,7 @@ permissions:
   contents: read
 
 env:
+  TRIVY_DETECTION_PRIORITY: comprehensive
   REGISTRY: ghcr.io
   IMAGE_NAME: alysis-sandbox
   DEFAULT_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.default_variant || 'dev' }}
@@ -98,6 +99,26 @@ jobs:
             echo "sha12=${GITHUB_SHA::12}"
             echo "source_date_epoch=${source_date_epoch}"
           } >> "${GITHUB_OUTPUT}"
+
+      - name: Check the release approval environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${GITHUB_REPOSITORY}/environments/sandbox-release" > sandbox-release-policy.json; then
+            echo "Configure the sandbox-release environment before publishing; see docs/RELEASING.md." >&2
+            exit 1
+          fi
+          if ! jq -e '
+            any(.protection_rules[]?;
+              .type == "required_reviewers"
+              and .prevent_self_review == true
+              and (.reviewers | length) > 0)
+          ' sandbox-release-policy.json > /dev/null; then
+            echo "sandbox-release must require a maintainer review and prevent self-review." >&2
+            exit 1
+          fi
 
   build-scan-pr:
     name: build, scan, and smoke ${{ matrix.variant }} (${{ matrix.platform.arch }}, pr)
@@ -377,6 +398,21 @@ jobs:
           docker pull --platform linux/arm64 "${ARM64_REF}"
           docker run --rm --platform linux/arm64 "${ARM64_REF}" sh -euc "${smoke}"
 
+      - name: Exercise offline toolchains on both architectures
+        env:
+          AMD64_REF: ${{ steps.platforms.outputs.amd64_ref }}
+          ARM64_REF: ${{ steps.platforms.outputs.arm64_ref }}
+          VARIANT: ${{ matrix.variant }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -i --platform linux/amd64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,exec,mode=1777 \
+            --entrypoint python "${AMD64_REF}" - "${VARIANT}" < scripts/sandbox/smoke_toolchains.py
+          docker run --rm -i --platform linux/arm64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,exec,mode=1777 \
+            --entrypoint python "${ARM64_REF}" - "${VARIANT}" < scripts/sandbox/smoke_toolchains.py
+
       - name: Set up Python for end-to-end doctor
         if: matrix.variant == 'dev'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -626,6 +662,11 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Check out verification helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -757,6 +798,15 @@ jobs:
             rm -f "${index_path}"
           done
 
+      - name: Verify anonymous candidate downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -er '.image + "@" + .digest' candidate-records/*.json > candidate-images.txt
+          mapfile -t images < candidate-images.txt
+          test "${#images[@]}" -eq 3
+          bash scripts/sandbox/check-public-images.sh "${images[@]}"
+
   promote:
     name: promote verified sandbox images
     if: github.event_name != 'pull_request'
@@ -772,6 +822,11 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Check out verification helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -920,6 +975,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t records < <(find candidate-records -maxdepth 1 -type f -name '*.json' -print | sort)
+          : > promoted-images.txt
           for record in "${records[@]}"; do
             image="$(jq -r '.image' "${record}")"
             digest="$(jq -r '.digest' "${record}")"
@@ -953,7 +1009,16 @@ jobs:
             fi
 
             docker buildx imagetools create "${tags[@]}" "${image}@${digest}"
+            for ((i=1; i<${#tags[@]}; i+=2)); do printf '%s\n' "${tags[$i]}" >> promoted-images.txt; done
           done
+
+      - name: Verify anonymous promoted downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t images < promoted-images.txt
+          test "${#images[@]}" -ge 3
+          bash scripts/sandbox/check-public-images.sh --pull "${images[@]}"
 
       - name: Write promotion summary
         env:

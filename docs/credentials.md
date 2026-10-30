@@ -1,6 +1,6 @@
 # Credentials
 
-Alysis Code now supports an explicit persisted API-key store separate from `config.json`.
+Alysis Code supports an explicit persisted API-key store separate from `config.json`.
 
 API key resolution order:
 
@@ -16,6 +16,8 @@ Notes:
 - `alysis config show` reports whether an API key is available and which source won.
 - `alysis setup` can save an API key into the local credentials store.
 
+## OAuth token storage
+
 MCP HTTP OAuth tokens use a separate user-scope store at `mcp_oauth_tokens.json` in the same config
 directory. That file is an AES-GCM encrypted envelope containing `version`, `key_source`, `nonce`,
 and `ciphertext`; it does not contain plaintext access tokens or refresh tokens. The AES master key
@@ -26,6 +28,16 @@ token envelope and filesystem key are written atomically with owner-only permiss
 POSIX mode bits are supported. Filesystem-key storage protects against disclosure of the token file
 alone, but it is not equivalent to an OS keychain: a process that can read all files as the same user
 can read the key as well.
+
+Hosts that need a stable filesystem key can set
+`ALYSIS_OAUTH_KEY_SOURCE=filesystem-random`. Other explicit values are rejected.
+This override uses the same random-key storage described above; it does not
+protect against a process that can read both the vault and its key file.
+
+When this override is selected, an accessible macOS keyring envelope is migrated
+to the filesystem key. If the old key cannot be read, the store refuses the
+operation rather than replacing an unreadable vault. Migration and key rotation
+are atomic, so a failed rewrite preserves the last readable store.
 
 Envelope version 2 introduced the random filesystem key. Version 1
 `weak-derived-fallback` envelopes remain readable and are re-encrypted automatically with the best

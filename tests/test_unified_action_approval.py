@@ -65,6 +65,57 @@ def test_full_access_skips_mandatory_prompt_but_not_an_explicit_deny(tmp_path: P
     assert surface.requests == []
 
 
+@pytest.mark.parametrize("mode", ["auto", "fullaccess"])
+@pytest.mark.parametrize(
+    "host_action,preview,context",
+    [
+        ("mcp.google.call", "send a Google Chat message", None),
+        # A verified plugin's write (alysis.notion) through the custom plugin channel.
+        (
+            "mcp.connector.call",
+            "create a Notion page",
+            {"connector": "Verified", "service": "Notion", "tool": "notion-create-pages"},
+        ),
+    ],
+)
+def test_remote_connector_writes_always_reach_a_person(
+    tmp_path: Path, mode: str, host_action: str, preview: str, context: dict | None
+):
+    surface = _Surface(allow=False)
+    request = ApprovalRequest(
+        "mcp",
+        "fixture",
+        preview,
+        metadata={
+            "access": "write",
+            "host_action": host_action,
+            "mandatory_explicit_approval": True,
+            "always_ask_person": True,
+            **({"connector_context": context} if context else {}),
+        },
+    )
+    decision = decide_action_approval(
+        request,
+        mode=mode,
+        root=tmp_path,
+        surface=surface,
+        can_ask_person=True,
+        reviewer=SimpleNamespace(
+            bound=True,
+            review=lambda *_a, **_k: pytest.fail("AI reviewer must not decide"),
+            record_person_decision=lambda **_k: None,
+        ),
+    )
+    assert not decision.allow
+    assert surface.requests == [request]
+    surface.standing_approval = lambda _: StandingApproval("allow", "saved allow rule")
+    surface.requests.clear()
+    assert not decide_action_approval(
+        request, mode=mode, root=tmp_path, surface=surface, can_ask_person=True
+    ).allow
+    assert surface.requests == [request]
+
+
 def test_expiry_is_not_a_human_denial_and_never_dispatches(tmp_path: Path):
     surface = _Surface()
     surface.request_approval = lambda _: ApprovalDecision(False, status="expired")
@@ -170,6 +221,7 @@ def test_mcp_uses_bound_reviewer_and_redacts_only_the_approval_preview(
         ("fullaccess", "computer_upload", 0, 1),
     ],
 )
+@pytest.mark.usefixtures("mac_computer_use_protocol")
 def test_native_and_chrome_preflight_obey_effective_engine_mode(
     tmp_path: Path, monkeypatch, mode: str, tool: str, asks: int, executions: int
 ):

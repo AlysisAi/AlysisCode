@@ -360,9 +360,9 @@ def test_hidden_stdio_entrypoint_starts_the_same_runtime_and_negotiates(
     root, trusted_pytest = _repo(tmp_path)
     handshake_fixture = (
         Path(__file__).parents[1]
-        / "schemas"
-        / "forge-host-v2"
+        / "tests"
         / "fixtures"
+        / "forge_host_v2"
         / "valid"
         / "handshake-request.json"
     ).read_bytes()
@@ -519,6 +519,7 @@ def test_canonical_runtime_runs_real_planner_approval_agent_pytest_git_and_repla
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    forge_impl._sync_cli_globals(cli_mod)
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
     monkeypatch.setenv("ALYSIS_REMOTE_SYNC", "off")

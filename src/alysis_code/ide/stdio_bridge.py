@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import inspect
@@ -20,16 +21,26 @@ from contextlib import nullcontext, redirect_stdout, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from .. import __version__, feedback_delivery
+from .. import computer_use_attribution as attribution
 from ..agent.action_approval import decide_action_approval
 from ..agent.browser_start import (
+    COMPUTER_TARGET_UNVERIFIED,
     BrowserStartHandoff,
     valid_browser_start_url,
     valid_computer_selection,
+    valid_unverified_target_refusal,
 )
+from ..agent.computer_start_resolved import (
+    HOST_CODES,
+    ProtocolUnavailable,
+    Refusal,
+    valid_descriptor,
+)
+from ..agent.computer_start_resolved import text as resolved_identity_text
 from ..agent.computer_use_files import (
     COMPUTER_USE_FILE_PROMPT,
     COMPUTER_USE_FILE_TOOL_NAMES,
@@ -54,8 +65,8 @@ from ..agent.prompt_context import (
     resolve_session_active_workdir_relpath,
     set_session_active_workdir,
 )
-from ..agent.session import create_session
 from ..agent.steering import MAX_PENDING_STEER_MESSAGES, steer_inbox_for
+from ..agent.task_relation import new_task_instruction
 from ..approval_scope import (
     SCOPE_EXACT_COMMAND_HASH,
     SCOPE_EXACT_FILE_SET,
@@ -66,6 +77,7 @@ from ..approval_scope import (
     exact_verify_command_set_scope,
 )
 from ..branding import env_get
+from ..budget_policy import BUDGET_STOP_EXIT_CODE
 from ..cancellation import CooperativeCancellationError, EventCancellationToken
 from ..code_review import (
     ChatReviewerClient,
@@ -74,6 +86,19 @@ from ..code_review import (
     ReviewRequest,
 )
 from ..command_text import command_text
+from ..computer_use_platform_policy import (
+    CU_EVENTS,
+    UNAVAILABLE_MESSAGE,
+    W11_EVENTS,
+    W11_HOST_FIELDS,
+    W11_UNAVAILABLE_MESSAGE,
+    computer_use_blocked,
+    legacy_mac_computer_use_available,
+    mac_w7_computer_use_available,
+    refuse_computer_use,
+    refuse_unavailable_mac_w7_computer_use,
+    unqualified_computer_arguments,
+)
 from ..config import (
     ConfigError,
     _apply_legacy_temperature_override,
@@ -81,6 +106,7 @@ from ..config import (
     load_config,
     save_config,
 )
+from ..execution_deadline import DeadlineExhausted
 from ..feedback_report import FeedbackReportError
 from ..host_actions import (
     HOST_ACTION_MAX_ARGUMENT_BYTES,
@@ -88,7 +114,9 @@ from ..host_actions import (
     HOST_ACTION_PROTOCOL_VERSION,
     HOST_ACTION_SET,
     HOST_ACTIONS,
+    REMOTE_CONNECTOR_WRITE_ACTIONS,
     HostActionError,
+    OperationScopedHostActionHandler,
     json_size_bytes,
     normalize_host_action_arguments,
     normalize_host_action_result,
@@ -109,19 +137,35 @@ from ..host_images import (
 from ..llm.base import RequiredToolCallingUnsupportedError
 from ..llm.metadata import credential_scope_fingerprint
 from ..llm.protocols import OPENAI_COMPAT_PROTOCOL
+from ..llm.resolved_entry import canonical as resolved_canonical
+from ..mcp import github_repository_policy as github_policy
+from ..mcp.connector_host import (
+    CONNECTOR_MCP_ACTION,
+    assert_connector_current,
+    bind_active_connector_catalogs,
+    bind_connector_catalogs,
+    check_connector_call,
+    connector_argument_limit,
+    connector_session_payload,
+    is_verified_connector,
+    normalize_connector_catalogs,
+)
 from ..mcp.errors import McpError
 from ..mcp.github_discovery import ACTIONS as GITHUB_DISCOVERY_ACTIONS
 from ..mcp.github_discovery import GitHubDiscoveryState
 from ..mcp.github_host import (
     GITHUB_MCP_ACTION,
+    GITHUB_PLUGIN_ID,
     assert_host_mcp_current,
     bind_host_mcp_catalog,
     host_mcp_session_payload,
     normalize_host_mcp_catalog,
 )
+from ..mcp.github_policy_json import argument_scope as github_argument_scope
 from ..mcp.google_host import (
     GOOGLE_MCP_ACTION,
     assert_google_current,
+    bind_active_google_catalogs,
     bind_google_catalogs,
     google_session_payload,
     normalize_google_catalogs,
@@ -160,10 +204,13 @@ from ..run_outcome import task_outcome_fields
 from ..runtime_kind import RuntimeKind
 from ..sandbox_settings import apply_sandbox_mode_to_config, resolve_shell_sandbox_settings
 from ..session_store import make_session_id, resolve_sessions_dir
+from ..skills.computer_use import (
+    computer_use_route_availability,
+    computer_use_workflow_instructions,
+)
 from ..surface.console import make_console
 from ..surface.events import InfoEmitted
 from ..surface.types import ApprovalDecision, ApprovalRequest, StandingApproval
-from ..swarm_orchestrator import run_swarm
 from ..task_budget import TaskBudgetAuthority, TaskBudgetRefused, task_budget_setup
 from ..task_budget import iso as budget_iso
 from ..task_budget import need as budget_need
@@ -175,6 +222,8 @@ from ..tools.registry import built_in_subagent_tool_names
 from ..usage_tracker import aggregate_usage_from_session_logs
 from ..workspace_binding import WorkspaceAction, WorkspaceBindingError
 from ..workspace_binding_ui import resolve_startup_workspace_binding
+from . import plugin_skill_admission as plugin_admission
+from . import plugin_skill_projection as plugin_projection
 from .activity_events import ActivityEvent
 from .approval_binding import (
     ApprovalBinding,
@@ -184,6 +233,7 @@ from .approval_binding import (
     runtime_instance_fingerprint,
 )
 from .artifacts import ArtifactRoot, ArtifactStore
+from .canonical_json import CanonicalJsonError, canonical_json_fingerprint
 from .cdp_websocket_transport import WebSocketCdpTransportFactory
 from .change_ledger import (
     ChangeLedger,
@@ -193,6 +243,7 @@ from .change_ledger import (
     checkpoint_storage_exists,
 )
 from .context_blocks import ContextValidationError, sanitize_context_blocks
+from .context_inspection import context_categories
 from .event_stream import EventContext, EventSequencer, ProtocolEventSurface, ProtocolPayloadEvent
 from .forge_protocol import (
     ForgePlanRecord,
@@ -345,6 +396,7 @@ DEFAULT_COMPUTER_USE_TIMEOUT_SECONDS = 45.0
 APPROVAL_RESOLUTION_RETENTION_SECONDS = 300.0
 APPROVAL_RESOLUTION_MAX = 512
 FINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_THREAD_START = threading.Thread.start  # Actual stdlib start, before any owned test port.
 ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "cancellation_requested"})
 FILE_APPROVAL_KINDS = frozenset(
     {
@@ -364,14 +416,18 @@ MAX_PREPARED_FEEDBACK = 16
 CHAT_SEND_ALLOWED_FIELDS = frozenset(
     {
         "session_id",
+        "task_relation",
         "message",
         "instruction",
         "images",
         "image_paths",
         "context_blocks",
         "skill",
+        "explicit_plugin_skill",
         "host_image",
         "idempotency_key",
+        "memory_scope",
+        "project_folders",
     }
 )
 RUN_START_SESSION_FIELDS = frozenset(
@@ -391,6 +447,7 @@ RUN_START_SESSION_FIELDS = frozenset(
         "model",
         "base_url",
         "computer_use_destination",
+        "computer_use_evidence_version",
         "sensitive_media",
         "computer_use_host",
         "active_workdir",
@@ -398,10 +455,12 @@ RUN_START_SESSION_FIELDS = frozenset(
         "workspace_trusted",
         "host_capabilities",
         "host_mcp",
+        "github_repository_policy",
         "google_mcp",
+        "connector_mcp",
     }
 )
-RUN_START_TURN_FIELDS = CHAT_SEND_ALLOWED_FIELDS - {"session_id"}
+RUN_START_TURN_FIELDS = CHAT_SEND_ALLOWED_FIELDS - {"session_id", "task_relation"}
 RUN_START_ALLOWED_FIELDS = RUN_START_SESSION_FIELDS | RUN_START_TURN_FIELDS
 SUPPORTED_IDE_IMAGE_MIME_TYPES = frozenset(
     {
@@ -429,6 +488,7 @@ SENSITIVE_MEDIA_ALLOWED_SESSION_METHODS = frozenset(
         "session.usage",
         "session.modelInfo",
         "session.cancel",
+        "session.close",
         "session.getEvents",
         "computer.respond",
         "task_budget.respond",
@@ -488,6 +548,9 @@ class ComputerUseHostBinding:
     scope_digest: str
     response_mode: str = "status_only"
     observation_version: int | None = None
+    interaction_version: int | None = None
+    application_lifecycle_version: int | None = None
+    window_selection_version: int | None = None
     verification_available: bool = False
     files_available: bool = False
     uploads_available: bool = False
@@ -514,6 +577,13 @@ class ComputerUseHostBinding:
                 + (COMPUTER_USE_UPLOAD_TOOL_NAMES if self.uploads_available else ())
             ),
             "response_mode": self.response_mode,
+            **({"interaction_version": 2} if self.interaction_version == 2 else {}),
+            **(
+                {"application_lifecycle_version": 1}
+                if self.application_lifecycle_version == 1
+                else {}
+            ),
+            **({"window_selection_version": 1} if self.window_selection_version == 1 else {}),
             **({"observation_version": 1} if self.observation_version == 1 else {}),
             **(
                 {"task_budget": _json_clone(self.task_budget)}
@@ -544,6 +614,20 @@ class PendingComputerUseRequest:
     done: threading.Event = field(default_factory=threading.Event)
     response: dict[str, Any] | None = None
     resolved: bool = False
+    host_succeeded: bool = False
+
+
+def _computer_use_request_remaining(pending: PendingComputerUseRequest) -> float:
+    """Seconds left before the earlier of the monotonic deadline and the original wall expiry.
+
+    Shorten-only: expires_at is the request's original, lease-clamped value and is never
+    re-armed. At or below zero the request has expired. This is not a continuous clock: it
+    cannot tell a suspended monotonic clock apart when wall time has also regressed.
+    """
+    return min(
+        pending.deadline - time.monotonic(),
+        budget_stamp(pending.expires_at) - time.time(),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,6 +712,8 @@ class BridgeJob:
     error: str | None = None
     error_code: str | None = None
     thread: threading.Thread | None = None
+    worker_reserved: bool = field(default=False, repr=False)
+    worker_never_started: bool = field(default=False, repr=False)
     plan_id: str | None = None
     result: dict[str, Any] | None = None
     cancellable: bool = True
@@ -648,6 +734,7 @@ class BridgeJob:
     browser_start_handoff: dict[str, str] | None = field(default=None, repr=False)
     host_image_binding: HostImageBinding | None = None
     prepared_host_image: tuple[ValidatedHostImage, bytes] | None = field(default=None, repr=False)
+    computer_use_attribution: attribution.Collector | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -663,9 +750,12 @@ class BridgeSession:
     checkpoint_setup: tuple[threading.Event, dict[str, Any]] | None = field(
         default=None, repr=False
     )
+    # Why the last restore-point setup failed (for example Git is missing); None when it did not.
+    checkpoint_failure: str | None = None
     structured_state: DurableStructuredState | None = None
     resumable_swarm: DurableResumableSwarmCoordinator | None = None
     managed_browser: ManagedBrowserService | None = None
+    requested_workspace: Path | None = None
     active_job: BridgeJob | None = None
     last_job: BridgeJob | None = None
     forked_from_session_id: str | None = None
@@ -676,11 +766,22 @@ class BridgeSession:
     closed: bool = False
     close_when_idle: bool = False
     close_worker: threading.Thread | None = field(default=None, repr=False)
+    close_attempted: bool = field(default=False, repr=False)
+    close_error: BaseException | None = field(default=None, repr=False)
+    # Private LR33 admission fences; never serialized or persisted.
+    cancellation_transitions: int = field(default=0, repr=False)
+    cancellation_uncertain: bool = field(default=False, repr=False)
+    mutation_in_progress: bool = field(default=False, repr=False)
+    mutation_effects_started: bool = field(default=False, repr=False)
+    mutation_error: BaseException | None = field(default=None, repr=False)
+    queue_mutation_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     sensitive_media: bool = False
     computer_use_destination: ComputerUseDestinationBinding | None = None
     browser_start_host: dict[str, Any] | None = None
     pending_browser_start: dict[str, Any] | None = field(default=None, repr=False)
     browser_start_consumed: bool = False
+    computer_start_resolved_host: dict[str, Any] | None = field(default=None, repr=False)
+    pending_resolved_start: dict[str, Any] | None = field(default=None, repr=False)
     computer_use_host: ComputerUseHostBinding | None = None
     task_budget_channel: TaskBudgetChannel | None = None
     task_budget_authority: TaskBudgetAuthority | None = None
@@ -697,8 +798,10 @@ class BridgeSession:
     host_actions: frozenset[str] = field(default_factory=frozenset)
     host_approval_protocol: int = 0
     host_mcp: dict[str, Any] | None = None
+    github_repository_policy: github_policy.RepositoryPolicy | None = None
     github_discovery: GitHubDiscoveryState = field(default_factory=GitHubDiscoveryState)
     google_mcp: list[dict[str, Any]] = field(default_factory=list)
+    connector_mcp: list[dict[str, Any]] = field(default_factory=list)
     workspace_fence: str = ""
     host_capability_fingerprint: str = ""
     pending_host_actions: dict[str, PendingHostActionRecord] = field(default_factory=dict)
@@ -728,6 +831,8 @@ class _CheckpointToolDispatchGuard:
         self._session_ref = session_ref
         self._prepared_job_id: str | None = None
         self._ready = False
+        # The job whose restore-point setup failed: it goes on without restore points.
+        self._unprotected_job_id: str | None = None
         self._lock = threading.Lock()
 
     def check_tool_call(
@@ -750,17 +855,38 @@ class _CheckpointToolDispatchGuard:
             return
         with self._lock:
             _check_job_cancelled(job)
+            if self._unprotected_job_id == job.job_id:
+                return
             # Not ready is checked again on the next call: the baseline worker keeps running
             # and may have finished since.
             if self._prepared_job_id != job.job_id or not self._ready:
                 self._ready = _prepare_change_ledger_with_deadline(session)
                 self._prepared_job_id = job.job_id
             _check_job_cancelled(job)
+            if not self._ready and getattr(session, "checkpoint_failure", None):
+                # Restore points could not be set up (Git missing or storage failing), so waiting
+                # would never help. The person was told this turn's changes can't be undone; the
+                # change goes ahead, and the next turn tries the setup again.
+                self._unprotected_job_id = job.job_id
+                return
             if not self._ready:
-                raise ChangeLedgerError(
-                    "checkpoint_unavailable: This action was not run because restore "
-                    "snapshots are not ready. File reading and Git review remain available. "
-                    "Wait for setup to finish, then send your request again."
+                from ..agent.errors import AgentRuntimeError
+
+                message = (
+                    "The action did not run because a restore snapshot could not be prepared. "
+                    "Do not retry modifying actions or work around this guard in this turn. "
+                    "Read-only inspection remains available. Retry in a new turn after "
+                    "the project's snapshot setup is available."
+                )
+                raise AgentRuntimeError(
+                    message,
+                    result_payload={
+                        "error": message,
+                        "error_code": "checkpoint_unavailable",
+                        "dispatch_state": "not_dispatched",
+                        "retryable": False,
+                        "recovery_class": "retry_in_new_turn",
+                    },
                 )
 
 
@@ -790,10 +916,76 @@ class _PlanInspectionSession:
         return
 
 
+def create_session(**kwargs: Any) -> Any:
+    # Protocol negotiation and management do not execute an agent. Load the
+    # canonical factory only when the validated session creation path calls it.
+    from ..agent.session import create_session as create
+
+    return create(**kwargs)
+
+
+def run_swarm(**kwargs: Any) -> int:
+    # The existing swarm admission, ownership and cancellation checks precede
+    # this call. Importing the bridge alone must not load the worker runtime.
+    cancellation_event = kwargs.get("cancellation_event")
+    if cancellation_event is not None and cancellation_event.is_set():
+        raise BridgeCancellationError("cancelled_by_user")
+
+    from ..swarm_orchestrator import run_swarm as run
+
+    # A cold import can block while Stop arrives. Do not enter workspace setup
+    # with cancellation already requested; use the bridge's normal cancel path.
+    if cancellation_event is not None and cancellation_event.is_set():
+        raise BridgeCancellationError("cancelled_by_user")
+    return run(**kwargs)
+
+
+class _DeferredManagedBrowserService:
+    """An optional browser cannot prevent unrelated chat/file work from starting.
+
+    Capture the configuration at session creation, but keep all browser data-root
+    validation and private-directory creation on the existing first-use boundary.
+    Closing an unused or retired session must never initialize a browser service.
+    """
+
+    def __init__(self, factory: Callable[[], ManagedBrowserService]) -> None:
+        self._factory = factory
+        self._service: ManagedBrowserService | None = None
+        self._lock = threading.RLock()
+        self._closed = False
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            with self._lock:
+                if self._closed:
+                    raise BrowserError("The chat's browser service has closed.")
+                if self._service is None:
+                    self._service = self._factory()
+                return getattr(self._service, name)(*args, **kwargs)
+
+        return invoke
+
+    def close_all(self) -> None:
+        with self._lock:
+            self._closed = True
+            service, self._service = self._service, None
+        if service is not None:
+            service.close_all()
+
+
 def _default_managed_browser_service(*, workspace_root: Path) -> ManagedBrowserService:
-    return ManagedBrowserService(
-        config=ManagedBrowserConfig(workspace_roots=(workspace_root,)),
-        transport_factory=WebSocketCdpTransportFactory(),
+    config = ManagedBrowserConfig(workspace_roots=(workspace_root,))
+    return cast(
+        ManagedBrowserService,
+        _DeferredManagedBrowserService(
+            lambda: ManagedBrowserService(
+                config=config,
+                transport_factory=WebSocketCdpTransportFactory(),
+            )
+        ),
     )
 
 
@@ -801,6 +993,7 @@ class StdioBridge:
     def __init__(
         self,
         *,
+        role: str = "runtime",
         stdin: TextIO | None = None,
         stdout: TextIO | None = None,
         create_session_fn: Callable[..., Any] = create_session,
@@ -827,8 +1020,22 @@ class StdioBridge:
         mcp_oauth_coordinator: McpOAuthIdeCoordinator | None = None,
         mcp_oauth_coordinator_factory: Callable[[], McpOAuthIdeCoordinator] | None = None,
     ) -> None:
+        if role not in {"runtime", "plugin_projection"}:
+            raise ValueError("Unsupported bridge role")
+        self._role = role
+        self._p2_readiness: dict[str, plugin_admission.Readiness] = {}
         self.stdin = stdin or sys.stdin
         self.stdout = stdout or sys.stdout
+        if role == "plugin_projection":
+            # This read-only child never opens durable queues, OAuth or model state.
+            self._sessions = {}
+            self._runtime_fingerprint = runtime_instance_fingerprint(
+                uuid.uuid4().hex, version=__version__
+            )
+            self._state_lock = threading.RLock()
+            self._write_lock = threading.Lock()
+            self._closed = False
+            return
         self._create_session = create_session_fn
         self._forge_execute_agent_runner = forge_execute_agent_runner
         self._forge_swarm_runner = forge_swarm_runner
@@ -884,13 +1091,23 @@ class StdioBridge:
         self._write_lock = threading.Lock()
         self._closed = False
 
+    @property
+    def role(self) -> str:
+        return self._role
+
     def _runtime_health_payload(self) -> dict[str, Any]:
         payload = health_payload()
+        if self.role == "plugin_projection":
+            payload["capabilities"] = self._runtime_capabilities_payload()
         payload["runtime_instance_fingerprint"] = self._runtime_fingerprint
         return payload
 
     def _runtime_capabilities_payload(self) -> dict[str, Any]:
         payload = capabilities_payload()
+        if self.role == "plugin_projection":
+            payload["methods"] = list(plugin_projection.METHODS)
+            payload["events"] = []
+            payload["features"] = {"plugin_skill_projection_v1": dict(plugin_projection.CAPABILITY)}
         payload["runtime_instance_fingerprint"] = self._runtime_fingerprint
         return payload
 
@@ -924,14 +1141,24 @@ class StdioBridge:
                 return
 
     def close(self) -> None:
+        if self.role == "plugin_projection":
+            self._closed = True
+            return
         with self._state_lock:
             if self._closed:
                 return
             self._closed = True
+            self._p2_retire()
             sessions = list(self._sessions.values())
             active: list[tuple[BridgeSession, BridgeJob]] = []
+            workers: dict[int, threading.Thread] = {}
             for session in sessions:
                 _reconcile_session_job_state(session)
+                # A terminal event can precede the worker's final cleanup.
+                # Retain both slots even after reconciliation moves the job.
+                for retained_job in (session.active_job, session.last_job):
+                    if retained_job is not None and retained_job.thread is not None:
+                        workers[id(retained_job.thread)] = retained_job.thread
                 job = session.active_job
                 if _job_is_active(job) and job is not None:
                     _request_job_cancellation(job, "bridge_shutdown_interrupted")
@@ -954,9 +1181,8 @@ class StdioBridge:
 
         deadline = time.monotonic() + self._shutdown_timeout_seconds
         current = threading.current_thread()
-        for _session, job in active:
-            thread = job.thread
-            if thread is None or thread is current or not thread.is_alive():
+        for thread in workers.values():
+            if thread is current or not thread.is_alive():
                 continue
             remaining = max(0.0, deadline - time.monotonic())
             if remaining <= 0:
@@ -1012,22 +1238,70 @@ class StdioBridge:
     def process_line(self, line: str) -> None:
         request_id: RequestId = None
         request: ProtocolRequest | None = None
+        collector = None
         try:
             request = parse_request_line(line)
             request_id = request.id
-            result, action = self._dispatch(request)
-            self._write(response_message(request.id, result))
+            if (
+                request.method in {"chat.send", "run.start"}
+                and "explicit_plugin_skill" in request.params
+            ):
+                plugin_admission.scoped_duplicates(line, "explicit_plugin_skill")
+            if request.method == "host.action.respond":
+                session = self._sessions.get(request.params.get("session_id"))
+                pending = (
+                    session.pending_host_actions.get(request.params.get("host_action_id"))
+                    if session
+                    else None
+                )
+                if pending is not None and pending.action == plugin_admission.ACTION:
+                    plugin_admission.scoped_duplicates(line, "result")
+            if (
+                request.method in {"plugin.skills.list", "plugin.skills.read"}
+                and self.role == "plugin_projection"
+            ):
+                plugin_projection.strict_frame(line)
+            collector = self._attribution_rpc_owner(request) if self.role == "runtime" else None
+            with attribution.bind_collector(collector):
+                result, action = self._dispatch(request)
+            reply = response_message(request.id, result)
+            private_echo = (
+                result.get("computer_start_resolved_host")
+                if request.method == "session.create"
+                else None
+            )
+            if private_echo is not None:
+                reply["result"]["computer_start_resolved_host"] = private_echo
+            if collector is not None and collector.context["contextKind"] == "turn":
+                sidecar = self._attribution_accept_turn(request, result, collector)
+                if sidecar is not None:
+                    reply["computer_use_attribution"] = sidecar
+            else:
+                reply = attribution.rpc_reply(collector, reply) or reply
+            self._write_resolved_wire(reply) if private_echo is not None else self._write(reply)
+            self._p2_reply_written(request, result)
             if action is not None:
                 action()
-        except ProtocolError as e:
+        except plugin_projection.PluginSkillUnavailable as exc:
+            self._p2_reject_owned_response(request)
+            self._p2_reply_failed(request)
             self._write(
+                error_message(request_id, exc.code, exc.message, details={"reason": exc.reason})
+            )
+        except ProtocolError as e:
+            self._p2_reject_owned_response(request)
+            self._p2_reply_failed(request)
+            self._write_attribution_error(
+                collector,
                 error_message(
                     e.request_id if e.request_id is not None else request_id,
                     e.code,
                     e.message,
-                )
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - unexpected exceptions may contain secrets
+            self._p2_reject_owned_response(request)
+            self._p2_reply_failed(request)
             # Only explicitly constructed ProtocolError messages are safe to
             # return to an IDE client. Provider, filesystem, SQLite, and test
             # double exceptions can embed credentials or caller-controlled
@@ -1041,18 +1315,118 @@ class StdioBridge:
             marker: str | None = None
             with suppress(Exception):
                 marker = protected_provider_diagnostic_marker(exc)
-            self._write(
+            self._write_attribution_error(
+                collector,
                 error_message(
                     request_id,
                     "internal_error",
                     "The IDE bridge encountered an unexpected internal error."
                     + (f" {marker}" if marker else ""),
-                )
+                ),
             )
+
+    def _write_attribution_error(self, collector, reply):
+        self._write(attribution.rpc_reply(collector, reply) or reply)
+
+    @attribution._safe
+    def _attribution_rpc_owner(self, request):
+        if computer_use_blocked():
+            return None
+        context = request.computer_use_attribution
+        if context is None or not attribution.valid_identity(request.id, numeric=True):
+            return None
+        if request.method == "session.create":
+            sensitive = request.params.get("sensitive_media", False)
+            if type(sensitive) is not bool:
+                return None
+            role = "protected" if sensitive else "ordinary"
+        elif request.method == "chat.send":
+            session = self._sessions.get(request.params.get("session_id"))
+            if session is None or session.closed:
+                return None
+            role = "protected" if session.sensitive_media else "ordinary"
+        elif request.method == "config.get":
+            role = "management"
+        else:
+            return None
+        if context["producerRole"] != role:
+            return None
+        return attribution.Collector(context)
+
+    @attribution._safe
+    def _attribution_accept_turn(self, request, result, collector):
+        # _start_job_thread assigns the worker under this same lock. Once it
+        # has done so, job_turn may already have captured an unbound owner;
+        # omit the ACK instead of reporting an unmeasured turn as zero work.
+        with self._state_lock:
+            session = self._sessions.get(result.get("session_id"))
+            job = self._jobs.get(result.get("job_id"))
+            if (
+                session is None
+                or job is None
+                or session.closed
+                or job.status in FINAL_JOB_STATUSES
+                or result.get("created") is False
+                or job.computer_use_attribution is not None
+                or job.thread is not None
+                or not attribution.valid_identity(session.session_id)
+                or not attribution.valid_identity(job.job_id)
+            ):
+                return None
+            captured_run = None
+
+            def emit(record):
+                nonlocal captured_run
+                if (
+                    self._sessions.get(session.session_id) is not session
+                    or session.closed
+                    or self._jobs.get(job.job_id) is not job
+                    or job.status in FINAL_JOB_STATUSES
+                ):
+                    return False
+                if record["kind"] != "summary" and (
+                    job.cancellation_event.is_set() or session.active_job is not job
+                ):
+                    return False
+                owner = session.surface.context
+                if owner.job_id == job.job_id and owner.run_id is not None:
+                    if captured_run is not None and captured_run != owner.run_id:
+                        return False
+                    captured_run = owner.run_id
+                if not attribution.valid_identity(captured_run, nullable=True):
+                    return False
+                envelope = session.surface.transient_envelope(
+                    ProtocolPayloadEvent(
+                        "computer_use_attribution",
+                        {
+                            "version": 1,
+                            "source": "engine",
+                            "context": dict(collector.context),
+                            "record": record,
+                        },
+                    ),
+                    context=EventContext(
+                        session_id=session.session_id, job_id=job.job_id, run_id=captured_run
+                    ),
+                )
+                if len(json.dumps(envelope, ensure_ascii=False).encode()) > 20480:
+                    return False
+                self._write_transient_computer_use_request(envelope)
+                return True
+
+            collector.emit = emit
+            job.computer_use_attribution = collector
+            return {"version": 1, "context": dict(collector.context), "accepted": True}
 
     def _write(self, payload: dict[str, Any]) -> None:
         with self._write_lock:
             self.stdout.write(dumps_message(payload))
+            self.stdout.flush()
+
+    def _write_resolved_wire(self, payload: dict[str, Any]) -> None:
+        refuse_unavailable_mac_w7_computer_use()
+        with self._write_lock:
+            self.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
             self.stdout.flush()
 
     def _write_transient_computer_use_request(self, payload: dict[str, Any]) -> None:
@@ -1063,6 +1437,7 @@ class StdioBridge:
         delivered to the trusted host, including secret-shaped typed text.
         """
 
+        refuse_computer_use()
         with self._write_lock:
             self.stdout.write(json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n")
             self.stdout.flush()
@@ -1071,12 +1446,33 @@ class StdioBridge:
         self, request: ProtocolRequest
     ) -> tuple[dict[str, Any], Callable[[], None] | None]:
         method = request.method
+        if self.role == "plugin_projection" and method not in plugin_projection.METHODS:
+            raise ProtocolError(
+                "method_not_found", f"Unsupported method: {method}", request_id=request.id
+            )
+        if method in {"plugin.skills.list", "plugin.skills.read"}:
+            if self.role != "plugin_projection":
+                raise ProtocolError(
+                    "method_not_found", f"Unsupported method: {method}", request_id=request.id
+                )
+            _reject_inline_secrets(request.params, request_id=request.id)
+            return plugin_projection.project(method, request.params, request.id), None
         # Computer Use has one host-issued capability whose exact response
         # location is checked only after its pending request binding is matched.
         # Every other request still uses the ordinary unconditional secret guard.
-        if method not in {"computer.respond", "task_budget.respond"}:
-            _reject_inline_secrets(request.params, request_id=request.id)
-        self._reject_sensitive_media_mutation(request)
+        if method not in {
+            "computer.respond",
+            "task_budget.respond",
+            "computer_start_resolved.respond",
+        }:
+            secret_params = request.params
+            if method == "session.create" and "computer_start_resolved_host" in secret_params:
+                secret_params = {
+                    k: v for k, v in secret_params.items() if k != "computer_start_resolved_host"
+                }
+            _reject_inline_secrets(secret_params, request_id=request.id)
+        if self.role == "runtime":
+            self._reject_sensitive_media_mutation(request)
         if method == "initialize":
             return self._runtime_health_payload(), None
         if method == "health":
@@ -1085,6 +1481,77 @@ class StdioBridge:
             return self._runtime_capabilities_payload(), None
         if method == "bridge.shutdown":
             return {"status": "shutting_down"}, self.close
+        if method == "session.artifactChecks":
+            session = self._require_session(
+                _required_str(request.params, "session_id", request_id=request.id),
+                request_id=request.id,
+            )
+            tool = (getattr(session.agent_session, "tools", {}) or {}).get("artifact_check")
+            reports = (getattr(tool, "metadata", {}) or {}).get("artifact_reports", [])
+            return {"session_id": session.session_id, "reports": copy.deepcopy(reports)}, None
+        if method == "session.outputArtifacts":
+            from ..agent.task_artifact_binding import declared_changed_output_paths
+
+            if set(request.params) != {"session_id", "job_id"}:
+                raise ProtocolError(
+                    "invalid_params",
+                    "Output queries require the exact session and job.",
+                    request_id=request.id,
+                )
+            session = self._require_session(
+                _required_str(request.params, "session_id", request_id=request.id),
+                request_id=request.id,
+            )
+            job_id = _required_str(request.params, "job_id", request_id=request.id)
+            with self._state_lock:
+                job = (
+                    session.active_job
+                    if getattr(session.active_job, "job_id", None) == job_id
+                    else session.last_job
+                )
+                outcome = getattr(session.agent_session, "last_turn_outcome", None)
+                state = getattr(session.agent_session, "_turn_execution_state", None)
+                contract = getattr(state, "acceptance_contract", None)
+                task_id = getattr(contract, "task_id", "")
+                recorded = (getattr(job, "result", None) or {}).get("task_outcome", {})
+                if (
+                    session.sensitive_media
+                    or job is None
+                    or (session.active_job is not None and session.active_job is not job)
+                    or job.job_id != job_id
+                    or job.session_id != session.session_id
+                    or job.status != "completed"
+                    or job.exit_code != 0
+                    or not task_id
+                    or not isinstance(outcome, dict)
+                    or outcome.get("terminal") is not True
+                    or outcome.get("task_id") != task_id
+                    or not isinstance(recorded, dict)
+                    or recorded.get("task_id") != task_id
+                ):
+                    raise ProtocolError(
+                        "output_artifacts_unavailable",
+                        "The exact completed file turn is unavailable.",
+                        request_id=request.id,
+                    )
+                requested_workspace = (session.requested_workspace or session.root).resolve()
+                try:
+                    output_prefix = requested_workspace.relative_to(
+                        session.root.resolve()
+                    ).as_posix()
+                except ValueError as exc:
+                    raise ProtocolError(
+                        "output_artifacts_unavailable",
+                        "The output workspace is outside its session.",
+                        request_id=request.id,
+                    ) from exc
+                paths = declared_changed_output_paths(state, relative_to=output_prefix)
+            return {
+                "session_id": session.session_id,
+                "job_id": job_id,
+                "task_id": task_id,
+                "paths": paths,
+            }, None
         if method == "session.create":
             result = self._session_create(request)
             created_session = self._require_session(
@@ -1203,6 +1670,8 @@ class StdioBridge:
             return self._session_clear(request), None
         if method == "session.cancel":
             return self._session_cancel(request), None
+        if method == "session.close":
+            return self._session_close(request), None
         if method == "approval.respond":
             return self._approval_respond(request), None
         if method == "host.action.dispatched":
@@ -1225,6 +1694,8 @@ class StdioBridge:
             return self._code_review_start(request)
         if method == "code.review.result":
             return self._code_review_job_result(request), None
+        if method == "computer_start_resolved.respond":
+            return self._resolved_start_respond(request), None
         if method == "browser_start.respond":
             return self._browser_start_respond(request), None
         if method == "computer.respond":
@@ -1515,6 +1986,27 @@ class StdioBridge:
 
     def _session_create(self, request: ProtocolRequest) -> dict[str, Any]:
         params = request.params
+        if "computer_start_resolved_host" in params and not mac_w7_computer_use_available():
+            raise ProtocolError(
+                "sensitive_media_restricted", W11_UNAVAILABLE_MESSAGE, request_id=request.id
+            )
+        if computer_use_blocked() and (
+            params.get("sensitive_media") is True
+            or any(
+                params.get(key) is not None
+                for key in (
+                    "computer_use_destination",
+                    "computer_use_host",
+                    "browser_start_host",
+                    "computer_start_resolved_host",
+                )
+            )
+        ):
+            raise ProtocolError(
+                "sensitive_media_restricted", UNAVAILABLE_MESSAGE, request_id=request.id
+            )
+        if "explicit_plugin_skill" in params:
+            plugin_projection.fail()
         mode = _mode_param(params, request_id=request.id)
         computer_use_destination = _computer_use_destination_param(
             params,
@@ -1530,6 +2022,13 @@ class StdioBridge:
             default=False,
             request_id=request.id,
         )
+        computer_use_evidence_version = params.get("computer_use_evidence_version")
+        if "computer_use_evidence_version" in params and (
+            type(computer_use_evidence_version) is not int or computer_use_evidence_version != 1
+        ):
+            raise ProtocolError(
+                "invalid_params", "computer_use_evidence_version must be 1.", request_id=request.id
+            )
         reasoning_trace_events = _session_reasoning_trace_events(
             params,
             sensitive_media=sensitive_media,
@@ -1544,7 +2043,34 @@ class StdioBridge:
                 "sensitive_media requires one complete Computer Use destination binding.",
                 request_id=request.id,
             )
+        if "computer_start_resolved_host" in params and not mac_w7_computer_use_available():
+            raise ProtocolError(
+                "invalid_params",
+                "Resolved Computer Use entry is not offered.",
+                request_id=request.id,
+            )
+        resolved_host = params.get("computer_start_resolved_host")
+        if "computer_start_resolved_host" in params and (
+            not valid_descriptor(resolved_host) or sensitive_media
+        ):
+            raise ProtocolError(
+                "invalid_params", "Invalid resolved Computer Use descriptor.", request_id=request.id
+            )
         browser_start_host = _browser_start_host_param(params, request_id=request.id)
+        if (
+            resolved_host is not None
+            and browser_start_host is not None
+            and (
+                "discovery" in browser_start_host
+                or any(
+                    browser_start_host[k] != resolved_host[k]
+                    for k in ("operation_id", "host_nonce")
+                )
+            )
+        ):
+            raise ProtocolError(
+                "invalid_params", "Conflicting Computer Use routes.", request_id=request.id
+            )
         if browser_start_host is not None and sensitive_media:
             raise ProtocolError(
                 "invalid_browser_start_host",
@@ -1557,8 +2083,30 @@ class StdioBridge:
                 "computer_use_host requires a sensitive host-context destination binding.",
                 request_id=request.id,
             )
+        if sensitive_media and not legacy_mac_computer_use_available():
+            # Legacy Mac destination/host admission is separate from W11 N/O
+            # qualification. New negotiation is refused above, and the original
+            # identity, account, retirement and cancellation checks still apply.
+            raise ProtocolError(
+                "sensitive_media_restricted",
+                "Computer Use is unavailable until shared-engine isolation and runtime provenance are qualified.",
+                request_id=request.id,
+            )
         workspace = Path(str(params.get("workspace") or "."))
         requested_session_id = params.get("session_id")
+        if (
+            resolved_host is not None
+            and "session_id" in params
+            and (
+                not resolved_identity_text(requested_session_id, 256)
+                or requested_session_id != requested_session_id.strip()
+            )
+        ):
+            raise ProtocolError(
+                "invalid_session_id",
+                "Invalid exact resolved entry session identity.",
+                request_id=request.id,
+            )
         session_id = str(requested_session_id or make_session_id()).strip() or make_session_id()
         if requested_session_id is not None:
             _validate_session_id(session_id, request_id=request.id)
@@ -1572,17 +2120,18 @@ class StdioBridge:
                 )
             if existing is not None:
                 self._remove_session_locked(session_id)
-        cfg = clone_cfg(load_config())
-        if computer_use_destination is None:
-            _apply_config_overrides(cfg, params, request_id=request.id)
-        else:
-            _apply_computer_use_route_overrides(
-                cfg,
-                params,
-                computer_use_destination,
-                request_id=request.id,
-            )
-        _apply_session_sandbox_profile(cfg, params, request_id=request.id)
+        with attribution.phase("config"):
+            cfg = clone_cfg(load_config())
+            if computer_use_destination is None:
+                _apply_config_overrides(cfg, params, request_id=request.id)
+            else:
+                _apply_computer_use_route_overrides(
+                    cfg,
+                    params,
+                    computer_use_destination,
+                    request_id=request.id,
+                )
+            _apply_session_sandbox_profile(cfg, params, request_id=request.id)
         if not cfg.model:
             raise ProtocolError("config_error", "Model is not set.", request_id=request.id)
         yes = _optional_bool(params, "yes", default=False, request_id=request.id)
@@ -1623,20 +2172,39 @@ class StdioBridge:
             allow_subprocess=not sensitive_media,
         )
         root = binding.workspace_context.workspace_root
+        # A host that opts in gets a session without a plugin that was turned off, removed or
+        # changed since it read the plugin state, reported in host_plugins_dropped, instead of
+        # a failed session for every plugin.
+        drop_inactive_plugins = _optional_bool(
+            params, "drop_inactive_host_plugins", default=False, request_id=request.id
+        )
+        dropped_host_plugins: list[dict[str, str]] = []
         host_mcp = None
         if workspace_trusted and not sensitive_media:
             try:
-                host_mcp = bind_host_mcp_catalog(
-                    root, normalize_host_mcp_catalog(params.get("host_mcp"))
-                )
+                host_mcp_catalog = normalize_host_mcp_catalog(params.get("host_mcp"))
+                try:
+                    host_mcp = bind_host_mcp_catalog(root, host_mcp_catalog)
+                except HostActionError as exc:
+                    if not drop_inactive_plugins or exc.code != "github_plugin_inactive":
+                        raise
+                    dropped_host_plugins.append(
+                        {"plugin_id": GITHUB_PLUGIN_ID, "code": exc.code, "message": exc.message}
+                    )
+                    host_actions -= GITHUB_DISCOVERY_ACTIONS
             except HostActionError as exc:
                 raise ProtocolError(exc.code, exc.message, request_id=request.id) from exc
         google_mcp = []
         if workspace_trusted and not sensitive_media:
             try:
-                google_mcp = bind_google_catalogs(
-                    root, normalize_google_catalogs(params.get("google_mcp"))
-                )
+                google_catalogs = normalize_google_catalogs(params.get("google_mcp"))
+                if drop_inactive_plugins:
+                    google_mcp, dropped = bind_active_google_catalogs(root, google_catalogs)
+                    dropped_host_plugins.extend(dropped)
+                    if google_catalogs and not google_mcp:
+                        host_actions -= {GOOGLE_MCP_ACTION}
+                else:
+                    google_mcp = bind_google_catalogs(root, google_catalogs)
             except HostActionError as exc:
                 raise ProtocolError(exc.code, exc.message, request_id=request.id) from exc
         if (GOOGLE_MCP_ACTION in host_actions) != bool(google_mcp):
@@ -1648,6 +2216,33 @@ class StdioBridge:
         if mode == "readonly":
             google_mcp = [
                 {**c, "tools": [t for t in c["tools"] if t["readOnly"]]} for c in google_mcp
+            ]
+        # The user's own online plugins (Plugins M2d): the app keeps the login and calls the
+        # server; the engine binds only the descriptor the person approved, with their marks.
+        connector_mcp = []
+        if workspace_trusted and not sensitive_media:
+            try:
+                connector_catalogs = normalize_connector_catalogs(params.get("connector_mcp"))
+                if drop_inactive_plugins:
+                    connector_mcp, dropped = bind_active_connector_catalogs(
+                        root, connector_catalogs
+                    )
+                    dropped_host_plugins.extend(dropped)
+                    if connector_catalogs and not connector_mcp:
+                        host_actions -= {CONNECTOR_MCP_ACTION}
+                else:
+                    connector_mcp = bind_connector_catalogs(root, connector_catalogs)
+            except HostActionError as exc:
+                raise ProtocolError(exc.code, exc.message, request_id=request.id) from exc
+        if (CONNECTOR_MCP_ACTION in host_actions) != bool(connector_mcp):
+            raise ProtocolError(
+                "invalid_connector_mcp",
+                "connector_mcp and mcp.connector.call must be negotiated together.",
+                request_id=request.id,
+            )
+        if mode == "readonly":
+            connector_mcp = [
+                {**c, "tools": [t for t in c["tools"] if t["readOnly"]]} for c in connector_mcp
             ]
         if (GITHUB_MCP_ACTION in host_actions) != (host_mcp is not None):
             raise ProtocolError(
@@ -1677,6 +2272,32 @@ class StdioBridge:
                     **host_mcp,
                     "tools": [tool for tool in host_mcp["tools"] if tool["readOnly"]],
                 }
+        github_repository_policy = None
+        # The opt-in already refused this plugin's catalog. Its stale sidecar
+        # must not fail unrelated plugins or retain any repository authority.
+        github_was_dropped = any(
+            item["plugin_id"] == GITHUB_PLUGIN_ID for item in dropped_host_plugins
+        )
+        if (
+            "github_repository_policy" in params
+            and workspace_trusted
+            and not sensitive_media
+            and not github_was_dropped
+        ):
+            try:
+                github_repository_policy = github_policy.RepositoryPolicy.parse(
+                    params["github_repository_policy"]
+                )
+                github_repository_policy.assert_plugin_current(root)
+            except HostActionError as exc:
+                raise ProtocolError(exc.code, exc.message, request_id=request.id) from exc
+        if github_repository_policy is None:
+            # Keep a bound catalog privately for direct-MCP shadow suppression,
+            # but expose none of its actions. Absence never means all repositories.
+            host_actions -= github_policy.REPOSITORY_ACTIONS
+        elif github_repository_policy.mode == "allow_list" and host_mcp is not None:
+            if host_mcp["protocol_version"] != 2:
+                host_actions -= GITHUB_DISCOVERY_ACTIONS
         session_log_dir = _session_log_dir_param(params, request_id=request.id)
         workspace_fence = f"wf_{uuid.uuid4().hex}"
         capability_fingerprint = _host_capability_fingerprint(
@@ -1684,7 +2305,9 @@ class StdioBridge:
             workspace_trusted=workspace_trusted,
             actions=host_actions,
             host_mcp=host_mcp,
+            github_repository_policy=github_repository_policy,
             google_mcp=google_mcp,
+            connector_mcp=connector_mcp,
         )
         session_ref: dict[str, BridgeSession] = {}
         checkpoint_guard = _CheckpointToolDispatchGuard(session_ref)
@@ -1707,8 +2330,33 @@ class StdioBridge:
             job = bridge_session.active_job
             return bool(job is not None and job.cancellation_event.is_set())
 
-        def _host_action_handler(action: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        def _host_action_request(action: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return self._request_host_action(session_ref["session"], action, arguments)
+
+        def _host_action_operation() -> str | None:
+            bridge_session = session_ref.get("session")
+            job = bridge_session.active_job if bridge_session is not None else None
+            return job.job_id if job is not None else None
+
+        _host_action_handler = OperationScopedHostActionHandler(
+            _host_action_request, _host_action_operation
+        )
+
+        def _emit_computer_use_evidence(envelope: dict[str, Any]) -> None:
+            # Existing authenticated pipe, never replay/session persistence. Bind to
+            # the live job and reject worker callbacks after release or cancellation.
+            bridge_session = session_ref.get("session")
+            if bridge_session is None or bridge_session.closed:
+                return
+            job = bridge_session.active_job
+            if (
+                not _job_is_active(job)
+                or job.cancellation_event.is_set()
+                or envelope.get("session_id") != bridge_session.session_id
+                or envelope.get("job_id") != job.job_id
+            ):
+                return
+            self._write_transient_computer_use_request(envelope)
 
         surface = ProtocolEventSurface(
             context=EventContext(session_id=session_id),
@@ -1725,6 +2373,10 @@ class StdioBridge:
             ),
             semantic_activity_events=True,
             reasoning_trace_events=reasoning_trace_events,
+            emit_transient=_emit_computer_use_evidence
+            if computer_use_evidence_version == 1
+            else None,
+            computer_use_evidence_version=computer_use_evidence_version,
         )
         surface.host_action_approval_protocol = int(
             params.get("host_capabilities", {}).get("approval_protocol", 0)
@@ -1773,7 +2425,27 @@ class StdioBridge:
                     host_action_handler=_host_action_handler if host_actions else None,
                     host_action_capabilities=host_actions,
                     **({"host_mcp": host_mcp} if host_mcp is not None else {}),
+                    github_repository_policy=github_repository_policy,
+                    github_repository_policy_required=(
+                        workspace_trusted
+                        and not sensitive_media
+                        and not github_was_dropped
+                        and (
+                            host_mcp is not None
+                            or github_repository_policy is not None
+                            # APP offers connector access in every ordinary chat.
+                            # Its repository listing alone does not bind the plugin.
+                            or bool(
+                                requested_host_actions
+                                & (
+                                    github_policy.REPOSITORY_ACTIONS
+                                    - {"connectors.github.repositories"}
+                                )
+                            )
+                        )
+                    ),
                     **({"google_mcp": google_mcp} if google_mcp else {}),
+                    **({"connector_mcp": connector_mcp} if connector_mcp else {}),
                     session_log_dir_override=session_log_dir,
                     session_id_override=session_id,
                     tool_dispatch_guard=checkpoint_guard,
@@ -1787,6 +2459,18 @@ class StdioBridge:
                         if browser_start_host is not None
                         else {}
                     ),
+                    **(
+                        {
+                            "computer_start_resolved_host": copy.deepcopy(resolved_host),
+                            "computer_start_resolved_request": lambda plan, selection, call_id: (
+                                self._request_resolved_start(
+                                    session_ref["session"], plan, selection, call_id
+                                )
+                            ),
+                        }
+                        if resolved_host is not None
+                        else {}
+                    ),
                     # AgentSession owns the complete startup restriction (hooks, MCP,
                     # plugins/custom tools, skills, subagents, power/background probes).
                     # The bridge passes this before the session can inspect artifact paths.
@@ -1794,6 +2478,13 @@ class StdioBridge:
                     **(
                         {
                             "trusted_system_prompt_override": COMPUTER_USE_SYSTEM_PROMPT
+                            + computer_use_workflow_instructions()
+                            + computer_use_route_availability(
+                                interaction_v2=computer_use_host.interaction_version == 2,
+                                application_lifecycle_v1=computer_use_host.application_lifecycle_version
+                                == 1,
+                                window_selection_v1=computer_use_host.window_selection_version == 1,
+                            )
                             + (
                                 COMPUTER_USE_VERIFICATION_PROMPT
                                 if computer_use_host.verification_available
@@ -1817,6 +2508,11 @@ class StdioBridge:
                                 )
                             ),
                             "computer_use_response_mode": computer_use_host.response_mode,
+                            "computer_interaction_v2": computer_use_host.interaction_version == 2,
+                            "computer_application_lifecycle_v1": computer_use_host.application_lifecycle_version
+                            == 1,
+                            "computer_window_selection_v1": computer_use_host.window_selection_version
+                            == 1,
                             "computer_observation_available": computer_use_host.observation_version
                             == 1,
                             "computer_use_verification_available": computer_use_host.verification_available,
@@ -1868,6 +2564,10 @@ class StdioBridge:
                 managed_browser.close_all()
             with self._state_lock:
                 self._remove_session_locked(session_id)
+            if isinstance(exc, ProtocolUnavailable):
+                raise ProtocolError(
+                    "computer_start_protocol_unavailable", str(exc), request_id=request.id
+                ) from None
             if isinstance(exc, RequiredToolCallingUnsupportedError):
                 raise ProtocolError(
                     "computer_use_tool_calling_unsupported",
@@ -1917,19 +2617,23 @@ class StdioBridge:
             artifact_store=ArtifactStore(roots),
             checkpoint_guard=checkpoint_guard,
             managed_browser=managed_browser,
+            requested_workspace=binding.requested_path,
             workspace_trusted=workspace_trusted,
             host_actions=host_actions,
             host_approval_protocol=int(
                 params.get("host_capabilities", {}).get("approval_protocol", 0)
             ),
             host_mcp=host_mcp,
+            github_repository_policy=github_repository_policy,
             google_mcp=google_mcp,
+            connector_mcp=connector_mcp,
             workspace_fence=workspace_fence,
             host_capability_fingerprint=capability_fingerprint,
             sensitive_media=sensitive_media,
             computer_use_destination=actual_destination,
             computer_use_host=computer_use_host,
             browser_start_host=browser_start_host,
+            computer_start_resolved_host=copy.deepcopy(resolved_host),
         )
         session_ref["session"] = bridge_session
         with self._state_lock:
@@ -1941,6 +2645,7 @@ class StdioBridge:
             "sandbox_mode": resolve_shell_sandbox_settings(cfg).mode,
             "session_dir": os.fspath(session_log_dir) if session_log_dir is not None else None,
             "reasoning_trace": reasoning_trace_events,
+            **({"computer_use_evidence_version": 1} if computer_use_evidence_version == 1 else {}),
             **(
                 {"browser_start_host": dict(browser_start_host)}
                 if browser_start_host is not None
@@ -1956,12 +2661,25 @@ class StdioBridge:
                 if computer_use_host is not None
                 else {}
             ),
+            **(
+                {"computer_start_resolved_host": copy.deepcopy(resolved_host)}
+                if resolved_host is not None
+                else {}
+            ),
             "host_actions": _host_actions_session_payload(
                 bridge_session,
                 request_timeout_seconds=self._host_action_timeout_seconds,
             ),
-            **({"host_mcp": host_mcp_session_payload(host_mcp)} if host_mcp is not None else {}),
+            **(
+                {"host_mcp": host_mcp_session_payload(host_mcp)}
+                if host_mcp is not None and GITHUB_MCP_ACTION in host_actions
+                else {}
+            ),
             **({"google_mcp": google_session_payload(google_mcp)} if google_mcp else {}),
+            **(
+                {"connector_mcp": connector_session_payload(connector_mcp)} if connector_mcp else {}
+            ),
+            **({"host_plugins_dropped": dropped_host_plugins} if drop_inactive_plugins else {}),
         }
 
     def _live_mcp_manager(
@@ -2008,7 +2726,7 @@ class StdioBridge:
         if mutating:
             with self._state_lock:
                 _reconcile_session_job_state(session)
-                if _job_is_active(session.active_job):
+                if _session_busy(session):
                     raise ProtocolError(
                         "session_busy",
                         "MCP server lifecycle changes require an idle session.",
@@ -2060,11 +2778,185 @@ class StdioBridge:
             raise _mcp_lifecycle_protocol_error(exc, request_id=request.id) from exc
         return {**result, "session_id": session.session_id}
 
+    def _p2_negotiate(self, session):
+        plugin_admission.negotiate(session, self._runtime_capabilities_payload())
+        expected = _host_capability_fingerprint(
+            root=session.root,
+            workspace_trusted=session.workspace_trusted,
+            actions=session.host_actions,
+            host_mcp=session.host_mcp,
+            google_mcp=session.google_mcp,
+            connector_mcp=session.connector_mcp,
+            github_repository_policy=session.github_repository_policy,
+        )
+        if expected != session.host_capability_fingerprint:
+            plugin_projection.fail("unsupported")
+
+    def _p2_enqueue(self, session, request, key, payload):
+        # Selected-only: arm before publication; the same state lock excludes a
+        # prior worker's drain until the generated prompt id is attached. No wait
+        # for ACK or host response ever holds this lock.
+        candidate = plugin_admission.Readiness(request, session.session_id)
+        with self._state_lock:
+            if len(self._p2_readiness) >= 256:
+                plugin_projection.fail("unavailable")
+            queued = self._prompt_queue.enqueue(
+                session_id=session.session_id,
+                idempotency_key=key,
+                payload=payload,
+            )
+            if queued.created:
+                candidate.prompt_id = queued.item.prompt_id
+                self._p2_readiness[candidate.prompt_id] = candidate
+            # An idempotent replay does not create, replace, or release readiness.
+            return queued
+
+    def _p2_reply_written(self, request, result):
+        with self._state_lock:
+            ready = self._p2_readiness.get(result.get("prompt_id"))
+            if ready is not None and ready.request is request and not ready.failed:
+                ready.ready = True
+                ready.event.set()
+
+    def _p2_reply_failed(self, request):
+        with self._state_lock:
+            for key, ready in list(self._p2_readiness.items()):
+                if ready.request is request and not ready.ready:
+                    ready.failed = True
+                    ready.event.set()
+                    job = self._jobs.get(key)
+                    if job is None or job.thread is None:
+                        self._p2_readiness.pop(key, None)
+                        with suppress(PromptQueueError):
+                            self._prompt_queue.delete_pending(
+                                session_id=ready.session_id, prompt_id=key
+                            )
+                        if job is not None:
+                            _mark_job_completed(
+                                job,
+                                status="failed",
+                                exit_code=1,
+                                error=plugin_projection.MESSAGE,
+                                result={
+                                    **task_outcome_fields(
+                                        None, exit_code=1, reason="terminal_error"
+                                    ),
+                                    "error_code": "plugin_skill_unavailable",
+                                    "error_details": {"reason": "unavailable"},
+                                },
+                            )
+
+    def _p2_reject_owned_response(self, request):
+        """A malformed owned admission reply is terminal, never retryable.
+
+        Generic host actions retain their existing retry behavior. Wrong-owner
+        traffic cannot consume another turn's pending admission.
+        """
+        if request is None or request.method != "host.action.respond":
+            return
+        params = request.params
+        if not all(
+            isinstance(params.get(k), str)
+            for k in ("session_id", "host_action_id", "workspace_fence", "capability_fingerprint")
+        ):
+            return
+        with self._state_lock:
+            session = self._sessions.get(params["session_id"])
+            if session is None:
+                return
+            with session.host_action_lock:
+                pending = session.pending_host_actions.get(params["host_action_id"])
+                if (
+                    pending is None
+                    or pending.resolved
+                    or pending.action != plugin_admission.ACTION
+                    or session.active_job is None
+                    or session.active_job.job_id != pending.job_id
+                    or session.active_job.cancellation_event.is_set()
+                    or params["workspace_fence"] != pending.workspace_fence
+                    or params["workspace_fence"] != session.workspace_fence
+                    or params["capability_fingerprint"] != pending.capability_fingerprint
+                    or params["capability_fingerprint"] != session.host_capability_fingerprint
+                ):
+                    return
+                self._resolve_host_action_error_locked(
+                    session,
+                    pending,
+                    HostActionError("invalid_host_action_result", plugin_projection.MESSAGE),
+                    status="failed",
+                )
+
+    def _p2_retire(self, *, prompt_id=None, session_id=None):
+        with self._state_lock:
+            for key, ready in list(self._p2_readiness.items()):
+                if (prompt_id is None or key == prompt_id) and (
+                    session_id is None or ready.session_id == session_id
+                ):
+                    ready.failed = True
+                    ready.event.set()
+                    self._p2_readiness.pop(key, None)
+
+    def _p2_live(self, session, job):
+        _check_job_cancelled(job)
+        plugin_admission.check_deadline(session)
+        with self._state_lock:
+            if (
+                self._closed
+                or session.closed
+                or session.close_when_idle
+                or session.active_job is not job
+                or not _job_is_active(job)
+            ):
+                plugin_projection.fail("stale")
+
+    def _p2_admit(self, session, job, value, message):
+        from ..extensions.plugin_skills import explicit_plugin_skill_message
+
+        selected = plugin_admission.selection(value)
+        with self._state_lock:
+            ready = self._p2_readiness.get(job.prompt_id)
+        self._p2_live(session, job)
+        if ready is None or ready.session_id != session.session_id:
+            plugin_projection.fail("stale")
+        deadline = time.monotonic() + self._host_action_timeout_seconds
+        while not ready.event.wait(0.025):
+            self._p2_live(session, job)
+            if time.monotonic() >= deadline:
+                plugin_projection.fail("unavailable")
+        self._p2_live(session, job)
+        if ready.failed or not ready.ready:
+            plugin_projection.fail("unavailable")
+        self._p2_negotiate(session)
+        skill = plugin_admission.resolve(session, selected)
+        fingerprint = session.host_capability_fingerprint
+        try:
+            reply = self._exchange_host_action(
+                session,
+                plugin_admission.ACTION,
+                selected,
+                phase="execute",
+                prepared_token=None,
+                write_effect=False,
+            )
+        except HostActionError:
+            self._p2_live(session, job)
+            plugin_projection.fail("unavailable")
+        self._p2_live(session, job)
+        if session.host_capability_fingerprint != fingerprint:
+            plugin_projection.fail("stale")
+        reply = plugin_admission.result(reply)
+        if not reply["admit"]:
+            plugin_projection.fail(reply["reason"])
+        plugin_admission.resolve(session, selected, expected=skill)
+        self._p2_live(session, job)
+        return explicit_plugin_skill_message(skill, message)
+
     def _chat_send(
         self,
         request: ProtocolRequest,
         *,
         run_start_fingerprint: str | None = None,
+        ack_request: ProtocolRequest | None = None,
     ) -> tuple[dict[str, Any], Callable[[], None]]:
         params = request.params
         _reject_unsupported_chat_send_fields(params, request_id=request.id)
@@ -2074,6 +2966,25 @@ class StdioBridge:
         message = _message_param(params, request_id=request.id)
         if not message:
             raise ProtocolError("invalid_request", "message is required.", request_id=request.id)
+        selected = None
+        if "explicit_plugin_skill" in params:
+            selected = plugin_admission.selection(params["explicit_plugin_skill"])
+            if "skill" in params:
+                plugin_projection.fail()
+            if session.sensitive_media or session.computer_use_host is not None:
+                plugin_projection.fail("protected_session")
+            self._p2_negotiate(session)
+            plugin_admission.resolve(session, selected)
+        from ..local_memory import validate_scope
+
+        try:
+            memory_scope = validate_scope(params.get("memory_scope"))
+            from ..project_folders import validate_folders
+
+            project_folders = validate_folders(params.get("project_folders"))
+        except (ValueError, OSError) as exc:
+            raise ProtocolError("invalid_field", str(exc), request_id=request.id) from exc
+        task_relation = _task_relation_param(session, params, message, request_id=request.id)
         skill = validate_skill_invocation(
             session.agent_session,
             params.get("skill"),
@@ -2081,6 +2992,12 @@ class StdioBridge:
             request_id=request.id,
         )
         if session.sensitive_media:
+            if project_folders:
+                raise ProtocolError(
+                    "invalid_field",
+                    "Project folders are unavailable in sensitive sessions.",
+                    request_id=request.id,
+                )
             return self._chat_send_sensitive_turn(request, session, message)
         if "host_image" in params:
             raise ProtocolError(
@@ -2119,41 +3036,56 @@ class StdioBridge:
             "basket_image_paths": basket_image_paths,
             "context": context_bundle.to_dict(),
             "context_prompt": context_bundle.to_prompt(),
+            "memory_scope": memory_scope,
+            "project_folders": project_folders,
         }
+        if selected is not None:
+            queue_payload["explicit_plugin_skill"] = selected
+        if task_relation is not None:
+            queue_payload["task_relation"] = task_relation
         if skill is not None:
             queue_payload["skill"] = skill
         if run_start_fingerprint is not None:
             queue_payload["run_start_fingerprint"] = run_start_fingerprint
-        try:
-            queued = self._prompt_queue.enqueue(
-                session_id=session.session_id,
-                idempotency_key=idempotency_key,
-                payload=queue_payload,
-            )
-        except PromptQueueError as exc:
-            raise ProtocolError("prompt_queue_error", str(exc), request_id=request.id) from exc
-        item = queued.item
-        with self._state_lock:
-            if queued.created and basket_image_paths:
-                # The basket belongs to the next accepted prompt, not the next
-                # completed prompt. Reserving it here prevents queued follow-ups
-                # from inheriting the same images while preserving retry safety.
-                _remove_pending_images(session, basket_image_paths)
-            _reconcile_session_job_state(session)
-            job = self._jobs.get(item.prompt_id)
-            if job is None:
-                self._prune_terminal_jobs_locked(reserve=1)
-                job = BridgeJob(
-                    job_id=item.prompt_id,
-                    session_id=session.session_id,
-                    created_at=_timestamp_iso(item.created_at),
-                    kind="session_turn",
-                    status=item.state.value,
-                    prompt_id=item.prompt_id,
-                    prompt_sequence=item.sequence,
+        with session.queue_mutation_lock:
+            with self._state_lock:
+                _assert_session_admission(session, request_id=request.id)
+            try:
+                queued = (
+                    self._p2_enqueue(
+                        session, ack_request or request, idempotency_key, queue_payload
+                    )
+                    if selected is not None
+                    else self._prompt_queue.enqueue(
+                        session_id=session.session_id,
+                        idempotency_key=idempotency_key,
+                        payload=queue_payload,
+                    )
                 )
-                self._jobs[job.job_id] = job
-            idle = not _job_is_active(session.active_job)
+            except PromptQueueError as exc:
+                raise ProtocolError("prompt_queue_error", str(exc), request_id=request.id) from exc
+            item = queued.item
+            with self._state_lock:
+                if queued.created and basket_image_paths:
+                    # The basket belongs to the next accepted prompt, not the next
+                    # completed prompt. Reserving it here prevents queued follow-ups
+                    # from inheriting the same images while preserving retry safety.
+                    _remove_pending_images(session, basket_image_paths)
+                _reconcile_session_job_state(session)
+                job = self._jobs.get(item.prompt_id)
+                if job is None:
+                    self._prune_terminal_jobs_locked(reserve=1)
+                    job = BridgeJob(
+                        job_id=item.prompt_id,
+                        session_id=session.session_id,
+                        created_at=_timestamp_iso(item.created_at),
+                        kind="session_turn",
+                        status=item.state.value,
+                        prompt_id=item.prompt_id,
+                        prompt_sequence=item.sequence,
+                    )
+                    self._jobs[job.job_id] = job
+                idle = not _session_busy(session)
 
         def _start() -> None:
             session.surface.emit_activity(
@@ -2235,7 +3167,7 @@ class StdioBridge:
             _assert_live_computer_use_destination(session, request_id=request.id)
             with self._state_lock:
                 _reconcile_session_job_state(session)
-                if _job_is_active(session.active_job):
+                if _session_busy(session):
                     raise ProtocolError(
                         "session_busy",
                         "Session already has a running job.",
@@ -2313,7 +3245,7 @@ class StdioBridge:
                 )
             with self._state_lock:
                 _reconcile_session_job_state(session)
-                if _job_is_active(session.active_job):
+                if _session_busy(session):
                     raise ProtocolError(
                         "session_busy", "Session already has a running job.", request_id=request.id
                     )
@@ -2356,12 +3288,7 @@ class StdioBridge:
                     host_image_binding=job.host_image_binding,
                     image_paths=image_paths,
                 )
-                with self._state_lock:
-                    _mark_job_completed(job, status="failed", exit_code=1, error=safe_error)
-                    _reconcile_session_job_state(session)
-                    self._prune_terminal_jobs_locked()
-                session.surface.emit_error("job_start_failed", safe_error, False)
-                _clear_bridge_host_screen_redactor(session)
+                self._finish_job_without_start(session, job, safe_error)
                 return
             self._start_job_thread(session, job, thread)
 
@@ -2401,6 +3328,7 @@ class StdioBridge:
         except PromptQueueError as exc:
             raise ProtocolError("prompt_queue_error", str(exc), request_id=request.id) from exc
         with self._state_lock:
+            self._p2_retire(prompt_id=prompt_id)
             job = self._jobs.get(prompt_id)
             if job is not None and job.status == "queued":
                 _mark_job_completed(job, status="cancelled", exit_code=130, error="queue_deleted")
@@ -2480,7 +3408,7 @@ class StdioBridge:
             _reconcile_session_job_state(session)
             messages = list(session.unread_steers)
             session.unread_steers.clear()
-            if not _job_is_active(session.active_job):
+            if not _session_busy(session):
                 inbox = steer_inbox_for(session.agent_session)
                 if inbox is not None:
                     messages.extend(inbox.drain())
@@ -3029,7 +3957,7 @@ class StdioBridge:
         )
         with self._state_lock:
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Checkpoint changes require an idle session.",
@@ -3113,6 +4041,7 @@ class StdioBridge:
             return self._chat_send(
                 chat_request,
                 run_start_fingerprint=run_start_fingerprint,
+                ack_request=request,
             )
         except Exception:
             if created_session is not None:
@@ -3188,6 +4117,11 @@ class StdioBridge:
                 return
             if reclaimable:
                 with self._state_lock:
+                    if _session_transition_pending(session) or (
+                        session.active_job is not None and session.active_job.worker_reserved
+                    ):
+                        job.prompt_reconciliation_started = False
+                        return
                     if session.active_job is job:
                         session.active_job = None
                     job.status = "queued"
@@ -3217,6 +4151,13 @@ class StdioBridge:
             return
         item = running[0]
         with self._state_lock:
+            if (
+                _session_transition_pending(session)
+                or session.closed
+                or session.close_when_idle
+                or (session.active_job is not None and session.active_job.worker_reserved)
+            ):
+                return
             job = self._jobs.get(item.prompt_id)
             if job is None:
                 self._prune_terminal_jobs_locked(reserve=1)
@@ -3242,7 +4183,8 @@ class StdioBridge:
                     self._closed
                     or session.closed
                     or session.close_when_idle
-                    or _job_is_active(session.active_job)
+                    or session.mutation_in_progress
+                    or _session_busy(session)
                 ):
                     return
                 try:
@@ -3279,8 +4221,15 @@ class StdioBridge:
             image_paths = payload.get("image_paths", [])
             basket_image_paths = payload.get("basket_image_paths", [])
             context_prompt = payload.get("context_prompt", "")
+            try:
+                task_relation = _task_relation_param(session, payload, message, request_id=None)
+                valid_task_relation = True
+            except ProtocolError:
+                task_relation = None
+                valid_task_relation = False
             if (
-                not isinstance(message, str)
+                not valid_task_relation
+                or not isinstance(message, str)
                 or not isinstance(context_prompt, str)
                 or not _is_string_list(image_paths)
                 or not _is_string_list(basket_image_paths)
@@ -3300,6 +4249,7 @@ class StdioBridge:
                 session.surface.emit_error(
                     "invalid_queue_payload", "Queued prompt data was invalid.", False
                 )
+                self._p2_retire(prompt_id=item.prompt_id)
                 continue
 
             if _prompt_completed_in_store(session, item.prompt_id):
@@ -3324,6 +4274,7 @@ class StdioBridge:
                         status="succeeded",
                     )
                 )
+                self._p2_retire(prompt_id=item.prompt_id)
                 continue
 
             if item.execution_started_at is not None or _prompt_started_in_store(
@@ -3361,9 +4312,12 @@ class StdioBridge:
                 session.surface.emit_warning(
                     f"prompt_recovery_stopped {item.prompt_id} reason=interrupted_indeterminate"
                 )
+                self._p2_retire(prompt_id=item.prompt_id)
                 continue
 
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_session_turn,
                 args=(
                     session,
@@ -3374,7 +4328,17 @@ class StdioBridge:
                     context_prompt,
                     lease,
                 ),
-                kwargs={"skill": payload.get("skill")},
+                kwargs={
+                    "skill": payload.get("skill"),
+                    "memory_scope": payload.get("memory_scope"),
+                    "project_folders": payload.get("project_folders"),
+                    "task_relation": task_relation,
+                    **(
+                        {"explicit_plugin_skill": payload["explicit_plugin_skill"]}
+                        if "explicit_plugin_skill" in payload
+                        else {}
+                    ),
+                },
                 name=f"alysis-ide-{job.job_id}",
                 daemon=True,
             )
@@ -3387,10 +4351,12 @@ class StdioBridge:
                     lease_token=lease.lease_token,
                     error_code="job_start_failed",
                 )
+            self._p2_retire(prompt_id=item.prompt_id)
             # The failed claim is terminal, so keep draining later prompts rather
             # than leaving the session idle until the original lease expires.
             continue
 
+    @attribution.job_turn
     def _run_session_turn(
         self,
         session: BridgeSession,
@@ -3402,8 +4368,14 @@ class StdioBridge:
         prompt_lease: PromptLease | None = None,
         *,
         skill: dict[str, str] | None = None,
+        explicit_plugin_skill: dict[str, str] | None = None,
+        memory_scope: dict[str, Any] | None = None,
+        project_folders: list[str] | None = None,
+        task_relation: str | None = None,
     ) -> None:
         session.surface.with_job(job.job_id)
+        session.agent_session.memory_scope = memory_scope
+        session.agent_session.project_folders = project_folders or []
         host_image_binding = job.host_image_binding
         heartbeat_stop = threading.Event()
         heartbeat_lost = threading.Event()
@@ -3496,6 +4468,12 @@ class StdioBridge:
                 # never the accepted instruction or its durable task identity.
                 # Keep their untrusted wrapper in the existing per-turn channel.
                 context_messages = [context_prompt] if context_prompt.strip() else []
+                if explicit_plugin_skill is not None:
+                    if skill is not None:
+                        plugin_projection.fail()
+                    context_messages.append(
+                        self._p2_admit(session, job, explicit_plugin_skill, message)
+                    )
                 if skill is not None:
                     # Resolve against this session's effective, plugin-filtered registry again
                     # after queue recovery. Instructions never become permanent chat messages.
@@ -3511,27 +4489,33 @@ class StdioBridge:
                     )
                 if session.sensitive_media:
                     _assert_live_computer_use_destination(session, request_id=None)
-                if image_paths:
-                    exit_code = int(
-                        _run_agent_turn_with_optional_cancellation(
-                            session.agent_session,
-                            message,
-                            image_paths=image_paths,
-                            ephemeral_user_messages=context_messages,
-                            cancellation_token=BridgeCancellationToken(job.cancellation_event),
+                with github_argument_scope(
+                    session.github_repository_policy is not None
+                    and session.github_repository_policy.mode == "allow_list"
+                ):
+                    if image_paths:
+                        exit_code = int(
+                            _run_agent_turn_with_optional_cancellation(
+                                session.agent_session,
+                                message,
+                                image_paths=image_paths,
+                                ephemeral_user_messages=context_messages,
+                                task_relation=task_relation,
+                                cancellation_token=BridgeCancellationToken(job.cancellation_event),
+                            )
+                            or 0
                         )
-                        or 0
-                    )
-                else:
-                    exit_code = int(
-                        _run_agent_turn_with_optional_cancellation(
-                            session.agent_session,
-                            message,
-                            ephemeral_user_messages=context_messages,
-                            cancellation_token=BridgeCancellationToken(job.cancellation_event),
+                    else:
+                        exit_code = int(
+                            _run_agent_turn_with_optional_cancellation(
+                                session.agent_session,
+                                message,
+                                ephemeral_user_messages=context_messages,
+                                task_relation=task_relation,
+                                cancellation_token=BridgeCancellationToken(job.cancellation_event),
+                            )
+                            or 0
                         )
-                        or 0
-                    )
             if heartbeat_lost.is_set():
                 raise PromptLeaseLost("Prompt lease is no longer valid.")
             with self._state_lock:
@@ -3540,6 +4524,7 @@ class StdioBridge:
                 # the checkpoint but before this completion write, allowing a late
                 # success to overwrite the accepted cancellation request.
                 _check_job_cancelled(job)
+                job.cancellable = False
                 outcome_fields = turn_outcome_fields(exit_code)
                 if not checkpoint_supported:
                     # Lightweight protocol test/fallback sessions (and sensitive
@@ -3694,9 +4679,26 @@ class StdioBridge:
                     and not heartbeat_lost.is_set()
                     and not isinstance(e, PromptLeaseLost)
                 )
+                deadline = getattr(session.agent_session, "execution_deadline", None)
+                p2_deadline = explicit_plugin_skill is not None and (
+                    isinstance(e, DeadlineExhausted)
+                    or (deadline is not None and deadline.is_exhausted())
+                )
+                p2_reason = (
+                    "cancelled"
+                    if cancelled
+                    else "deadline_exhausted"
+                    if p2_deadline
+                    else "terminal_error"
+                )
+                p2_exit = 130 if cancelled else BUDGET_STOP_EXIT_CODE if p2_deadline else 1
                 safe_error = _redact_bridge_error(
                     session,
-                    (job.cancellation_reason or "cancelled_by_user") if cancelled else e,
+                    (job.cancellation_reason or "cancelled_by_user")
+                    if cancelled
+                    else "run deadline exhausted during plugin skill admission"
+                    if p2_deadline
+                    else e,
                     host_image_binding=host_image_binding,
                     image_paths=image_paths,
                 )
@@ -3723,25 +4725,44 @@ class StdioBridge:
                 _mark_job_completed(
                     job,
                     status="cancelled" if cancelled else "failed",
-                    exit_code=130 if cancelled else 1,
+                    exit_code=p2_exit,
                     error=safe_error,
-                    result=turn_outcome_fields(
-                        130 if cancelled else 1, "cancelled" if cancelled else "terminal_error"
-                    ),
+                    result={
+                        **turn_outcome_fields(p2_exit, p2_reason),
+                        **(
+                            {
+                                "error_code": "plugin_skill_unavailable",
+                                "error_details": {"reason": e.reason},
+                            }
+                            if isinstance(e, plugin_projection.PluginSkillUnavailable)
+                            and not cancelled
+                            and not p2_deadline
+                            else {}
+                        ),
+                    },
                 )
                 _reconcile_session_job_state(session)
             if cancelled:
                 session.surface.emit_warning(f"job_cancelled {job.job_id} reason={safe_error}")
             else:
-                session.surface.emit_error("job_failed", safe_error, False)
+                session.surface.emit_error(
+                    "plugin_skill_unavailable"
+                    if isinstance(e, plugin_projection.PluginSkillUnavailable) and not p2_deadline
+                    else "job_failed",
+                    safe_error,
+                    False,
+                )
         finally:
             heartbeat_stop.set()
             with self._state_lock:
                 # A completed/cancelled/failed job can be retained in history;
                 # the raw one-shot descriptor must never be retained with it.
+                if explicit_plugin_skill is not None and job.prompt_id is not None:
+                    self._p2_retire(prompt_id=job.prompt_id)
                 job.host_image_binding = None
                 job.prepared_host_image = None
                 job.browser_start_handoff = None
+                session.computer_start_resolved_host = None
                 with session.approval_lock:
                     session.approved_approval_scopes[:] = [
                         scope
@@ -3804,35 +4825,116 @@ class StdioBridge:
         except ChangeLedgerError as exc:
             session.surface.emit_error("checkpoint_failed", str(exc), False)
 
+    def _mark_job_without_start_locked(
+        self, session: BridgeSession, job: BridgeJob, message: str
+    ) -> None:
+        # The caller holds state ownership through the no-start decision, so a
+        # concurrent cancel cannot publish an observer for an unstarted thread.
+        job.worker_never_started = True
+        job.worker_reserved = False
+        _mark_job_completed(job, status="failed", exit_code=1, error=message)
+        job.host_image_binding = None
+        job.prepared_host_image = None
+        _reconcile_session_job_state(session)
+        self._prune_terminal_jobs_locked()
+
+    def _report_job_start_failure(
+        self, session: BridgeSession, job: BridgeJob, message: str
+    ) -> None:
+        try:
+            session.surface.emit_error("job_start_failed", message, False)
+        finally:
+            _clear_bridge_host_screen_redactor(session)
+            if session.close_when_idle:
+                self._schedule_session_close_after_job(session, job)
+
+    def _finish_job_without_start(
+        self, session: BridgeSession, job: BridgeJob, message: str
+    ) -> None:
+        """Constructor failure: no native start was attempted."""
+        with self._state_lock:
+            self._mark_job_without_start_locked(session, job, message)
+        self._report_job_start_failure(session, job, message)
+
+    def _make_job_thread(
+        self, session: BridgeSession, job: BridgeJob, **kwargs: Any
+    ) -> threading.Thread | None:
+        try:
+            return threading.Thread(**kwargs)
+        except Exception as exc:  # No start is invoked by the Thread constructor.
+            message = _redact_bridge_error(
+                session, f"job_start_failed: {exc}", host_image_binding=job.host_image_binding
+            )
+            self._finish_job_without_start(session, job, message)
+            return None
+
     def _start_job_thread(
         self,
         session: BridgeSession,
         job: BridgeJob,
-        thread: threading.Thread,
+        thread: threading.Thread | None,
     ) -> bool:
-        """Start an acknowledged background job without leaving it queued forever on OS failure."""
+        """Retain the original worker, including ambiguous start ownership."""
+        if thread is None:  # The constructor path already retired known no-start.
+            return False
         message: str | None = None
+        known_no_start = False
+        original_run = thread.run
+
+        def run_owned() -> None:
+            finished = False
+            try:
+                original_run()
+                finished = True
+            finally:
+                with self._state_lock:
+                    if finished:
+                        job.worker_reserved = False
+                        _reconcile_session_job_state(session)
+                    else:
+                        session.cancellation_uncertain = True
+                    closing = (
+                        finished
+                        and session.close_when_idle
+                        and not _session_transition_pending(session)
+                    )
+                if closing:
+                    self._schedule_session_close_after_job(session, job)
+                elif finished and (job.kind == "session_turn" or job.cancellation_event.is_set()):
+                    self._drain_prompt_queue(session)
+
         with self._state_lock:
             job.thread = thread
+            job.worker_reserved = True
+            thread.run = run_owned
             try:
-                # Serialize the transition from queued -> started with bridge
-                # shutdown.  The worker may block briefly on this same lock,
-                # but Thread.start() itself does not wait for the target.
                 thread.start()
-            except Exception as exc:  # noqa: BLE001 - OS resource pressure.
-                message = _redact_bridge_error(
-                    session,
-                    f"job_start_failed: {exc}",
-                    host_image_binding=job.host_image_binding,
+            except BaseException as exc:
+                # CPython's original Thread.start reports failure to create the
+                # native thread with this RuntimeError. Other start overrides,
+                # interruptions, or a published identity remain uncertain.
+                known_no_start = (
+                    getattr(thread.start, "__func__", None) is _THREAD_START
+                    and isinstance(exc, RuntimeError)
+                    and str(exc) == "can't start new thread"
+                    and thread.ident is None
+                    and not thread._started.is_set()
                 )
-                _mark_job_completed(job, status="failed", exit_code=1, error=message)
-                job.host_image_binding = None
-                job.prepared_host_image = None
-                _reconcile_session_job_state(session)
-                self._prune_terminal_jobs_locked()
+                if not known_no_start:
+                    session.cancellation_uncertain = True
+                if not isinstance(exc, Exception):
+                    raise
+                message = _redact_bridge_error(
+                    session, f"job_start_failed: {exc}", host_image_binding=job.host_image_binding
+                )
+                if known_no_start:
+                    self._mark_job_without_start_locked(session, job, message)
+                else:
+                    _mark_job_completed(job, status="failed", exit_code=1, error=message)
+                    job.host_image_binding = None
+                    job.prepared_host_image = None
         if message is not None:
-            session.surface.emit_error("job_start_failed", message, False)
-            _clear_bridge_host_screen_redactor(session)
+            self._report_job_start_failure(session, job, message)
             return False
         return True
 
@@ -3990,11 +5092,26 @@ class StdioBridge:
         message_count = len(messages)
         pinned_prefix_len = _pinned_prefix_len(session.agent_session, messages)
         context_left = _call_context_left(session.agent_session)
+        from ..llm.base import effective_tools_for_client
+
+        tool_list = _session_tool_list(session.agent_session)
+        client = getattr(session.agent_session, "client", None)
+        if client is not None:
+            tool_list = effective_tools_for_client(client, tool_list)
         breakdown = estimate_request_token_breakdown(
             messages=messages,
-            tool_list=_session_tool_list(session.agent_session),
+            tool_list=tool_list,
             pinned_prefix_len=pinned_prefix_len,
         ).to_payload()
+        categories = context_categories(
+            messages,
+            tool_list,
+            pinned_prefix_len=pinned_prefix_len,
+            registered_tools=getattr(session.agent_session, "tools", {}) or {},
+        )
+        from ..provider_usage import session_provider_usage
+
+        provider_usage = session_provider_usage(session.agent_session)
         if context_left is not None:
             model_name = str(getattr(context_left, "model_name", "") or model_name)
             max_input_tokens = _non_negative_int_or_none(
@@ -4017,7 +5134,9 @@ class StdioBridge:
                 getattr(context_left, "effective_percent_left", None)
             )
             token_usage_available = used_input_tokens is not None
-            source = "tokenizer_estimate" if token_usage_available else "unavailable"
+            confidence = str(getattr(context_left, "token_count_confidence", "estimated"))
+            count_source = str(getattr(context_left, "token_count_source", "local_estimate"))
+            source = count_source if token_usage_available else "unavailable"
             return {
                 "session_id": session.session_id,
                 "model_name": model_name,
@@ -4027,7 +5146,12 @@ class StdioBridge:
                 "percent_left": percent_left,
                 "source": source,
                 "provider_metadata_source": str(getattr(context_left, "source", "") or ""),
-                "approximate": token_usage_available,
+                "approximate": token_usage_available
+                and confidence not in {"authoritative", "reported"},
+                "count_source": count_source,
+                "count_confidence": confidence,
+                "context_categories": categories,
+                "provider_usage": provider_usage,
                 "token_usage_available": token_usage_available,
                 "message_count": message_count,
                 "pinned_prefix_len": pinned_prefix_len,
@@ -4069,6 +5193,10 @@ class StdioBridge:
             "remaining_tokens": None,
             "percent_left": None,
             "source": "tokenizer_estimate",
+            "count_source": "local_estimate",
+            "count_confidence": "estimated",
+            "context_categories": categories,
+            "provider_usage": provider_usage,
             "provider_metadata_source": None,
             "approximate": True,
             "token_usage_available": True,
@@ -4085,7 +5213,7 @@ class StdioBridge:
             _required_str(request.params, "session_id", request_id=request.id),
             request_id=request.id,
         )
-        if _job_is_active(session.active_job):
+        if _session_busy(session):
             raise ProtocolError(
                 "session_busy",
                 "Wait for the current turn before compacting.",
@@ -4229,7 +5357,7 @@ class StdioBridge:
         with self._state_lock:
             for session in (source, target):
                 _reconcile_session_job_state(session)
-                if _job_is_active(session.active_job):
+                if _session_busy(session):
                     raise ProtocolError(
                         "session_busy",
                         "Finish or stop the active task before moving it.",
@@ -4297,7 +5425,61 @@ class StdioBridge:
                 "history_count": len(history),
             }
 
+    def _run_session_mutation(
+        self,
+        session: BridgeSession,
+        request: ProtocolRequest,
+        operation: Callable[[ProtocolRequest], dict[str, Any]],
+    ) -> dict[str, Any]:
+        safe_release = False
+        original_error: BaseException | None = None
+        try:
+            with session.queue_mutation_lock:
+                with self._state_lock:
+                    _assert_session_admission(session, request_id=request.id)
+                    session.mutation_in_progress = True
+                    session.mutation_effects_started = False
+                    session.mutation_error = None
+                try:
+                    return operation(request)
+                except BaseException as exc:
+                    original_error = exc
+                    raise
+                finally:
+                    with self._state_lock:
+                        # The real clear/resume producers mark the first possible
+                        # effect. A read/validation refusal can release deferred
+                        # original-worker progress; partial mutation cannot.
+                        safe_release = (
+                            original_error is None or not session.mutation_effects_started
+                        )
+                        if safe_release:
+                            session.mutation_in_progress = False
+                            _reconcile_session_job_state(session)
+                        else:
+                            session.mutation_error = original_error
+        finally:
+            if safe_release:
+                # Outside queue/state locks, on both success and known no-effect
+                # refusal. Preserve the original refusal if the wakeup itself
+                # encounters uncertainty; retain that secondary error and fence.
+                try:
+                    self._drain_prompt_queue(session)
+                except BaseException as wakeup_error:
+                    with self._state_lock:
+                        session.mutation_error = wakeup_error
+                        session.mutation_in_progress = True
+                    if original_error is None:
+                        raise
+
     def _session_resume(self, request: ProtocolRequest) -> dict[str, Any]:
+        session = self._require_session(
+            _required_str(request.params, "session_id", request_id=request.id),
+            request_id=request.id,
+        )
+        return self._run_session_mutation(session, request, self._session_resume_unfenced)
+
+    def _session_resume_unfenced(self, request: ProtocolRequest) -> dict[str, Any]:
         params = request.params
         session = self._require_session(
             _required_str(params, "session_id", request_id=request.id),
@@ -4349,6 +5531,10 @@ class StdioBridge:
                 "Retained session log was not found.",
                 request_id=request.id,
             )
+        with self._state_lock:
+            # Adoption/warning and all later history/store/evidence/queue changes
+            # are effectful. An error from here is not a no-effect refusal.
+            session.mutation_effects_started = True
         try:
             checkpoint_lineage = None
             if shutil.which("git") is None and not checkpoint_storage_exists(session.root):
@@ -4396,6 +5582,9 @@ class StdioBridge:
                 str(redact_secrets(context_message)),
             )
         target_messages.extend(replay_messages)
+        from ..provider_usage import restore_provider_usage
+
+        restore_provider_usage(session.agent_session, target_path)
         after_count = len(target_messages)
         store = getattr(session.agent_session, "store", None)
         if (
@@ -4465,6 +5654,9 @@ class StdioBridge:
             "bounded": bounded,
             "max_messages": max_messages,
             "source": "retained_session_log_replay",
+            # Workspace evidence was restored; no conversation objective was.
+            "task_state_recovery": "not_restored",
+            "task_id": None,
             "model_context_replay_supported": True,
             "resume_context_loaded": context_inserted,
             "resume_context_skipped_reason": "bounded_replay" if bounded else None,
@@ -4546,7 +5738,7 @@ class StdioBridge:
         # turn is rejected instead of rebuilding the tools underneath it.
         with self._state_lock:
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Cancel or wait for the active turn before changing Permissions.",
@@ -4598,7 +5790,7 @@ class StdioBridge:
         model = _optional_str(request.params, "model", request_id=request.id)
         with self._state_lock:
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Finish or stop the current task before switching providers.",
@@ -4818,7 +6010,7 @@ class StdioBridge:
         # not rebuild it under a running job either.
         with self._state_lock:
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "persona_change_busy",
                     "Cannot change persona while a task is running.",
@@ -5195,14 +6387,25 @@ class StdioBridge:
             _required_str(request.params, "session_id", request_id=request.id),
             request_id=request.id,
         )
+        return self._run_session_mutation(session, request, self._session_clear_unfenced)
+
+    def _session_clear_unfenced(self, request: ProtocolRequest) -> dict[str, Any]:
+        session = self._require_session(
+            _required_str(request.params, "session_id", request_id=request.id),
+            request_id=request.id,
+        )
         with self._state_lock:
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Cancel or wait for the active turn before clearing this session.",
                     request_id=request.id,
                 )
+        with self._state_lock:
+            # SQLite cancellation can have an uncertain outcome, before any
+            # in-memory history/steering/approval mutation runs.
+            session.mutation_effects_started = True
         try:
             cancelled_prompts = self._prompt_queue.cancel_pending_for_session(
                 session_id=session.session_id
@@ -5228,149 +6431,281 @@ class StdioBridge:
             "queued_prompts_cancelled": cancelled_prompts,
         }
 
+    def _session_close(self, request: ProtocolRequest) -> dict[str, Any]:
+        """Retire an idle session, including its worker, before reusing this process."""
+
+        session_id = _required_str(request.params, "session_id", request_id=request.id)
+        with self._state_lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise ProtocolError(
+                    "session_not_found", "Session was not found.", request_id=request.id
+                )
+            _reconcile_session_job_state(session)
+            if _job_is_active(session.active_job):
+                raise ProtocolError(
+                    "session_busy",
+                    "Cancel the active job before closing its session.",
+                    request_id=request.id,
+                )
+            # Terminal events can precede the worker's finally block. Fence queue draining
+            # and new sends before waiting; a timeout never makes this session reusable.
+            session.close_when_idle = True
+            jobs = [*self._jobs.values(), session.active_job, session.last_job]
+            workers = list(
+                {
+                    job.thread
+                    for job in jobs
+                    if job is not None and job.session_id == session_id and job.thread is not None
+                }
+            )
+            if session.close_worker is not None:
+                workers.append(session.close_worker)
+        try:
+            # Retiring the session must also retire queued follow-ups. Otherwise a
+            # new session with the same chat id could pick up the old task's work.
+            self._prompt_queue.cancel_pending_for_session(session_id=session_id)
+        except PromptQueueError as exc:
+            raise ProtocolError("prompt_queue_error", str(exc), request_id=request.id) from exc
+        deadline = time.monotonic() + self._shutdown_timeout_seconds
+        for worker in workers:
+            if worker is threading.current_thread():
+                raise ProtocolError(
+                    "session_busy", "The session worker is still active.", request_id=request.id
+                )
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            if worker.is_alive():
+                raise ProtocolError(
+                    "session_busy", "The session worker has not finished.", request_id=request.id
+                )
+        try:
+            self._close_session(session)
+        except BridgeSessionCleanupError as exc:
+            raise ProtocolError(
+                "session_cleanup_incomplete", str(exc), request_id=request.id
+            ) from exc
+        with self._state_lock:
+            # Forget private bindings, event history and old request/job ids. A later
+            # session.create can use the chat id without inheriting any of that authority.
+            if self._sessions.get(session_id) is session:
+                self._remove_session_locked(session_id)
+        return {"session_id": session_id, "status": "closed", "worker_settled": True}
+
     def _session_cancel(self, request: ProtocolRequest) -> dict[str, Any]:
+        qualified = "job_id" in request.params
+        job_id = request.params.get("job_id")
+        if qualified and (
+            not isinstance(job_id, str)
+            or len(job_id) > 256
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]*", job_id) is None
+        ):
+            raise ProtocolError(
+                "invalid_field", "job_id must be a valid identifier.", request_id=request.id
+            )
         session_id = _required_str(request.params, "session_id", request_id=request.id)
         session = self._require_session(session_id, request_id=request.id, allow_closing=True)
         reason = (
             _optional_str(request.params, "reason", request_id=request.id) or "cancelled_by_user"
         )
         close_when_idle = _optional_bool(
-            request.params,
-            "close_when_idle",
-            default=False,
-            request_id=request.id,
+            request.params, "close_when_idle", default=False, request_id=request.id
         )
-        cancelled_prompts = 0
-        if close_when_idle:
-            try:
-                cancelled_prompts = self._prompt_queue.cancel_pending_for_session(
-                    session_id=session.session_id
-                )
-            except PromptQueueError as exc:
-                raise ProtocolError("prompt_queue_error", str(exc), request_id=request.id) from exc
-        if session.sensitive_media:
-            with self._state_lock:
-                active_binding = (
-                    session.active_job.host_image_binding
-                    if session.active_job is not None
-                    else None
-                )
-            reason = _redact_bridge_error(
-                session,
-                reason,
-                host_image_binding=active_binding,
-            )
-        cancellation_status: str | None = None
-        cancellation_job: BridgeJob | None = None
         with self._state_lock:
-            _reconcile_session_job_state(session)
-            job = session.active_job
-            if _job_is_active(job):
+            if self._sessions.get(session.session_id) is not session or session.closed:
+                raise ProtocolError(
+                    "session_not_found", "Session was not found.", request_id=request.id
+                )
+            if qualified:
+                job = self._jobs.get(job_id)
+                if job is None or job.session_id != session.session_id:
+                    raise ProtocolError(
+                        "job_not_found", "Job was not found.", request_id=request.id
+                    )
+                if job.status in FINAL_JOB_STATUSES:
+                    # Retained history is read-only, even when another job owns S.
+                    return {
+                        "session_id": session.session_id,
+                        "job_id": job.job_id,
+                        "status": job.status,
+                        "state": job.status,
+                        "job": _job_summary(job),
+                        "close_when_idle": False,
+                        "queued_prompts_cancelled": 0,
+                    }
+                if session.active_job is not job or not _job_is_active(job):
+                    raise ProtocolError(
+                        "job_not_found", "Job was not found.", request_id=request.id
+                    )
+            else:
+                # Only absence selects the deliberately session-wide legacy path.
+                _reconcile_session_job_state(session)
+                job = session.active_job
+            if (
+                session.mutation_in_progress
+                or session.cancellation_uncertain
+                or session.close_lock.locked()
+                or session.close_attempted
+                or session.close_error is not None
+            ):
+                raise ProtocolError(
+                    "session_busy", "Session transition is still settling.", request_id=request.id
+                )
+            if not qualified and (
+                session.cancellation_transitions
+                or (not _job_is_active(job) and _session_worker_pending(session))
+            ):
+                raise ProtocolError(
+                    "session_busy",
+                    "Session cancellation or original worker is still settling.",
+                    request_id=request.id,
+                )
+            if session.sensitive_media:
+                reason = _redact_bridge_error(
+                    session, reason, host_image_binding=job.host_image_binding if job else None
+                )
+            active = _job_is_active(job)
+            session.cancellation_transitions += 1
+            if close_when_idle or not active:
+                session.close_when_idle = True
+            if active:
                 assert job is not None
-                if close_when_idle:
-                    session.close_when_idle = True
                 result = _request_job_cancellation(job, reason)
-                cancellation_status = str(result["status"])
-                cancellation_job = job
                 response = {
                     "session_id": session.session_id,
+                    "job_id": job.job_id,
                     "status": result["status"],
                     "state": result["state"],
-                    "job_id": job.job_id,
                     "job": _job_summary(job),
                     "close_when_idle": session.close_when_idle,
-                    "queued_prompts_cancelled": cancelled_prompts,
+                    "queued_prompts_cancelled": 0,
                 }
             else:
-                response = None
-        if response is not None and cancellation_job is not None:
-            if cancellation_status == "cancellation_requested":
-                self._cancel_pending_approvals(session, reason)
-                self._cancel_pending_host_actions(session, reason)
-                self._cancel_pending_computer_use(session, reason)
-                session.surface.emit_warning(
-                    f"cancellation_requested {cancellation_job.job_id} "
-                    f"reason={cancellation_job.cancellation_reason}"
-                )
-            elif cancellation_status == "non_cancellable":
-                session.surface.emit_warning(
-                    f"cancel_rejected {cancellation_job.job_id} non_cancellable"
-                )
-            if close_when_idle:
-                self._schedule_session_close_after_job(session, cancellation_job)
-            return response
+                response = {
+                    "session_id": session.session_id,
+                    "status": "closed",
+                    "state": "closed",
+                    "job": None,
+                    "close_when_idle": False,
+                    "queued_prompts_cancelled": 0,
+                }
+        settled = False
         try:
-            self._close_session(session)
+            if close_when_idle:
+                # Queue -> state is the only nested order. Admission was fenced
+                # before releasing state; an already admitted enqueue finishes first.
+                with session.queue_mutation_lock:
+                    response["queued_prompts_cancelled"] = (
+                        self._prompt_queue.cancel_pending_for_session(session_id=session.session_id)
+                    )
+                # Wake selected admission only after the exact cancellation was
+                # recorded; main transition ownership still fences new work.
+                self._p2_retire(session_id=session.session_id)
+            if active:
+                if response["status"] == "cancellation_requested":
+                    self._cancel_pending_approvals(session, reason)
+                    self._cancel_pending_host_actions(session, reason)
+                    self._cancel_pending_computer_use(session, reason)
+                    session.surface.emit_warning(
+                        f"cancellation_requested {job.job_id} reason={job.cancellation_reason}"
+                    )
+                elif response["status"] == "non_cancellable":
+                    session.surface.emit_warning(f"cancel_rejected {job.job_id} non_cancellable")
+            else:
+                self._close_session(session, cancellation_owner=True)
+            settled = True
+        except PromptQueueError as exc:
+            raise ProtocolError("prompt_queue_error", str(exc), request_id=request.id) from exc
         except BridgeSessionCleanupError as exc:
             raise ProtocolError(
-                "browser_cleanup_incomplete",
-                str(exc),
-                request_id=request.id,
+                "browser_cleanup_incomplete", str(exc), request_id=request.id
             ) from exc
-        return {
-            "session_id": session.session_id,
-            "status": "closed",
-            "state": "closed",
-            "job": None,
-            "close_when_idle": False,
-            "queued_prompts_cancelled": cancelled_prompts,
-        }
-
-    def _schedule_session_close_after_job(self, session: BridgeSession, job: BridgeJob) -> None:
-        """Close an explicitly abandoned session after its exact active worker settles."""
-
-        with self._state_lock:
-            existing = session.close_worker
-            if existing is not None and existing.is_alive():
-                return
-            worker = threading.Thread(
-                target=self._close_session_after_job,
-                args=(session, job),
-                name=f"alysis-ide-close-{session.session_id[:12]}",
-                daemon=True,
-            )
-            session.close_worker = worker
-        try:
-            worker.start()
-        except Exception as exc:  # noqa: BLE001 - OS resource pressure
-            with self._state_lock:
-                if session.close_worker is worker:
-                    session.close_worker = None
-            session.surface.emit_error(
-                "session_close_schedule_failed",
-                str(redact_secrets(f"Could not schedule abandoned session cleanup: {exc}")),
-                False,
-            )
-
-    def _close_session_after_job(self, session: BridgeSession, job: BridgeJob) -> None:
-        thread = job.thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join()
-
-        cleanup_error: BridgeSessionCleanupError | None = None
-        try:
-            with self._state_lock:
-                _reconcile_session_job_state(session)
-                active = session.active_job
-            if _job_is_active(active):
-                # Defensive fail-closed guard: never tear resources out from
-                # under a replacement worker if an unexpected producer raced
-                # the close request.
-                return
-            for attempt in range(2):
-                try:
-                    self._close_session(session)
-                    cleanup_error = None
-                    break
-                except BridgeSessionCleanupError as exc:
-                    cleanup_error = exc
-                    if attempt == 0:
-                        continue
-            if cleanup_error is not None:
-                session.surface.emit_error("session_cleanup_incomplete", str(cleanup_error), False)
         finally:
             with self._state_lock:
-                if session.close_worker is threading.current_thread():
+                if settled:
+                    session.cancellation_transitions -= 1
+                    _reconcile_session_job_state(session)
+                else:
+                    # Do not retry/clear unknown session-wide effects on a new job.
+                    session.cancellation_uncertain = True
+                close = (
+                    settled
+                    and active
+                    and session.close_when_idle
+                    and not session.cancellation_transitions
+                )
+        if close:
+            self._schedule_session_close_after_job(session, job)
+        elif settled and active and not session.close_when_idle:
+            self._drain_prompt_queue(session)
+        return response
+
+    def _schedule_session_close_after_job(self, session: BridgeSession, job: BridgeJob) -> None:
+        """Reserve one consumer; close_when_idle remains the pending intent."""
+        with self._state_lock:
+            if session.closed or session.close_attempted or session.close_error is not None:
+                return
+            if not session.close_when_idle or session.cancellation_uncertain:
+                return
+            if job.thread is None and not job.worker_never_started:
+                return  # Original start/known-no-start owner must hand back.
+            if session.close_worker is not None:
+                return  # Reservation includes pre-start; is_alive is not an ACK.
+            try:
+                worker = threading.Thread(
+                    target=self._close_session_after_job,
+                    args=(session, job),
+                    name=f"alysis-ide-close-{session.session_id[:12]}",
+                    daemon=True,
+                )
+                session.close_worker = worker
+                worker.start()
+            except BaseException as exc:
+                # Even scheduling uncertainty remains owned, without retries.
+                session.close_error = exc
+                if not isinstance(exc, Exception):
+                    raise
+                session.surface.emit_error(
+                    "session_close_schedule_failed",
+                    str(redact_secrets(f"Could not schedule abandoned session cleanup: {exc}")),
+                    False,
+                )
+
+    def _close_session_after_job(self, session: BridgeSession, job: BridgeJob) -> None:
+        current = threading.current_thread()
+        try:
+            thread = job.thread
+            if not job.worker_never_started:
+                if thread is None or thread is current:
+                    raise BridgeSessionCleanupError("Original worker retirement is unknown.")
+                thread.join()
+            with self._state_lock:
+                _reconcile_session_job_state(session)
+                if (
+                    _session_transition_pending(session)
+                    or _session_worker_pending(session)
+                    or _job_is_active(session.active_job)
+                ):
+                    # Relinquish atomically with the readiness decision. The
+                    # last outstanding transition can now reserve its consumer,
+                    # even while this old observer is still exiting.
+                    if session.close_worker is current:
+                        session.close_worker = None
+                    return
+                if session.closed or session.close_attempted or session.close_error is not None:
+                    return
+                session.close_attempted = True
+            # A single cleanup attempt; errors do not spawn retry observers.
+            self._close_session(session)
+        except BaseException as exc:
+            with self._state_lock:
+                if session.close_error is None:
+                    session.close_error = exc
+            if not isinstance(exc, Exception):
+                raise
+            session.surface.emit_error("session_cleanup_incomplete", str(exc), False)
+        finally:
+            with self._state_lock:
+                if session.close_worker is current:
                     session.close_worker = None
 
     def _host_action_dispatched(self, request: ProtocolRequest) -> dict[str, Any]:
@@ -5396,6 +6731,7 @@ class StdioBridge:
                 session.host_approval_protocol != 1
                 or pending is None
                 or pending.resolved
+                or pending.action == plugin_admission.ACTION
                 or pending.phase != "execute"
                 or time.monotonic() >= pending.deadline
                 or request.params.get("workspace_fence") != pending.workspace_fence
@@ -5583,10 +6919,28 @@ class StdioBridge:
                             raise HostActionError(
                                 "invalid_host_preparation", "Host preparation is too large."
                             )
+                    elif pending.action in _REMOTE_MCP_RESULT_ACTIONS:
+                        # A remote server's result the engine can't use fails that tool call, not
+                        # the host channel and the turn (review M2D1-C1).
+                        try:
+                            normalized_result = normalize_host_action_result(
+                                pending.action, raw_result
+                            )
+                        except HostActionError:
+                            normalized_result = None
+                            pending.error = HostActionError(
+                                "invalid_host_action_result",
+                                "The server's result could not be used (too large or not valid"
+                                " text). If this was a change, check its outcome before retrying.",
+                                retryable=False,
+                                dispatch_state="dispatched",
+                            )
+                            pending.status = "failed"
                     else:
                         normalized_result = normalize_host_action_result(pending.action, raw_result)
-                    pending.result = normalized_result
-                    pending.status = "completed"
+                    if pending.status != "failed":
+                        pending.result = normalized_result
+                        pending.status = "completed"
                 else:
                     assert isinstance(raw_error, dict)
                     host_code, host_message, retryable = normalize_host_error(raw_error)
@@ -5616,7 +6970,7 @@ class StdioBridge:
                 "session_id": session.session_id,
                 "host_action_id": pending.host_action_id,
                 "action": pending.action,
-                "outcome": "result" if ok else "error",
+                "outcome": "result" if pending.status == "completed" else "error",
             }
 
     def _permission_rules_list(self, request: ProtocolRequest) -> dict[str, Any]:
@@ -5744,7 +7098,23 @@ class StdioBridge:
     def _request_computer_use(
         self, session: BridgeSession, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if computer_use_blocked():
+            return {"error": "computer_use_host_unavailable", "message": UNAVAILABLE_MESSAGE}
         host = session.computer_use_host
+        if unqualified_computer_arguments(
+            tool_name,
+            arguments,
+            interaction_v2=host is not None and host.interaction_version == 2,
+            application_lifecycle_v1=host is not None and host.application_lifecycle_version == 1,
+            window_selection_v1=host is not None and host.window_selection_version == 1,
+        ):
+            return {"error": "computer_use_route_unqualified"}
+        if (
+            not mac_w7_computer_use_available()
+            and host is not None
+            and any(getattr(host, field, None) is not None for field in W11_HOST_FIELDS)
+        ):
+            return {"error": "computer_use_route_unqualified"}
         if (
             tool_name == "computer_verify"
             and host is not None
@@ -6007,6 +7377,7 @@ class StdioBridge:
         host = session.computer_use_host
         if host is None or host.task_budget is None:
             return nullcontext()
+        refuse_computer_use()
         budget_need(not session.task_budget_consumed)
         session.task_budget_consumed = True
         agent = session.agent_session
@@ -6074,6 +7445,8 @@ class StdioBridge:
     def _task_budget_respond(
         self, request: ProtocolRequest
     ) -> tuple[dict[str, Any], Callable[[], None]]:
+        if computer_use_blocked():
+            raise ProtocolError("task_budget_refused", UNAVAILABLE_MESSAGE, request_id=request.id)
         session = self._require_session(
             _required_str(request.params, "session_id", request_id=request.id),
             request_id=request.id,
@@ -6089,6 +7462,8 @@ class StdioBridge:
             ) from None
 
     def _request_browser_start(self, session: BridgeSession, url: Any) -> Any:
+        if computer_use_blocked():
+            return {"error": "browser_start_unavailable", "message": UNAVAILABLE_MESSAGE}
         selection = url if isinstance(url, dict) else None
         if selection is not None:
             if not valid_computer_selection(
@@ -6098,6 +7473,9 @@ class StdioBridge:
         elif not valid_browser_start_url(url):
             return {"error": "browser_start_invalid_url"}
         with self._state_lock:
+            entry = getattr(session.agent_session, "resolved_entry", None)
+            if entry is not None:
+                return {"error": "browser_start_unavailable"}
             host, job = session.browser_start_host, session.active_job
             call_id = session.surface.current_tool_call_id()
             if (
@@ -6106,6 +7484,7 @@ class StdioBridge:
                 or session.sensitive_media
                 or session.browser_start_consumed
                 or session.pending_browser_start is not None
+                or session.pending_resolved_start is not None
                 or job is None
                 or not _job_is_active(job)
                 or session.surface.context.job_id != job.job_id
@@ -6127,6 +7506,13 @@ class StdioBridge:
                 "deadline": time.monotonic() + 30.0,
                 "response": None,
             }
+            pending["selection_target_ids"] = (
+                tuple(selection["target_ids"]) if selection is not None else ()
+            )
+            # valid_computer_selection already checked each ID against this pinned inventory.
+            pending["inventory_target_ids"] = frozenset(
+                target["target_id"] for target in host.get("discovery", {}).get("targets", [])
+            )
             session.pending_browser_start = pending
             payload = {
                 key: value
@@ -6156,9 +7542,17 @@ class StdioBridge:
                 _check_job_cancelled(job)
                 if session.closed or session.active_job is not job:
                     raise BridgeCancellationError("cancelled_by_user")
+                refuse_computer_use()
                 response = pending["response"]
                 if not response["allow"]:
-                    return {"error": response.get("code") or "browser_start_refused"}
+                    return {
+                        "error": response.get("code") or "browser_start_refused",
+                        **(
+                            {"unverified_target_ids": list(response["unverified_target_ids"])}
+                            if "unverified_target_ids" in response
+                            else {}
+                        ),
+                    }
                 session.browser_start_consumed = True
                 job.browser_start_handoff = {
                     key: identities[key] for key in ("request_id", "operation_id", "host_nonce")
@@ -6169,7 +7563,204 @@ class StdioBridge:
                 if session.pending_browser_start is pending:
                     session.pending_browser_start = None
 
+    def _request_resolved_start(
+        self, session: BridgeSession, plan: dict, selection: dict, call_id: str
+    ) -> Any:
+        if not mac_w7_computer_use_available():
+            return {"error": "browser_start_unavailable", "message": UNAVAILABLE_MESSAGE}
+        with self._state_lock:
+            host, job = session.computer_start_resolved_host, session.active_job
+            entry = getattr(session.agent_session, "resolved_entry", None)
+            if (
+                host is None
+                or entry is None
+                or entry.mode != "resolved"
+                or entry.retired
+                or session.closed
+                or session.sensitive_media
+                or session.browser_start_consumed
+                or session.pending_browser_start is not None
+                or session.pending_resolved_start is not None
+                or job is None
+                or not _job_is_active(job)
+                or session.surface.context.job_id != job.job_id
+                or session.surface.current_tool_call_id() != call_id
+            ):
+                return {"error": "browser_start_unavailable"}
+            _check_job_cancelled(job)
+            if not all(
+                resolved_identity_text(v, 256) for v in (session.session_id, job.job_id, call_id)
+            ):
+                return {"error": "computer_use_start_request_invalid"}
+            identities = {
+                "version": 1,
+                "session_id": session.session_id,
+                "job_id": job.job_id,
+                "tool_call_id": call_id,
+                "request_id": str(uuid.uuid4()),
+                **{
+                    k: host[k]
+                    for k in ("operation_id", "host_nonce", "generation_nonce", "inventory_nonce")
+                },
+            }
+            timeout = 30.0
+            deadline = getattr(session.agent_session, "execution_deadline", None)
+            if deadline is not None:
+                remaining = deadline.remaining_seconds()
+                if remaining is not None:
+                    timeout = min(timeout, max(0.0, remaining))
+            exchange_deadline = time.monotonic() + timeout
+            if entry.exchange_deadline is None:
+                entry.exchange_deadline = exchange_deadline
+            exchange_deadline = min(exchange_deadline, entry.exchange_deadline)
+            if time.monotonic() >= exchange_deadline:
+                return {"error": "browser_start_timeout"}
+            pending = {
+                "identities": identities,
+                "done": threading.Event(),
+                "deadline": exchange_deadline,
+                "response": None,
+                "selection": copy.deepcopy(selection),
+                "entry": entry,
+            }
+            session.pending_resolved_start = pending
+            payload = {k: v for k, v in identities.items() if k not in {"session_id", "job_id"}}
+            payload.update(plan=copy.deepcopy(plan), selection=copy.deepcopy(selection))
+            if len(resolved_canonical(payload)) > 262144:
+                session.pending_resolved_start = None
+                return {"error": "computer_use_start_request_invalid"}
+            self._write_resolved_wire(
+                session.surface.transient_envelope(
+                    ProtocolPayloadEvent("computer_start_resolved_request", payload)
+                )
+            )
+        try:
+            while not pending["done"].wait(0.05):
+                with self._state_lock:
+                    _check_job_cancelled(job)
+                    if session.closed or session.active_job is not job:
+                        return Refusal("computer_start_owner_invalid", "unknown")
+                    if not entry.live(
+                        session.agent_session.client,
+                        session.agent_session.stream,
+                        session.agent_session.cfg,
+                    ):
+                        return Refusal("computer_start_capability_lost", "unknown")
+                    if time.monotonic() >= pending["deadline"]:
+                        return {"error": "browser_start_timeout"}
+            with self._state_lock:
+                _check_job_cancelled(job)
+                if session.closed or session.active_job is not job:
+                    return Refusal("computer_start_owner_invalid", "unknown")
+                if not entry.live(
+                    session.agent_session.client,
+                    session.agent_session.stream,
+                    session.agent_session.cfg,
+                ):
+                    return Refusal("computer_start_capability_lost", "unknown")
+                refuse_computer_use()
+                response = pending["response"]
+                if not response["allow"]:
+                    return {
+                        "error": response["code"],
+                        **(
+                            {"unverified_target_ids": response["unverified_target_ids"]}
+                            if "unverified_target_ids" in response
+                            else {}
+                        ),
+                    }
+                session.browser_start_consumed = True
+                job.browser_start_handoff = {
+                    k: identities[k] for k in ("request_id", "operation_id", "host_nonce")
+                }
+                session.computer_start_resolved_host = None
+                return BrowserStartHandoff(identities["request_id"])
+        finally:
+            with self._state_lock:
+                if session.pending_resolved_start is pending:
+                    session.pending_resolved_start = None
+
+    def _resolved_start_respond(self, request: ProtocolRequest) -> dict[str, Any]:
+        if not mac_w7_computer_use_available():
+            raise ProtocolError(
+                "computer_start_response_invalid", UNAVAILABLE_MESSAGE, request_id=request.id
+            )
+        params = request.params
+        with self._state_lock:
+            session = (
+                self._sessions.get(params.get("session_id"))
+                if isinstance(params.get("session_id"), str)
+                else None
+            )
+            pending = session.pending_resolved_start if session is not None else None
+            job = session.active_job if session is not None else None
+            if (
+                pending is None
+                or session.closed
+                or session.computer_start_resolved_host is None
+                or job is None
+                or not _job_is_active(job)
+                or job.cancellation_event.is_set()
+                or pending["done"].is_set()
+                or time.monotonic() >= pending["deadline"]
+                or job.job_id != pending["identities"]["job_id"]
+                or any(params.get(k) != v for k, v in pending["identities"].items())
+            ):
+                raise ProtocolError(
+                    "computer_start_response_invalid",
+                    "The exact entry request is unavailable.",
+                    request_id=request.id,
+                )
+            keys = set(pending["identities"])
+            allow = params.get("allow")
+            code = params.get("code")
+            expected = keys | ({"allow"} if allow is True else {"allow", "code"})
+            unverified = allow is False and code == COMPUTER_TARGET_UNVERIFIED
+            if unverified:
+                expected.add("unverified_target_ids")
+            valid = (
+                getattr(request, "resolved_entry_valid", True)
+                and type(params.get("version")) is int
+                and type(allow) is bool
+                and set(params) == expected
+                and (allow is True or isinstance(code, str) and code in HOST_CODES)
+            )
+            if valid and unverified:
+                valid = valid_unverified_target_refusal(
+                    {"error": code, "unverified_target_ids": params.get("unverified_target_ids")},
+                    tuple(pending["selection"]["target_ids"]),
+                    frozenset(
+                        t["target_id"]
+                        for t in session.computer_start_resolved_host["discovery"]["targets"]
+                    ),
+                )
+            pending["response"] = (
+                {
+                    "allow": allow,
+                    **({"code": code} if allow is False else {}),
+                    **(
+                        {"unverified_target_ids": list(params["unverified_target_ids"])}
+                        if valid and unverified
+                        else {}
+                    ),
+                }
+                if valid
+                else {"allow": False, "code": "computer_start_response_invalid"}
+            )
+            pending["done"].set()
+            if not valid:
+                raise ProtocolError(
+                    "computer_start_response_invalid",
+                    "Invalid owned entry response.",
+                    request_id=request.id,
+                )
+            return {"status": "accepted", "request_id": params["request_id"]}
+
     def _browser_start_respond(self, request: ProtocolRequest) -> dict[str, Any]:
+        if computer_use_blocked():
+            raise ProtocolError(
+                "browser_start_response_refused", UNAVAILABLE_MESSAGE, request_id=request.id
+            )
         params = request.params
         with self._state_lock:
             session = (
@@ -6187,6 +7778,9 @@ class StdioBridge:
                 "host_nonce",
                 "request_id",
             }
+            unverified = (
+                params.get("allow") is False and params.get("code") == COMPUTER_TARGET_UNVERIFIED
+            )
             valid = (
                 pending is not None
                 and session is not None
@@ -6196,7 +7790,13 @@ class StdioBridge:
                 and not job.cancellation_event.is_set()
                 and not pending["done"].is_set()
                 and time.monotonic() < pending["deadline"]
-                and set(params) in (identity_keys | {"allow"}, identity_keys | {"allow", "code"})
+                # Authenticated verification refusals are consumed even when malformed,
+                # then reduced to a closed invalid-correlation result. They cannot time
+                # out into another admission attempt or project arbitrary host text.
+                and (
+                    unverified
+                    or set(params) in (identity_keys | {"allow"}, identity_keys | {"allow", "code"})
+                )
                 and type(params.get("allow")) is bool
                 and all(params.get(key) == value for key, value in pending["identities"].items())
                 and job.job_id == pending["identities"]["job_id"]
@@ -6216,6 +7816,22 @@ class StdioBridge:
                 "allow": params["allow"],
                 **({"code": params["code"]} if "code" in params else {}),
             }
+            if unverified:
+                candidate = {
+                    "error": COMPUTER_TARGET_UNVERIFIED,
+                    "unverified_target_ids": params.get("unverified_target_ids"),
+                }
+                if set(params) == identity_keys | {
+                    "allow",
+                    "code",
+                    "unverified_target_ids",
+                } and valid_unverified_target_refusal(
+                    candidate, pending["selection_target_ids"], pending["inventory_target_ids"]
+                ):
+                    pending["response"]["unverified_target_ids"] = list(
+                        candidate["unverified_target_ids"]
+                    )
+                # Missing IDs deliberately reach the engine's fail-closed admission latch.
             pending["done"].set()
             return {"status": "accepted", "request_id": params["request_id"]}
 
@@ -6225,7 +7841,23 @@ class StdioBridge:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
+        if computer_use_blocked():
+            return {"error": "computer_use_host_unavailable", "message": UNAVAILABLE_MESSAGE}
         host = session.computer_use_host
+        if unqualified_computer_arguments(
+            tool_name,
+            arguments,
+            interaction_v2=host is not None and host.interaction_version == 2,
+            application_lifecycle_v1=host is not None and host.application_lifecycle_version == 1,
+            window_selection_v1=host is not None and host.window_selection_version == 1,
+        ):
+            return {"error": "computer_use_route_unqualified"}
+        if (
+            not mac_w7_computer_use_available()
+            and host is not None
+            and any(getattr(host, field, None) is not None for field in W11_HOST_FIELDS)
+        ):
+            return {"error": "computer_use_route_unqualified"}
         if host is None or tool_name not in COMPUTER_USE_TOOL_NAMES + (
             COMPUTER_USE_VERIFICATION_TOOL_NAMES if host.verification_available else ()
         ) + (COMPUTER_USE_FILE_TOOL_NAMES if host.files_available else ()) + (
@@ -6261,17 +7893,15 @@ class StdioBridge:
             budget_need(budget is not None)
             budget.ensure_lease()
         clean_arguments = _json_clone(arguments)
-        arguments_fingerprint = (
-            "sha256:"
-            + hashlib.sha256(
-                json.dumps(
-                    clean_arguments,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            ).hexdigest()
-        )
+        try:
+            # The app recomputes this from the arguments it parses, so both sides use
+            # the same canonical form (see ide/canonical_json.py).
+            arguments_fingerprint = canonical_json_fingerprint(clean_arguments)
+        except CanonicalJsonError:
+            return {
+                "error": "invalid_tool_arguments_json",
+                "message": "Computer Use arguments must be valid JSON with finite numbers.",
+            }
         request_id = f"cu_{uuid.uuid4().hex}"
         response_nonce = uuid.uuid4().hex + uuid.uuid4().hex
         expires_at = _expires_at(DEFAULT_COMPUTER_USE_TIMEOUT_SECONDS)
@@ -6340,7 +7970,7 @@ class StdioBridge:
 
         try:
             while True:
-                remaining = pending.deadline - time.monotonic()
+                remaining = _computer_use_request_remaining(pending)
                 if remaining <= 0:
                     with session.computer_use_lock:
                         if not pending.resolved:
@@ -6363,10 +7993,18 @@ class StdioBridge:
             if session.closed:
                 raise BridgeCancellationError("cancelled_by_user")
             _check_job_cancelled(active_job)
+            refuse_computer_use()
             response = pending.response or {
                 "error": "invalid_host_response",
                 "message": "The Computer Use host returned no response.",
             }
+            # A success accepted in time but adopted after expiry projects nothing.
+            # Engine first causes and host errors keep their own codes.
+            if pending.host_succeeded and _computer_use_request_remaining(pending) <= 0:
+                response = {
+                    "error": "computer_use_timeout",
+                    "message": "The Computer Use host response was not adopted before expiry.",
+                }
         finally:
             with session.computer_use_lock:
                 session.pending_computer_use.pop(request_id, None)
@@ -6383,6 +8021,10 @@ class StdioBridge:
         return response
 
     def _computer_respond(self, request: ProtocolRequest) -> dict[str, Any]:
+        if computer_use_blocked():
+            raise ProtocolError(
+                "computer_use_host_unavailable", UNAVAILABLE_MESSAGE, request_id=request.id
+            )
         params = request.params
         session_id = _required_str(params, "session_id", request_id=request.id)
         request_key = _required_str(params, "request_id", request_id=request.id)
@@ -6430,7 +8072,7 @@ class StdioBridge:
                         f"Computer Use response {field_name} does not match the pending request.",
                         request_id=request.id,
                     )
-            if time.monotonic() >= pending.deadline:
+            if _computer_use_request_remaining(pending) <= 0:
                 pending.response = {
                     "error": "computer_use_timeout",
                     "message": "The Computer Use host response arrived after expiry.",
@@ -6471,6 +8113,7 @@ class StdioBridge:
                     "error": code[:128] or "computer_use_failed",
                     "message": message[:2000] or "Computer Use host request failed.",
                 }
+            pending.host_succeeded = ok
             pending.response = response
             pending.resolved = True
             pending.done.set()
@@ -6839,7 +8482,7 @@ class StdioBridge:
             created_session = True
         with self._state_lock:
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Session already has a running job.",
@@ -6970,7 +8613,9 @@ class StdioBridge:
         def _start() -> None:
             if dispatch_lease is None:
                 return
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_forge_plan_job,
                 args=(
                     session,
@@ -7512,7 +9157,7 @@ class StdioBridge:
             except ProtocolError as e:
                 raise ProtocolError(e.code, e.message, request_id=request.id) from e
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Session already has a running job.",
@@ -7528,7 +9173,9 @@ class StdioBridge:
             self._register_job_locked(session, job)
 
         def _start() -> None:
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_forge_plan_regenerate_job,
                 args=(session, job, record, plan, instruction, focus, expected_revision, cfg),
                 name=f"alysis-ide-forge-plan-regenerate-{job.job_id}",
@@ -7661,7 +9308,7 @@ class StdioBridge:
         with self._state_lock:
             session = self._require_session(session_id, request_id=request.id)
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Session already has a running job.",
@@ -7676,7 +9323,9 @@ class StdioBridge:
             self._register_job_locked(session, job)
 
         def _start() -> None:
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_code_review_job,
                 args=(session, job, review_request),
                 name=f"alysis-ide-code-review-{job.job_id}",
@@ -8053,7 +9702,7 @@ class StdioBridge:
             )
         with self._state_lock:
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Session already has a running job.",
@@ -8069,7 +9718,9 @@ class StdioBridge:
             self._register_job_locked(session, job)
 
         def _start() -> None:
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_forge_execute_job,
                 args=(
                     session,
@@ -8297,7 +9948,7 @@ class StdioBridge:
             permission_scope = _swarm_permission_scope(grants)
             action_grants = grants
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Session already has a running job.",
@@ -8350,7 +10001,9 @@ class StdioBridge:
             )
 
         def _start() -> None:
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_forge_swarm_job,
                 args=(
                     session,
@@ -8406,7 +10059,7 @@ class StdioBridge:
                 )
             )
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Session already has a running job.",
@@ -8452,7 +10105,9 @@ class StdioBridge:
                         session.approved_approval_scopes.append(grant)
 
         def _start() -> None:
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_forge_swarm_job,
                 args=(
                     session,
@@ -9103,7 +10758,7 @@ class StdioBridge:
         with self._state_lock:
             session, record, plan = self._forge_request_context(request, migrate_legacy=False)
             _reconcile_session_job_state(session)
-            if _job_is_active(session.active_job):
+            if _session_busy(session):
                 raise ProtocolError(
                     "session_busy",
                     "Session already has a running job.",
@@ -9119,7 +10774,9 @@ class StdioBridge:
             self._register_job_locked(session, job)
 
         def _start() -> None:
-            thread = threading.Thread(
+            thread = self._make_job_thread(
+                session,
+                job,
                 target=self._run_forge_review_job,
                 args=(session, job, record, plan, task_id, cfg),
                 name=f"alysis-ide-forge-review-{job.job_id}",
@@ -9270,9 +10927,22 @@ class StdioBridge:
     def _request_host_action(
         self, session: BridgeSession, action: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if action == plugin_admission.ACTION:
+            raise HostActionError(
+                "unsupported_host_action", "Internal admission is not a tool action."
+            )
+        policy_owner = session.github_repository_policy
+        arguments = github_policy.guard_arguments(
+            session.github_repository_policy, action, arguments, session.github_discovery
+        )
         if session.host_approval_protocol != 1:
             return self._exchange_host_action(session, action, arguments)
         prepared = self._exchange_host_action(session, action, arguments, phase="prepare")
+        if (
+            action in github_policy.REPOSITORY_ACTIONS
+            and session.github_repository_policy is not policy_owner
+        ):
+            github_policy.fail()
         token = prepared.get("preparation_id")
         if not isinstance(token, str) or not re.fullmatch(r"pa_[a-f0-9]{32}", token):
             raise HostActionError(
@@ -9295,6 +10965,31 @@ class StdioBridge:
                 raise HostActionError(
                     "invalid_host_preparation", str(exc), dispatch_state="not_dispatched"
                 ) from exc
+            # Only a plugin Alysis reviewed may be labelled verified in the approval.
+            if context["connector"] == "Verified" and not (
+                action == CONNECTOR_MCP_ACTION and is_verified_connector(arguments.get("plugin_id"))
+            ):
+                raise HostActionError(
+                    "invalid_host_preparation",
+                    "Only a verified plugin's call can be labelled verified.",
+                    dispatch_state="not_dispatched",
+                )
+        # A custom plugin's tool is a read only when the person marked it so in the descriptor
+        # the engine verified; the host can't turn an unmarked tool into a read.
+        if action == CONNECTOR_MCP_ACTION and not prepared["write_effect"]:
+            _, connector_tool = _connector_catalog_tool(
+                session, normalize_host_action_arguments(action, arguments)
+            )
+            if not connector_tool["readOnly"]:
+                with suppress(HostActionError):
+                    self._exchange_host_action(
+                        session, action, arguments, phase="discard", prepared_token=token
+                    )
+                raise HostActionError(
+                    "invalid_host_preparation",
+                    "The host described a call the person didn't mark as reading only.",
+                    dispatch_state="not_dispatched",
+                )
         if session.mode == "readonly" and prepared["write_effect"]:
             with suppress(HostActionError):
                 self._exchange_host_action(
@@ -9305,17 +11000,44 @@ class StdioBridge:
                 "This action is unavailable in Read only.",
                 dispatch_state="not_dispatched",
             )
+        preview = str(prepared.get("preview", action))[:10000]
+        tool_metadata: dict[str, Any] = {}
+        if action == CONNECTOR_MCP_ACTION:
+            catalog, connector_tool = _connector_catalog_tool(
+                session, normalize_host_action_arguments(action, arguments)
+            )
+            tool_metadata = {
+                "mcp_server_id": catalog["server_id"],
+                "mcp_tool_id": connector_tool["name"],
+                **(
+                    {"tool_server_rule": "ask_every_call"} if not connector_tool["readOnly"] else {}
+                ),
+            }
+            # Use the existing MCP approval contract so the desktop can display
+            # the exact reviewed arguments instead of only the connector label.
+            preview = (
+                f"Run MCP tool\nserver: {catalog['server_id']}\ntool: {connector_tool['name']}\nargs:\n"
+                + json.dumps(redact_secrets(arguments["arguments"]), ensure_ascii=False)
+            )
         request = ApprovalRequest(
             kind=str(prepared.get("kind", "host_action"))[:128],
             reason=str(prepared.get("reason", "This action needs authorization."))[:2000],
-            preview=str(prepared.get("preview", action))[:10000],
+            preview=preview,
             command=action,
             metadata={
                 "access": "write" if prepared["write_effect"] else "read",
                 "host_action": action,
                 "target": str(prepared.get("target", ""))[:2000],
                 "prepared_action": token,
+                **tool_metadata,
                 **({"connector_context": context} if context is not None else {}),
+                # The user's rule: remote connector writes always ask a person,
+                # one call at a time, even in Full Access.
+                **(
+                    {"mandatory_explicit_approval": True, "always_ask_person": True}
+                    if prepared["write_effect"] and action in REMOTE_CONNECTOR_WRITE_ACTIONS
+                    else {}
+                ),
             },
         )
         try:
@@ -9352,6 +11074,11 @@ class StdioBridge:
                 "The owning task changed before dispatch.",
                 dispatch_state="not_dispatched",
             )
+        if (
+            action in github_policy.REPOSITORY_ACTIONS
+            and session.github_repository_policy is not policy_owner
+        ):
+            github_policy.fail()
         return self._exchange_host_action(
             session,
             action,
@@ -9371,6 +11098,11 @@ class StdioBridge:
         prepared_token: str | None = None,
         write_effect: bool | None = None,
     ) -> dict[str, Any]:
+        if action == plugin_admission.ACTION:
+            self._p2_negotiate(session)
+            if phase != "execute" or prepared_token is not None or write_effect is not False:
+                plugin_projection.fail("unsupported")
+        policy_owner = session.github_repository_policy
         normalized_action = str(action or "").strip()
         if not session.workspace_trusted:
             raise HostActionError(
@@ -9382,6 +11114,9 @@ class StdioBridge:
                 "host_action_not_negotiated",
                 "The IDE host did not negotiate this action for the owning session.",
             )
+        arguments = github_policy.guard_arguments(
+            session.github_repository_policy, normalized_action, arguments, session.github_discovery
+        )
         normalized_arguments = normalize_host_action_arguments(normalized_action, arguments)
         if normalized_action == GOOGLE_MCP_ACTION:
             catalog = next(
@@ -9400,10 +11135,14 @@ class StdioBridge:
                 raise HostActionError(
                     "google_tool_unavailable", "Google tool is not enabled for this session."
                 )
+        if normalized_action == CONNECTOR_MCP_ACTION:
+            catalog, tool = _connector_catalog_tool(session, normalized_arguments)
         if session.host_mcp is not None and (
             normalized_action in GITHUB_DISCOVERY_ACTIONS or normalized_action.startswith("github.")
         ):
             assert_host_mcp_current(session.root, session.host_mcp)
+        if normalized_action in github_policy.REPOSITORY_ACTIONS:
+            session.github_repository_policy.assert_plugin_current(session.root)
         if normalized_action in GITHUB_DISCOVERY_ACTIONS:
             if session.host_mcp is None:
                 raise HostActionError(
@@ -9433,7 +11172,12 @@ class StdioBridge:
                 raise HostActionError(
                     "github_mcp_tool_unavailable", "The MCP tool is not enabled for this session."
                 )
-        if json_size_bytes(normalized_arguments) > HOST_ACTION_MAX_ARGUMENT_BYTES:
+        argument_limit = (
+            connector_argument_limit(catalog)
+            if normalized_action == CONNECTOR_MCP_ACTION
+            else HOST_ACTION_MAX_ARGUMENT_BYTES
+        )
+        if json_size_bytes(normalized_arguments) > argument_limit:
             raise HostActionError(
                 "host_action_arguments_too_large",
                 "IDE host action arguments exceed the allowed size.",
@@ -9483,7 +11227,7 @@ class StdioBridge:
                 "browser.forward",
                 "browser.scroll",
             }
-            if normalized_action == GOOGLE_MCP_ACTION or (
+            if normalized_action in {GOOGLE_MCP_ACTION, CONNECTOR_MCP_ACTION} or (
                 normalized_action == GITHUB_MCP_ACTION and session.host_mcp["protocol_version"] == 1
             ):
                 effect = not tool["readOnly"]
@@ -9546,6 +11290,8 @@ class StdioBridge:
         cancellation_to_emit: tuple[PendingHostActionRecord, str] | None = None
         try:
             while not pending.done.wait(timeout=0.05):
+                if normalized_action == plugin_admission.ACTION:
+                    self._p2_live(session, job)
                 with session.host_action_lock:
                     if pending.resolved:
                         break
@@ -9602,6 +11348,42 @@ class StdioBridge:
                         "host_action_failed",
                         "The IDE host action ended without a bounded result.",
                     )
+                try:
+                    if normalized_action in github_policy.REPOSITORY_ACTIONS:
+                        if (
+                            session.github_repository_policy is not policy_owner
+                            or session.closed
+                            or session.active_job is not job
+                            or job.cancellation_event.is_set()
+                            or session.host_capability_fingerprint != pending.capability_fingerprint
+                        ):
+                            github_policy.fail()
+                        session.github_repository_policy.assert_plugin_current(session.root)
+                        github_policy.guard_arguments(
+                            session.github_repository_policy,
+                            normalized_action,
+                            normalized_arguments,
+                            session.github_discovery,
+                        )
+                        if phase == "execute":
+                            github_policy.guard_result(
+                                session.github_repository_policy,
+                                normalized_action,
+                                pending.result,
+                                normalized_arguments,
+                            )
+                except HostActionError as exc:
+                    # A refusal after transmission cannot claim that nothing was sent.
+                    raise HostActionError(
+                        exc.code,
+                        exc.message,
+                        retryable=False,
+                        dispatch_state="dispatched"
+                        if pending.dispatched
+                        else "unknown"
+                        if phase == "execute"
+                        else "not_dispatched",
+                    ) from exc
                 if (
                     normalized_action in GITHUB_DISCOVERY_ACTIONS
                     and session.host_mcp["protocol_version"] == 2
@@ -9697,6 +11479,7 @@ class StdioBridge:
             self._emit_host_action_cancelled(session, pending, clean_reason)
 
     def _clear_session_host_actions(self, session: BridgeSession) -> None:
+        self._p2_retire(session_id=session.session_id)
         self._cancel_pending_host_actions(session, "session_cleared")
         with session.host_action_lock:
             self._prune_resolved_host_actions_locked(session, time.monotonic())
@@ -9735,6 +11518,17 @@ class StdioBridge:
 
         kind = _approval_kind(approval_request)
         metadata = approval_request.metadata if isinstance(approval_request.metadata, dict) else {}
+        from ..agent.artifact_output_observation import FileMetadataApproval
+        from ..agent.scoped_access import SandboxAccessApproval
+
+        authentication = (
+            isinstance(approval_request, SandboxAccessApproval) and approval_request.authentication
+        )
+        # These host-owned requests retain the OS boundary. Metadata inspection
+        # reads only the exact output's lstat data, never contents or workspace code.
+        review_external = isinstance(
+            approval_request, (SandboxAccessApproval, FileMetadataApproval)
+        )
         files = _normalized_files(approval_request.files)
         sensitive, external_directory = _permission_path_safety_flags(
             files, os.fspath(session.root)
@@ -9748,7 +11542,8 @@ class StdioBridge:
                     workspace_root=session.root,
                     sensitive=sensitive,
                     external_directory=external_directory,
-                )
+                ),
+                review_external=review_external,
             )
         except PermissionPolicyError:
             return StandingApproval("deny", "the permission rules could not be read")
@@ -9757,9 +11552,11 @@ class StdioBridge:
         if (
             kind == "computer_use"
             or sensitive
-            or external_directory
+            or authentication
+            or (external_directory and not review_external)
             or metadata.get("mandatory_explicit_approval") is True
             or metadata.get("allow_for_session_disabled") is True
+            or metadata.get("always_ask_person") is True
         ):
             return StandingApproval("ask_person", "this always needs your approval")
         if evaluation.decision is PolicyEffect.ASK and evaluation.matched_rule_id is not None:
@@ -9831,6 +11628,10 @@ class StdioBridge:
         )
         active_job_id = session.active_job.job_id if session.active_job is not None else None
         job_id = context.job_id or active_job_id
+        if context.job_id is None and job_id is not None:
+            # Helper threads do not inherit the surface's thread-local job.
+            # Emit under the same server-owned job already bound below.
+            emit_event = _emit_under_job(session.surface, job_id, emit_event)
         operation_id = (
             context.run_id or str(request_metadata.get("operation_id") or "").strip() or job_id
         )
@@ -10322,6 +12123,7 @@ class StdioBridge:
         return session
 
     def _register_job_locked(self, session: BridgeSession, job: BridgeJob) -> None:
+        _assert_session_admission(session)
         self._prune_terminal_jobs_locked(reserve=1)
         from ..user_questions import question_broker
 
@@ -10339,6 +12141,8 @@ class StdioBridge:
         """Attach durable status without replacing a live in-process worker."""
 
         status = _durable_forge_protocol_status(record.state)
+        if record.state in {ForgeRequestState.QUEUED, ForgeRequestState.RUNNING}:
+            _assert_session_admission(session)
         existing = self._jobs.get(record.job_id)
         if existing is not None:
             if record.state in {
@@ -10478,6 +12282,7 @@ class StdioBridge:
                 self._jobs.pop(job_id, None)
 
     def _remove_session_locked(self, session_id: str) -> None:
+        self._p2_retire(session_id=session_id)
         self._sessions.pop(session_id, None)
         self._event_buffers.pop(session_id, None)
         self._event_dropped_counts.pop(session_id, None)
@@ -10537,11 +12342,27 @@ class StdioBridge:
             self._sessions[session_id] = session
         return session
 
-    def _close_session(self, session: BridgeSession) -> None:
+    def _close_session(self, session: BridgeSession, *, cancellation_owner: bool = False) -> None:
         with session.close_lock:
             with self._state_lock:
                 if session.closed:
                     return
+                if (
+                    session.mutation_in_progress
+                    or session.cancellation_uncertain
+                    or (session.cancellation_transitions and not cancellation_owner)
+                ):
+                    raise BridgeSessionCleanupError(
+                        "Session cancellation or mutation is still settling."
+                    )
+                if _session_worker_pending(session):
+                    raise BridgeSessionCleanupError("Original worker is still settling.")
+                session.close_when_idle = True
+                self._p2_retire(session_id=session.session_id)
+                session.computer_start_resolved_host = None
+                entry = getattr(session.agent_session, "resolved_entry", None)
+                if entry is not None:
+                    entry.retire("computer_start_owner_invalid")
                 # One-shot host-media authority is never retained past a close
                 # request, even when owned-resource cleanup must be retried.
                 for retained_job in (session.active_job, session.last_job):
@@ -10564,7 +12385,7 @@ class StdioBridge:
                     session.managed_browser.close_all()
                 except Exception as exc:
                     raise BridgeSessionCleanupError(
-                        "Managed browser cleanup is incomplete; retry session close."
+                        "Managed browser cleanup is incomplete; the session remains blocked."
                     ) from exc
             try:
                 session.agent_session.close()
@@ -10705,6 +12526,10 @@ class StdioBridge:
                 job.updated_at = _now_iso()
 
     def _record_and_write_event(self, payload: dict[str, Any]) -> None:
+        if (not mac_w7_computer_use_available() and payload.get("type") in W11_EVENTS) or (
+            computer_use_blocked() and payload.get("type") in CU_EVENTS
+        ):
+            return
         raw_session_id = str(payload.get("session_id") or "")
         raw_job_id = str(payload.get("job_id") or "")
         with self._state_lock:
@@ -11145,6 +12970,20 @@ def _approved_scope_matches(
             ) and approved.scope.get("command_count") == scope.get("command_count"):
                 return True
     return False
+
+
+def _emit_under_job(
+    surface: Any, job_id: str, emit_event: Callable[[Any], None]
+) -> Callable[[Any], None]:
+    def emit(event: Any) -> None:
+        previous_job = surface.context.job_id
+        surface.with_job(job_id)
+        try:
+            emit_event(event)
+        finally:
+            surface.with_job(previous_job)
+
+    return emit
 
 
 def _approval_prompt_event(pending: PendingApprovalRecord) -> ProtocolPayloadEvent:
@@ -11636,10 +13475,25 @@ def _browser_start_host_param(
         )
     if "discovery" in raw:
         d = raw["discovery"]
+        if (
+            isinstance(d, dict)
+            and "application_lifecycle_version" in d
+            and not mac_w7_computer_use_available()
+        ):
+            raise ProtocolError(
+                "invalid_browser_start_host", W11_UNAVAILABLE_MESSAGE, request_id=request_id
+            )
         try:
             valid = (
                 isinstance(d, dict)
-                and set(d) == {"version", "targets"}
+                and {"version", "targets"}
+                <= set(d)
+                <= {"version", "targets", "application_lifecycle_version"}
+                and (
+                    "application_lifecycle_version" not in d
+                    or type(d["application_lifecycle_version"]) is int
+                    and d["application_lifecycle_version"] == 1
+                )
                 and type(d["version"]) is int
                 and d["version"] == 1
                 and isinstance(d["targets"], list)
@@ -11651,7 +13505,9 @@ def _browser_start_host_param(
                     <= {"target_id", "name", "route", "availability"}
                     and (
                         "availability" not in t
-                        or t["availability"] == "installed"
+                        # Installed: not running. no_window: running without an open window.
+                        # Both are native apps that the plan must open before use.
+                        or t["availability"] in {"installed", "no_window"}
                         and t["route"] == "native"
                     )
                     and str(uuid.UUID(t["target_id"])) == t["target_id"]
@@ -11690,6 +13546,10 @@ def _computer_use_host_param(
             "computer_use_host must be an object.",
             request_id=request_id,
         )
+    if W11_HOST_FIELDS.intersection(raw) and not mac_w7_computer_use_available():
+        raise ProtocolError(
+            "invalid_computer_use_host", W11_UNAVAILABLE_MESSAGE, request_id=request_id
+        )
     required_fields = {
         "version",
         "operation_id",
@@ -11708,6 +13568,9 @@ def _computer_use_host_param(
             "task_budget",
             "upload_objective",
             "observation_version",
+            "interaction_version",
+            "application_lifecycle_version",
+            "window_selection_version",
         }
         or raw.get("version") != 1
     ):
@@ -11766,11 +13629,37 @@ def _computer_use_host_param(
             "computer_use_host must advertise exactly the fixed Computer Use tool set.",
             request_id=request_id,
         )
+    if "interaction_version" in raw and (
+        type(raw["interaction_version"]) is not int or raw["interaction_version"] != 2
+    ):
+        raise ProtocolError(
+            "invalid_computer_use_host", "Unsupported interaction version.", request_id=request_id
+        )
+    if "application_lifecycle_version" in raw and (
+        type(raw["application_lifecycle_version"]) is not int
+        or raw["application_lifecycle_version"] != 1
+        or raw.get("interaction_version") != 2
+    ):
+        raise ProtocolError(
+            "invalid_computer_use_host",
+            "Application lifecycle requires interaction v2 and lifecycle v1.",
+            request_id=request_id,
+        )
     if "observation_version" in raw and (
         type(raw["observation_version"]) is not int or raw["observation_version"] != 1
     ):
         raise ProtocolError(
             "invalid_computer_use_host", "Unsupported observation version.", request_id=request_id
+        )
+    if "window_selection_version" in raw and (
+        type(raw["window_selection_version"]) is not int
+        or raw["window_selection_version"] != 1
+        or raw.get("interaction_version") != 2
+    ):
+        raise ProtocolError(
+            "invalid_computer_use_host",
+            "Window selection requires interaction v2 and window selection v1.",
+            request_id=request_id,
         )
     response_mode = raw.get("response_mode", "status_only")
     if response_mode not in COMPUTER_USE_RESPONSE_MODES:
@@ -11801,6 +13690,9 @@ def _computer_use_host_param(
         scope_digest=scope_digest,
         response_mode=response_mode,
         observation_version=raw.get("observation_version"),
+        interaction_version=raw.get("interaction_version"),
+        application_lifecycle_version=raw.get("application_lifecycle_version"),
+        window_selection_version=raw.get("window_selection_version"),
         verification_available="computer_verify" in tools,
         files_available="computer_download" in tools,
         uploads_available="computer_upload" in tools,
@@ -12359,6 +14251,10 @@ def _make_job_id() -> str:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+# Results from remote MCP servers: one the engine can't use fails that call, not the channel.
+_REMOTE_MCP_RESULT_ACTIONS = frozenset({"mcp.github.call", "mcp.google.call", "mcp.connector.call"})
 
 
 def _required_str(params: dict[str, Any], field: str, *, request_id: RequestId) -> str:
@@ -13473,6 +15369,7 @@ def _prepare_change_ledger_with_deadline(
     ``_CHANGE_LEDGER_SETUP_NOTICE_SECONDS`` is shown as a "Preparing restore points" activity.
     """
     done, outcome = _start_change_ledger_setup(session)
+    session.checkpoint_failure = None
     started = time.monotonic()
     deadline = started + max(0.0, deadline_seconds)
     announced = False
@@ -13500,8 +15397,10 @@ def _prepare_change_ledger_with_deadline(
     if error is not None:
         if announced:
             _emit_restore_point_activity(session, "failed")
+        session.checkpoint_failure = str(error) or type(error).__name__
         session.surface.emit_warning(
-            f"Restore snapshots are unavailable; actions that may change files are paused: {error}"
+            "Restore points are unavailable in this chat, so changes made in this turn can't be "
+            f"undone from Alysis. They still go ahead. Reason: {session.checkpoint_failure}"
         )
         return False
     if announced:
@@ -13562,9 +15461,58 @@ def _redact_resume_message(value: Any) -> Any:
     return value
 
 
+def _session_transition_pending(session: BridgeSession) -> bool:
+    return bool(
+        session.cancellation_transitions
+        or session.cancellation_uncertain
+        or session.mutation_in_progress
+    )
+
+
+def _session_worker_pending(session: BridgeSession) -> bool:
+    # Reconciliation may move a terminal worker to last_job before its wrapper
+    # physically returns. Direct cleanup must retain that original custody too.
+    return any(
+        job is not None
+        and (
+            job.worker_reserved
+            or (job.thread is not None and not job.worker_never_started and job.thread.is_alive())
+        )
+        for job in (session.active_job, session.last_job)
+    )
+
+
+def _session_busy(session: BridgeSession) -> bool:
+    return bool(
+        session.cancellation_transitions
+        or session.cancellation_uncertain
+        or (session.active_job is not None and session.active_job.worker_reserved)
+        or _job_is_active(session.active_job)
+    )
+
+
+def _assert_session_admission(session: BridgeSession, *, request_id: RequestId = None) -> None:
+    if session.closed or session.close_when_idle:
+        raise ProtocolError(
+            "session_closing",
+            "Session cancellation is settling and owned resources are closing.",
+            request_id=request_id,
+        )
+    if _session_transition_pending(session) or (
+        session.active_job is not None
+        and session.active_job.worker_reserved
+        and session.active_job.status in FINAL_JOB_STATUSES
+    ):
+        raise ProtocolError(
+            "session_busy", "Session transition is still settling.", request_id=request_id
+        )
+
+
 def _reconcile_session_job_state(session: BridgeSession) -> None:
+    if _session_transition_pending(session):
+        return
     job = session.active_job
-    if job is not None and job.status in FINAL_JOB_STATUSES:
+    if job is not None and job.status in FINAL_JOB_STATUSES and not job.worker_reserved:
         session.last_job = job
         session.active_job = None
 
@@ -13607,6 +15555,10 @@ def _mark_job_completed(
         # descriptor merely because another path finalized the job first.
         job.host_image_binding = None
         return
+    collector = job.computer_use_attribution
+    if collector is not None:
+        collector.finish({"completed": "returned", "cancelled": "cancelled"}.get(status, "failed"))
+        job.computer_use_attribution = None
     now = _now_iso()
     job.status = status
     job.updated_at = now
@@ -13688,6 +15640,33 @@ def _call_accepts_keyword(callable_obj: Callable[..., Any], keyword: str) -> boo
     return False
 
 
+def _task_relation_param(
+    session: Any, params: dict[str, Any], message: str, *, request_id: RequestId
+) -> str | None:
+    if "task_relation" not in params:
+        return None
+    relation = params["task_relation"]
+    if type(relation) is not str or relation != "new_task":
+        raise ProtocolError(
+            "invalid_field", "task_relation must be new_task when present.", request_id=request_id
+        )
+    agent = getattr(session, "agent_session", session)
+    try:
+        if getattr(session, "sensitive_media", False):
+            raise ValueError("task_relation requires ordinary interactive chat")
+        # A generic **kwargs sink is not evidence of an implemented consumer.
+        parameter = inspect.signature(agent.run_turn).parameters.get("task_relation")
+        if parameter is None or parameter.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            raise ValueError("This session runtime does not support task_relation")
+        new_task_instruction(agent, message, relation)
+    except (AttributeError, ValueError, TypeError) as exc:
+        raise ProtocolError("task_relation_unsupported", str(exc), request_id=request_id) from exc
+    return relation
+
+
 def _run_agent_turn_with_optional_cancellation(
     agent_session: Any,
     message: str,
@@ -13695,9 +15674,15 @@ def _run_agent_turn_with_optional_cancellation(
     image_paths: list[str] | None = None,
     ephemeral_user_messages: list[str] | None = None,
     cancellation_token: BridgeCancellationToken,
+    task_relation: str | None = None,
 ) -> Any:
     run_turn = agent_session.run_turn
     kwargs: dict[str, Any] = {}
+    if task_relation is not None:
+        _task_relation_param(
+            agent_session, {"task_relation": task_relation}, message, request_id=None
+        )
+        kwargs["task_relation"] = task_relation
     if image_paths is not None:
         kwargs["image_paths"] = image_paths
     if ephemeral_user_messages:
@@ -13900,6 +15885,24 @@ def _host_capabilities_param(
     return frozenset(normalized)
 
 
+def _connector_catalog_tool(
+    session: BridgeSession, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    catalog = next(
+        (c for c in session.connector_mcp if c["plugin_id"] == arguments["plugin_id"]), None
+    )
+    if catalog is None:
+        raise HostActionError("custom_plugin_inactive", "Custom plugin was not negotiated.")
+    assert_connector_current(session.root, catalog)
+    tool = next((t for t in catalog["tools"] if t["name"] == arguments["name"]), None)
+    if tool is None or (session.mode == "readonly" and not tool["readOnly"]):
+        raise HostActionError(
+            "custom_tool_unavailable", "This custom plugin tool is not enabled for this session."
+        )
+    check_connector_call(catalog, arguments)
+    return catalog, tool
+
+
 def _host_capability_fingerprint(
     *,
     root: Path,
@@ -13907,6 +15910,8 @@ def _host_capability_fingerprint(
     actions: frozenset[str],
     host_mcp: dict[str, Any] | None = None,
     google_mcp: list[dict[str, Any]] | None = None,
+    connector_mcp: list[dict[str, Any]] | None = None,
+    github_repository_policy: github_policy.RepositoryPolicy | None = None,
 ) -> str:
     payload = {
         "protocol_version": HOST_ACTION_PROTOCOL_VERSION,
@@ -13918,6 +15923,10 @@ def _host_capability_fingerprint(
         payload["host_mcp"] = host_mcp
     if google_mcp:
         payload["google_mcp"] = google_mcp
+    if connector_mcp:
+        payload["connector_mcp"] = connector_mcp
+    if github_repository_policy is not None:
+        payload["github_repository_policy"] = github_repository_policy.payload()
     encoded = json.dumps(
         payload,
         ensure_ascii=True,
@@ -14185,7 +16194,15 @@ def claim_protocol_streams() -> tuple[TextIO, TextIO]:
     return protocol_stdin, protocol_stdout
 
 
-def run_stdio_bridge() -> int:
+def run_stdio_bridge(*, role: str = "runtime") -> int:
+    # The alysis-ide-bridge entry point skips cli.py: give restore points the engine's own
+    # Git on Windows computers without one, as cli.py does (windows_toolchain).
+    try:
+        from ..windows_toolchain import add_bundled_git_to_path
+
+        add_bundled_git_to_path()
+    except Exception:  # pragma: no cover - defensive: never fail bridge start on this
+        pass
     # stdout is the protocol transport. Agent/provider integrations are allowed to
     # print diagnostics, but a single stray print would otherwise corrupt the JSONL
     # stream and strand every pending extension request. Capture the protocol streams
@@ -14193,7 +16210,19 @@ def run_stdio_bridge() -> int:
     # this dedicated bridge process. StdioBridge reads and writes through the captured
     # handles, which no child process can inherit.
     protocol_stdin, protocol_stdout = claim_protocol_streams()
-    bridge = StdioBridge(stdin=protocol_stdin, stdout=protocol_stdout)
+    # The bridge entry point does not import cli.py. Use only the existing
+    # integrity-checked bundled Git when the host has no Git on PATH.
+    try:
+        from ..windows_toolchain import add_bundled_git_to_path
+
+        add_bundled_git_to_path()
+    except Exception:  # pragma: no cover - optional tool discovery cannot abort chat
+        pass
+    bridge = StdioBridge(
+        stdin=protocol_stdin,
+        stdout=protocol_stdout,
+        **({"role": role} if role != "runtime" else {}),
+    )
     # Backstop for a hard-killed extension host: stdin EOF is the normal exit path,
     # this guarantees the interpreter cannot outlive its parent when that path stalls.
     start_parent_watchdog(

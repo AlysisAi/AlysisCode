@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .agent.prompt_context import prepare_session_prompt_context
-from .agent.tools_assembly import build_tools
+from .agent.task_notes import task_notes_context, task_notes_enabled
+from .agent.tool_discovery import install_tool_discovery, model_visible
 from .config import AppConfig
 from .model_registry import ModelRegistry
 from .request_estimation import estimate_message_tokens, estimate_tool_schema_tokens
+from .runtime_kind import RuntimeKind, resolve_session_runtime_kind
 from .session_store import SessionStore, resolve_sessions_dir
 from .subagents import SubagentDefinition
 from .surface import NoopSurface
@@ -20,6 +21,18 @@ DEFAULT_EXECUTION_HEADROOM_RESERVE_TOKENS = 1024
 DEFAULT_MINIMUM_EXECUTION_INSTRUCTION_BUDGET_TOKENS = 1200
 DEFAULT_MIN_EXECUTION_RESPONSE_RESERVE_TOKENS = 256
 DEFAULT_EXECUTION_IMAGE_RESERVE_TOKENS_PER_IMAGE = 1024
+
+
+def prepare_session_prompt_context(*args: Any, **kwargs: Any) -> Any:
+    from .agent.prompt_context import prepare_session_prompt_context as prepare
+
+    return prepare(*args, **kwargs)
+
+
+def build_tools(*args: Any, **kwargs: Any) -> Any:
+    from .agent.tools_assembly import build_tools as build
+
+    return build(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -223,6 +236,8 @@ def compute_execution_prompt_budget_inputs(
     allow_write_globs: list[str] | None = None,
     non_interactive: bool = False,
     one_shot_execution: bool = False,
+    runtime_kind: RuntimeKind | str | None = None,
+    session_id: str = "execution-budget-estimate",
     verification_enabled: bool = True,
     authoritative_verification_commands: list[str] | None = None,
     trusted_system_prompt_override: str | None = None,
@@ -241,6 +256,11 @@ def compute_execution_prompt_budget_inputs(
     image_count: int = 0,
     image_budget_reserve_tokens_per_image: int = DEFAULT_EXECUTION_IMAGE_RESERVE_TOKENS_PER_IMAGE,
 ) -> ExecutionPromptBudgetInputs:
+    resolved_runtime_kind = resolve_session_runtime_kind(
+        runtime_kind=runtime_kind,
+        one_shot_execution=one_shot_execution,
+        subagent_depth=subagent_depth,
+    )
     prompt_context = prepare_session_prompt_context(
         cfg=cfg,
         root=root,
@@ -277,6 +297,7 @@ def compute_execution_prompt_budget_inputs(
             max_steps=None,
             no_log=True,
             usage_role="execution_budget_estimate",
+            runtime_kind=resolved_runtime_kind,
             usage_summary=None,
             model_registry=registry,
             deny_write_prefixes=deny_write_prefixes,
@@ -299,8 +320,17 @@ def compute_execution_prompt_budget_inputs(
     finally:
         store.close()
 
-    tool_list = [tool.as_openai_tool() for tool in tools.values()]
-    prefix_tokens = estimate_message_tokens(prompt_context.messages)
+    install_tool_discovery(tools)
+    tool_list = [tool.as_openai_tool() for tool in tools.values() if model_visible(tool)]
+    messages = list(prompt_context.messages)
+    if task_notes_enabled(
+        runtime_kind=resolved_runtime_kind, subagent_depth=subagent_depth, sensitive_media=False
+    ):
+        messages.insert(
+            prompt_context.pinned_prefix_len,
+            {"role": "user", "content": task_notes_context(session_id)},
+        )
+    prefix_tokens = estimate_message_tokens(messages)
     tool_schema_tokens = estimate_tool_schema_tokens(tool_list)
 
     safety_margin = max(0, int(safety_margin_tokens))
@@ -355,7 +385,7 @@ def compute_execution_prompt_budget_inputs(
             image_budget_reserve_tokens=image_budget_reserve,
             final_instruction_budget=reserve_resolution.final_instruction_budget,
         ),
-        prefix_messages=tuple(prompt_context.messages),
+        prefix_messages=tuple(messages),
         tool_list=tuple(tool_list),
     )
 
@@ -370,6 +400,8 @@ def compute_execution_prompt_budget(
     allow_write_globs: list[str] | None = None,
     non_interactive: bool = False,
     one_shot_execution: bool = False,
+    runtime_kind: RuntimeKind | str | None = None,
+    session_id: str = "execution-budget-estimate",
     verification_enabled: bool = True,
     authoritative_verification_commands: list[str] | None = None,
     trusted_system_prompt_override: str | None = None,
@@ -397,6 +429,8 @@ def compute_execution_prompt_budget(
         allow_write_globs=allow_write_globs,
         non_interactive=non_interactive,
         one_shot_execution=one_shot_execution,
+        runtime_kind=runtime_kind,
+        session_id=session_id,
         verification_enabled=verification_enabled,
         authoritative_verification_commands=authoritative_verification_commands,
         trusted_system_prompt_override=trusted_system_prompt_override,

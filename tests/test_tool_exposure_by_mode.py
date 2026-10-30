@@ -889,7 +889,7 @@ def test_review_mode_custom_tool_execution_requires_approval(
 
 
 @pytest.mark.parametrize("mode", ["auto", "fullaccess"])
-def test_trusted_custom_tools_follow_action_approval_mode(
+def test_trusted_custom_tools_follow_mode_authority_without_a_reviewer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
@@ -938,7 +938,7 @@ def test_build_tools_custom_tools_disabled_by_config_excludes_custom_tools(
     assert "project_echo" not in tools
 
 
-def test_review_mode_asks_before_each_unscoped_mcp_tool_call(
+def test_review_mode_asks_before_an_mcp_tool_call_with_exact_identity(
     tmp_path: Path,
 ) -> None:
     binding, client = _make_mcp_binding()
@@ -975,10 +975,11 @@ def test_review_mode_declined_mcp_tool_call_never_reaches_the_server(tmp_path: P
         surface=surface,
     )
 
-    with pytest.raises(AgentRuntimeError, match="MCP action was not approved"):
+    with pytest.raises(AgentRuntimeError, match="MCP action was not approved") as caught:
         tools["mcp__alpha__echo"].run({})
 
     assert client.called is False
+    assert caught.value.result_payload["dispatch_state"] == "not_dispatched"
 
 
 def test_review_mode_runs_a_tool_its_server_marks_read_only_without_asking(
@@ -1018,7 +1019,9 @@ def test_review_mode_mcp_tool_call_fails_closed_when_nobody_can_be_asked(
     assert client.called is False
 
 
-def test_auto_mode_asks_for_unscoped_and_destructive_mcp_tools(tmp_path: Path) -> None:
+def test_auto_mode_without_reviewer_asks_for_writes_and_retains_destructive_hint(
+    tmp_path: Path,
+) -> None:
     plain, plain_client = _make_mcp_binding()
     surface = _RecordingSurface(allow=True)
     tools = _build_tools(
@@ -1048,17 +1051,17 @@ def test_auto_mode_asks_for_unscoped_and_destructive_mcp_tools(tmp_path: Path) -
     [request] = surface.requests
     assert request.kind == "mcp"
     assert request.metadata["destructive"] is True
-    assert "outside the project sandbox" in request.reason
+    assert request.metadata["access"] == "write"
     # A destructive tool asks every time: no "allow for this chat".
     assert request.allow_for_session_scope is None
 
 
 @pytest.mark.parametrize(("mode", "yes"), [("auto", True), ("fullaccess", False)])
-def test_full_access_bypasses_mcp_prompts_but_yes_does_not(
+def test_yes_does_not_override_mcp_authority_but_fullaccess_does(
     tmp_path: Path, mode: str, yes: bool
 ) -> None:
     binding, client = _make_mcp_binding(destructive_hint=True)
-    surface = _RecordingSurface(allow=False)
+    surface = _RecordingSurface(allow=True)
     tools = _build_tools(
         tmp_path,
         mode=mode,
@@ -1068,15 +1071,10 @@ def test_full_access_bypasses_mcp_prompts_but_yes_does_not(
         yes=yes,
     )
 
-    if mode == "auto":
-        with pytest.raises(AgentRuntimeError, match="MCP action was not approved"):
-            tools["mcp__alpha__echo"].run({})
-        assert client.called is False
-        assert len(surface.requests) == 1
-    else:
-        tools["mcp__alpha__echo"].run({})
-        assert client.called is True
-        assert surface.requests == []
+    tools["mcp__alpha__echo"].run({})
+
+    assert client.called is True
+    assert len(surface.requests) == (1 if mode == "auto" else 0)
 
 
 @pytest.mark.parametrize(

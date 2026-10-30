@@ -104,9 +104,11 @@ def _registered_tool_schema_list(
 ) -> list[dict[str, Any]]:
     if not tool_defs:
         return []
+    from .tool_discovery import model_visible
+
     canonical_by_name = {
         _tool_schema_function_name(schema): schema
-        for schema in (tool.as_openai_tool() for tool in tool_defs.values())
+        for schema in (tool.as_openai_tool() for tool in tool_defs.values() if model_visible(tool))
     }
     ordered: list[dict[str, Any]] = []
     added: set[str] = set()

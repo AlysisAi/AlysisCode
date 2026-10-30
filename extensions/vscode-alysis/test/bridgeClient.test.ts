@@ -44,6 +44,48 @@ test("AlysisBridgeClient correlates JSONL responses by request id", async () => 
   client.dispose();
 });
 
+test("turn question responses must match the requested session and job", async () => {
+  const fake = new FakeBridgeProcess({ initializePayload: healthPayloadWithMethods([
+    "session.userQuestions.get", "session.userQuestions.answer", "session.userQuestions.touch"
+  ]) });
+  const client = clientFor(fake);
+  await client.startStdio(config());
+  try {
+    const pending = client.sessionUserQuestions("s", "j");
+    await fake.waitForRequests(1);
+    fake.respond(0, { session_id: "s", job_id: "j", questions: [{ request_id: "q", status: "pending" }] });
+    assert.equal((await pending).questions[0].request_id, "q");
+    const answer = client.answerSessionUserQuestions("s", "j", "q", [{ id: "a", selected: [], text: "Proceed" }]);
+    await fake.waitForRequests(2);
+    assert.equal(fake.requests[1].params.request_id, "q");
+    fake.respond(1, { session_id: "s", job_id: "other-job", questions: [] });
+    await assert.rejects(answer, (error: any) => error?.code === "invalid_response");
+    const touch = client.touchSessionUserQuestions("s", "j", "q");
+    await fake.waitForRequests(3);
+    fake.respond(2, { session_id: "other-session", job_id: "j", questions: [] });
+    await assert.rejects(touch, (error: any) => error?.code === "invalid_response");
+  } finally { client.dispose(); }
+});
+
+test("host dispatch acknowledgement cannot resolve a different action", async () => {
+  const fake = new FakeBridgeProcess({ initializePayload: healthPayloadWithMethods(["host.action.dispatched"]) });
+  const client = clientFor(fake);
+  await client.startStdio(config());
+  const params = { session_id: "s", host_action_id: `ha_${"a".repeat(32)}`,
+    workspace_fence: "wf_fixture", capability_fingerprint: "b".repeat(64) };
+  try {
+    const pending = client.hostActionDispatched(params);
+    await fake.waitForRequests(1);
+    assert.deepEqual(fake.requests[0].params, params);
+    fake.respond(0, { status: "dispatched", host_action_id: params.host_action_id });
+    assert.equal((await pending).status, "dispatched");
+    const wrong = client.hostActionDispatched(params);
+    await fake.waitForRequests(2);
+    fake.respond(1, { status: "dispatched", host_action_id: `ha_${"c".repeat(32)}` });
+    await assert.rejects(wrong, (error: any) => error?.code === "invalid_response");
+  } finally { client.dispose(); }
+});
+
 test("AlysisBridgeClient correlates twelve concurrent in-flight requests", async () => {
   const fake = new FakeBridgeProcess();
   const client = clientFor(fake);

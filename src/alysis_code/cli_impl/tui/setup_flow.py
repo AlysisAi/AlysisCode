@@ -1083,7 +1083,9 @@ class SetupFlow:
                 validation_status="skipped",
                 validation_message="Alysis Code account uses browser sign-in — no API key.",
             )
-            self.model_result = _ModelStepResult(model=preset.suggested_models[0])
+            from ... import account_login
+
+            self.model_result = _ModelStepResult(model=account_login._FRESH_LOGIN_DEFAULT_MODEL)
             self._goto("workspace")
             self._set_status(
                 "Alysis Code account: no API key needed — you'll sign in after setup.",

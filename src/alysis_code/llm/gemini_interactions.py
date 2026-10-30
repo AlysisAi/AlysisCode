@@ -10,6 +10,7 @@ import httpx
 from ..branding import env_get
 from ..error_text import sanitize_error_text_for_output
 from ..provider_telemetry import ProviderCallTelemetryRecorder
+from .base import input_token_count_request, scoped_input_token_counter
 from .cancellable_http import provider_httpx_client
 from .http_cancellation import cancellable_httpx_send, raise_if_cancelled
 from .metadata import (
@@ -181,6 +182,7 @@ class GeminiInteractionsClient:
             )
         )
 
+    @scoped_input_token_counter
     def count_input_tokens(
         self,
         *,
@@ -231,16 +233,17 @@ class GeminiInteractionsClient:
                 raw_provider_usage=copy.deepcopy(data),
             )
 
-        return run_provider_limited_call(
-            call=_send_request,
-            provider_key=self.provider_key,
-            provider_concurrency_caps=self.provider_concurrency_caps,
-            retry_settings=self.provider_retry_settings,
-            operation="gemini_interactions_count_input_tokens",
-            sleep_fn=self._provider_sleep_fn,
-            random_fn=self._provider_random_fn,
-            retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
-        )
+        with input_token_count_request():
+            return run_provider_limited_call(
+                call=_send_request,
+                provider_key=self.provider_key,
+                provider_concurrency_caps=self.provider_concurrency_caps,
+                retry_settings=self.provider_retry_settings,
+                operation="gemini_interactions_count_input_tokens",
+                sleep_fn=self._provider_sleep_fn,
+                random_fn=self._provider_random_fn,
+                retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
+            )
 
     def chat(
         self,
@@ -641,34 +644,35 @@ def _usage_from_response(data: dict[str, Any]) -> LLMUsage | None:
     usage = data.get("usageMetadata") or data.get("usage_metadata") or data.get("usage")
     if not isinstance(usage, dict):
         return None
-    prompt_tokens = _int_or_none(
-        usage.get("promptTokenCount")
-        or usage.get("prompt_tokens")
-        or usage.get("input_tokens")
-        or usage.get("total_input_tokens")
+
+    def first_count(*keys: str) -> int | None:
+        for key in keys:
+            value = usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+        return None
+
+    prompt_tokens = first_count(
+        "promptTokenCount", "prompt_tokens", "input_tokens", "total_input_tokens"
     )
-    completion_tokens = _int_or_none(
-        usage.get("candidatesTokenCount")
-        or usage.get("completion_tokens")
-        or usage.get("output_tokens")
-        or usage.get("total_output_tokens")
+    completion_tokens = first_count(
+        "candidatesTokenCount", "completion_tokens", "output_tokens", "total_output_tokens"
     )
-    tool_use_prompt_tokens = _int_or_none(
-        usage.get("toolUsePromptTokenCount")
-        or usage.get("tool_use_prompt_token_count")
-        or usage.get("tool_use_prompt_tokens")
+    tool_use_prompt_tokens = first_count(
+        "toolUsePromptTokenCount",
+        "tool_use_prompt_token_count",
+        "tool_use_prompt_tokens",
+        "total_tool_use_tokens",
     )
-    thoughts_tokens = _int_or_none(
-        usage.get("thoughtsTokenCount")
-        or usage.get("thoughts_token_count")
-        or usage.get("thinking_tokens")
-        or usage.get("total_thought_tokens")
+    thoughts_tokens = first_count(
+        "thoughtsTokenCount", "thoughts_token_count", "thinking_tokens", "total_thought_tokens"
     )
-    total_tokens = _int_or_none(usage.get("totalTokenCount") or usage.get("total_tokens"))
-    cached_tokens = _int_or_none(
-        usage.get("cachedContentTokenCount")
-        or usage.get("cached_content_token_count")
-        or usage.get("cached_prompt_tokens")
+    total_tokens = first_count("totalTokenCount", "total_tokens")
+    cached_tokens = first_count(
+        "cachedContentTokenCount",
+        "cached_content_token_count",
+        "cached_prompt_tokens",
+        "total_cached_tokens",
     )
     # Gemini reports tool-use prompts separately from the ordinary prompt and
     # candidates separately from thinking. Fold them into their billing sides;
@@ -685,14 +689,16 @@ def _usage_from_response(data: dict[str, Any]) -> LLMUsage | None:
     ):
         return None
     input_tokens_uncached = None
-    if prompt_tokens is not None and cached_tokens is not None:
-        input_tokens_uncached = max(0, prompt_tokens - cached_tokens)
+    if prompt_tokens is not None and cached_tokens is not None and prompt_tokens >= cached_tokens:
+        input_tokens_uncached = prompt_tokens - cached_tokens
     return LLMUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
         cached_prompt_tokens=cached_tokens,
         input_tokens_uncached=input_tokens_uncached,
+        input_tokens_uncached_derived=input_tokens_uncached is not None,
+        input_tokens_scope="interaction",
         cache_read_input_tokens=cached_tokens,
         reasoning_tokens=thoughts_tokens,
         raw_provider_usage=copy.deepcopy(usage),

@@ -57,6 +57,37 @@ def _first_criterion(contract, kind: AcceptanceCriterionKind):  # type: ignore[n
     return matches[0]
 
 
+@pytest.mark.parametrize("attached,private", [(True, False), (False, False), (True, True)])
+def test_attached_output_exists_only_with_current_folder_and_private_policy(
+    tmp_path, monkeypatch, attached, private
+):
+    from alysis_code.project_folders import folder_scope
+
+    root, extra = tmp_path / "main", tmp_path / "共有 assets"
+    root.mkdir()
+    extra.mkdir()
+    target = extra / "result.custom"
+    if private:
+        monkeypatch.setenv("ALYSIS_MEMORY_HOME", str(extra))
+    with folder_scope(root, [str(extra)] if attached else []):
+        contract = build_acceptance_contract(
+            root=root, instruction=f'Write the result to "{target}".'
+        )
+        criterion = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
+        finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
+        assert criterion.status == AcceptanceCriterionStatus.UNVERIFIED
+        target.write_text("observed output")
+        finalize_acceptance_contract(contract=contract, root=root, touched_paths={str(target)})
+        assert criterion.status == (
+            AcceptanceCriterionStatus.PASSED
+            if attached and not private
+            else AcceptanceCriterionStatus.UNVERIFIED
+        )
+        target.unlink()
+        finalize_acceptance_contract(contract=contract, root=root, touched_paths={str(target)})
+        assert criterion.status == AcceptanceCriterionStatus.UNVERIFIED
+
+
 def test_acceptance_contract_extracts_core_criteria(tmp_path: Path) -> None:
     contract = build_acceptance_contract(
         root=tmp_path,
@@ -129,6 +160,84 @@ def test_absolute_workspace_output_finalization_uses_workspace_relative_path(
     assert not (root / root.name / "regex.txt").exists()
 
 
+@pytest.mark.parametrize("separator", ["/", "\\"])
+def test_windows_path_with_directory_spaces_is_one_output(separator: str) -> None:
+    path = "C:/Users/test/Windows App/project/result.txt".replace("/", separator)
+    contract = build_acceptance_contract(
+        root=Path("C:/Users/test/Windows App/project"), instruction=f"Create {path}."
+    )
+    assert [(ref.display_path, ref.role) for ref in contract.path_refs] == [
+        ("result.txt", AcceptancePathRole.REQUIRED_OUTPUT)
+    ]
+    assert contract.allowed_output_paths == {"result.txt"}
+
+
+def test_boundary_probe_does_not_require_denied_targets(tmp_path: Path) -> None:
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction=(
+            "Create sandbox_boundary_probe.py inside this project. "
+            "Have it confirm it can write a normal project file, then attempt to read "
+            r"C:\Users\test\Windows App\outside\boundary-marker.txt "
+            r"and create outside\should-not-exist.txt in that same absolute outside folder. "
+            "Each outside operation must fail with PermissionError. "
+            "Then create results.txt containing the observed exception types."
+        ),
+    )
+    roles = {ref.display_path: ref.role for ref in contract.path_refs}
+    assert roles == {
+        "sandbox_boundary_probe.py": AcceptancePathRole.REQUIRED_OUTPUT,
+        "C:/Users/test/Windows App/outside/boundary-marker.txt": AcceptancePathRole.UNKNOWN_REFERENCE,
+        "outside/should-not-exist.txt": AcceptancePathRole.UNKNOWN_REFERENCE,
+        "results.txt": AcceptancePathRole.REQUIRED_OUTPUT,
+    }
+    # Mixed-folder prose does not mechanically bind relative names to the
+    # selected project. The agent still receives every original instruction.
+    assert not contract.allowed_output_paths
+    required_paths = {
+        path
+        for criterion in contract.required_criteria()
+        if criterion.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
+        for path in criterion.paths
+    }
+    assert not required_paths
+    assert {
+        path
+        for item in contract.criteria
+        if item.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
+        for path in item.paths
+    } == {"sandbox_boundary_probe.py", "results.txt"}
+
+
+@pytest.mark.parametrize("phrase", ["Do not create", "Never write", "Try to create"])
+def test_non_guaranteed_output_does_not_hide_later_required_output(
+    tmp_path: Path, phrase: str
+) -> None:
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction=f"{phrase} outside/denied.txt, then create report.txt.",
+    )
+    assert contract.allowed_output_paths == {"report.txt"}
+    roles = {ref.display_path: ref.role for ref in contract.path_refs}
+    assert roles["outside/denied.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
+    assert roles["report.txt"] == AcceptancePathRole.REQUIRED_OUTPUT
+
+
+def test_existing_probe_is_input_to_attempted_operation(tmp_path: Path) -> None:
+    contract = build_acceptance_contract(
+        root=tmp_path,
+        instruction=(
+            "Use the existing probe.py to attempt to read outside/input.txt "
+            "and create outside/denied.txt. Then create results.txt."
+        ),
+    )
+    roles = {ref.display_path: ref.role for ref in contract.path_refs}
+    assert roles["probe.py"] == AcceptancePathRole.EXISTING_INPUT
+    assert roles["outside/input.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
+    assert roles["outside/denied.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
+    assert contract.allowed_output_paths == {"results.txt"}
+
+
 def test_relative_and_external_paths_keep_distinct_models(tmp_path: Path) -> None:
     contract = build_acceptance_contract(
         root=tmp_path,
@@ -148,7 +257,8 @@ def test_relative_and_external_paths_keep_distinct_models(tmp_path: Path) -> Non
     assert required[0].path_refs[0].path_kind == AcceptancePathKind.WORKSPACE_RELATIVE
     assert required[1].path_refs[0].path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL
     assert required[1].path_refs[0].absolute_path == "/usr/local/bin/tool"
-    assert contract.allowed_output_paths == {"results/out.txt"}
+    assert not contract.allowed_output_paths
+    assert all(item.enforcement == AcceptanceCriterionEnforcement.ADVISORY for item in required)
 
 
 def test_preservation_clause_keeps_dotted_filename_and_does_not_require_output() -> None:

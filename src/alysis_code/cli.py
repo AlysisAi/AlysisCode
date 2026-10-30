@@ -40,14 +40,66 @@ def _apply_host_tls() -> None:
         print(f"ALYSIS_EXTRA_CA_CERTS ignored: {exc}", file=sys.stderr)
 
 
+def _apply_bundled_git() -> None:
+    """On Windows without Git, let restore points and Git tools use the engine's own
+    pinned Git (windows_toolchain.add_bundled_git_to_path). Never blocks startup."""
+    try:
+        from .windows_toolchain import add_bundled_git_to_path
+
+        add_bundled_git_to_path()
+    except Exception:  # pragma: no cover - defensive: never fail launch on this
+        pass
+
+
 _harden_stdio()
 _apply_host_tls()
+_apply_bundled_git()
 
 # Source-alignment markers for checks that read this legacy entrypoint after the
 # command implementation moved into cli_impl/commands.
 # Chat command marker: "/forge"
 # Prompt hotkey marker: @kb.add("c-b")
-from .cli_impl.commands.cli_surface import *
+import sys
+
+from .cli_impl.auth_status_entry import create_auth_status_app, is_auth_status_probe
+
+if is_auth_status_probe(sys.argv[1:]):
+    app = create_auth_status_app()
+else:
+    from .cli_impl.commands.root import app
+
+
+def _load_legacy_surface():
+    """Materialize interactive helpers only when a Python caller needs them.
+
+    Command registration and protocol startup use the same Typer app without
+    importing the interactive facade. Keep real objects (and existing caller
+    overrides), since the chat implementation copies this module's globals.
+    """
+    from .cli_impl.commands import cli_surface
+
+    namespace = globals()
+    for name in cli_surface.__all__:
+        namespace.setdefault(name, getattr(cli_surface, name))
+    namespace["__all__"] = cli_surface.__all__
+
+
+def __getattr__(name: str):
+    # Import machinery probes package attributes, which must not initialize the
+    # legacy facade while the canonical command registrations are still loading.
+    if name.startswith("__") and name not in {"__all__", "__version__"}:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    _load_legacy_surface()
+    try:
+        return globals()[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+
+def __dir__():
+    _load_legacy_surface()
+    return sorted(globals())
+
 
 if __name__ == "__main__":
     app()

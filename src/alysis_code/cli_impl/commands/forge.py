@@ -39,6 +39,7 @@ from ...plan_repair import (
 )
 from ...profiles import apply_runtime_base_url_override
 from ...review_gate import ReviewError, review_task
+from ..assets_cli import assets_app as forge_assets_app
 from . import _patchable
 from ._shared import Mode, _console, _Table
 from .forge_asset_view import forge_asset_view_count, forge_asset_view_entries
@@ -60,7 +61,7 @@ def _resolve_cli_host_pytest(candidate: Path | None) -> Path:
 
     selected = candidate
     if selected is None and not str(env_get("ALYSIS_FORGE_TRUSTED_PYTEST") or "").strip():
-        selected = Path(sys.executable).with_name("pytest")
+        selected = Path(sys.executable).with_name("pytest.exe" if os.name == "nt" else "pytest")
     return resolve_local_trusted_pytest(selected)
 
 
@@ -71,6 +72,7 @@ forge_app = typer.Typer(
         "default path; `forge swarm` is the parallel optimization for independent tasks."
     ),
 )
+forge_app.add_typer(forge_assets_app, name="assets")
 
 _MACHINE_CONTEXT_KEY = "alysis_forge_machine"
 

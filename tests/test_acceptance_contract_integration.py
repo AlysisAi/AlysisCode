@@ -10,7 +10,27 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
+
+
+@pytest.fixture(autouse=True)
+def acceptance_contract_host_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These inert-client tests exercise evidence, not native worker installation.
+
+    Keep file effects in the test's temporary workspace. Native sandbox admission
+    and installed-byte qualification are covered by their separate real gates.
+    """
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+    monkeypatch.setenv("ALYSIS_VERIFY_SANDBOX_MODE", "off")
+    # The scripted verifier/command handlers below are controlled test ports.
+    # Explicitly answer their approval cards; --yes is not a person decision.
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
+    )
 
 
 class _ScriptedClient:

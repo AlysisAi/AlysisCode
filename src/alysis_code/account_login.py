@@ -51,7 +51,7 @@ _DEFAULT_POLL_INTERVAL_S = 5.0
 # model picker, so an offline/slow gateway must not stall the menu for long.
 _MODELS_TIMEOUT_S = 6.0
 
-_FRESH_LOGIN_DEFAULT_MODEL = "deepseek-flash"
+_FRESH_LOGIN_DEFAULT_MODEL = "gpt-6-luna"
 
 
 class AlysisLoginError(Exception):
@@ -192,6 +192,164 @@ def _account_text(value: object) -> str | None:
     return value.strip()[:200] if isinstance(value, str) and value.strip() else None
 
 
+def _account_number(value: object) -> int | float | None:
+    """A finite JSON-safe number; bound integers before any float conversion."""
+    if type(value) not in (int, float):
+        return None
+    if not -(2**53 - 1) <= value <= 2**53 - 1:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _account_int(value: object, *, allow_none: bool = False) -> int | None | bool:
+    """A finite whole number within JSON-safe range; False means invalid."""
+    if value is None and allow_none:
+        return None
+    number = _account_number(value)
+    if number is None or number != int(number):
+        return False
+    return int(number)  # type: ignore[arg-type]
+
+
+def _account_paid(value: object) -> dict[str, Any] | None:
+    """Validate the optional paid-plan section (Plan 1 / Plan 5).
+
+    An invalid section is dropped rather than failing the whole account status,
+    so older and newer servers never make `whoami` lose the balance line.
+    """
+    if not isinstance(value, dict):
+        return None
+    plan = _account_text(value.get("plan"))
+    name = _account_text(value.get("plan_name"))
+    if plan is None or name is None:
+        return None
+    from .model_reasoning import hosted_model_capabilities
+    from .profile_presets import model_display_name
+
+    result: dict[str, Any] = {"plan": plan, "plan_name": name}
+    base = _account_int(value.get("base_monthly_credits_microusd"), allow_none=True)
+    unit = _account_int(value.get("ledger_microusd_per_base_credit"), allow_none=True)
+    monthly = _account_int(value.get("monthly_credits_microusd"))
+    if (
+        value.get("credit_unit_version") == "paid-base-display-v1"
+        and type(base) is int
+        and base > 0
+        and type(unit) is int
+        and unit > 0
+        and type(monthly) is int
+        and base <= monthly
+        and monthly * 10000 == base * unit
+    ):
+        result.update(
+            credit_unit_version="paid-base-display-v1",
+            base_monthly_credits_microusd=base,
+            ledger_microusd_per_base_credit=unit,
+        )
+    maximum = _account_int(value.get("max_usage_value_microusd"), allow_none=True)
+    if maximum is not False and maximum is not None and maximum >= 0:
+        result["max_usage_value_microusd"] = maximum
+    for field in (
+        "monthly_credits_microusd",
+        "cap_5h_microusd",
+        "burn_5h_microusd",
+        "max_output_tokens",
+    ):
+        number = _account_int(value.get(field))
+        if number is False or number is None or number < 0:
+            return None
+        result[field] = number
+    # Current servers explicitly null both obsolete daily fields. A partial or
+    # malformed window still invalidates only paid details, never the balance.
+    for cap_field, burn_field in (
+        ("cap_7d_microusd", "burn_7d_microusd"),
+        ("cap_day_microusd", "burn_day_microusd"),
+    ):
+        if value.get(cap_field) is None and value.get(burn_field) is None:
+            continue
+        for field in (cap_field, burn_field):
+            number = _account_int(value.get(field))
+            if number is False or number is None or number < 0:
+                return None
+            result[field] = number
+    if value.get("credit_period_days") is not None:
+        days = _account_int(value["credit_period_days"])
+        if type(days) is not int or days <= 0:
+            return None
+        result["credit_period_days"] = days
+    for field in (
+        "premium_month_limit_microusd",
+        "premium_month_used_microusd",
+        "premium_day_limit_microusd",
+        "premium_day_used_microusd",
+    ):
+        number = _account_int(value.get(field), allow_none=True)
+        if number is False or (number is not None and number < 0):
+            return None
+        result[field] = number
+    for field in ("credits_reset_at", "period_start", "upgrade_to"):
+        result[field] = _account_text(value.get(field))
+    models = value.get("models")
+    if not isinstance(models, list) or len(models) > 50:
+        return None
+    result["models"] = []
+    seen: set[str] = set()
+    for row in models:
+        if not isinstance(row, dict) or not _account_text(row.get("model")):
+            return None
+        model_id = _account_text(row["model"])
+        if model_id in seen:
+            return None
+        seen.add(model_id)
+        rates = row.get("microusd_per_million")
+        if not isinstance(rates, dict):
+            return None
+        parsed: dict[str, int] = {}
+        for key in ("input", "cached_input", "cache_write", "output"):
+            number = _account_int(rates.get(key))
+            if number is False or number is None or number < 0:
+                return None
+            parsed[key] = number
+        cap = _account_int(row.get("max_input_tokens"), allow_none=True)
+        if cap is False or (cap is not None and cap < 0):
+            return None
+        result["models"].append(
+            {
+                "model": _account_text(row["model"]),
+                "label": _account_text(row.get("label")) or model_display_name(str(row["model"])),
+                "price_tier": _account_text(row.get("price_tier")),
+                "max_input_tokens": cap,
+                "microusd_per_million": parsed,
+                **hosted_model_capabilities(str(row["model"])),
+            }
+        )
+        # Older servers omit conversion metadata. Preserve that distinction:
+        # rates must never silently claim a 1x conversion for a premium model.
+        multiplier = _account_number(row.get("credit_conversion_multiplier", row.get("multiplier")))
+        if type(row.get("available")) is bool:
+            result["models"][-1]["available"] = row["available"]
+            result["models"][-1]["availability_reason"] = _account_text(
+                row.get("availability_reason")
+            )
+        if multiplier is not None and multiplier > 0:
+            result["models"][-1]["credit_conversion_multiplier"] = multiplier
+        value_multiplier = _account_number(row.get("value_multiplier"))
+        allowance = _account_int(row.get("usage_allowance_microusd"), allow_none=True)
+        if (
+            row.get("shared_allowance") is True
+            and value_multiplier is not None
+            and value_multiplier > 0
+            and allowance is not False
+            and allowance is not None
+            and allowance >= 0
+        ):
+            result["models"][-1].update(
+                value_multiplier=value_multiplier,
+                usage_allowance_microusd=allowance,
+                shared_allowance=True,
+            )
+    return result
+
+
 def _account_billing(value: object) -> dict[str, Any] | None:
     """Validate the website's numerical contract without inventing missing balances."""
     if not isinstance(value, dict):
@@ -208,10 +366,8 @@ def _account_billing(value: object) -> dict[str, Any] | None:
         "burn_5h_microusd",
         "burn_7d_microusd",
     ):
-        number = value.get(field)
-        if type(number) not in (int, float) or not math.isfinite(number):
-            return None
-        if number != int(number) or abs(number) > 2**53 - 1:
+        number = _account_number(value.get(field))
+        if number is None or number != int(number):
             return None
         if field != "balance_microusd" and number < 0:
             return None
@@ -221,8 +377,7 @@ def _account_billing(value: object) -> dict[str, Any] | None:
             return None
         number = value.get(field)
         if number is not None and (
-            type(number) not in (int, float)
-            or not math.isfinite(number)
+            _account_number(number) is None
             or number < 0
             or number > 2**53 - 1
             or number != int(number)
@@ -237,6 +392,16 @@ def _account_billing(value: object) -> dict[str, Any] | None:
         return None
     for field in ("free_next_refill_at", "current_period_end"):
         result[field] = _account_text(value.get(field))
+    # Paid plans (server 2026-10-21+): keys appear only when the server sends them,
+    # so the Free contract stays byte-for-byte what older clients and tests expect.
+    if "credits_reset_at" in value:
+        result["credits_reset_at"] = _account_text(value.get("credits_reset_at"))
+    paid = _account_paid(value.get("paid"))
+    if paid is not None:
+        if "cap_7d_microusd" not in paid and type(result["cap_7d_microusd"]) is int:
+            paid["cap_7d_microusd"] = result["cap_7d_microusd"]
+            paid["burn_7d_microusd"] = result["burn_7d_microusd"]
+        result["paid"] = paid
     promotions = value.get("model_promotions")
     if not isinstance(promotions, list) or len(promotions) > 100:
         return None
@@ -244,12 +409,11 @@ def _account_billing(value: object) -> dict[str, Any] | None:
     for row in promotions:
         if not isinstance(row, dict):
             return None
-        multiplier = row.get("multiplier")
+        multiplier = _account_number(row.get("multiplier"))
         if (
             not _account_text(row.get("model"))
             or not _account_text(row.get("label"))
-            or type(multiplier) not in (int, float)
-            or not math.isfinite(multiplier)
+            or multiplier is None
             or multiplier < 1
             or multiplier > 2**53 - 1
         ):
@@ -347,10 +511,229 @@ def list_trial_models(cfg: AppConfig) -> list[str]:
     return models
 
 
+def billing_with_model_availability(
+    cfg: AppConfig, billing: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Intersect a new paid account catalog with the authenticated gateway catalog.
+
+    Membership, balances and rates remain unchanged. A failed availability read
+    closes model selection until retry rather than advertising an unverified route.
+    """
+    if not billing or not isinstance(billing.get("paid"), dict):
+        return billing
+    paid = billing["paid"]
+    if paid.get("credit_unit_version") != "paid-base-display-v1":
+        return billing
+    ids: set[str] | None = None
+    try:
+        key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+        if key:
+            request = urllib.request.Request(
+                cloud.models_url(),
+                method="GET",
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            )
+            with urllib.request.build_opener(_AccountNoRedirect()).open(
+                request, timeout=_MODELS_TIMEOUT_S
+            ) as response:
+                raw = response.read(65_537)
+            if len(raw) <= 65_536:
+                body = json.loads(raw)
+                rows = body.get("data") if isinstance(body, dict) else None
+                if (
+                    isinstance(rows, list)
+                    and len(rows) <= 100
+                    and all(isinstance(row, dict) and _account_text(row.get("id")) for row in rows)
+                ):
+                    ids = {str(row["id"]).strip() for row in rows}
+    except (
+        cloud.AlysisCloudConfigError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        UnicodeDecodeError,
+    ):
+        pass
+    models = []
+    for model in paid["models"]:
+        current = dict(model)
+        if current.get("available") is not False:
+            current["available"] = ids is not None and current["model"] in ids
+            current["availability_reason"] = (
+                None
+                if current["available"]
+                else (
+                    "Model availability could not be checked. Retry shortly."
+                    if ids is None
+                    else "Hosted access is not available yet."
+                )
+            )
+        models.append(current)
+    return {**billing, "paid": {**paid, "models": models}}
+
+
+def format_paid_plan_details(status: TrialStatus, *, detailed: bool = False) -> list[str]:
+    """Extra `whoami` lines for a paid plan: windows, Premium use and model rates."""
+    from .model_reasoning import hosted_model_capabilities
+
+    billing = status.billing or {}
+    paid = billing.get("paid")
+    if not paid:
+        return []
+
+    credit_unit = paid.get("ledger_microusd_per_base_credit", 10_000)
+
+    def credits(microusd: int | None) -> str:
+        value = (microusd or 0) / credit_unit
+        return f"{value:,.1f}".removesuffix(".0") if credit_unit != 10_000 else f"{value:,.0f}"
+
+    def usage_credits(microusd: int) -> str:
+        return f"{microusd / 10_000:,.0f}"
+
+    window_line = f"Last 5 hours: {credits(paid['burn_5h_microusd'])} of {credits(paid['cap_5h_microusd'])} credits"
+    if "cap_7d_microusd" in paid:
+        window_line += f" · last 7 days: {credits(paid['burn_7d_microusd'])} of {credits(paid['cap_7d_microusd'])}"
+    elif "cap_day_microusd" in paid:
+        window_line += f" · last 24 hours: {credits(paid['burn_day_microusd'])} of {credits(paid['cap_day_microusd'])}"
+    lines = [window_line]
+    if paid.get("credit_period_days"):
+        from .profile_presets import model_display_name
+
+        models = sorted(paid["models"], key=lambda row: row.get("available") is False)
+        available = sum(row.get("available") is not False for row in models)
+        lines.extend(
+            [
+                f"{credits(paid['monthly_credits_microusd'])} shared credits every {paid['credit_period_days']} days",
+                f"{len(models)} models · {available} available",
+                "Switching models uses the same credit balance.",
+                "Usage values share one allowance. They are not separate model balances.",
+                "",
+            ]
+        )
+        names = [row.get("label") or model_display_name(row["model"]) for row in models]
+        width = max([5, *(len(name) for name in names)])
+        lines.append(f"  {'Model':<{width}}  {'Usage credits':>15}  Status")
+        for row, name in zip(models, names, strict=True):
+            allowance = row.get("usage_allowance_microusd")
+            value = f"up to {usage_credits(allowance)}" if allowance is not None else "—"
+            state = "Unavailable" if row.get("available") is False else "Available"
+            lines.append(f"  {name:<{width}}  {value:>15}  {state}")
+            if detailed:
+                rates = row["microusd_per_million"]
+                lines.append(f"    ID: {row['model']}")
+                lines.append(
+                    f"    Credits per 1M tokens (input / cached / output): "
+                    f"{rates['input'] / credit_unit:g} / {rates['cached_input'] / credit_unit:g} / {rates['output'] / credit_unit:g}"
+                )
+                capabilities = hosted_model_capabilities(row["model"])
+                if capabilities.get("context_window_tokens"):
+                    lines.append(f"    Context: {capabilities['context_window_tokens']:,} tokens")
+                if capabilities.get("max_output_tokens"):
+                    lines.append(f"    Max output: {capabilities['max_output_tokens']:,} tokens")
+                choices = ", ".join(item["label"] for item in capabilities["reasoning_efforts"])
+                lines.append(
+                    f"    Effort: Auto{', ' + choices if choices else ' (provider default)'}"
+                )
+                default = capabilities["default_reasoning_effort"]
+                if default:
+                    label = next(
+                        item["label"]
+                        for item in capabilities["reasoning_efforts"]
+                        if item["id"] == default
+                    )
+                    lines.append(f"    Default: {label}")
+                if row.get("max_input_tokens"):
+                    lines.append(f"    Up to {row['max_input_tokens']:,} input tokens")
+                if row.get("available") is False and row.get("availability_reason"):
+                    lines.append(f"    {row['availability_reason']}")
+        if not detailed:
+            lines.append(
+                "Run `alysis whoami --details` for model IDs, token rates and reasoning options."
+            )
+        if paid.get("upgrade_to"):
+            lines.append("Need more? Run `alysis upgrade` to review available plans.")
+        return lines
+    if paid.get("premium_month_limit_microusd"):
+        lines.append(
+            f"Premium models this month: {credits(paid.get('premium_month_used_microusd'))}"
+            f" of {credits(paid['premium_month_limit_microusd'])} credits"
+            + (
+                f" · last 24 hours: {credits(paid.get('premium_day_used_microusd'))}"
+                f" of {credits(paid['premium_day_limit_microusd'])}"
+                if paid.get("premium_day_limit_microusd")
+                else ""
+            )
+        )
+    lines.extend(
+        [
+            f"{credits(paid['monthly_credits_microusd'])} monthly shared credits"
+            f" · {len(paid['models'])} included models",
+            "Switching models uses the same credit balance.",
+        ]
+    )
+    if (
+        paid.get("max_usage_value_microusd", 0) / 10_000
+        > paid["monthly_credits_microusd"] / credit_unit
+    ):
+        lines.append(
+            f"Up to {usage_credits(paid['max_usage_value_microusd'])} usage credits, depending on the model."
+        )
+    lines.append("Rates, credits per 1M tokens (input / cached / output):")
+    for row in paid["models"]:
+        rates = row["microusd_per_million"]
+        lines.append(
+            f"  {row['model']}: {rates['input'] / credit_unit:g} / {rates['cached_input'] / credit_unit:g}"
+            f" / {rates['output'] / credit_unit:g}"
+            + (
+                f" · up to {row['max_input_tokens']:,} input tokens"
+                if row.get("max_input_tokens")
+                else ""
+            )
+        )
+        capabilities = hosted_model_capabilities(row["model"])
+        efforts = capabilities["reasoning_efforts"]
+        choices = ", ".join(item["label"] for item in efforts)
+        lines.append(f"    Effort: Auto{', ' + choices if choices else ' (provider default)'}")
+        default = capabilities["default_reasoning_effort"]
+        metadata = []
+        if capabilities.get("context_window_tokens"):
+            metadata.append(f"Context: {capabilities['context_window_tokens']:,} tokens")
+        if capabilities.get("max_output_tokens"):
+            metadata.append(f"Max output: {capabilities['max_output_tokens']:,} tokens")
+        if row.get("available") is False:
+            metadata.append(
+                "Unavailable"
+                + (f": {row['availability_reason']}" if row.get("availability_reason") else "")
+            )
+        if default:
+            label = next(item["label"] for item in efforts if item["id"] == default)
+            metadata.append(f"Default: {label}")
+        multiplier = row.get("credit_conversion_multiplier")
+        if multiplier is not None:
+            metadata.append(f"Credit rate: {multiplier:.3g}×")
+        if row.get("shared_allowance") is True:
+            metadata.append(
+                f"Model value: {row['value_multiplier']:.3g}×"
+                f" · up to {usage_credits(row['usage_allowance_microusd'])} usage credits"
+            )
+        if metadata:
+            lines.append("    " + " · ".join(metadata))
+    if paid.get("upgrade_to"):
+        lines.append("Need more? Run `alysis upgrade` to review available plans.")
+    return lines
+
+
 def format_trial_status_line(status: TrialStatus) -> str | None:
     """A one-line account summary for `whoami`, or None if there's nothing to show."""
     if status.billing is not None:
         billing = status.billing
+        paid = billing.get("paid")
+        if paid is not None and not billing["unlimited_credits"]:
+            unit = paid.get("ledger_microusd_per_base_credit", 10_000)
+            line = f"{paid['plan_name']}: {max(0, billing['balance_microusd']) / unit:,.1f} credits left"
+            reset = _format_date(paid.get("credits_reset_at"))
+            return line + (f" · resets {reset}" if reset else "")
         if billing["unlimited_credits"]:
             return f"{status.plan or 'Account'}: unlimited credits"
         balance = billing["balance_microusd"]
@@ -579,11 +962,11 @@ def _format_token_usage(used: int | None, total: int | None) -> str | None:
 def _activate_alysis_profile(cfg: AppConfig, *, email: str | None) -> LoginResult:
     """Create + activate the `alysis` profile, keeping any model the user chose.
 
-    Fresh logins default to V4.1 Flash (``deepseek-flash``) so
+    Fresh logins default to GPT-6 Luna (``gpt-6-luna``, free credits) so
     connect → login → chat works with zero extra steps. Re-logins preserve
     whatever model the user selected since, so logging in again never undoes
-    supported choices. Retired Flash/beta ids are remapped to the current
-    default via the preset's model_aliases, including on re-login.
+    supported choices. Retired Free DeepSeek ids are remapped to
+    `glm-5.3-flash` via the preset's model_aliases, including on re-login.
     """
     preset = get_preset(cloud.PROFILE_KEY)
     if preset is not None:

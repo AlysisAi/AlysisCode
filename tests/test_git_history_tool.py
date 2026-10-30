@@ -264,3 +264,9 @@ def test_git_history_show_truncates_large_body_and_patch(tmp_path: Path) -> None
     assert result["patch_truncated"] is True
     assert len(result["patch_excerpt"]) <= _GIT_HISTORY_SHOW_PATCH_MAX_CHARS + 14
     assert result["patch_excerpt"].endswith("...(truncated)")
+
+
+@pytest.fixture(autouse=True)
+def history_semantics_without_os_backend(monkeypatch):
+    # These tests isolate Git history behavior; installed tests cover containment.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")

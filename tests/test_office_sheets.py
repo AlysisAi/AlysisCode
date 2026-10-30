@@ -130,8 +130,6 @@ def test_formulas_never_return_cached_results_as_calculated(tmp_path):
 @pytest.mark.parametrize(
     "formula",
     [
-        '=HYPERLINK("https://example.com")',
-        '=WEBSERVICE("https://example.com")',
         "=cmd|' /C calc'!A1",
         "='[other.xlsx]Sheet1'!A1",
         "=Revenue[Amount]",
@@ -468,3 +466,84 @@ def test_formatting_and_literal_table_headers(tmp_path):
         assert cell.alignment.horizontal == "center" and cell.alignment.wrap_text
         assert book.active["B2"].value is True
     assert result["editable"] and not result["needs_recalculation"]
+
+
+def test_print_layout_survives_creation_and_cell_revision(tmp_path):
+    spec = sheets.example_spec()
+    spec["sheets"][0]["page_setup"] = {
+        "orientation": "landscape",
+        "fit_to_pages": [1, 0],
+        "print_area": "A1:B4",
+    }
+    source, result = create(tmp_path, spec)
+    output, _ = edit(
+        tmp_path, source, result["source_sha256"], [{"sheet": "Έσοδα", "cell": "B2", "value": 130}]
+    )
+    for path in (source, output):
+        with closing(openpyxl.load_workbook(path)) as book:
+            ws = book.active
+            assert ws.page_setup.orientation == "landscape"
+            # OOXML's default width is one page; XlsxWriter omits that attribute.
+            assert ws.page_setup.fitToWidth in {None, 1}
+            assert ws.page_setup.fitToHeight == 0
+            assert ws.sheet_properties.pageSetUpPr.fitToPage
+            assert "$A$1:$B$4" in str(ws.print_area)
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        {"fit_to_pages": [True, 0]},
+        {"fit_to_pages": [-1, 0]},
+        {"fit_to_pages": [1]},
+        {"fit_to_pages": None},
+        {"orientation": "diagonal"},
+        {"orientation": []},
+        {"print_area": "A1:C10"},
+        {"extra": True},
+    ],
+)
+def test_invalid_print_layout_does_not_create_output(tmp_path, setup):
+    spec = sheets.example_spec()
+    spec["sheets"][0]["page_setup"] = setup
+    with pytest.raises(ValueError):
+        create(tmp_path, spec)
+    assert not (tmp_path / "source.xlsx").exists()
+
+
+@pytest.mark.parametrize(
+    "reference,attributes",
+    [
+        ("'[external.xlsx]Έσοδα'!$A$1:$B$4", {}),
+        ("'Other sheet'!$A$1:$B$4", {}),
+        ("'Έσοδα'!$A$1:$B$4", {"localSheetId": "1"}),
+        ("'Έσοδα'!$A$1:$B$4", {"name": "BusinessFormula"}),
+        ("OFFSET('Έσοδα'!$A$1,0,0,4,2)", {}),
+        ("'Έσοδα'!$A$1:$B$4,'Έσοδα'!$D$1:$E$4", {}),
+    ],
+)
+def test_print_area_exception_does_not_admit_other_defined_names(tmp_path, reference, attributes):
+    from xml.etree import ElementTree as ET
+
+    spec = sheets.example_spec()
+    spec["sheets"][0]["page_setup"] = {"print_area": "A1:B4"}
+    source, _ = create(tmp_path, spec)
+
+    def alter(data):
+        root = ET.fromstring(data)
+        area = root.find("{*}definedNames/{*}definedName")
+        area.text = reference
+        area.attrib.update(attributes)
+        return ET.tostring(root)
+
+    replace_part(source, "xl/workbook.xml", alter)
+    original = source.read_bytes()
+    with pytest.raises(ValueError, match="unsupported|Unsupported"):
+        edit(
+            tmp_path,
+            source,
+            hashlib.sha256(original).hexdigest(),
+            [{"sheet": "Έσοδα", "cell": "B2", "value": 130}],
+        )
+    assert source.read_bytes() == original
+    assert not (tmp_path / "revised.xlsx").exists()

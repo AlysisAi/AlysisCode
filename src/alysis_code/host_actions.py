@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Collection
+from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 from .desktop_connections import CONNECTION_TOOLS, connection_arguments, connection_result
@@ -12,6 +13,7 @@ from .open_panels import PANEL_TOOLS, panel_arguments, panel_result
 
 HOST_ACTION_PROTOCOL_VERSION = "1"
 HOST_ACTIONS: tuple[str, ...] = (
+    "plugin.skill.admit",
     "tasks.list",
     "tasks.run",
     "tasks.status",
@@ -30,6 +32,7 @@ HOST_ACTIONS: tuple[str, ...] = (
     "mcp.github.discover",
     "mcp.github.describe",
     "mcp.google.call",
+    "mcp.connector.call",
 )
 HOST_ACTIONS += tuple(
     spec[0] for spec in TERMINAL_TOOLS + BROWSER_TOOLS + CONNECTION_TOOLS + PANEL_TOOLS
@@ -60,6 +63,20 @@ GITHUB_WRITE_ACTIONS = frozenset(
         "github.git.fetch",
         "github.git.pull",
         "github.git.push",
+    }
+)
+# Host actions whose write effect changes an account on a remote service (GitHub,
+# Google). The user's rule: these always ask a person, even in Full Access, with no
+# AI-reviewer or allow-for-session approval. Local fetch/pull are not included.
+REMOTE_CONNECTOR_WRITE_ACTIONS = frozenset(
+    {
+        "github.pr.create",
+        "github.git.push",
+        "mcp.github.call",
+        "mcp.google.call",
+        # The user's own online plugins: every call to a tool the person didn't mark
+        # "only reads" is a write, so it asks a person (Plugins M2d).
+        "mcp.connector.call",
     }
 )
 HOST_ACTION_MAX_ARGUMENT_BYTES = 8 * 1024
@@ -104,6 +121,17 @@ class HostActionError(RuntimeError):
 HostActionHandler: TypeAlias = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class OperationScopedHostActionHandler:
+    """A host action handler that also names the host operation (bridge job) it serves now."""
+
+    request: HostActionHandler
+    operation_id: Callable[[], str | None]
+
+    def __call__(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self.request(action, arguments)
+
+
 def normalized_host_action_capabilities(actions: Collection[str] | None) -> frozenset[str]:
     if actions is None:
         return frozenset()
@@ -127,6 +155,16 @@ def normalize_host_action_arguments(action: str, arguments: dict[str, Any]) -> d
             "IDE host action arguments must be an object.",
         )
 
+    if normalized_action == "plugin.skill.admit":
+        from .ide import plugin_skill_admission as admission
+        from .ide.plugin_skill_projection import PluginSkillUnavailable
+
+        try:
+            return admission.selection(arguments)
+        except PluginSkillUnavailable as exc:
+            raise HostActionError(
+                "invalid_host_action_arguments", "Invalid plugin skill admission."
+            ) from exc
     if normalized_action.startswith("panels."):
         try:
             normalized = panel_arguments(normalized_action, arguments)
@@ -151,6 +189,14 @@ def normalize_host_action_arguments(action: str, arguments: dict[str, Any]) -> d
         from .mcp.google_host import normalize_google_arguments
 
         normalized = normalize_google_arguments(arguments)
+    elif normalized_action == "mcp.connector.call":
+        from .mcp.connector_host import is_verified_connector, normalize_connector_arguments
+
+        normalized = normalize_connector_arguments(arguments)
+        if is_verified_connector(normalized["plugin_id"]):
+            # A verified plugin's descriptor may raise its own limit (long pages); the call is
+            # checked against that limit with its bound catalog.
+            return normalized
     elif normalized_action in {"mcp.github.discover", "mcp.github.describe"}:
         from .mcp.github_discovery import discovery_arguments
 
@@ -227,6 +273,16 @@ def normalize_host_action_result(action: str, result: dict[str, Any]) -> dict[st
             "IDE host action result exceeds the allowed size.",
         )
 
+    if normalized_action == "plugin.skill.admit":
+        from .ide import plugin_skill_admission as admission
+        from .ide.plugin_skill_projection import PluginSkillUnavailable
+
+        try:
+            return admission.result(result)
+        except PluginSkillUnavailable as exc:
+            raise HostActionError(
+                "invalid_host_action_result", "Invalid plugin skill admission reply."
+            ) from exc
     if normalized_action.startswith("panels."):
         try:
             normalized = panel_result(normalized_action, result)
@@ -251,7 +307,7 @@ def normalize_host_action_result(action: str, result: dict[str, Any]) -> dict[st
         from .mcp.github_discovery import discovery_result
 
         normalized = discovery_result(normalized_action, result)
-    elif normalized_action in {"mcp.github.call", "mcp.google.call"}:
+    elif normalized_action in {"mcp.github.call", "mcp.google.call", "mcp.connector.call"}:
         from .mcp.github_host import normalize_mcp_call_result
 
         normalized = normalize_mcp_call_result(result)
@@ -676,8 +732,23 @@ def _normalize_github_arguments(action: str, args: dict[str, Any]) -> dict[str, 
         _reject_extra_keys(args, set())
         return {}
     if action in {"github.git.pull", "github.git.push"}:
-        _reject_extra_keys(args, {"branch"})
-        return {"branch": _github_branch(args.get("branch"), "branch")}
+        _reject_extra_keys(
+            args, {"branch", "expected_remote_head"} if action == "github.git.push" else {"branch"}
+        )
+        normalized = {"branch": _github_branch(args.get("branch"), "branch")}
+        if "expected_remote_head" in args:
+            value = args["expected_remote_head"]
+            if (
+                not isinstance(value, str)
+                or len(value) not in {40, 64}
+                or any(c not in "0123456789abcdef" for c in value)
+            ):
+                raise HostActionError(
+                    "invalid_host_action_payload",
+                    "A force-with-lease push requires the exact expected remote commit.",
+                )
+            normalized["expected_remote_head"] = value
+        return normalized
     if action == "github.pr.list":
         _reject_extra_keys(args, {"base", "head"})
         return {key: _github_branch(args[key], key) for key in ("base", "head") if key in args}

@@ -259,7 +259,9 @@ def test_session_restores_active_emitter_even_when_the_body_raises() -> None:
 
 def test_every_forge_command_accepts_machine_flag() -> None:
     runner = CliRunner()
-    forge_group = typer.main.get_command(alysis_app).commands["forge"]
+    root_group = typer.main.get_command(alysis_app)
+    forge_group = root_group.get_command(typer.Context(root_group), "forge")
+    assert forge_group is not None
     for command in ALL_FORGE_COMMANDS:
         result = runner.invoke(alysis_app, ["forge", command, "--help"])
         assert result.exit_code == 0, f"forge {command} --help failed"

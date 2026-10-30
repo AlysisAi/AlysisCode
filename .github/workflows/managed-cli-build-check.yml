@@ -39,7 +39,7 @@ jobs:
           - target: darwin-x64
             runner: macos-15-intel
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
           - target: linux-x64
             runner: ubuntu-22.04
             manylinux_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8

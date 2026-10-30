@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+from copy import deepcopy
 
 import pytest
 from PIL import Image
@@ -105,7 +106,7 @@ class VisualClient:
         self.calls = []
 
     def chat(self, *, messages, **kwargs):
-        self.calls.append(list(messages))
+        self.calls.append(deepcopy(messages))
         if len(self.calls) == 1:
             return LLMResponse(
                 content="",
@@ -142,7 +143,15 @@ def test_real_session_delivers_image_to_provider_without_persisting_base64(tmp_p
         provider = _responses_input_from_messages(client.calls[1])
         parts = [p for msg in provider for p in msg.get("content", []) if isinstance(p, dict)]
         assert any(p.get("type") == "input_image" for p in parts)
-        tool_message = next(m for m in client.calls[1] if m.get("tool_call_id") == "browser-view")
+        provider_call = next(
+            c
+            for m in client.calls[1]
+            for c in m.get("tool_calls", [])
+            if c.get("function", {}).get("name") == "embedded_browser_screenshot"
+        )
+        tool_message = next(
+            m for m in client.calls[1] if m.get("tool_call_id") == provider_call["id"]
+        )
         assert "base64" not in tool_message["content"]
         log_path = session.store.path
     finally:

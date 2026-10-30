@@ -107,6 +107,8 @@ class ProfilePreset:
     model_choices: tuple[ReviewedModel, ...] = ()
     # Hosted paid models need an authenticated catalog before picker display.
     paid_models: tuple[str, ...] = ()
+    # Short account/billing guidance for connection UIs; notes may contain CLI details.
+    connection_description: str = ""
 
     def __post_init__(self) -> None:
         if not self.model_choices:
@@ -374,6 +376,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         model_choices=(
             ReviewedModel("gpt-6-astra", "gpt-normal"),
             ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("gpt-6.1-terra", "gpt-normal"),
             ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
             ReviewedModel("gpt-5.6-terra", "gpt-normal"),
@@ -391,6 +394,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # output, 1.05M context.
             "gpt-6-astra": "default - GPT-6 flagship, reasoning always on, 1.05M",
             "gpt-6.1-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6.1-terra": "balanced - 1.05M context, Off through Max reasoning, Responses tools",
             "gpt-6-sol": "coding - previous Sol, complex agentic work, 1.05M context",
             "gpt-6-luna": "fast - latest Luna, low-cost focused work, 1.05M context",
             "gpt-5.6-terra": "advanced - balanced 5.6 tier at 1/5 the price, 1.05M",
@@ -441,6 +445,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         model_choices=(
             ReviewedModel("gpt-6-astra", "gpt-normal"),
             ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("gpt-6.1-terra", "gpt-normal"),
             ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
             ReviewedModel("gpt-5.6-terra", "gpt-normal"),
@@ -453,6 +458,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         suggested_model_descriptions={
             "gpt-6-astra": "default - GPT-6 flagship, reasoning always on, 1.05M",
             "gpt-6.1-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6.1-terra": "balanced - 1.05M context, Off through Max reasoning",
             "gpt-6-sol": "coding - previous Sol, complex agentic work, 1.05M context",
             "gpt-6-luna": "fast - latest Luna, low-cost focused work, 1.05M context",
             "gpt-5.6-terra": "advanced - balanced 5.6 tier at 1/5 the price, 1.05M",
@@ -965,10 +971,11 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
     ProfilePreset(
         key="zhipu",
         provider_key="zhipu",
-        label="Zhipu / GLM",
+        label="Zhipu / GLM (China)",
         protocol="openai_compat",
         base_url="https://open.bigmodel.cn/api/paas/v4/",
         api_key_env="ZHIPUAI_API_KEY",
+        connection_description="Uses a China BigModel account. Global Z.AI API keys and Coding Plan subscriptions use separate connections.",
         model_choices=(
             ReviewedModel("glm-5.3", "glm-normal"),
             ReviewedModel("glm-5.3-flash", "glm-normal"),
@@ -995,6 +1002,25 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         # The Zhipu web_search tool endpoint is model-independent; this is the
         # label attached to hosted-search results.
         web_search_model="glm-5.3",
+    ),
+    ProfilePreset(
+        key="zai",
+        provider_key="zai",
+        label="Z.AI GLM (pay-as-you-go)",
+        protocol="openai_compat",
+        base_url="https://api.z.ai/api/paas/v4",
+        api_key_env="ZAI_API_KEY",
+        model_choices=(
+            ReviewedModel("glm-5.3", "glm-normal"),
+            ReviewedModel("glm-5.3-flash", "glm-normal"),
+        ),
+        suggested_model_descriptions={
+            "glm-5.3": "default - agentic coding model",
+            "glm-5.3-flash": "fast - multimodal coding model",
+        },
+        validation_model="glm-5.3-flash",
+        connection_description="Uses your global Z.AI API balance. API usage is billed separately from a GLM Coding Plan subscription.",
+        setup_warning="Use a Standard API Key from Z.AI for this general API connection. Coding Plan quota uses the separate Coding Plan connection.",
     ),
     ProfilePreset(
         key="zai-coding-plan",
@@ -1026,9 +1052,12 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         validation_model="glm-5.3-flash",
         cache_capability=_ZAI_CODING_PLAN_CACHE_CAPABILITY,
         setup_warning=(
-            "Requires a Z.AI GLM Coding Plan key; general pay-as-you-go and "
-            "open.bigmodel.cn keys use different endpoints. Z.AI limits plan benefits "
-            "to supported coding tools, so verify Alysis Code eligibility for your account."
+            "Requires a Z.AI GLM Coding Plan key for supported agent tools. "
+            "General API balance and China BigModel keys use different endpoints and connections."
+        ),
+        connection_description=(
+            "Uses your Z.AI GLM Coding Plan subscription quota. "
+            "This is separate from the general Z.AI API, which is billed against API balance."
         ),
         notes=(
             "Subscription Coding Plan endpoint, not the general Z.AI or China Zhipu API. "
@@ -1193,6 +1222,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         api_key_env="MINIMAX_API_KEY",
         model_choices=(
             ReviewedModel("MiniMax-M3", "minimax-expanded"),
+            ReviewedModel("MiniMax-M3.1-Flash", "minimax-expanded"),
             ReviewedModel("MiniMax-M2.7", "minimax-normal"),
             ReviewedModel("MiniMax-M2.7-highspeed", "minimax-normal"),
             ReviewedModel("MiniMax-M2.5", "minimax-expanded"),
@@ -1203,6 +1233,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # MiniMax-M2 / M2.5 stay live as separately priced legacy ids, so
             # no alias remaps them.
             "MiniMax-M3": "default - 1M context, multimodal agentic coding",
+            "MiniMax-M3.1-Flash": "fast - 1M context, five reasoning effort levels",
             "MiniMax-M2.7": "coding - 204K context, prior flagship",
             "MiniMax-M2.7-highspeed": "fast - same weights as M2.7, latency-tuned",
             "MiniMax-M2.5": "fallback - stable prior generation, 204K",
@@ -1375,6 +1406,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         api_key_env="MISTRAL_API_KEY",
         model_choices=(
             ReviewedModel("mistral-medium-3-5", "mistral-normal"),
+            ReviewedModel("mistral-large-4", "mistral-normal"),
             ReviewedModel("mistral-large-2512", "mistral-normal"),
             ReviewedModel("mistral-small-2603", "mistral-expanded"),
             ReviewedModel("zai-glm-5-3", "glm-normal"),
@@ -1388,6 +1420,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # routes are Public Preview with 1M context and a 1-month
             # deprecation notice.
             "mistral-medium-3-5": "default - agentic and coding flagship, 256K",
+            "mistral-large-4": "advanced - Mistral Large 4, 1M context, Low/Medium/High reasoning",
             "mistral-large-2512": "advanced - mistral large 3, 675B MoE, 256K",
             "mistral-small-2603": "fast - mistral small 4, low latency",
             "zai-glm-5-3": "coding - hosted GLM-5.3, 1M context, preview tier",
@@ -1401,6 +1434,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # provider-managed -latest alias passes through unchanged.
             # devstral-2512 / magistral-* / mistral-medium-2508 were deprecated
             # 2026-05-22 (still callable under the 6-month GA notice policy).
+            "mistral-large-4-0": "mistral-large-4",
             "mistral-medium-2604": "mistral-medium-3-5",
             "mistral-medium-3": "mistral-medium-3-5",
             "mistral-medium-2508": "mistral-medium-3-5",
@@ -1670,6 +1704,9 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek-normal"),
             ReviewedModel("zai-org/GLM-5.3-Flash", "glm-normal"),
             ReviewedModel("MiniMaxAI/MiniMax-M3", "minimax-expanded"),
+            ReviewedModel("MiniMaxAI/MiniMax-M3.1-Flash", "minimax-expanded"),
+            ReviewedModel("reflection/Beam-1.0-501B-A23B", "general-expanded"),
+            ReviewedModel("nvidia/NVIDIA-Nemotron-3.5-Super-VL", "nemotron-expanded"),
             ReviewedModel("openai/gpt-oss-120b", "gpt-oss-expanded"),
             ReviewedModel("Qwen/Qwen3.5-9B", "qwen-expanded"),
         ),
@@ -1685,6 +1722,9 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "deepseek-ai/DeepSeek-V4-Flash-0731": "fast - current 1M-context release",
             "zai-org/GLM-5.3-Flash": "economy - cheapest 1M-context tool caller",
             "MiniMaxAI/MiniMax-M3": "multimodal - 512K context, vision + agentic coding",
+            "MiniMaxAI/MiniMax-M3.1-Flash": "fast - 1M context, five reasoning effort levels",
+            "reflection/Beam-1.0-501B-A23B": "coding - 1M text context, five reasoning effort levels",
+            "nvidia/NVIDIA-Nemotron-3.5-Super-VL": "multimodal - 262K context, low/medium/high reasoning",
             "openai/gpt-oss-120b": "open - larger tool-capable GPT-OSS model, 128K context",
             "Qwen/Qwen3.5-9B": "fallback - small vision + tool model, 262K context",
         },
@@ -1770,43 +1810,75 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         provider_key="alysis",
         label="Alysis Code",
         protocol="openai_compat",
-        # Device login supplies the deployment URL at runtime.
+        # Resolve the hosted endpoint from portable cloud configuration when
+        # materializing a profile; never bake a deployment into the preset.
         base_url="",
         api_key_env=None,
         # Free models are available offline; paid models require the authenticated
         # gateway catalog before the managed account picker offers them.
+        # Open models run on Together AI and Mistral Large 4 on Mistral AI
+        # (Oct 23, 2026); DeepSeek is paid-only, under a new id.
         model_choices=(
-            ReviewedModel("deepseek-flash", "deepseek-expanded"),
             ReviewedModel("glm-5.3-flash", "glm-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
             ReviewedModel("claude-haiku-5-5", "claude-normal"),
-            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("deepseek-v4.1-flash", "deepseek-expanded"),
+            ReviewedModel("deepseek-v4-pro", "deepseek-normal"),
+            ReviewedModel("mistral-large-4", "mistral-normal"),
+            ReviewedModel("minimax-m3.1-flash", "minimax-expanded"),
+            ReviewedModel("reflection-beam", "general-expanded"),
+            ReviewedModel("nemotron-3.5-super-vl", "general-expanded"),
+            ReviewedModel("glm-5.3", "glm-normal"),
+            ReviewedModel("kimi-k3", "kimi-normal"),
+            ReviewedModel("gpt-6.1-terra", "gpt-normal"),
+            ReviewedModel("qwen3.8-2.4t", "qwen-normal"),
         ),
         suggested_model_descriptions={
             "claude-haiku-5-5": "Claude Haiku 5.5 - fast coding, 1M context, Free credits; 5x rates above 100K input",
             "gpt-6-luna": "GPT-6 Luna - efficient coding and reasoning, included with free credits",
-            "gpt-6.1-sol": "GPT-6.1 Sol - coding and reasoning, paid plans only",
-            "deepseek-flash": (
-                "DeepSeek V4.1 Flash - vision and reasoning, 1M context, included with free credits"
-            ),
-            "glm-5.3-flash": (
-                "GLM 5.3 Flash - coding and reasoning, 1M context, included with free credits"
-            ),
+            "deepseek-v4.1-flash": "DeepSeek V4.1 Flash - reasoning and coding, 1M context, Beta and Alpha",
+            "deepseek-v4-pro": "DeepSeek V4 Pro - deep reasoning and coding, 1M context, Alpha",
+            "mistral-large-4": "Mistral Large 4 (Preview) - coding, 1M context, Alpha",
+            "minimax-m3.1-flash": "MiniMax M3.1 Flash - 1M context, Beta and Alpha, text and code",
+            "reflection-beam": "Reflection Beam - 1M context, Beta and Alpha, text and code",
+            "nemotron-3.5-super-vl": "NVIDIA Nemotron 3.5 Super VL - 262K context, Beta and Alpha, text and code",
+            "glm-5.3": "GLM 5.3 - 1M context, Low/High/Max reasoning, Alpha, text and code",
+            "kimi-k3": "Kimi K3 - Alpha, text and code",
+            "gpt-6.1-terra": "GPT-6.1 Terra - 1.05M context, Off through Max reasoning; account access applies",
+            "qwen3.8-2.4t": "Qwen 3.8 2.4T - availability is controlled by the account catalog",
+            "glm-5.3-flash": "GLM 5.3 Flash - coding and reasoning, 1M context, included with free credits",
         },
-        validation_model="deepseek-flash",
-        paid_models=("gpt-6.1-sol",),
+        validation_model="glm-5.3-flash",
+        paid_models=(
+            "minimax-m3.1-flash",
+            "reflection-beam",
+            "nemotron-3.5-super-vl",
+            "glm-5.3",
+            "kimi-k3",
+            "gpt-6.1-terra",
+            "qwen3.8-2.4t",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "mistral-large-4",
+        ),
         cache_capability=CacheCapabilitySpec(
             model_family_overrides=(("claude-haiku-5-5", _cache_minimum(512)),), source="preset"
         ),
-        # Migrate retired Flash/beta ids to the free default. Do not silently
-        # redirect models from the retired Xiaomi trial to another provider.
+        # Older releases defaulted to DeepSeek on Free credits. DeepSeek is now
+        # paid-only (as deepseek-v4.1-flash), so saved legacy ids move to GLM 5.3
+        # Flash, the other free chat model, instead of failing; paid users pick
+        # DeepSeek again from the account catalog.
         model_aliases={
-            "deepseek-v4-flash": "deepseek-flash",
-            "deepseek-v4-flash-vision-exp": "deepseek-flash",
-            "deepseek-v4.1-flash-expires-on-0910": "deepseek-flash",
+            "deepseek-flash": "glm-5.3-flash",
+            "deepseek-v4-flash": "glm-5.3-flash",
+            "deepseek-v4-flash-vision-exp": "glm-5.3-flash",
+            "deepseek-v4.1-flash-expires-on-0910": "glm-5.3-flash",
         },
         setup_warning="Run `alysis login` to connect your Alysis account and use free credits.",
-        notes="DeepSeek V4.1 Flash, GLM 5.3 Flash, GPT-6 Luna, and Claude Haiku 5.5 with free credits. Authenticate with `alysis login`.",
+        notes=(
+            "GLM 5.3 Flash, GPT-6 Luna, and Claude Haiku 5.5 with free credits; paid plans add "
+            "DeepSeek, MiniMax, Mistral and other models from your account catalog. Authenticate with `alysis login`."
+        ),
     ),
     ProfilePreset(
         key="ollama",
@@ -1855,13 +1927,39 @@ def get_preset(key: str) -> ProfilePreset | None:
     return PRESET_BY_KEY.get(str(key or "").strip().lower())
 
 
+def _preset_base_url(preset: ProfilePreset) -> str:
+    if preset.key == "alysis":
+        from .alysis_cloud import gateway_base_url
+
+        return gateway_base_url()
+    return preset.base_url
+
+
 def model_display_name(model: str) -> str:
     """Display a release name while retaining the routing ID in configuration."""
     return {
         "deepseek-flash": "DeepSeek V4.1 Flash",
+        "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+        "deepseek-v4-pro": "DeepSeek V4 Pro",
+        "minimax-m3": "MiniMax M3",
+        "mistral-large-4": "Mistral Large 4 (Preview)",
+        "minimax-m3.1-flash": "MiniMax M3.1 Flash",
+        "minimaxai/minimax-m3.1-flash": "MiniMax M3.1 Flash",
+        "qwen3.8-flash": "Qwen3.8 Flash",
+        "gpt-oss-120b": "GPT-OSS 120B",
+        "reflection-beam": "Reflection Beam",
+        "reflection/beam-1.0-501b-a23b": "Reflection Beam",
+        "nemotron-3.5-super-vl": "NVIDIA Nemotron 3.5 Super VL",
+        "nvidia/nvidia-nemotron-3.5-super-vl": "NVIDIA Nemotron 3.5 Super VL",
+        "mistral-small-4": "Mistral Small 4",
+        "glm-5.3": "GLM 5.3",
+        "kimi-k3": "Kimi K3",
+        "muse-spark-open": "Muse Spark Open",
         "glm-5.3-flash": "GLM 5.3 Flash",
         "gpt-6-luna": "GPT-6 Luna",
         "gpt-6.1-sol": "GPT-6.1 Sol",
+        "gpt-6.1-terra": "GPT-6.1 Terra",
+        "qwen3.8-2.4t": "Qwen 3.8 2.4T",
         "claude-sonnet-5-5": "Claude Sonnet 5.5",
         "claude-haiku-5-5": "Claude Haiku 5.5",
         "grok-4.7": "Grok 4.7",
@@ -1877,6 +1975,12 @@ def model_options_for_preset(
     for model in preset.suggested_models:
         model_id = str(model or "").strip()
         if not model_id or model_id in seen:
+            continue
+        if (
+            preset.key == "alysis"
+            and available_models is not None
+            and model_id not in available_models
+        ):
             continue
         if model_id in preset.paid_models and model_id not in (available_models or set()):
             continue
@@ -1926,7 +2030,7 @@ def find_preset_for_base_url(base_url: str) -> ProfilePreset | None:
     for preset in PROFILE_PRESETS:
         if preset.key == "custom":
             continue
-        if _normalized_base_url(preset.base_url) == normalized:
+        if _normalized_base_url(_preset_base_url(preset)) == normalized:
             matches.append(preset)
     if not matches:
         return None
@@ -1943,7 +2047,7 @@ def _profile_matches_preset(profile: ProfileSpec, preset: ProfilePreset) -> bool
     if preset.key == "alysis":
         return is_alysis_gateway_url(profile.base_url)
     profile_url = _normalized_base_url(profile.base_url)
-    preset_url = _normalized_base_url(preset.base_url)
+    preset_url = _normalized_base_url(_preset_base_url(preset))
     if not profile_url or not preset_url or profile_url != preset_url:
         return False
     return True
@@ -2037,7 +2141,7 @@ def convert_profile_to_preset(profile: ProfileSpec, preset: ProfilePreset) -> Pr
     return ProfileSpec(
         name=profile.name,
         protocol=preset.protocol,
-        base_url=preset.base_url,
+        base_url=_preset_base_url(preset),
         api_key_env=profile.api_key_env or preset.api_key_env,
         extra_headers=dict(profile.extra_headers),
         default_model=default_model,
@@ -2150,14 +2254,11 @@ def make_profile_from_preset(
     *,
     name: str | None = None,
 ) -> ProfileSpec:
-    from . import alysis_cloud
-
     profile_name = str(name or preset.key).strip().lower()
-    base_url = alysis_cloud.gateway_base_url() if preset.key == "alysis" else preset.base_url
     return ProfileSpec(
         name=profile_name,
         protocol=preset.protocol,
-        base_url=base_url,
+        base_url=_preset_base_url(preset),
         api_key_env=preset.api_key_env,
         extra_headers=dict(preset.extra_headers),
         default_model=preset.suggested_models[0] if preset.suggested_models else "",

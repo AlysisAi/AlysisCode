@@ -12,7 +12,6 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from .agent.prompt_context import _build_user_message
 from .branding import env_get
 from .command_text import command_text
 from .compaction.settings import resolve_compaction_settings
@@ -43,6 +42,7 @@ from .runtime_artifacts import (
     RUNTIME_ARTIFACT_DIR_NAMES,
     is_runtime_artifact_path,
 )
+from .runtime_kind import RuntimeKind
 from .serialized_paths import safe_serialized_path
 from .session_store import resolve_sessions_dir, sanitize_session_id
 from .step_budget import (
@@ -63,6 +63,12 @@ _SNAPSHOT_HASH_MAX_BYTES = 1 * 1024 * 1024
 _TASK_IMAGES_ENV = "ALYSIS_TASK_IMAGES"
 _DEFAULT_SNAPSHOT_EXCLUDES = RUNTIME_ARTIFACT_DIR_NAMES
 _READ_ONLY_GIT_TIMEOUT_S = 5.0
+
+
+def _build_user_message(*args: Any, **kwargs: Any) -> Any:
+    from .agent.prompt_context import _build_user_message as build
+
+    return build(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -647,6 +653,7 @@ def build_task_execution_instruction_bundle(
         allow_write_globs=allow_write_globs,
         non_interactive=non_interactive,
         one_shot_execution=False,
+        runtime_kind=RuntimeKind.FORGE_EXEC,
         verification_enabled=verification_enabled,
         authoritative_verification_commands=authoritative_verification_commands,
         trusted_system_prompt_override=trusted_system_prompt_override,

@@ -62,6 +62,11 @@ def computer_use_terminal_failure_code(exit_code: int, reason: object) -> str | 
         return None
     if type(reason) is str and reason in (
         "computer_use_no_trusted_host_call",
+        "computer_use_action_budget_exhausted",
+        "computer_use_window_selection_exhausted",
+        "computer_use_observation_arguments_invalid",
+        "computer_use_observation_recovery_incomplete",
+        "computer_use_observation_stalled",
         "computer_use_transition_unobserved",
         "computer_use_itinerary_incomplete",
         "computer_use_file_setup_required",
@@ -349,6 +354,11 @@ def computer_use_provider_diagnostic(error: BaseException) -> ComputerUseProvide
         if category == FailureCategory.IMPLEMENTATION_FAILED.value:
             try:
                 candidate = classify_failure_category(current).value
+                if (
+                    candidate == FailureCategory.IMPLEMENTATION_FAILED.value
+                    and _attribute(current, "provider_error_origin") == "responses_stream"
+                ):
+                    candidate = FailureCategory.PROVIDER_ERROR.value
             except BaseException:  # noqa: BLE001 - retain only the closed fallback
                 candidate = category
             category = _allowed_text(candidate, DIAGNOSTIC_CATEGORIES, category)

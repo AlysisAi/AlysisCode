@@ -18,10 +18,10 @@ Design constraints:
   third-party dependencies (httpx, pydantic, rich).
 * Deterministic and idempotent: ``redact(redact(t)) == redact(t)``.
 * Fast: one precompiled alternation covers every known spelling of every
-  captured value, and one further combined pass covers risky assignment
-  patterns, so a line costs two regex scans regardless of how many secrets are
-  known. Run ``python -m alysis_code.logging_redaction`` for a
-  micro-benchmark.
+  captured value. Risky assignment matching uses a lowercase view for ASCII
+  logs while retaining original payloads and syntax; Unicode logs use the full
+  case-insensitive matcher. Run ``python -m alysis_code.logging_redaction`` for
+  a micro-benchmark.
 
 What is captured
 ----------------
@@ -153,8 +153,7 @@ def _value_variants(value: str) -> list[str]:
 # Assignment-style and Authorization-header patterns whose payload is long and
 # high-entropy. The payload class excludes the guillemets used by the
 # placeholders, so an already-redacted string can never be re-matched.
-_RISKY_PATTERN_RE = re.compile(
-    r"""
+_RISKY_PATTERN = r"""
     (?:
         \b(?:
             api[-_]?key | access[-_]?key | secret[-_]?key | client[-_]?secret
@@ -167,9 +166,9 @@ _RISKY_PATTERN_RE = re.compile(
         |
         \b bearer \s+ (?P<bearer> [A-Za-z0-9._~+/=-]{16,})
     )
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
+    """
+_RISKY_PATTERN_RE = re.compile(_RISKY_PATTERN, re.VERBOSE | re.IGNORECASE)
+_LOWERCASE_RISKY_PATTERN_RE = re.compile(_RISKY_PATTERN, re.VERBOSE)
 
 
 def _replace_risky(match: re.Match) -> str:
@@ -187,6 +186,28 @@ def _replace_risky(match: re.Match) -> str:
     # The payload is always the tail of the match, so keeping everything before
     # it preserves the surrounding syntax (including JSON quoting).
     return match.group(0)[: payload_start - match.start()] + _PATTERN_PLACEHOLDER
+
+
+def _redact_ascii_risky(text: str) -> str:
+    # The caller proves that the original input and placeholder names are ASCII.
+    # Exact substitutions can add only the non-word guillemets, whose lowercase
+    # spelling and width are unchanged. Match offsets therefore still refer to
+    # the original text. Entropy must use original casing: AaBbCcDd has more
+    # entropy than aabbccdd, even though the matching view is lowercase.
+    parts: list[str] = []
+    previous_end = 0
+    for match in _LOWERCASE_RISKY_PATTERN_RE.finditer(text.lower()):
+        group = "assigned" if match.group("assigned") is not None else "bearer"
+        payload_start, payload_end = match.span(group)
+        payload = text[payload_start:payload_end]
+        if _shannon_entropy_bits_per_char(payload) < MIN_PATTERN_ENTROPY_BITS_PER_CHAR:
+            continue
+        parts.extend((text[previous_end:payload_start], _PATTERN_PLACEHOLDER))
+        previous_end = payload_end
+    if not parts:
+        return text
+    parts.append(text[previous_end:])
+    return "".join(parts)
 
 
 class SecretRedactor:
@@ -216,6 +237,7 @@ class SecretRedactor:
                 # the alphabetically-first name wins. Deterministic either way.
                 replacements.setdefault(variant, placeholder)
         self.secret_names: tuple[str, ...] = tuple(names)
+        self._ascii_placeholder_names = all(name.isascii() for name in names)
         self._replacements = replacements
         self._exact_re = self._compile(replacements)
 
@@ -235,8 +257,11 @@ class SecretRedactor:
         """Return ``text`` with every known secret value and risky payload masked."""
         if not text:
             return text
+        ascii_input = text.isascii() and self._ascii_placeholder_names
         if self._exact_re is not None:
             text = self._exact_re.sub(self._replace_exact, text)
+        if ascii_input:
+            return _redact_ascii_risky(text)
         return _RISKY_PATTERN_RE.sub(_replace_risky, text)
 
 

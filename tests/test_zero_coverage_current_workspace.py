@@ -40,7 +40,7 @@ def test_deleted_module_is_omitted_but_recreation_requires_coverage(tmp_path: Pa
 def test_final_coverage_marker_uses_files_remaining_after_actual_delete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recreate: bool
 ) -> None:
-    monkeypatch.delenv("ALYSIS_ZERO_COVERAGE_ADVISORY", raising=False)
+    monkeypatch.setenv("ALYSIS_ZERO_COVERAGE_ADVISORY", "on")
     session = _session(tmp_path)
     responses = [
         LLMResponse(

@@ -1,15 +1,12 @@
+from importlib import import_module
+from typing import TYPE_CHECKING
+
 from .conventions import load_repo_conventions, render_repo_conventions_context
 from .discovery import (
     discover_skills,
     resolve_bundled_skills_enabled,
     resolve_skill_by_name,
     resolve_skills_enabled,
-)
-from .install import (
-    SkillInstallResult,
-    SkillRemoveResult,
-    install_skill_bundle,
-    remove_managed_skill,
 )
 from .loader import SkillReadError, read_skill_bundle_file
 from .matching import match_skills
@@ -35,7 +32,6 @@ from .prompting import (
     build_skill_advertise_block,
     render_skill_info_text,
 )
-from .scaffold import SkillScaffoldResult, scaffold_skill_bundle
 from .state import (
     ManagedSkillRecord,
     SkillCatalog,
@@ -56,6 +52,42 @@ from .state import (
     set_project_skill_override,
 )
 from .validation import SkillValidationIssue, SkillValidationResult, validate_skill_bundle
+
+if TYPE_CHECKING:
+    from .install import (
+        SkillInstallResult,
+        SkillRemoveResult,
+        install_skill_bundle,
+        remove_managed_skill,
+    )
+    from .scaffold import SkillScaffoldResult, scaffold_skill_bundle
+
+
+# Discovery and prompt construction do not install or scaffold bundles.
+# Keep the existing public API while loading these implementations on first use.
+_MANAGEMENT_EXPORTS = {
+    "SkillInstallResult": "install",
+    "SkillRemoveResult": "install",
+    "install_skill_bundle": "install",
+    "remove_managed_skill": "install",
+    "SkillScaffoldResult": "scaffold",
+    "scaffold_skill_bundle": "scaffold",
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name = _MANAGEMENT_EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(import_module(f".{module_name}", __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | _MANAGEMENT_EXPORTS.keys())
+
 
 __all__ = [
     "ConventionDocument",

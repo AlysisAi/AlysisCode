@@ -118,12 +118,21 @@ def chat_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def run_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
-    _sync_cli_globals(cli_mod)
-    _sync_loop_globals_from_public()
-    return _loop_module().run(*args, **kwargs)
+    from ..run import run_impl as execute
+
+    overrides = {
+        name: value
+        for name, value in globals().items()
+        if name not in _PUBLIC_FACADE_NAMES and _PUBLIC_LOOP_COPY_VALUES.get(name) is not value
+    }
+    return execute(cli_mod, *args, dependency_overrides=overrides, **kwargs)
 
 
 def __getattr__(name: str) -> Any:
+    if name == "__all__":
+        return tuple(sorted(_exported_names()))
+    if name.startswith("__") and name != "__version__":
+        raise AttributeError(name)
     _copy_loop_globals_to_public()
     if name in globals():
         return globals()[name]
@@ -139,6 +148,3 @@ def _exported_names() -> set[str]:
 
 def __dir__() -> list[str]:
     return sorted(_exported_names())
-
-
-__all__ = tuple(sorted(_exported_names()))

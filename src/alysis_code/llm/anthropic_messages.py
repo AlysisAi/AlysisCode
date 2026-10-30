@@ -11,10 +11,17 @@ import httpx
 
 from ..cancellation import CooperativeCancellationError
 from ..error_text import sanitize_error_text_for_output
+from ..mcp import github_policy_json
+from ..mcp.github_policy_json import arguments as github_policy_arguments
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from ..request_estimation import estimate_provider_payload_tokens
 from ..web_search_adapters import ANTHROPIC_MESSAGES_ADAPTER, AUTO_WEB_SEARCH_ADAPTER
-from .base import omitted_reasoning_display_required, serial_tool_calls_required
+from .base import (
+    input_token_count_request,
+    omitted_reasoning_display_required,
+    scoped_input_token_counter,
+    serial_tool_calls_required,
+)
 from .cache_capabilities import CACHE_CONTROL_FIELD
 from .cache_control_blocks import (
     count_cache_control_blocks,
@@ -63,6 +70,7 @@ from .types import (
     UsageConfidence,
     UsageContract,
 )
+from .types import parse_token_count as _as_non_negative_int
 
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_MESSAGES_ROUTE_REVISION = _DEFAULT_ANTHROPIC_VERSION
@@ -1014,15 +1022,6 @@ def _parse_usage(raw: Any) -> LLMUsage | None:
     if not isinstance(raw, dict):
         return None
 
-    def _as_non_negative_int(value: Any) -> int | None:
-        try:
-            parsed = int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-        if parsed is None or parsed >= 0:
-            return parsed
-        return None
-
     input_tokens = _as_non_negative_int(raw.get("input_tokens"))
     output_tokens = _as_non_negative_int(raw.get("output_tokens"))
     output_details = raw.get("output_tokens_details")
@@ -1056,7 +1055,7 @@ def _parse_usage(raw: Any) -> LLMUsage | None:
         value is not None for value in (cache_read_input_tokens, cache_creation_input_tokens)
     )
     prompt_tokens = input_tokens
-    if has_cache_accounting:
+    if has_cache_accounting and input_tokens is not None:
         prompt_tokens = sum(
             value or 0
             for value in (input_tokens, cache_read_input_tokens, cache_creation_input_tokens)
@@ -1428,7 +1427,8 @@ class _AnthropicStreamAccumulator:
                 block["input"] = {}
             return
         try:
-            parsed = json.loads(joined)
+            checked = github_policy_arguments(joined, str(block.get("name") or ""))
+            parsed = checked if checked is not None else json.loads(joined)
         except json.JSONDecodeError as exc:
             raise LLMError(
                 "Anthropic Messages stream emitted malformed tool input JSON "
@@ -1636,6 +1636,7 @@ class AnthropicMessagesClient:
         error.provider_error_body = safe_body
         return error
 
+    @scoped_input_token_counter
     def count_input_tokens(
         self,
         *,
@@ -1731,16 +1732,17 @@ class AnthropicMessagesClient:
                 raw_provider_usage=copy.deepcopy(data),
             )
 
-        return run_provider_limited_call(
-            call=_send_request,
-            provider_key=self.provider_key,
-            provider_concurrency_caps=self.provider_concurrency_caps,
-            retry_settings=self.provider_retry_settings,
-            operation="anthropic_messages_count_input_tokens",
-            sleep_fn=self._provider_sleep_fn,
-            random_fn=self._provider_random_fn,
-            retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
-        )
+        with input_token_count_request():
+            return run_provider_limited_call(
+                call=_send_request,
+                provider_key=self.provider_key,
+                provider_concurrency_caps=self.provider_concurrency_caps,
+                retry_settings=self.provider_retry_settings,
+                operation="anthropic_messages_count_input_tokens",
+                sleep_fn=self._provider_sleep_fn,
+                random_fn=self._provider_random_fn,
+                retry_deadline_allows=getattr(self, "_provider_retry_deadline_allows", None),
+            )
 
     def chat(
         self,
@@ -2432,6 +2434,8 @@ class AnthropicMessagesClient:
         )
         for frame in iter_sse_frames(response.iter_lines()):
             raw_event = parse_sse_json_frame(frame, stream_name="Anthropic Messages stream")
+            if github_policy_json.active():
+                raw_event = github_policy_json.provider_payload(frame.data, protocol="anthropic")
             if not isinstance(raw_event, dict):
                 raise LLMError("Anthropic Messages stream emitted non-object JSON event")
             accumulator.handle(frame, raw_event)
@@ -2451,7 +2455,11 @@ class AnthropicMessagesClient:
         on_reasoning_delta: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         try:
-            data = response.json()
+            data = (
+                github_policy_json.provider_payload(response.text, protocol="anthropic")
+                if github_policy_json.active()
+                else response.json()
+            )
         except Exception as e:  # noqa: BLE001
             raise LLMError("Anthropic Messages returned non-JSON response") from e
         if not isinstance(data, dict):

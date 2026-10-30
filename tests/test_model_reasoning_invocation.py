@@ -92,7 +92,7 @@ def test_secondary_model_does_not_inherit_selected_models_effort(monkeypatch):
     "cfg",
     [
         config("unknown-model"),
-        config(url="https://another-provider.test/v1"),
+        config("unknown-model", url="https://another-provider.test/v1"),
         config(protocol="openai_compat"),
     ],
 )

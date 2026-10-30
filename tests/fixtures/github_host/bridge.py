@@ -44,7 +44,12 @@ class FixtureSession:
             host_action_handler=kwargs["host_action_handler"],
             host_action_capabilities=kwargs["host_action_capabilities"],
             host_mcp=kwargs.get("host_mcp"),
+            github_repository_policy=kwargs.get("github_repository_policy"),
+            github_repository_policy_required=kwargs.get(
+                "github_repository_policy_required", False
+            ),
             google_mcp=kwargs.get("google_mcp"),
+            connector_mcp=kwargs.get("connector_mcp"),
         )
 
     def run_turn(self, message: str) -> int:
@@ -53,7 +58,7 @@ class FixtureSession:
         for item in requests:
             tool_name = item["tool"]
             if not isinstance(tool_name, str) or not tool_name.startswith(
-                ("github_", "mcp__github__", "mcp__google_")
+                ("github_", "mcp__github__", "mcp__google_", "mcp__custom_")
             ):
                 raise ValueError("Fixture only executes negotiated plugin tools")
             result = self.tools[tool_name].run(item["arguments"])

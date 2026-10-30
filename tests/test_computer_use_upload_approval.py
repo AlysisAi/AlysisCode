@@ -13,6 +13,8 @@ from test_ide_computer_use_host import _bridge_session, _lines, _request, _wait_
 from alysis_code.agent.computer_use_tools import build_computer_use_tools
 from alysis_code.ide.stdio_bridge import BridgeCancellationError
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 @pytest.mark.parametrize("review_seconds", [18, 19])
 @pytest.mark.parametrize("required", [True, False])

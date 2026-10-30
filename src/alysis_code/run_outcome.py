@@ -35,12 +35,17 @@ def task_outcome_record(
     task_id: str = "",
     state: dict[str, Any] | None = None,
     terminal: bool = True,
+    trusted_entry_blocked: bool = False,
 ) -> dict[str, Any]:
     """Classify host state; model claims and exit zero are never verification."""
     state = state or {}
     certificate = state.get("completion_certificate") or {}
     problems = list(certificate.get("problems") or [])
     missing = list(state.get("missing_verification_commands") or [])
+    # A repository command can remain available without applying to this turn.
+    # Only the host certificate's explicit applicability decision can exclude
+    # missing/stale inferred coverage; observed failures still count below.
+    verification_expected = state.get("verification_expected") is not False
     failed = list(state.get("failed_verification_commands") or [])
     controller = state.get("completion_gate_controller") or {}
     snapshot = controller.get("last_snapshot_payload") or {}
@@ -61,13 +66,17 @@ def task_outcome_record(
         for item in hard
         if item.get("status") != "PASSED"
     ]
-    if missing and "verification_incomplete" not in problems:
+    if verification_expected and missing and "verification_incomplete" not in problems:
         problems.append("verification_incomplete")
-    if failed and "verification_failed" not in problems:
+    unresolved_failures = state.get("unresolved_observed_verification_failures", 0)
+    if type(unresolved_failures) is not int or unresolved_failures < 0:
+        problems.append("verification_evidence_unavailable")
+    observed_failure = type(unresolved_failures) is int and unresolved_failures > 0
+    if (failed or observed_failure) and "verification_failed" not in problems:
         problems.append("verification_failed")
     if unresolved and "acceptance_criteria_unverified" not in problems:
         problems.append("acceptance_criteria_unverified")
-    if state.get("verification_coverage_stale"):
+    if verification_expected and state.get("verification_coverage_stale"):
         problems.append("verification_stale")
     connector_links = state.get("connector_link_evidence") or {}
     if connector_links.get("unchecked_links"):
@@ -91,13 +100,20 @@ def task_outcome_record(
         outcome = TaskOutcome.CANCELLED
     elif reason in {"provider_failure", "provider_failure_salvaged", "provider_unavailable"}:
         outcome = TaskOutcome.PROVIDER_FAILURE
-    elif blocked or reason in {
-        "blocked",
-        "approval_declined",
-        "prompt_blocked",
-    }:
+    elif (
+        trusted_entry_blocked
+        or blocked
+        or reason
+        in {
+            "blocked",
+            "computer_use_goal_blocked",
+            "approval_declined",
+            "prompt_blocked",
+        }
+    ):
         outcome = TaskOutcome.BLOCKED
     elif exit_code != 0 or reason in {
+        "computer_use_goal_incomplete",
         "max_steps_exhausted",
         "max_steps_exceeded",
         "output_token_limit",
@@ -124,17 +140,71 @@ def task_outcome_record(
         "reason": reason,
         "problems": list(dict.fromkeys(problems)),
         "unresolved_criterion_ids": unresolved,
-        "material_paths": list(state.get("touched_repo_paths") or []),
+        "material_paths": sorted(
+            set(state.get("touched_repo_paths") or []).union(
+                state.get("touched_external_paths") or []
+            )
+        ),
         "completion_certificate": certificate,
         "connector_link_evidence": connector_links,
+        "artifact_checks": list(state.get("artifact_checks") or []),
+        "observed_passing_checks": sum(
+            isinstance(item, dict)
+            and item.get("real_execution") is True
+            and item.get("observed_exit_code") == 0
+            and item.get("observed_output") is True
+            and item.get("generation", 0) == state.get("verification_relevant_edit_generation", 0)
+            and item.get("evidence_category") not in {"COMMAND_EXECUTION", "NOT_VERIFICATION"}
+            for item in (
+                state.get("executed_verification_evidence")
+                or state.get("accepted_verification_evidence")
+                or []
+            )
+        ),
     }
 
 
 def task_outcome_notice(record: dict[str, Any]) -> str:
-    """Append a host verdict without rewriting or discarding the model's answer."""
+    """Surface a concrete host concern, not the absence of formal certification.
+
+    COMPLETED_UNVERIFIED is conservative accounting, not evidence that no check
+    ran or that a requested Git/file operation failed. Keep that classification
+    in the structured outcome without attaching a blanket negative to the reply.
+    Never promote an uncertified result to VERIFIED_SUCCESS to remove a notice.
+    """
     if record.get("verified_success"):
         return ""
+    terminal_notices = {
+        TaskOutcome.CANCELLED: "Task cancelled; completion was not confirmed.",
+        TaskOutcome.DEADLINE_EXCEEDED: "The run limit was reached; task completion was not confirmed.",
+        TaskOutcome.PROVIDER_FAILURE: "The model service failed; task completion was not confirmed.",
+        TaskOutcome.BLOCKED: "The task is blocked; completion was not confirmed.",
+        TaskOutcome.INCOMPLETE: "The task is incomplete.",
+    }
+    if notice := terminal_notices.get(record.get("outcome")):
+        return "\n\n" + notice
     problems = record.get("problems") or []
+    # No edits alone is an accounting limitation, not an unmet requirement:
+    # inspection and validation tasks can intentionally leave every file alone.
+    # Keep the record unchanged; explicit missing/failed requirements still warn.
+    if not problems or set(problems) == {"no_material_edits"}:
+        return ""
+    # A passing check never cancels contradictory evidence from another check.
+    if set(problems).intersection(
+        {
+            "verification_failed",
+            "acceptance_criteria_failed",
+            "regressions_detected",
+            "unattributed_failures",
+            "repro_failing_after_fix",
+            "blast_radius_regressions",
+        }
+    ):
+        return "\n\nNot verified: required or observed checks failed." + (
+            " Link availability has not been verified."
+            if "connector_links_unverified" in problems
+            else ""
+        )
     if "connector_links_unverified" in problems:
         other_problems = [
             problem for problem in problems if problem != "connector_links_unverified"
@@ -142,12 +212,11 @@ def task_outcome_notice(record: dict[str, Any]) -> str:
         return "\n\nLink availability has not been verified." + (
             " Required checks also failed or could not be confirmed." if other_problems else ""
         )
-    detail = (
-        "required checks failed or could not be confirmed."
-        if problems
-        else "no test or check confirmed this result."
-    )
-    return "\n\nNot verified: " + detail
+    if record.get("observed_passing_checks", 0) > 0 and not set(problems).intersection(
+        {"verification_failed", "verification_incomplete", "verification_stale"}
+    ):
+        return "\n\nObserved checks passed; complete task requirements remain unconfirmed."
+    return "\n\nNot verified: some task requirements or checks remain unconfirmed."
 
 
 def task_outcome_fields(

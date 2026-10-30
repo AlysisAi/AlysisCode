@@ -20,6 +20,82 @@ from alysis_code.cancellation import InteractiveCancellationToken
 from alysis_code.llm.http_cancellation import cancellable_httpx_request
 
 
+@pytest.mark.parametrize(
+    "body,count",
+    [
+        (
+            b'{"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:PRIVATE"}]}]}',
+            1,
+        ),
+        (b'{"input":"image mentioned in prose"}', 0),
+        (b"not-json-PRIVATE", None),
+    ],
+)
+def test_evidence_observes_selected_transport_entry_and_response_without_content(body, count):
+    import json
+
+    from alysis_code.computer_use_call_diagnostics import (
+        _provider_attempt_ordinal,
+        bind_computer_use_provider_evidence,
+    )
+    from alysis_code.llm.cancellable_http import cancellation_aware_httpx_client
+
+    records = []
+
+    class SelectedTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.entries = self.closes = self.opens = 0
+
+        async def __aenter__(self):
+            self.opens += 1
+            return self
+
+        async def handle_async_request(self, request):
+            self.entries += 1
+            assert request.content == body
+            return httpx.Response(200, content=b"ok")
+
+        async def aclose(self):
+            self.closes += 1
+
+    transport = SelectedTransport()
+    with bind_computer_use_provider_evidence(records.append):
+        assert _provider_attempt_ordinal(prepare=True) == 1
+        with cancellation_aware_httpx_client(
+            timeout_s=2, transport=transport, cancellation_token=InteractiveCancellationToken()
+        ) as client:
+            assert client.post("https://example.invalid/responses", content=body).status_code == 200
+    assert (transport.opens, transport.entries, transport.closes) == (1, 1, 1)
+    assert [r["phase"] for r in records] == ["transport_attempted", "response_received"]
+    assert all(r["attemptOrdinal"] == 1 for r in records)
+    if count is None:
+        assert "transportImageCount" not in records[0]
+    else:
+        assert records[0]["transportImageCount"] == count
+    assert "PRIVATE" not in json.dumps(records)
+
+
+def test_evidence_callback_failure_cannot_change_selected_transport_response():
+    from alysis_code.computer_use_call_diagnostics import (
+        _provider_attempt_ordinal,
+        bind_computer_use_provider_evidence,
+    )
+    from alysis_code.llm.cancellable_http import cancellation_aware_httpx_client
+
+    def broken(_payload):
+        raise RuntimeError("private diagnostic error")
+
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={"ok": True}))
+    with bind_computer_use_provider_evidence(broken):
+        _provider_attempt_ordinal(prepare=True)
+        with cancellation_aware_httpx_client(
+            timeout_s=2, transport=transport, cancellation_token=InteractiveCancellationToken()
+        ) as client:
+            assert client.post(
+                "https://example.invalid/responses", content=b'{"input":[]}'
+            ).json() == {"ok": True}
+
+
 class _BlockedTLSServer:
     """Accept one HTTPS request and deliberately withhold its next bytes."""
 
@@ -201,3 +277,64 @@ def test_cancellation_interrupts_real_blocked_tls_read(
     assert isinstance(outcome[0], KeyboardInterrupt)
     assert "cancelled_by_user" in str(outcome[0])
     assert token._abort is None  # noqa: SLF001
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_cancellation_defers_descriptor_close_until_active_io_retires(operation: str) -> None:
+    from alysis_code.llm.http_cancellation import _InterruptibleNetworkBackend
+
+    entered = threading.Event()
+    shutdown = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    errors: list[BaseException] = []
+
+    class BlockingStream:
+        def get_extra_info(self, info: str) -> object:
+            assert info == "socket"
+            return self
+
+        def shutdown(self, how: int) -> None:
+            assert how == socket.SHUT_RDWR
+            shutdown.set()
+
+        def close(self) -> None:
+            closed.set()
+
+        def read(self, _max_bytes: int, timeout: float | None = None) -> bytes:
+            entered.set()
+            assert release.wait(2), "test did not release the owned I/O operation"
+            return b""
+
+        def write(self, _buffer: bytes, timeout: float | None = None) -> None:
+            self.read(1, timeout)
+
+    backend = _InterruptibleNetworkBackend(object())
+    stream = backend._track(BlockingStream())
+
+    def request() -> None:
+        try:
+            if operation == "read":
+                stream.read(1)
+            else:
+                stream.write(b"x")
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=request, name="owned-io-close-test")
+    worker.start()
+    try:
+        assert entered.wait(1)
+        stream.interrupt()
+        # Client/response teardown may ask for another close while the reader
+        # is still consuming the shutdown notification. Neither may invalidate
+        # the descriptor until that operation has actually returned.
+        stream.close()
+        assert shutdown.is_set()
+        assert not closed.is_set()
+    finally:
+        release.set()
+        worker.join(2)
+    assert not worker.is_alive()
+    assert not errors
+    assert closed.is_set()

@@ -2,3 +2,7 @@
 
 # SSE events end with a blank line, including the final event.
 tests/fixtures/stream_parity/*.sse whitespace=-blank-at-eof
+# These release inputs are pinned by byte digest, including signatures and metadata.
+src/alysis_code/assets/windows-mxc/* -text
+src/alysis_code/assets/windows-git/** -text -diff -merge
+src/alysis_code/assets/git-sign/** -text -diff -merge

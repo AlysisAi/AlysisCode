@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Literal
 
@@ -54,7 +55,8 @@ def normalize_project_skill_family(raw: str | None) -> ProjectSkillFamily:
 
 
 def skill_bundle_dir_name(raw_name: str) -> str:
-    candidate = re.sub(r"[^a-z0-9._-]+", "-", str(raw_name or "").strip().casefold()).strip("-")
+    normalized = unicodedata.normalize("NFC", str(raw_name or "").strip().casefold())
+    candidate = re.sub(r"[^\w.-]+", "-", normalized, flags=re.UNICODE).strip("-.")
     if not candidate:
         raise ValueError("Skill name must contain at least one letter or digit.")
     return candidate

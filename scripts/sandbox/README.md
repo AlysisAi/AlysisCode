@@ -42,8 +42,6 @@ attestations as described in the sandbox guide.
 
 Changing a pinned version requires changing its matching digest in the same
 review and passing the sandbox release-contract tests.
-The [September security remediation record](../../docs/sandbox-image-security-remediation.md)
-distinguishes verified source inputs from the still-required rebuilt-image scans.
 
 ## Development
 

@@ -1,0 +1,70 @@
+name: desktop-contracts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-contracts-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-contracts:
+    name: desktop contracts (${{ matrix.os }}, py3.12)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.23"
+      - name: Sync locked contract test dependencies
+        run: uv sync --frozen --python "3.12" --extra dev
+      - name: Probe the desktop capabilities command
+        env:
+          ALYSIS_CONFIG_DIR: ${{ runner.temp }}/desktop-contract-config
+          ALYSIS_DATA_DIR: ${{ runner.temp }}/desktop-contract-data
+        run: uv run --frozen --no-sync alysis capabilities
+      - name: Test bridge, stdio, Unicode and desktop host contracts without providers
+        env:
+          ALYSIS_CONFIG_DIR: ${{ runner.temp }}/desktop-contract-config
+          ALYSIS_DATA_DIR: ${{ runner.temp }}/desktop-contract-data
+        run: >-
+          uv run --frozen --no-sync pytest -q
+          tests/test_capabilities_cli.py
+          tests/test_desktop_run_contract.py
+          tests/test_managed_session_persistence.py
+          tests/test_managed_session_windows.py
+          tests/test_ide_protocol_contract.py
+          tests/test_ide_skill_availability.py
+          tests/test_ide_queue_bridge.py
+          tests/test_ide_stdio_bridge.py
+          tests/test_ide_protocol_stream_isolation.py
+          tests/test_forge_host_stdio.py
+          tests/test_forge_host_protocol_v2.py
+          tests/test_ide_computer_use_host.py
+          tests/test_task_budget_channel.py
+          --junitxml=desktop-contracts.xml
+      - name: Preserve contract test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-contracts-${{ matrix.os }}
+          path: desktop-contracts.xml
+          if-no-files-found: warn

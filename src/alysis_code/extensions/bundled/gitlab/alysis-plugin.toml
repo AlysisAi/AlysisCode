@@ -1,0 +1,180 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.gitlab"
+name = "GitLab"
+version = "1.0.0"
+description = "GitLab's official remote MCP tools for gitlab.com: read projects, merge requests, issues, code and pipelines. Merging, commits and pipeline runs ask you first, every time."
+author = "Alysis AI (integration); GitLab (MCP server)"
+license = "MIT"
+homepage = "https://docs.gitlab.com/user/model_context_protocol/mcp_server/"
+keywords = ["gitlab", "mcp", "git", "merge-requests", "ci"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# GitLab's official remote MCP server on gitlab.com (self-managed GitLab isn't supported). Scope `mcp`
+# only; every call is still checked against the person's role and tier. Dynamic registration makes a
+# public client. On gitlab.com the person must belong to a top-level group that allows MCP access.
+# accept_merge_request merges into the target branch, add_commit commits file changes, save_pipeline
+# runs, retries or cancels a pipeline (CI minutes); each asks a person first. Left out: GitLab Duo
+# (paid AI: semantic_search, Duo agent sessions, and save_merge_request_review, whose actions include a
+# Duo review), Ultimate-only security tools, feature-flagged Pages content, the Orbit graph, and the
+# tools the server hides from its list (including manage_pipeline, which can delete a pipeline).
+[[components.verified_connector]]
+id = "gitlab"
+url = "https://gitlab.com/api/v4/mcp"
+resource = "https://gitlab.com/api/v4/mcp"
+oauth_issuer = "https://gitlab.com"
+oauth_sign_in_origins = []
+oauth_client = "dynamic"
+oauth_scopes = ["mcp"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "get_mcp_server_version"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_project"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_user"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_groups"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_projects"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_project_members"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_todos"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_labels"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_merge_request"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_merge_requests"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_work_item"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_work_items"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_work_item_types"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_saved_view_work_items"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_repository_file"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_repository_tree"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_commit"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_commits"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_branches"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_tags"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_releases"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_pipeline"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_pipelines"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_job"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_artifact_file"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list_wiki_pages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "save_note"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "save_merge_request"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "accept_merge_request"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "save_work_item"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "link_work_items"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add_branch"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "fork_repository"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "add_commit"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "save_pipeline"
+reads_only = false
+
+[security]
+contact = "https://about.gitlab.com/security/disclosure/"

@@ -76,6 +76,11 @@ def _observe(root, state, tool, command=_CHECK, *, environment_known=True, known
     changed = [
         path.name for path in root.glob("*.py") if before.get(path.name) != path.read_bytes()
     ]
+    if not environment_known:
+        # Simulate an opaque runner that cannot supply execution context.
+        result.pop("verification_execution_scope", None)
+        for item in result.get("command_results", []):
+            item.pop("verification_execution_scope", None)
     if changed:
         result["touched_repo_paths"] = changed
     _record_tool_effect(

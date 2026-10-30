@@ -13,6 +13,8 @@ from alysis_code.ide.health import capabilities_payload
 from alysis_code.ide.protocol import ProtocolError
 from alysis_code.ide.stdio_bridge import ComputerUseHostBinding, _computer_use_host_param
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 def binding():
     return {

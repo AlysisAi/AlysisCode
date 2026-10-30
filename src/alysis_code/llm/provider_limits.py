@@ -24,19 +24,25 @@ from ..transport_retry import (
     mark_transport_connection_failure,
 )
 from .http_cancellation import raise_if_cancelled
+from .provider_defaults import (
+    DEFAULT_PROVIDER_CONCURRENCY_CAPS as DEFAULT_PROVIDER_CONCURRENCY_CAPS,
+)
+from .provider_defaults import (
+    DEFAULT_PROVIDER_RETRY_BASE_DELAY_SECONDS as DEFAULT_PROVIDER_RETRY_BASE_DELAY_SECONDS,
+)
+from .provider_defaults import (
+    DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS as DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS,
+)
+from .provider_defaults import (
+    DEFAULT_PROVIDER_RETRY_MAX_RETRIES as DEFAULT_PROVIDER_RETRY_MAX_RETRIES,
+)
+from .provider_defaults import (
+    DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS as DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS,
+)
 from .rate_limit_metadata import HARD_QUOTA_CODES, MAX_RETRY_SECONDS, bounded_seconds
 from .types import LLMStreamNoProgressError
 
 T = TypeVar("T")
-
-DEFAULT_PROVIDER_CONCURRENCY_CAPS: dict[str, int] = {"qwen": 4}
-DEFAULT_PROVIDER_RETRY_MAX_RETRIES = 1
-DEFAULT_PROVIDER_RETRY_BASE_DELAY_SECONDS = 10.0
-DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS = 120.0
-# One value for every protocol client that caps provider-retry wall time, so
-# the config snapshot records the cap the clients actually pass. The window it
-# measures opens at a call's first failure (see run_provider_limited_call).
-DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS = 60.0
 
 _LOGGER = logging.getLogger(__name__)
 _JITTER_RATIO = 0.25

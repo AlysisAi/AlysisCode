@@ -57,6 +57,8 @@ class ProtocolRequest:
     method: str
     params: dict[str, Any]
     protocol_version: str = PROTOCOL_VERSION
+    computer_use_attribution: dict[str, Any] | None = None
+    resolved_entry_valid: bool = True
 
 
 def _env_secret_values() -> tuple[str, ...]:
@@ -115,6 +117,28 @@ def parse_request_line(line: str) -> ProtocolRequest:
         raise ProtocolError("empty_request", "Request line is empty.")
     if len(raw.encode("utf-8", errors="replace")) > MAX_REQUEST_BYTES:
         raise ProtocolError("request_too_large", "Request exceeds the maximum supported size.")
+    from ..llm.resolved_entry import BridgeFrameInvalid, validate_bridge_request
+
+    resolved_entry_valid = True
+    try:
+        validate_bridge_request(raw)
+    except BridgeFrameInvalid as exc:
+        if exc.response_frame:
+            # Decode only to correlate and poison the owned pending request.
+            resolved_entry_valid = False
+        else:
+            raise ProtocolError(
+                "invalid_params",
+                "Invalid resolved Computer Use frame.",
+                request_id=exc.request_id,
+            ) from None
+    from ..host_actions import HostActionError
+    from ..mcp.github_policy_json import validate_sidecar_frame
+
+    try:
+        validate_sidecar_frame(raw)
+    except (ValueError, TypeError, RecursionError, HostActionError):
+        raise ProtocolError("invalid_params", "Invalid GitHub repository policy frame.") from None
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -149,11 +173,16 @@ def parse_request_line(line: str) -> ProtocolRequest:
             "invalid_request", "Request params must be an object.", request_id=request_id
         )
 
+    from ..computer_use_attribution import request_context
+
+    attribution = request_context(raw, method) if "computer_use_attribution" in payload else None
     return ProtocolRequest(
         id=request_id,
         method=method,
         params=params,
         protocol_version=version,
+        computer_use_attribution=attribution,
+        resolved_entry_valid=resolved_entry_valid,
     )
 
 

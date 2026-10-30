@@ -25,6 +25,8 @@ from alysis_code.config import AppConfig
 from alysis_code.ide.protocol import ProtocolRequest
 from alysis_code.profiles import get_active_profile
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 @pytest.mark.parametrize(
     "mode",

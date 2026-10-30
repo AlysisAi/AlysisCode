@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -155,7 +156,11 @@ def test_run_turn_blocks_repeated_identical_failed_tool_calls(tmp_path: Path) ->
     assert warnings
 
 
-def test_repeated_path_escape_preserves_structured_recovery_guidance(tmp_path: Path) -> None:
+def test_repeated_scope_refusal_preserves_structured_recovery_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Exercise the scoped-access route without changing the host platform.
+    monkeypatch.setattr("alysis_code.agent.tools_assembly.sys", SimpleNamespace(platform="darwin"))
     cfg = AppConfig(model="test-model", routing_mode="code_only")
     sessions_dir = tmp_path / "sessions"
     session = create_session(
@@ -170,7 +175,7 @@ def test_repeated_path_escape_preserves_structured_recovery_guidance(tmp_path: P
         session_id_override="retry-path-escape",
     )
 
-    escaped_path = "/git/server/hooks/post-receive"
+    escaped_path = str(Path.home() / "scope-refusal-output.txt")
     repeated_call = {"path": escaped_path, "content": "#!/bin/sh\n"}
     responses = [
         LLMResponse(
@@ -191,7 +196,7 @@ def test_repeated_path_escape_preserves_structured_recovery_guidance(tmp_path: P
     session.client = fake_client  # type: ignore[assignment]
 
     try:
-        exit_code = session.run_turn("Install a post-receive hook at /git/server/hooks.")
+        exit_code = session.run_turn(f"Write the requested output at {escaped_path}.")
     finally:
         session.close()
 
@@ -203,12 +208,15 @@ def test_repeated_path_escape_preserves_structured_recovery_guidance(tmp_path: P
         if event.get("type") == "tool_result"
     ]
     assert len(tool_results) == 4
-    assert tool_results[0]["error_code"] == "path_escapes_workspace"
-    assert tool_results[0]["attempted_path"] == escaped_path
+    # External paths now enter scoped-access admission. This file would require
+    # a whole-home grant and is refused before any file tool dispatch.
+    assert tool_results[0]["error_code"] == "scoped_file_access_refused"
+    assert tool_results[0]["dispatch_state"] == "not_dispatched"
+    assert tool_results[0]["retryable"] is False
 
     repeated_result = tool_results[2]
     assert repeated_result["error_code"] == "repeated_tool_failure_guard"
-    assert repeated_result["previous_error_code"] == "path_escapes_workspace"
+    assert repeated_result["previous_error_code"] == "scoped_file_access_refused"
     assert "Do not retry the same blocked tool call" in repeated_result["guidance"]
     assert any(
         action["action"] == "ask_or_explain_boundary"
@@ -222,7 +230,7 @@ def test_repeated_path_escape_preserves_structured_recovery_guidance(tmp_path: P
         and event.get("payload", {}).get("warning") == "repeated_tool_failure_guard"
     ]
     assert warnings
-    assert warnings[0]["payload"]["previous_error_code"] == "path_escapes_workspace"
+    assert warnings[0]["payload"]["previous_error_code"] == "scoped_file_access_refused"
 
 
 def test_run_turn_returns_tool_result_when_tool_arguments_are_invalid_json(

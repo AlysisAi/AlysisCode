@@ -120,7 +120,6 @@ from ..profiles import (
 from ..replanning import resolve_replanning_mode
 from ..run_state import RUN_STATUS_COMPLETED, RUN_STATUS_FAILED, RUN_STATUS_RUNNING
 from ..runtime_kind import RuntimeKind
-from ..swarm_orchestrator import acquire_swarm_mutation_guard
 from ..swarm_scheduler import (
     SUCCESSFUL_TERMINAL_STATUSES,
     TaskCandidate,
@@ -146,10 +145,17 @@ from ..verification_repair import (
     verification_failure_excerpts,
 )
 from ..verify_gate import verify_run_status
+from .commands import _materialize_cli_globals
 
 _PROTECTED_GLOBAL_NAMES: set[str] = set()
 _HOST_TASK_EXECUTOR_BOOTSTRAP_LOCK = threading.Lock()
 _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE: Any | None = None
+
+
+def acquire_swarm_mutation_guard(*args: Any, **kwargs: Any) -> Any:
+    from ..swarm_orchestrator import acquire_swarm_mutation_guard as acquire
+
+    return acquire(*args, **kwargs)
 
 
 def _events_or_null(events: Any) -> ForgeEventEmitter:
@@ -2413,6 +2419,7 @@ def _plan_execution_readiness(plan: dict[str, Any]) -> str | None:
 
 
 def _sync_cli_globals(cli_mod: Any) -> None:
+    _materialize_cli_globals(cli_mod)
     module_globals = globals()
     if not _PROTECTED_GLOBAL_NAMES:
         for local_name, local_value in module_globals.items():
@@ -2447,6 +2454,20 @@ def _missing_host_executor_globals() -> tuple[str, ...]:
     )
 
 
+def _validate_host_cli_module(cli_mod: Any) -> None:
+    if (
+        _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is not None
+        and _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is not cli_mod
+    ):
+        raise RuntimeError("Host task executor is already bound to a different CLI module object")
+    expected_module_name = "alysis_code.cli"
+    if (
+        getattr(cli_mod, "__name__", None) != expected_module_name
+        or sys.modules.get(expected_module_name) is not cli_mod
+    ):
+        raise RuntimeError("Host task executor requires the canonical CLI module object")
+
+
 def build_host_task_executor(cli_mod: Any) -> Callable[..., TaskExecutionOutcome]:
     """Bootstrap and return only the native result-returning task executor.
 
@@ -2459,19 +2480,7 @@ def build_host_task_executor(cli_mod: Any) -> Callable[..., TaskExecutionOutcome
 
     global _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE
     with _HOST_TASK_EXECUTOR_BOOTSTRAP_LOCK:
-        if (
-            _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is not None
-            and _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is not cli_mod
-        ):
-            raise RuntimeError(
-                "Host task executor is already bound to a different CLI module object"
-            )
-        expected_module_name = "alysis_code.cli"
-        if (
-            getattr(cli_mod, "__name__", None) != expected_module_name
-            or sys.modules.get(expected_module_name) is not cli_mod
-        ):
-            raise RuntimeError("Host task executor requires the canonical CLI module object")
+        _validate_host_cli_module(cli_mod)
         if _HOST_TASK_EXECUTOR_BOOTSTRAP_MODULE is None:
             _sync_cli_globals(cli_mod)
             missing = _missing_host_executor_globals()
@@ -2659,7 +2668,11 @@ def build_forge_host_dependency_factory(
     every deferred Phase-0 capability off.
     """
 
-    task_executor = build_host_task_executor(cli_mod)
+    # Protocol negotiation needs the canonical module identity, not the entire
+    # interactive execution graph. Materialize that graph when assembling an
+    # admitted run, still under its inherited deadline and the original guards.
+    with _HOST_TASK_EXECUTOR_BOOTSTRAP_LOCK:
+        _validate_host_cli_module(cli_mod)
 
     def dependency_factory(
         request: Any,
@@ -2668,6 +2681,7 @@ def build_forge_host_dependency_factory(
         runtime = runtime_binding_for(request)
         if not isinstance(runtime, HostExecutionRuntimeBinding):
             raise RuntimeError("Host execution runtime binding is invalid")
+        task_executor = build_host_task_executor(cli_mod)
         if not callable(getattr(runtime.console, "print", None)):
             raise RuntimeError("Host execution console binding is invalid")
         # Take one private config snapshot up front.  Provider authority and the

@@ -1,0 +1,190 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.notion"
+name = "Notion"
+version = "1.0.0"
+description = "Notion's official remote MCP tools: search and read your pages and databases; every change asks you first."
+author = "Alysis AI (integration); Notion (MCP server)"
+license = "MIT"
+homepage = "https://developers.notion.com/guides/mcp/get-started-with-mcp"
+keywords = ["notion", "mcp", "notes", "wiki", "docs"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Notion's official remote MCP server. The app keeps the sign-in; only the reviewed tools
+# below are offered, and every tool not marked reads_only asks a person before each call.
+[[components.verified_connector]]
+id = "notion"
+url = "https://mcp.notion.com/mcp"
+resource = "https://mcp.notion.com/mcp"
+oauth_issuer = "https://mcp.notion.com"
+oauth_sign_in_origins = []
+oauth_client = "dynamic"
+oauth_scopes = ["default"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "notion-search"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-fetch"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-get-self"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-get-users"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-get-teams"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-get-groups"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-get-comments"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-list-private-pages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-list-shared-pages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-list-favorite-pages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-list-recent-pages"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-list-page-backlinks"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-query-data-sources"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-query-multiple-data-sources"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-query-meeting-notes"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-memory-search"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-get-async-task"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-get-tool-access"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-calendar-list-calendars"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-calendar-list-events"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-calendar-list-calendar-resources"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "notion-create-pages"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-update-page"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-move-pages"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-duplicate-page"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-delete-pages"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-restore-pages"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-create-database"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-update-data-source"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-create-view"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-update-view"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-create-folder"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-update-folder"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-create-comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-update-comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-delete-comment"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-set-discussion-resolved"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-calendar-create-events"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-calendar-update-events"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "notion-calendar-cancel-events"
+reads_only = false
+
+[security]
+contact = "https://github.com/makenotion/notion-mcp-server/security"

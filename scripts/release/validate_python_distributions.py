@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import email
+import hashlib
 import os
 import re
 import shutil
@@ -11,8 +13,11 @@ import tarfile
 import tempfile
 import tomllib
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZipFile
+
+from cryptography import x509
 
 
 class DistributionValidationError(ValueError):
@@ -30,6 +35,8 @@ _FORBIDDEN_SUFFIXES = {".jks", ".key", ".keystore", ".p12", ".pfx", ".pem", ".pp
 _FORBIDDEN_DIRECTORIES = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 _MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_MEMBER_BYTES = 64 * 1024 * 1024
+_GIT_CA_SHA256 = "76055a37e6fbc802e2051bcb620210a915d112f4284a5e93fb2e68c7106398ba"
+_PUBLIC_CERTIFICATE_ASSETS = ("alysis_code/assets/windows-git/ucrt64/etc/ssl/cert.pem",)
 _SDIST_FILES = {
     ".gitignore",
     "docs/CHANGELOG.md",
@@ -38,6 +45,7 @@ _SDIST_FILES = {
     "PKG-INFO",
     "README.md",
     "pyproject.toml",
+    "hatch_build.py",
 }
 
 
@@ -46,8 +54,12 @@ def validate_distributions(
     *,
     project_file: Path,
     smoke: bool = True,
+    expected_commit: str | None = None,
 ) -> tuple[Path, Path]:
-    project = tomllib.loads(project_file.read_text(encoding="utf-8"))["project"]
+    if expected_commit is not None and re.fullmatch(r"[a-f0-9]{40}", expected_commit) is None:
+        raise DistributionValidationError("Expected source commit must be an exact Git SHA.")
+    project_document = tomllib.loads(project_file.read_text(encoding="utf-8"))
+    project = project_document["project"]
     name = str(project["name"])
     version = str(project["version"])
     normalized = re.sub(r"[-_.]+", "_", name).lower()
@@ -67,18 +79,167 @@ def validate_distributions(
     for path in (wheel, sdist):
         if path.stat().st_size <= 0 or path.stat().st_size > _MAX_ARCHIVE_BYTES:
             raise DistributionValidationError("Distribution archive size is invalid.")
-    _validate_wheel(wheel, name=name, version=version, normalized=normalized)
-    _validate_sdist(
+    certificates = _pinned_public_certificates(project_file.parent)
+    wheel_stamp = _validate_wheel(
+        wheel,
+        name=name,
+        version=version,
+        normalized=normalized,
+        expected_commit=expected_commit,
+        public_certificates=certificates,
+    )
+    sdist_stamp = _validate_sdist(
         sdist,
         normalized=normalized,
         version=version,
+        expected_commit=expected_commit,
+        public_certificates=certificates,
     )
+    if expected_commit is not None and wheel_stamp != sdist_stamp:
+        raise DistributionValidationError("Wheel and sdist build stamps differ.")
+    hook = (
+        project_document.get("tool", {})
+        .get("hatch", {})
+        .get("build", {})
+        .get("hooks", {})
+        .get("custom", {})
+    )
+    if hook.get("path") == "hatch_build.py":
+        from alysis_code.windows_mxc_bundle import BUNDLE_FILES
+
+        with ZipFile(wheel) as wheel_archive, tarfile.open(sdist, "r:gz") as source_archive:
+            if "alysis_code/_windows_mxc_local.json" in wheel_archive.namelist():
+                raise DistributionValidationError(
+                    "Local Windows sandbox candidates cannot be released."
+                )
+            for filename, expected in BUNDLE_FILES.items():
+                member = f"alysis_code/assets/windows-mxc/{filename}"
+                try:
+                    source_file = source_archive.extractfile(f"{normalized}-{version}/src/{member}")
+                    if source_file is None:
+                        raise KeyError(member)
+                    for payload in (wheel_archive.read(member), source_file.read()):
+                        if hashlib.sha256(payload).hexdigest() != expected:
+                            raise DistributionValidationError(
+                                f"Windows sandbox bundle changed: {filename}"
+                            )
+                except KeyError as exc:
+                    raise DistributionValidationError(
+                        f"Windows sandbox bundle is missing: {filename}"
+                    ) from exc
     if smoke:
-        _smoke_wheel(wheel, name=name, version=version)
+        _smoke_wheel(wheel, name=name, version=version, expected_commit=expected_commit)
     return wheel, sdist
 
 
-def _validate_wheel(wheel: Path, *, name: str, version: str, normalized: str) -> None:
+def _validate_build_stamp(source: bytes, *, expected_commit: str) -> bytes:
+    """Read literal metadata only; never execute code from an archive being admitted."""
+    if len(source) > 16 * 1024:
+        raise DistributionValidationError("Build stamp exceeds its size limit.")
+    required = {
+        "BUILD_COMMIT",
+        "BUILD_COMMIT_SUBJECT",
+        "BUILD_TIMESTAMP",
+        "BUILD_DIRTY",
+        "BUILD_SOURCE",
+        "BUILD_RESOLVED_ORIGIN_MAIN",
+        "BUILD_INFO_SCHEMA_VERSION",
+    }
+    values = {}
+    try:
+        for index, node in enumerate(ast.parse(source.decode("utf-8")).body):
+            if (
+                index == 0
+                and isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                continue
+            if (
+                not isinstance(node, ast.Assign)
+                or len(node.targets) != 1
+                or not isinstance(node.targets[0], ast.Name)
+            ):
+                raise ValueError("Nonliteral build stamp statement")
+            key = node.targets[0].id
+            if key not in required or key in values:
+                raise ValueError("Unexpected or repeated build stamp field")
+            values[key] = ast.literal_eval(node.value)
+        if set(values) != required:
+            raise ValueError("Missing build stamp fields")
+        if (
+            values["BUILD_COMMIT"] != expected_commit
+            or values["BUILD_DIRTY"] is not False
+            or values["BUILD_SOURCE"] != "git"
+        ):
+            raise ValueError("Build stamp does not identify the clean expected commit")
+        if (
+            type(values["BUILD_INFO_SCHEMA_VERSION"]) is not int
+            or values["BUILD_INFO_SCHEMA_VERSION"] != 2
+        ):
+            raise ValueError("Unsupported build stamp schema")
+        if (
+            not isinstance(values["BUILD_COMMIT_SUBJECT"], str)
+            or len(values["BUILD_COMMIT_SUBJECT"]) > 200
+        ):
+            raise ValueError("Invalid build commit subject")
+        timestamp = values["BUILD_TIMESTAMP"]
+        if not isinstance(timestamp, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", timestamp
+        ):
+            raise ValueError("Invalid build timestamp")
+        datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+        remote = values["BUILD_RESOLVED_ORIGIN_MAIN"]
+        if not isinstance(remote, str) or (
+            remote != "unavailable" and re.fullmatch(r"[a-f0-9]{40}", remote) is None
+        ):
+            raise ValueError("Invalid remote provenance")
+    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError, RecursionError) as exc:
+        raise DistributionValidationError(f"Invalid build stamp: {exc}") from exc
+    return source
+
+
+def _pinned_public_certificates(root: Path) -> dict[str, bytes]:
+    """Only exact reviewed runtime assets, never arbitrary PEM archive entries."""
+    assets = {}
+    block = re.compile(
+        rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----"
+    )
+    for name in _PUBLIC_CERTIFICATE_ASSETS:
+        path = root / "src" / name
+        if not path.exists():
+            continue
+        if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 1024 * 1024:
+            raise DistributionValidationError("Pinned public certificate asset is unsafe.")
+        data = path.read_bytes()
+        remainder = block.sub(b"", data)
+        try:
+            remainder.decode("utf-8")
+            certificates = x509.load_pem_x509_certificates(data)
+            if len(certificates) != len(block.findall(data)) or any(
+                line.strip() and not line.lstrip().startswith(b"#")
+                for line in remainder.splitlines()
+            ):
+                raise ValueError("Non-certificate material")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise DistributionValidationError(
+                "Pinned public certificate bundle contains non-certificate material."
+            ) from exc
+        if hashlib.sha256(data).hexdigest() != _GIT_CA_SHA256:
+            raise DistributionValidationError("Portable Git public CA bundle differs from its pin.")
+        assets[name] = data
+    return assets
+
+
+def _validate_wheel(
+    wheel: Path,
+    *,
+    name: str,
+    version: str,
+    normalized: str,
+    expected_commit: str | None = None,
+    public_certificates: dict[str, bytes] | None = None,
+) -> bytes | None:
     dist_info = f"{normalized}-{version}.dist-info"
     try:
         with ZipFile(wheel) as archive:
@@ -93,7 +254,13 @@ def _validate_wheel(wheel: Path, *, name: str, version: str, normalized: str) ->
                     for item in archive.infolist()
                 ),
                 archive_kind="wheel",
+                allowed_private_key_entries=set(public_certificates or {}),
             )
+            for entry, expected in (public_certificates or {}).items():
+                if entry not in names or archive.read(entry) != expected:
+                    raise DistributionValidationError(
+                        "Wheel public certificates differ from the pinned repository asset."
+                    )
             if archive.testzip() is not None:
                 raise DistributionValidationError("Wheel contains a corrupt member.")
             metadata_name = f"{dist_info}/METADATA"
@@ -127,8 +294,14 @@ def _validate_wheel(wheel: Path, *, name: str, version: str, normalized: str) ->
             entry_points = archive.read(entry_points_name).decode("utf-8")
             if "alysis = alysis_code.cli:app" not in entry_points:
                 raise DistributionValidationError("Wheel console entry point is missing.")
+            if expected_commit is not None:
+                stamp = "alysis_code/_build_info.py"
+                if stamp not in names or archive.getinfo(stamp).file_size > 16 * 1024:
+                    raise DistributionValidationError("Wheel build stamp is missing or oversized.")
+                return _validate_build_stamp(archive.read(stamp), expected_commit=expected_commit)
     except (BadZipFile, KeyError, UnicodeDecodeError) as exc:
         raise DistributionValidationError("Wheel archive is invalid.") from exc
+    return None
 
 
 def _validate_sdist(
@@ -136,8 +309,14 @@ def _validate_sdist(
     *,
     normalized: str,
     version: str,
-) -> None:
+    expected_commit: str | None = None,
+    public_certificates: dict[str, bytes] | None = None,
+) -> bytes | None:
     prefix = f"{normalized}-{version}/"
+    allowed_private_key_entries = set()
+    allowed_private_key_entries.update(
+        f"{prefix}src/{name}" for name in (public_certificates or {})
+    )
     try:
         with tarfile.open(sdist, "r:gz") as archive:
             members = archive.getmembers()
@@ -151,7 +330,15 @@ def _validate_sdist(
                     for item in members
                 ),
                 archive_kind="sdist",
+                allowed_private_key_entries=allowed_private_key_entries,
             )
+            for name, expected in (public_certificates or {}).items():
+                entry = f"{prefix}src/{name}"
+                archived = archive.extractfile(entry) if entry in names else None
+                if archived is None or archived.read() != expected:
+                    raise DistributionValidationError(
+                        "Sdist public certificates differ from the pinned repository asset."
+                    )
             if any(not name.startswith(prefix) for name in names):
                 raise DistributionValidationError(
                     "Sdist members do not share the expected root directory."
@@ -176,16 +363,21 @@ def _validate_sdist(
                 raise DistributionValidationError(
                     f"Sdist is missing required entries: {sorted(missing)}"
                 )
+            if expected_commit is not None:
+                stamp = f"{prefix}src/alysis_code/_build_info.py"
+                if stamp not in names or archive.getmember(stamp).size > 16 * 1024:
+                    raise DistributionValidationError("Sdist build stamp is missing or oversized.")
+                stream = archive.extractfile(stamp)
+                if stream is None:
+                    raise DistributionValidationError("Sdist build stamp is not a file.")
+                return _validate_build_stamp(stream.read(), expected_commit=expected_commit)
     except (tarfile.TarError, OSError) as exc:
         raise DistributionValidationError("Sdist archive is invalid.") from exc
+    return None
 
 
 def _is_allowed_sdist_member(relative_name: str) -> bool:
-    return (
-        relative_name in _SDIST_FILES
-        or relative_name.startswith("src/alysis_code/")
-        or relative_name == "schemas/forge-host-v2/forge-host-v2.schema.json"
-    )
+    return relative_name in _SDIST_FILES or relative_name.startswith("src/alysis_code/")
 
 
 def _validate_member_names(
@@ -247,7 +439,9 @@ def _validate_member_names(
     return names
 
 
-def _smoke_wheel(wheel: Path, *, name: str, version: str) -> None:
+def _smoke_wheel(
+    wheel: Path, *, name: str, version: str, expected_commit: str | None = None
+) -> None:
     uv = shutil.which("uv")
     if uv is None:
         raise DistributionValidationError("uv is required for the isolated wheel smoke install.")
@@ -285,6 +479,12 @@ def _smoke_wheel(wheel: Path, *, name: str, version: str) -> None:
                 raise DistributionValidationError(
                     f"Installed {name} wheel reported the wrong version."
                 )
+            if argument == "--version" and expected_commit is not None:
+                for marker in (f"commit: {expected_commit[:12]}", "dirty: no", "source: git"):
+                    if marker not in output:
+                        raise DistributionValidationError(
+                            "Installed wheel did not report its expected clean build identity."
+                        )
         subprocess.run(
             [
                 sys.executable,
@@ -306,8 +506,16 @@ def main() -> int:
     parser.add_argument("dist_dir", type=Path)
     parser.add_argument("--project", type=Path, default=Path("pyproject.toml"))
     parser.add_argument("--no-smoke", action="store_true")
+    parser.add_argument(
+        "--expected-commit", required=True, help="Exact independently selected source commit."
+    )
     args = parser.parse_args()
-    validate_distributions(args.dist_dir, project_file=args.project, smoke=not args.no_smoke)
+    validate_distributions(
+        args.dist_dir,
+        project_file=args.project,
+        smoke=not args.no_smoke,
+        expected_commit=args.expected_commit,
+    )
     return 0
 
 

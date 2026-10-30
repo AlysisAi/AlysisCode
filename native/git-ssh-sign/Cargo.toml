@@ -1,0 +1,13 @@
+[package]
+name = "alysis-git-ssh-sign"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+ssh-key = { version = "=0.6.7", features = ["ed25519", "rsa", "ecdsa"] }
+
+[profile.release]
+strip = true
+lto = "thin"

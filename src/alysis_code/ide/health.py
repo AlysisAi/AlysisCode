@@ -4,6 +4,16 @@ from typing import Any
 
 from .. import __version__
 from ..agent.steering import MAX_PENDING_STEER_MESSAGES, MAX_STEER_MESSAGE_CHARS
+from ..computer_use_platform_policy import (
+    CU_EVENTS,
+    CU_FEATURES,
+    CU_METHODS,
+    W11_EVENTS,
+    W11_FEATURES,
+    W11_METHODS,
+    computer_use_blocked,
+    mac_w7_computer_use_available,
+)
 from ..feedback_delivery import MAX_DESCRIPTION_CHARS, MAX_REQUEST_BYTES
 from ..host_actions import (
     HOST_ACTION_MAX_ARGUMENT_BYTES,
@@ -11,6 +21,7 @@ from ..host_actions import (
     HOST_ACTION_PROTOCOL_VERSION,
     HOST_ACTIONS,
 )
+from ..mcp.connector_host import VERIFIED_CONNECTOR_PLUGIN_IDS
 from ..surface.events import EVENT_REGISTRY
 from .activity_events import activity_capabilities
 from .approval_binding import (
@@ -24,6 +35,10 @@ from .management_protocol import MANAGEMENT_FEATURES
 from .protocol import PROTOCOL_VERSION
 
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300
+
+# Historical source switch retained for compatibility; LR-42 uses the actual
+# Mac W7 predicate at both advertisement and admission, never this cached flag.
+COMPUTER_USE_START_RESOLVED_ENABLED = False
 
 SUPPORTED_METHODS = (
     "initialize",
@@ -60,6 +75,8 @@ SUPPORTED_METHODS = (
     "session.history",
     "session.search",
     "session.context",
+    "session.artifactChecks",
+    "session.outputArtifacts",
     "session.compact",
     "session.resume",
     "session.fork",
@@ -87,6 +104,7 @@ SUPPORTED_METHODS = (
     "session.terminals.clear",
     "session.clear",
     "session.cancel",
+    "session.close",
     "approval.respond",
     "host.action.respond",
     "host.action.dispatched",
@@ -99,6 +117,7 @@ SUPPORTED_METHODS = (
     "code.review.start",
     "code.review.result",
     "browser_start.respond",
+    "computer_start_resolved.respond",
     "computer.respond",
     "task_budget.respond",
     "job.status",
@@ -168,6 +187,7 @@ SUPPORTED_METHODS = (
     "profile.list",
     "profile.show",
     "profile.add",
+    "provider.auth.status",
     "profile.remove",
     "profile.use",
     "profile.rename",
@@ -184,6 +204,16 @@ SUPPORTED_METHODS = (
     "commands.list",
     "agents.list",
     "skill.list",
+    "skill.import.preview",
+    "skill.import.describe",
+    "skill.import.package",
+    "skill.import.install",
+    "skill.import.discard",
+    "skill.document.read",
+    "skill.document.save",
+    "skill.update.preview",
+    "hooks.document.read",
+    "hooks.document.save",
     "skill.info",
     "skill.init",
     "skill.validate",
@@ -228,6 +258,7 @@ SUPPORTED_METHODS = (
     "ext.list",
     "ext.info",
     "ext.install",
+    "ext.custom.save",
     "ext.uninstall",
     "ext.enable",
     "ext.disable",
@@ -246,8 +277,11 @@ def capabilities_payload() -> dict[str, Any]:
             {
                 *EVENT_REGISTRY,
                 "computer_use_request",
+                "computer_use_evidence",
+                "computer_use_attribution",
                 "task_budget_request",
                 "browser_start_request",
+                "computer_start_resolved_request",
                 "host_action_requested",
                 "host_action_cancelled",
             }
@@ -255,6 +289,10 @@ def capabilities_payload() -> dict[str, Any]:
         "modes": list(SUPPORTED_MODES),
         "transport": "stdio-jsonl",
         "features": {
+            "computer_use_evidence": {"version": 1},
+            "computer_use_attribution_v1": {"supported": True, "version": 1},
+            "project_folders": {"version": 1, "field": "project_folders", "scope": "turn"},
+            "local_memory": {"version": 1, "field": "memory_scope", "scope": "turn"},
             "explicit_skill_invocation": {"version": 1, "field": "skill", "scope": "turn"},
             "structured_surface_events": True,
             "graceful_shutdown": {
@@ -274,7 +312,7 @@ def capabilities_payload() -> dict[str, Any]:
             },
             "typed_ide_context": context_capabilities(),
             "embedded_browser": {"version": 1, "interactions_version": 1},
-            "open_panels": {"version": 1},
+            "open_panels": {"version": 1, "workspace_files": 1},
             "desktop_terminal": {"version": 1, "mutation_mode": "fullaccess"},
             "user_questions": {
                 "version": 1,
@@ -288,9 +326,15 @@ def capabilities_payload() -> dict[str, Any]:
                 "full_history_resume": True,
             },
             "desktop_connections": {"version": 1, "read_only": True},
+            "host_mcp_instructions": {"version": 1},
             "github_host_actions": {
                 "version": 1,
                 "actions": [action for action in HOST_ACTIONS if action.startswith("github.")],
+            },
+            "host_plugin_drop": {
+                "version": 1,
+                "session_param": "drop_inactive_host_plugins",
+                "result": "host_plugins_dropped",
             },
             "google_mcp_plugins": {
                 "version": 1,
@@ -299,6 +343,18 @@ def capabilities_payload() -> dict[str, Any]:
                 "credential_authority": "host",
                 "max_services": 8,
             },
+            # The user's own online plugins (Plugins M2d): the person's descriptor, their marks.
+            "custom_connector_mcp": {
+                "version": 1,
+                "host_action": "mcp.connector.call",
+                "session_param": "connector_mcp",
+                "credential_authority": "host",
+                "management_method": "ext.custom.save",
+                "max_plugins": 16,
+                # Alysis-reviewed vendor plugins bound through the same channel.
+                "verified_plugins": list(VERIFIED_CONNECTOR_PLUGIN_IDS),
+            },
+            "github_repository_policy_v1": {"supported": True, "version": 1},
             "github_mcp_plugin": {
                 "version": 1,
                 "protocol_versions": [1, 2],
@@ -542,8 +598,16 @@ def capabilities_payload() -> dict[str, Any]:
                 "custom_transports": False,
                 "auth_refresh": False,
             },
+            "computer_interaction_v2": {"supported": True, "version": 2},
+            "computer_application_lifecycle_v1": {"supported": True, "version": 1},
+            "computer_window_selection_v1": {"supported": True, "version": 1},
             "computer_observation_v1": {"supported": True, "version": 1, "ephemeral_images": True},
             "computer_discovery_v1": {"supported": True, "version": 1, "host_issued_targets": True},
+            **(
+                {"computer_use_start_resolved_v1": {"supported": True, "version": 1}}
+                if mac_w7_computer_use_available()
+                else {}
+            ),
             "browser_start_v1": {
                 "supported": True,
                 "protocol_version": 1,
@@ -1134,6 +1198,16 @@ def capabilities_payload() -> dict[str, Any]:
             },
         },
     }
+    if not mac_w7_computer_use_available():
+        payload["methods"] = [m for m in payload["methods"] if m not in W11_METHODS]
+        payload["events"] = [e for e in payload["events"] if e not in W11_EVENTS]
+        for feature in W11_FEATURES:
+            payload["features"].pop(feature, None)
+    if computer_use_blocked():
+        payload["methods"] = [method for method in payload["methods"] if method not in CU_METHODS]
+        payload["events"] = [event for event in payload["events"] if event not in CU_EVENTS]
+        for feature in CU_FEATURES:
+            payload["features"].pop(feature, None)
     return payload
 
 

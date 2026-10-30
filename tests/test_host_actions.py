@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from alysis_code.agent.errors import AgentRuntimeError
+from alysis_code.agent.errors import AgentRuntimeError, ApprovalDeclinedError
 from alysis_code.agent.tools_assembly import build_tools
 from alysis_code.config import AppConfig
 from alysis_code.host_actions import (
@@ -41,6 +41,7 @@ def _build_tools(
     surface: Any | None = None,
     host_mcp: dict[str, Any] | None = None,
     google_mcp: list[dict[str, Any]] | None = None,
+    cfg: AppConfig | None = None,
 ) -> dict[str, Any]:
     return build_tools(
         root=root,
@@ -48,7 +49,7 @@ def _build_tools(
         store=_store(root),
         mode=mode,
         yes=True,
-        cfg=AppConfig(model="test-model"),
+        cfg=cfg or AppConfig(model="test-model"),
         surface=surface,
         host_action_capabilities=actions,
         host_action_handler=handler,
@@ -69,13 +70,67 @@ class _ApprovalSurface(NoopSurface):
         return self.decision
 
 
+@pytest.mark.parametrize("action,args", [("terminal.open", {}), ("tasks.run", {"task_id": "one"})])
+def test_explicit_host_denial_uses_the_existing_terminal_user_denial_flow(tmp_path, action, args):
+    class UnifiedSurface(_ApprovalSurface):
+        host_action_approval_protocol = 1
+
+    def denied(_action, _arguments):
+        raise HostActionError(
+            "approval_denied", "The user declined this action.", dispatch_state="not_dispatched"
+        )
+
+    tools = _build_tools(
+        tmp_path,
+        mode="review",
+        actions=(action,),
+        handler=denied,
+        surface=UnifiedSurface(ApprovalDecision(allow=False)),
+    )
+    with pytest.raises(ApprovalDeclinedError) as caught:
+        tools[HOST_ACTION_TOOL_NAMES[action]].run(args)
+    assert caught.value.result_payload["error_code"] == "approval_denied"
+    assert caught.value.result_payload["dispatch_state"] == "not_dispatched"
+
+
+@pytest.mark.parametrize(
+    "code,state",
+    [
+        ("approval_review_denied", "not_dispatched"),
+        ("unsupported_host_action", "not_dispatched"),
+        ("approval_denied", "unknown"),
+    ],
+)
+def test_other_host_failures_are_never_reclassified_as_a_persons_denial(tmp_path, code, state):
+    class UnifiedSurface(_ApprovalSurface):
+        host_action_approval_protocol = 1
+
+    def failed(_action, _arguments):
+        raise HostActionError(code, "Structured failure.", dispatch_state=state)
+
+    tools = _build_tools(
+        tmp_path,
+        mode="review",
+        actions=("terminal.open",),
+        handler=failed,
+        surface=UnifiedSurface(ApprovalDecision(allow=False)),
+    )
+    with pytest.raises(AgentRuntimeError) as caught:
+        tools["desktop_terminal_open"].run({})
+    assert not isinstance(caught.value, ApprovalDeclinedError)
+    assert caught.value.result_payload["error_code"] == code
+
+
 def test_host_action_tool_metadata_is_complete() -> None:
-    # MCP tool schemas come from the negotiated catalog rather than built-in metadata.
+    # MCP schemas are catalog supplied; plugin admission is internal, never a model tool.
+    assert "plugin.skill.admit" not in HOST_ACTION_TOOL_NAMES
     assert set(HOST_ACTION_TOOL_NAMES) == set(HOST_ACTIONS) - {
+        "plugin.skill.admit",
         "mcp.github.call",
         "mcp.github.discover",
         "mcp.github.describe",
         "mcp.google.call",
+        "mcp.connector.call",
     }
     for action in HOST_ACTION_TOOL_NAMES:
         tool_name = HOST_ACTION_TOOL_NAMES[action]
@@ -458,11 +513,14 @@ def test_desktop_terminal_tools_require_capability_and_full_access(
     tmp_path: Path, mode: str
 ) -> None:
     calls = []
+    cfg = AppConfig(model="test-model")
+    cfg.extra_fields["shell_sandbox"] = {"mode": "off"}
     tools = _build_tools(
         tmp_path,
         mode=mode,
         actions=HOST_ACTIONS,
         handler=lambda action, args: calls.append((action, args)) or {"accepted": True},
+        cfg=cfg,
     )
     assert "desktop_terminal_list" in tools
     assert "desktop_terminal_read" in tools
@@ -473,6 +531,79 @@ def test_desktop_terminal_tools_require_capability_and_full_access(
         assert calls == [("terminal.write", {"terminal_id": "one", "text": "Καλημέρα 世界\n"})]
     unbound = _build_tools(tmp_path, mode="fullaccess", handler=lambda *_: {})
     assert not any(name.startswith("desktop_terminal_") for name in unbound)
+
+
+@pytest.mark.parametrize("sandbox_mode", ["strict", "warn"])
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("open", {}),
+        ("write", {"terminal_id": "one", "text": "echo example\n"}),
+        ("close", {"terminal_id": "one"}),
+    ],
+)
+def test_desktop_terminal_full_access_preserves_native_sandbox(
+    tmp_path: Path, sandbox_mode: str, name: str, args: dict[str, Any]
+) -> None:
+    calls = []
+    cfg = AppConfig(model="test-model")
+    cfg.extra_fields["shell_sandbox"] = {
+        "mode": sandbox_mode,
+        "backend": "windows-native",
+        "unavailable_fallback": "ask",
+    }
+    tools = _build_tools(
+        tmp_path,
+        mode="fullaccess",
+        actions=HOST_ACTIONS,
+        handler=lambda action, args: calls.append((action, args)) or {},
+        cfg=cfg,
+    )
+    with pytest.raises(AgentRuntimeError, match="require shell sandbox mode off"):
+        tools[f"desktop_terminal_{name}"].run(args)
+    assert calls == []
+
+
+@pytest.mark.parametrize("mode", ["readonly", "review", "auto", "fullaccess"])
+def test_desktop_terminal_sandbox_keeps_read_only_actions(tmp_path: Path, mode: str) -> None:
+    calls = []
+    cfg = AppConfig(model="test-model")
+    cfg.extra_fields["shell_sandbox"] = {"mode": "strict", "backend": "windows-native"}
+    tools = _build_tools(
+        tmp_path,
+        mode=mode,
+        actions=HOST_ACTIONS,
+        handler=lambda action, args: calls.append((action, args)) or {},
+        cfg=cfg,
+    )
+    tools["desktop_terminal_list"].run({})
+    tools["desktop_terminal_read"].run({"terminal_id": "one"})
+    assert calls == [("terminal.list", {}), ("terminal.read", {"terminal_id": "one"})]
+
+
+def test_desktop_terminal_checks_effective_sandbox_at_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    cfg = AppConfig(model="test-model")
+    cfg.extra_fields["shell_sandbox"] = {"mode": "off", "backend": "windows-native"}
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+    tools = _build_tools(
+        tmp_path,
+        mode="fullaccess",
+        actions=HOST_ACTIONS,
+        handler=lambda action, args: calls.append((action, args)) or {},
+        cfg=cfg,
+    )
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "strict")
+    with pytest.raises(AgentRuntimeError, match="effective mode is strict"):
+        tools["desktop_terminal_open"].run({})
+    assert calls == []
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+    tools["desktop_terminal_open"].run({})
+    tools["desktop_terminal_write"].run({"terminal_id": "one", "text": "echo example\n"})
+    tools["desktop_terminal_close"].run({"terminal_id": "one"})
+    assert [action for action, _ in calls] == ["terminal.open", "terminal.write", "terminal.close"]
 
 
 @pytest.mark.parametrize(

@@ -193,6 +193,22 @@ def _candidate_rank(
     )
 
 
+@lru_cache(maxsize=1)
+def _catalog_name_indexes(
+    keys: tuple[str, ...],
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    # Session setup resolves several roles against the same bundled catalog.
+    # Cache only its name indexes: current metadata and provider ranking must
+    # still be evaluated for every lookup. Changed keys rebuild the indexes.
+    lower_index: dict[str, list[str]] = {}
+    alias_index: dict[str, list[str]] = {}
+    for key in keys:
+        lower_index.setdefault(key.casefold(), []).append(key)
+        for alias in model_name_variants(key):
+            alias_index.setdefault(alias.casefold(), []).append(key)
+    return lower_index, alias_index
+
+
 def _lookup_model_info(
     model_cost: dict[str, Any],
     requested_model: str,
@@ -200,14 +216,8 @@ def _lookup_model_info(
     base_url: str | None = None,
     provider_hint: str | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
-    lower_index: dict[str, list[str]] = {}
-    alias_index: dict[str, list[str]] = {}
-    for key, value in model_cost.items():
-        if not _is_model_catalog_entry(key, value):
-            continue
-        lower_index.setdefault(key.casefold(), []).append(key)
-        for alias in model_name_variants(key):
-            alias_index.setdefault(alias.casefold(), []).append(key)
+    keys = tuple(key for key, value in model_cost.items() if _is_model_catalog_entry(key, value))
+    lower_index, alias_index = _catalog_name_indexes(keys)
 
     preferred_provider_tokens = _preferred_provider_tokens(base_url, provider_hint)
     candidates: list[tuple[tuple[int, int, int, int, int], str, dict[str, Any]]] = []

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Update provider models, reasoning controls, and context limits across CLI
+  settings and requests. Keep NVIDIA tool catalogs within request limits and
+  preserve conversation history when switching to Reflection.
+- Show Beta and Alpha model availability and shared credit usage from the
+  account catalog.
+- Require separate approvals for GitHub credentials and write actions,
+  including continued shell commands and scoped services.
+- Improve cancellation, process ownership, retry recovery, and completion reporting.
+- Expand desktop bridge, document artifact, and native Windows sandbox contracts.
+- Refresh pinned dependencies and installed-package qualification checks.
 - Preserve Git rename and copy paths containing ` b/` directory components
   when diff headers require adjacent metadata to disambiguate the paths.
 - Recognize Alibaba Model Studio endpoints by owned hostname boundaries rather

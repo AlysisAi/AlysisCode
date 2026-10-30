@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import io
 from pathlib import Path
 
@@ -108,6 +109,67 @@ def test_generate_images_writes_validated_new_assets_and_returns_metadata(
     with Image.open(tmp_path / "web/assets/empty-state.png") as generated:
         assert generated.size == (11, 9)
         assert generated.format == "PNG"
+
+
+def test_generate_images_requires_decoder_before_provider_request(tmp_path, monkeypatch) -> None:
+    original_import = builtins.__import__
+    requests = []
+
+    def without_decoder(name, *args, **kwargs):
+        if name == "PIL":
+            raise ImportError("image decoder unavailable")
+        return original_import(name, *args, **kwargs)
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(500)
+
+    monkeypatch.setattr(builtins, "__import__", without_decoder)
+    with pytest.raises(ImportError, match="image decoder unavailable"):
+        generate_images(
+            root=tmp_path,
+            cfg=_enabled_config(),
+            fallback_api_key="fixture-only",
+            prompt="A synthetic test image",
+            output_path="image.png",
+            transport=httpx.MockTransport(handler),
+        )
+    assert requests == []
+    assert not (tmp_path / "image.png").exists()
+
+
+def test_partial_publication_retains_output_without_host_path_rollback(tmp_path, monkeypatch):
+    raw = _png_bytes()
+    calls = []
+
+    def publish(target, payload):
+        if calls:
+            raise OSError("synthetic second publication failure")
+        target.write_bytes(payload)
+        calls.append(target)
+
+    def forbidden_unlink(*args, **kwargs):
+        raise AssertionError("published pathname must not be deleted by the host")
+
+    monkeypatch.setattr(Path, "unlink", forbidden_unlink)
+    with pytest.raises(
+        ImageGenerationError, match="already-created outputs were retained: image-1.png"
+    ):
+        generate_images(
+            root=tmp_path,
+            cfg=_enabled_config(),
+            fallback_api_key="synthetic",
+            prompt="synthetic",
+            output_path="image.png",
+            count=2,
+            publish=publish,
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, json={"data": [{"b64_json": base64.b64encode(raw).decode()}] * 2}
+                )
+            ),
+        )
+    assert calls[0].is_file()
 
 
 def test_generate_images_never_calls_provider_when_output_exists(tmp_path: Path) -> None:

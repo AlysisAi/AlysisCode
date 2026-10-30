@@ -8,6 +8,7 @@ from typing import Any
 from .context.tool_schema_budgeter import (
     ToolSchemaBudgetReport,
     analyze_tool_schema_budget,
+    tool_schema_token_total,
 )
 from .llm.metadata import strip_provider_metadata_from_message
 from .token_budget import estimate_tokens
@@ -159,7 +160,7 @@ def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
 def estimate_tool_schema_tokens(tool_list: list[dict[str, Any]] | None) -> int:
     if not tool_list:
         return 0
-    return analyze_tool_schema_budget(tool_list).total_tokens
+    return tool_schema_token_total(tool_list)
 
 
 def estimate_request_tokens(

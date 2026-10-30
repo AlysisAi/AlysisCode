@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from ..frontmatter_utils import parse_frontmatter_yaml, split_frontmatter
+import yaml
+
+from ..frontmatter_utils import split_frontmatter
 from .prompting import (
     EXPLICIT_SKILL_CONTEXT_TOTAL_MAX_CHARS,
     EXPLICIT_SKILL_DESCRIPTION_DISPLAY_MAX_CHARS,
@@ -161,12 +164,31 @@ def _validate_skill_bundle(bundle_path: Path) -> SkillValidationResult:
             issues=tuple(issues),
         )
 
-    meta = parse_frontmatter_yaml(
-        frontmatter,
-        allowed_keys={"name", "description", "aliases"},
-        list_fields={"aliases"},
-        string_fields={"name", "description"},
-    )
+    try:
+        if any(isinstance(token, yaml.tokens.AliasToken) for token in yaml.scan(frontmatter)):
+            raise ValueError("Expand YAML aliases before importing this skill.")
+        meta = yaml.safe_load(frontmatter)
+        if not isinstance(meta, dict) or any(not isinstance(key, str) for key in meta):
+            raise ValueError("Frontmatter must be a mapping with string keys.")
+        for key in ("name", "description"):
+            if key in meta and not isinstance(meta[key], str):
+                raise ValueError(f"Frontmatter {key} must be text.")
+        if "aliases" in meta and (
+            not isinstance(meta["aliases"], list)
+            or any(not isinstance(value, str) for value in meta["aliases"])
+        ):
+            raise ValueError("Frontmatter aliases must be a list of strings.")
+        # YAML dates are metadata, not runtime objects; recursive aliases are invalid.
+        meta = json.loads(json.dumps(meta, default=str))
+    except (yaml.YAMLError, ValueError) as exc:
+        issues.append(
+            SkillValidationIssue(
+                severity="error", message=f"Invalid skill frontmatter: {exc}", path=entry_path
+            )
+        )
+        return SkillValidationResult(
+            bundle_path=resolved_bundle, entry_path=entry_path, valid=False, issues=tuple(issues)
+        )
     name = str(meta.get("name") or "").strip()
     description = str(meta.get("description") or "").strip()
     instructions = body.strip()
@@ -295,10 +317,6 @@ def _validate_skill_bundle(bundle_path: Path) -> SkillValidationResult:
         name=name,
         description=description,
         instructions=instructions,
-        metadata={
-            key: value
-            for key, value in meta.items()
-            if key in {"name", "description", "aliases"} and value
-        },
+        metadata=meta,
         issues=tuple(issues),
     )

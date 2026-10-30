@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import json
 import logging
 import ntpath
 import os
 import platform
 import re
+import secrets
 import shlex
 import shutil
-import site
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields, is_dataclass, replace
+from contextlib import ExitStack, contextmanager
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
@@ -22,12 +27,15 @@ from .branding import default_sandbox_docker_image
 from .bwrap_etc import ensure_minimal_etc_dir
 from .command_text import command_text
 from .config import AppConfig, ConfigError
+from .macos_sandbox import seatbelt_profile
 from .process_reaping import (
     CommandCancelledError,
+    CommandCleanupError,
     ProcessGroupRegistry,
     communicate_until_cancelled,
     run_in_tracked_process_group,
 )
+from .project_folders import allowed_roots, containing_root
 from .sandbox_settings import ShellSandboxSettings, resolve_shell_sandbox_settings
 from .service_persistence import apply_non_interactive_defaults
 
@@ -115,37 +123,6 @@ def is_safe_repo_meta_git_command(cmd: str) -> bool:
 
 
 _BWRAP_SYSTEM_BIND_ROOTS = (Path("/usr"), Path("/bin"), Path("/lib"), Path("/lib64"))
-_BWRAP_COMMON_TOOLCHAIN_COMMANDS = (
-    "python",
-    "python3",
-    "pip",
-    "pip3",
-    "pytest",
-    "py.test",
-    "ruff",
-    "mypy",
-    "pyright",
-    "tox",
-    "nox",
-    "uv",
-    "poetry",
-    "pipx",
-    "node",
-    "npm",
-    "npx",
-    "pnpm",
-    "yarn",
-    "bun",
-    "cargo",
-    "rustc",
-    "rustup",
-    "go",
-    "java",
-    "javac",
-    "jar",
-    "mvn",
-    "gradle",
-)
 
 
 class ShellRunner(Protocol):
@@ -203,7 +180,11 @@ def _workspace_cwd(*, root: Path, cwd: Path) -> str:
     try:
         rel = cwd_abs.relative_to(root_abs)
     except ValueError as e:
-        raise RuntimeError(f"cwd is outside root: {cwd_abs}") from e
+        try:
+            containing_root(root_abs, cwd_abs)
+            return os.fspath(cwd_abs)
+        except ValueError:
+            raise RuntimeError(f"cwd is outside root: {cwd_abs}") from e
     if not rel.parts:
         return "/workspace"
     return os.fspath(PurePosixPath("/workspace", *rel.parts))
@@ -360,6 +341,9 @@ def _python_runtime_ro_bind_roots() -> tuple[Path, ...]:
             Path(sys.base_prefix),
             Path(sys.base_exec_prefix),
             executable.resolve().parent,
+            # Editable installs keep engine code outside the interpreter prefix.
+            # Bind only the trusted package, not its checkout or neighboring files.
+            Path(__file__).resolve().parent,
             *_executable_symlink_parent_roots(executable),
         ]
     )
@@ -413,91 +397,103 @@ def _add_python_runtime_bindings(args: list[str], *, created_dirs: set[str]) -> 
         )
 
 
-def _path_env_entries(path_value: str | None) -> tuple[Path, ...]:
-    entries: list[Path] = []
-    for raw in (path_value or "").split(os.pathsep):
-        if not raw.strip():
-            continue
-        entries.append(Path(raw.strip()))
-    return tuple(entries)
-
-
-def _toolchain_root_for_executable(executable: Path, *, command_name: str) -> Path:
-    resolved = executable.resolve()
-    parts = tuple(part.casefold() for part in resolved.parts)
-    if ".cargo" in parts:
-        index = parts.index(".cargo")
-        return Path(*resolved.parts[: index + 1])
-    if ".rustup" in parts:
-        index = parts.index(".rustup")
-        return Path(*resolved.parts[: index + 1])
-    if command_name in {"node", "npm", "npx", "pnpm", "yarn", "bun"}:
-        for marker in (".nvm", ".fnm", ".volta"):
-            if marker in parts:
-                index = parts.index(marker)
-                # Bind the version manager root. npm/yarn shims commonly jump between
-                # bin and lib/node_modules under the same versioned install.
-                if marker == ".nvm" and index + 3 < len(resolved.parts):
-                    return Path(*resolved.parts[: index + 4])
-                return Path(*resolved.parts[: index + 1])
-    if resolved.parent.name == "bin":
-        return resolved.parent.parent
-    return resolved.parent
-
-
-def _toolchain_extra_env(bind_roots: tuple[Path, ...]) -> dict[str, str]:
-    env: dict[str, str] = {}
-    cargo_home = Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
-    rustup_home = Path(os.environ.get("RUSTUP_HOME") or Path.home() / ".rustup")
-    python_userbase = Path(site.getuserbase())
-    if any(root == cargo_home.resolve() for root in bind_roots if root.exists()):
-        env["CARGO_HOME"] = os.fspath(cargo_home.resolve())
-    if rustup_home.exists():
-        env["RUSTUP_HOME"] = os.fspath(rustup_home.resolve())
-    if python_userbase.exists() and any(
-        root == python_userbase.resolve() for root in bind_roots if root.exists()
-    ):
-        env["PYTHONUSERBASE"] = os.fspath(python_userbase.resolve())
-    return env
-
-
-def _common_toolchain_ro_bind_roots(path_value: str | None) -> tuple[Path, ...]:
-    search_path = os.pathsep.join(os.fspath(path) for path in _path_env_entries(path_value))
-    candidates: list[Path] = []
-    for command_name in _BWRAP_COMMON_TOOLCHAIN_COMMANDS:
-        executable = shutil.which(command_name, path=search_path or None)
-        if not executable:
-            continue
-        executable_path = Path(executable)
-        if _path_is_inside_system_root(executable_path):
-            continue
-        candidates.append(
-            _toolchain_root_for_executable(executable_path, command_name=command_name)
-        )
-        if command_name in {"cargo", "rustc", "rustup"}:
-            cargo_home = Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
-            rustup_home = Path(os.environ.get("RUSTUP_HOME") or Path.home() / ".rustup")
-            candidates.extend([cargo_home, rustup_home])
-    return _dedupe_existing_paths(candidates)
-
-
-def _add_common_toolchain_bindings(
+def _add_host_runtime_bindings(
     args: list[str],
     *,
     path_value: str | None,
+    workspace_roots: tuple[Path, ...],
     created_dirs: set[str],
-) -> dict[str, str]:
+    check_preparation: Callable[[], None],
+) -> tuple[Path, ...]:
+    """Use the same executable discovery as Seatbelt, plus explicit runtime data."""
+    from .host_file_policy import HostFilePolicy
+    from .host_runtime_policy import desktop_runtime_roots
+    from .posix_runtime_paths import path_runtime_paths
+
+    policy = HostFilePolicy.capture()
+    home = Path.home().resolve()
     bound_dests: set[str] = set()
-    bind_roots = _common_toolchain_ro_bind_roots(path_value)
-    for root in bind_roots:
+    mounted_directories: set[Path] = set()
+    available_roots = (*_BWRAP_SYSTEM_BIND_ROOTS, *_python_runtime_ro_bind_roots())
+    discovered = path_runtime_paths(
+        path_value,
+        workspace_roots=workspace_roots,
+        system_paths=available_roots,
+        check_preparation=check_preparation,
+    )
+    paths = tuple(dict.fromkeys((*desktop_runtime_roots(), *discovered)))
+    inspected_roots: set[Path] = set()
+    for path in paths:
+        check_preparation()
+        root = path.resolve()
+        if home.is_relative_to(root):
+            raise ConfigError("Runtime access requires a narrow installation directory.")
+        if any(
+            root.is_relative_to(private) or private.is_relative_to(root)
+            for private in policy.private_roots
+        ):
+            raise ConfigError("A sandbox runtime scope cannot overlap private host state.")
+        if any(root.is_relative_to(p) or p.is_relative_to(root) for p in workspace_roots):
+            raise ConfigError("A sandbox workspace cannot overlap a trusted runtime.")
+        # A hardlink can expose an unapproved file under a runtime's otherwise
+        # ordinary name. Do not follow symlinks: their targets still need their
+        # own namespace mount. Trusted runtime trees must use copied files.
+        pending = []
+        inspected = 0
+        already_available = any(root.is_relative_to(p) for p in available_roots)
+        try:
+            if not already_available and root.exists() and root not in inspected_roots:
+                info = root.lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                    raise ConfigError("Runtime executable is hardlinked to another file.")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(root)
+                inspected_roots.add(root)
+            while pending:
+                check_preparation()
+                directory = pending.pop()
+                if not stat.S_ISDIR(directory.lstat().st_mode):
+                    raise ConfigError("Runtime directory changed during sandbox preparation.")
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        check_preparation()
+                        inspected += 1
+                        if inspected > 200_000:
+                            raise ConfigError(
+                                "Runtime scope is too large; choose a narrower installation."
+                            )
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode):
+                            pending.append(Path(entry.path))
+                        elif stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                            raise ConfigError(
+                                "Runtime scope contains hardlinked files; install with copy semantics."
+                            )
+        except OSError as exc:
+            raise ConfigError("Cannot inspect the sandbox runtime scope.") from exc
+        if any(path.is_relative_to(directory) for directory in mounted_directories):
+            continue
+        if path != root:
+            # Preserve executable identity and self-relative library lookup.
+            # Mounting the target file at its alias would turn the symlink into
+            # a different executable path (for example Node's process.execPath).
+            _add_bwrap_dir(args, PurePosixPath(path.parent), created_dirs=created_dirs)
+            args.extend(["--symlink", str(root), str(path)])
+            bound_dests.add(str(path))
+            continue
+        if already_available:
+            continue
         _add_bwrap_ro_bind(
             args,
             root,
-            root,
+            path,
             created_dirs=created_dirs,
             bound_dests=bound_dests,
+            resolve_dest=False,
         )
-    return _toolchain_extra_env(bind_roots)
+        if root.is_dir():
+            mounted_directories.add(path)
+    return tuple(dict.fromkeys(path.resolve() for path in paths))
 
 
 def _hardened_java_config_ro_bind_paths(*, etc_root: Path = Path("/etc")) -> tuple[Path, ...]:
@@ -539,8 +535,36 @@ def _bwrap_path_value(path_value: str | None) -> str:
     return os.pathsep.join(entries)
 
 
+def _host_verification_launcher_unavailable(command: str, cwd: Path) -> bool:
+    """Observe a missing direct verifier executable before the host shell runs."""
+    from .verification_command_analysis import analyze_verification_command
+
+    if os.name != "posix" or os.environ.get("BASH_ENV") or os.environ.get("ENV"):
+        return False
+    analysis = analyze_verification_command(command, trusted=True, workspace_root=cwd)
+    # Wrappers, assignments and shell functions need their own environment;
+    # a host PATH lookup cannot establish whether those launched a checker.
+    if not (
+        analysis.is_valid_verifier
+        and analysis.parts
+        and analysis.shell_control_flow == "none"
+        and analysis.unwrapped_command == analysis.normalized_command
+        and not any(key.startswith("BASH_FUNC_") for key in os.environ)
+    ):
+        return False
+    head = shlex.split(command)[0]
+    if head == "command" or any(character in head for character in "$~*?[]=\\"):
+        return False
+    search_path = os.pathsep.join(
+        str(cwd / part) if not Path(part).is_absolute() else part for part in os.get_exec_path()
+    )
+    executable = str(cwd / head) if "/" in head and not Path(head).is_absolute() else head
+    return shutil.which(executable, path=search_path) is None
+
+
 @dataclass(frozen=True)
 class HostShellRunner:
+    additional_workspace_roots: tuple[str, ...] = ()
     process_group_registry: ProcessGroupRegistry | None = None
     close_stdin: bool = False
     # True when this runner stands in for a sandbox that is not available here: the shell
@@ -556,7 +580,8 @@ class HostShellRunner:
         timeout_s: int,
         cancel_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        return run_in_tracked_process_group(
+        launcher_unavailable = _host_verification_launcher_unavailable(cmd, cwd)
+        result = run_in_tracked_process_group(
             cmd,
             shell=True,
             cwd=str(cwd),
@@ -567,6 +592,10 @@ class HostShellRunner:
             stdin=subprocess.DEVNULL if self.close_stdin else None,
             cancel_check=cancel_check,
         )
+
+        if launcher_unavailable and result.returncode == 127:
+            result.host_launcher_unavailable = True
+        return result
 
 
 @dataclass(frozen=True)
@@ -586,10 +615,26 @@ class DisabledShellRunner:
 
 
 class LazyShellRunner:
-    def __init__(self, loader: Callable[[], ShellRunner]) -> None:
+    def __init__(
+        self,
+        loader: Callable[[], ShellRunner],
+        *,
+        settings: ShellSandboxSettings | None = None,
+    ) -> None:
         self._loader = loader
         self._runner: ShellRunner | None = None
         self._load_error: Exception | None = None
+        self._settings = settings
+
+    @property
+    def execution_settings(self) -> ShellSandboxSettings | None:
+        """Settings captured by the loader, unaffected by later config edits."""
+        return self._settings
+
+    @property
+    def resolved_runner(self) -> ShellRunner | None:
+        """Inspect an already-loaded runner without initializing a helper."""
+        return self._runner
 
     def _resolve_runner(self) -> ShellRunner:
         if self._runner is not None:
@@ -629,6 +674,36 @@ class LazyShellRunner:
         )
 
 
+def _validate_bwrap_primary_host_scope(root: Path, *, filesystem_access: str) -> None:
+    """The primary /workspace alias must preserve the host file-tool boundary."""
+    from .branding import env_get
+    from .host_file_policy import HostFilePolicy
+
+    policy = HostFilePolicy.capture()
+    if any(
+        root.is_relative_to(private) or private.is_relative_to(root)
+        for private in policy.private_roots
+    ):
+        raise ConfigError("The primary sandbox workspace overlaps private host state.")
+    desktop_root = env_get("ALYSIS_DESKTOP_USER_DATA")
+    if desktop_root:
+        desktop = Path(desktop_root)
+        if not desktop.is_absolute() or "\0" in desktop_root:
+            raise ConfigError("Desktop application data must be an absolute local path.")
+        if desktop.resolve().is_relative_to(root):
+            raise ConfigError(
+                "A sandbox grant cannot contain the Desktop application's data folder."
+            )
+    if filesystem_access == "workspace-write" and any(
+        root.is_relative_to(runtime) or runtime.is_relative_to(root)
+        for runtime in (*policy.readonly_roots, Path(__file__).parent.resolve())
+    ):
+        # A read-only mount at the runtime's original name leaves the /workspace
+        # alias writable. Refuse overlapping writes rather than rely on pathname
+        # checks before a concurrently mutable worker operation.
+        raise ConfigError("The primary sandbox workspace overlaps a trusted runtime.")
+
+
 def _build_bwrap_argv(
     *,
     root: Path,
@@ -640,11 +715,41 @@ def _build_bwrap_argv(
     unshare_cgroup: bool,
     protect_repo_meta: bool = True,
     allow_repo_meta_writes: bool = False,
+    filesystem_access: str = "workspace-write",
+    additional_workspace_roots: tuple[str, ...] = (),
+    check_preparation: Callable[[], None] | None = None,
 ) -> tuple[list[str], dict[str, str]]:
-    """Build bwrap argv + parent-process env. Pure function; no subprocess calls."""
+    """Build bwrap argv + parent-process env without starting subprocesses."""
+
+    if check_preparation is None:
+        deadline = time.monotonic() + 30
+
+        def check_preparation() -> None:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(
+                    cmd, 30, stderr="Sandbox preparation timed out before launch."
+                )
+
+    check_preparation()
 
     root_abs = root.resolve()
-    workdir = _workspace_cwd(root=root_abs, cwd=cwd)
+    additional_workspace_roots = tuple(
+        dict.fromkeys((*additional_workspace_roots, *map(os.fspath, allowed_roots(root)[1:])))
+    )
+    _validate_filesystem_access(filesystem_access)
+    # This applies even without additional roots or a Desktop launcher. Otherwise
+    # a contained file worker can follow a post-admission alias into private state
+    # already present beneath the primary mount.
+    _validate_bwrap_primary_host_scope(root_abs, filesystem_access=filesystem_access)
+    workdir = (
+        _workspace_cwd(root=root_abs, cwd=cwd)
+        if cwd.resolve().is_relative_to(root_abs)
+        else os.fspath(cwd.resolve())
+    )
+    from .sandbox_workspace import contains_workspace_path
+
+    if not contains_workspace_path(root_abs, cwd, additional_workspace_roots):
+        raise ConfigError("cwd is outside root and approved additional sandbox workspaces")
     run_env = _sanitized_env(clear_env=clear_env)
     path_value = _bwrap_path_value(run_env.get("PATH"))
     args: list[str] = ["bwrap", "--die-with-parent"]
@@ -658,7 +763,8 @@ def _build_bwrap_argv(
     else:
         args.append("--unshare-pid")
 
-    args.extend(["--bind", os.fspath(root_abs), "/workspace"])
+    workspace_bind = "--ro-bind" if filesystem_access == "read-only" else "--bind"
+    args.extend([workspace_bind, os.fspath(root_abs), "/workspace"])
     # Repo-meta protection now honors the protect_repo_meta setting (it was
     # previously welded to the hardened profile, making the config knob dead on
     # the bwrap backend), and a vetted safe git write skips the read-only
@@ -721,11 +827,34 @@ def _build_bwrap_argv(
     )
     created_dirs.update({"/proc", "/dev", "/tmp", "/tmp/home"})
     _add_python_runtime_bindings(args, created_dirs=created_dirs)
-    toolchain_env = _add_common_toolchain_bindings(
+    runtime_roots = _add_host_runtime_bindings(
         args,
         path_value=path_value,
+        workspace_roots=(root_abs, *(Path(p) for p in additional_workspace_roots)),
         created_dirs=created_dirs,
+        check_preparation=check_preparation,
     )
+    from .host_runtime_policy import desktop_runtime_roots
+
+    if additional_workspace_roots or desktop_runtime_roots():
+        from .sandbox_workspace_linux import add_workspace_bindings
+
+        add_workspace_bindings(
+            args,
+            root=root_abs,
+            additional=additional_workspace_roots,
+            read_only=filesystem_access == "read-only",
+            profile=profile,
+            protect_repo_meta=protect_repo_meta,
+            clear_env=clear_env,
+            allow_repo_meta_writes=allow_repo_meta_writes,
+            runtime_roots=runtime_roots,
+            check_preparation=check_preparation,
+        )
+    else:
+        from .sandbox_workspace_linux import validate_workspace_tree
+
+        validate_workspace_tree(root_abs, check_preparation=check_preparation)
 
     args.extend(
         [
@@ -741,11 +870,10 @@ def _build_bwrap_argv(
     lang_value = run_env.get("LANG")
     if lang_value:
         args.extend(["--setenv", "LANG", lang_value])
-    for key, value in toolchain_env.items():
-        args.extend(["--setenv", key, value])
     if network == "off":
         args.append("--unshare-net")
     args.extend(["sh", "-lc", cmd])
+    check_preparation()
     return args, run_env
 
 
@@ -758,6 +886,8 @@ class BwrapShellRunner:
     safe_git_writes: bool = True
     process_group_registry: ProcessGroupRegistry | None = None
     close_stdin: bool = False
+    filesystem_access: str = "workspace-write"
+    additional_workspace_roots: tuple[str, ...] = ()
 
     def run(
         self,
@@ -768,6 +898,16 @@ class BwrapShellRunner:
         timeout_s: int,
         cancel_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        deadline = time.monotonic() + timeout_s
+
+        def check_preparation() -> None:
+            if cancel_check is not None and cancel_check():
+                raise CommandCancelledError(cmd)
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(
+                    cmd, timeout_s, stderr="Sandbox preparation timed out before launch."
+                )
+
         allow_repo_meta_writes = bool(
             self.protect_repo_meta and self.safe_git_writes and is_safe_repo_meta_git_command(cmd)
         )
@@ -781,12 +921,15 @@ class BwrapShellRunner:
             unshare_cgroup=_supports_bwrap_unshare_cgroup(),
             protect_repo_meta=self.protect_repo_meta,
             allow_repo_meta_writes=allow_repo_meta_writes,
+            filesystem_access=self.filesystem_access,
+            additional_workspace_roots=self.additional_workspace_roots,
+            check_preparation=check_preparation,
         )
         return run_in_tracked_process_group(
             args,
             cwd=os.fspath(root.resolve()),
             env=run_env,
-            timeout=timeout_s,
+            timeout=max(0, deadline - time.monotonic()),
             registry=self.process_group_registry,
             origin="shell_run:bwrap",
             command_label=cmd,
@@ -828,6 +971,19 @@ def _add_hardened_tls_bindings(args: list[str]) -> None:
         args.extend(["--ro-bind", "/etc/ca-certificates", "/etc/ca-certificates"])
 
 
+def _docker_policy_env(env: dict[str, str], filesystem_access: str) -> dict[str, str]:
+    if filesystem_access != "read-only":
+        return env
+    # ReadOnlyForceRecursive first appeared in API 1.44. Negotiating an older
+    # API can silently ignore the field, so require this known protocol version
+    # for every read-only launch. An incompatible daemon must reject it.
+    # Remove case aliases too: Windows environment keys are case-insensitive.
+    return {
+        **{key: value for key, value in env.items() if key.upper() != "DOCKER_API_VERSION"},
+        "DOCKER_API_VERSION": "1.44",
+    }
+
+
 def _build_docker_argv(
     *,
     root: Path,
@@ -845,14 +1001,16 @@ def _build_docker_argv(
     env_allowlist: tuple[str, ...],
     published_ports: tuple[tuple[str, int, int], ...] = (),
     allow_repo_meta_writes: bool = False,
+    filesystem_access: str = "workspace-write",
 ) -> tuple[list[str], dict[str, str]]:
     """Build docker run argv + parent-process env. Pure function."""
 
     root_abs = root.resolve()
     workdir = _workspace_cwd(root=root_abs, cwd=cwd)
-    run_env = _sanitized_env(clear_env=clear_env)
+    run_env = _docker_policy_env(_sanitized_env(clear_env=clear_env), filesystem_access)
     container_env = _container_env(clear_env, allowlist=env_allowlist)
 
+    _validate_filesystem_access(filesystem_access)
     args: list[str] = [
         "docker",
         "run",
@@ -860,19 +1018,42 @@ def _build_docker_argv(
         "--init",
         "--name",
         container_name,
-        "-v",
-        f"{os.fspath(root_abs)}:/workspace:rw",
-        "-w",
-        workdir,
     ]
-    if (protect_repo_meta and not allow_repo_meta_writes) or read_only_rootfs:
-        for host_path, rel_posix_path in _protected_repo_paths(root_abs):
+    mounts = [
+        (root_abs, "/workspace"),
+        *[(path, os.fspath(path)) for path in allowed_roots(root)[1:]],
+    ]
+    for source_path, destination in mounts:
+        if not destination.startswith("/"):
+            raise ConfigError(
+                "Additional Docker folders require POSIX paths; use the native Windows sandbox."
+            )
+        if filesystem_access == "read-only":
+            # Require recursive read-only support for every attached root.
+            source = os.fspath(source_path)
+            if any(char in source + destination for char in ("\r", "\n", "\0")):
+                raise ConfigError(
+                    "Read-only Docker workspace path contains unsupported control characters."
+                )
+            source_field = '"source=' + source.replace('"', '""') + '"'
+            target_field = '"target=' + destination.replace('"', '""') + '"'
+            if not any(char in destination for char in (",", '"')):
+                target_field = "target=" + destination
             args.extend(
                 [
-                    "-v",
-                    f"{os.fspath(host_path)}:/workspace/{rel_posix_path}:ro",
+                    "--mount",
+                    f"type=bind,{source_field},{target_field},readonly,"
+                    "bind-recursive=readonly,bind-propagation=rprivate",
                 ]
             )
+        else:
+            args.extend(["-v", f"{os.fspath(source_path)}:{destination}:rw"])
+        if filesystem_access != "read-only" and (
+            (protect_repo_meta and not allow_repo_meta_writes) or read_only_rootfs
+        ):
+            for host_path, rel_posix_path in _protected_repo_paths(source_path):
+                args.extend(["-v", f"{os.fspath(host_path)}:{destination}/{rel_posix_path}:ro"])
+    args.extend(["-w", workdir])
     if pids_limit is not None:
         args.extend(["--pids-limit", str(pids_limit)])
     if memory_limit is not None:
@@ -952,6 +1133,7 @@ class DockerShellRunner:
     env_allowlist: tuple[str, ...] = ()
     warning_callback: Callable[[str], None] | None = None
     close_stdin: bool = False
+    filesystem_access: str = "workspace-write"
 
     def run(
         self,
@@ -985,6 +1167,7 @@ class DockerShellRunner:
             read_only_rootfs=self.read_only_rootfs,
             protect_repo_meta=self.protect_repo_meta,
             env_allowlist=self.env_allowlist,
+            filesystem_access=self.filesystem_access,
         )
         proc: subprocess.Popen[str] | None = None
         container_killed = False
@@ -1058,12 +1241,18 @@ class DockerShellRunner:
 SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec"
 
 
+def _validate_filesystem_access(value: str) -> None:
+    if value not in {"read-only", "workspace-write"}:
+        raise ConfigError(f"Unsupported sandbox filesystem policy: {value!r}")
+
+
 @dataclass(frozen=True)
 class SandboxBackendChoice:
     """Where shell commands run under some sandbox settings, decided in one place.
 
-    ``backend`` is "host", "bwrap", "docker" or "seatbelt", or None when the settings ask
-    for a sandbox that this machine cannot provide (``unavailable_reason`` says why).
+    ``backend`` is "host", "bwrap", "docker", "seatbelt", "windows-native", "windows-mxc", or None
+    when the settings ask for a sandbox that this machine cannot provide. The native
+    backend validates its helper in the runner builders and always fails closed.
     """
 
     backend: str | None
@@ -1081,24 +1270,105 @@ def select_shell_sandbox_backend(
     """Pick the backend for ``settings``; the shell and background builders and the shell
     guards all use this, so they cannot disagree.
 
-    ``auto`` prefers bubblewrap on Linux, then Docker, then Seatbelt on macOS. When no
+    ``auto`` prefers native Seatbelt on macOS and bubblewrap, then Docker, on Linux. When no
     backend is usable and ``unavailable_fallback`` is "ask", commands run on the host and
     each one needs the user's approval; with "refuse" nothing runs.
+    Explicit Windows backends never fall back; their builders validate platform and helper.
     """
+    _validate_filesystem_access(settings.filesystem_access)
+    if settings.github_auth:
+        current = (system if system is not None else platform.system()).lower()
+        if (
+            settings.mode != "strict"
+            or not (
+                (current == "windows" and settings.backend in {"auto", "windows-mxc"})
+                or (current == "darwin" and settings.backend in {"auto", "seatbelt"})
+            )
+            or settings.network != "on"
+            or not settings.clear_env
+            or not settings.protect_repo_meta
+            or not settings.safe_git_writes
+        ):
+            raise ConfigError(
+                "GitHub authentication requires strict Windows MXC or macOS Seatbelt with networking and environment/metadata isolation; no host fallback is allowed."
+            )
+    if settings.additional_read_files:
+        current = (system if system is not None else platform.system()).lower()
+        supported = (current == "windows" and settings.backend in {"auto", "windows-mxc"}) or (
+            current == "darwin" and settings.backend in {"auto", "seatbelt"}
+        )
+        if (
+            settings.mode != "strict"
+            or not supported
+            or not settings.clear_env
+            or not settings.protect_repo_meta
+        ):
+            raise ConfigError(
+                "Exact read-file permissions require strict Windows MXC or macOS Seatbelt; "
+                "no host fallback is allowed."
+            )
+    if (
+        settings.network_domains is not None
+        or settings.private_network_endpoints
+        or settings.unix_sockets
+        or settings.forward_env
+        or settings.ssh_agent_socket
+        or settings.git_metadata_access
+    ):
+        current = (system if system is not None else platform.system()).lower()
+        if (
+            settings.mode != "strict"
+            or settings.backend not in {"auto", "seatbelt"}
+            or current != "darwin"
+        ):
+            raise ConfigError(
+                "Scoped network, authentication and Git permissions require strict macOS Seatbelt; no host fallback is allowed."
+            )
     if settings.mode == "off":
         return SandboxBackendChoice("host")
+    from .host_runtime_policy import desktop_runtime_roots
+
+    extended_roots = bool(
+        settings.additional_workspace_roots
+        or settings.additional_read_roots
+        or settings.network_domains is not None
+        or settings.private_network_endpoints
+        or settings.unix_sockets
+        or settings.additional_read_files
+        or settings.forward_env
+        or settings.ssh_agent_socket
+        or settings.git_metadata_access
+        or desktop_runtime_roots()
+    )
+    if extended_roots and (not settings.clear_env or not settings.protect_repo_meta):
+        raise ConfigError(
+            "Additional workspace folders require environment isolation and metadata protection."
+        )
+    if settings.backend in {"windows-native", "windows-mxc"}:
+        # Keep explicit native containment even when general host fallback is enabled.
+        # Helper validation belongs in the builders, not approval-policy inspection.
+        return SandboxBackendChoice(settings.backend)
     # Looked up at call time, so a patched shutil.which or os.path.exists applies.
     which = which or shutil.which
     path_exists = path_exists or os.path.exists
     current = (system if system is not None else platform.system()).lower()
+    if settings.backend == "auto" and current == "windows":
+        return SandboxBackendChoice("windows-mxc")
     available = {
         "bwrap": current == "linux" and which("bwrap") is not None,
         "docker": which("docker") is not None,
         "seatbelt": current == "darwin" and path_exists(SEATBELT_EXECUTABLE),
     }
     if settings.backend == "auto":
-        backend = next((b for b in ("bwrap", "docker", "seatbelt") if available[b]), None)
-        reason = "auto backend could not find bwrap or docker" if backend is None else ""
+        backend = next(
+            (
+                b
+                for b in (("seatbelt", "docker") if current == "darwin" else ("bwrap", "docker"))
+                if available[b]
+            ),
+            None,
+        )
+        reason = "auto backend could not find a supported sandbox" if backend is None else ""
     else:
         backend = settings.backend if available.get(settings.backend) else None
         reason = {
@@ -1107,8 +1377,28 @@ def select_shell_sandbox_backend(
             "seatbelt": "seatbelt backend selected, but sandbox-exec is not available (macOS only)",
         }.get(settings.backend, f"unsupported shell sandbox backend: {settings.backend}")
     if backend is not None:
+        if (
+            settings.network_domains is not None
+            or settings.private_network_endpoints
+            or settings.unix_sockets
+            or settings.additional_read_files
+            or settings.forward_env
+            or settings.ssh_agent_socket
+            or settings.git_metadata_access
+        ) and backend != "seatbelt":
+            raise ConfigError("Network capability grants require macOS Seatbelt.")
+        if settings.additional_read_roots and backend != "seatbelt":
+            raise ConfigError("Operation-local read grants require macOS Seatbelt.")
+        if extended_roots and backend not in {"bwrap", "seatbelt"}:
+            raise ConfigError(
+                "Additional sandbox workspace folders require Windows MXC/native, Linux/WSL bubblewrap or macOS Seatbelt; no host fallback is allowed."
+            )
         return SandboxBackendChoice(backend)
-    if settings.unavailable_fallback == "ask":
+    if extended_roots:
+        raise ConfigError(
+            "No sandbox supporting additional workspace folders is available; no host fallback is allowed."
+        )
+    if settings.unavailable_fallback == "ask" and settings.filesystem_access != "read-only":
         return SandboxBackendChoice("host", reason, requires_command_approval=True)
     return SandboxBackendChoice(None, reason)
 
@@ -1142,44 +1432,9 @@ def describe_shell_backend(
         return "sh (Docker sandbox)"
     if choice.backend == "seatbelt":
         return "sh (Seatbelt sandbox)"
+    if choice.backend in {"windows-mxc", "windows-native"}:
+        return f"Windows PowerShell (powershell.exe, {choice.backend} sandbox)"
     return "none (no usable sandbox, so shell commands are disabled)"
-
-
-def seatbelt_profile(*, network: str, protected_path_count: int) -> str:
-    """A macOS Seatbelt (sandbox-exec) profile: everything allowed except writes outside the
-    workspace and the temporary folders, writes to protected repository metadata, and, with
-    the network off, connections to anything but this machine.
-
-    Paths come in as ``-D`` parameters so no path is ever quoted into the profile text. In
-    Seatbelt the last matching rule wins, so the narrower rules follow the broad ones.
-    """
-    lines = [
-        "(version 1)",
-        "(allow default)",
-        "(deny file-write*)",
-        "(allow file-write*",
-        '    (subpath (param "WORKSPACE"))',
-        '    (subpath (param "TMPDIR"))',
-        '    (subpath "/private/tmp")',
-        '    (subpath "/private/var/folders")',
-        '    (literal "/dev/null")',
-        '    (literal "/dev/zero")',
-        '    (literal "/dev/stdout")',
-        '    (literal "/dev/stderr")',
-        '    (literal "/dev/tty")',
-        '    (literal "/dev/dtracehelper")',
-        '    (regex #"^/dev/fd/[0-9]+$"))',
-    ]
-    lines += [
-        f'(deny file-write* (subpath (param "PROTECTED_{index}")))'
-        for index in range(protected_path_count)
-    ]
-    if network != "on":
-        lines += [
-            '(deny network-outbound (remote ip "*:*"))',
-            '(allow network-outbound (remote ip "localhost:*"))',
-        ]
-    return "\n".join(lines)
 
 
 def seatbelt_command(
@@ -1189,26 +1444,274 @@ def seatbelt_command(
     network: str,
     protect_repo_meta: bool,
     safe_git_writes: bool,
+    filesystem_access: str = "workspace-write",
+    additional_workspace_roots: tuple[str, ...] = (),
+    temp_dir: Path | None = None,
+    additional_read_roots: tuple[str, ...] = (),
+    preview_access: str = "auto",
+    network_proxy_port: int | None = None,
+    unix_sockets: tuple[str, ...] = (),
+    additional_read_files: tuple[str, ...] = (),
+    git_metadata_access: bool = False,
+    runtime_paths: tuple[Path, ...] | None = None,
+    check_preparation: Callable[[], None] = lambda: None,
 ) -> str:
     """``cmd`` wrapped in sandbox-exec, as one string for ``/bin/sh``."""
-    root_abs = os.path.realpath(root)
-    protected: list[str] = []
-    if protect_repo_meta and not (safe_git_writes and is_safe_repo_meta_git_command(cmd)):
-        protected = [os.path.realpath(path) for path, _rel in _protected_repo_paths(Path(root_abs))]
-    parameters = [
-        "-D",
-        f"WORKSPACE={root_abs}",
-        "-D",
-        f"TMPDIR={os.path.realpath(tempfile.gettempdir())}",
-    ]
-    for index, path in enumerate(protected):
-        parameters += ["-D", f"PROTECTED_{index}={path}"]
-    profile = seatbelt_profile(network=network, protected_path_count=len(protected))
-    return shlex.join([SEATBELT_EXECUTABLE, *parameters, "-p", profile, "/bin/sh", "-c", cmd])
+    from .macos_git import literal_git_process
+    from .macos_sandbox import policy_paths, runtime_read_paths
+    from .macos_sandbox_owner import ownership_names
+
+    _validate_filesystem_access(filesystem_access)
+    check_preparation()
+    root_abs = root.resolve()
+    all_roots = tuple(
+        dict.fromkeys((*allowed_roots(root_abs), *(Path(p) for p in additional_workspace_roots)))
+    )
+    protected: list[Path] = []
+    git_argv = literal_git_process(cmd) if safe_git_writes else None
+    metadata_writes = git_argv is not None or git_metadata_access
+    if protect_repo_meta:
+        for folder in all_roots:
+            protected.extend(
+                folder / name
+                for name in _PROTECTED_REPO_META
+                if name != ".git" or not metadata_writes
+            )
+            protected.extend(
+                path
+                for path, rel in _protected_repo_paths(folder)
+                if rel != ".git" or not metadata_writes
+            )
+    if runtime_paths is None:
+        runtime_paths = runtime_read_paths(
+            os.environ.get("PATH"), workspace_roots=all_roots, check_preparation=check_preparation
+        )
+    roots, policy, anchors = policy_paths(
+        root_abs,
+        additional_workspace_roots,
+        readonly_roots=runtime_paths,
+        protected=tuple(protected),
+        additional_read_roots=additional_read_roots,
+        filesystem_access=filesystem_access,
+        check_preparation=check_preparation,
+    )
+    parameters = ["-D", f"WORKSPACE={root_abs}"]
+    groups = {
+        "FOLDER": roots[1:],
+        "READ": (*policy.readonly_roots, *(Path(p) for p in additional_read_roots)),
+        "PROTECTED": tuple(dict.fromkeys(p.resolve() for p in protected)),
+        "PRIVATE": policy.private_roots,
+        "READONLY": policy.readonly_roots,
+        "ANCHOR": anchors,
+        "SOCKET": tuple(Path(p) for p in unix_sockets),
+        "FILE": tuple(Path(p) for p in additional_read_files),
+    }
+    for prefix, paths in groups.items():
+        for index, path in enumerate(paths):
+            parameters += ["-D", f"{prefix}_{index}={path}"]
+    if temp_dir is not None:
+        parameters += ["-D", f"TMPDIR={temp_dir.resolve()}"]
+    owner_names = ownership_names(temp_dir) if temp_dir is not None else None
+    if owner_names is not None:
+        parameters += ["-D", f"OWNER_ALLOW={owner_names[0]}", "-D", f"OWNER_DENY={owner_names[1]}"]
+    profile = seatbelt_profile(
+        network=network,
+        preview_access=preview_access,
+        filesystem_access=filesystem_access,
+        protected_path_count=len(groups["PROTECTED"]),
+        extra_folder_count=len(roots) - 1,
+        read_root_count=len(groups["READ"]),
+        private_path_count=len(groups["PRIVATE"]),
+        readonly_path_count=len(groups["READONLY"]),
+        anchor_count=len(anchors),
+        scratch=temp_dir is not None,
+        protect_repo_meta=protect_repo_meta,
+        git_metadata_writes=metadata_writes,
+        read_file_count=len(additional_read_files),
+        network_proxy_port=network_proxy_port,
+        unix_socket_count=len(unix_sockets),
+        ownership=owner_names is not None,
+    )
+    process = git_argv if git_argv is not None else ["/bin/sh", "-c", cmd]
+    return shlex.join([SEATBELT_EXECUTABLE, *parameters, "-p", profile, *process])
+
+
+@contextmanager
+def seatbelt_execution(
+    *,
+    root: Path,
+    cwd: Path,
+    cmd: str,
+    filesystem_access: str,
+    network: str,
+    clear_env: bool,
+    protect_repo_meta: bool,
+    safe_git_writes: bool,
+    additional_workspace_roots: tuple[str, ...],
+    additional_read_roots: tuple[str, ...] = (),
+    preview_access: str = "auto",
+    network_domains: tuple[str, ...] | None = None,
+    private_network_endpoints: tuple[str, ...] = (),
+    unix_sockets: tuple[str, ...] = (),
+    additional_read_files: tuple[str, ...] = (),
+    forward_env: tuple[str, ...] = (),
+    ssh_agent_socket: str | None = None,
+    git_metadata_access: bool = False,
+    check_preparation: Callable[[], None] | None = None,
+):
+    from .macos_git import stage_global_preferences
+    from .macos_sandbox import project_read_paths, runtime_read_paths
+    from .sandbox_workspace import contains_workspace_path
+
+    # Background starts also have a finite preparation budget. Foreground and
+    # file-worker callers supply their command deadline and cancellation check.
+    if check_preparation is None:
+        preparation_deadline = time.monotonic() + 30
+
+        def check_preparation() -> None:
+            if time.monotonic() >= preparation_deadline:
+                raise subprocess.TimeoutExpired(
+                    cmd, 30, stderr="Sandbox preparation timed out before launch."
+                )
+
+    check_preparation()
+
+    if not contains_workspace_path(
+        root, cwd, (*additional_workspace_roots, *additional_read_roots)
+    ):
+        raise ConfigError("Seatbelt cwd must be inside an approved workspace.")
+    with ExitStack() as lifetime:
+        directory = lifetime.enter_context(
+            # Darwin Unix socket paths are limited to 104 bytes. The per-user
+            # /var/folders prefix leaves too little room for worker sockets.
+            tempfile.TemporaryDirectory(
+                prefix=f"alysis-seatbelt-{secrets.token_hex(16)}-", dir="/private/tmp"
+            )
+        )
+        scratch = Path(directory).resolve()
+        from .macos_sandbox_owner import MacSandboxOwner
+
+        owner = MacSandboxOwner(scratch)
+        (scratch / "home").mkdir()
+        env = _sanitized_env(clear_env=clear_env)
+        runtime_paths = runtime_read_paths(
+            env.get("PATH"),
+            workspace_roots=(*allowed_roots(root), *(Path(p) for p in additional_workspace_roots)),
+            check_preparation=check_preparation,
+        )
+        env.update(
+            HOME=str(scratch / "home"), TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch)
+        )
+        from .macos_access import environment_names, file_identity
+
+        for path in additional_read_files:
+            file_identity(path)
+        env.update({name: os.environ[name] for name in environment_names(forward_env)})
+        if ssh_agent_socket is not None:
+            if ssh_agent_socket not in unix_sockets:
+                raise ConfigError("SSH agent forwarding requires its exact approved socket.")
+            env["SSH_AUTH_SOCK"] = ssh_agent_socket
+        proxy_port = None
+        if network_domains is not None or private_network_endpoints:
+            from .ide.browser_egress_proxy import BrowserEgressProxy
+            from .macos_network import endpoint_pairs, proxy_environment
+            from .macos_network import network_domains as validate_domains
+
+            if network != "on":
+                raise ConfigError("Domain-scoped command access requires network permission.")
+            proxy = lifetime.enter_context(
+                BrowserEgressProxy(
+                    require_authentication=True,
+                    allowed_hosts=frozenset(validate_domains(network_domains))
+                    if network_domains
+                    else frozenset(),
+                    allowed_private_endpoints=endpoint_pairs(private_network_endpoints),
+                )
+            )
+            proxy_port = proxy.port
+            env.update(proxy_environment(proxy.proxy_url))
+        if unix_sockets:
+            from .macos_network import socket_identity
+
+            for path in unix_sockets:
+                identity = socket_identity(path)
+                if identity.path != path:
+                    raise ConfigError("Daemon socket paths must be canonical.")
+        # Git may be launched by any contained program, including the fixed
+        # read worker. Its private configuration must not depend on recognizing
+        # the outer command. Metadata write authority remains separate below.
+        stage_global_preferences(scratch / "home")
+        env.update(
+            GIT_CONFIG_GLOBAL=str(scratch / "home" / ".gitconfig"),
+            GIT_CONFIG_NOSYSTEM="1",
+            GIT_TERMINAL_PROMPT="0",
+            # Git children must not probe an unapproved parent repository when
+            # the selected project has no .git of its own.
+            GIT_CEILING_DIRECTORIES=os.pathsep.join(
+                str(Path(path).resolve().parent)
+                for path in (*allowed_roots(root), *additional_workspace_roots)
+            ),
+        )
+        wrapped = seatbelt_command(
+            cmd,
+            root=root,
+            network=network,
+            protect_repo_meta=protect_repo_meta,
+            safe_git_writes=safe_git_writes,
+            filesystem_access=filesystem_access,
+            additional_workspace_roots=additional_workspace_roots,
+            additional_read_roots=additional_read_roots,
+            preview_access=preview_access,
+            temp_dir=scratch,
+            network_proxy_port=proxy_port,
+            unix_sockets=unix_sockets,
+            additional_read_files=additional_read_files,
+            git_metadata_access=git_metadata_access,
+            runtime_paths=runtime_paths,
+            check_preparation=check_preparation,
+        )
+        project_read_paths(
+            scratch / "home",
+            (*runtime_paths, *(Path(p) for p in (*additional_read_roots, *additional_read_files))),
+            user_home=Path.home().resolve(),
+        )
+        from .terminal_ownership import TerminalOwnershipLedger, seatbelt_scratch_cleanup_id
+
+        ledger = TerminalOwnershipLedger()
+        ownership_handle = ledger.track(
+            child_pid=None,
+            termination_mode="resource",
+            posix_pgid=None,
+            cleanup_kind="seatbelt-scratch",
+            cleanup_id=seatbelt_scratch_cleanup_id(scratch),
+        )
+        if ownership_handle is None:
+            raise ConfigError("Could not persist Seatbelt command ownership before launch.")
+        try:
+            check_preparation()
+            yield wrapped, env, owner
+        finally:
+            if not owner.terminate():
+                raise CommandCleanupError(cmd)
+            owner.release_records()
+            ledger.release(ownership_handle)
 
 
 @dataclass(frozen=True)
 class SeatbeltShellRunner:
+    github_auth: bool = False
+    filesystem_access: str = "workspace-write"
+    additional_workspace_roots: tuple[str, ...] = ()
+    additional_read_roots: tuple[str, ...] = ()
+    network_domains: tuple[str, ...] | None = None
+    private_network_endpoints: tuple[str, ...] = ()
+    unix_sockets: tuple[str, ...] = ()
+    additional_read_files: tuple[str, ...] = ()
+    forward_env: tuple[str, ...] = ()
+    ssh_agent_socket: str | None = None
+    git_metadata_access: bool = False
+    preview_access: str = "auto"
+    clear_env: bool = True
     network: str = "off"
     protect_repo_meta: bool = True
     safe_git_writes: bool = True
@@ -1224,24 +1727,109 @@ class SeatbeltShellRunner:
         timeout_s: int,
         cancel_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        wrapped = seatbelt_command(
-            cmd,
+        credential = None
+        if self.github_auth:
+            from .macos_github_auth import validate_command
+
+            if not (
+                self.clear_env
+                and self.protect_repo_meta
+                and self.safe_git_writes
+                and self.network == "on"
+            ):
+                raise ConfigError(
+                    "GitHub authentication requires contained Git with reviewed networking."
+                )
+            validate_command(cmd)
+        deadline = time.monotonic() + timeout_s
+
+        def check_preparation() -> None:
+            if cancel_check is not None and cancel_check():
+                raise CommandCancelledError(cmd)
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(
+                    cmd, timeout_s, stderr="Sandbox preparation timed out before launch."
+                )
+
+        with seatbelt_execution(
             root=root,
+            cwd=cwd,
+            cmd=cmd,
+            filesystem_access=self.filesystem_access,
+            additional_workspace_roots=self.additional_workspace_roots,
+            additional_read_roots=self.additional_read_roots,
+            preview_access=self.preview_access,
+            clear_env=self.clear_env,
             network=self.network,
             protect_repo_meta=self.protect_repo_meta,
             safe_git_writes=self.safe_git_writes,
-        )
-        return run_in_tracked_process_group(
-            wrapped,
-            shell=True,
-            cwd=str(cwd),
-            timeout=timeout_s,
-            registry=self.process_group_registry,
-            origin="shell_run:seatbelt",
-            command_label=cmd,
-            stdin=subprocess.DEVNULL if self.close_stdin else None,
-            cancel_check=cancel_check,
-        )
+            network_domains=self.network_domains,
+            private_network_endpoints=self.private_network_endpoints,
+            unix_sockets=self.unix_sockets,
+            additional_read_files=self.additional_read_files,
+            forward_env=self.forward_env,
+            ssh_agent_socket=self.ssh_agent_socket,
+            git_metadata_access=self.git_metadata_access,
+            check_preparation=check_preparation,
+        ) as (wrapped, env, owner):
+            if self.github_auth:
+                from .macos_github_auth import load_credential
+
+                credential = load_credential(
+                    workspace_roots=(
+                        *allowed_roots(root),
+                        *(Path(p) for p in self.additional_workspace_roots),
+                    )
+                )
+                credential.configure(env)
+                check_preparation()
+            try:
+                completed = run_in_tracked_process_group(
+                    wrapped,
+                    shell=True,
+                    cwd=str(cwd),
+                    env=env,
+                    timeout=max(0, deadline - time.monotonic()),
+                    registry=self.process_group_registry,
+                    origin="shell_run:seatbelt",
+                    track_descendants=True,
+                    process_owner=owner,
+                    popen_factory=owner.spawn,
+                    command_label=cmd,
+                    stdin=subprocess.DEVNULL if self.close_stdin else None,
+                    cancel_check=cancel_check,
+                )
+            except (subprocess.TimeoutExpired, CommandCancelledError) as exc:
+                if credential is not None:
+                    for name in ("output", "stderr"):
+                        value = getattr(exc, name, None)
+                        if isinstance(value, bytes):
+                            value = value.decode("utf-8", errors="replace")
+                        if isinstance(value, str):
+                            setattr(exc, name, credential.redact(value))
+                raise
+            if credential is not None:
+                completed.stdout = credential.redact(completed.stdout)
+                completed.stderr = credential.redact(completed.stderr)
+            if completed.returncode and self.protect_repo_meta and not self.git_metadata_access:
+                from .macos_git import literal_git_process
+
+                if not self.safe_git_writes or literal_git_process(cmd) is None:
+                    # Report the policy actually applied, without guessing the cause
+                    # from localized stderr or automatically rerunning side effects.
+                    completed.sandbox_policy = {
+                        "backend": "seatbelt",
+                        "filesystem_access": self.filesystem_access,
+                        "git_metadata": "protected",
+                        "guidance": (
+                            "Policy context, not a diagnosis of this exit code: folder-write "
+                            "permissions do not grant Git metadata writes to mixed shell commands. "
+                            "Use cwd with a literal Git command, or request operation-only "
+                            "permissions.git_metadata=true for the entire exact script when "
+                            "metadata writes are needed. Inspect partial effects before retrying."
+                        ),
+                    }
+            return completed
 
 
 def _emit_warning(message: str, *, warning_callback: Callable[[str], None] | None) -> None:
@@ -1265,6 +1853,43 @@ def with_closed_stdin(runner: ShellRunner) -> ShellRunner:
     return runner
 
 
+def execution_scope_fingerprint(runner: object) -> str | None:
+    """Identify a known execution scope without exposing environment values.
+
+    Resolve only an already-used lazy runner. Custom runners stay incomparable.
+    Process tracking, callbacks and stdin handling do not change the filesystem,
+    environment or isolation policy used to compare verification executions.
+    """
+    from .windows_mxc import WindowsMxcRunner
+    from .windows_sandbox import WindowsNativeRunner
+
+    if type(runner) is LazyShellRunner:
+        runner = runner._runner
+    if type(runner) not in {
+        HostShellRunner,
+        BwrapShellRunner,
+        DockerShellRunner,
+        SeatbeltShellRunner,
+        WindowsNativeRunner,
+        WindowsMxcRunner,
+    }:
+        return None
+    ignored = {"process_group_registry", "warning_callback", "close_stdin"}
+    settings = {
+        item.name: getattr(runner, item.name) for item in fields(runner) if item.name not in ignored
+    }
+    settings = {
+        key: asdict(value) if is_dataclass(value) else value for key, value in settings.items()
+    }
+    context = (
+        type(runner).__module__,
+        type(runner).__qualname__,
+        settings,
+        sorted(os.environ.items()),
+    )
+    return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+
+
 def build_shell_runner_from_settings(
     settings: ShellSandboxSettings,
     root: Path,
@@ -1282,11 +1907,24 @@ def build_shell_runner_from_settings(
     choice = select_shell_sandbox_backend(settings)
     if choice.backend == "host":
         return HostShellRunner(
+            additional_workspace_roots=settings.additional_workspace_roots,
             process_group_registry=process_group_registry,
             requires_command_approval=choice.requires_command_approval,
         )
+    if choice.backend == "windows-mxc":
+        from .windows_mxc import WindowsMxcRunner, resolve_helper
+
+        resolve_helper()
+        return WindowsMxcRunner(settings)
+    if choice.backend == "windows-native":
+        from .windows_sandbox import WindowsNativeRunner, resolve_helper
+
+        resolve_helper()
+        return WindowsNativeRunner(settings)
     if choice.backend == "bwrap":
         return BwrapShellRunner(
+            additional_workspace_roots=settings.additional_workspace_roots,
+            filesystem_access=settings.filesystem_access,
             network=settings.network,
             clear_env=settings.clear_env,
             profile=settings.bwrap_profile,
@@ -1296,6 +1934,7 @@ def build_shell_runner_from_settings(
         )
     if choice.backend == "docker":
         return DockerShellRunner(
+            filesystem_access=settings.filesystem_access,
             network=settings.network,
             docker_image=settings.docker_image,
             clear_env=settings.clear_env,
@@ -1310,6 +1949,19 @@ def build_shell_runner_from_settings(
         )
     if choice.backend == "seatbelt":
         return SeatbeltShellRunner(
+            github_auth=settings.github_auth,
+            network_domains=settings.network_domains,
+            private_network_endpoints=settings.private_network_endpoints,
+            unix_sockets=settings.unix_sockets,
+            additional_read_files=settings.additional_read_files,
+            forward_env=settings.forward_env,
+            ssh_agent_socket=settings.ssh_agent_socket,
+            git_metadata_access=settings.git_metadata_access,
+            additional_read_roots=settings.additional_read_roots,
+            preview_access=settings.preview_access,
+            filesystem_access=settings.filesystem_access,
+            additional_workspace_roots=settings.additional_workspace_roots,
+            clear_env=settings.clear_env,
             network=settings.network,
             protect_repo_meta=settings.protect_repo_meta,
             safe_git_writes=settings.safe_git_writes,

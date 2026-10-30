@@ -12,6 +12,8 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.surface.noop_surface import NoopSurface
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 class _ScriptedComputerUseClient:
     model = "test-model"
@@ -139,7 +141,12 @@ def test_stale_receipt_cannot_mask_invalid_host_state_workflow_permission_or_unc
     )
 
 
-def test_native_key_target_recovery_reobserves_then_allows_safe_press(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "refusal", ["computer_use_key_target_not_routable", "computer_use_invalid_keys_not_dispatched"]
+)
+def test_local_native_key_refusal_precedes_host_feedback_then_allows_safe_press(
+    tmp_path: Path, refusal: str
+) -> None:
     host_calls: list[tuple[str, dict[str, Any]]] = []
 
     def host_request(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -151,11 +158,11 @@ def test_native_key_target_recovery_reobserves_then_allows_safe_press(tmp_path: 
             }
         if arguments.get("action") == "key":
             bridge_error = {
-                "error": "computer_use_key_target_not_routable",
+                "error": refusal,
                 "message": "The native key target is not keyboard-routable.",
             }
             assert bridge_error == {
-                "error": "computer_use_key_target_not_routable",
+                "error": refusal,
                 "message": "The native key target is not keyboard-routable.",
             }
             return bridge_error
@@ -234,7 +241,6 @@ def test_native_key_target_recovery_reobserves_then_allows_safe_press(tmp_path: 
 
     assert [name for name, _arguments in host_calls] == [
         "computer_state",
-        "computer_action",
         "computer_state",
         "computer_action",
     ]
@@ -242,14 +248,19 @@ def test_native_key_target_recovery_reobserves_then_allows_safe_press(tmp_path: 
     assert all(arguments.get("action") != "key" for _name, arguments in host_calls[2:])
     recovery_messages = client.call_records[2]["messages"]
     assert any(
-        "keyboard-routable" in str(message.get("content") or "")
+        "unavailable for the current observation" in str(message.get("content") or "")
         for message in recovery_messages
         if message.get("role") == "system"
     )
     assert client.call_records[2]["tool_choice"]["function"]["name"] == "computer_state"
 
 
-def test_native_key_target_recovery_is_bounded_and_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "refusal", ["computer_use_key_target_not_routable", "computer_use_invalid_keys_not_dispatched"]
+)
+def test_local_native_key_refusals_are_bounded_before_host_feedback(
+    tmp_path: Path, refusal: str
+) -> None:
     host_calls: list[tuple[str, dict[str, Any]]] = []
 
     def host_request(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -257,7 +268,7 @@ def test_native_key_target_recovery_is_bounded_and_fails_closed(tmp_path: Path) 
         if name == "computer_state":
             return {"snapshot_id": f"state-{len(host_calls)}"}
         return {
-            "error": "computer_use_key_target_not_routable",
+            "error": refusal,
             "message": "The native key target is not keyboard-routable.",
         }
 
@@ -309,17 +320,9 @@ def test_native_key_target_recovery_is_bounded_and_fails_closed(tmp_path: Path) 
 
     assert [name for name, _arguments in host_calls] == [
         "computer_state",
-        "computer_action",
         "computer_state",
-        "computer_action",
         "computer_state",
-        "computer_action",
     ]
-    assert all(
-        arguments.get("action") == "key"
-        for name, arguments in host_calls
-        if name == "computer_action"
-    )
     assert client.calls == 6
 
 

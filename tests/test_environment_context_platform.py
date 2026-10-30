@@ -36,6 +36,7 @@ from alysis_code.sandbox_runner import (
 )
 from alysis_code.sandbox_settings import resolve_shell_sandbox_settings
 from alysis_code.session_store import SessionStore
+from alysis_code.windows_mxc import WindowsMxcRunner
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +71,9 @@ def _machine(
         monkeypatch.delenv("COMSPEC", raising=False)
     else:
         monkeypatch.setenv("COMSPEC", comspec)
+    # Check selection/prompt agreement here; native helper execution has its
+    # own Windows tests.
+    monkeypatch.setattr("alysis_code.windows_mxc.resolve_helper", lambda: Path("/fixture/mxc"))
 
 
 def _cfg(**shell_sandbox: str) -> AppConfig:
@@ -104,14 +108,14 @@ RUNNER_CHOICES = [
         id="host-posix-sh",
     ),
     pytest.param(
-        dict(system="Windows"),
+        dict(system="Linux"),
         dict(mode="strict", unavailable_fallback="ask"),
-        "cmd.exe (host, each command needs approval)",
+        "sh (host, each command needs approval)",
         HostShellRunner,
         id="host-after-approval",
     ),
     pytest.param(
-        dict(system="Windows", tools=("docker",)),
+        dict(system="Linux", tools=("docker",)),
         dict(mode="strict"),
         "sh (Docker sandbox)",
         DockerShellRunner,
@@ -132,11 +136,18 @@ RUNNER_CHOICES = [
         id="seatbelt",
     ),
     pytest.param(
-        dict(system="Windows"),
+        dict(system="Linux"),
         dict(mode="warn"),
         "none (no usable sandbox, so shell commands are disabled)",
         DisabledShellRunner,
         id="no-backend",
+    ),
+    pytest.param(
+        dict(system="Windows"),
+        dict(mode="strict"),
+        "Windows PowerShell (powershell.exe, windows-mxc sandbox)",
+        WindowsMxcRunner,
+        id="windows-mxc",
     ),
 ]
 
@@ -198,7 +209,7 @@ def test_session_names_the_shell_of_its_own_runner(
         assert "shell: cmd.exe (host)" in env_block.splitlines()
         assert type(session.shell_runner._resolve_runner()) is HostShellRunner
         description = session.tools["shell_run"].as_openai_tool()["function"]["description"]
-        assert description.endswith("Commands run in cmd.exe (host), so use that shell's syntax.")
+        assert "Commands run in cmd.exe (host), so use that shell's syntax." in description
 
         # A config change cannot swap the runner of a live session, so a refresh (here
         # after a mode change) keeps naming the shell the commands actually run in.
@@ -332,13 +343,13 @@ def test_system_prompt_answers_environment_questions_from_the_block() -> None:
     rule = next(
         line
         for line in prompt_context.SYSTEM_PROMPT.splitlines()
-        if "Environment context is authoritative" in line
+        if "authoritative environment context" in line
     )
     block = _env_context().splitlines()
 
-    assert "without running a command" in rule
+    assert "without commands" in rule
     for field in ("os", "shell", "date", "mode"):
-        assert re.search(rf"\b{field}\b", rule)
+        assert re.search(rf"\b{field}\b", rule, re.IGNORECASE)
         assert any(line.startswith(f"{field}: ") for line in block)
 
 

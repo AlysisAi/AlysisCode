@@ -14,6 +14,7 @@ from ..verification_command_analysis import (
     VerificationCommandEvidentiaryCapability,
     analyze_verification_command,
 )
+from ..windows_verification_command import is_windows_verifier_command
 from .prompt_context import _normalized_verify_commands
 
 
@@ -414,6 +415,12 @@ def _verification_coverage_key(raw: str) -> _VerificationCoverageKey | None:
     analysis = analyze_verification_command(command, trusted=True)
     if analysis.rejection_reason or analysis.command_family is None:
         return None
+    if is_windows_verifier_command(command):
+        # A literal PowerShell call operator and quote style do not change the
+        # executable or arguments. Preserve the full path and every argument:
+        # another interpreter location or test selection is different evidence.
+        parts = split_verify_command_parts(command)
+        return _VerificationCoverageKey((("windows_executable",),), tuple(parts)) if parts else None
     chain = _top_level_shell_chain_segments(command)
     if chain is not None:
         segments, separators = chain

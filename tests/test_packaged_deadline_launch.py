@@ -46,7 +46,10 @@ def test_real_adapter_launch_installed_cli_stops_stalled_provider(
     # case can exercise network cancellation. Keep startup expiry independently
     # bounded by the inherited one-second deadline below.
     host_budget_seconds = 15
-    with _fault_server("headers") as (url, connected):
+    # Keep the injected stall alive beyond the host budget. A five-second
+    # disconnect can finish first on a fast startup and tests provider failure,
+    # not cancellation of a stalled request.
+    with _fault_server("headers", stall_seconds=host_budget_seconds + 1) as (url, connected):
         agent = adapter.AlysisAgent(
             logs_dir=tmp_path / "logs",
             extra_env={

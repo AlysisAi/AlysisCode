@@ -23,7 +23,12 @@
       "source_kind": "bundled",
       "bundled_path": "github",
       "package_sha256": "cef5b5815ae5a1948cde37b0692841835563653829e48e9d73e5d18fe4caa76c",
-      "upstream_commit": "85598ba6e1256f7ebf4867b95d63b833c4549264"
+      "upstream_commit": "85598ba6e1256f7ebf4867b95d63b833c4549264",
+      "categories": [
+        "code"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_drive",
@@ -46,7 +51,12 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-drive",
-      "package_sha256": "816b98638ddbb704c38cff7e72a004b3c4db654a0c6c689cbd91dc8230beaf74"
+      "package_sha256": "816b98638ddbb704c38cff7e72a004b3c4db654a0c6c689cbd91dc8230beaf74",
+      "categories": [
+        "docs-files"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_docs",
@@ -69,7 +79,12 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-docs",
-      "package_sha256": "76e8a00341016e1bd201bf846d49e3946470d4241662c93e69b4b69e533410d9"
+      "package_sha256": "76e8a00341016e1bd201bf846d49e3946470d4241662c93e69b4b69e533410d9",
+      "categories": [
+        "docs-files"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_sheets",
@@ -92,7 +107,12 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-sheets",
-      "package_sha256": "fb0ea01d607d470e4b01e90ec4dc157f8053a074bbf37c68a77ce7307a259ac5"
+      "package_sha256": "fb0ea01d607d470e4b01e90ec4dc157f8053a074bbf37c68a77ce7307a259ac5",
+      "categories": [
+        "docs-files"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_slides",
@@ -115,7 +135,12 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-slides",
-      "package_sha256": "ad241f8f3dc9646793694ad6e5ff78960609186bfbe8d5c0b3bd0596b6618a74"
+      "package_sha256": "ad241f8f3dc9646793694ad6e5ff78960609186bfbe8d5c0b3bd0596b6618a74",
+      "categories": [
+        "docs-files"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_calendar",
@@ -138,7 +163,12 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-calendar",
-      "package_sha256": "fd0c59e51b70a6dda52bb3479491737e40fdcecc0029de7d87040aa2178aac2d"
+      "package_sha256": "fd0c59e51b70a6dda52bb3479491737e40fdcecc0029de7d87040aa2178aac2d",
+      "categories": [
+        "calendar"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_gmail",
@@ -161,7 +191,12 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-gmail",
-      "package_sha256": "60d2e202c9c0a2cc93ce43ef8285bcf5a393613d05f933211a877e5d91535c73"
+      "package_sha256": "60d2e202c9c0a2cc93ce43ef8285bcf5a393613d05f933211a877e5d91535c73",
+      "categories": [
+        "mail-chat"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_chat",
@@ -184,7 +219,12 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-chat",
-      "package_sha256": "435297c24489556dd19bf30b557abc2931d13c3ad23e468c9320f9b7f0d3b5d6"
+      "package_sha256": "435297c24489556dd19bf30b557abc2931d13c3ad23e468c9320f9b7f0d3b5d6",
+      "categories": [
+        "mail-chat"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     },
     {
       "id": "alysis.google_contacts",
@@ -207,7 +247,292 @@
       ],
       "source_kind": "bundled",
       "bundled_path": "google-contacts",
-      "package_sha256": "d1e8496bfc72ebd6407f49073dfb2bf4619aebeeef91c518ac4690801fdb8786"
+      "package_sha256": "d1e8496bfc72ebd6407f49073dfb2bf4619aebeeef91c518ac4690801fdb8786",
+      "categories": [
+        "mail-chat"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.notion",
+      "name": "Notion",
+      "description": "Notion's official remote MCP tools: search and read your pages and databases; every change asks you first.",
+      "repo": "https://developers.notion.com/guides/mcp/get-started-with-mcp",
+      "commit": "sha256:51b361376dbfeb320c56b4119d86866c4ae6762167c038a1bd9d287cef44feb3",
+      "version": "1.0.0",
+      "tags": [
+        "notion",
+        "mcp",
+        "notes",
+        "wiki",
+        "docs"
+      ],
+      "permissions": [
+        "notion-workspace",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "notion",
+      "package_sha256": "51b361376dbfeb320c56b4119d86866c4ae6762167c038a1bd9d287cef44feb3",
+      "categories": [
+        "notes-wiki"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.linear",
+      "name": "Linear",
+      "description": "Linear's official remote MCP tools: find and read issues, projects and documents; every change asks you first.",
+      "repo": "https://linear.app/docs/mcp",
+      "commit": "sha256:ce0ac46d2bb4e2bfba270909628b5fcdbd02733fefaf5085af08c3d2be618ef4",
+      "version": "1.0.0",
+      "tags": [
+        "linear",
+        "mcp",
+        "issues",
+        "projects",
+        "tasks"
+      ],
+      "permissions": [
+        "linear-workspace",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "linear",
+      "package_sha256": "ce0ac46d2bb4e2bfba270909628b5fcdbd02733fefaf5085af08c3d2be618ef4",
+      "categories": [
+        "tasks-projects"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.sentry",
+      "name": "Sentry",
+      "description": "Sentry's official remote MCP tools: search issues, errors, logs and traces; every issue update asks you first.",
+      "repo": "https://docs.sentry.io/product/sentry-mcp/",
+      "commit": "sha256:c5ad71108a9a612edbe238e6749da51a46168549d9d50a7a29d8728c6aed7f7d",
+      "version": "1.0.0",
+      "tags": [
+        "sentry",
+        "mcp",
+        "errors",
+        "issues",
+        "monitoring"
+      ],
+      "permissions": [
+        "sentry-organization",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "sentry",
+      "package_sha256": "c5ad71108a9a612edbe238e6749da51a46168549d9d50a7a29d8728c6aed7f7d",
+      "categories": [
+        "code"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.atlassian",
+      "name": "Jira + Confluence",
+      "description": "Atlassian's official remote MCP tools for one Jira and Confluence site you pick: search and read issues and pages; every change asks you first.",
+      "repo": "https://support.atlassian.com/atlassian-rovo-mcp-server/",
+      "commit": "sha256:a902ac0d7ab42d7019decf7b04dc2303f21faf43a804ceba14f9d0cd72a18dcf",
+      "version": "1.0.0",
+      "tags": [
+        "jira",
+        "confluence",
+        "atlassian",
+        "mcp",
+        "issues",
+        "wiki"
+      ],
+      "permissions": [
+        "selected-atlassian-site",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "atlassian",
+      "package_sha256": "a902ac0d7ab42d7019decf7b04dc2303f21faf43a804ceba14f9d0cd72a18dcf",
+      "categories": [
+        "tasks-projects"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.supabase",
+      "name": "Supabase",
+      "description": "Supabase's official remote MCP tools. Its SQL, migration and function deploy tools can change or delete any data and reach project secrets; each call asks you first.",
+      "repo": "https://supabase.com/docs/guides/getting-started/mcp",
+      "commit": "sha256:8f2e4696ae39b0c747c0d90baa3ba6396511fba9404f803669ca36ca332d1968",
+      "version": "1.0.0",
+      "tags": [
+        "supabase",
+        "mcp",
+        "database",
+        "postgres",
+        "sql"
+      ],
+      "permissions": [
+        "supabase-organization",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "supabase",
+      "package_sha256": "8f2e4696ae39b0c747c0d90baa3ba6396511fba9404f803669ca36ca332d1968",
+      "categories": [
+        "code"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.gitlab",
+      "name": "GitLab",
+      "description": "GitLab's official remote MCP tools for gitlab.com: read projects, merge requests, issues, code and pipelines. Merging, commits and pipeline runs ask you first, every time.",
+      "repo": "https://docs.gitlab.com/user/model_context_protocol/mcp_server/",
+      "commit": "sha256:1dda264e63eca31edf577ce5e95bcaa9b4067e19810794a5973f360849a62841",
+      "version": "1.0.0",
+      "tags": [
+        "gitlab",
+        "mcp",
+        "git",
+        "merge-requests",
+        "ci"
+      ],
+      "permissions": [
+        "gitlab-account",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "gitlab",
+      "package_sha256": "1dda264e63eca31edf577ce5e95bcaa9b4067e19810794a5973f360849a62841",
+      "categories": [
+        "code"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.huggingface",
+      "name": "Hugging Face",
+      "description": "Hugging Face's official remote MCP tools: search and read models, datasets, Spaces, papers and docs. Read only: jobs, sandboxes, uploads and Space calls are left out.",
+      "repo": "https://huggingface.co/docs/hub/hf-mcp-server",
+      "commit": "sha256:b8c79b856bbb0d5fe520a786bc61ecfed5c0b031435ba26911b4fa952d90c0f3",
+      "version": "1.0.0",
+      "tags": [
+        "huggingface",
+        "mcp",
+        "models",
+        "datasets",
+        "ai"
+      ],
+      "permissions": [
+        "huggingface-account",
+        "main-owned-credentials"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "huggingface",
+      "package_sha256": "b8c79b856bbb0d5fe520a786bc61ecfed5c0b031435ba26911b4fa952d90c0f3",
+      "categories": [
+        "code"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.clickup",
+      "name": "ClickUp",
+      "description": "ClickUp's official remote MCP tools: read and search tasks, docs and chat. Every change asks you first; chat messages and comments post as you.",
+      "repo": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server",
+      "commit": "sha256:10049c54845dfabc7cc94f5b1130e2ad56fdcbe0ca29011e93d9038b97305c7b",
+      "version": "1.0.0",
+      "tags": [
+        "clickup",
+        "mcp",
+        "tasks",
+        "projects",
+        "docs"
+      ],
+      "permissions": [
+        "clickup-workspace",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "clickup",
+      "package_sha256": "10049c54845dfabc7cc94f5b1130e2ad56fdcbe0ca29011e93d9038b97305c7b",
+      "categories": [
+        "tasks-projects"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.todoist",
+      "name": "Todoist",
+      "description": "Todoist's official remote MCP tools: find and read your tasks and projects. Every change asks you first; deleting and public template links are left out.",
+      "repo": "https://github.com/Doist/todoist-mcp",
+      "commit": "sha256:cb0a385eac4ec80e5422c89e0abfbeee8ca1ff3d2258b247d6dcf385b1a66ea2",
+      "version": "1.0.0",
+      "tags": [
+        "todoist",
+        "mcp",
+        "tasks",
+        "todo",
+        "projects"
+      ],
+      "permissions": [
+        "todoist-account",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "todoist",
+      "package_sha256": "cb0a385eac4ec80e5422c89e0abfbeee8ca1ff3d2258b247d6dcf385b1a66ea2",
+      "categories": [
+        "tasks-projects"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
+    },
+    {
+      "id": "alysis.airtable",
+      "name": "Airtable",
+      "description": "Airtable's official remote MCP tools: read and search your bases and records. Every change asks you first; deleting records, tables, pages and automations is left out.",
+      "repo": "https://support.airtable.com/docs/using-the-airtable-mcp-server",
+      "commit": "sha256:3504bae43e00b2139eaeb08d4a48ad5a602e75ae2ad02aea56ba144e4b9c0029",
+      "version": "1.0.0",
+      "tags": [
+        "airtable",
+        "mcp",
+        "database",
+        "spreadsheet",
+        "records"
+      ],
+      "permissions": [
+        "airtable-bases",
+        "main-owned-credentials",
+        "explicit-write-approval"
+      ],
+      "source_kind": "bundled",
+      "bundled_path": "airtable",
+      "package_sha256": "3504bae43e00b2139eaeb08d4a48ad5a602e75ae2ad02aea56ba144e4b9c0029",
+      "categories": [
+        "docs-files"
+      ],
+      "publisher": "Alysis",
+      "tier": "alysis"
     }
   ]
 }

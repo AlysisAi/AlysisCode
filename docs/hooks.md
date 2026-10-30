@@ -56,6 +56,14 @@ Common hook events are:
 
 `Stop` is accepted as an alias for `TurnComplete`.
 
+`SessionEnd` is attempted at most once per session instance. The attempt is
+recorded before context preparation and dispatch, so a failure, timeout,
+concurrent or reentrant close, or later cleanup failure does not replay it.
+This does not certify cleanup success or relax the caller's existing cleanup
+rules: a retained close failure remains blocked where the caller requires it.
+There is no exactly-once guarantee across process crashes; an uncertain hook
+may already have produced external effects.
+
 Blocking events can stop execution. Non-blocking events can record output, inject context for later handling, or stop remaining hooks for the same event, but they cannot retroactively block work that already happened.
 
 ## Config Format

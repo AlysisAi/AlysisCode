@@ -66,6 +66,8 @@ from alysis_code.surface.events import (
 from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.usage_tracker import UsageSummary
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 _CANARY = "ALYSIS_SECRET_CANARY_7dc6f758"
 _ERROR_CANARY = "ALYSIS_EXCEPTION_CANARY_c18afe42"
 _PRIVATE_TYPED_TEXT = "TypedPhraseOrchid"
@@ -1032,8 +1034,7 @@ def test_final_computer_use_response_drops_all_provider_state_before_persistence
         for message in durable_messages
         if message.get("role") == "assistant"
         and not message.get("tool_calls")
-        and message.get("content")
-        == ("Computer Use completed the authorized workflow through the trusted host boundary.")
+        and message.get("content") == ("Computer Use ended without a completed goal report.")
     ]
     assert len(final_messages) == 1
     assert PROVIDER_METADATA_KEY not in final_messages[0]
@@ -1855,10 +1856,7 @@ def test_computer_use_zero_free_ids_are_private_but_live_dispatch_is_exact(
     ):
         assert private_value not in durable_bundle
     assert "[redacted: transient computer use identifier]" in durable_bundle
-    assert (
-        "Computer Use completed the authorized workflow through the trusted host boundary."
-        in durable_bundle
-    )
+    assert "Computer Use ended without a completed goal report." in durable_bundle
 
 
 def test_short_ui_taint_preserves_openai_responses_tool_pairing_and_route(
@@ -2808,10 +2806,7 @@ def test_observed_zero_free_semantic_id_and_snapshot_cannot_leak_in_final_prose(
     )
     assert observed_snapshot not in durable_bundle
     assert observed_element not in durable_bundle
-    assert (
-        "Computer Use completed the authorized workflow through the trusted host boundary."
-        in durable_bundle
-    )
+    assert "Computer Use ended without a completed goal report." in durable_bundle
 
 
 def test_known_computer_use_ids_are_projected_from_provider_failure_boundaries(
@@ -3613,3 +3608,151 @@ def test_sensitive_error_result_is_never_sent_or_persisted(tmp_path: Path) -> No
         "Sensitive path is protected and will not be readable after this failure. "
         "No content was returned. This failure is terminal; do not retry."
     ) in durable_and_display
+
+
+@pytest.mark.parametrize("web_action", ["search", "open_page", "find_in_page"])
+def test_ordinary_ephemeral_tool_contract_retains_hosted_search_only_in_transient_replay(
+    web_action,
+):
+    response = LLMResponse(
+        content="Source found.",
+        tool_calls=[ToolCall(id="provider-call", name="fs_write", arguments={"path": "note.md"})],
+        raw={},
+        provider_metadata={
+            OPENAI_RESPONSES_PROVIDER_METADATA_KEY: {
+                "output_items": [
+                    {
+                        "type": "web_search_call",
+                        "id": "provider-search",
+                        "status": "completed",
+                        "action": {"type": web_action, "query": "spreadsheet documentation"},
+                        "unrecognized": "drop-me",
+                    },
+                    {
+                        "type": "message",
+                        "id": "provider-message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Source found.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "title": "Docs",
+                                        "url": "https://example.com/docs",
+                                        "start_index": 0,
+                                        "end_index": 12,
+                                        "unrecognized": "drop-me",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "provider-call",
+                        "name": "fs_write",
+                        "arguments": '{"path":"note.md"}',
+                    },
+                ]
+            }
+        },
+    )
+    with pytest.raises(ValueError):
+        canonicalize_computer_use_response_for_dispatch(response, allowed_tool_names={"fs_write"})
+    canonical = canonicalize_computer_use_response_for_dispatch(
+        response, allowed_tool_names={"fs_write"}, allow_web_search=True
+    )
+    output = canonical.provider_metadata[OPENAI_RESPONSES_PROVIDER_METADATA_KEY]["output_items"]
+    assert output[0]["action"]["type"] == web_action
+    assert "unrecognized" not in output[0]
+    assert "unrecognized" not in output[1]["content"][0]["annotations"][0]
+    assert len(canonical.tool_calls) == 1
+    assert canonical.tool_calls[0].name == "fs_write"
+    safe = strip_computer_use_provider_state_for_persistence(canonical)
+    assert safe.provider_metadata is None
+    assert "provider-search" not in _serialized(safe)
+
+
+def test_computer_use_contract_never_admits_hosted_search():
+    response = LLMResponse(
+        content="",
+        tool_calls=[ToolCall(id="call", name="computer_state", arguments={})],
+        raw={},
+        provider_metadata={
+            OPENAI_RESPONSES_PROVIDER_METADATA_KEY: {
+                "output_items": [
+                    {"type": "web_search_call", "id": "search", "action": {"type": "search"}},
+                    {
+                        "type": "function_call",
+                        "call_id": "call",
+                        "name": "computer_state",
+                        "arguments": "{}",
+                    },
+                ]
+            }
+        },
+    )
+    with pytest.raises(ValueError):
+        canonicalize_computer_use_response_for_dispatch(response, allow_web_search=True)
+
+
+@pytest.mark.parametrize("pending_search", [False, True])
+def test_anthropic_hosted_search_with_local_tools_stays_in_transient_replay(pending_search):
+    blocks = [
+        {
+            "type": "server_tool_use",
+            "id": "server-search",
+            "name": "web_search",
+            "input": {"query": "formula calculation"},
+        },
+        {"type": "tool_use", "id": "local-call", "name": "fs_write", "input": {"path": "note.md"}},
+    ]
+    if not pending_search:
+        blocks += [
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "server-search",
+                "content": [
+                    {
+                        "type": "web_search_result",
+                        "url": "https://example.com/docs",
+                        "title": "Docs",
+                        "encrypted_content": "signed-result",
+                    }
+                ],
+            },
+            {
+                "type": "text",
+                "text": "Source",
+                "citations": [
+                    {
+                        "type": "web_search_result_location",
+                        "url": "https://example.com/docs",
+                        "title": "Docs",
+                        "cited_text": "Formula",
+                        "encrypted_index": "signed-index",
+                    }
+                ],
+            },
+        ]
+    response = LLMResponse(
+        content="",
+        tool_calls=[ToolCall(id="local-call", name="fs_write", arguments={"path": "note.md"})],
+        raw={},
+        provider_metadata={ANTHROPIC_MESSAGES_PROVIDER_METADATA_KEY: {"content_blocks": blocks}},
+    )
+    with pytest.raises(ValueError):
+        canonicalize_computer_use_response_for_dispatch(response, allowed_tool_names={"fs_write"})
+    canonical = canonicalize_computer_use_response_for_dispatch(
+        response, allowed_tool_names={"fs_write"}, allow_web_search=True
+    )
+    assert (
+        canonical.provider_metadata[ANTHROPIC_MESSAGES_PROVIDER_METADATA_KEY]["content_blocks"]
+        == blocks
+    )
+    assert len(canonical.tool_calls) == 1
+    safe = strip_computer_use_provider_state_for_persistence(canonical)
+    assert "signed-result" not in _serialized(safe)
+    assert "server-search" not in _serialized(safe)

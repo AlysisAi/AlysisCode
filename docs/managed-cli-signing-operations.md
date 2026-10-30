@@ -70,10 +70,9 @@ replace the signed candidate's provenance, signature, or installation checks.
 
 Create two GitHub environments. Both environments must have at least one required release
 maintainer and contain exactly the custom deployment tag pattern `v*`, with administrator bypass
-disabled. Self-review is normally prevented. The owner-authorized single-maintainer exception
-allows self-review only when the sole required reviewer is `Perdikis10` (GitHub user ID
-`190930654`), pinned in `scripts/release/vscode_approval_policy.py`. That maintainer may also fill
-all three signoff roles, but must actually approve each signing, evidence, and promotion gate.
+disabled. Self-review is normally prevented. The narrowly scoped single-maintainer
+exception is enforced by `scripts/release/vscode_approval_policy.py`. Each signing,
+evidence and promotion gate still requires an explicit approval.
 Environments with other reviewers must prevent self-review. The unprotected source-validation job
 checks these rules through the versioned GitHub API before either protected job can start. Do not
 copy an environment secret or variable to repository or organization scope.
@@ -184,20 +183,11 @@ custodian. The offline checker can first inspect the public pin without a secret
 python scripts/release/verify_managed_cli_key_custody.py
 ```
 
-The DER fingerprint observed on 28 September 2026 is
-`9c9054ccb2540eef5af95fc904d3af986798c880f86353717dc18ff6de6fa07e`.
-This is the expected public identity, not proof of private-key custody or a configured
-GitHub environment. The resource PEM and embedded trust anchor remain unchanged.
+The checker prints the fingerprint of the checked-in public key. This identifies
+the expected key; it does not prove that the private key is available or that GitHub
+is configured.
 
-On 4 October 2026, the owner approved Perdikis10 as recovery custodian and a separate
-organization-controlled Azure Key Vault copy. Retrieval inside Azure Cloud Shell
-passed this checker against the unchanged public pin; private material went directly
-through stdin without a file or secret output. Access logging was verified from
-delivered records and temporary network access removed. The private operations
-record holds the vault/version coordinates and recovery procedure. This proves
-recovery custody, not the protected workflow's provisioned key or native signing.
-
-Once the custodian locates the approved backup, run the same checker **inside the
+To check a private key, run the same checker **inside the
 approved secret-management boundary** with `--private-key-stdin` and
 `--approved-fingerprint <reviewed-public-DER-SHA256>`. Pipe the secret manager's export
 directly into stdin; do not paste it into a terminal, interpolate it into arguments,
@@ -205,12 +195,6 @@ enable shell tracing, or save it in this checkout. The checker accepts one unenc
 P-256 `EC PRIVATE KEY` PEM, compares its derived public PEM byte-for-byte, and emits only
 public fingerprint/match fields. It neither uploads a secret nor configures GitHub.
 The actual protected signing workflow must still verify the provisioned key.
-
-The legacy repository secret `SYLLIPTOR_MANAGED_CLI_SIGNING_KEY` was last updated
-29 July 2026 at 14:04:26 UTC according to GitHub's read-only metadata. GitHub cannot
-return its value, and this timestamp does not identify its owner or prove a key match.
-Preserve it while establishing custody; do not dispatch a diagnostic workflow to
-extract it or silently substitute it for the environment key.
 
 - Store `ALYSIS_MANAGED_CLI_SIGNING_KEY` only in the protected GitHub environment
   `managed-cli-signing`; never use a repository, organization-wide, local `.env`, or runner file

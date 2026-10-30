@@ -22,15 +22,39 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+# Aggregate orchestration headroom for the complete ordered source selection.
+# Individual startup, action and cancellation deadlines remain inside its tests.
+SOURCE_RELIABILITY_TIMEOUT_SECONDS = 1800
 RELIABILITY_TESTS = (
     "test_objective_removed.py",
     "test_task_evidence_lifecycle.py",
     "test_acceptance_contract.py",
     "test_acceptance_contract_integration.py",
+    "test_task_artifact_binding.py",
+    "test_task_artifact_binding_integration.py",
+    "test_assets_public_api.py",
+    "test_extensions_public_api.py",
+    "test_mcp_startup_boundary.py",
+    "test_config_startup_boundary.py",
+    "test_update_startup_boundary.py",
+    "test_safety_startup_boundary.py",
+    "test_web_search_startup_boundary.py",
+    "test_tool_execution_startup_boundary.py",
+    "test_tool_schema_budgeter.py",
+    "test_execution_budget.py",
+    "test_cli_run_deadline.py",
     "test_acceptance_evidence_authority_integration.py",
+    "test_artifact_output_observation.py",
+    "test_artifact_filesystem.py",
     "test_completion_certificate.py",
     "test_task_outcome_authority.py",
+    "test_ide_stdio_bridge.py",
+    "test_ide_session_close.py",
+    "test_plan_reconciliation.py",
     "test_agent_loop_event_emission.py",
+    "test_external_tool_repetition.py",
+    "test_wire_request_diagnostics.py",
+    "test_mcp_visual_delivery.py",
     "test_provider_failure_salvage.py",
     "test_durable_service_ownership.py",
     "test_durable_service_cleanup_recovery.py",
@@ -67,8 +91,19 @@ RELIABILITY_TESTS = (
     "test_turn_contract_v2.py",
     "test_one_shot_prompt_contract.py",
     "test_cli_api_key.py::test_system_prompt_reinforces_narrow_repo_execution_changes",
+    "test_cli_api_key.py::test_agent_session_context_left_uses_model_window_and_effective_budget",
+    "test_cli_entrypoint.py::test_cli_and_plain_trace_imports_defer_optional_execution_and_rendering",
+    "test_cli_entrypoint.py::test_command_registration_does_not_load_interactive_compatibility_surface",
+    "test_cli_entrypoint.py::test_selected_cli_group_preserves_routing_without_loading_other_commands",
+    "test_cli_entrypoint.py::test_cold_host_executor_materializes_complete_canonical_dependencies",
+    "test_cli_entrypoint.py::test_ide_registration_defers_session_and_swarm_execution",
+    "test_cli_entrypoint.py::test_cli_registration_defers_credential_crypto_until_store_access",
+    "test_cli_entrypoint.py::test_cli_registration_defers_diagnostic_backends",
+    "test_cli_entrypoint.py::test_one_shot_admission_does_not_load_interactive_shell",
+    "test_cli_entrypoint.py::test_cold_one_shot_classic_workspace_picker_keeps_its_dependencies",
 )
 SAFETY_TESTS = (
+    "test_file_staging_platform.py",
     "test_agent_loop_review_approval.py",
     "test_fs_safety_policy.py",
     "test_fs_tools.py",
@@ -154,6 +189,11 @@ def main(argv: list[str] | None = None) -> int:
         "--full", action="store_true", help="Also run the entire source pytest suite"
     )
     parser.add_argument("--require-clean", action="store_true", help="Reject uncommitted source")
+    parser.add_argument(
+        "--windows-managed-install",
+        action="store_true",
+        help="Match the Windows desktop install's bytecode preparation before installed checks",
+    )
     args = parser.parse_args(argv)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = (args.output_dir or ROOT / "qa_reports" / "production" / stamp).resolve()
@@ -172,7 +212,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         ),
         "provider_fixture": "loopback only; installed CLI rejects external DNS",
+        "installed_preparation": (
+            "windows_managed_compileall" if args.windows_managed_install else "uncompiled_wheel"
+        ),
         "stages": [],
+        "source_reliability_timeout_seconds": SOURCE_RELIABILITY_TIMEOUT_SECONDS,
     }
     manifest_path = output / "manifest.json"
 
@@ -190,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         log = output / f"{name}.log"
         started = time.monotonic()
         timed_out = False
+        manifest["active_stage"] = {"name": name, "timeout_seconds": timeout}
+        save()
         print(f"Running {name}", flush=True)
         with log.open("w", encoding="utf-8") as stream:
             process = subprocess.Popen(
@@ -216,16 +262,20 @@ def main(argv: list[str] | None = None) -> int:
                 "command": command,
                 "returncode": returncode,
                 "timed_out": timed_out,
+                "timeout_seconds": timeout,
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "log": log.name,
                 "log_sha256": _sha256(log),
             }
         )
+        manifest.pop("active_stage", None)
         save()
         if returncode or timed_out:
             raise RuntimeError(f"{name} failed; see {log}")
 
     try:
+        if args.windows_managed_install and os.name != "nt":
+            raise RuntimeError("--windows-managed-install requires Windows")
         manifest["source"] = _source_identity()
         save()
         if args.require_clean and manifest["source"]["dirty"]:
@@ -234,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
             ("source-reliability", RELIABILITY_TESTS),
             ("source-safety", SAFETY_TESTS),
         ):
+            # Let pytest report the first failure before running later cases
+            # into the stage timeout. Passing runs still execute every selector.
             run(
                 group,
                 [
@@ -241,11 +293,16 @@ def main(argv: list[str] | None = None) -> int:
                     "-m",
                     "pytest",
                     "-q",
+                    "-x",
+                    "--tb=short",
                     "-p",
                     "no:cacheprovider",
                     f"--junitxml={output / (group + '.xml')}",
                     *(str(ROOT / "tests" / name) for name in files),
                 ],
+                timeout=SOURCE_RELIABILITY_TIMEOUT_SECONDS
+                if group == "source-reliability"
+                else 900,
             )
         if args.full:
             run(
@@ -255,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
                     "-m",
                     "pytest",
                     "-q",
+                    "-x",
+                    "--tb=short",
                     "-p",
                     "no:cacheprovider",
                     f"--junitxml={output / 'source-full.xml'}",
@@ -293,6 +352,17 @@ def main(argv: list[str] | None = None) -> int:
                 str(wheel),
             ],
         )
+        if args.windows_managed_install:
+            # The desktop's compileManagedRuntimeBytecode performs this step
+            # before launcher hardening and its first capability probe. Keep
+            # the default uncompiled CLI gate separate: this option qualifies
+            # that real managed installation, not every distribution method.
+            # No CLI is warmed and no fault assertion or deadline is changed.
+            run(
+                "compile-installed-bytecode",
+                [sys.executable, "-B", "-m", "compileall", "-q", "-j", "0", str(installed)],
+                timeout=300,
+            )
         consumer = output / "consumer"
         consumer.mkdir()
         for name in INSTALLED_TESTS:
@@ -311,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             "import alysis_code, pytest\n"
             "assert pathlib.Path(alysis_code.__file__).resolve().is_relative_to(installed)\n"
             "print('qualified_package=' + str(alysis_code.__file__), flush=True)\n"
-            f"raise SystemExit(pytest.main({['-q', '-p', 'no:cacheprovider', '-c', str(config), '--durations=20', '--junitxml=' + str(output / 'installed-faults.xml'), *INSTALLED_TESTS]!r}))\n",
+            f"raise SystemExit(pytest.main({['-q', '-x', '--tb=short', '-p', 'no:cacheprovider', '-c', str(config), '--durations=20', '--junitxml=' + str(output / 'installed-faults.xml'), *INSTALLED_TESTS]!r}))\n",
             encoding="utf-8",
         )
         env = dict(os.environ)

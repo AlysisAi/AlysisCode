@@ -18,6 +18,7 @@ The six scenarios the protocol is specified against each have a named test:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,8 @@ from alysis_code.config import AppConfig, ConfigError, set_config_value
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.sandbox_runner import HostShellRunner
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 
 # ---------------------------------------------------------------------------
 # Synthetic repo + drivers
@@ -795,13 +798,30 @@ def test_summary_handles_unattributed_run_with_no_failures(repo: Path) -> None:
     _edit(state, repo, "src/pkg/core.py")
     _run_tests(state, repo, _pytest_scope_command(state.blast_radius_scope))
 
-    summary = build_blast_radius_status_summary(
-        state.compute_blast_radius_assessment(enabled=True, turn_intent="execute")
-    )
+    assessment = state.compute_blast_radius_assessment(enabled=True, turn_intent="execute")
+    summary = build_blast_radius_status_summary(assessment)
 
+    assert assessment.status == BlastRadiusStatus.UNATTRIBUTED
+    assert not assessment.satisfied
+    assert "Checks passed:" in summary
     assert "no failures were reported" in summary
-    assert "clean result is UNATTRIBUTED" in summary
+    assert "before/after comparison is unavailable" in summary
+    assert "UNATTRIBUTED" not in summary
+    assert "⚠" not in summary
     assert "failures are mine: ." not in summary
+
+
+@pytest.mark.parametrize("column", ["agent_authored", "pre_existing", "unattributed"])
+def test_summary_does_not_hide_other_failure_columns(repo: Path, column: str) -> None:
+    state = _scoped_state(repo)
+    _edit(state, repo, "src/pkg/core.py")
+    _run_tests(state, repo, _pytest_scope_command(state.blast_radius_scope))
+    assessment = state.compute_blast_radius_assessment(enabled=True, turn_intent="execute")
+    failure = "tests/test_core.py::test_widen"
+    summary = build_blast_radius_status_summary(replace(assessment, **{column: (failure,)}))
+    assert failure in summary
+    assert "Checks passed:" not in summary
+    assert "no failures were reported" not in summary
 
 
 def test_summary_is_silent_when_the_protocol_does_not_apply(repo: Path) -> None:
@@ -1251,6 +1271,10 @@ class _ScriptedClient:
 
 
 def _scripted_session(root: Path, session_id: str) -> Any:
+    class ScriptedSurface(NoopSurface):
+        def request_approval(self, request):
+            return ApprovalDecision(request.kind == "shell_run")
+
     session = create_session(
         cfg=AppConfig(model="test-model", routing_mode="code_only", verify_commands=["pytest -q"]),
         root=root,
@@ -1262,6 +1286,7 @@ def _scripted_session(root: Path, session_id: str) -> Any:
         one_shot_execution=True,
         session_log_dir_override=root / "sessions",
         session_id_override=session_id,
+        surface=ScriptedSurface(),
     )
     # The scripted shell below models host execution in this fixture workspace.
     session.shell_runner = HostShellRunner()

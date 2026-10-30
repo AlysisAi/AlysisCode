@@ -28,6 +28,7 @@ from .reasoning_contracts import (
     WIRE_THINKING_TYPE,
     ReasoningContract,
     reasoning_contract_for,
+    resolve_reasoning_provider,
 )
 
 _LOGGER = logging.getLogger("alysis_code.model_reasoning")
@@ -76,6 +77,30 @@ def _contract_efforts(contract: ReasoningContract) -> tuple[ProviderReasoningEff
     return efforts
 
 
+def contract_reasoning_capabilities(contract: ReasoningContract) -> dict[str, Any]:
+    """Serialize one route's allowlisted reasoning choices for catalog consumers."""
+    efforts = _contract_efforts(contract)
+    return {
+        "reasoning_efforts": [
+            {"id": item.id, "label": item.label, "description": item.description or ""}
+            for item in efforts
+        ],
+        "default_reasoning_effort": (
+            contract.default if any(item.id == contract.default for item in efforts) else ""
+        ),
+    }
+
+
+def hosted_model_capabilities(model: str) -> dict[str, Any]:
+    """The hosted route's capacities and choices for account JSON and terminal views."""
+    from .model_registry import catalog_model_capabilities
+
+    return {
+        **catalog_model_capabilities(model, "alysis"),
+        **contract_reasoning_capabilities(reasoning_contract_for("alysis", model)),
+    }
+
+
 def _api_contract(
     cfg: Any, profile: Any, model: str, transport: httpx.BaseTransport | None
 ) -> ReasoningContract:
@@ -84,14 +109,17 @@ def _api_contract(
     from .llm.factory import resolve_model_protocol
     from .profile_presets import find_preset_for_profile
     from .profiles import resolve_effective_base_url
-    from .provider_model_catalog import ProviderModelCatalogError, discover_provider_models
+    from .provider_model_catalog import (
+        ProviderModelCatalogError,
+        discover_provider_models,
+        openrouter_reasoning_contract,
+    )
 
     profile = replace(profile, base_url=resolve_effective_base_url(cfg=cfg, profile=profile))
     preset = find_preset_for_profile(profile)
-    if preset is None:
-        return UNKNOWN_CONTRACT
+    provider_key = preset.provider_key if preset else resolve_reasoning_provider(None, model)
     protocol = resolve_model_protocol(
-        provider_key=preset.provider_key, model=model, protocol=profile.protocol
+        provider_key=provider_key, model=model, protocol=profile.protocol
     )
     if protocol == "openai_compat" and profile.reasoning_trace_adapter != "auto":
         from .llm.openai_compat import (
@@ -100,7 +128,7 @@ def _api_contract(
         )
 
         provider = _transport_provider_key(
-            base_url=profile.base_url, provider_key=preset.provider_key, model=model
+            base_url=profile.base_url, provider_key=provider_key, model=model
         )
         if (
             _reasoning_transport_provider_key(
@@ -110,18 +138,27 @@ def _api_contract(
             != provider
         ):
             return UNKNOWN_CONTRACT
-    if preset.provider_key == "openrouter" and protocol == "openai_compat":
-        # The public catalog owns gateway-specific levels. Never borrow an
-        # upstream provider's levels or credentials for a routed model.
+    if provider_key == "openrouter" and protocol == "openai_compat":
+        # Explicit gateway capabilities override model defaults. Missing
+        # metadata can use the same catalog model as a custom endpoint.
         try:
             models = discover_provider_models(
                 profile=replace(profile, extra_headers={}), api_key=None, transport=transport
             )
         except ProviderModelCatalogError as exc:
-            raise ProviderAuthError("Reasoning capabilities are temporarily unavailable.") from exc
+            contract = openrouter_reasoning_contract(None, model=model)
+            if contract is None:
+                raise ProviderAuthError(
+                    "Reasoning capabilities are temporarily unavailable."
+                ) from exc
+            return contract
         candidate = next((item for item in models if item.id == model), None)
-        return (candidate.reasoning_contract or UNKNOWN_CONTRACT) if candidate else UNKNOWN_CONTRACT
-    contract = reasoning_contract_for(preset.provider_key, model, preset_key=preset.key)
+        if candidate and candidate.reasoning_contract is not None:
+            return candidate.reasoning_contract
+        return openrouter_reasoning_contract(None, model=model) or UNKNOWN_CONTRACT
+    contract = reasoning_contract_for(
+        provider_key, model, preset_key=preset.key if preset else None
+    )
     if protocol == "anthropic_messages":
         supported = {WIRE_THINKING_ADAPTIVE, WIRE_BUDGET_TOKENS}
     elif protocol == "gemini_generate_content":
@@ -131,7 +168,7 @@ def _api_contract(
     elif protocol == "openai_compat":
         # Official OpenAI reasoning with tools requires Responses on several
         # catalog models. Legacy compatibility routes must not promise it.
-        if preset.provider_key == "openai":
+        if provider_key == "openai":
             return UNKNOWN_CONTRACT
         supported = {
             WIRE_REASONING_EFFORT,
@@ -152,6 +189,8 @@ def _api_contract(
 def model_reasoning_capabilities(
     cfg: Any, *, transport: httpx.BaseTransport | None = None
 ) -> dict[str, Any]:
+    from .model_registry import catalog_model_capabilities
+    from .profile_presets import find_preset_for_profile
     from .profiles import get_active_profile
     from .provider_auth import create_provider_auth
 
@@ -159,6 +198,7 @@ def model_reasoning_capabilities(
     model = str(cfg.model or profile.default_model or "").strip()
     efforts = ()
     default = ""
+    capacity: dict[str, Any] = {}
     if profile.auth_provider:
         candidate = next(
             (
@@ -172,11 +212,20 @@ def model_reasoning_capabilities(
         )
         if candidate:
             efforts, default = candidate.reasoning_efforts, candidate.default_reasoning_effort or ""
+            # A subscription owns its limits; API model facts must not expand them.
+            capacity = {
+                "context_window_tokens": candidate.context_window_tokens,
+                "max_output_tokens": candidate.max_output_tokens,
+                "input_modalities": list(candidate.input_modalities),
+            }
     else:
         contract = _api_contract(cfg, profile, model, transport)
         efforts = _contract_efforts(contract)
         default = contract.default if any(item.id == contract.default for item in efforts) else ""
+        preset = find_preset_for_profile(profile)
+        capacity = catalog_model_capabilities(model, preset.provider_key if preset else None)
     return {
+        **capacity,
         "id": model,
         "profile_name": profile.name,
         "reasoning_efforts": [

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -24,6 +23,17 @@ from alysis_code.skills import (
     validate_skill_bundle,
 )
 from alysis_code.subagents import load_subagent_registry
+
+
+def _bundled_skill_names() -> set[str]:
+    """Every shipped bundle that discovery serves on this platform."""
+    from alysis_code.computer_use_platform_policy import computer_use_blocked
+    from alysis_code.skills.paths import bundled_skill_root
+
+    names = {p.name for p in bundled_skill_root().iterdir() if (p / "SKILL.md").is_file()}
+    if computer_use_blocked():
+        names.discard("computer-use")
+    return names
 
 
 def _write_skill_bundle(
@@ -189,7 +199,7 @@ def test_inaccessible_skill_bundle_is_reported_without_breaking_discovery(
     assert len(validation.errors) == 1
     assert "Failed to inspect skill bundle" in validation.errors[0].message
     assert "blocked" not in discovered.skills
-    assert len(discovered.skills) == 9
+    assert set(discovered.skills) == _bundled_skill_names()
     assert all(skill.source_scope == "bundled" for skill in discovered.ordered)
     assert len(discovered.issues) == 1
     assert "Failed to inspect skill bundle" in discovered.issues[0].message
@@ -374,50 +384,40 @@ def test_install_skill_bundle_from_zip_rejects_excess_uncompressed_size(
         )
 
 
-def test_install_skill_bundle_from_git_file_url(
+def test_install_skill_bundle_from_https_git_with_fake_subprocess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if shutil.which("git") is None:
-        pytest.skip("git not available")
+    # Preserve remote subdir/commit/state coverage without launching real git.
+    from alysis_code.skills import install as install_mod
+
     user_cfg = tmp_path / "usercfg"
     _patch_user_config_dir(monkeypatch, user_cfg)
-    repo = tmp_path / "skill-repo"
-    _write_skill_bundle(
-        repo / "packs" / "architecture-review",
-        name="architecture-review",
-        description="Review architecture changes.",
-    )
-    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True, text=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.email", "skills@test.local"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.name", "Skills Test"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True, text=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-m", "seed"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _: "/fixture/git")
+    calls = []
 
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        assert kwargs["env"]["GIT_ALLOW_PROTOCOL"] == "https"
+        if args[1] == "clone":
+            assert args[2:6] == ["--depth", "1", "--", "https://example.invalid/skill.git"]
+            _write_skill_bundle(
+                Path(args[-1]) / "packs" / "architecture-review",
+                name="architecture-review",
+                description="Review architecture changes.",
+            )
+        return subprocess.CompletedProcess(args, 0, stdout="a" * 40 + "\n", stderr="")
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
     result = install_skill_bundle(
-        source=f"file://{repo.as_posix()}",
+        source="https://example.invalid/skill.git",
         workspace_root=tmp_path,
         subdir="packs/architecture-review",
         project=False,
     )
-
+    assert len(calls) == 2
     assert result.source_kind == "git"
-    assert result.source_commit
+    assert result.source_commit == "a" * 40
     assert (user_cfg / "skills" / "architecture-review" / "SKILL.md").exists()
 
 
@@ -458,7 +458,10 @@ def test_resolve_skill_catalog_applies_global_and_project_enable_disable(
         user_config_dir=user_cfg,
     )
     assert "verification-playbook" not in disabled_catalog.effective.skills
-    assert len(disabled_catalog.effective.ordered) == 9
+    assert len(disabled_catalog.effective.ordered) == len(discovered.ordered) - 1
+    assert sorted(s.name for s in disabled_catalog.effective.ordered) == sorted(
+        _bundled_skill_names()
+    )
     assert all(skill.source_scope == "bundled" for skill in disabled_catalog.effective.ordered)
 
     project_state = set_project_skill_override(
@@ -473,7 +476,10 @@ def test_resolve_skill_catalog_applies_global_and_project_enable_disable(
         user_config_dir=user_cfg,
     )
     assert "verification-playbook" in enabled_catalog.effective.skills
-    assert len(enabled_catalog.effective.ordered) == 10
+    assert len(enabled_catalog.effective.ordered) == len(discovered.ordered)
+    assert sorted(s.name for s in enabled_catalog.effective.ordered) == sorted(
+        _bundled_skill_names() | {"verification-playbook"}
+    )
 
 
 def test_remove_managed_skill_deletes_bundle_and_state(
@@ -766,7 +772,7 @@ def test_create_session_uses_effective_enabled_skills(
     )
     try:
         assert "verification-playbook" not in session.skill_registry
-        assert len(session.skills_ordered) == 9
+        assert sorted(s.name for s in session.skills_ordered) == sorted(_bundled_skill_names())
         assert all(skill.source_scope == "bundled" for skill in session.skills_ordered)
     finally:
         session.close()
@@ -798,7 +804,9 @@ def test_create_session_tolerates_invalid_project_skill_state(
     )
     try:
         assert session.skills_ordered[0].name == "docs-consistency"
-        assert len(session.skills_ordered) == 10
+        assert sorted(s.name for s in session.skills_ordered) == sorted(
+            _bundled_skill_names() | {"docs-consistency"}
+        )
         assert all(skill.source_scope == "bundled" for skill in session.skills_ordered[1:])
     finally:
         session.close()

@@ -476,8 +476,12 @@ def test_mcp_status_cli_reports_snapshot_and_stale_observability(tmp_path: Path)
             "operator_action": [],
             "prompt_error": None,
             "startup_error": None,
+            # No desktop rule in this environment: the permission-mode rules apply.
+            "call_approval": "permission_mode",
+            "tools": [],
         }
     ]
+    assert payload["tool_server_approval"] == {"version": 1, "active": False}
 
 
 def test_mcp_prompts_list_cli_resolves_project_root_from_nested_path(tmp_path: Path) -> None:

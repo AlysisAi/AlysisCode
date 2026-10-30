@@ -83,35 +83,37 @@ INFERRED_FILE_EXTENSIONS = frozenset(
     }
 )
 
-CODE_SCAN_SKIP_DIR_NAMES = frozenset(
-    {
-        ".git",
-        ".hg",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".svn",
-        ".alysis",
-        ".tox",
-        ".venv",
-        "__pycache__",
-        "build",
-        "coverage",
-        "dist",
-        "node_modules",
-        "target",
-        "vendor",
-        "venv",
-        # Vendored-dependency trees under other conventional names. Editing
-        # (or symbol-scanning) these is practically never the intended change:
-        # sklearn uses ``externals``, pip uses ``_vendor``, Chromium-style
-        # projects use ``third_party``/``thirdparty``.
-        "_vendor",
-        "externals",
-        "third_party",
-        "thirdparty",
-    }
-) | frozenset(RUNTIME_ARTIFACT_DIR_NAMES)
+REPOSITORY_METADATA_DIR_NAMES = frozenset({".git", ".hg", ".svn"})
+CODE_SCAN_SKIP_DIR_NAMES = (
+    frozenset(
+        {
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".alysis",
+            ".tox",
+            ".venv",
+            "__pycache__",
+            "build",
+            "coverage",
+            "dist",
+            "node_modules",
+            "target",
+            "vendor",
+            "venv",
+            # Vendored-dependency trees under other conventional names. Editing
+            # (or symbol-scanning) these is practically never the intended change:
+            # sklearn uses ``externals``, pip uses ``_vendor``, Chromium-style
+            # projects use ``third_party``/``thirdparty``.
+            "_vendor",
+            "externals",
+            "third_party",
+            "thirdparty",
+        }
+    )
+    | frozenset(RUNTIME_ARTIFACT_DIR_NAMES)
+    | REPOSITORY_METADATA_DIR_NAMES
+)
 GENERATED_DIR_NAMES = frozenset({"gen", "generated", "out"})
 TEST_DIR_NAMES = frozenset({"__tests__", "spec", "specs", "test", "tests"})
 FIXTURE_DIR_NAMES = frozenset(
@@ -242,6 +244,11 @@ def is_generated_or_vendor_path(path: str) -> bool:
     if not parts:
         return False
     return bool(set(parts) & (CODE_SCAN_SKIP_DIR_NAMES | GENERATED_DIR_NAMES))
+
+
+def is_repository_metadata_path(path: str) -> bool:
+    """Repository bookkeeping stays excluded from source scans, not an edited dependency."""
+    return bool(set(_parts(path)) & REPOSITORY_METADATA_DIR_NAMES)
 
 
 DERIVED_ARTIFACT_FILENAMES = frozenset(

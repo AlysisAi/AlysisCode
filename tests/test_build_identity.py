@@ -172,19 +172,6 @@ class RenderAndReadTests(unittest.TestCase):
             path = bi.write_build_info(info, Path(temp) / "_build_info.py")
             self.assertEqual(bi.read_build_info(path), info)
 
-    def test_rendered_module_uses_double_quotes(self) -> None:
-        # Keeps the generated file stable under the repository's ruff format.
-        rendered = bi.render_build_info_module(bi.BuildInfo(commit=_SHA, source="git"))
-        self.assertIn(f'BUILD_COMMIT = "{_SHA}"', rendered)
-        self.assertIn('BUILD_SOURCE = "git"', rendered)
-        self.assertNotIn("'", rendered.split('"""')[-1])
-
-    def test_committed_stamp_is_exactly_the_rendered_dev_default(self) -> None:
-        # If this drifts, the committed stamp was hand-edited.
-        expected = bi.render_build_info_module(bi.DEV_DEFAULT_BUILD_INFO)
-        actual = _COMMITTED_BUILD_INFO.read_text(encoding="utf-8")
-        self.assertEqual(actual, expected)
-
     def test_committed_stamp_reads_back_as_the_dev_default(self) -> None:
         self.assertEqual(bi.read_build_info(_COMMITTED_BUILD_INFO), bi.DEV_DEFAULT_BUILD_INFO)
 
@@ -493,10 +480,10 @@ class ResolveOriginMainTests(unittest.TestCase):
             runner.calls, [["fetch", "--quiet", "origin"], ["rev-parse", "origin/main"]]
         )
 
-    def test_no_fetch_still_reads_the_tracking_ref(self) -> None:
+    def test_no_fetch_does_not_claim_a_cached_tracking_ref(self) -> None:
         runner = _git_runner({"rev-parse origin/main": (0, _MAIN_SHA)})
-        self.assertEqual(bi.resolve_origin_main(runner, fetch=False), _MAIN_SHA)
-        self.assertEqual(runner.calls, [["rev-parse", "origin/main"]])
+        self.assertEqual(bi.resolve_origin_main(runner, fetch=False), bi.UNAVAILABLE)
+        self.assertEqual(runner.calls, [])
 
     def test_a_failed_fetch_does_not_stop_the_read(self) -> None:
         # The offline case: the fetch fails, the stale tracking ref still answers.
@@ -575,8 +562,11 @@ class ProvenanceStampingTests(unittest.TestCase):
 
     def test_fetch_false_skips_the_network_probe(self) -> None:
         runner = self._runner()
-        bi.generate_build_info(repo_root=".", git_runner=runner, environ={}, fetch=False)
+        info = bi.generate_build_info(repo_root=".", git_runner=runner, environ={}, fetch=False)
         self.assertNotIn("fetch", [call[0] for call in runner.calls])
+        self.assertNotIn(["rev-parse", "origin/main"], runner.calls)
+        self.assertEqual(info.resolved_origin_main, bi.UNAVAILABLE)
+        self.assertFalse(info.is_origin_main)
 
     def test_the_new_fields_survive_a_render_read_round_trip(self) -> None:
         info = bi.generate_build_info(repo_root=".", git_runner=self._runner(), environ={})

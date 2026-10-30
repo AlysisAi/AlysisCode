@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from .config import ConfigError
+from .config_errors import ConfigError
 
 
 class RuntimeKind(StrEnum):

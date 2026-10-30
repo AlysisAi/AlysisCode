@@ -72,6 +72,25 @@ def _verify_cfg(*, mode: str | None = None) -> AppConfig:
     return cfg
 
 
+@pytest.mark.parametrize("cleanup_pending", [False, True])
+def test_timeout_report_preserves_pending_process_cleanup(tmp_path, monkeypatch, cleanup_pending):
+    def timeout(*_args, **_kwargs):
+        error = subprocess.TimeoutExpired("owned command", 0.4)
+        error.cleanup_pending = cleanup_pending
+        raise error
+
+    monkeypatch.setattr(sandbox_runner_mod.HostShellRunner, "run", timeout)
+    result = run_task_verification(
+        root=tmp_path,
+        commands=["python slow.py"],
+        artifact_path=tmp_path / "verification.txt",
+        cfg=_verify_cfg(mode="off"),
+        timeout_s=0.4,
+    )
+    assert result.command_results[0].exit_code == 124
+    assert ("process cleanup pending" in result.command_results[0].stderr) is cleanup_pending
+
+
 def test_legacy_collections_import_collection_error_is_infra_unavailable() -> None:
     output = """ERROR collecting tests/test_app.py
 tests/test_app.py:2: in <module>

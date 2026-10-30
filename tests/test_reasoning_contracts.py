@@ -349,6 +349,7 @@ def test_catalog_models_resolve_beyond_unknown_where_researched() -> None:
     probe_gated = {"bytedance", "fireworks", "openrouter", "alysis", "xiaomi"}
     probe_gated_models = {
         ("together", "deepseek-ai/DeepSeek-V4-Flash-0731"),
+        ("together", "zai-org/GLM-5.3-Flash"),
     }
     for preset in PROFILE_PRESETS:
         provider = preset.provider_key or preset.key

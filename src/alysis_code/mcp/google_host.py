@@ -47,7 +47,7 @@ def normalize_google_catalogs(raw: Any) -> list[dict[str, Any]]:
         _fail("google_mcp must contain at most eight service catalogs.")
     seen: set[str] = set()
     for catalog in raw:
-        if not isinstance(catalog, dict) or set(catalog) != {
+        if not isinstance(catalog, dict) or set(catalog) - {"instructions"} != {
             "protocol_version",
             "service",
             "plugin_id",
@@ -55,6 +55,10 @@ def normalize_google_catalogs(raw: Any) -> list[dict[str, Any]]:
             "tools",
         }:
             _fail("Invalid Google catalog fields.")
+        if "instructions" in catalog and (
+            not isinstance(catalog["instructions"], str) or len(catalog["instructions"]) > 12_000
+        ):
+            _fail("Google server instructions must be a bounded string.")
         service = catalog["service"]
         if not isinstance(service, str) or service not in SERVICES or service in seen:
             _fail("Unknown or duplicate Google service.")
@@ -122,6 +126,26 @@ def bind_google_catalogs(root: Path, catalogs: list[dict[str, Any]]) -> list[dic
             _fail("Install and enable the trusted Google plugin before connecting tools.")
         bound.append({**catalog, "plugin": plugin})
     return bound
+
+
+def bind_active_google_catalogs(
+    root: Path, catalogs: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Bind the catalogs whose plugin is still on and trusted; report the others."""
+    bound, dropped = [], []
+    for catalog in catalogs:
+        plugin = active_google_plugin(root, catalog["service"])
+        if plugin is None:
+            dropped.append(
+                {
+                    "plugin_id": f"alysis.google_{catalog['service']}",
+                    "code": "google_plugin_inactive",
+                    "message": "This Google plugin was turned off, removed or changed.",
+                }
+            )
+        else:
+            bound.append({**catalog, "plugin": plugin})
+    return bound, dropped
 
 
 def assert_google_current(root: Path, catalog: dict[str, Any]) -> None:

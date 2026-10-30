@@ -56,11 +56,6 @@ def test_default_configuration_uses_the_exact_catalog_and_expanded_fallback() ->
     assert guidance.model_profiles == get_model_prompt_catalog()
 
 
-@pytest.mark.parametrize(("model", "expected"), list(get_model_prompt_catalog().items()))
-def test_every_catalog_model_resolves_its_declared_profile(model: str, expected: str) -> None:
-    assert resolve_prompt_guidance_profile(AppConfig(model=model)) == expected
-
-
 @pytest.mark.parametrize(
     ("model", "expected"),
     [

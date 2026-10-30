@@ -190,7 +190,11 @@ def test_github_broker_round_trip_uses_existing_session_job_and_workspace_fences
     tmp_path: Path, monkeypatch
 ) -> None:
     out, bridge, session_id, captured, results, errors = _make_bridge(
-        tmp_path, monkeypatch, actions=("github.repo.read",), action="github.repo.read"
+        tmp_path,
+        monkeypatch,
+        actions=("github.repo.read",),
+        action="github.repo.read",
+        explicit_github_all=True,
     )
     try:
         event = _start_host_action(out, bridge, session_id)
@@ -224,6 +228,7 @@ def test_github_broker_refusal_and_cancellation_reach_the_agent(
         actions=("github.git.push",),
         action="github.git.push",
         arguments={"branch": "feature/test"},
+        explicit_github_all=True,
     )
     try:
         event = _start_host_action(out, bridge, session_id)

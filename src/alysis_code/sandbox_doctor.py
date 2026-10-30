@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from typing import Literal
 from .branding import default_sandbox_docker_image, env_get
 from .command_text import command_text
 from .config import AppConfig
-from .sandbox_runner import build_shell_runner_from_settings
+from .sandbox_runner import SEATBELT_EXECUTABLE, build_shell_runner_from_settings
 from .sandbox_settings import ShellSandboxSettings, resolve_shell_sandbox_settings
 
 SandboxCheckStatus = Literal["ok", "missing", "failed", "skipped", "disabled"]
@@ -151,6 +152,25 @@ def diagnose_sandbox(
         )
 
     selected_backend = _select_configured_backend(settings)
+    if selected_backend == "seatbelt":
+        available = platform.system() == "Darwin" and os.path.exists(SEATBELT_EXECUTABLE)
+        checks = [
+            SandboxCheck("selected backend", "ok" if available else "missing", "seatbelt"),
+            SandboxCheck("Seatbelt", "ok" if available else "missing", SEATBELT_EXECUTABLE),
+        ]
+        if available and include_smoke:
+            _append_smoke_check(checks=checks, settings=settings)
+        return _diagnostic(
+            settings=settings,
+            server_image=server_image,
+            selected_backend="seatbelt",
+            checks=checks,
+            next_steps=() if available else ("The native macOS sandbox is unavailable.",),
+        )
+    if selected_backend == "windows-mxc":
+        return _diagnose_windows_mxc(settings, include_smoke=include_smoke)
+    if selected_backend == "windows-native":
+        return _diagnose_windows_native(settings, include_smoke=include_smoke)
     server_worker_backend = _resolve_server_worker_backend()
     needs_server_docker_image = include_server_image and (
         selected_backend == "docker" or server_worker_backend == "docker"
@@ -437,6 +457,10 @@ def format_sandbox_problem_message(result: SandboxDiagnostic) -> str:
     if result.ready:
         if result.status == "disabled":
             return "Alysis Code sandboxing is disabled by configuration."
+        if result.selected_backend == "windows-native":
+            return "Alysis Code Windows sandbox preview passed its live checks (experimental)."
+        if result.selected_backend == "windows-mxc":
+            return "Alysis Code Windows beta sandbox passed the requested local checks."
         return "Alysis Code sandbox is ready."
 
     lines = [
@@ -480,6 +504,16 @@ def _diagnostic(
 
 
 def _select_configured_backend(settings: ShellSandboxSettings) -> str | None:
+    if settings.backend == "seatbelt" or (
+        settings.backend == "auto"
+        and platform.system() == "Darwin"
+        and os.path.exists(SEATBELT_EXECUTABLE)
+    ):
+        return "seatbelt"
+    if settings.backend == "auto" and platform.system() == "Windows":
+        return "windows-mxc"
+    if settings.backend in {"windows-native", "windows-mxc"}:
+        return settings.backend
     if settings.backend == "bwrap":
         return "bwrap"
     if settings.backend == "docker":
@@ -490,6 +524,253 @@ def _select_configured_backend(settings: ShellSandboxSettings) -> str | None:
     if shutil.which("docker"):
         return "docker"
     return None
+
+
+def _diagnose_windows_mxc(
+    settings: ShellSandboxSettings, *, include_smoke: bool = False
+) -> SandboxDiagnostic:
+    from dataclasses import replace
+
+    from .config import ConfigError
+    from .windows_mxc import WindowsMxcRunner, resolve_helper
+
+    checks = [
+        SandboxCheck(
+            "qualification",
+            "skipped",
+            "Windows beta sandbox. These local checks do not certify every host or workload.",
+        )
+    ]
+    try:
+        resolve_helper()
+        checks.append(
+            SandboxCheck(
+                "native capability",
+                "ok",
+                "Pinned strict MXC helper supports this host. This does not qualify workspace policy or production use.",
+            )
+        )
+        if include_smoke:
+            # Independent of project content; probe execution and outside access.
+            with tempfile.TemporaryDirectory(prefix="alysis-mxc-doctor-") as temporary:
+                base = Path(temporary)
+                root = base / "workspace"
+                root.mkdir()
+                outside = base / "outside.txt"
+                outside.write_text("unchanged", encoding="utf-8")
+                escaped = str(outside).replace("'", "''")
+                command = (
+                    "$ErrorActionPreference='Stop'; "
+                    "$readBlocked=$false; $writeBlocked=$false; "
+                    f"try {{ [IO.File]::ReadAllText('{escaped}') | Out-Null }} "
+                    "catch { $readBlocked=$true }; "
+                    f"try {{ [IO.File]::WriteAllText('{escaped}','escaped') }} "
+                    "catch { $writeBlocked=$true }; "
+                    "if (!$readBlocked -or !$writeBlocked) { exit 41 }; "
+                    f"Write-Output '{_READY_SMOKE_OUTPUT}'"
+                )
+                probe_settings = replace(settings, additional_workspace_roots=())
+                completed = WindowsMxcRunner(probe_settings).run(
+                    root=root, cwd=root, cmd=command, timeout_s=_SANDBOX_SMOKE_TIMEOUT_S
+                )
+                if (
+                    completed.returncode != 0
+                    or _READY_SMOKE_OUTPUT not in completed.stdout
+                    or outside.read_text(encoding="utf-8") != "unchanged"
+                ):
+                    raise ConfigError("Windows sandbox execution/containment smoke failed.")
+                from .contained_read_tools import ContainedReadTools
+
+                (root / "sandbox-doctor.txt").write_text("fixture", encoding="utf-8")
+                worker = ContainedReadTools(probe_settings, root)
+                result = worker.run("fs_list", {})
+                if "sandbox-doctor.txt" not in str(result):
+                    raise ConfigError("Contained CLI file worker smoke failed.")
+                if probe_settings.filesystem_access == "workspace-write":
+                    worker.run_write("fs_mkdir", {"path": "worker-created"})
+                    if not (root / "worker-created").is_dir():
+                        raise ConfigError("Contained CLI mutation worker smoke failed.")
+            checks.append(
+                SandboxCheck(
+                    "native execution and containment",
+                    "ok",
+                    "Command ran; outside reads and writes were denied.",
+                )
+            )
+    except (ConfigError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        checks.append(SandboxCheck("native capability", "failed", str(exc)))
+    ready = not any(check.status == "failed" for check in checks)
+    return SandboxDiagnostic(
+        ready=ready,
+        status="ready" if ready else "not_ready",
+        configured_mode=settings.mode,
+        configured_backend=settings.backend,
+        selected_backend="windows-mxc",
+        docker_image=settings.docker_image,
+        server_image=resolve_server_sandbox_image(),
+        checks=tuple(checks),
+        next_steps=()
+        if ready
+        else (
+            "Reinstall the CLI if its helper is missing or damaged. Use a supported Windows x64 host and a local NTFS project. No command runs outside containment as a fallback.",
+        ),
+    )
+
+
+def _diagnose_windows_native(
+    settings: ShellSandboxSettings, *, include_smoke: bool
+) -> SandboxDiagnostic:
+    from .config import ConfigError
+    from .windows_sandbox import WindowsNativeRunner, helper_status
+
+    checks = [
+        SandboxCheck(
+            "qualification",
+            "skipped",
+            "Experimental, opt-in shell backend. Hooks, MCP, host file tools and computer use retain separate permissions. Durable services and destination-scoped network approvals are not supported.",
+        ),
+        SandboxCheck(
+            "Node subprocess compatibility",
+            "skipped",
+            "Node runtimes without the libuv AppContainer pipe fix can hang when creating subprocesses, including the default test runner. A fixed runtime needs separate qualification; launch smoke does not test it. Commands are never rewritten or run outside the sandbox to bypass this limitation.",
+        ),
+    ]
+    ready = False
+    smoke_root: Path | None = None
+    try:
+        status = helper_status()
+        user = status.get("user", {})
+        provisioned = user.get("user", {})
+        if (
+            not provisioned.get("exists")
+            or not user.get("cred_present")
+            or user.get("marker_version") != 3
+        ):
+            raise ConfigError("Native sandbox account is missing or setup requires repair.")
+        if user.get("owner_user_sid") != user.get("real_user_sid"):
+            raise ConfigError("This experimental installation belongs to a different Windows user.")
+        ambient = status.get("ambient", {}).get("paths", [])
+        if not ambient or any(item.get("present") is False for item in ambient):
+            raise ConfigError("Native sandbox ambient filesystem protection needs repair.")
+        checks.append(
+            SandboxCheck(
+                "native setup",
+                "ok",
+                "Account and ambient protection records are present; commands verify filesystem and network enforcement before launch.",
+            )
+        )
+        if settings.network not in {"off", "on"}:
+            raise ConfigError("The native sandbox requires an explicit off/on network policy.")
+        checks.append(
+            SandboxCheck(
+                "network policy",
+                "ok",
+                "Outbound internet capability requested; no destination allowlist. Localhost/private-network server capabilities are not granted."
+                if settings.network == "on"
+                else "No network capabilities requested; network access is blocked.",
+            )
+        )
+        if settings.network == "on":
+            checks.append(
+                SandboxCheck(
+                    "network client compatibility",
+                    "skipped",
+                    "Public HTTPS qualification remains unresolved. PowerShell and Windows curl using Schannel fail with SEC_E_NO_CREDENTIALS under the restricted token; Node HTTPS also needs reliable host and sandbox controls. Doctor smoke makes no internet request.",
+                )
+            )
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
+        if not local_app_data.is_absolute():
+            raise ConfigError("Native diagnostics require an absolute LOCALAPPDATA directory.")
+        pending = local_app_data / "alysis-sandbox" / "execution-pending.json"
+        if _native_recovery_pending(pending):
+            raise ConfigError(
+                "An execution is active or cleanup was interrupted; stop active commands and inspect the native recovery journal."
+            )
+        if include_smoke:
+            # Never use TemporaryDirectory here: its exception cleanup can
+            # delete an object still recorded in the native recovery journal.
+            smoke_root = Path(tempfile.mkdtemp(prefix="alysis-native-smoke-"))
+            original = smoke_root.lstat()
+            canonical = smoke_root.resolve(strict=True)
+            try:
+                result = WindowsNativeRunner(settings).run(
+                    root=smoke_root,
+                    cwd=smoke_root,
+                    cmd=f"Write-Output '{_READY_SMOKE_OUTPUT}'",
+                    timeout_s=45,
+                )
+                if result.returncode or result.stdout.strip() != _READY_SMOKE_OUTPUT:
+                    raise ConfigError(f"Native launch smoke failed: {result.stderr.strip()}")
+                if _native_recovery_pending(pending):
+                    raise ConfigError("Native smoke left an unfinished recovery journal.")
+                observed = smoke_root.lstat()
+                if (
+                    not stat.S_ISDIR(observed.st_mode)
+                    or (observed.st_dev, observed.st_ino) != (original.st_dev, original.st_ino)
+                    or smoke_root.resolve(strict=True) != canonical
+                ):
+                    raise ConfigError("Native smoke workspace identity changed; refusing cleanup.")
+                shutil.rmtree(smoke_root)
+                smoke_root = None
+            except BaseException as exc:
+                # Also retain/report on Ctrl+C, outside the ordinary diagnostic
+                # error envelope. Recovery must precede operator removal.
+                exc.add_note(f"Native diagnostic workspace retained for recovery: {smoke_root}")
+                raise
+            ready = True
+            checks.append(
+                SandboxCheck(
+                    "native launch and policy",
+                    "ok",
+                    f"PowerShell launched with verified network={settings.network} AppContainer capabilities and independent write restrictions. Setup probes passed. This smoke does not contact an internet endpoint; full release qualification remains separate.",
+                )
+            )
+        else:
+            checks.append(
+                SandboxCheck(
+                    "native launch and policy",
+                    "skipped",
+                    "Run doctor with --smoke to verify actual enforcement. Setup presence alone does not establish readiness.",
+                )
+            )
+    except (ConfigError, OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        checks.append(SandboxCheck("native sandbox", "failed", str(exc)))
+    finally:
+        if smoke_root is not None:
+            checks.append(
+                SandboxCheck(
+                    "retained diagnostic workspace",
+                    "skipped",
+                    f"Preserved {smoke_root}. Keep it intact; run alysis sandbox recover-native before removing it. Do not delete the recovery journal.",
+                )
+            )
+    return SandboxDiagnostic(
+        ready=ready,
+        status="experimental_ready" if ready else "not_ready",
+        configured_mode=settings.mode,
+        configured_backend=settings.backend,
+        selected_backend="windows-native",
+        docker_image=settings.docker_image,
+        server_image=resolve_server_sandbox_image(),
+        checks=tuple(checks),
+        next_steps=()
+        if ready
+        else (
+            "Build or install the native helper, then run alysis sandbox setup --native-windows (UAC consent).",
+            "Set ALYSIS_SHELL_SANDBOX_BACKEND=windows-native and ALYSIS_SHELL_SANDBOX_NETWORK=off, then run alysis sandbox doctor --smoke.",
+            "For WSL2, install bubblewrap inside the Linux distribution instead.",
+        ),
+    )
+
+
+def _native_recovery_pending(journal: Path) -> bool:
+    # Only definitive absence permits cleanup. Path.exists may hide an access
+    # error on some Python versions; a symlink is also an unfinished record.
+    try:
+        journal.lstat()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def _is_linux() -> bool:

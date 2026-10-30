@@ -146,7 +146,9 @@ def _tokens(simple_command: str) -> list[str]:
 
 
 def command_name(token: str) -> str:
-    name = re.split(r"[\\/]", token.strip().lower())[-1]
+    # This is an already-tokenized executable, not display text. Trimming can
+    # turn a quoted filename such as NBSP + echo into a different program.
+    name = re.split(r"[\\/]", token.lower())[-1]
     for suffix in _EXECUTABLE_SUFFIXES:
         if name.endswith(suffix):
             return name[: -len(suffix)]

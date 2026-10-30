@@ -47,6 +47,51 @@ def _raise(exc: Exception) -> None:
     raise exc
 
 
+@pytest.mark.parametrize("provider,vision", [("openai", True), ("alysis", False)])
+def test_general_evidence_keeps_route_specific_vision_and_closed_provenance(
+    monkeypatch, tmp_path, provider, vision, configured_hosted_api
+):
+    from alysis_code.assets.local_tools import LocalAssetViewer
+    from alysis_code.computer_use_call_diagnostics import _readiness_evidence
+    from alysis_code.profile_presets import get_preset, make_profile_from_preset
+
+    monkeypatch.delenv("ALYSIS_SUPPORTS_VISION", raising=False)
+    preset = get_preset("openai-responses" if provider == "openai" else "alysis")
+    profile = make_profile_from_preset(preset)
+    cfg = AppConfig(base_url=profile.base_url, model="gpt-6.1-sol")
+    cfg.extra_fields = {
+        "active_profile": preset.key,
+        "profiles": {
+            preset.key: {
+                "protocol": preset.protocol,
+                "base_url": profile.base_url,
+                "default_model": "gpt-6.1-sol",
+            }
+        },
+    }
+    viewer = LocalAssetViewer(root=tmp_path, cfg=cfg)
+    status = viewer.status()
+    assert status["model_supports_vision"] is vision
+    closed = _readiness_evidence(viewer._computer_use_readiness)
+    assert closed["effectiveVision"] == ("available" if vision else "unavailable")
+    assert closed["capabilitySource"] == "registry"
+    cfg.extra_fields["model_metadata_overrides"] = {
+        "models": {"gpt-6.1-sol": {"supports_vision": not vision}}
+    }
+    assert viewer.status()["model_supports_vision"] is not vision
+    assert (
+        _readiness_evidence(viewer._computer_use_readiness)["capabilitySource"]
+        == "explicit_override"
+    )
+    monkeypatch.setenv("ALYSIS_SUPPORTS_VISION", "true")
+    assert viewer.status()["model_supports_vision"] is True
+    assert (
+        _readiness_evidence(viewer._computer_use_readiness)["capabilitySource"]
+        == "explicit_override"
+    )
+    assert "base_url" not in closed
+
+
 def test_litellm_static_provider_handles_missing_bundled_catalog(monkeypatch) -> None:
     monkeypatch.setattr(
         provider_mod,
@@ -57,6 +102,33 @@ def test_litellm_static_provider_handles_missing_bundled_catalog(monkeypatch) ->
     assert result.error == "bundled model catalog missing"
     assert result.context_window_tokens is None
     assert result.max_output_tokens is None
+
+
+def test_catalog_name_cache_preserves_current_metadata_routes_and_changed_entries() -> None:
+    provider_mod._catalog_name_indexes.cache_clear()
+    first = {"litellm_provider": "first", "max_output_tokens": 100}
+    second = {"litellm_provider": "second", "max_output_tokens": 200}
+    catalog = {"first/Example-2026-10-01": first, "second/Example": second}
+    lookup = provider_mod._lookup_model_info
+
+    assert lookup(catalog, "example", provider_hint="first") == ("first/Example-2026-10-01", first)
+    assert lookup(catalog, "EXAMPLE", provider_hint="second") == ("second/Example", second)
+    assert provider_mod._catalog_name_indexes.cache_info().hits == 1
+
+    # Name indexes are reusable even when the same keys carry new values.
+    replacement = {"litellm_provider": "third", "max_output_tokens": 300}
+    catalog["second/Example"] = replacement
+    assert lookup(catalog, "example", provider_hint="third") == ("second/Example", replacement)
+    assert lookup(catalog, "example", provider_hint="unrelated") is None
+
+    # Removed entries and entries that stop being valid models cannot remain
+    # reachable through old aliases. A newly added alias is visible immediately.
+    del catalog["first/Example-2026-10-01"]
+    catalog["second/Example"] = None
+    assert lookup(catalog, "example") is None
+    catalog["third/Example"] = replacement
+    assert lookup(catalog, "example", provider_hint="third") == ("third/Example", replacement)
+    assert provider_mod._catalog_name_indexes.cache_info().currsize == 1
 
 
 def test_provider_scoped_catalog_lookup_never_borrows_another_host_route() -> None:
@@ -914,6 +986,19 @@ def test_official_zai_coding_plan_metadata_covers_glm_53() -> None:
     assert flash.max_output_tokens == 131_072
     assert flash.supports_vision is True
     assert flash.input_cost_per_token is None  # plan credits are not token prices
+
+
+def test_general_zai_route_has_its_own_official_model_metadata() -> None:
+    cfg = AppConfig(base_url="https://api.z.ai/api/paas/v4", model="glm-5.3-flash")
+    meta = ModelRegistry(cfg=cfg).get("glm-5.3-flash")
+    assert meta.context_window_tokens == 1_000_000
+    assert meta.max_output_tokens == 131_072
+    assert meta.supports_vision is True and meta.supports_reasoning is True
+    assert (
+        meta.field_sources["context_window_tokens"]
+        == f"{OFFICIAL_PROVIDER_MODEL_CATALOG_SOURCE}:zai"
+    )
+    assert "https://docs.z.ai/guides/overview/quick-start" in meta.raw_metadata["catalog_sources"]
 
 
 def test_official_moonshot_k3_metadata_preserves_large_input_budget() -> None:

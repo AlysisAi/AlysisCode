@@ -9,8 +9,11 @@ validation-to-connect race that URL-only request interception cannot close.
 
 from __future__ import annotations
 
+import base64
+import hmac
 import ipaddress
 import re
+import secrets
 import select
 import socket
 import threading
@@ -146,6 +149,7 @@ class _ParsedRequest:
     upstream_header: bytes | None
     buffered_body: bytes
     connect_tunnel: bool
+    proxy_authorization: bytes
 
 
 class _RequestFailure(Exception):
@@ -166,7 +170,20 @@ class BrowserEgressProxy:
         allow_local_destinations: bool = False,
         local_destinations_loopback_only: bool = False,
         owned_preview_origin_allowed: OwnedPreviewOriginAllowed | None = None,
+        allowed_hosts: frozenset[str] | None = None,
+        allowed_private_endpoints: frozenset[tuple[str, int]] = frozenset(),
+        require_authentication: bool = False,
     ) -> None:
+        if not isinstance(require_authentication, bool):
+            raise BrowserEgressProxySecurityError("Invalid proxy authentication policy.")
+        # A loopback port is reachable by other commands with local-preview
+        # permission. Bind access to this invocation with an in-memory secret.
+        self._credential = "alysis:" + secrets.token_urlsafe(32) if require_authentication else None
+        self._authorization = (
+            b"Basic " + base64.b64encode(self._credential.encode("ascii"))
+            if self._credential is not None
+            else None
+        )
         if not isinstance(allow_local_destinations, bool):
             raise BrowserEgressProxySecurityError(
                 "Browser egress proxy local-destination policy is invalid."
@@ -189,6 +206,30 @@ class BrowserEgressProxy:
         self._allow_local_destinations = allow_local_destinations
         self._local_destinations_loopback_only = local_destinations_loopback_only
         self._owned_preview_origin_allowed = owned_preview_origin_allowed
+        from ..config import ConfigError
+        from ..macos_network import network_domains, private_network_endpoints
+
+        try:
+            if allowed_hosts is not None and (
+                not isinstance(allowed_hosts, frozenset)
+                or (
+                    allowed_hosts
+                    and frozenset(network_domains(tuple(allowed_hosts))) != allowed_hosts
+                )
+            ):
+                raise ConfigError("Invalid proxy destination allowlist.")
+            if not isinstance(allowed_private_endpoints, frozenset):
+                raise ConfigError("Invalid private endpoint allowlist.")
+            private_network_endpoints(
+                tuple(
+                    f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+                    for host, port in allowed_private_endpoints
+                )
+            )
+        except (ConfigError, ValueError, TypeError) as exc:
+            raise BrowserEgressProxySecurityError("Invalid proxy destination allowlist.") from exc
+        self._allowed_private_endpoints = allowed_private_endpoints
+        self._allowed_hosts = allowed_hosts
         self._lock = threading.RLock()
         self._close_lock = threading.Lock()
         self._stop = threading.Event()
@@ -218,7 +259,8 @@ class BrowserEgressProxy:
 
     @property
     def proxy_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        userinfo = self._credential + "@" if self._credential is not None else ""
+        return f"http://{userinfo}{self.host}:{self.port}"
 
     @property
     def terminal_error(self) -> BrowserEgressProxyError | None:
@@ -401,6 +443,18 @@ class BrowserEgressProxy:
         try:
             raw_header, buffered = self._read_header(client)
             parsed = _parse_request(raw_header, buffered, limits=self._limits)
+            if self._authorization is not None and not hmac.compare_digest(
+                parsed.proxy_authorization, self._authorization
+            ):
+                raise _RequestFailure(407)
+            from ..macos_network import domain_matches
+
+            if (
+                self._allowed_hosts is not None
+                and not domain_matches(parsed.host, self._allowed_hosts)
+                and (parsed.host, parsed.port) not in self._allowed_private_endpoints
+            ):
+                raise _RequestFailure(403)
             addresses = self._resolve_public(
                 parsed.host,
                 parsed.port,
@@ -563,6 +617,10 @@ class BrowserEgressProxy:
             or (
                 not self._allow_local_destinations
                 and not (owned_preview_allowed and owned_preview_addresses_safe)
+                and not (
+                    values
+                    and all((value, port) in self._allowed_private_endpoints for value in values)
+                )
                 and any(not _is_public_address(value) for value in values)
             )
             or (
@@ -771,7 +829,7 @@ def _parse_request(
     if len(request_parts) != 3 or any(not item for item in request_parts):
         raise _RequestFailure(400)
     method, target, version = request_parts
-    if not _TOKEN_RE.fullmatch(method) or version != b"HTTP/1.1":
+    if not _TOKEN_RE.fullmatch(method) or version not in {b"HTTP/1.0", b"HTTP/1.1"}:
         raise _RequestFailure(400)
     if len(target) > limits.max_header_line_bytes or any(
         value < 0x21 or value == 0x7F for value in target
@@ -795,12 +853,22 @@ def _parse_request(
         lowered = name.lower()
         headers.append((lowered, stripped))
         grouped.setdefault(lowered, []).append(stripped)
-    for singleton in (b"host", b"content-length", b"transfer-encoding", b"upgrade"):
+    for singleton in (
+        b"host",
+        b"content-length",
+        b"transfer-encoding",
+        b"upgrade",
+        b"proxy-authorization",
+    ):
         if len(grouped.get(singleton, ())) > 1:
             raise _RequestFailure(400)
     if len(grouped.get(b"host", ())) != 1:
         raise _RequestFailure(400)
     if b"content-length" in grouped and b"transfer-encoding" in grouped:
+        raise _RequestFailure(400)
+    # HTTP/1.0 clients (including curl after a 1.0 redirect) use the same
+    # validated authority and framing path. Chunked bodies require HTTP/1.1.
+    if version == b"HTTP/1.0" and b"transfer-encoding" in grouped:
         raise _RequestFailure(400)
     if b"content-length" in grouped:
         raw_length = grouped[b"content-length"][0]
@@ -809,6 +877,7 @@ def _parse_request(
     if b"transfer-encoding" in grouped and grouped[b"transfer-encoding"][0].lower() != b"chunked":
         raise _RequestFailure(400)
     connection_tokens = _connection_tokens(grouped.get(b"connection", ()))
+    authorization = grouped.get(b"proxy-authorization", [b""])[0]
     if any(
         item in {b"host", b"content-length", b"transfer-encoding"} for item in connection_tokens
     ):
@@ -818,10 +887,12 @@ def _parse_request(
         if b"content-length" in grouped or b"transfer-encoding" in grouped or b"upgrade" in grouped:
             raise _RequestFailure(400)
         host, port = _parse_authority(target, default_port=None)
-        host_value, host_port = _parse_authority(grouped[b"host"][0], default_port=None)
+        # HTTPS clients may omit the default TLS port from Host even though
+        # CONNECT's request target must carry it. Keep both authorities equal.
+        host_value, host_port = _parse_authority(grouped[b"host"][0], default_port=443)
         if host != host_value or port != host_port:
             raise _RequestFailure(400)
-        return _ParsedRequest(method, "https", host, port, None, buffered, True)
+        return _ParsedRequest(method, "https", host, port, None, buffered, True, authorization)
     if method not in _METHODS:
         raise _RequestFailure(405)
     try:
@@ -877,6 +948,7 @@ def _parse_request(
         b"\r\n".join(output) + b"\r\n\r\n",
         buffered,
         False,
+        authorization,
     )
 
 
@@ -1020,6 +1092,7 @@ def _send_error(client: ConnectedSocket, status: int) -> None:
         400: b"Bad Request",
         403: b"Forbidden",
         405: b"Method Not Allowed",
+        407: b"Proxy Authentication Required",
         408: b"Request Timeout",
         414: b"URI Too Long",
         431: b"Request Header Fields Too Large",
@@ -1037,6 +1110,7 @@ def _send_error(client: ConnectedSocket, status: int) -> None:
         + reason
         + b"\r\nContent-Type: text/plain\r\nContent-Length: "
         + str(len(body)).encode("ascii")
+        + (b'\r\nProxy-Authenticate: Basic realm="command"' if status == 407 else b"")
         + b"\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
         + body
     )

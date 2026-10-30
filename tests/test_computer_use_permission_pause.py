@@ -18,6 +18,8 @@ from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.task_budget import TaskBudgetAuthority, iso
 
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
+
 
 def pause_result():
     return {

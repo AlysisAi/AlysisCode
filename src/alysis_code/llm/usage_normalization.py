@@ -10,20 +10,12 @@ upstream schemas.
 from __future__ import annotations
 
 import copy
+import math
 from collections.abc import Mapping
 from typing import Any
 
 from .types import LLMUsage
-
-
-def _non_negative_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed is None or parsed >= 0 else None
+from .types import parse_token_count as _non_negative_int
 
 
 def _non_negative_float(value: Any) -> float | None:
@@ -31,9 +23,9 @@ def _non_negative_float(value: Any) -> float | None:
         return None
     try:
         parsed = float(value) if value is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return parsed if parsed is None or parsed >= 0 else None
+    return parsed if parsed is not None and math.isfinite(parsed) and parsed >= 0 else None
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -171,10 +163,11 @@ def parse_compatible_usage(
         cache_miss is None
         and prompt is not None
         and (cache_read is not None or cache_write is not None)
+        and prompt >= (cache_read or 0) + (cache_write or 0)
     ):
         # Implied by the counts the provider did send — usable, but not itself
         # a reported figure.
-        cache_miss = max(0, prompt - (cache_read or 0) - (cache_write or 0))
+        cache_miss = prompt - (cache_read or 0) - (cache_write or 0)
         cache_miss_derived = True
 
     reasoning = _first_int(

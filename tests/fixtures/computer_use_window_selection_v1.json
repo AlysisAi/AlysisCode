@@ -1,0 +1,506 @@
+{
+  "contract": "w1-window-selection-v1",
+  "negotiation": {
+    "engine_feature": {"computer_window_selection_v1": {"supported": true, "version": 1}},
+    "native_handshake": {"computer_interaction_v2": true, "computer_window_selection_v1": true},
+    "host_binding_valid": {
+      "version": 1,
+      "operation_id": "op-w1-0001",
+      "broker_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "authority_epoch": 1,
+      "scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "tools": ["computer_state", "computer_action", "computer_wait"],
+      "response_mode": "host_sanitized_text",
+      "interaction_version": 2,
+      "observation_version": 1,
+      "window_selection_version": 1
+    },
+    "host_binding_feature_off_patches": [{"window_selection_version": null}],
+    "host_binding_invalid_patches": [{"window_selection_version": 2}, {"window_selection_version": true}, {"window_selection_version": "1"}, {"window_selection_version": 0}, {"interaction_version": null}]
+  },
+  "discover": {"app_to_native_params": {"bundle_id": "com.apple.Preview", "pid": 4242, "interaction_version": 2, "window_selection_version": 1, "window_pinned": false, "reason": "list_requested"}, "native_only_activation_field": {"activation": {"dispatched": true, "launched": false}}},
+  "selection_multiple": {
+    "kind": "window_selection_required",
+    "window_selection_version": 1,
+    "interaction_version": 2,
+    "selection_required": true,
+    "reason": "multiple_windows",
+    "inventory_id": "window_inventory_00000000-0000-4000-8000-000000000001",
+    "observed_at": "2026-10-17T11:28:40Z",
+    "expires_at": "2026-10-17T11:29:40Z",
+    "target": {"bundle_id": "com.apple.Preview", "pid": 4242, "name": "Preview"},
+    "windows": [
+      {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a1", "index": 0, "title": "boxes.png", "title_status": "available", "role": "AXWindow", "subrole": "AXStandardWindow", "main": false, "focused": false, "minimized": false, "on_screen": true, "size": {"width": 800, "height": 600}, "document_hint": null},
+      {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2", "index": 1, "title": "boxes.png", "title_status": "available", "role": "AXWindow", "subrole": "AXStandardWindow", "main": false, "focused": false, "minimized": false, "on_screen": true, "size": {"width": 1024, "height": 768}, "document_hint": null},
+      {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a3", "index": 2, "title": null, "title_status": "redacted", "role": "AXWindow", "subrole": "AXStandardWindow", "main": false, "focused": false, "minimized": null, "on_screen": null, "size": null, "document_hint": null},
+      {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a4", "index": 3, "title": "Ünïcödé — 報告.pdf", "title_status": "available", "role": "AXWindow", "subrole": "AXStandardWindow", "main": false, "focused": false, "minimized": true, "on_screen": false, "size": {"width": 640.5, "height": 480}, "document_hint": null}
+    ],
+    "inventory_complete": true,
+    "inventory_reasons": [],
+    "truncated": false,
+    "omitted_count": 0
+  },
+  "selection_unreadable": {
+    "kind": "window_selection_required",
+    "window_selection_version": 1,
+    "interaction_version": 2,
+    "selection_required": true,
+    "reason": "list_requested",
+    "inventory_id": "window_inventory_00000000-0000-4000-8000-000000000003",
+    "observed_at": "2026-10-17T11:28:40Z",
+    "expires_at": "2026-10-17T11:29:40Z",
+    "target": {"bundle_id": "com.apple.Preview", "pid": 4242, "name": "Preview"},
+    "windows": [],
+    "inventory_complete": false,
+    "inventory_reasons": ["window_list_unreadable"],
+    "truncated": false,
+    "omitted_count": null
+  },
+  "selection_truncated_rule": {
+    "base": "selection_multiple with reason list_requested and inventory_id window_inventory_00000000-0000-4000-8000-000000000004",
+    "windows": "32 entries; entry i (0..31) = window_ref_00000000-0000-4000-8000-0000000001<i as 2 lowercase hex>, index i, title 'Doc <i>', title_status available, role AXWindow, subrole AXStandardWindow, main false, focused false, minimized false, on_screen true, size {width:800,height:600}, document_hint null",
+    "inventory_complete": false,
+    "inventory_reasons": ["window_limit"],
+    "truncated": true,
+    "omitted_count": 3
+  },
+  "select": {
+    "engine_to_app_arguments": {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2", "include_image": true, "interaction_version": 2},
+    "app_to_native_inspect_params": {"bundle_id": "com.apple.Preview", "pid": 4242, "window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2", "interaction_version": 2, "window_selection_version": 1, "window_pinned": false, "max_elements": 500},
+    "observation_required_fields": {
+      "snapshot_id": "snapshot_00000000-0000-4000-8000-0000000000c1",
+      "interaction_version": 2,
+      "selection_required": false,
+      "window_selection": {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2", "inventory_id": "window_inventory_00000000-0000-4000-8000-000000000001"},
+      "target": {"bundle_id": "com.apple.Preview", "pid": 4242, "name": "Preview", "window_id": "window_00000000-0000-4000-8000-0000000000d1", "window_title": "boxes.png"}
+    }
+  },
+  "stale_reselection": {
+    "engine_to_app_arguments": {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a1", "interaction_version": 2},
+    "native_failure_code": "window_reference_stale",
+    "app_to_engine_result": {
+      "kind": "window_selection_required",
+      "window_selection_version": 1,
+      "interaction_version": 2,
+      "selection_required": true,
+      "reason": "selected_window_unavailable",
+      "inventory_id": "window_inventory_00000000-0000-4000-8000-000000000002",
+      "observed_at": "2026-10-17T11:29:05Z",
+      "expires_at": "2026-10-17T11:30:05Z",
+      "target": {"bundle_id": "com.apple.Preview", "pid": 4242, "name": "Preview"},
+      "windows": [
+        {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000b1", "index": 0, "title": "boxes.png", "title_status": "available", "role": "AXWindow", "subrole": "AXStandardWindow", "main": false, "focused": false, "minimized": false, "on_screen": true, "size": {"width": 1024, "height": 768}, "document_hint": null},
+        {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000b2", "index": 1, "title": "Ünïcödé — 報告.pdf", "title_status": "available", "role": "AXWindow", "subrole": "AXStandardWindow", "main": false, "focused": false, "minimized": true, "on_screen": false, "size": {"width": 640.5, "height": 480}, "document_hint": null}
+      ],
+      "inventory_complete": true,
+      "inventory_reasons": [],
+      "truncated": false,
+      "omitted_count": 0
+    }
+  },
+  "errors": {
+    "window_reference_invalid": {"error": "window_reference_invalid", "message": "(not compared)", "interaction_feedback": {"dispatch": "not_dispatched", "authority": "invalid", "effect": "unknown", "cause": "window_reference_invalid", "phase": "validation"}},
+    "window_reselection_required": {"error": "window_reselection_required", "message": "(not compared)", "interaction_feedback": {"dispatch": "not_dispatched", "authority": "valid_for_reobserve", "effect": "unknown", "cause": "window_reselection_required", "phase": "validation"}},
+    "window_selection_pending": {"error": "window_selection_pending", "message": "(not compared)", "interaction_feedback": {"dispatch": "not_dispatched", "authority": "valid_for_reobserve", "effect": "unknown", "cause": "window_selection_pending", "phase": "validation"}},
+    "window_selection_exhausted": {"error": "computer_use_window_selection_exhausted", "message": "(not compared)", "interaction_feedback": {"dispatch": "not_dispatched", "authority": "invalid", "effect": "unknown", "cause": "computer_use_window_selection_exhausted", "phase": "validation"}}
+  },
+  "argument_cases": [
+    {"arguments": {"list_windows": true}, "engine": "dispatch", "app": "accept"},
+    {"arguments": {"list_windows": false}, "engine": "strip_list_windows", "app": "invalid_request"},
+    {"arguments": {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2", "max_elements": 200}, "engine": "dispatch", "app": "accept"},
+    {"arguments": {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000ff"}, "engine": "window_reference_unknown", "app": "window_reference_invalid"},
+    {"arguments": {"window_ref": "window_1"}, "engine": "window_reference_unknown", "app": "window_reference_invalid"},
+    {"arguments": {"window_ref": 7}, "engine": "invalid_observation_arguments", "app": "invalid_request"},
+    {"arguments": {"list_windows": true, "window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2"}, "engine": "invalid_observation_arguments", "app": "invalid_request"},
+    {"arguments": {"list_windows": true, "include_image": true}, "engine": "invalid_observation_arguments", "app": "invalid_request"},
+    {"arguments": {"list_windows": true, "max_elements": 10}, "engine": "invalid_observation_arguments", "app": "invalid_request"},
+    {"arguments": {"list_windows": true, "assertions": [{"role": "AXButton", "name": "OK", "property": "enabled", "expected": true}]}, "engine": "invalid_observation_arguments", "app": "n/a"},
+    {"arguments": {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2", "surface_ref": "surface_x"}, "engine": "invalid_observation_arguments", "app": "invalid_request"},
+    {"arguments": {"window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2", "element_id": "e1"}, "engine": "invalid_observation_arguments", "app": "invalid_request"},
+    {"arguments": {"list_windows": true, "page_cursor": "c"}, "engine": "invalid_observation_arguments", "app": "invalid_request"}
+  ],
+  "activation_selection": {
+    "engine_to_app_arguments": {
+      "action": "activate_application",
+      "application": "Preview",
+      "snapshot_id": "snapshot_00000000-0000-4000-8000-0000000000c0",
+      "interaction_version": 2
+    },
+    "app_to_engine_result": {
+      "receipt": {
+        "action": "activate_application",
+        "semantic": true,
+        "source": "native-application"
+      },
+      "state": {
+        "kind": "window_selection_required",
+        "window_selection_version": 1,
+        "interaction_version": 2,
+        "selection_required": true,
+        "reason": "multiple_windows",
+        "inventory_id": "window_inventory_00000000-0000-4000-8000-000000000001",
+        "observed_at": "2026-10-17T11:28:40Z",
+        "expires_at": "2026-10-17T11:29:40Z",
+        "target": {
+          "bundle_id": "com.apple.Preview",
+          "pid": 4242,
+          "name": "Preview"
+        },
+        "windows": [
+          {
+            "window_ref": "window_ref_00000000-0000-4000-8000-0000000000a1",
+            "index": 0,
+            "title": "boxes.png",
+            "title_status": "available",
+            "role": "AXWindow",
+            "subrole": "AXStandardWindow",
+            "main": false,
+            "focused": false,
+            "minimized": false,
+            "on_screen": true,
+            "size": {
+              "width": 800,
+              "height": 600
+            },
+            "document_hint": null
+          },
+          {
+            "window_ref": "window_ref_00000000-0000-4000-8000-0000000000a2",
+            "index": 1,
+            "title": "boxes.png",
+            "title_status": "available",
+            "role": "AXWindow",
+            "subrole": "AXStandardWindow",
+            "main": false,
+            "focused": false,
+            "minimized": false,
+            "on_screen": true,
+            "size": {
+              "width": 1024,
+              "height": 768
+            },
+            "document_hint": null
+          },
+          {
+            "window_ref": "window_ref_00000000-0000-4000-8000-0000000000a3",
+            "index": 2,
+            "title": null,
+            "title_status": "redacted",
+            "role": "AXWindow",
+            "subrole": "AXStandardWindow",
+            "main": false,
+            "focused": false,
+            "minimized": null,
+            "on_screen": null,
+            "size": null,
+            "document_hint": null
+          },
+          {
+            "window_ref": "window_ref_00000000-0000-4000-8000-0000000000a4",
+            "index": 3,
+            "title": "Ünïcödé — 報告.pdf",
+            "title_status": "available",
+            "role": "AXWindow",
+            "subrole": "AXStandardWindow",
+            "main": false,
+            "focused": false,
+            "minimized": true,
+            "on_screen": false,
+            "size": {
+              "width": 640.5,
+              "height": 480
+            },
+            "document_hint": null
+          }
+        ],
+        "inventory_complete": true,
+        "inventory_reasons": [],
+        "truncated": false,
+        "omitted_count": 0
+      },
+      "interaction_feedback": {
+        "dispatch": "dispatched",
+        "authority": "valid_for_reobserve",
+        "effect": "unknown",
+        "cause": null,
+        "phase": "post_observation"
+      }
+    }
+  },
+  "unicode_length_cases": [
+    {
+      "name": "emoji_300",
+      "title": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "code_points": 300,
+      "accepted": true
+    },
+    {
+      "name": "astral_512",
+      "title": "𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷𠮷",
+      "code_points": 512,
+      "accepted": true
+    },
+    {
+      "name": "astral_513",
+      "title": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "code_points": 513,
+      "accepted": false
+    },
+    {
+      "name": "combining_512",
+      "title": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "code_points": 512,
+      "accepted": true
+    }
+  ],
+  "exhaustion_terminal_event": {
+    "protocol_version": "1",
+    "session_id": "s",
+    "run_id": "r",
+    "job_id": "j",
+    "sequence": 1,
+    "timestamp": "2026-10-18T00:00:00.000Z",
+    "type": "error_raised",
+    "payload": {
+      "code": "computer_use_window_selection_exhausted",
+      "message": "Computer Use stopped without verified completion.",
+      "recoverable": false,
+      "worker_id": null,
+      "role": null
+    }
+  },
+  "capture_refusal_limit_observation": {
+    "interaction_version": 2,
+    "snapshot_id": "snapshot_00000000-0000-4000-8000-0000000000c3",
+    "observed_at": "2026-10-18T09:00:02.000Z",
+    "expires_at": "2026-10-18T09:01:02.000Z",
+    "selection_required": false,
+    "target": {
+      "bundle_id": "com.apple.Preview",
+      "pid": 4242,
+      "name": "Preview",
+      "window_id": "window_00000000-0000-4000-8000-0000000000d1",
+      "window_title": "boxes.png",
+      "window_title_digest": "sha256:271dbcde30ee063397997913469dd45fad6ed6a9ba4cedd4a20f1dfdff8e53b7",
+      "bounds": {
+        "x": 20,
+        "y": 30,
+        "width": 800,
+        "height": 600
+      }
+    },
+    "elements": [],
+    "element_count": 0,
+    "truncated": false,
+    "incomplete": false,
+    "coverage": {
+      "scope": "window",
+      "complete": true
+    },
+    "coordinate_space": "global_display_points",
+    "secure_values_redacted": true,
+    "focused_target": {
+      "available": false,
+      "key": false,
+      "type": false
+    },
+    "input_capabilities": {
+      "default_mode": "background",
+      "background": [
+        "press",
+        "focus",
+        "set_value",
+        "semantic_click"
+      ],
+      "foreground": [],
+      "foreground_shares_desktop": true
+    },
+    "surfaces": [
+      {
+        "surface_ref": "surface_00000000-0000-4000-8000-0000000000e3",
+        "title": "boxes.png",
+        "role": "AXWindow",
+        "bounds": {
+          "x": 20,
+          "y": 30,
+          "width": 800,
+          "height": 600
+        },
+        "focused": false
+      }
+    ],
+    "surface_inventory": {
+      "complete": true,
+      "reasons": []
+    },
+    "selected_surface": "surface_00000000-0000-4000-8000-0000000000e3",
+    "focused_surface": null,
+    "surface_ref": "surface_00000000-0000-4000-8000-0000000000e3",
+    "visual": {
+      "status": "unavailable",
+      "reason": "capture_refusal_limit",
+      "retryable": false,
+      "message": "Image capture was refused twice for this window. Ask the user for help or report that the image is unavailable; do not retry this capture."
+    },
+    "alysis_workflow": {
+      "version": 1,
+      "required": false,
+      "complete": true,
+      "current_application": "Preview",
+      "next_application": null,
+      "remaining_applications": []
+    }
+  },
+  "observation_window_count": {
+    "interaction_version": 2,
+    "snapshot_id": "snapshot_00000000-0000-4000-8000-0000000000c3",
+    "observed_at": "2026-10-18T09:00:02.000Z",
+    "expires_at": "2026-10-18T09:01:02.000Z",
+    "selection_required": false,
+    "target": {
+      "bundle_id": "com.apple.Preview",
+      "pid": 4242,
+      "name": "Preview",
+      "window_id": "window_00000000-0000-4000-8000-0000000000d1",
+      "window_title": "boxes.png",
+      "window_title_digest": "sha256:271dbcde30ee063397997913469dd45fad6ed6a9ba4cedd4a20f1dfdff8e53b7",
+      "bounds": {
+        "x": 20,
+        "y": 30,
+        "width": 800,
+        "height": 600
+      },
+      "window_count": 2
+    },
+    "elements": [],
+    "element_count": 0,
+    "truncated": false,
+    "incomplete": false,
+    "coverage": {
+      "scope": "window",
+      "complete": true
+    },
+    "coordinate_space": "global_display_points",
+    "secure_values_redacted": true,
+    "focused_target": {
+      "available": false,
+      "key": false,
+      "type": false
+    },
+    "input_capabilities": {
+      "default_mode": "background",
+      "background": [
+        "press",
+        "focus",
+        "set_value",
+        "semantic_click"
+      ],
+      "foreground": [],
+      "foreground_shares_desktop": true
+    },
+    "surfaces": [
+      {
+        "surface_ref": "surface_00000000-0000-4000-8000-0000000000e3",
+        "title": "boxes.png",
+        "role": "AXWindow",
+        "bounds": {
+          "x": 20,
+          "y": 30,
+          "width": 800,
+          "height": 600
+        },
+        "focused": false
+      }
+    ],
+    "surface_inventory": {
+      "complete": true,
+      "reasons": []
+    },
+    "selected_surface": "surface_00000000-0000-4000-8000-0000000000e3",
+    "focused_surface": null,
+    "surface_ref": "surface_00000000-0000-4000-8000-0000000000e3",
+    "alysis_workflow": {
+      "version": 1,
+      "required": false,
+      "complete": true,
+      "current_application": "Preview",
+      "next_application": null,
+      "remaining_applications": []
+    }
+  },
+  "observation_window_count_invalid_cases": [
+    true,
+    false,
+    "2",
+    0,
+    -1,
+    1.5,
+    [],
+    {}
+  ],
+  "admission_refusal_target_unverified": {
+    "selection": {
+      "target_ids": [
+        "00000000-0000-4000-8000-0000000000f2",
+        "00000000-0000-4000-8000-0000000000f1"
+      ],
+      "allowed_actions": [
+        "activate_application"
+      ],
+      "goal": "Open the selected fixture apps.",
+      "constraints": []
+    },
+    "host_decision": {
+      "allow": false,
+      "code": "computer_use_target_unverified",
+      "unverified_target_ids": [
+        "00000000-0000-4000-8000-0000000000f1"
+      ]
+    },
+    "refusal": {
+      "error": "computer_use_target_unverified",
+      "unverified_target_ids": [
+        "00000000-0000-4000-8000-0000000000f1"
+      ]
+    },
+    "invalid_refusals": [
+      {
+        "error": "computer_use_target_unverified"
+      },
+      {
+        "error": "computer_use_target_unverified",
+        "unverified_target_ids": []
+      },
+      {
+        "error": "computer_use_target_unverified",
+        "unverified_target_ids": [
+          "00000000-0000-4000-8000-0000000000f1",
+          "00000000-0000-4000-8000-0000000000f1"
+        ]
+      },
+      {
+        "error": "computer_use_target_unverified",
+        "unverified_target_ids": [
+          "00000000-0000-4000-8000-0000000000f3"
+        ]
+      },
+      {
+        "error": "computer_use_target_unverified",
+        "unverified_target_ids": "not-an-array"
+      },
+      {
+        "error": "computer_use_target_unverified",
+        "unverified_target_ids": [
+          true
+        ]
+      },
+      {
+        "error": "computer_use_target_unverified",
+        "unverified_target_ids": [
+          "00000000-0000-4000-8000-0000000000f1"
+        ],
+        "message": "untrusted host text"
+      }
+    ]
+  }
+}

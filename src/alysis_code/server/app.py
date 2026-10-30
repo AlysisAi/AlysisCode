@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ..branding import env_get
 from .auth import require_token
 from .job_config import resolve_effective_model_base_url
 from .settings import ServerSettings
@@ -238,8 +239,16 @@ def create_app(settings: ServerSettings):  # type: ignore[no-untyped-def]
     auth_dep = require_token(settings)
 
     @app.get("/health")
-    def health() -> dict[str, bool]:
-        return {"ok": True}
+    def health() -> dict[str, bool | str]:
+        payload: dict[str, bool | str] = {"ok": True}
+        if marker := env_get("ALYSIS_APP_SERVER_MARKER"):
+            payload["instance_id"] = marker
+        return payload
+
+    @app.post("/v1/shutdown", dependencies=[Depends(auth_dep)])
+    def shutdown() -> dict[str, bool | str]:
+        runner.close()
+        return {"ok": True, "workers": "stopped"}
 
     @app.post("/v1/runs", dependencies=[Depends(auth_dep)])
     async def create_run(file: UploadFile = File(...)) -> dict[str, str]:

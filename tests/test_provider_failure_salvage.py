@@ -101,7 +101,11 @@ def _run_failing_turn(
 ) -> tuple[int, list[dict[str, Any]]]:
     sessions_dir = tmp_path / "sessions"
     session = create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only"),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            extra_fields={"shell_sandbox": {"mode": "off"}},
+        ),
         root=tmp_path,
         mode="auto",
         yes=True,

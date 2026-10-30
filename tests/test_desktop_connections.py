@@ -115,6 +115,7 @@ def test_production_bridge_round_trip_and_untrusted_workspace(tmp_path: Path, mo
         actions=ACTIONS,
         action="connectors.status",
         arguments={"connector": "github"},
+        explicit_github_all=True,
     )
     try:
         assert captured["host_action_capabilities"] == frozenset(ACTIONS)

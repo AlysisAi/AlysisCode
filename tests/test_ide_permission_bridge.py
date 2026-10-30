@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -392,7 +393,7 @@ def test_policy_failure_denies_even_a_cached_session_grant(
         ApprovalScopeRecord(kind="fs_write", scope=scope, key=key)
     )
 
-    def fail(_request):
+    def fail(_request, **_kwargs):
         raise PermissionPolicyError("invalid policy request")
 
     monkeypatch.setattr(store, "evaluate", fail)
@@ -432,8 +433,188 @@ def test_standing_approval_applies_the_rules_the_card_would(
     store.grant("allow", tool_pattern="shell_run", command_pattern="make build")
     assert bridge._standing_approval(session, command).outcome == "allow"
 
-    def fail(_request):
+    def fail(_request, **_kwargs):
         raise PermissionPolicyError("invalid policy request")
 
     monkeypatch.setattr(store, "evaluate", fail)
     assert bridge._standing_approval(session, command).outcome == "deny"
+
+
+def test_validated_authentication_requires_person_and_never_bypasses_deny(approval_bridge):
+    from alysis_code.agent.scoped_access import SandboxAccessApproval
+
+    bridge, session, store = approval_bridge
+    request = SandboxAccessApproval(
+        kind="sandbox_access",
+        reason="Use existing authentication",
+        preview="{}",
+        files=[str(session.root / ".env")],
+        command="service status",
+        authentication=True,
+        metadata={"allow_for_session_disabled": True},
+    )
+    assert bridge._standing_approval(session, request).outcome == "ask_person"
+    for effect, expected in (("allow", "ask_person"), ("ask", "ask_person"), ("deny", "deny")):
+        rule = store.grant(effect, tool_pattern="sandbox_access")
+        assert bridge._standing_approval(session, request).outcome == expected
+        store.revoke(rule.id)
+
+
+def test_external_metadata_reaches_reviewer_without_weakening_file_or_policy_checks(
+    approval_bridge,
+):
+    from dataclasses import replace
+
+    from alysis_code.agent.artifact_output_observation import FileMetadataApproval
+
+    bridge, session, store = approval_bridge
+    path = str(session.root.parent / "outside" / "result.txt")
+    request = FileMetadataApproval(
+        kind="fs_read",
+        reason="Verify output metadata",
+        preview="lstat",
+        files=[path],
+        metadata={"access": "read", "external_directory": True},
+    )
+    assert bridge._standing_approval(session, request) is None
+    # The same untrusted metadata on an ordinary read cannot opt into this route.
+    ordinary = ApprovalRequest(
+        kind=request.kind,
+        reason=request.reason,
+        preview=request.preview,
+        files=request.files,
+        metadata=request.metadata,
+    )
+    assert bridge._standing_approval(session, ordinary).outcome == "ask_person"
+    sensitive = replace(request, files=[str(session.root.parent / ".env")])
+    assert bridge._standing_approval(session, sensitive).outcome == "ask_person"
+    mandatory = replace(request, metadata={"mandatory_explicit_approval": True})
+    assert bridge._standing_approval(session, mandatory).outcome == "ask_person"
+    for effect, expected in (("ask", "ask_person"), ("deny", "deny"), ("allow", "allow")):
+        rule = store.grant(effect, tool_pattern="fs_read")
+        assert bridge._standing_approval(session, request).outcome == expected
+        assert bridge._standing_approval(session, sensitive).outcome == (
+            "deny" if effect == "deny" else "ask_person"
+        )
+        store.revoke(rule.id)
+
+
+def test_helper_thread_approval_goes_out_under_the_job_its_binding_names(approval_bridge) -> None:
+    """QA-006: a subagent thread has no job on the event surface. Its approval named the active job
+    in the binding but went out with a null job in the envelope, and the host stopped the engine."""
+    bridge, session, _ = approval_bridge
+    session.active_job = SimpleNamespace(job_id="job-parent")
+    request = ApprovalRequest(kind="fs_write", reason="write", preview="write", files=["safe.txt"])
+    seen: list[tuple[str | None, str | None, str | None]] = []
+    outcome: dict[str, Any] = {}
+
+    def respond(event):
+        payload = getattr(event, "payload", {})
+        seen.append((payload.get("kind"), session.surface.context.job_id, payload.get("job_id")))
+        if payload.get("kind") != "approval":
+            return
+        bridge._resolve_approval(
+            session=session,
+            approval_id=payload["approval_id"],
+            allow=False,
+            allow_for_session=False,
+            response_bindings=payload,
+            request_id="decision",
+        )
+
+    def helper() -> None:
+        outcome["decision"] = bridge._request_approval(session, request, respond)
+        outcome["job_after"] = session.surface.context.job_id
+
+    worker = threading.Thread(target=helper, name="subagent-batch_0")
+    worker.start()
+    worker.join(timeout=10)
+    session.active_job = None
+    assert outcome["decision"].allow is False
+    prompts = [entry for entry in seen if entry[0] == "approval"]
+    assert prompts and prompts[0][2] == "job-parent"
+    assert [envelope_job for _, envelope_job, _ in seen] == ["job-parent"] * len(seen)
+    assert outcome["job_after"] is None
+
+
+def test_turn_thread_approval_keeps_its_own_job(approval_bridge) -> None:
+    bridge, session, _ = approval_bridge
+    session.active_job = SimpleNamespace(job_id="job-parent")
+    session.surface.with_job("job-turn")
+    request = ApprovalRequest(kind="fs_write", reason="write", preview="write", files=["safe.txt"])
+    seen: list[tuple[str | None, str | None]] = []
+
+    def respond(event):
+        payload = getattr(event, "payload", {})
+        seen.append((session.surface.context.job_id, payload.get("job_id")))
+        if payload.get("kind") == "approval":
+            bridge._resolve_approval(
+                session=session,
+                approval_id=payload["approval_id"],
+                allow=False,
+                allow_for_session=False,
+                response_bindings=payload,
+                request_id="decision",
+            )
+
+    try:
+        assert bridge._request_approval(session, request, respond).allow is False
+        assert seen[0] == ("job-turn", "job-turn")
+        assert session.surface.context.job_id == "job-turn"
+    finally:
+        session.surface.with_job(None)
+        session.active_job = None
+
+
+@pytest.mark.parametrize("kind", ["sandbox_access", "shell_run"])
+def test_lr49_person_cards_ignore_old_scope_and_allow_rules(approval_bridge, kind):
+    from dataclasses import replace
+
+    from alysis_code.agent.scoped_access import SandboxAccessApproval
+    from alysis_code.approval_scope import exact_command_scope
+
+    bridge, session, store = approval_bridge
+    command = "git push git@github.com:owner/b.git HEAD:feature"
+    ordinary = ApprovalRequest(
+        kind,
+        "fixture",
+        command,
+        command=command,
+        allow_for_session_scope=exact_command_scope(command, kind=kind),
+    )
+    scope, key, _ = stdio_bridge._approval_scope_for_request(kind, ordinary)
+    session.approved_approval_scopes.append(ApprovalScopeRecord(kind=kind, scope=scope, key=key))
+    store.grant("allow", tool_pattern=kind)
+    metadata = {
+        "mandatory_explicit_approval": True,
+        "always_ask_person": True,
+        "allow_for_session_disabled": True,
+    }
+    request = (
+        SandboxAccessApproval(
+            kind, "fixture", command, command=command, authentication=True, metadata=metadata
+        )
+        if kind == "sandbox_access"
+        else replace(ordinary, metadata=metadata, allow_for_session_scope=None)
+    )
+    prompts = []
+
+    def respond(event):
+        if getattr(event, "payload", {}).get("kind") != "approval":
+            return
+        prompts.append(event.payload)
+        bridge._resolve_approval(
+            session=session,
+            approval_id=event.payload["approval_id"],
+            allow=True,
+            allow_for_session=True,
+            response_bindings=event.payload,
+            request_id="decision",
+        )
+
+    for _ in range(2):
+        assert bridge._standing_approval(session, request).outcome == "ask_person"
+        decision = bridge._request_approval(session, request, respond)
+        assert decision.allow and not decision.allow_for_session
+    assert len(prompts) == 2
+    assert all(not p["allow_for_session_supported"] for p in prompts)

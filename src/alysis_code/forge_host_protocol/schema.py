@@ -11,17 +11,16 @@ from typing import Any
 from .errors import ProtocolValidationError
 from .models import PROTOCOL_VERSION
 
-SCHEMA_RELATIVE_PATH = Path("schemas/forge-host-v2/forge-host-v2.schema.json")
+SCHEMA_RELATIVE_PATH = Path("forge_host_protocol/alysis-code.schema.json")
 
 
 @lru_cache(maxsize=1)
 def schema_path() -> Path:
     """Locate the authoritative schema in a source tree or installed wheel."""
 
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / SCHEMA_RELATIVE_PATH
-        if candidate.is_file():
-            return candidate
+    candidate = Path(__file__).with_name("alysis-code.schema.json")
+    if candidate.is_file():
+        return candidate
     raise FileNotFoundError(f"Forge host schema not found: {SCHEMA_RELATIVE_PATH}")
 
 

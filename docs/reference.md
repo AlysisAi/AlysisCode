@@ -339,7 +339,7 @@ account-scoped model and its supported reasoning effort together. Raw `model`,
 that profile is active, and legacy reasoning-effort environment overrides do not
 replace the paired subscription selection.
 
-The ChatGPT Codex subscription also manages sampling temperature, so its
+The ChatGPT subscription also manages sampling temperature, so its
 unsupported per-role temperature fields are hidden. API-key profiles continue to
 offer temperature overrides for models that accept them.
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -23,7 +24,6 @@ from pydantic import BaseModel, ConfigDict
 from alysis_code import __version__
 
 from ..atomic_io import atomic_write_json, atomic_write_text
-from ..command_text import command_text
 from ..custom_tools.discovery import global_custom_tools_root, project_custom_tools_root
 from ..custom_tools.trust import (
     ProjectToolTrustKey,
@@ -47,11 +47,13 @@ from ..hooks.trust import (
 from ..hooks.trust import (
     save_trust_state as save_hooks_trust_state,
 )
+from ..installer_git import run_installer_git
 from ..mcp.config import _load_user_mcp_config, user_mcp_config_path
 from ..mcp.models import UserMcpConfigFile
 from ..skills.install import install_skill_bundle, remove_managed_skill
-from .bundled import bundled_manifest
+from .bundled import bundled_manifest, parse_bundled_manifest
 from .manifest import (
+    CUSTOM_PLUGIN_PREFIX,
     PluginManifest,
     PluginManifestError,
     Security,
@@ -163,9 +165,17 @@ class _ResolvedSource:
     bundled_content: bytes | None = None
     package_sha256: str | None = None
     upstream_commit: str | None = None
+    registry_id: str | None = None
+    #: The user's own online plugin (custom.<name>), whose descriptor the desktop app supplied.
+    custom_id: str | None = None
+    snapshot_path: Path | None = None
 
     @property
     def source_kind(self) -> str:
+        if self.snapshot_path is not None:
+            return "snapshot"
+        if self.custom_id is not None:
+            return "custom"
         return "bundled" if self.bundled_content is not None else "git"
 
 
@@ -190,14 +200,34 @@ def install_plugin(
     project: bool = False,
     trust_prompt: TrustPromptFn,
     user_config_dir: Path | None = None,
+    custom_descriptor: bytes | None = None,
+    reviewed_snapshot: Path | None = None,
+    snapshot_digest: str | None = None,
 ) -> PluginInstallResult:
     scope: Scope = "project" if project else "user"
     resolved_repo_root = repo_root.expanduser().resolve()
-    source_ref = _resolve_source(source)
+    # Only the reviewed import service supplies a private, immutable materialization.
+    # The public ext.install RPC never accepts this path or a caller-provided digest.
+    if reviewed_snapshot is not None:
+        if not snapshot_digest or custom_descriptor is not None:
+            raise PluginInstallError("invalid reviewed package snapshot")
+        source_ref = _ResolvedSource(
+            display_url=source,
+            git_url="",
+            commit=f"sha256:{snapshot_digest}",
+            snapshot_path=reviewed_snapshot,
+            package_sha256=snapshot_digest,
+        )
+    else:
+        source_ref = _resolve_source(source, custom_descriptor=custom_descriptor)
+    if source_ref.custom_id is not None and project:
+        raise PluginInstallError("a custom plugin is installed for the user, not a project")
 
     with tempfile.TemporaryDirectory(prefix="alysis-plugin-") as temp_dir:
         staging_root = Path(temp_dir)
-        if source_ref.bundled_content is not None:
+        if source_ref.snapshot_path is not None:
+            shutil.copytree(source_ref.snapshot_path, staging_root, dirs_exist_ok=True)
+        elif source_ref.bundled_content is not None:
             (staging_root / "alysis-plugin.toml").write_bytes(source_ref.bundled_content)
         else:
             _clone_pinned_git_repo(
@@ -211,6 +241,9 @@ def install_plugin(
             raise PluginInstallError(f"manifest validation failed: {exc}") from exc
 
         _check_compatibility(manifest)
+        _check_plugin_identity(manifest.plugin.id, source_ref, repo_root=resolved_repo_root)
+        _check_project_mcp_scope(manifest, source_ref, project=project)
+        _check_verified_connector_source(manifest, source_ref, project=project)
         # Hash whichever manifest was actually loaded — a legacy-named one still
         # has to produce a stable integrity hash for the install record.
         manifest_sha256 = _sha256_file(resolve_manifest_path(staging_root))
@@ -620,8 +653,160 @@ def _without_normalized_id(values: list[str], plugin_id: str) -> list[str]:
     return sorted(value for value in _normalized_id_set(values) if value != plugin_id)
 
 
-def _resolve_source(source: str) -> _ResolvedSource:
+_FIRST_PARTY_SLUG_PREFIX = "alysis-"
+
+
+def _check_plugin_identity(plugin_id: str, source_ref: _ResolvedSource, *, repo_root: Path) -> None:
+    """A plugin may not claim another plugin's id, install folder, or the first-party namespace."""
+    normalized = normalize_extension_id(plugin_id)
+    # Custom descriptors use bundled_content as their materialization buffer;
+    # that does not make them bundled publishers. They cannot also be a catalog
+    # or Git source, and must retain the descriptor supplied by the custom route.
+    if source_ref.custom_id is not None and (
+        source_ref.registry_id is not None
+        or source_ref.git_url
+        or source_ref.bundled_content is None
+    ):
+        raise PluginInstallError("plugin source identity is inconsistent")
+    if (
+        source_ref.registry_id is not None
+        and normalize_extension_id(source_ref.registry_id) != normalized
+    ):
+        raise PluginInstallError(
+            f"catalog entry {source_ref.registry_id} contains a different plugin id: {plugin_id}"
+        )
+    if source_ref.custom_id is not None:
+        if normalized != normalize_extension_id(source_ref.custom_id):
+            raise PluginInstallError(
+                f"custom descriptor {source_ref.custom_id} contains a different plugin id: "
+                f"{plugin_id}"
+            )
+    elif normalized.startswith(CUSTOM_PLUGIN_PREFIX):
+        raise PluginInstallError(f"plugin id {plugin_id} is reserved for the user's own plugins")
+    slug = plugin_slug_from_id(normalized)
+    if source_ref.source_kind != "bundled" and slug.startswith(_FIRST_PARTY_SLUG_PREFIX):
+        raise PluginInstallError(
+            f"plugin id {plugin_id} is reserved for plugins bundled with Alysis Code"
+        )
+    known = {normalize_extension_id(entry.id) for entry in load_registry().extensions}
+    for state in _states_for_identity_check(repo_root):
+        for raw_id, record in state.installed.items():
+            installed_id = normalize_extension_id(record.id or raw_id)
+            known.add(installed_id)
+            # The model deliberately defaults pre-source-kind records to git.
+            if installed_id == normalized and record.source_kind != source_ref.source_kind:
+                raise PluginInstallError("plugin source kind conflicts with installed identity")
+    for other in sorted(known - {normalized}):
+        if plugin_slug_from_id(other) == slug:
+            raise PluginInstallError(
+                f"plugin id {plugin_id} collides with {other}; both would use the folder {slug}"
+            )
+
+
+def _check_project_mcp_scope(
+    manifest: PluginManifest, source_ref: _ResolvedSource, *, project: bool
+) -> None:
+    """Preflight only; the early install caller is a separately owned handoff.
+
+    A project direct definition currently writes the user MCP file. Refuse that
+    scope crossing; only the exact content-pinned bundled host declaration is
+    exempt. A manifest's host_managed flag alone is not provenance.
+    """
+    if not project:
+        return
+    enabled = [server for server in manifest.components.mcp_server if server.enabled]
+    if not enabled:
+        return
+    error = "project plugin MCP definitions are not supported"
+    if any(not server.host_managed for server in enabled):
+        raise PluginInstallError(error)
+    if (
+        source_ref.custom_id is not None
+        or source_ref.git_url
+        or source_ref.registry_id is None
+        or source_ref.bundled_content is None
+    ):
+        raise PluginInstallError(error)
+    try:
+        entry = find_by_id(load_registry(), source_ref.registry_id)
+        if (
+            entry is None
+            or entry.source_kind != "bundled"
+            or entry.id != manifest.plugin.id
+            or entry.commit != source_ref.commit
+            or entry.package_sha256 != source_ref.package_sha256
+        ):
+            raise PluginInstallError(error)
+        verified_content = bundled_manifest(entry)
+        if (
+            verified_content != source_ref.bundled_content
+            or parse_bundled_manifest(verified_content) != manifest
+        ):
+            raise PluginInstallError(error)
+    except (OSError, RuntimeError, ValueError):
+        raise PluginInstallError(error) from None
+
+
+def _check_verified_connector_source(
+    manifest: PluginManifest, source_ref: _ResolvedSource, *, project: bool
+) -> None:
+    """A verified connector comes only from its content-pinned bundled catalog entry.
+
+    Alysis reviewed its tool list and read marks, so no other source may carry one; it is
+    bound for the user only, like the user's own online plugins.
+    """
+    if not manifest.components.verified_connector:
+        return
+    error = "a verified connector installs only from its built-in catalog entry"
+    if project:
+        raise PluginInstallError("a verified connector is installed for the user, not a project")
+    if (
+        source_ref.custom_id is not None
+        or source_ref.git_url
+        or source_ref.registry_id is None
+        or source_ref.bundled_content is None
+    ):
+        raise PluginInstallError(error)
+    try:
+        entry = find_by_id(load_registry(), source_ref.registry_id)
+        if (
+            entry is None
+            or entry.source_kind != "bundled"
+            or entry.id != manifest.plugin.id
+            or entry.commit != source_ref.commit
+            or entry.package_sha256 != source_ref.package_sha256
+            or bundled_manifest(entry) != source_ref.bundled_content
+        ):
+            raise PluginInstallError(error)
+    except (OSError, RuntimeError, ValueError):
+        raise PluginInstallError(error) from None
+
+
+def _states_for_identity_check(repo_root: Path) -> list[ExtensionState]:
+    # Missing state is handled by the loaders. Malformed or unreadable state
+    # cannot prove that another plugin does not own the same install identity.
+    return [load_global_state(), load_project_state(repo_root)]
+
+
+def _resolve_source(source: str, *, custom_descriptor: bytes | None = None) -> _ResolvedSource:
     raw = str(source or "").strip()
+    if raw.startswith("custom:") or custom_descriptor is not None:
+        plugin_id = raw.removeprefix("custom:")
+        if (
+            not raw.startswith("custom:")
+            or custom_descriptor is None
+            or not plugin_id.startswith(CUSTOM_PLUGIN_PREFIX)
+        ):
+            raise PluginInstallError(f"unsupported install source: {raw}")
+        digest = hashlib.sha256(custom_descriptor).hexdigest()
+        return _ResolvedSource(
+            display_url=f"custom://{plugin_id}/sha256/{digest}",
+            git_url="",
+            commit=f"sha256:{digest}",
+            bundled_content=custom_descriptor,
+            package_sha256=digest,
+            custom_id=plugin_id,
+        )
     if _SOURCE_ID_RE.fullmatch(raw):
         registry = load_registry()
         entry = find_by_id(registry, raw)
@@ -636,6 +821,7 @@ def _resolve_source(source: str) -> _ResolvedSource:
                 bundled_content=content,
                 package_sha256=entry.package_sha256,
                 upstream_commit=entry.upstream_commit,
+                registry_id=entry.id,
             )
         if not _SHA40_RE.fullmatch(entry.commit or ""):
             raise PluginInstallError(f"registry entry has invalid commit for {raw}: {entry.commit}")
@@ -643,6 +829,7 @@ def _resolve_source(source: str) -> _ResolvedSource:
             display_url=f"{entry.repo}@{entry.commit}",
             git_url=entry.repo,
             commit=entry.commit.lower(),
+            registry_id=entry.id,
         )
 
     if raw.startswith("git+https://"):
@@ -681,15 +868,7 @@ def _clone_pinned_git_repo(*, git_url: str, commit: str, destination: Path) -> N
 
 def _run_git(args: list[str], *, cwd: Path | None) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            args,
-            cwd=os.fspath(cwd) if cwd is not None else None,
-            shell=False,
-            check=True,
-            timeout=120,
-            capture_output=True,
-            **command_text(),
-        )
+        return run_installer_git(args, cwd=cwd)
     except subprocess.TimeoutExpired as exc:
         raise PluginInstallError(f"git command timed out after 120s: {' '.join(args)}") from exc
     except subprocess.CalledProcessError as exc:
@@ -743,6 +922,7 @@ def _permissions_summary(manifest: PluginManifest) -> PermissionsSummary:
     } | {env_name for server in manifest.components.mcp_server for env_name in server.env}
     return PermissionsSummary(
         network=bool(manifest.components.mcp_server)
+        or bool(manifest.components.verified_connector)
         or any(tool.network for tool in manifest.components.tool),
         filesystem_write=any(tool.filesystem == "write" for tool in manifest.components.tool),
         required_env=tuple(sorted(required_env)),
@@ -795,6 +975,9 @@ def _state_with_installed_record(
     package_sha256: str | None = None,
     upstream_commit: str | None = None,
 ) -> ExtensionState:
+    previous = state.installed.get(plugin_id)
+    # Installing over an existing record (an update) keeps a turned-off plugin off.
+    enabled = previous is None or previous.enabled or plugin_id in _normalized_id_set(state.enabled)
     updated = state.model_copy(deep=True)
     updated.installed[plugin_id] = InstalledExtensionState(
         id=plugin_id,
@@ -803,7 +986,7 @@ def _state_with_installed_record(
         source=source_url,
         source_url=source_url,
         trust="manifest-sha256",
-        enabled=True,
+        enabled=enabled,
         manifest_sha256=manifest_sha256,
         installed_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
         scope=scope,
@@ -817,7 +1000,11 @@ def _state_with_installed_record(
         package_sha256=package_sha256,
         upstream_commit=upstream_commit,
     )
-    updated.enabled = _with_normalized_id(updated.enabled, plugin_id)
+    updated.enabled = (
+        _with_normalized_id(updated.enabled, plugin_id)
+        if enabled
+        else _without_normalized_id(updated.enabled, plugin_id)
+    )
     return updated
 
 
@@ -835,7 +1022,6 @@ def _install_plugin_tree(
         if backup_path.exists():
             _remove_path(backup_path)
         os.replace(target_root, backup_path)
-    shutil.copytree(source_root, target_root, ignore=shutil.ignore_patterns(".git"))
 
     def rollback_plugin_tree() -> None:
         _remove_path(target_root)
@@ -843,6 +1029,7 @@ def _install_plugin_tree(
             os.replace(backup_path, target_root)
 
     rollback.append(rollback_plugin_tree)
+    shutil.copytree(source_root, target_root, ignore=shutil.ignore_patterns(".git"))
     if backup_path is not None:
         cleanup_after_success.append(lambda path=backup_path: _remove_path(path))
 
@@ -998,6 +1185,15 @@ def _install_hooks(
     if not enabled_hooks:
         return installed
 
+    # The destination keeps this manifest-controlled suffix. list2cmdline is
+    # argv quoting, not cmd.exe escaping: metacharacters/expansions in a suffix
+    # could become shell syntax on Windows. Preflight the whole batch before
+    # copying any hooks, including when installing on another platform.
+    for hook in enabled_hooks:
+        suffix = Path(hook.path).suffix
+        if suffix and re.fullmatch(r"\.[A-Za-z0-9]{1,16}", suffix) is None:
+            raise PluginInstallError("unsupported hook file suffix")
+
     config_path = _hooks_config_path(
         repo_root=repo_root,
         project=project,
@@ -1010,7 +1206,6 @@ def _install_hooks(
         user_config_dir=user_config_dir,
     )
     snapshot = _read_optional_text(config_path)
-    trust_snapshot = load_hooks_trust_state(user_config_dir=user_config_dir)
     raw_config = _read_json_config(config_path, default={"schema_version": 1, "hooks": {}})
     hooks_root = raw_config.setdefault("hooks", {})
     if not isinstance(hooks_root, dict):
@@ -1040,17 +1235,11 @@ def _install_hooks(
 
     HookConfigFile.model_validate(raw_config)
     atomic_write_json(config_path, raw_config)
-    if project:
-        _trust_project_hooks_config(
-            workspace_root=repo_root,
-            config_path=config_path,
-            user_config_dir=user_config_dir,
-        )
+    # Plugin consent does not review the entire project hooks configuration.
     rollback.append(
-        lambda target=config_path, text=snapshot, root=hook_root, trust=trust_snapshot: (
+        lambda target=config_path, text=snapshot, root=hook_root: (
             _restore_optional_text(target, text),
             _remove_path(root),
-            save_hooks_trust_state(trust, user_config_dir=user_config_dir),
         )
     )
     return installed
@@ -1150,12 +1339,7 @@ def _remove_hook_component(
                     hooks_root.pop(event_name, None)
         HookConfigFile.model_validate(raw)
         atomic_write_json(config_path, raw)
-        if project:
-            _trust_project_hooks_config(
-                workspace_root=repo_root,
-                config_path=config_path,
-                user_config_dir=user_config_dir,
-            )
+        # Removal cannot grant trust to unrelated remaining project hooks.
     hook_root = _hooks_component_root(
         plugin_id,
         repo_root=repo_root,
@@ -1395,9 +1579,14 @@ def _hook_event_name(event_name: str) -> str:
 
 
 def _hook_command(path: Path) -> str:
+    args = [os.fspath(path)]
     if path.suffix.casefold() == ".py":
-        return subprocess.list2cmdline([sys.executable, os.fspath(path)])
-    return subprocess.list2cmdline([os.fspath(path)])
+        args.insert(0, sys.executable)
+    # The hook dispatcher runs this string through the platform shell. Windows
+    # quoting leaves substitutions and quote characters active in a POSIX shell.
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(args)
+    return shlex.join(args)
 
 
 def _hook_config_id(plugin_id: str, hook_id: str) -> str:

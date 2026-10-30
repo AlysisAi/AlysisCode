@@ -933,10 +933,6 @@ def test_make_llm_client_routes_gemini_interactions_when_config_flag_enabled(
     assert isinstance(client, GeminiInteractionsClient)
 
 
-def test_make_llm_client_return_annotation_is_protocol_neutral() -> None:
-    assert make_llm_client.__annotations__["return"] == "ChatClient"
-
-
 def test_make_llm_client_defaults_legacy_profile_without_protocol_to_openai_compat() -> None:
     profile = ProfileSpec.from_dict(
         "legacy",

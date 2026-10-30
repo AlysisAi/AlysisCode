@@ -1,0 +1,77 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.sentry"
+name = "Sentry"
+version = "1.0.0"
+description = "Sentry's official remote MCP tools: search issues, errors, logs and traces; every issue update asks you first."
+author = "Alysis AI (integration); Sentry (MCP server)"
+license = "MIT"
+homepage = "https://docs.sentry.io/product/sentry-mcp/"
+keywords = ["sentry", "mcp", "errors", "issues", "monitoring"]
+
+[compatibility]
+alysis = ">=0.14.1"
+
+# Sentry's official remote MCP server. The app keeps the sign-in; only the reviewed tools
+# below are offered, and every tool not marked reads_only asks a person before each call.
+[[components.verified_connector]]
+id = "sentry"
+url = "https://mcp.sentry.dev/mcp"
+resource = "https://mcp.sentry.dev/mcp"
+oauth_issuer = "https://mcp.sentry.dev"
+oauth_sign_in_origins = []
+oauth_client = "dynamic"
+oauth_scopes = ["org:read", "project:write", "team:write", "event:write", "alerts:write"]
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "find_organizations"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find_projects"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_issues"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_errors"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_logs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_traces"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_metrics"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_profiles"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "search_replays"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "find_dropped_events"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get_sentry_resource"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "update_issue"
+reads_only = false
+
+[security]
+contact = "https://sentry.io/security/"

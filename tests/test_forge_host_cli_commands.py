@@ -21,7 +21,7 @@ from alysis_code.forge_status_channel import (
     FORGE_STATUS_NONCE_ENV,
 )
 
-FIXTURES = Path(__file__).parents[1] / "schemas" / "forge-host-v2" / "fixtures" / "valid"
+FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures" / "forge_host_v2" / "valid"
 
 
 def _event(name: str) -> EventEnvelope:
@@ -37,7 +37,30 @@ def _cli_stub() -> SimpleNamespace:
     )
 
 
-@pytest.mark.parametrize("machine", [False, True])
+def test_cli_trusted_pytest_uses_only_the_current_interpreter_directory(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    interpreter = runtime / ("python.exe" if os.name == "nt" else "python")
+    trusted = runtime / ("pytest.exe" if os.name == "nt" else "pytest")
+    trusted.write_bytes(b"trusted executable identity")
+    monkeypatch.setattr(forge_commands.sys, "executable", str(interpreter))
+    monkeypatch.delenv("ALYSIS_FORGE_TRUSTED_PYTEST", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "untrusted"))
+    assert forge_commands._resolve_cli_host_pytest(None) == trusted.resolve()
+
+    explicit = tmp_path / "explicit-runner"
+    explicit.write_bytes(b"explicit identity")
+    monkeypatch.setenv("ALYSIS_FORGE_TRUSTED_PYTEST", str(explicit))
+    assert forge_commands._resolve_cli_host_pytest(None) == explicit.resolve()
+    assert forge_commands._resolve_cli_host_pytest(trusted) == trusted.resolve()
+
+    trusted.unlink()
+    monkeypatch.delenv("ALYSIS_FORGE_TRUSTED_PYTEST")
+    with pytest.raises(host_runtime.ForgeHostPreflightError, match="unavailable"):
+        forge_commands._resolve_cli_host_pytest(None)
+
+
+@pytest.mark.parametrize("machine", [False])
 def test_public_forge_plan_routes_only_to_canonical_host_runtime(
     tmp_path: Path,
     monkeypatch,

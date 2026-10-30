@@ -95,8 +95,23 @@ def hosted_chat_input_bound(payload: dict[str, Any]) -> int:
     )
 
 
+_INPUT_LIMITS = {
+    "glm-5.3-flash": 1000000,
+    "deepseek-v4.1-flash": 1000000,
+    "deepseek-v4-pro": 1048576,
+    "mistral-large-4": 1000000,
+    "minimax-m3.1-flash": 1000000,
+    "qwen3.8-flash": 1000000,
+    "reflection-beam": 1000000,
+    "nemotron-3.5-super-vl": 262144,
+    "glm-5.3": 1000000,
+    "qwen3.8-2.4t": 1000000,
+    "kimi-k3": 1000000,
+}
+
+
 def _input_limit(payload: dict[str, Any]) -> int:
-    return 1_000_000 if payload.get("model") == "glm-5.3-flash" else 1_048_576
+    return _INPUT_LIMITS.get(str(payload.get("model") or ""), 1_048_576)
 
 
 def hosted_chat_capacity_ratio(payload: dict[str, Any], *, headroom: int = 0) -> float:

@@ -29,6 +29,8 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import ApprovalDecision
+from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
 
 _VERIFY_OK_COMMAND = "pytest tests/test_cli.py -q"
@@ -160,6 +162,11 @@ def _fake_verify_run(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(agent_loop_mod, "run_task_verification", fake_run_task_verification)
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind == "verify_run"),
+    )
 
 
 def _init_git_repo_with_commit(repo: Path) -> None:

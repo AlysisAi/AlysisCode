@@ -130,6 +130,10 @@ import {
   HooksWorkspaceParams,
   HOST_ACTION_NAMES,
   HostActionName,
+  HostActionDispatchedParams,
+  HostActionDispatchedResult,
+  SessionUserQuestionsResult,
+  SessionUserQuestionAnswer,
   HostActionRespondParams,
   HostActionRespondResult,
   HostActionsNegotiation,
@@ -215,6 +219,7 @@ import {
   SessionClearResult,
   SessionCompactResult,
   SessionContextResult,
+  SessionArtifactChecksResult,
   SessionCreateParams,
   SessionCreateResult,
   SessionHistoryResult,
@@ -1221,6 +1226,36 @@ export class AlysisBridgeClient extends EventEmitter {
     return this.trackStartedJob(await this.request("run.start", request));
   }
 
+  public async hostActionDispatched(params: HostActionDispatchedParams): Promise<HostActionDispatchedResult> {
+    const result = await this.request("host.action.dispatched", params as unknown as Record<string, unknown>);
+    if (result.status !== "dispatched" || result.host_action_id !== params.host_action_id) {
+      throw new ProtocolClientError("invalid_response", "Invalid host action dispatch acknowledgement.");
+    }
+    return { status: "dispatched", host_action_id: params.host_action_id };
+  }
+
+  public async sessionUserQuestions(sessionId: string, jobId: string): Promise<SessionUserQuestionsResult> {
+    return parseSessionUserQuestions(await this.request("session.userQuestions.get", {
+      session_id: sessionId, job_id: jobId
+    }), sessionId, jobId);
+  }
+
+  public async answerSessionUserQuestions(
+    sessionId: string, jobId: string, requestId: string, answers: SessionUserQuestionAnswer[]
+  ): Promise<SessionUserQuestionsResult> {
+    return parseSessionUserQuestions(await this.request("session.userQuestions.answer", {
+      session_id: sessionId, job_id: jobId, request_id: requestId, answers
+    }), sessionId, jobId);
+  }
+
+  public async touchSessionUserQuestions(
+    sessionId: string, jobId: string, requestId: string
+  ): Promise<SessionUserQuestionsResult> {
+    return parseSessionUserQuestions(await this.request("session.userQuestions.touch", {
+      session_id: sessionId, job_id: jobId, request_id: requestId
+    }), sessionId, jobId);
+  }
+
   public async hostActionRespond(params: HostActionRespondParams): Promise<HostActionRespondResult> {
     if (
       !/^ha_[a-f0-9]{32}$/.test(params.host_action_id)
@@ -1370,6 +1405,17 @@ export class AlysisBridgeClient extends EventEmitter {
       source: requireString(result, "source"),
       message_count: typeof result.message_count === "number" ? result.message_count : 0,
       pinned_prefix_len: typeof result.pinned_prefix_len === "number" ? result.pinned_prefix_len : 0
+    };
+  }
+
+  public async sessionArtifactChecks(sessionId: string): Promise<SessionArtifactChecksResult> {
+    const result = await this.request("session.artifactChecks", { session_id: sessionId });
+    return {
+      session_id: requireString(result, "session_id"),
+      reports: Array.isArray(result.reports)
+        ? result.reports.filter((item): item is Record<string, unknown> =>
+          item !== null && typeof item === "object" && !Array.isArray(item))
+        : []
     };
   }
 
@@ -1718,6 +1764,15 @@ export class AlysisBridgeClient extends EventEmitter {
       messages_before: typeof result.messages_before === "number" ? result.messages_before : 0,
       messages_after: typeof result.messages_after === "number" ? result.messages_after : 0
     };
+  }
+
+  /** Optional idle-session retirement; check advertised methods before using it. */
+  public async closeSession(sessionId: string): Promise<{ session_id: string; status: "closed"; worker_settled: true }> {
+    const result = await this.request("session.close", { session_id: sessionId });
+    if (result.session_id !== sessionId || result.status !== "closed" || result.worker_settled !== true) {
+      throw new Error("The engine did not confirm complete session cleanup.");
+    }
+    return { session_id: sessionId, status: "closed", worker_settled: true };
   }
 
   public async cancelSession(
@@ -2433,6 +2488,11 @@ export class AlysisBridgeClient extends EventEmitter {
       max_bytes: typeof result.max_bytes === "number" ? result.max_bytes : 0,
       redaction: requireString(result, "redaction") || undefined
     };
+  }
+
+  /** Fresh native subscription status; only advertised supporting engines accept it. */
+  public async providerAuthStatus(providerId: string): Promise<ManagementResult> {
+    return this.managementRequest("provider.auth.status", { provider_id: providerId });
   }
 
   public async configGet(): Promise<ConfigGetResult> {
@@ -4940,4 +5000,14 @@ async function withTimeout(promise: Promise<void>, timeoutMs: number): Promise<b
     clearTimeout(timeout);
   }
   return result;
+}
+
+function parseSessionUserQuestions(
+  result: Record<string, unknown>, sessionId: string, jobId: string
+): SessionUserQuestionsResult {
+  if (result.session_id !== sessionId || result.job_id !== jobId
+    || !Array.isArray(result.questions) || !result.questions.every(isRecord)) {
+    throw new ProtocolClientError("invalid_response", "Invalid turn question response binding.");
+  }
+  return { session_id: sessionId, job_id: jobId, questions: result.questions };
 }

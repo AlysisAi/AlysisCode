@@ -7,18 +7,15 @@ import json
 import math
 import os
 import stat
-import subprocess
 import time
-import zipfile
-from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..artifact_filesystem import ArtifactFilesystemOperations
 from ..atomic_io import atomic_write_json
 from ..checkpoint_settings import CheckpointSettings
 from ..runtime_artifacts import is_runtime_artifact_path
-from ..session_artifacts import SessionArtifactLayout
-from ..tools.fs import classify_sensitive_path
+from ..sensitive_paths import sensitive_path_category
 
 if TYPE_CHECKING:
     from ..config import AnytimeCheckpointConfig
@@ -26,6 +23,27 @@ if TYPE_CHECKING:
 
 class CheckpointUnavailable(ValueError):
     pass
+
+
+def _git_listing_may_apply(root: Path) -> bool:
+    """Avoid process startup only when no repository can be discovered.
+
+    A Git indirection file, bare repository, inherited Git location, or an
+    unreadable ancestor still requires Git's own decision. Do not cache this:
+    the second snapshot must observe changes to repository metadata too.
+    """
+    if any(os.environ.get(key) for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")):
+        return True
+    for directory in (root, *root.parents):
+        for name in (".git", "HEAD"):
+            try:
+                (directory / name).lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+            return True
+    return False
 
 
 class AnytimeCheckpointManager:
@@ -40,7 +58,7 @@ class AnytimeCheckpointManager:
         self,
         *,
         root: Path,
-        layout: SessionArtifactLayout,
+        layout: ArtifactFilesystemOperations,
         config: AnytimeCheckpointConfig | CheckpointSettings,
         excluded_paths: tuple[Path, ...] = (),
     ):
@@ -85,7 +103,7 @@ class AnytimeCheckpointManager:
                 "root": str(self.root),
                 "artifact_root": str(self.layout.filesystem_root),
                 "locator_prefix": self.layout.locator_prefix,
-                "config": asdict(self.config)
+                "config": self.config._asdict()
                 if isinstance(self.config, CheckpointSettings)
                 else self.config.model_dump(mode="json"),
                 "excluded_paths": [str(path) for path in self.excluded_paths],
@@ -204,31 +222,34 @@ class AnytimeCheckpointManager:
         omitted: list[str] = []
         total = 0
         allowed_paths: set[str] | None = None
-        try:
-            listing = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.root),
-                    "ls-files",
-                    "-z",
-                    "--cached",
-                    "--others",
-                    "--exclude-standard",
-                ],
-                capture_output=True,
-                timeout=max(0.001, min(0.5, stop_at - time.monotonic())),
-                check=False,
-            )
-            if listing.returncode == 0:
-                allowed_paths = {
-                    path.decode("utf-8", errors="surrogateescape")
-                    for path in listing.stdout.split(b"\0")
-                    if path
-                }
-                allowed_paths.update(material_paths)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        if _git_listing_may_apply(self.root):
+            import subprocess
+
+            try:
+                listing = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(self.root),
+                        "ls-files",
+                        "-z",
+                        "--cached",
+                        "--others",
+                        "--exclude-standard",
+                    ],
+                    capture_output=True,
+                    timeout=max(0.001, min(0.5, stop_at - time.monotonic())),
+                    check=False,
+                )
+                if listing.returncode == 0:
+                    allowed_paths = {
+                        path.decode("utf-8", errors="surrogateescape")
+                        for path in listing.stdout.split(b"\0")
+                        if path
+                    }
+                    allowed_paths.update(material_paths)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         for directory, directories, names in os.walk(self.root, followlinks=False):
             self._check_io_deadline()
             base = Path(directory)
@@ -241,7 +262,7 @@ class AnytimeCheckpointManager:
                     or is_runtime_artifact_path(
                         (base / name).relative_to(self.root).as_posix(), root=self.root
                     )
-                    or classify_sensitive_path((base / name).relative_to(self.root)).sensitive
+                    or sensitive_path_category((base / name).relative_to(self.root)) is not None
                     or (base / name).resolve() == self.layout.filesystem_root.resolve()
                     or (base / name).resolve() in self.excluded_paths
                     or (
@@ -264,7 +285,7 @@ class AnytimeCheckpointManager:
                     continue
                 if is_runtime_artifact_path(relative, root=self.root):
                     continue
-                if classify_sensitive_path(relative).sensitive or path.is_symlink():
+                if sensitive_path_category(relative) is not None or path.is_symlink():
                     omitted.append(relative)
                     continue
                 path.resolve().relative_to(self.root)
@@ -453,6 +474,8 @@ class AnytimeCheckpointManager:
                 "objective_value": score,
                 "objective_direction": self.config.objective_direction,
             }
+            import zipfile
+
             archive_bytes = io.BytesIO()
             with zipfile.ZipFile(archive_bytes, "w", compression=zipfile.ZIP_STORED) as archive:
                 for name, data in sorted(files.items()):

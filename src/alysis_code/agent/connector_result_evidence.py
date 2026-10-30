@@ -72,9 +72,15 @@ class ConnectorLinkEvidence:
                 self.checked.update(urls & self.references)
             return
         # These are host wrappers from registered MCP tools, not model assertions.
-        if not result.get("server_id") or not isinstance(result.get("text"), str):
+        if not result.get("server_id"):
             return
-        if not result["text"].startswith("[MCP_UNTRUSTED_TEXT]\n"):
+        texts = [result.get("text")]
+        content = result.get("content")
+        if isinstance(content, list):
+            texts.extend(item.get("text") for item in content if isinstance(item, dict))
+        if not any(
+            isinstance(text, str) and text.startswith("[MCP_UNTRUSTED_TEXT]\n") for text in texts
+        ):
             return
         if result.get("is_error") or result.get("error") or result.get("error_code"):
             return

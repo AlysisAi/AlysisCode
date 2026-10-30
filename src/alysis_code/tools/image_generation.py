@@ -9,17 +9,18 @@ import os
 import socket
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from PIL import Image, UnidentifiedImageError
 
 from ..branding import env_get
 from ..config import AppConfig
 from ..error_text import sanitize_error_summary
+from ..host_file_handles import guard_host_mutation, mkdir_host_path, rename_host_file_no_replace
 from ..profiles import get_active_profile, resolve_effective_base_url
 
 _OUTPUT_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
@@ -30,6 +31,12 @@ _BACKGROUNDS = frozenset({"auto", "opaque", "transparent"})
 
 class ImageGenerationError(RuntimeError):
     pass
+
+
+def _load_image_decoder() -> tuple[Any, type[OSError]]:
+    from PIL import Image, UnidentifiedImageError
+
+    return Image, UnidentifiedImageError
 
 
 def plan_image_output_paths(
@@ -83,6 +90,7 @@ def generate_images(
     background: str = "auto",
     timeout_s: float | None = None,
     transport: httpx.BaseTransport | None = None,
+    publish: Callable[[Path, bytes], None] | None = None,
 ) -> dict[str, Any]:
     settings = cfg.image_generation
     if not settings.enabled:
@@ -117,6 +125,9 @@ def generate_images(
             "Refusing to overwrite existing image file(s): " + ", ".join(existing)
         )
 
+    # Text-only startup does not need image codecs. An enabled image request
+    # must still discover missing codecs before contacting the provider.
+    _load_image_decoder()
     base_url, api_key, extra_headers = _resolve_runtime(
         cfg=cfg,
         fallback_api_key=fallback_api_key,
@@ -210,12 +221,18 @@ def generate_images(
     committed: list[Path] = []
     try:
         for target, _relative, image_bytes, _metadata in prepared:
-            _atomic_create_bytes(target, image_bytes)
+            (publish or _atomic_create_bytes)(target, image_bytes)
             committed.append(target)
-    except Exception:
-        for target in committed:
-            with suppress(OSError):
-                target.unlink()
+    except Exception as exc:
+        # A published pathname may already have been replaced by another
+        # process. Host rollback would follow mutable ancestors outside the
+        # publication sandbox. Preserve successful outputs and report them so
+        # recovery never deletes an object we no longer own.
+        if committed:
+            retained = ", ".join(path.relative_to(root.resolve()).as_posix() for path in committed)
+            raise ImageGenerationError(
+                "Image publication failed; already-created outputs were retained: " + retained
+            ) from exc
         raise
 
     images: list[dict[str, Any]] = []
@@ -448,6 +465,7 @@ def _normalize_and_validate_image(
     max_bytes: int,
     max_pixels: int,
 ) -> tuple[bytes, dict[str, Any]]:
+    Image, UnidentifiedImageError = _load_image_decoder()
     try:
         with Image.open(io.BytesIO(raw_bytes)) as opened:
             width, height = opened.size
@@ -491,7 +509,8 @@ def _normalize_and_validate_image(
 
 
 def _atomic_create_bytes(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    guard_host_mutation(path)
+    mkdir_host_path(path.parent)
     fd, temp_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
@@ -504,12 +523,18 @@ def _atomic_create_bytes(path: Path, payload: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         try:
-            os.link(temp_path, path)
+            if os.name == "nt":
+                rename_host_file_no_replace(temp_path, path)
+            else:
+                os.link(temp_path, path)
         except FileExistsError as exc:
             raise ImageGenerationError(
                 f"Refusing to overwrite existing image file: {path.name}"
             ) from exc
         except OSError:
+            if os.name == "nt":
+                # A denied guarded rename must not reopen a rejected pathname.
+                raise
             # Filesystems without hard-link support still get an exclusive,
             # fully-written target. The fallback never overwrites an existing path.
             try:

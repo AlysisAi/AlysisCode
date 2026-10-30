@@ -7,12 +7,10 @@ configuration library inside the fixed checkpoint deadline.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NamedTuple
 
 
-@dataclass(frozen=True, slots=True)
-class CheckpointSettings:
+class CheckpointSettings(NamedTuple):
     enabled: bool
     max_files: int
     max_total_bytes: int

@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import socket
+import stat
 import threading
 from pathlib import Path
 
@@ -53,6 +54,17 @@ def test_atomic_write_text_replaces_existing_file_without_temp_leaks(tmp_path: P
 
     assert target.read_text(encoding="utf-8") == "after\n"
     assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable to Windows")
+def test_atomic_write_text_preserves_existing_file_mode(tmp_path: Path) -> None:
+    target = tmp_path / "artifact.txt"
+    target.write_text("before\n", encoding="utf-8")
+    target.chmod(0o640)
+
+    atomic_write_text(target, "after\n")
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
 
 
 def test_atomic_write_json_overwrites_existing_file_atomically(tmp_path: Path) -> None:

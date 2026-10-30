@@ -67,7 +67,7 @@ try:
 finally:
     bridge.close()
 
-fixture = Path(sys.argv[1]) / "schemas/forge-host-v2/fixtures/valid/planner-input-request.json"
+fixture = Path(sys.argv[1]) / "tests/fixtures/forge_host_v2/valid/planner-input-request.json"
 envelope = json.loads(fixture.read_text(encoding="utf-8"))
 envelope["payload"]["input"]["text"] = request["id"]
 encoded = encode_envelope(validate_envelope(envelope))
@@ -154,9 +154,8 @@ def test_private_protocol_preserves_unicode_with_cp1252_parent_stdio(tmp_path: P
     assert len(lines) == 2
     ide_response, forge_response = map(json.loads, lines)
     assert ide_response["id"] == text
-    assert "computer.respond" in ide_response["result"]["methods"]
-    assert "browser_start.respond" in ide_response["result"]["methods"]
-    assert "task_budget.respond" in ide_response["result"]["methods"]
+    for method in ("computer.respond", "browser_start.respond", "task_budget.respond"):
+        assert (method in ide_response["result"]["methods"]) is (sys.platform == "darwin")
     assert forge_response["payload"]["input"]["text"] == text
     assert text.encode("utf-8") in probe.stdout
 

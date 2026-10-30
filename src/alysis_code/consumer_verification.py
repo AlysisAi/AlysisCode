@@ -16,6 +16,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -63,10 +64,30 @@ class _ConsumerProcessRegistry(ProcessGroupRegistry):
         super().__init__()
         self.parent = parent
 
-    def register(self, *, pgid: int, command: str, origin: str):
-        record = super().register(pgid=pgid, command=command, origin=origin)
+    def register(
+        self,
+        *,
+        pgid: int,
+        command: str,
+        origin: str,
+        track_descendants: bool = False,
+        process_owner=None,
+    ):
+        record = super().register(
+            pgid=pgid,
+            command=command,
+            origin=origin,
+            track_descendants=track_descendants,
+            process_owner=process_owner,
+        )
         if record is not None and self.parent is not None:
-            self.parent.register(pgid=pgid, command=command, origin=origin)
+            self.parent.register(
+                pgid=pgid,
+                command=command,
+                origin=origin,
+                track_descendants=track_descendants,
+                process_owner=process_owner,
+            )
         return record
 
     def release(self, pgid: int) -> None:
@@ -79,6 +100,18 @@ class _ConsumerProcessRegistry(ProcessGroupRegistry):
 
     def __exit__(self, *_args):
         reap_tracked_groups(self, grace_seconds=0.1)
+
+
+@contextmanager
+def _consumer_stage(registry: ProcessGroupRegistry):
+    # The bound callback retains the directory object and its Windows read-only
+    # cleanup behavior. Its finalizer cannot delete a live worker's cwd early.
+    directory = tempfile.TemporaryDirectory(prefix="alysis-consumer-")
+    try:
+        yield directory.name
+    finally:
+        if not registry.defer_cleanup(directory.cleanup):
+            directory.cleanup()
 
 
 def _relative(raw: object) -> Path:
@@ -329,6 +362,7 @@ def run_consumer_profile(
     process_group_registry: ProcessGroupRegistry | None = None,
     service_status: Callable[..., dict[str, Any]] | None = None,
     authorize_artifact_read: Callable[[str], Any] | None = None,
+    before_command_launch: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Execute proposed checks without replacing any host/user verification contract."""
     spec = validate_consumer_profile(spec)
@@ -371,11 +405,18 @@ def run_consumer_profile(
             )
         )
 
-    with (
-        tempfile.TemporaryDirectory(prefix="alysis-consumer-") as temporary,
-        _ConsumerProcessRegistry(process_group_registry) as consumer_registry,
-    ):
+    consumer_registry = _ConsumerProcessRegistry(process_group_registry)
+    with _consumer_stage(consumer_registry) as temporary, consumer_registry:
         stage = Path(temporary).resolve()
+        from .agent.scoped_access import ExecutionDirectoryIdentity
+
+        stage_identity = ExecutionDirectoryIdentity.capture(str(stage))
+
+        def check_launch_directory() -> None:
+            stage_identity.check()
+            if before_command_launch is not None:
+                before_command_launch()
+
         for name, source in files.items():
             _check_deadline(deadline)
             target = stage / name
@@ -475,6 +516,7 @@ def run_consumer_profile(
                 cfg=cfg,
                 timeout_s=deadline - time.monotonic(),
                 process_group_registry=consumer_registry,
+                before_command_launch=check_launch_directory,
             )
             if not result.command_results:
                 return {

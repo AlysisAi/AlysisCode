@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .agent_loop import run_agent
 from .branding import env_get_from
 from .command_text import command_text
 from .config import AppConfig, ConfigError, clone_cfg
@@ -125,6 +124,13 @@ class AutoResolveOutcome:
     error: str | None
     agent_exit_code: int | None = None
     salvaged_nonzero_exit: bool = False
+
+
+def run_agent(*args: Any, **kwargs: Any) -> Any:
+    # Conflict resolution is optional; loading its settings should stay lightweight.
+    from .agent_loop import run_agent as run
+
+    return run(*args, **kwargs)
 
 
 def _parse_bool(raw: object, *, default: bool) -> bool:

@@ -222,7 +222,14 @@ def test_stdio_mcp_images_reach_one_model_request_without_persistence(
                     raw={},
                 )
             if len(self.counts) == 2:
-                assert parts, "The read-only fixture must deliver its image to this request."
+                assert parts, {
+                    "error": "The read-only fixture must deliver its image to this request.",
+                    "tool_results": [
+                        str(message.get("content", ""))[:1200]
+                        for message in messages
+                        if message.get("role") == "tool"
+                    ][-3:],
+                }
                 assert parts[0]["image_url"]["url"] == f"data:image/png;base64,{data}"
                 if outcome == "provider_failure":
                     raise RuntimeError("Provider disconnected during image request")

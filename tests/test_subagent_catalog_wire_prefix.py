@@ -104,6 +104,19 @@ def _resume(tools: Any, run_id: str, task: str) -> dict[str, Any]:
     return result["results"][resumed["run_id"]]
 
 
+def _retained_history(request: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    history = request[key]
+    metadata = [
+        item
+        for item in history
+        if item.get("role") in {"system", "developer"}
+        and isinstance(item.get("content"), str)
+        and item["content"].startswith("Runtime request metadata: ")
+    ]
+    assert len(metadata) <= 1
+    return [item for item in history if item not in metadata]
+
+
 @pytest.mark.parametrize("protocol", ["responses", "compat", "anthropic"])
 def test_real_child_catalog_keeps_fresh_prefix_through_two_resumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protocol: str
@@ -123,7 +136,10 @@ def test_real_child_catalog_keeps_fresh_prefix_through_two_resumes(
         for previous, current in zip(requests, requests[1:], strict=False):
             # Keep earlier continuation notices and tasks, not only the fresh
             # bootstrap. Dropping a previous resume notice breaks this prefix.
-            assert current[history_key][: len(previous[history_key])] == previous[history_key]
+            previous_history = _retained_history(previous, history_key)
+            assert (
+                _retained_history(current, history_key)[: len(previous_history)] == previous_history
+            )
             assert current.get("instructions") == previous.get("instructions")
             assert current.get("system") == previous.get("system")
             assert current["tools"] == previous["tools"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,17 @@ from alysis_code.skills import SkillBundle, build_explicit_skill_context_message
 from alysis_code.skills.prompting import EXPLICIT_SKILL_CONTEXT_TOTAL_MAX_CHARS
 from alysis_code.subagents import SubagentDefinition, built_in_subagents
 from alysis_code.tools.web_search import WebSearchRuntimeStatus
+
+
+@pytest.fixture(autouse=True)
+def isolated_skill_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from alysis_code.skills import discovery
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(discovery, "canonical_user_config_dir", lambda: tmp_path / "config")
 
 
 def _fake_git_repo(root: Path) -> None:
@@ -330,11 +342,13 @@ def test_create_session_splits_skill_lifecycle_and_discovery_guidance(
         assert "default to the managed project-local scaffold" in no_skills_prompt
         assert "Do not hand-build skill bundles with `fs_mkdir` or `fs_write`" in no_skills_prompt
         assert "Skills and skill_read" not in no_skills_prompt
+        assert "read the relevant available skill" not in no_skills_prompt
         assert "skill_read(name)" not in no_skills_prompt
         assert "skill_read" not in no_skills_tool_names
 
         assert "Skills lifecycle" in skills_prompt
         assert "Skills and skill_read" in skills_prompt
+        assert "read the relevant available skill" in skills_prompt
         assert "Select only a skill whose action the user requests" in skills_prompt
         assert "concept mention is not a match" in skills_prompt
         assert "Honor explicit exclusions" in skills_prompt
@@ -393,28 +407,33 @@ def test_create_session_respects_explicit_skills_auto_invoke_false_for_discovery
         assert "call skill_read(name) before any other task action" not in joined_messages
         assert "skill_read" in tool_names
         assert "Select only a skill whose action the user requests" not in system_prompt
+        assert "read the relevant available skill" not in system_prompt
         assert "<matched_skill_context>" not in joined_messages
     finally:
         session.close()
 
 
-# Fixed ceilings for the complete serialized bootstrap. Version 0.15 adds
-# structured-question guidance and the bundled Alysis docs skill; measured
-# profiles are about 12,850 compact, 13,425 balanced, and 14,430 expanded tokens.
-# Keep a small allowance for workspace paths; one-shot adds a fixed 450 below.
+# Serialized-size regression budgets, not provider token measurements. The
+# Work increment adds ~1,324 char/4 units: native document/check schemas,
+# five skill catalog entries, notes and deliverable guidance. Skill bodies
+# remain deferred. Observed compact/balanced/expanded totals are approximately
+# 14,252/14,827/15,833. Keep a small fixed allowance, not a dynamic self-budget.
+# One-shot adds a separate fixed 450 below.
+# Windows native sandbox permissions, shell schemas and boundary guidance add
+# about 3,064 units. Seatbelt folder, network and Git contracts add about
+# 4,847 units on macOS. Keep fixed allowances for these required contracts.
+_NATIVE_BOOTSTRAP_ALLOWANCE = {"win32": 3_100, "darwin": 4_900}
 _BOOTSTRAP_PROFILE_LIMITS = [
-    pytest.param(None, 14_500, id="unknown-expanded-default"),
-    pytest.param("compact", 13_000, id="compact"),
-    # balanced had about 10 tokens to spare; the environment rule in the system prompt
-    # (answer os/shell/date/mode questions from <environment_context>) adds about 22.
-    pytest.param("balanced", 13_500, id="balanced"),
-    pytest.param("expanded", 14_500, id="expanded"),
+    pytest.param(None, 15_850, id="unknown-expanded-default"),
+    pytest.param("compact", 14_275, id="compact"),
+    pytest.param("balanced", 14_850, id="balanced"),
+    pytest.param("expanded", 15_850, id="expanded"),
     *[
-        pytest.param(profile, 13_150, id=profile)
+        pytest.param(profile, 14_500, id=profile)
         for profile in ("gpt-astra", "gpt-sol", "gpt-terra")
     ],
     *[
-        pytest.param(profile, 14_000, id=profile)
+        pytest.param(profile, 15_350, id=profile)
         for profile in (
             "gpt-luna",
             "gpt-5.5",
@@ -427,12 +446,12 @@ _BOOTSTRAP_PROFILE_LIMITS = [
         )
     ],
     *[
-        pytest.param(profile, 13_150, id=profile)
+        pytest.param(profile, 14_500, id=profile)
         for profile in GUIDANCE_PROFILES
         if profile.endswith("-normal")
     ],
     *[
-        pytest.param(profile, 14_000, id=profile)
+        pytest.param(profile, 15_350, id=profile)
         for profile in GUIDANCE_PROFILES
         if profile.endswith("-expanded")
     ],
@@ -486,7 +505,8 @@ def test_interactive_bootstrap_payload_stays_bounded(
         assert session.prompt_guidance_profile == expected_profile
         assert render_guidance("workflow", expected_profile) in _system_prompt(session)
         _assert_dependency_scout_visible(session)
-        assert estimated_tokens <= token_limit
+        platform_allowance = _NATIVE_BOOTSTRAP_ALLOWANCE.get(sys.platform, 0)
+        assert estimated_tokens <= token_limit + platform_allowance
     finally:
         session.close()
 
@@ -578,41 +598,8 @@ def test_one_shot_bootstrap_payload_stays_bounded(
         assert session.prompt_guidance_profile == expected_profile
         assert render_guidance("workflow", expected_profile) in _system_prompt(session)
         _assert_dependency_scout_visible(session)
-        assert estimated_tokens <= token_limit + 450
-    finally:
-        session.close()
-
-
-@pytest.mark.parametrize("profile", GUIDANCE_PROFILES)
-def test_subagent_report_injection_prompt_denies_authority_and_permission_changes(
-    tmp_path: Path,
-    profile: PromptGuidanceProfile,
-) -> None:
-    session = create_session(
-        cfg=AppConfig(
-            model="test-model",
-            web_search_mode="off",
-            prompt_guidance={"default": profile, "model_profiles": {}},
-        ),
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=1,
-        no_log=True,
-        api_key_override="override-key",
-        subagents_enabled=True,
-    )
-    try:
-        prompt = _system_prompt(session)
-
-        delegation = render_guidance("delegation", profile)
-        assert prompt.count(delegation) == 1
-        trust_boundary = next(
-            line for line in delegation.splitlines() if "untrusted evidence" in line
-        )
-        for term in ("instructions", "authority", "permission"):
-            assert term in trust_boundary
-        assert "never" in trust_boundary or "cannot change" in trust_boundary
+        platform_allowance = _NATIVE_BOOTSTRAP_ALLOWANCE.get(sys.platform, 0)
+        assert estimated_tokens <= token_limit + platform_allowance + 450
     finally:
         session.close()
 

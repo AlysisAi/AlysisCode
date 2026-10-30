@@ -10,15 +10,19 @@ import copy
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..extensions.activation import resolve_active_plugins
-from ..extensions.bundled import bundled_manifest
-from ..extensions.manifest import load_manifest, resolve_manifest_path
+from pydantic import ValidationError
+
+from ..extensions.activation import ActivationDecision, resolve_active_plugins
+from ..extensions.bundled import bundled_manifest, same_bundled_access
+from ..extensions.manifest import PluginManifest, load_manifest, resolve_manifest_path
+from ..extensions.models import ExtensionState, ProjectExtensionOverrides
 from ..extensions.paths import installed_plugin_root
 from ..extensions.registry import find_by_id, load_registry
-from ..extensions.state import load_global_state, load_project_state
+from ..extensions.state import compute_effective_enabled, load_global_state, load_project_state
 from ..host_actions import HostActionError
 from .untrusted_content import build_untrusted_mcp_text_block, reduce_model_facing_tool_schema
 
@@ -37,7 +41,9 @@ def _fail(message: str) -> None:
 
 def _json_copy(value: Any, *, limit: int) -> Any:
     try:
-        encoded = json.dumps(value, allow_nan=False, ensure_ascii=True)
+        # Measured in compact UTF-8, as the app measures (review M2D1-C1): escaping non-ASCII would
+        # count a CJK character as 6 bytes and an emoji as 12. A lone surrogate can't be encoded.
+        encoded = json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > limit:
             _fail("GitHub MCP payload exceeds its size limit.")
         return json.loads(encoded)
@@ -51,11 +57,18 @@ def normalize_host_mcp_catalog(raw: Any) -> dict[str, Any] | None:
     raw = _json_copy(raw, limit=GITHUB_MCP_MAX_CATALOG_BYTES)
     if (
         isinstance(raw, dict)
+        and "instructions" in raw
+        and (not isinstance(raw["instructions"], str) or len(raw["instructions"]) > 12_000)
+    ):
+        _fail("GitHub server instructions must be a bounded string.")
+    if (
+        isinstance(raw, dict)
         and type(raw.get("protocol_version")) is int
         and raw["protocol_version"] == 2
     ):
         if (
-            set(raw) != {"protocol_version", "plugin_id", "server_id", "discovery"}
+            set(raw) - {"instructions"}
+            != {"protocol_version", "plugin_id", "server_id", "discovery"}
             or raw["discovery"] != {"version": 1}
             or type(raw["discovery"].get("version")) is not int
         ):
@@ -63,7 +76,7 @@ def normalize_host_mcp_catalog(raw: Any) -> dict[str, Any] | None:
         if raw["plugin_id"] != GITHUB_PLUGIN_ID or raw["server_id"] != GITHUB_MCP_SERVER_ID:
             _fail("host_mcp must identify the installed GitHub MCP plugin.")
         return raw
-    if not isinstance(raw, dict) or set(raw) != {
+    if not isinstance(raw, dict) or set(raw) - {"instructions"} != {
         "protocol_version",
         "plugin_id",
         "server_id",
@@ -115,7 +128,53 @@ def active_host_plugin(
     root: Path, plugin_id: str, server_name: str, url: str
 ) -> dict[str, Any] | None:
     """Verify installed content and runtime trust; an enabled id alone grants nothing."""
-    decision = resolve_active_plugins(repo_root=root, workspace_trust_prompt=None)
+    verified = verified_host_plugin(root, plugin_id, server_name, url)
+    return verified[0] if verified is not None else None
+
+
+def verified_host_plugin(
+    root: Path, plugin_id: str, server_name: str, url: str
+) -> tuple[dict[str, Any], PluginManifest] | None:
+    """`active_host_plugin`'s answer together with the installed descriptor it verified."""
+
+    def serves(manifest: PluginManifest) -> bool:
+        return any(
+            server.id == server_name
+            and server.host_managed
+            and server.enabled
+            and str(server.url) == url
+            for server in manifest.components.mcp_server
+        )
+
+    return verified_bundled_plugin(root, plugin_id, server_name, serves)
+
+
+def verified_bundled_plugin(
+    root: Path,
+    plugin_id: str,
+    server_name: str,
+    serves: Callable[[PluginManifest], bool],
+    *,
+    user_only: bool = False,
+) -> tuple[dict[str, Any], PluginManifest] | None:
+    """A bundled plugin that is on, installed with its pins intact, and whose installed
+    descriptor `serves` the component asked for. ``user_only`` skips project installs."""
+    try:
+        decision = resolve_active_plugins(repo_root=root, workspace_trust_prompt=None)
+        project_state = load_project_state(root)
+    except (RuntimeError, ValidationError):
+        # A malformed repository file (.alysis/extensions.json) is untrusted input: ignore it
+        # and use the user's own plugin state, instead of failing the plugin or the session.
+        global_state = load_global_state()
+        decision = ActivationDecision(
+            enabled_plugin_ids=frozenset(
+                compute_effective_enabled(global_state, ProjectExtensionOverrides())
+            ),
+            workspace_trust_was_prompted=False,
+            workspace_trust_granted=False,
+            untrusted_project_plugin_ids=frozenset(),
+        )
+        project_state = ExtensionState()
     if plugin_id not in decision.enabled_plugin_ids:
         return None
     entry = find_by_id(load_registry(), plugin_id)
@@ -123,42 +182,47 @@ def active_host_plugin(
         return None
     expected = bundled_manifest(entry)
     digest = hashlib.sha256(expected).hexdigest()
-    for project, state in ((False, load_global_state()), (True, load_project_state(root))):
-        if project and not decision.workspace_trust_granted:
+    for project, state in ((False, load_global_state()), (True, project_state)):
+        if project and (user_only or not decision.workspace_trust_granted):
             continue
         record = state.installed.get(plugin_id)
         if record is None or record.trust != "manifest-sha256" or record.source_kind != "bundled":
             continue
-        if (
-            record.manifest_sha256 != digest
-            or record.package_sha256 != digest
-            or record.commit != entry.commit
+        installed_digest = record.manifest_sha256 or ""
+        current = (
+            installed_digest == digest
+            and record.package_sha256 == digest
+            and record.commit == entry.commit
+        )
+        # A descriptor bundled by an earlier Alysis version stays valid while its own pins
+        # hold and it grants exactly what this version's copy grants (only its text changed).
+        if not current and (
+            record.package_sha256 != installed_digest
+            or record.commit != f"sha256:{installed_digest}"
         ):
             continue
         plugin_root = installed_plugin_root(plugin_id, project=project, repo_root=root)
         try:
             manifest_bytes = resolve_manifest_path(plugin_root).read_bytes()
-            if manifest_bytes != expected:
+            if current and manifest_bytes != expected:
+                continue
+            if not current and hashlib.sha256(manifest_bytes).hexdigest() != installed_digest:
                 continue
             manifest = load_manifest(plugin_root)
         except (OSError, ValueError):
             continue
-        if not any(
-            server.id == server_name
-            and server.host_managed
-            and server.enabled
-            and str(server.url) == url
-            for server in manifest.components.mcp_server
-        ):
+        if not current and not same_bundled_access(manifest, expected):
+            continue
+        if not serves(manifest):
             continue
         return {
             "plugin_id": plugin_id,
             "server_id": f"{plugin_id}/{server_name}",
-            "manifest_sha256": digest,
-            "package_sha256": digest,
+            "manifest_sha256": installed_digest,
+            "package_sha256": installed_digest,
             "source_kind": "bundled",
             "scope": "project" if project else "user",
-        }
+        }, manifest
     return None
 
 

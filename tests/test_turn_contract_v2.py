@@ -46,6 +46,7 @@ from alysis_code.agent.verification import (
     TurnExecutionState,
     _completion_gate_problems,
     _completion_gate_repair_stage,
+    _record_tool_effect,
 )
 from alysis_code.config import AppConfig, ConfigError, set_config_value
 
@@ -82,6 +83,29 @@ def test_input_reference_is_not_extracted_as_named_locus(tmp_path: Path) -> None
     loci = {e.text for e in contract.expectations if e.kind == ExpectationKind.NAMED_LOCUS}
     assert "data.txt" not in loci
     assert "answer.txt" in loci
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Give a concise explanation with an input/output example table and a Mermaid flowchart.",
+        "Explain the read/write behavior with examples.",
+        "Inspect src/output.py and report the findings.",
+        "Inspect src/create.py and report the findings.",
+    ],
+)
+def test_path_words_do_not_create_output_requirements(tmp_path: Path, instruction: str) -> None:
+    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    assert not any(e.kind == ExpectationKind.NAMED_LOCUS for e in contract.expectations)
+    assert not any(ref.role.value == "required_output" for ref in contract.path_refs)
+
+
+@pytest.mark.parametrize("path", ["input/output", "before/after", "src/output.py"])
+def test_explicit_output_path_still_requires_an_artifact(tmp_path: Path, path: str) -> None:
+    contract = build_acceptance_contract(root=tmp_path, instruction=f"Create the file `{path}`.")
+    assert any(
+        e.kind == ExpectationKind.NAMED_LOCUS and e.text == path for e in contract.expectations
+    )
 
 
 def test_backtick_command_is_not_expected_output(tmp_path: Path) -> None:
@@ -325,6 +349,156 @@ def test_gate_unaddressed_expectation_blocks_then_clears_after_editing_locus() -
     state.touched_repo_paths.add("src/foo.py")  # now edit the named locus
     cleared = _gate(state)
     assert "expectations_unaddressed" not in cleared
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_scoped_external_edit_confirms_only_its_exact_locus(tmp_path, failure):
+    project = tmp_path / "project"
+    project.mkdir()
+    external = tmp_path / "shared"
+    external.mkdir()
+    target = external / "report.txt"
+    state = _state_with_locus(str(target))
+    _record_tool_effect(
+        root=project,
+        state=state,
+        tool_name="fs_write",
+        arguments={"path": str(target)},
+        status="failed" if failure else "done",
+        result={"path": str(target), "scoped_workspace": str(external), "created": True},
+        known_verification_commands=[],
+    )
+    assert not state.touched_repo_paths
+    assert state.touched_external_paths == (set() if failure else {str(target)})
+    assert ("expectations_unaddressed" in _gate(state)) is failure
+    state.acceptance_contract.expectations = [
+        Expectation("exp002", ExpectationKind.NAMED_LOCUS, str(external / "other.txt"), "q")
+    ]
+    assert "expectations_unaddressed" in _gate(state)
+
+
+@pytest.mark.parametrize("canonical_argument", [False, True])
+def test_external_output_uses_exact_host_observation_and_rechecks_alias(
+    tmp_path, canonical_argument
+):
+    from alysis_code.agent.acceptance_contract import finalize_acceptance_contract
+
+    root, external, other = (tmp_path / name for name in ("main", "outside", "other"))
+    for path in (root, external, other):
+        path.mkdir()
+        (path / "output.custom").write_text("synthetic")
+    alias = tmp_path / "外部 alias"
+    try:
+        alias.symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows account lacks symlink creation privilege")
+        raise
+    requested, target = alias / "output.custom", external / "output.custom"
+    contract = build_acceptance_contract(
+        root=root, instruction=f'Write the result to "{requested}".'
+    )
+    state = TurnExecutionState(execution_requested=True, acceptance_contract=contract)
+    finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
+    assert "acceptance_criteria_unverified" in contract.problem_names()
+    _record_tool_effect(
+        root=root,
+        state=state,
+        tool_name="fs_write",
+        arguments={"path": str(target if canonical_argument else requested)},
+        status="done",
+        result={"path": str(target), "scoped_workspace": str(external), "created": True},
+        known_verification_commands=[],
+    )
+    finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
+    assert "acceptance_criteria_unverified" not in contract.problem_names()
+    assert not state.compute_expectation_assessment(enabled=True, turn_intent="execute").unaddressed
+    assert "external_path_observations" not in contract.as_payload()
+    target.unlink()
+    finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
+    assert "acceptance_criteria_unverified" in contract.problem_names()
+    target.write_text("restored")
+    finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
+    assert "acceptance_criteria_unverified" not in contract.problem_names()
+    alias.unlink()
+    alias.symlink_to(other, target_is_directory=True)
+    finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
+    assert "acceptance_criteria_unverified" in contract.problem_names()
+
+
+@pytest.mark.parametrize("failure,private", [(True, False), (False, True)])
+def test_failed_or_private_external_output_cannot_satisfy_required_artifact(
+    tmp_path, monkeypatch, failure, private
+):
+    from alysis_code.agent.acceptance_contract import finalize_acceptance_contract
+
+    root, external = tmp_path / "main", tmp_path / "outside"
+    root.mkdir()
+    external.mkdir()
+    target = external / "output.custom"
+    target.write_text("synthetic")
+    if private:
+        monkeypatch.setenv("ALYSIS_MEMORY_HOME", str(external))
+    contract = build_acceptance_contract(root=root, instruction=f'Write the result to "{target}".')
+    state = TurnExecutionState(execution_requested=True, acceptance_contract=contract)
+    _record_tool_effect(
+        root=root,
+        state=state,
+        tool_name="fs_write",
+        arguments={"path": str(target)},
+        status="failed" if failure else "done",
+        result={"path": str(target), "scoped_workspace": str(external), "created": True},
+        known_verification_commands=[],
+    )
+    finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
+    assert "acceptance_criteria_unverified" in contract.problem_names()
+
+
+@pytest.mark.parametrize("attached", [False, True])
+def test_attached_folder_edit_records_only_the_authorized_exact_path(tmp_path, attached):
+    from alysis_code.project_folders import folder_scope
+
+    project, extra = tmp_path / "project", tmp_path / "共有"
+    project.mkdir()
+    extra.mkdir()
+    target = extra / "report.txt"
+    state = _state_with_locus(str(target))
+    with folder_scope(project, [str(extra)] if attached else []):
+        _record_tool_effect(
+            root=project,
+            state=state,
+            tool_name="fs_write",
+            arguments={"path": str(target)},
+            status="done",
+            result={"path": str(target), "created": True},
+            known_verification_commands=[],
+        )
+    assert state.touched_external_paths == ({str(target)} if attached else set())
+    assert ("expectations_unaddressed" in _gate(state)) is not attached
+    # Same filename in another folder must not be credited as the edited target.
+    state.acceptance_contract.expectations = [
+        Expectation("exp002", ExpectationKind.NAMED_LOCUS, str(project / target.name), "q")
+    ]
+    assert "expectations_unaddressed" in _gate(state)
+
+
+@pytest.mark.parametrize("tool", ["fs_read", "shell_run", "fs_write"])
+def test_unrelated_or_read_only_scoped_results_cannot_confirm_an_edit(tmp_path, tool):
+    project = tmp_path / "project"
+    external = tmp_path / "shared"
+    target = external / "report.txt"
+    state = _state_with_locus(str(target))
+    _record_tool_effect(
+        root=project,
+        state=state,
+        tool_name=tool,
+        arguments={"path": str(external / "different.txt") if tool == "fs_write" else str(target)},
+        status="done",
+        result={"path": str(target), "scoped_workspace": str(external)},
+        known_verification_commands=[],
+    )
+    assert not state.touched_external_paths
+    assert "expectations_unaddressed" in _gate(state)
 
 
 def test_gate_expectation_confirmed_by_run_output() -> None:

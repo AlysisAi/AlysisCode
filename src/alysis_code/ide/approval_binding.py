@@ -122,6 +122,30 @@ def normalize_approval_action(
         "file_arguments": ordered_files,
         "tool_identity": _tool_identity(metadata),
     }
+    from ..agent.artifact_output_observation import FileMetadataApproval
+
+    if isinstance(request, FileMetadataApproval):
+        action["access"] = "read"
+        action["risk_level"] = "unknown"
+    if kind == "sandbox_access":
+        from ..agent.scoped_access import SandboxAccessApproval
+
+        # A capability request has no intrinsic risk score until assessed.
+        # Only the internal admission type supplies capability access metadata.
+        action["risk_level"] = "unknown"
+        if isinstance(request, SandboxAccessApproval) and metadata.get("access") in {
+            "read",
+            "write",
+            "network",
+            "control",
+        }:
+            action["access"] = metadata["access"]
+    assessment = metadata.get("approval_review")
+    if isinstance(assessment, dict):
+        if assessment.get("risk") in {"low", "medium", "high", "critical", "unknown"}:
+            action["risk_level"] = assessment["risk"]
+        if assessment.get("intent_level") in {"low", "medium", "high", "unknown"}:
+            action["intent_level"] = assessment["intent_level"]
     if isinstance(metadata.get("host_action"), str):
         # Main's negotiated descriptor describes the remote effect, independently
         # of the generic MCP transport kind. Include the safe scope in the hash.
@@ -155,7 +179,7 @@ def normalize_connector_approval_context(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
         or not set(value) <= fields
-        or value.get("connector") not in ("GitHub", "Google")
+        or value.get("connector") not in ("GitHub", "Google", "Custom", "Verified")
     ):
         raise ValueError("Invalid connector approval context.")
     result = {"connector": value["connector"]}

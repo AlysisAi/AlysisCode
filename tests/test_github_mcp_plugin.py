@@ -18,6 +18,7 @@ from alysis_code.extensions.install import (
     uninstall_plugin,
 )
 from alysis_code.extensions.paths import installed_plugin_root
+from alysis_code.extensions.registry import load_registry
 from alysis_code.extensions.workspace_trust import grant_workspace_trust
 from alysis_code.host_actions import (
     HostActionError,
@@ -26,6 +27,7 @@ from alysis_code.host_actions import (
 )
 from alysis_code.ide import stdio_bridge
 from alysis_code.ide.management_protocol import handle_management_method
+from alysis_code.mcp import github_host
 from alysis_code.mcp.github_host import (
     GITHUB_MCP_ACTION,
     active_github_plugin,
@@ -34,6 +36,7 @@ from alysis_code.mcp.github_host import (
 )
 from alysis_code.surface import ApprovalDecision
 from tests.fixtures.github_host.bridge import FixtureSession
+from tests.fixtures.github_repository_policy import explicit_all
 from tests.test_host_actions import _ApprovalSurface, _build_tools, _store
 from tests.test_ide_host_actions import _request, _respond, _response_for, _wait_for
 
@@ -164,6 +167,35 @@ def test_readonly_exposes_only_host_policy_read_tools_and_writes_require_host_au
 
 
 @pytest.mark.parametrize(
+    "name", ["$defs", "definitions", "dependentSchemas", "patternProperties", "properties"]
+)
+def test_model_facing_github_schema_strips_annotations_of_keyword_named_arguments(installed, name):
+    catalog = copy.deepcopy(CATALOG)
+    catalog["tools"][1]["inputSchema"]["properties"][name] = {
+        "type": "string",
+        "description": "SERVER_INSTRUCTION_SENTINEL",
+        "title": "ANNOTATION_SENTINEL",
+    }
+    bound = bind_host_mcp_catalog(installed, normalize_host_mcp_catalog(catalog))
+    tools = _build_tools(
+        installed, actions=(GITHUB_MCP_ACTION,), host_mcp=bound, handler=lambda *_: RESULT
+    )
+    parameters = tools["mcp__github__create_pull_request"].parameters
+    assert parameters["properties"][name] == {"type": "string"}
+    assert "SENTINEL" not in json.dumps(parameters)
+
+
+def test_model_facing_github_schema_keeps_the_pull_request_title(installed):
+    bound = bind_host_mcp_catalog(installed, normalize_host_mcp_catalog(CATALOG))
+    tools = _build_tools(
+        installed, actions=(GITHUB_MCP_ACTION,), host_mcp=bound, handler=lambda *_: RESULT
+    )
+    parameters = tools["mcp__github__create_pull_request"].parameters
+    assert parameters["properties"]["title"] == {"type": "string"}
+    assert parameters["required"] == ["title"]
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         lambda c: c.update(plugin_id="other.plugin"),
@@ -221,6 +253,7 @@ def test_production_bridge_and_tool_assembly_round_trip(installed, monkeypatch, 
                         "protocol_version": "1",
                         "actions": [GITHUB_MCP_ACTION, "github.repo.read"],
                     },
+                    "github_repository_policy": explicit_all(installed),
                     "host_mcp": catalog,
                 },
                 "create",
@@ -353,6 +386,7 @@ def test_bridge_revokes_native_git_tools_when_bound_plugin_is_disabled(
                         "protocol_version": "1",
                         "actions": [GITHUB_MCP_ACTION, action],
                     },
+                    "github_repository_policy": explicit_all(installed),
                     "host_mcp": CATALOG,
                 },
                 "create",
@@ -423,3 +457,96 @@ def test_active_plugin_honors_only_trusted_project_enablement(installed, globall
     assert bool(active_github_plugin(installed)) != globally_enabled
     overrides.write_text(overrides.read_text() + "\n")
     assert bool(active_github_plugin(installed)) == globally_enabled
+
+
+def _ship_new_github_descriptor(monkeypatch, *, old: str, new: str) -> None:
+    """Simulate a newer Alysis that bundles an edited GitHub descriptor."""
+    original = github_host.bundled_manifest(
+        github_host.find_by_id(load_registry(), "alysis.github")
+    )
+    content = original.replace(old.encode(), new.encode())
+    assert content != original
+    digest = hashlib.sha256(content).hexdigest()
+    registry = load_registry()
+    entry = github_host.find_by_id(registry, "alysis.github")
+    entry.package_sha256 = digest
+    entry.commit = f"sha256:{digest}"
+    monkeypatch.setattr(github_host, "load_registry", lambda: registry)
+    monkeypatch.setattr(github_host, "bundled_manifest", lambda _entry: content)
+    monkeypatch.setattr("alysis_code.ide.management_protocol.load_registry", lambda: registry)
+    monkeypatch.setattr(
+        "alysis_code.ide.management_protocol.bundled_manifest", lambda _entry: content
+    )
+    monkeypatch.setattr("alysis_code.extensions.install.load_registry", lambda: registry)
+    monkeypatch.setattr("alysis_code.extensions.install.bundled_manifest", lambda _entry: content)
+
+
+def test_an_app_update_with_a_reworded_descriptor_keeps_github_on(installed, monkeypatch):
+    before = active_github_plugin(installed)
+    assert before is not None
+    _ship_new_github_descriptor(monkeypatch, old='version = "1.0.0"', new='version = "1.0.1"')
+    after = active_github_plugin(installed)
+    assert after == before
+    info = handle_management_method(
+        "ext.info", {"workspace": str(installed), "plugin_id": "alysis.github"}, request_id=1
+    )
+    assert info["update_available"] is True
+    assert info["needs_review"] is False
+    assert info["enabled_effective"] is True
+
+
+def test_an_app_update_that_changes_access_turns_github_off_until_reviewed(installed, monkeypatch):
+    _ship_new_github_descriptor(
+        monkeypatch, old="https://api.githubcopilot.com/mcp/", new="https://example.com/mcp/"
+    )
+    assert active_github_plugin(installed) is None
+    info = handle_management_method(
+        "ext.info", {"workspace": str(installed), "plugin_id": "alysis.github"}, request_id=1
+    )
+    assert info["update_available"] is True
+    assert info["needs_review"] is True
+    # The Marketplace shows where the reviewed update would connect, from its descriptor.
+    assert info["extension"]["connects_to"] == ["https://example.com/mcp/"]
+
+
+@pytest.mark.parametrize("turned_off", [True, False])
+def test_installing_an_update_keeps_the_on_off_choice(installed, monkeypatch, turned_off):
+    if turned_off:
+        disable_plugin(plugin_id="alysis.github", repo_root=installed)
+    _ship_new_github_descriptor(monkeypatch, old='version = "1.0.0"', new='version = "1.0.1"')
+    install_plugin(source="alysis.github", repo_root=installed, trust_prompt=lambda _r: True)
+    info = handle_management_method(
+        "ext.info", {"workspace": str(installed), "plugin_id": "alysis.github"}, request_id=1
+    )
+    assert info["installed"]["version"] == "1.0.1"
+    assert info["update_available"] is False
+    assert info["enabled_effective"] is (not turned_off)
+    assert bool(active_github_plugin(installed)) is (not turned_off)
+
+
+def test_a_current_install_needs_no_update_or_review(installed):
+    info = handle_management_method(
+        "ext.info", {"workspace": str(installed), "plugin_id": "alysis.github"}, request_id=1
+    )
+    assert info["update_available"] is False
+    assert info["needs_review"] is False
+
+
+def test_a_tampered_older_descriptor_is_not_accepted(installed, monkeypatch):
+    _ship_new_github_descriptor(monkeypatch, old='version = "1.0.0"', new='version = "1.0.1"')
+    path = (
+        installed_plugin_root("alysis.github", project=False, repo_root=installed)
+        / "alysis-plugin.toml"
+    )
+    path.write_text(path.read_text() + "\n# changed\n")
+    assert active_github_plugin(installed) is None
+
+
+@pytest.mark.parametrize("content", ["{not json", '{"enabled": "alysis.github"}', "[]"])
+def test_a_malformed_repository_plugin_file_is_ignored(installed, content):
+    before = active_github_plugin(installed)
+    (installed / ".alysis").mkdir()
+    (installed / ".alysis" / "extensions.json").write_text(content, encoding="utf-8")
+    assert active_github_plugin(installed) == before
+    disable_plugin(plugin_id="alysis.github", repo_root=installed)
+    assert active_github_plugin(installed) is None

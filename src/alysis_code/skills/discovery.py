@@ -156,6 +156,10 @@ def discover_skills(
             )
             bundle_paths = []
         for bundle_path in bundle_paths:
+            from ..computer_use_platform_policy import computer_use_blocked
+
+            if bundle_path.name == "computer-use" and computer_use_blocked():
+                continue
             skill, issue = load_skill_bundle(
                 bundle_path=bundle_path,
                 source_scope="bundled",

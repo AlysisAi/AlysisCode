@@ -886,6 +886,31 @@ def test_stdio_client_allows_immediate_response_with_sub_window_timeout(
         client.close()
 
 
+def test_stdio_transport_allows_reader_scheduling_delay_after_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = _resolved_stdio_server(tmp_path, monkeypatch, {})
+    transport = transport_mod.McpStdioTransport(server=server, workspace_root=tmp_path)
+    try:
+        assert transport.request(method="tools/list", params={}, timeout_s=3).result == {
+            "tools": []
+        }
+        wait_for_follow_up = transport._wait_for_deferred_response_follow_up
+
+        def delayed_follow_up(**kwargs):
+            # A valid response must survive a short scheduling pause in its
+            # reader while the caller is already waiting for stdout to settle.
+            time.sleep(0.3)
+            return wait_for_follow_up(**kwargs)
+
+        monkeypatch.setattr(transport, "_wait_for_deferred_response_follow_up", delayed_follow_up)
+        assert transport.request(method="tools/list", params={}, timeout_s=3).result == {
+            "tools": []
+        }
+    finally:
+        transport.close()
+
+
 def test_stdio_transport_prioritizes_follow_up_timeout_over_late_quiet_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

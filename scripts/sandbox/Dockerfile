@@ -186,9 +186,8 @@ WORKDIR /opt/alysis
 # The digest is an official multi-platform uv image; the lockfile supplies hashes
 # for all Python runtime and build dependencies.
 COPY --from=ghcr.io/astral-sh/uv@sha256:2381d6aa60c326b71fd40023f921a0a3b8f91b14d5db6b90402e65a635053709 /uv /usr/local/bin/uv
-COPY pyproject.toml uv.lock README.md LICENSE NOTICE /opt/alysis/
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE hatch_build.py /opt/alysis/
 COPY src /opt/alysis/src
-COPY schemas/forge-host-v2/forge-host-v2.schema.json /opt/alysis/schemas/forge-host-v2/forge-host-v2.schema.json
 ENV UV_LINK_MODE=copy \
     UV_NO_DEV=1 \
     UV_PROJECT_ENVIRONMENT=/opt/alysis/.venv \

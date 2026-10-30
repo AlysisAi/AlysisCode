@@ -36,6 +36,7 @@ from .repo_scan import RepoScanResult, detect_fallback_test_commands, scan_works
 from .sandbox_runner import (
     HostShellRunner,
     build_shell_runner_from_settings,
+    execution_scope_fingerprint,
     with_closed_stdin,
 )
 from .sandbox_settings import resolve_shell_sandbox_settings
@@ -57,6 +58,10 @@ from .verification_contract import (
     rejection_reason_is_unclassifiable,
 )
 from .verification_failure_summary import summarize_verification_failure
+from .windows_verification_command import (
+    is_windows_verifier_command,
+    quote_windows_verifier_parts,
+)
 from .workspace_context import WorkspaceContext, WorkspaceContextError, resolve_workspace_context
 
 VERIFY_MODES = {"off", "warn", "strict"}
@@ -167,7 +172,7 @@ _PYTEST_NO_TESTS_RE = re.compile(
 )
 _UNITTEST_NO_TESTS_RE = re.compile(r"\bRan\s+0\s+tests\b", re.IGNORECASE)
 _JUNIT_ZERO_TESTS_RE = re.compile(r"\bTests\s+run:\s*0\b", re.IGNORECASE)
-_NODE_ZERO_TESTS_RE = re.compile(r"^\s*#\s+tests\s+0\s*$", re.IGNORECASE | re.MULTILINE)
+_NODE_ZERO_TESTS_RE = re.compile(r"^\s*[#ℹ]\s+tests\s+0\s*$", re.IGNORECASE | re.MULTILINE)
 _NOTHING_TO_DO_RE = re.compile(
     r"\b(?:nothing to be done|nothing to do|no work to do)\b",
     re.IGNORECASE,
@@ -347,6 +352,9 @@ class VerifyCommandResult:
     fallback_reason: str | None = None
     real_execution: bool | None = None
     non_execution_reason: str | None = None
+    host_launcher_unavailable: bool = False
+    execution_context: str | None = None
+    verification_execution_scope: str | None = None
 
     @property
     def status(self) -> VerificationCommandStatus:
@@ -1641,6 +1649,9 @@ class VerificationCommandExecution:
     exit_code: int
     stdout: str
     stderr: str
+    host_launcher_unavailable: bool = False
+    execution_context: str | None = None
+    admission_refused: bool = False
 
     @property
     def output(self) -> str:
@@ -1732,7 +1743,10 @@ def build_primary_verification_failure(
         }
 
     if first_failed_item is not None:
-        prefer_raw_output = first_failed_item.non_execution_reason == "execution_layer_failure"
+        prefer_raw_output = first_failed_item.non_execution_reason in {
+            "execution_layer_failure",
+            "host_launcher_unavailable",
+        }
         snippet = ""
         if prefer_raw_output:
             snippet = _extract_failure_snippet_line(
@@ -2003,7 +2017,7 @@ def assess_verification_command_execution(
                 real_execution=False,
                 non_execution_reason=f"{family.replace(':', '_')}_zero_tests",
             )
-    if family in {"npm:test", "pnpm:test", "yarn:test"} and _NODE_ZERO_TESTS_RE.search(
+    if family in {"node:test", "npm:test", "pnpm:test", "yarn:test"} and _NODE_ZERO_TESTS_RE.search(
         str(output or "")
     ):
         return VerificationExecutionAssessment(
@@ -2138,7 +2152,11 @@ def _expand_verification_command_globs(command: str, *, root: Path) -> str:
         expanded_parts.extend(sorted(set(matches)))
         changed = True
 
-    return shlex.join(expanded_parts) if changed else command
+    if not changed:
+        return command
+    if is_windows_verifier_command(command):
+        return quote_windows_verifier_parts(expanded_parts)
+    return shlex.join(expanded_parts)
 
 
 def _is_execution_layer_failure(*, exit_code: int, output: str) -> bool:
@@ -2209,6 +2227,7 @@ def _run_verify_command_once(
     runner_build_error: str | None,
     timeout_s: float,
     cancel_check: Callable[[], bool] | None = None,
+    before_command_launch: Callable[[], None] | None = None,
 ) -> VerificationCommandExecution:
     if runner_build_error is not None:
         return VerificationCommandExecution(
@@ -2228,20 +2247,29 @@ def _run_verify_command_once(
     run_kwargs: dict[str, Any] = {}
     if cancel_check is not None and runner_takes_cancel_check(runner):
         run_kwargs["cancel_check"] = cancel_check
+    cwd = root.resolve()
     try:
-        cp = runner.run(
-            root=root, cwd=root.resolve(), cmd=command, timeout_s=timeout_s, **run_kwargs
+        if before_command_launch is not None:
+            before_command_launch()
+    except ConfigError as exc:
+        return VerificationCommandExecution(
+            exit_code=126, stdout="", stderr=str(exc), admission_refused=True
         )
+    try:
+        cp = runner.run(root=root, cwd=cwd, cmd=command, timeout_s=timeout_s, **run_kwargs)
         return VerificationCommandExecution(
             exit_code=cp.returncode,
             stdout=cp.stdout or "",
             stderr=cp.stderr or "",
+            host_launcher_unavailable=getattr(cp, "host_launcher_unavailable", False) is True,
+            execution_context=getattr(cp, "execution_context", None),
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         return VerificationCommandExecution(
             exit_code=124,
             stdout="",
-            stderr=f"Command timed out after {timeout_s:g}s",
+            stderr=f"Command timed out after {timeout_s:g}s"
+            + ("; process cleanup pending" if getattr(exc, "cleanup_pending", False) else ""),
         )
     except CommandCancelledError as e:
         raise VerifyError(CANCELLED_VERIFICATION_MESSAGE) from e
@@ -2301,6 +2329,12 @@ def verify_run_result_to_payload(
             command_payload["fallback_reason"] = item.fallback_reason
         if item.non_execution_reason:
             command_payload["non_execution_reason"] = item.non_execution_reason
+        if item.host_launcher_unavailable:
+            command_payload["host_launcher_unavailable"] = True
+        if item.execution_context:
+            command_payload["execution_context"] = item.execution_context
+        if item.verification_execution_scope is not None:
+            command_payload["verification_execution_scope"] = item.verification_execution_scope
         command_results.append(command_payload)
         if item.fallback_used:
             fallback_details.append(
@@ -2378,6 +2412,8 @@ def compact_verification_payload(
                 compact_item["fallback_reason"] = str(item.get("fallback_reason") or "")
             if item.get("non_execution_reason") is not None:
                 compact_item["non_execution_reason"] = str(item.get("non_execution_reason") or "")
+            if item.get("host_launcher_unavailable") is True:
+                compact_item["host_launcher_unavailable"] = True
             raw_failure_summary = item.get("failure_summary")
             if isinstance(raw_failure_summary, dict):
                 compact_summary = _compact_failure_summary(raw_failure_summary)
@@ -3064,7 +3100,19 @@ def run_task_verification(
     timeout_s: float = 900,
     process_group_registry: ProcessGroupRegistry | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    before_command_launch: Callable[[], None] | None = None,
 ) -> VerifyRunResult:
+    from .agent.scoped_access import ExecutionDirectoryIdentity
+
+    execution_directory = ExecutionDirectoryIdentity.capture(str(root.resolve()))
+
+    def check_launch_directory() -> None:
+        # The caller retains the approval-bound original identity. This local
+        # identity additionally binds standalone callers and staged consumers.
+        execution_directory.check()
+        if before_command_launch is not None:
+            before_command_launch()
+
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     results: list[VerifyCommandResult] = []
     lines: list[str] = [
@@ -3118,17 +3166,20 @@ def run_task_verification(
                 runner_build_error=runner_build_error,
                 timeout_s=timeout_s,
                 cancel_check=cancel_check,
+                before_command_launch=check_launch_directory,
             )
             exit_code = initial_execution.exit_code
             stdout = initial_execution.stdout
             stderr = initial_execution.stderr
             output = initial_execution.output
+            final_execution = initial_execution
             fallback_used = False
             fallback_reason: str | None = None
 
             fallback_command = _build_pytest_module_fallback_command(command)
             if (
                 runner_build_error is None
+                and not initial_execution.admission_refused
                 and fallback_command
                 and (
                     _is_execution_layer_failure(
@@ -3148,17 +3199,27 @@ def run_task_verification(
                     runner_build_error=runner_build_error,
                     timeout_s=timeout_s,
                     cancel_check=cancel_check,
+                    before_command_launch=check_launch_directory,
                 )
                 exit_code = fallback_execution.exit_code
                 stdout = fallback_execution.stdout
                 stderr = fallback_execution.stderr
                 output = fallback_execution.output
+                final_execution = fallback_execution
 
             execution_assessment = assess_verification_command_execution(
                 command=effective_command,
                 exit_code=exit_code,
                 output=output,
             )
+            if final_execution.host_launcher_unavailable:
+                execution_assessment = VerificationExecutionAssessment(
+                    real_execution=False, non_execution_reason="host_launcher_unavailable"
+                )
+            if final_execution.admission_refused:
+                execution_assessment = VerificationExecutionAssessment(
+                    real_execution=False, non_execution_reason="execution_directory_changed"
+                )
             result = VerifyCommandResult(
                 command=command,
                 effective_command=effective_command,
@@ -3170,10 +3231,14 @@ def run_task_verification(
                 fallback_reason=fallback_reason,
                 real_execution=execution_assessment.real_execution,
                 non_execution_reason=execution_assessment.non_execution_reason,
+                host_launcher_unavailable=final_execution.host_launcher_unavailable,
+                execution_context=final_execution.execution_context,
+                verification_execution_scope=execution_scope_fingerprint(runner),
             )
             results.append(result)
             if failure_category is None and (
-                result.non_execution_reason == "execution_layer_failure"
+                result.non_execution_reason
+                in {"execution_layer_failure", "host_launcher_unavailable"}
                 or is_infra_unavailable_error(result.output)
                 or _is_toolchain_unavailable_failure(output=result.output)
             ):
@@ -3207,6 +3272,10 @@ def run_task_verification(
                     "",
                 ]
             )
+            if final_execution.admission_refused:
+                # Retain earlier results and this refusal; never send another
+                # original/fallback command after observing identity loss.
+                break
 
         run_result = VerifyRunResult(
             commands=commands,
@@ -3222,4 +3291,11 @@ def run_task_verification(
         artifact_path.write_text("\n".join(lines), encoding="utf-8")
         return run_result
     finally:
-        _restore_path_snapshot(pytest_cache_path, pytest_cache_snapshot)
+        try:
+            execution_directory.check()
+        except ConfigError:
+            # Do not restore the old cache over a replacement project.
+            if pytest_cache_snapshot.temp_dir is not None:
+                pytest_cache_snapshot.temp_dir.cleanup()
+        else:
+            _restore_path_snapshot(pytest_cache_path, pytest_cache_snapshot)

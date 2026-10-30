@@ -14,8 +14,8 @@ def test_readme_does_not_claim_host_verification_by_default() -> None:
     assert "Verification commands are executed by the platform-native shell" not in readme
     assert "host shell by default" not in lowered
     assert "default to strict sandboxing" in readme
-    assert 'verify_sandbox.mode="off"' in readme
-    assert "ALYSIS_VERIFY_SANDBOX_MODE=off" in readme
+    assert "refuses execution when no backend is available" in readme
+    assert "docs/shell_sandbox.md" in readme
 
 
 def test_sandbox_doc_keeps_strict_fail_closed_verification_language() -> None:
@@ -24,5 +24,5 @@ def test_sandbox_doc_keeps_strict_fail_closed_verification_language() -> None:
     assert "- `network=off`" in doc
     assert "default to strict sandboxing too" in doc
     assert "`shell_sandbox.mode` | `strict`" in doc
-    assert "does not fall back to host shell" in doc
+    assert "requests never silently fall back to unsandboxed host execution" in doc
     assert "network policy" in doc

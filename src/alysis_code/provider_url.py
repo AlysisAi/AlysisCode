@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ipaddress import IPv6Address, ip_address
 from urllib.parse import urlsplit
 
 from . import alysis_cloud
@@ -27,6 +28,27 @@ _ALIBABA_MODEL_STUDIO_SUFFIXES = (".dashscope.aliyuncs.com", ".maas.aliyuncs.com
 # infrastructure id that reads like a leaked credential and changes whenever the
 # gateway moves.
 ALYSIS_GATEWAY_LABEL = f"{PRODUCT_NAME} gateway"
+
+
+def is_loopback_endpoint(base_url: str | None) -> bool:
+    """Recognize HTTP endpoints on this host without resolving arbitrary DNS names."""
+
+    try:
+        parsed = urlsplit(str(base_url or "").strip())
+        if parsed.scheme not in {"http", "https"} or parsed.port == 0:
+            return False
+        host = (parsed.hostname or "").rstrip(".").casefold()
+    except ValueError:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback
 
 
 def is_alysis_gateway_url(base_url: str | None) -> bool:
@@ -146,6 +168,8 @@ def known_provider_key_from_base_url(base_url: str | None) -> str | None:
         path == _ZAI_CODING_PLAN_PATH or path.startswith(f"{_ZAI_CODING_PLAN_PATH}/")
     ):
         return "zai_coding_plan"
+    if host == "api.z.ai" and (path == "/api/paas/v4" or path.startswith("/api/paas/v4/")):
+        return "zai"
     if host == "generativelanguage.googleapis.com":
         return "gemini"
     if host == "api.mistral.ai" or host.endswith(".mistral.ai"):
