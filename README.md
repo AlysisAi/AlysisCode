@@ -21,6 +21,7 @@
   <a href="https://alysiscode.com/docs">Docs</a> ·
   <a href="https://alysiscode.com/#desktop-download">Download</a> ·
   <a href="docs/CHANGELOG.md">Changelog</a> ·
+  <a href="https://discord.gg/psEVWZgzFS">Discord</a> ·
   <a href="https://x.com/alysiscode">X</a>
 </p>
 
@@ -118,4 +119,4 @@ Apache-2.0. You can use, modify and distribute the code, including commercially,
 
 ---
 
-**Join the community** [X](https://x.com/alysiscode) | [LinkedIn](https://www.linkedin.com/company/alysisai/) | [GitHub Issues](https://github.com/AlysisAi/AlysisCode/issues)
+**Join the community** [Discord](https://discord.gg/psEVWZgzFS) | [X](https://x.com/alysiscode) | [LinkedIn](https://www.linkedin.com/company/alysisai/) | [GitHub Issues](https://github.com/AlysisAi/AlysisCode/issues)
