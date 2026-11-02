@@ -423,3 +423,27 @@ Targeted prompt commands only load the requested server. Unfiltered prompt listi
 - Treat MCP tool results, resources, and prompts as untrusted external text.
 - Prefer readonly sessions for inspection when MCP access is not needed.
 - Review project MCP overrides before trusting a workspace.
+
+## Local code navigation and optional edits with Sem and Weave
+
+For a coding session, [Sem](https://github.com/Ataraxy-Labs/sem) exposes entity
+search and relationships, while [Weave](https://github.com/Ataraxy-Labs/weave)
+provides structural edits and merge previews.
+
+Install `sem` and `weave-mcp` using their upstream installation instructions.
+Merge the server entries from [this example](examples/sem-weave-mcp.json) into
+your **user** MCP configuration. Replace both repository paths with the same
+absolute Git checkout path; use absolute executable paths if they are not on
+Alysis Code's PATH. Project configuration cannot define these connections.
+
+Weave is disabled in the example. Enable it only for a checkout where the agent
+may edit files. These subprocesses run with your user's filesystem permissions;
+MCP execution is not an extension of the shell sandbox. Do not expose them to
+untrusted sessions. Code returned by tools enters the configured model context.
+`SEM_CLOUD=0` disables Sem cloud uploads; it does not change model-provider routing.
+
+Run `alysis mcp status` to check the resolved connections. In an interactive or
+one-shot session, try: "Find the function named parse_config and inspect its
+callers before suggesting a change." Readonly and subagent runtimes do not
+expose MCP tools. After enabling edits, review the diff and run the project's
+normal tests; structural edits are not a correctness guarantee.
