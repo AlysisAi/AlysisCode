@@ -198,7 +198,7 @@ def test_tag_publication_requires_successful_exact_source_platform_qualification
     }
     assert not gate.get("continue-on-error", False)
     checkout = next(step for step in gate["steps"] if "actions/checkout@" in step.get("uses", ""))
-    assert checkout["with"]["ref"] == "${{ github.sha }}"
+    assert checkout["with"]["ref"] == "${{ needs.validate-release-source.outputs.commit }}"
     qualification = next(
         step
         for step in gate["steps"]

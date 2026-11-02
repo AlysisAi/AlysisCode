@@ -364,7 +364,8 @@ def test_python_release_verifies_exact_provenance_and_cyclonedx_predicates() -> 
     assert workflow.count('--predicate-type "https://slsa.dev/provenance/v1"') == 2
     assert workflow.count('--predicate-type "https://cyclonedx.org/bom"') == 2
     assert workflow.count("--expected-predicate dist/alysis-code.cdx.json") == 1
-    assert workflow.count("validate_github_attestation_receipt.py") == 2
+    assert workflow.count("validate_github_attestation_receipt.py") == 3
+    assert "--expected-predicate dist/release-source.json" in workflow
     assert "--deny-self-hosted-runners" in workflow
 
 

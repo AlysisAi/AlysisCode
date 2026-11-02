@@ -3,6 +3,19 @@
 This checklist covers the completion-gate reliability and deadline/diagnostic
 runtime safety invariants that should stay true across releases.
 
+## Recovering an unpublished Python version
+
+If a tag's publishing run timed out after its exact source passed complete CI,
+run `release.yml` manually from the public repository's default branch. Supply
+the existing `release_tag`, its independently verified full `release_commit`,
+and the successful complete `ci_run_id`. Do not move the tag or change the
+package version to recover publication. Recovery verifies all four Python
+test jobs, platform reliability jobs, workflow lint and package smoke from that
+exact source; it then repeats release qualification on Windows, macOS and Linux.
+The packages are built from the tag, validated and signed with provenance,
+an explicit release-source binding and the dependency SBOM before the existing
+`pypi` environment approval and trusted-publisher upload.
+
 ## One-Shot Completion Gate
 
 - Safety invariant: a one-shot execute-intent run must not finalize

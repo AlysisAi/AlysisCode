@@ -44,7 +44,12 @@ def test_workflow_stamps_clean_head_and_restores_on_exit(
     validation = next(
         step["run"] for step in steps if "validate_python_distributions.py" in step.get("run", "")
     )
-    assert '--expected-commit "${{ github.sha }}"' in validation
+    expression = (
+        "needs.validate-release-source.outputs.commit"
+        if workflow == "release.yml"
+        else "github.sha"
+    )
+    assert f'--expected-commit "${{{{ {expression} }}}}"' in validation
     assert "--require-clean --no-fetch" in build
 
     repo = tmp_path / "checkout"
@@ -91,6 +96,7 @@ def test_workflow_stamps_clean_head_and_restores_on_exit(
     )
     commit = run_git("rev-parse", "HEAD")
     env["GITHUB_SHA"] = "0" * 40 if outcome == "wrong-head" else commit
+    env["RELEASE_COMMIT"] = env["GITHUB_SHA"]
     if outcome == "dirty-stamp":
         (repo / STAMP).write_bytes(b"# Pre-existing change must survive refusal.\n")
     original = (repo / STAMP).read_bytes()

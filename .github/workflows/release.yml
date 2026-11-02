@@ -4,12 +4,26 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable version tag to publish
+        required: true
+        type: string
+      release_commit:
+        description: Independently verified full commit of the existing tag
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful complete CI run for that exact commit
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: python-release-${{ github.ref }}
+  group: python-release-${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -19,37 +33,69 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tag: ${{ steps.source.outputs.tag }}
     steps:
+      - name: Check out the publication policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify complete exact-source CI for recovery
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: >-
+          python scripts/release/validate_completed_ci.py
+          --run-id "$CI_RUN_ID" --commit "$RELEASE_COMMIT" --branch "$DEFAULT_BRANCH"
+
       - name: Check out the exact tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ inputs.release_commit || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Validate tag matches package version and official source
+        id: source
         shell: bash
         env:
           EXPECTED_REPOSITORY: AlysisAi/AlysisCode
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          RELEASE_COMMIT: ${{ inputs.release_commit || github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
           test "$REPOSITORY_PRIVATE" = "false"
           test "$REPOSITORY_VISIBILITY" = "public"
           git check-ref-format --branch "$DEFAULT_BRANCH" > /dev/null
-          test "$GITHUB_REF_TYPE" = "tag"
-          test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+          else
+            test "$GITHUB_EVENT_NAME" = "push"
+            test "$GITHUB_REF_TYPE" = "tag"
+            test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          fi
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]
           source_commit="$(git rev-parse HEAD)"
-          tag_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
-          test "$source_commit" = "$GITHUB_SHA"
-          test "$tag_commit" = "$GITHUB_SHA"
+          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          test "$source_commit" = "$RELEASE_COMMIT"
+          test "$tag_commit" = "$RELEASE_COMMIT"
           git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
-          git merge-base --is-ancestor "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}"
+          git merge-base --is-ancestor "$RELEASE_COMMIT" "origin/${DEFAULT_BRANCH}"
           version="$(python -c 'import tomllib; from pathlib import Path; print(tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"])')"
-          test "$GITHUB_REF_NAME" = "v$version"
+          test "$RELEASE_TAG" = "v$version"
+          echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   reliability-qualification:
     name: Qualify release (${{ matrix.os }}, py3.12)
@@ -67,7 +113,7 @@ jobs:
       - name: Check out the exact release source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.validate-release-source.outputs.commit }}
           persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -101,7 +147,11 @@ jobs:
     name: Build, validate, and attest
     runs-on: ubuntu-latest
     needs: [validate-release-source, reliability-qualification]
-    timeout-minutes: 45
+    timeout-minutes: 120
+    env:
+      RELEASE_COMMIT: ${{ needs.validate-release-source.outputs.commit }}
+      RELEASE_TAG: ${{ needs.validate-release-source.outputs.tag }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
     permissions:
       contents: read
       id-token: write
@@ -112,6 +162,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ needs.validate-release-source.outputs.commit }}
           persist-credentials: false
 
       - name: Set up Python
@@ -137,13 +188,15 @@ jobs:
         run: uv run --frozen --no-sync ruff format --check .
 
       - name: Test
+        # Recovery already verified all four full suites at this exact source.
+        if: github.event_name != 'workflow_dispatch'
         run: uv run --frozen --no-sync pytest -q
 
       - name: Build deterministic distributions from the frozen environment
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
           test -z "$(git status --porcelain)"
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export SOURCE_DATE_EPOCH
@@ -159,7 +212,7 @@ jobs:
         run: >-
           uv run --frozen --no-sync python
           scripts/release/validate_python_distributions.py dist/python
-          --expected-commit "${{ github.sha }}"
+          --expected-commit "${{ needs.validate-release-source.outputs.commit }}"
 
       - name: Export the locked runtime dependency SBOM
         run: >-
@@ -170,6 +223,21 @@ jobs:
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-path: dist/python/*
+
+      - name: Record the immutable release source
+        shell: python
+        run: |
+          import json, os
+          from pathlib import Path
+          source = {key: os.environ[key] for key in ("RELEASE_COMMIT", "RELEASE_TAG", "CI_RUN_ID")}
+          Path("dist/release-source.json").write_text(json.dumps(source), encoding="utf-8")
+
+      - name: Attest the immutable release source
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: dist/python/*
+          predicate-type: https://alysiscode.com/attestations/release-source/v1
+          predicate-path: dist/release-source.json
 
       - name: Attest the CycloneDX dependency inventory
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
@@ -188,7 +256,7 @@ jobs:
   publish-pypi:
     name: Publish attested distributions to PyPI
     runs-on: ubuntu-latest
-    needs: build
+    needs: [validate-release-source, build]
     timeout-minutes: 15
     environment: pypi
     permissions:
@@ -213,10 +281,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          expected = {key: os.environ[key] for key in ("RELEASE_COMMIT", "RELEASE_TAG", "CI_RUN_ID")}
+          assert json.loads(Path("dist/release-source.json").read_text()) == expected
+          PY
           shopt -s nullglob
           artifacts=(dist/python/*)
           test "${#artifacts[@]}" -eq 2
           for artifact in "${artifacts[@]}"; do
+            source_receipt="$(mktemp)"
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --predicate-type "https://alysiscode.com/attestations/release-source/v1" \
+              --deny-self-hosted-runners \
+              --format json > "$source_receipt"
+            python scripts/release/validate_github_attestation_receipt.py \
+              "$source_receipt" "$artifact" \
+              --predicate-type "https://alysiscode.com/attestations/release-source/v1" \
+              --expected-predicate dist/release-source.json
+
             provenance_receipt="$(mktemp)"
             gh attestation verify "$artifact" \
               --repo "$GITHUB_REPOSITORY" \
@@ -246,6 +334,9 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.validate-release-source.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate-release-source.outputs.tag }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
 
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
@@ -255,7 +346,7 @@ jobs:
   github-release:
     name: Attach distributions and SBOM to GitHub release
     runs-on: ubuntu-latest
-    needs: publish-pypi
+    needs: [validate-release-source, publish-pypi]
     timeout-minutes: 10
     permissions:
       contents: write
@@ -270,6 +361,7 @@ jobs:
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ needs.validate-release-source.outputs.tag }}
           files: |
             dist/python/*
             dist/alysis-code.cdx.json

@@ -414,11 +414,11 @@ def test_only_validated_release_workflow_can_publish_python_distribution() -> No
     assert "EXPECTED_REPOSITORY: AlysisAi/AlysisCode" in release
     assert 'test "$REPOSITORY_PRIVATE" = "false"' in release
     assert 'test "$REPOSITORY_VISIBILITY" = "public"' in release
-    assert 'test "$source_commit" = "$GITHUB_SHA"' in release
-    assert 'test "$tag_commit" = "$GITHUB_SHA"' in release
+    assert 'test "$source_commit" = "$RELEASE_COMMIT"' in release
+    assert 'test "$tag_commit" = "$RELEASE_COMMIT"' in release
     assert "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}" in release
     assert 'git check-ref-format --branch "$DEFAULT_BRANCH"' in release
-    assert 'git merge-base --is-ancestor "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}"' in release
+    assert 'git merge-base --is-ancestor "$RELEASE_COMMIT" "origin/${DEFAULT_BRANCH}"' in release
     assert "astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0" in release
     assert 'version: "0.11.23"' in release
     assert "uv sync --frozen --no-editable --extra dev" in release
