@@ -178,12 +178,18 @@ def test_run_turn_stops_without_retry_when_approval_declined(tmp_path: Path) -> 
     ]
     assert tool_results == [
         {
+            "error_code": "approval_denied",
             "status": "approval_declined",
             "approval_declined": True,
             "approval_kind": "fs_edit",
             "message": "User declined: fs_edit",
         }
     ]
+    assert next(
+        event["payload"]["guardrail_denial"]
+        for event in events
+        if event.get("type") == "tool_result"
+    ) == {"error_code": "approval_denied"}
     assert any(
         event.get("type") == "approval_declined"
         and event.get("payload", {}).get("tool_name") == "fs_edit"

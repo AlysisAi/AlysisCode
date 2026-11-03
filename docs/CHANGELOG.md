@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Let explicitly linked chats exchange messages and replies across local projects
+  while keeping each chat's model, workspace, and permissions. The terminal
+  displays sent and received messages with delivery status. See
+  [chat messaging](chat-messaging.md) to opt in.
+- Record machine-readable reasons for policy, approval, and hook denials in
+  engine-owned tool-result metadata. The codes remain available in session logs
+  when large tool outputs are stored separately.
 - Update provider models, reasoning controls, and context limits across CLI
   settings and requests. Keep NVIDIA tool catalogs within request limits and
   preserve conversation history when switching to Reflection.

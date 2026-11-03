@@ -1599,6 +1599,13 @@ def test_pre_tool_block_fires_notification_event(
         surface=_RecordingSurface(),
         tool=tool,
         hook_dispatcher=_build_hook_dispatcher(workspace_root=tmp_path),
+        store=SessionStore(
+            enabled=True,
+            sessions_dir=tmp_path / "sessions",
+            session_id="hook-denial",
+            cwd=str(tmp_path),
+            repo_root=str(tmp_path),
+        ),
     )
     try:
         exit_code = session.run_turn("trigger a block")
@@ -1613,6 +1620,14 @@ def test_pre_tool_block_fires_notification_event(
     assert notification_payload["cause"] == "pre_tool_use_blocked"
     assert notification_payload["level"] == "warning"
     assert notification_payload["tool_name"] == "echo_tool"
+
+    result = next(
+        event["payload"]
+        for event in read_session_events(tmp_path / "sessions/hook-denial.jsonl")
+        if event["type"] == "tool_result"
+    )
+    assert result["guardrail_denial"] == {"error_code": "hook_denied"}
+    assert result["result"]["error_code"] == "hook_denied"
 
 
 def test_subagent_tool_result_fires_subagent_stop_event(

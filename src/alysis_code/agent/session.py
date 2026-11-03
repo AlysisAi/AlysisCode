@@ -39,6 +39,7 @@ from ..cancellation import (
     EventCancellationToken,
     InteractiveCancellationToken,
 )
+from ..chat_messaging_runtime import attach_chat_messaging, serialized_chat_turn
 from ..command_text import command_text
 from ..compaction.call_policy import compaction_provider_call
 from ..compaction.conversation_compactor import ConversationCompactor
@@ -1432,6 +1433,9 @@ class AgentSession:
                 pass
 
     def close(self, *, reason: str = "session_close") -> None:
+        chat_endpoint = getattr(self, "chat_endpoint", None)
+        if chat_endpoint is not None:
+            chat_endpoint.close()
         entry = getattr(self, "resolved_entry", None)
         if entry is not None:
             entry.retire("computer_start_owner_invalid")
@@ -2635,6 +2639,7 @@ class AgentSession:
             atomic_write_json(Path(host_output).expanduser().resolve(), record)
         return record
 
+    @serialized_chat_turn
     def run_turn(
         self,
         instruction: str,
@@ -3261,6 +3266,8 @@ def create_session(
     yes: bool,
     max_steps: int | None,
     no_log: bool,
+    chat_messaging_owner_handle: Any | None = None,
+    chat_messaging_defer_start: bool = False,
     api_key_override: str | None = None,
     console: Any | None = None,
     deny_write_prefixes: list[str] | None = None,
@@ -4852,6 +4859,11 @@ def create_session(
                 store.runtime_artifact_path("diagnostics", "provider_telemetry.jsonl")
             )
         session.resolved_entry = resolved_entry
+        attach_chat_messaging(
+            session,
+            owner_handle=chat_messaging_owner_handle,
+            defer_start=chat_messaging_defer_start,
+        )
         active_workdir_state["session"] = session
         return session
     except Exception:

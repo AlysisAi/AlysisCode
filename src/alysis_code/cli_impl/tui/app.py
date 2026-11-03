@@ -373,7 +373,18 @@ _THINK_RAIL = "│"
 # pane but never enter the clipboard; unknown future roles fail closed until
 # they are intentionally classified here.
 _COPYABLE_TRANSCRIPT_ROLES = frozenset(
-    {"user", "assistant", "error", "warn", "info", "system", "spacer", "planmeta", "planmetacont"}
+    {
+        "user",
+        "assistant",
+        "peer_message",
+        "error",
+        "warn",
+        "info",
+        "system",
+        "spacer",
+        "planmeta",
+        "planmetacont",
+    }
 )
 
 _COMPLETION_MENU_BOTTOM = 8
@@ -2384,7 +2395,7 @@ def _has_conversation(entries: list[tuple[str, str]]) -> bool:
     but must not count as a conversation, otherwise they would instantly dismiss
     the landing the moment the app opens.
     """
-    return any(role in ("user", "assistant") for role, _ in entries)
+    return any(role in ("user", "assistant", "peer_message") for role, _ in entries)
 
 
 def _duplicate_assistant_indices(
@@ -3211,6 +3222,10 @@ def run_tui(
                 # streaming block plain so a half-open code fence never flickers.
                 done = streaming_index != index
                 block = _assistant_rows(text, width, markdown=done, theme=terminal_theme)
+            elif role == "peer_message":
+                from .peer_messages import peer_message_rows
+
+                block = peer_message_rows(text, width)
             elif role == "patch":
                 from .tool_trace import patch_rows
 

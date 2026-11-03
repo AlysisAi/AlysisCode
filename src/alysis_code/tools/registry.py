@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
+from ..chat_messaging_protocol import CHAT_TOOL_SPECS
 from ..desktop_connections import CONNECTION_TOOLS
 from ..desktop_terminal import TERMINAL_TOOLS
 from ..embedded_browser import BROWSER_TOOLS, BROWSER_WRITE_ACTIONS
@@ -3330,6 +3331,32 @@ _BUILTIN_TOOL_METADATA = (
             action_hint="Delete the retained worktree and mark it discarded.",
             fallback_hint="Use subagent_apply when the captured patch should be kept.",
         ),
+    ),
+)
+
+_BUILTIN_TOOL_METADATA = (
+    *_BUILTIN_TOOL_METADATA,
+    *(
+        BuiltinToolMetadata(
+            name=name,
+            description=description,
+            parameters={
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+            categories=("chat_messaging",),
+            optional=True,
+            optional_unavailable_reason="Messaging requires an enabled, logged top-level interactive chat.",
+            rich=RichToolMetadata(
+                display_name=name.replace("_", " ").title(),
+                reasoning_hint=description,
+                action_hint=description,
+                fallback_hint="Inspect the messaging error or ask the user to link the chats.",
+            ),
+        )
+        for name, description, properties, required in CHAT_TOOL_SPECS
     ),
 )
 

@@ -495,6 +495,8 @@ class AnytimeCheckpointConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    # Peer-chat tools and receiving workers are explicitly opt-in.
+    chat_messaging_enabled: bool = False
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     prompt_guidance: PromptGuidanceConfig = Field(default_factory=PromptGuidanceConfig)
@@ -1867,6 +1869,7 @@ _SETTABLE_KEYS: set[str] = {
     "workspace_provisioning_enabled",
     "step_budget_policy",
     "subagents_enabled",
+    "chat_messaging_enabled",
     "skills_enabled",
     "bundled_skills_enabled",
     "skills_auto_invoke",
@@ -3565,6 +3568,9 @@ def set_config_value(
         cfg.step_budget_policy = normalize_step_budget_policy(normalized)
         return cfg
 
+    if key == "chat_messaging_enabled":
+        cfg.chat_messaging_enabled = _coerce_bool(value, key=key)
+        return cfg
     if key == "subagents_enabled":
         v = value.strip().lower()
         if v in {"1", "true", "yes", "on"}:

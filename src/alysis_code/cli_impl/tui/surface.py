@@ -267,6 +267,14 @@ class TuiSurface:
             pass
 
     # ------------------------------------------------------------------ content
+    def on_chat_message(self, kind: str, payload: dict) -> None:
+        # Mailbox receipts arrive on a listener thread, including while the user
+        # is composing or an assistant response is streaming. The transcript
+        # updates its existing block without stealing status or stream ownership.
+        if kind != "chat_message_state":
+            self._prepare_visible_output()
+        self._t.on_chat_message(kind, payload)
+
     def on_user_message(self, text: str) -> None:
         # The app echoes the user's line instantly on submit; here we just open a
         # fresh assistant block for the turn that is starting.
@@ -609,6 +617,17 @@ class TuiSurface:
         # A page the remote site refused, stalled, or dropped is an outcome of that
         # source, not an agent failure: a neutral "◦" trace line, never a red ✗.
         site_reason = remote_site_outcome(meta) if event.status != "done" else ""
+        if (
+            event.name == "send_chat_message"
+            and event.status == "done"
+            and not unavailable
+            and self._trace_level != "full"
+        ):
+            # The audited message already has its own block. Keep a failed send
+            # visible below, and retain raw tool diagnostics in full trace mode.
+            self._t.set_status(None)
+            self._maybe_refresh_hud()
+            return
         if event.subagent_name and self._trace_level != "full":
             # Nested subagent steps stay out of the transcript (minimal view) —
             # except failures and withdrawn tools, which are real signal and keep

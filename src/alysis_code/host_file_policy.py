@@ -21,10 +21,11 @@ from .config import ConfigError
 from .host_file_handles import admit_host_path
 from .host_runtime_policy import desktop_runtime_roots
 from .local_memory import memory_home
+from .tools.errors import ToolError
 
 
-class HostFilePolicyError(RuntimeError):
-    pass
+class HostFilePolicyError(ToolError):
+    denial_code = "host_file_policy_denied"
 
 
 def _path_names(path: Path) -> tuple[Path, ...]:

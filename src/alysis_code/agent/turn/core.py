@@ -115,6 +115,7 @@ from ...tools.errors import (
     SearchError,
     ShellError,
     SymbolSearchError,
+    ToolError,
 )
 from ...tools.fs import FsError
 from ...tools.registry import (
@@ -2102,7 +2103,7 @@ def run_turn(
     hook_turn_user_messages: list[str] = []
     prompt_hook_result = (
         HookDispatchResult()
-        if host_screen_image_candidate_turn
+        if host_screen_image_candidate_turn or getattr(self, "_chat_peer_message", None) is not None
         else self._safe_dispatch_hooks(
             lambda: self.hook_dispatcher.fire_user_prompt_submit(  # type: ignore[union-attr]
                 prompt=instruction,
@@ -2833,18 +2834,23 @@ def run_turn(
             },
         )
     display_instruction = log_payload.get("display_content")
-    self.store.append("user_message", log_payload)
+    peer_message = getattr(self, "_chat_peer_message", None)
+    if peer_message is None:
+        self.store.append("user_message", log_payload)
     connector_link_evidence = ConnectorLinkEvidence()
     connector_link_nudge_sent = False
     connector_verification_tools: dict[str, ToolDef] | None = None
-    self.messages.append(user_message)
+    if peer_message is None:
+        self.messages.append(user_message)
+    else:
+        self.chat_endpoint.deliver(peer_message)
     _register_ephemeral_host_image_message(
         self,
         message=user_message,
         log_payload=log_payload,
     )
     user_questions = question_broker(self.surface)
-    if user_questions is not None:
+    if user_questions is not None and peer_message is None:
         user_questions.note_user_input()
     turn_user_message_index = len(self.messages) - 1
     if not isinstance(display_instruction, str) or not display_instruction.strip():
@@ -2852,7 +2858,8 @@ def run_turn(
     controller_instruction = (
         explicit_instruction if explicit_instruction is not None else display_instruction
     )
-    self.surface.on_user_message(display_instruction)
+    if peer_message is None:
+        self.surface.on_user_message(display_instruction)
     _diagnostic_event(
         "turn_started",
         {
@@ -5007,6 +5014,12 @@ def run_turn(
                     if callable(emit_info):
                         emit_info(f"{label} - applied")
 
+        # The execution owner delivers peer data only between complete tool
+        # batches. It stays tool data and never enters the user-steering path.
+        from ...chat_messaging_runtime import deliver_chat_messages
+
+        deliver_chat_messages(self)
+
         # Drain user steering at the worker-thread step boundary. The previous
         # step's tool results are already committed, so this cannot split tool
         # call/result adjacency. It is also before compaction, so any replacement
@@ -6998,6 +7011,9 @@ def run_turn(
                 pre_tool_blocked = False
                 terminal_approval_declined_error: ApprovalDeclinedError | None = None
                 tool_executed_for_deadline_observation = False
+                # Engine-owned provenance; never infer a refusal from a tool's
+                # error text or from fields in a returned tool/MCP dictionary.
+                guardrail_denial: dict[str, str] | None = None
                 # A host-owned tool (the desktop browser start handoff) is supplied
                 # for this session only; the process-wide optional-tool registry,
                 # which tracks the same-named managed-browser tool, must not shadow it.
@@ -7128,11 +7144,12 @@ def run_turn(
                         },
                     )
                     result = {
+                        "error_code": "repeated_tool_failure_guard",
                         "error": (
                             "Blocked repeated tool call after "
                             f"{prior_failures} failures with identical arguments: {tc.name}. "
                             "Change strategy before retrying."
-                        )
+                        ),
                     }
                     if previous_error_code and isinstance(previous_failure, dict):
                         previous_guidance = str(previous_failure.get("guidance") or "").strip()
@@ -7302,7 +7319,11 @@ def run_turn(
                                 "reason": blocked_reason,
                             },
                         )
-                        result = {"error": f"Blocked by hook: {blocked_reason}"}
+                        guardrail_denial = {"error_code": "hook_denied"}
+                        result = {
+                            "error": f"Blocked by hook: {blocked_reason}",
+                            "error_code": "hook_denied",
+                        }
                         if self.hook_dispatcher is not None:
                             self._safe_dispatch_hooks(
                                 lambda tool_name=effective_tool_name, reason=blocked_reason, hook_cwd=cwd, hook_relpath=active_workdir_relpath: (
@@ -7549,6 +7570,7 @@ def run_turn(
                                 raise
                             except ApprovalDeclinedError as e:
                                 terminal_approval_declined_error = e
+                                guardrail_denial = {"error_code": e.denial_code}
                                 result = {
                                     **(e.result_payload or {}),
                                     "status": "approval_declined",
@@ -7566,6 +7588,7 @@ def run_turn(
                                 GitError,
                                 VerifyError,
                                 AgentRuntimeError,
+                                ToolError,
                             ) as e:
                                 if call_trace is not None:
                                     call_trace.capture_exception(e)
@@ -7575,6 +7598,8 @@ def run_turn(
                                     result.setdefault("error", str(e))
                                 else:
                                     result = {"error": str(e)}
+                                if isinstance(e, ToolError) and e.denial_code is not None:
+                                    guardrail_denial = {"error_code": e.denial_code}
                             except Exception as e:  # noqa: BLE001
                                 if call_trace is not None:
                                     call_trace.capture_exception(e)
@@ -9327,6 +9352,10 @@ def run_turn(
                     "tool_call_id": tc.id,
                     "step": step,
                 }
+                if guardrail_denial is not None:
+                    tool_result_payload["guardrail_denial"] = guardrail_denial
+                    if raw_observation_payload is not None:
+                        raw_observation_payload["guardrail_denial"] = guardrail_denial
                 if alias_recovery_payload is not None:
                     tool_result_payload["executed_tool_name"] = effective_tool_name
                     tool_result_payload["compatibility_alias"] = alias_recovery_payload
