@@ -15,16 +15,9 @@ def native_capability_status(format_name: str) -> dict:
     from alysis_code.office import office_capability_status
 
     capability = pdf_capability_status() if format_name == "pdf" else office_capability_status()
-    for key in (
-        "command",
-        "describe_example",
-        "create_example",
-        "inspect_example",
-        "edit_example",
-        "render_example",
-        "extract_example",
-    ):
-        capability.pop(key, None)
+    for key in list(capability):
+        if key == "command" or key.endswith("_example"):
+            capability.pop(key)
     if "preview" in capability:
         capability["preview"].pop("render_example", None)
         capability["preview"]["tool_example"] = {"tool": "artifact_check", "path": "report.docx"}

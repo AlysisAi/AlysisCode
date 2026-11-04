@@ -806,7 +806,7 @@ test("AlysisBridgeClient rejects malformed host action negotiation limits", asyn
 
 test("AlysisBridgeClient sends structured management backend methods", async () => {
   const fake = new FakeBridgeProcess({
-    initializePayload: healthPayloadWithMethods([...MANAGEMENT_BRIDGE_METHODS])
+    initializePayload: healthPayloadWithMethods([...MANAGEMENT_BRIDGE_METHODS, "session.outputArtifacts"])
   });
   const client = clientFor(fake);
   await client.startStdio(config());
@@ -815,6 +815,17 @@ test("AlysisBridgeClient sends structured management backend methods", async () 
   assert.equal(client.supportsMethod("mcp.status"), true);
 
   const workspace = "/workspace";
+  const skillDraft = {
+    workspace, workspace_trusted: true, draft_id: "draft-1", selected: ["demo"], yes: true
+  };
+  const reviewedPlugin = {
+    workspace, workspace_trusted: true, plugin_id: "custom.demo",
+    descriptor: "  reviewed descriptor\n", yes: true,
+    trust_approval: {
+      approved: true as const, plugin_id: "custom.demo", commit: "a".repeat(40),
+      manifest_sha256: "b".repeat(64), approval_fingerprint: "fingerprint"
+    }
+  };
   const calls: Array<{
     call: () => Promise<unknown>;
     method: string;
@@ -837,6 +848,12 @@ test("AlysisBridgeClient sends structured management backend methods", async () 
     { call: () => client.sessionShow({ session_id: "session-1", max_events: 10 }), method: "session.show", params: { session_id: "session-1", max_events: 10 }, response: { session_id: "session-1", path: "/sessions/session-1.jsonl", events: [], event_count: 0, truncated: false, max_events: 10 } },
     { call: () => client.sessionUsage("session-1"), method: "session.usage", params: { session_id: "session-1" }, response: { session_id: "session-1", by_model: [], totals: { calls: 0 }, call_count: 0 } },
     { call: () => client.sessionScore({ latest: 1 }), method: "session.score", params: { latest: 1 }, response: { sessions_dir: "/sessions", scores: [], score: null } },
+    {
+      call: () => client.sessionOutputArtifacts("session-1", "job-1"),
+      method: "session.outputArtifacts",
+      params: { session_id: "session-1", job_id: "job-1" },
+      response: { session_id: "session-1", job_id: "job-1", task_id: "task-1", paths: ["report.pdf"] }
+    },
     { call: () => client.toolsCatalog(), method: "tools.catalog", params: {}, response: { tools: [], count: 0 } },
     { call: () => client.toolList({ workspace }), method: "tool.list", params: { workspace }, response: { workspace_root: workspace, tools: [] } },
     { call: () => client.toolInfo({ workspace, name: "demo" }), method: "tool.info", params: { workspace, name: "demo" }, response: { workspace_root: workspace, tools: [] } },
@@ -847,6 +864,12 @@ test("AlysisBridgeClient sends structured management backend methods", async () 
     { call: () => client.skillInit({ workspace, workspace_trusted: true, name: "demo", project: true }), method: "skill.init", params: { workspace, workspace_trusted: true, name: "demo", project: true }, response: { changed: true, result: {} } },
     { call: () => client.skillValidate({ workspace, all: true }), method: "skill.validate", params: { workspace, all: true }, response: { workspace_root: workspace, results: [], valid: true } },
     { call: () => client.skillInstall({ workspace, workspace_trusted: true, source: "demo" }), method: "skill.install", params: { workspace, workspace_trusted: true, source: "demo" }, response: { changed: true, result: {} } },
+    {
+      call: () => client.skillImportInstall(skillDraft),
+      method: "skill.import.install",
+      params: skillDraft,
+      response: { changed: true }
+    },
     { call: () => client.skillEnable({ workspace, workspace_trusted: true, name: "demo" }), method: "skill.enable", params: { workspace, workspace_trusted: true, name: "demo" }, response: { workspace_root: workspace, name: "demo", enabled: true, scope: "user", changed: true } },
     { call: () => client.skillDisable({ workspace, workspace_trusted: true, name: "demo" }), method: "skill.disable", params: { workspace, workspace_trusted: true, name: "demo" }, response: { workspace_root: workspace, name: "demo", enabled: false, scope: "user", changed: true } },
     { call: () => client.skillRemove({ workspace, workspace_trusted: true, name: "demo" }), method: "skill.remove", params: { workspace, workspace_trusted: true, name: "demo" }, response: { changed: true, result: {} } },
@@ -882,6 +905,12 @@ test("AlysisBridgeClient sends structured management backend methods", async () 
     { call: () => client.extList({ workspace }), method: "ext.list", params: { workspace }, response: { workspace_root: workspace, extensions: [], count: 0, project_overrides: {}, secret_values_included: false } },
     { call: () => client.extInfo({ workspace, ext_id: "demo" }), method: "ext.info", params: { workspace, ext_id: "demo" }, response: { workspace_root: workspace, extension: { id: "demo" }, installed: null, installed_scopes: [], enabled_effective: false, project_override_state: "absent", workspace_trust: {}, secret_values_included: false } },
     { call: () => client.extInstall({ workspace, workspace_trusted: true, source: "demo", yes: true, trust_approval: { approved: true, plugin_id: "demo", commit: "a".repeat(40), manifest_sha256: "b".repeat(64), approval_fingerprint: "fingerprint" } }), method: "ext.install", params: { workspace, workspace_trusted: true, source: "demo", yes: true, trust_approval: { approved: true, plugin_id: "demo", commit: "a".repeat(40), manifest_sha256: "b".repeat(64), approval_fingerprint: "fingerprint" } }, response: { changed: true, result: {}, secret_values_included: false } },
+    {
+      call: () => client.extCustomSave(reviewedPlugin),
+      method: "ext.custom.save",
+      params: reviewedPlugin,
+      response: { changed: true, result: {}, secret_values_included: false }
+    },
     { call: () => client.extUninstall({ workspace, workspace_trusted: true, plugin_id: "demo", yes: true }), method: "ext.uninstall", params: { workspace, workspace_trusted: true, plugin_id: "demo", yes: true }, response: { changed: true, result: {}, secret_values_included: false } },
     { call: () => client.extEnable({ workspace, workspace_trusted: true, plugin_id: "demo", yes: true }), method: "ext.enable", params: { workspace, workspace_trusted: true, plugin_id: "demo", yes: true }, response: { changed: true, result: {}, secret_values_included: false } },
     { call: () => client.extDisable({ workspace, workspace_trusted: true, plugin_id: "demo", yes: true }), method: "ext.disable", params: { workspace, workspace_trusted: true, plugin_id: "demo", yes: true }, response: { changed: true, result: {}, secret_values_included: false } }

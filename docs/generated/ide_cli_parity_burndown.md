@@ -170,8 +170,8 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### ide.methods.desktop_host_responses
 
 - Surface: `ide_bridge_method`
-- Features: `browser_start.respond`, `computer.respond`, `task_budget.respond`
-- Rationale: Capability-negotiated responses from the trusted Alysis Code desktop host for browser start, Computer Use and per-turn task budgets.
+- Features: `browser_start.respond`, `computer.respond`, `computer_start_resolved.respond`, `task_budget.respond`
+- Rationale: Capability-negotiated responses from the trusted Alysis Code desktop host for browser start, Computer Use, resolved application start and per-turn task budgets.
 - Bridge-only rationale: The desktop owns these private media, approval and budget boundaries. VS Code does not negotiate or implement the desktop host capability; these methods are intentionally excluded from its typed client coverage, while bridge dispatch and protocol documentation remain required.
 
 ### ide.methods.subagent_models
@@ -212,9 +212,9 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### ide.methods.desktop_workbench
 
 - Surface: `ide_bridge_method`
-- Features: `computer_start_resolved.respond`, `ext.custom.save`, `hooks.document.read`, `hooks.document.save`, `session.outputArtifacts`, `skill.document.read`, `skill.document.save`, `skill.import.describe`, `skill.import.discard`, `skill.import.install`, `skill.import.package`, `skill.import.preview`, `skill.update.preview`
-- Rationale: These methods serve the desktop customization workbench, exact session-output handoff and native Computer Use controller.
-- Bridge-only rationale: VS Code has no matching draft-review, document-revision or native host controller. Their current support is in the engine and desktop client.
+- Features: `ext.custom.save`, `hooks.document.read`, `hooks.document.save`, `session.outputArtifacts`, `skill.document.read`, `skill.document.save`, `skill.import.describe`, `skill.import.discard`, `skill.import.install`, `skill.import.package`, `skill.import.preview`, `skill.update.preview`
+- Rationale: Typed client calls support skill import and updates, skill and hook documents, reviewed plugin descriptors, and exact session-output lookup through the existing engine contracts.
+- Bridge-only rationale: The VS Code client exposes typed calls. The corresponding user-facing workflows are in the desktop app.
 
 
 ## implemented_in_extension

@@ -51,6 +51,7 @@ import {
   ExtInfoParams,
   ExtInfoResult,
   ExtInstallParams,
+  ExtCustomSaveParams,
   ExtListResult,
   ExtMutationParams,
   ExtMutationResult,
@@ -114,6 +115,8 @@ import {
   ForgeScopedPlanParams,
   ForgeShowResult,
   HooksDoctorResult,
+  HooksDocumentParams,
+  HooksDocumentSaveParams,
   HooksEffectiveParams,
   HooksEffectiveResult,
   HooksEventParams,
@@ -220,6 +223,7 @@ import {
   SessionCompactResult,
   SessionContextResult,
   SessionArtifactChecksResult,
+  SessionOutputArtifactsResult,
   SessionCreateParams,
   SessionCreateResult,
   SessionHistoryResult,
@@ -255,6 +259,13 @@ import {
   SessionStatusResult,
   SessionUsageResult,
   SkillInfoParams,
+  SkillDocumentSaveParams,
+  SkillImportDraftParams,
+  SkillImportDiscardParams,
+  SkillImportInstallParams,
+  SkillImportPackageParams,
+  SkillImportPreviewParams,
+  SkillUpdatePreviewParams,
   SkillInfoResult,
   SkillInitParams,
   SkillInstallParams,
@@ -1417,6 +1428,16 @@ export class AlysisBridgeClient extends EventEmitter {
           item !== null && typeof item === "object" && !Array.isArray(item))
         : []
     };
+  }
+
+  public async sessionOutputArtifacts(
+    sessionId: string,
+    jobId: string
+  ): Promise<SessionOutputArtifactsResult> {
+    return (await this.request("session.outputArtifacts", {
+      session_id: sessionId,
+      job_id: jobId
+    })) as SessionOutputArtifactsResult;
   }
 
   public async sessionCompact(sessionId: string, focus?: string): Promise<SessionCompactResult> {
@@ -2599,6 +2620,38 @@ export class AlysisBridgeClient extends EventEmitter {
     return this.managementRequest("skill.info", params);
   }
 
+  public async skillDocumentRead(params: SkillInfoParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.document.read", params);
+  }
+
+  public async skillDocumentSave(params: SkillDocumentSaveParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.document.save", params);
+  }
+
+  public async skillImportDescribe(params: SkillImportDraftParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.import.describe", params);
+  }
+
+  public async skillImportDiscard(params: SkillImportDiscardParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.import.discard", params);
+  }
+
+  public async skillImportInstall(params: SkillImportInstallParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.import.install", params);
+  }
+
+  public async skillImportPackage(params: SkillImportPackageParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.import.package", params);
+  }
+
+  public async skillImportPreview(params: SkillImportPreviewParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.import.preview", params);
+  }
+
+  public async skillUpdatePreview(params: SkillUpdatePreviewParams): Promise<ManagementResult> {
+    return this.managementRequest("skill.update.preview", params);
+  }
+
   public async skillInit(params: SkillInitParams): Promise<ManagementResult> {
     return this.managementRequest("skill.init", params);
   }
@@ -2734,6 +2787,14 @@ export class AlysisBridgeClient extends EventEmitter {
     return this.managementRequest("hooks.doctor", params);
   }
 
+  public async hooksDocumentRead(params: HooksDocumentParams): Promise<ManagementResult> {
+    return this.managementRequest("hooks.document.read", params);
+  }
+
+  public async hooksDocumentSave(params: HooksDocumentSaveParams): Promise<ManagementResult> {
+    return this.managementRequest("hooks.document.save", params);
+  }
+
   public async hooksTrace(params: HooksTraceParams = {}): Promise<HooksTraceResult> {
     return this.managementRequest("hooks.trace", params);
   }
@@ -2790,6 +2851,10 @@ export class AlysisBridgeClient extends EventEmitter {
 
   public async extInstall(params: ExtInstallParams): Promise<ExtMutationResult> {
     return this.managementRequest("ext.install", params);
+  }
+
+  public async extCustomSave(params: ExtCustomSaveParams): Promise<ExtMutationResult> {
+    return this.managementRequest("ext.custom.save", params);
   }
 
   public async extUninstall(params: ExtMutationParams): Promise<ExtMutationResult> {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add typed VS Code bridge calls for skill imports and updates, skill and hook
+  documents, reviewed plugin descriptors, and completed job output paths.
+- Keep host interpreter examples out of native document capability responses.
 - Let explicitly linked chats exchange messages and replies across local projects
   while keeping each chat's model, workspace, and permissions. The terminal
   displays sent and received messages with delivery status. See

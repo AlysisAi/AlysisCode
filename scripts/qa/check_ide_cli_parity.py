@@ -77,9 +77,8 @@ VALID_EXTENSION_COMMAND_ROUTE_TYPES = {
     "tree_refresh",
 }
 
-# These integrations belong to the desktop host. VS Code has no corresponding
-# approval/media controller, customization workbench or session-output handoff.
-# Keep them visible as bridge-only features rather than claiming extension support.
+# These integrations require a desktop host controller. They remain bridge-only
+# and are exempt from typed VS Code client coverage.
 DESKTOP_HOST_ONLY_METHODS = {
     "browser_start.respond",
     "computer.respond",
@@ -89,18 +88,6 @@ DESKTOP_HOST_ONLY_METHODS = {
     "session.userQuestions.get",
     "session.userQuestions.answer",
     "session.userQuestions.touch",
-    "session.outputArtifacts",
-    "ext.custom.save",
-    "hooks.document.read",
-    "hooks.document.save",
-    "skill.document.read",
-    "skill.document.save",
-    "skill.import.describe",
-    "skill.import.discard",
-    "skill.import.install",
-    "skill.import.package",
-    "skill.import.preview",
-    "skill.update.preview",
 }
 
 TS_CLIENT_COVERAGE_EXEMPT_METHODS = {

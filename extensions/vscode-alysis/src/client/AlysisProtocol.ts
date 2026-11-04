@@ -33,6 +33,14 @@ export const MANAGEMENT_BRIDGE_METHODS = [
   "agents.list",
   "skill.list",
   "skill.info",
+  "skill.document.read",
+  "skill.document.save",
+  "skill.import.describe",
+  "skill.import.discard",
+  "skill.import.install",
+  "skill.import.package",
+  "skill.import.preview",
+  "skill.update.preview",
   "skill.init",
   "skill.validate",
   "skill.install",
@@ -57,6 +65,8 @@ export const MANAGEMENT_BRIDGE_METHODS = [
   "mcp.auth.login.cancel",
   "mcp.auth.logout",
   "hooks.list",
+  "hooks.document.read",
+  "hooks.document.save",
   "hooks.doctor",
   "hooks.trace",
   "hooks.test",
@@ -72,6 +82,7 @@ export const MANAGEMENT_BRIDGE_METHODS = [
   "ext.list",
   "ext.info",
   "ext.install",
+  "ext.custom.save",
   "ext.uninstall",
   "ext.enable",
   "ext.disable"
@@ -79,6 +90,7 @@ export const MANAGEMENT_BRIDGE_METHODS = [
 
 export const OPTIONAL_BRIDGE_METHODS = [
   "session.artifactChecks",
+  "session.outputArtifacts",
   "session.userQuestions.get",
   "session.userQuestions.answer",
   "session.userQuestions.touch",
@@ -947,6 +959,80 @@ export interface SkillRemoveParams extends WorkspaceScopedParams {
   workspace_trusted: boolean;
   name: string;
   project?: boolean;
+}
+
+export interface SkillImportDraftParams extends WorkspaceScopedParams {
+  draft_id: string;
+}
+
+export interface SkillImportPackageParams extends SkillImportDraftParams {
+  workspace_trusted: boolean;
+  yes?: boolean;
+}
+
+export interface SkillImportDiscardParams extends SkillImportDraftParams {
+  workspace_trusted: boolean;
+}
+
+export interface SkillImportPreviewParams extends WorkspaceScopedParams {
+  workspace_trusted: boolean;
+  source: string;
+  subdir?: string;
+  ref?: string;
+  yes?: boolean;
+}
+
+export interface SkillImportInstallParams extends SkillImportDraftParams {
+  workspace_trusted: boolean;
+  selected: string[];
+  project?: boolean;
+  accept_partial?: boolean;
+  yes?: boolean;
+}
+
+export interface SkillDocumentSaveParams extends WorkspaceScopedParams {
+  workspace_trusted: boolean;
+  content: string;
+  name?: string;
+  revision?: string;
+  copy_from?: string;
+  project?: boolean;
+  yes?: boolean;
+}
+
+export interface SkillUpdatePreviewParams extends WorkspaceScopedParams {
+  workspace_trusted: boolean;
+  name: string;
+  project?: boolean;
+  expected_source?: string;
+  yes?: boolean;
+}
+
+export interface HooksDocumentParams extends WorkspaceScopedParams {
+  layer?: "user" | "project" | "local";
+}
+
+export interface HooksDocumentSaveParams extends HooksDocumentParams {
+  workspace_trusted: boolean;
+  content: string;
+  revision: string;
+  yes?: boolean;
+}
+
+export interface ExtCustomSaveParams extends ExtWorkspaceParams {
+  workspace_trusted: boolean;
+  plugin_id: string;
+  descriptor: string;
+  yes?: boolean;
+  confirm?: boolean;
+  trust_approval?: ExtInstallTrustApproval;
+}
+
+export interface SessionOutputArtifactsResult extends ManagementResult {
+  session_id: string;
+  job_id: string;
+  task_id: string;
+  paths: string[];
 }
 
 export interface DoctorSummaryResult extends ManagementResult {

@@ -1573,10 +1573,11 @@
       "names": [
         "browser_start.respond",
         "computer.respond",
+        "computer_start_resolved.respond",
         "task_budget.respond"
       ],
       "status": "implemented_in_bridge_only",
-      "rationale": "Capability-negotiated responses from the trusted Alysis Code desktop host for browser start, Computer Use and per-turn task budgets.",
+      "rationale": "Capability-negotiated responses from the trusted Alysis Code desktop host for browser start, Computer Use, resolved application start and per-turn task budgets.",
       "bridge_only_rationale": "The desktop owns these private media, approval and budget boundaries. VS Code does not negotiate or implement the desktop host capability; these methods are intentionally excluded from its typed client coverage, while bridge dispatch and protocol documentation remain required."
     },
     {
@@ -1683,7 +1684,6 @@
       "id": "ide.methods.desktop_workbench",
       "surface": "ide_bridge_method",
       "names": [
-        "computer_start_resolved.respond",
         "ext.custom.save",
         "hooks.document.read",
         "hooks.document.save",
@@ -1698,8 +1698,8 @@
         "skill.update.preview"
       ],
       "status": "implemented_in_bridge_only",
-      "rationale": "These methods serve the desktop customization workbench, exact session-output handoff and native Computer Use controller.",
-      "bridge_only_rationale": "VS Code has no matching draft-review, document-revision or native host controller. Their current support is in the engine and desktop client."
+      "rationale": "Typed client calls support skill import and updates, skill and hook documents, reviewed plugin descriptors, and exact session-output lookup through the existing engine contracts.",
+      "bridge_only_rationale": "The VS Code client exposes typed calls. The corresponding user-facing workflows are in the desktop app."
     }
   ]
 }

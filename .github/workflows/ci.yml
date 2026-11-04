@@ -35,8 +35,36 @@ jobs:
       - name: Lint GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
+  preflight:
+    name: Public source checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.23"
+
+      - name: Sync locked preflight dependencies
+        run: uv sync --frozen --python "3.12" --extra dev
+
+      - name: Check public repository contents
+        run: uv run --frozen --no-sync python scripts/qa/check_public_repo.py
+
+      - name: Lint
+        run: uv run --frozen --no-sync ruff check .
+
+      - name: Format check
+        run: uv run --frozen --no-sync ruff format --check .
+
   test:
     name: test (ubuntu-latest, py${{ matrix.python-version }})
+    needs: [workflow-lint, preflight]
     runs-on: ubuntu-latest
     # Leave room for the full sandbox, Office and protocol integration suite.
     timeout-minutes: 120
@@ -61,6 +89,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Node.js for cross-language protocol tests
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
       - name: Set up pinned uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -68,15 +101,6 @@ jobs:
 
       - name: Sync locked test dependencies
         run: uv sync --frozen --no-editable --python "${{ matrix.python-version }}" --extra dev --extra documents
-
-      - name: Check public repository contents
-        run: uv run --frozen --no-sync python scripts/qa/check_public_repo.py
-
-      - name: Lint
-        run: uv run --frozen --no-sync ruff check .
-
-      - name: Format check
-        run: uv run --frozen --no-sync ruff format --check .
 
       - name: Install native sandbox for real CLI qualification
         run: |
@@ -94,7 +118,18 @@ jobs:
         env:
           ALYSIS_TEST_OFFICE_SOFFICE: /usr/bin/soffice
           ALYSIS_RUN_BWRAP_RUNTIME_TESTS: "1"
-        run: uv run --frozen --no-sync pytest -q
+        run: >-
+          uv run --frozen --no-sync pytest -q --durations=50
+          --junitxml="${{ runner.temp }}/pytest-python-${{ matrix.python-version }}.xml"
+
+      - name: Preserve test timings and results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pytest-python-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/pytest-python-${{ matrix.python-version }}.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   reliability-qualification:
     name: production reliability (${{ matrix.os }}, py3.12)
