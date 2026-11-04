@@ -30,9 +30,10 @@ from ..host_file_handles import (
 from ..project_folders import containing_root
 from ..runtime_artifacts import RUNTIME_ARTIFACT_DIR_NAMES
 from ..sensitive_paths import sensitive_path_category
+from .errors import ToolError
 
 
-class FsError(RuntimeError):
+class FsError(ToolError):
     pass
 
 
@@ -222,7 +223,9 @@ def _resolve_under_root(root: Path, user_path: str) -> Path:
     try:
         containing_root(root_abs, p)
     except ValueError as e:
-        raise FsError(f"Path escapes root: {user_path}") from e
+        raise FsError(
+            f"Path escapes root: {user_path}", denial_code="path_escapes_workspace"
+        ) from e
     guard_host_resolved_read(p)
     return p
 

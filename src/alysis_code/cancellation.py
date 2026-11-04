@@ -87,6 +87,11 @@ class CombinedCancellationToken:
             pause.wait(0.05 if remaining is None else min(0.05, remaining))
         return True
 
+    def wait_cancelled(self, timeout: float | None = None) -> bool:
+        """Preserve the provider wait interface when combining cancellation sources."""
+
+        return self.wait(timeout)
+
 
 class InteractiveCancellationToken:
     """Thread-safe cancellation token for an interactive user turn.

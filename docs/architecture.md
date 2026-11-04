@@ -8,6 +8,11 @@ session ends.
 This page gives a high-level view of the system. Detailed command behavior,
 configuration keys, and subsystem contracts live in the feature-specific docs.
 
+Ordinary interactive sessions can opt into engine-owned
+[chat-to-chat messaging](chat-messaging.md). A durable mailbox, explicit chat
+links and a single execution owner support peer exchanges across processes;
+the desktop remains a presentation client.
+
 ## Design Principles
 
 - Local-first operation: source code, runtime state, and logs stay on the local

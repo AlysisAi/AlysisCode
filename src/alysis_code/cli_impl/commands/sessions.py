@@ -19,6 +19,7 @@ from ...session_store import (
 from ...usage_tracker import aggregate_usage_from_session_logs
 from . import _patchable
 from ._shared import _console, _Table
+from .chat_messaging import messaging_app
 
 
 def _cli_module() -> Any:
@@ -31,6 +32,8 @@ def _cli_module() -> Any:
 
 
 sessions_app = typer.Typer(add_completion=False, help="Session log commands.")
+
+sessions_app.add_typer(messaging_app, name="messaging")
 
 
 def _usage_source_pair(row: dict[str, Any]) -> str:

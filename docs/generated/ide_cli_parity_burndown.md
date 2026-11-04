@@ -12,8 +12,8 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 | `experimental_with_gate` | 1 |
 | `implemented_in_bridge_only` | 48 |
 | `implemented_in_extension` | 411 |
-| `intentionally_cli_only` | 39 |
-| `not_applicable_to_ide` | 30 |
+| `intentionally_cli_only` | 45 |
+| `not_applicable_to_ide` | 31 |
 | `planned_for_protocol` | 0 |
 
 ## Source Inventory
@@ -21,7 +21,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Backend action metadata entries: 122
 - CLI Forge chat commands: 10
 - CLI chat slash commands: 36
-- CLI commands and groups: 144
+- CLI commands and groups: 151
 - IDE bridge methods: 221
 - VS Code package/chat commands: 54
 - VS Code slash commands and aliases: 68
@@ -387,6 +387,12 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Features: `server`
 - Rationale: The server namespace is intentionally CLI-only until lifecycle, authentication, and port exposure policy exists for IDE hosts.
 
+### cli.commands.session_messaging
+
+- Surface: `cli_command`
+- Features: `sessions messaging close`, `sessions messaging link`, `sessions messaging list`, `sessions messaging serve`, `sessions messaging status`, `sessions messaging unlink`
+- Rationale: The terminal commands manage local chat links and the standalone receiver. The engine bridge handles message delivery to active sessions.
+
 ### cli.commands.intentional_cli_only
 
 - Surface: `cli_command`
@@ -447,7 +453,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### cli.groups.namespaces
 
 - Surface: `cli_command_group`
-- Features: `auth`, `config`, `conventions`, `ext`, `forge`, `forge assets`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `profile`, `report`, `sandbox`, `sessions`, `skill`, `tool`, `update`, `agents`, `memory`
+- Features: `auth`, `config`, `conventions`, `ext`, `forge`, `forge assets`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `profile`, `report`, `sandbox`, `sessions`, `sessions messaging`, `skill`, `tool`, `update`, `agents`, `memory`
 - Rationale: Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision.
 
 ### cli.chat_slash.not_applicable

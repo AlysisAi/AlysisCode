@@ -49,7 +49,10 @@ def shell_run(
     if cwd:
         cwd_path = (base / cwd).resolve()
         if not contains_workspace_path(base, cwd_path, runner_workspace_roots(runner)):
-            raise ShellError(f"cwd escapes root and approved additional folders: {cwd}")
+            raise ShellError(
+                f"cwd escapes root and approved additional folders: {cwd}",
+                denial_code="path_escapes_workspace",
+            )
     else:
         cwd_path = base
 

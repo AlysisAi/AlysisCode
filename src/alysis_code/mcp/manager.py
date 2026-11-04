@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..runtime_kind import RuntimeKind, normalize_runtime_kind
+from ..tools.errors import ToolError
 from .catalog import McpListedTool
 from .config import load_resolved_mcp_config, project_mcp_config_path, user_mcp_config_path
 from .errors import McpConfigError as ConfigError
@@ -498,8 +499,9 @@ class McpToolBinding:
 
     def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.session_mode == "readonly":
-            raise RuntimeError(
-                f"Blocked in readonly mode: MCP tool '{self.tool_alias}' is not available."
+            raise ToolError(
+                f"Blocked in readonly mode: MCP tool '{self.tool_alias}' is not available.",
+                denial_code="readonly_denied",
             )
         result = self.client.call_tool(
             tool_name=self.tool_name,
@@ -569,8 +571,9 @@ class McpHostToolBinding:
 
     def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.session_mode == "readonly":
-            raise RuntimeError(
-                f"Blocked in readonly mode: MCP tool '{self.tool_alias}' is not available."
+            raise ToolError(
+                f"Blocked in readonly mode: MCP tool '{self.tool_alias}' is not available.",
+                denial_code="readonly_denied",
             )
         return self.run_handler(arguments)
 
@@ -1240,9 +1243,10 @@ class McpManager:
         uri = self._normalize_required_argument(arguments, field_name="uri")
         record = self._resource_lookup.get((server_id, uri))
         if record is None:
-            raise RuntimeError(
+            raise ToolError(
                 "Blocked: MCP resource reads are limited to the frozen session snapshot; "
-                f"no snapshotted resource matches server '{server_id}' and uri '{uri}'."
+                f"no snapshotted resource matches server '{server_id}' and uri '{uri}'.",
+                denial_code="mcp_snapshot_denied",
             )
         result = record.client.read_resource(resource_uri=uri, allowed_uris=frozenset({uri}))
         payload: dict[str, Any] = {
@@ -1631,10 +1635,11 @@ class McpManager:
         self._sync_stale_catalog_snapshot_metadata()
         record = self._prompt_lookup.get((normalized_server_id, normalized_prompt_name))
         if record is None:
-            raise RuntimeError(
+            raise ToolError(
                 "Blocked: MCP prompt fetches are limited to the frozen session snapshot; "
                 f"no snapshotted prompt matches server '{normalized_server_id}' and prompt "
-                f"{normalized_prompt_name!r}."
+                f"{normalized_prompt_name!r}.",
+                denial_code="mcp_snapshot_denied",
             )
         result = record.client.get_prompt(name=record.prompt.name, arguments=arguments)
         payload: dict[str, Any] = {

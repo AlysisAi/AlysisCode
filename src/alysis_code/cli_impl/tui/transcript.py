@@ -10,6 +10,7 @@ Kept free of any agent imports so it can be unit-tested in isolation.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -17,7 +18,8 @@ from collections.abc import Callable
 from .forge_status import forge_status_bucket, forge_status_is_terminal
 
 # (role, text) — role drives styling in the app: "user" | "assistant" | "reasoning"
-# | "trace" | "patch" (structured JSON) | "tool_output" | "error" | "warn" | "info" | "system".
+# | "trace" | "patch" | "peer_message" (structured JSON) | "tool_output"
+# | "error" | "warn" | "info" | "system".
 Entry = tuple[str, str]
 
 
@@ -34,6 +36,8 @@ class TuiTranscript:
         self._status: str | None = None
         self._assistant_index: int | None = None
         self._response_assistant_indices: list[int] = []
+        self._peer_message_indices: dict[str, int] = {}
+        self._peer_receipts: dict[str, dict] = {}
         # Live provider-generated reasoning-summary block: index of the open
         # entry, when it started, and elapsed seconds for each closed block.
         self._reasoning_index: int | None = None
@@ -141,6 +145,41 @@ class TuiTranscript:
         self._touch()
 
     # ---- generic appends ----
+    def on_chat_message(self, kind: str, payload: dict) -> None:
+        """One block per audited message; receipt updates never disturb a live reply."""
+        message_id = payload.get("message_id")
+        if not isinstance(message_id, str) or not message_id:
+            return
+        with self._lock:
+            index = self._peer_message_indices.get(message_id)
+            if kind == "chat_message_state":
+                previous = self._peer_receipts.get(message_id)
+                if previous and previous.get("updated", 0) > payload.get("updated", 0):
+                    return
+                self._peer_receipts[message_id] = dict(payload)
+                if index is None:
+                    return
+                data = json.loads(self.entries[index][1])
+            elif kind in {"chat_message_sent", "chat_message_received"}:
+                data = dict(payload)
+                data["direction"] = "sent" if kind == "chat_message_sent" else "received"
+                data["peer_id"] = payload.get(
+                    "recipient" if data["direction"] == "sent" else "sender"
+                )
+                if index is None:
+                    self._close_reasoning_locked()
+                    self._assistant_index = None
+                    index = len(self.entries)
+                    self._peer_message_indices[message_id] = index
+                    self.entries.append(("peer_message", ""))
+            else:
+                return
+            receipt = self._peer_receipts.get(message_id)
+            if receipt and receipt.get("updated", 0) >= data.get("updated", 0):
+                data.update({key: receipt.get(key) for key in ("state", "error", "updated")})
+            self.entries[index] = ("peer_message", json.dumps(data, ensure_ascii=False))
+        self._touch()
+
     def append(self, role: str, text: str) -> None:
         with self._lock:
             self._close_reasoning_locked()
@@ -332,6 +371,11 @@ class TuiTranscript:
     def _remove_entry_locked(self, index: int) -> None:
         """Remove a duplicate without shifting reasoning metadata onto other rows."""
         self.entries.pop(index)
+        self._peer_message_indices = {
+            message_id: position - (position > index)
+            for message_id, position in self._peer_message_indices.items()
+            if position != index
+        }
         for metadata in (self._reasoning_secs, self._reasoning_block_ids):
             shifted = {
                 key - (key > index): value for key, value in metadata.items() if key != index
@@ -529,6 +573,8 @@ class TuiTranscript:
     def clear(self) -> None:
         with self._lock:
             self.entries.clear()
+            self._peer_message_indices.clear()
+            self._peer_receipts.clear()
             self._assistant_index = None
             self._response_assistant_indices.clear()
             self._reasoning_index = None
@@ -553,6 +599,8 @@ class TuiTranscript:
         """
         with self._lock:
             self.entries.clear()
+            self._peer_message_indices.clear()
+            self._peer_receipts.clear()
             self._assistant_index = None
             self._response_assistant_indices.clear()
             self._reasoning_index = None

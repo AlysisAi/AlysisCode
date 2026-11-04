@@ -859,6 +859,14 @@ def _built_in_tool_exposed_in_mode(
     normalized_tool_name = str(tool_name or "").strip()
     if subagent_depth == 0 and normalized_tool_name in {"request_user_input", "wait_user_input"}:
         return True
+    if subagent_depth == 0 and normalized_tool_name in {
+        "list_chats",
+        "send_chat_message",
+        "read_chat_messages",
+        "wait_for_chat_reply",
+        "close_chat_exchange",
+    }:
+        return True
     if normalized_tool_name in _READONLY_MAIN_SESSION_BUILTIN_TOOL_NAMES:
         return True
     if subagent_depth == 0 and normalized_tool_name in (
@@ -1318,6 +1326,7 @@ def build_tools(
                     "error_code": "approval_denied_by_policy",
                     "dispatch_state": "not_dispatched",
                 },
+                denial_code="approval_denied_by_policy",
             )
         return decision
 
@@ -1331,7 +1340,8 @@ def build_tools(
             standing = handler(request)
         except Exception as exc:
             raise AgentRuntimeError(
-                "Permission rules could not be rechecked; saved access was not used."
+                "Permission rules could not be rechecked; saved access was not used.",
+                denial_code="approval_recheck_failed",
             ) from exc
         if standing is not None and standing.outcome in {"deny", "ask_person"}:
             decision = _request_action_approval(request)
@@ -1478,7 +1488,8 @@ def build_tools(
             raise AgentRuntimeError(
                 "No sandbox is available on this computer, so each command needs your "
                 "approval, and this run cannot ask for it. Install Docker (or bubblewrap on "
-                "Linux), or use Full access."
+                "Linux), or use Full access.",
+                denial_code="approval_required",
             )
         reason = (
             "No sandbox is available on this computer, so this command will run "
@@ -1678,7 +1689,9 @@ def build_tools(
                 field_name="path",
                 workspace_root=root_abs,
             )
-            raise AgentRuntimeError(str(payload["error"]), result_payload=payload) from e
+            raise AgentRuntimeError(
+                str(payload["error"]), result_payload=payload, denial_code="path_escapes_workspace"
+            ) from e
         return os.fspath(normalized)
 
     def _resolve_rel_write_path(rel_path: str) -> str:
@@ -1693,10 +1706,13 @@ def build_tools(
         protected_relative = os.fspath(target.relative_to(selected_root))
         if selected_root != root.resolve() and allow_pattern_groups:
             raise AgentRuntimeError(
-                "Additional folders are unavailable under this restricted write scope."
+                "Additional folders are unavailable under this restricted write scope.",
+                denial_code="write_scope_denied",
             )
         if _is_denied_path(protected_relative):
-            raise AgentRuntimeError(f"Blocked write to protected path: {rel_path}")
+            raise AgentRuntimeError(
+                f"Blocked write to protected path: {rel_path}", denial_code="protected_path_denied"
+            )
         rel_norm = _normalize_rel_match_path(rel_path)
         rel_cf = rel_norm.casefold()
         for patterns in allow_pattern_groups:
@@ -1710,7 +1726,10 @@ def build_tools(
                     if not any(ch in pattern for ch in ["*", "?", "["])
                 )
             if not in_scope:
-                raise AgentRuntimeError(f"Blocked write outside allowed scope: {rel_path}")
+                raise AgentRuntimeError(
+                    f"Blocked write outside allowed scope: {rel_path}",
+                    denial_code="write_scope_denied",
+                )
 
     def _guard_host_file_path(path: str, *, write: bool = False, recursive: bool = False) -> None:
         if host_file_policy is None:
@@ -1721,7 +1740,7 @@ def build_tools(
             else:
                 host_file_policy.guard_read(root, path, recursive=recursive)
         except HostFilePolicyError as exc:
-            raise AgentRuntimeError(str(exc)) from exc
+            raise AgentRuntimeError(str(exc), denial_code=exc.denial_code) from exc
 
     def _run_file_mutation(
         name: str,
@@ -1773,7 +1792,8 @@ def build_tools(
             return []
         if not is_full_access_mode and non_interactive and not host_managed_approvals:
             raise AgentRuntimeError(
-                f"Explicit one-time user approval is required for {kind} on a sensitive file."
+                f"Explicit one-time user approval is required for {kind} on a sensitive file.",
+                denial_code="sensitive_approval_required",
             )
         categories = sorted({finding["category"] for finding in findings})
         preview = "\n".join(
@@ -1810,7 +1830,8 @@ def build_tools(
             # allow decision.
             raise AgentRuntimeError(
                 f"Automatic or session approval cannot authorize {kind} on a sensitive file. "
-                "Switch approvals to ask and approve this operation once."
+                "Switch approvals to ask and approve this operation once.",
+                denial_code="sensitive_approval_required",
             )
         return findings
 
@@ -1867,11 +1888,14 @@ def build_tools(
         if is_full_access_mode:
             return
         if mode == "readonly":
-            raise AgentRuntimeError(f"Blocked in readonly mode: {kind}")
+            raise AgentRuntimeError(
+                f"Blocked in readonly mode: {kind}", denial_code="readonly_denied"
+            )
         if mode == "review":
             if _approver_unavailable():
                 raise AgentRuntimeError(
-                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
+                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
+                    denial_code="approval_required",
                 )
             decision = _request_action_approval(
                 ApprovalRequest(
@@ -1890,7 +1914,8 @@ def build_tools(
         if mode == "auto" and kind == "fs_delete" and not yes:
             if _approver_unavailable():
                 raise AgentRuntimeError(
-                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
+                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
+                    denial_code="approval_required",
                 )
             decision = _request_action_approval(
                 ApprovalRequest(
@@ -1910,7 +1935,8 @@ def build_tools(
         # The common engine authority handles this flagged action in the effective mode.
         if not is_full_access_mode and not can_ask_person:
             raise AgentRuntimeError(
-                f"Blocked: {concern}. This mode requires a person and this run cannot ask."
+                f"Blocked: {concern}. This mode requires a person and this run cannot ask.",
+                denial_code="approval_required",
             )
         decision = _request_action_approval(
             ApprovalRequest(
@@ -1951,7 +1977,10 @@ def build_tools(
             or access_grant.tool != tool_name
             or access_grant.cwd != str((root / cwd).resolve() if cwd else root.resolve())
         ):
-            raise AgentRuntimeError("Authentication approval does not match this command/tool/cwd.")
+            raise AgentRuntimeError(
+                "Authentication approval does not match this command/tool/cwd.",
+                denial_code="approval_scope_mismatch",
+            )
         from ..background_runner import HostBackgroundRunner
         from ..sandbox_runner import HostShellRunner, LazyShellRunner
         from ..sandbox_settings import ShellSandboxSettings
@@ -2066,13 +2095,18 @@ def build_tools(
         if persona_write_scope_active:
             raise AgentRuntimeError(
                 f"Blocked while persona write scope is active: {tool_name}. "
-                "Use scoped filesystem and inspection tools instead."
+                "Use scoped filesystem and inspection tools instead.",
+                denial_code="persona_write_scope_denied",
             )
         if matched_pattern := _fullaccess_denylist_match(cmd):
             if tool_name != "shell_run" and not is_full_access_mode:
-                raise AgentRuntimeError(f"Blocked command: denylist pattern {matched_pattern}")
+                raise AgentRuntimeError(
+                    f"Blocked command: denylist pattern {matched_pattern}",
+                    denial_code="command_denylist_denied",
+                )
             raise AgentRuntimeError(
-                f"Blocked fullaccess shell command by denylist pattern: {matched_pattern}"
+                f"Blocked fullaccess shell command by denylist pattern: {matched_pattern}",
+                denial_code="command_denylist_denied",
             )
         remote_write = _require_github_write_approval(
             cmd,
@@ -2083,7 +2117,9 @@ def build_tools(
             durable_execution=durable_execution,
         )
         if mode == "readonly" and not is_full_access_mode:
-            raise AgentRuntimeError(f"Blocked in readonly mode: {tool_name}")
+            raise AgentRuntimeError(
+                f"Blocked in readonly mode: {tool_name}", denial_code="readonly_denied"
+            )
         critical = _critical_delete_reason(cmd, cwd)
         operation_approved = (
             critical is None
@@ -2098,7 +2134,9 @@ def build_tools(
             return remote_write
         decision = evaluate_shell_command(cmd)
         if not decision.allowed:
-            raise AgentRuntimeError(f"Blocked command: {decision.reason}")
+            raise AgentRuntimeError(
+                f"Blocked command: {decision.reason}", denial_code="shell_policy_denied"
+            )
         if _shell_commands_need_approval():
             # Host fallback replaces the sandbox only after approval, including for
             # read-only commands. Whoever answers sees every reason it was flagged.
@@ -2119,7 +2157,8 @@ def build_tools(
         if mode == "review":
             if _approver_unavailable():
                 raise AgentRuntimeError(
-                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
+                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
+                    denial_code="approval_required",
                 )
             decision = _request_action_approval(
                 ApprovalRequest(
@@ -2143,7 +2182,8 @@ def build_tools(
         if concern:
             if _approver_unavailable():
                 raise AgentRuntimeError(
-                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
+                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
+                    denial_code="approval_required",
                 )
             choice = _request_action_approval(
                 ApprovalRequest(
@@ -2166,7 +2206,9 @@ def build_tools(
         if is_full_access_mode:
             return
         if mode == "readonly":
-            raise AgentRuntimeError(f"Blocked in readonly mode: {op_name}")
+            raise AgentRuntimeError(
+                f"Blocked in readonly mode: {op_name}", denial_code="readonly_denied"
+            )
 
     def guard_verify(commands: list[str]) -> tuple[ExecutionDirectoryIdentity, ...]:
         _admit_routine_action(
@@ -2177,7 +2219,8 @@ def build_tools(
         if persona_write_scope_active:
             raise AgentRuntimeError(
                 "Blocked while persona write scope is active: verify_run. "
-                "Verification commands can write paths the persona scope cannot constrain."
+                "Verification commands can write paths the persona scope cannot constrain.",
+                denial_code="persona_write_scope_denied",
             )
         directories = tuple(
             directory
@@ -2192,13 +2235,17 @@ def build_tools(
         if is_full_access_mode:
             return directories
         if mode == "readonly":
-            raise AgentRuntimeError("Blocked in readonly mode: verify_run")
+            raise AgentRuntimeError(
+                "Blocked in readonly mode: verify_run", denial_code="readonly_denied"
+            )
 
         sensitive_reason: str | None = None
         for command in commands:
             decision = evaluate_shell_command(command)
             if not decision.allowed:
-                raise AgentRuntimeError(f"Blocked command: {decision.reason}")
+                raise AgentRuntimeError(
+                    f"Blocked command: {decision.reason}", denial_code="shell_policy_denied"
+                )
             if sensitive_reason is None and decision.needs_confirm:
                 sensitive_reason = decision.reason
 
@@ -2212,7 +2259,8 @@ def build_tools(
                 raise AgentRuntimeError(
                     "No sandbox is available on this computer, so verification commands need "
                     "your approval, and this run cannot ask for it. Install Docker (or "
-                    "bubblewrap on Linux), or use Full access."
+                    "bubblewrap on Linux), or use Full access.",
+                    denial_code="approval_required",
                 )
             choice = _request_action_approval(
                 ApprovalRequest(
@@ -2233,7 +2281,8 @@ def build_tools(
         if mode == "review":
             if _approver_unavailable():
                 raise AgentRuntimeError(
-                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
+                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
+                    denial_code="approval_required",
                 )
             decision = _request_action_approval(
                 ApprovalRequest(
@@ -2251,7 +2300,8 @@ def build_tools(
         if sensitive_reason and not yes:
             if _approver_unavailable():
                 raise AgentRuntimeError(
-                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan."
+                    "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
+                    denial_code="approval_required",
                 )
             choice = _request_action_approval(
                 ApprovalRequest(
@@ -2340,7 +2390,9 @@ def build_tools(
                 workspace_root=workspace_root,
                 path_base=base_kind,
             )
-            raise AgentRuntimeError(str(payload["error"]), result_payload=payload) from e
+            raise AgentRuntimeError(
+                str(payload["error"]), result_payload=payload, denial_code="path_escapes_workspace"
+            ) from e
         rel_path = relative_path(workspace_root, candidate)
         if rel_path == "README" and not (workspace_root / "README").exists():
             if (workspace_root / "README.md").exists():
@@ -2379,7 +2431,10 @@ def build_tools(
 
     def _run_custom_tool(spec: Any, args: dict[str, Any]) -> dict[str, Any]:
         if mode == "readonly":
-            raise AgentRuntimeError(f"Blocked in readonly mode: custom tool '{spec.name}'")
+            raise AgentRuntimeError(
+                f"Blocked in readonly mode: custom tool '{spec.name}'",
+                denial_code="readonly_denied",
+            )
         args_preview = json.dumps(args, ensure_ascii=True, indent=2, sort_keys=True)
         preview = (
             f"Run custom tool\n"
@@ -3139,7 +3194,7 @@ def build_tools(
             except AgentRuntimeError as exc:
                 if (
                     persona_write_scope_active
-                    or "outside allowed scope" not in str(exc)
+                    or exc.denial_code != "write_scope_denied"
                     or not is_non_material_untracked_path(path)
                 ):
                     raise
@@ -3309,7 +3364,9 @@ def build_tools(
         if _is_allowed_ancestor_dir_creation(path):
             _guard_host_file_path(path, write=True)
             if _is_denied_path(path):
-                raise AgentRuntimeError(f"Blocked write to protected path: {path}")
+                raise AgentRuntimeError(
+                    f"Blocked write to protected path: {path}", denial_code="protected_path_denied"
+                )
         else:
             _guard_write_path(path)
         parents = bool(args.get("parents", True))
@@ -6019,14 +6076,18 @@ def build_tools(
             if action in BROWSER_WRITE_ACTIONS and (
                 mode == "readonly" or persona_write_scope_active
             ):
-                raise AgentRuntimeError(f"Blocked by the current write scope: {tool_name}")
+                raise AgentRuntimeError(
+                    f"Blocked by the current write scope: {tool_name}",
+                    denial_code="write_scope_denied",
+                )
             if (
                 action in TERMINAL_WRITE_ACTIONS
                 and not is_full_access_mode
                 and not unified_host_approvals
             ):
                 raise AgentRuntimeError(
-                    "Interactive host terminal input requires Full access for this chat."
+                    "Interactive host terminal input requires Full access for this chat.",
+                    denial_code="permission_mode_denied",
                 )
             if action in TERMINAL_WRITE_ACTIONS and is_full_access_mode:
                 # An explicitly retained strict sandbox still applies in Full access.
@@ -6036,26 +6097,37 @@ def build_tools(
                         "Interactive host terminals require shell sandbox mode off. "
                         f"The effective mode is {terminal_sandbox.mode}. Use shell_run or "
                         "shell_background with the configured sandbox, or explicitly disable "
-                        "the sandbox while keeping Full access."
+                        "the sandbox while keeping Full access.",
+                        denial_code="sandbox_policy_denied",
                     )
             if action in GITHUB_WRITE_ACTIONS:
                 if persona_write_scope_active or mode == "readonly":
-                    raise AgentRuntimeError(f"Blocked by the current write scope: {tool_name}")
+                    raise AgentRuntimeError(
+                        f"Blocked by the current write scope: {tool_name}",
+                        denial_code="write_scope_denied",
+                    )
                 if not host_managed_approvals:
-                    raise AgentRuntimeError(f"Host-managed approval is required for {tool_name}.")
+                    raise AgentRuntimeError(
+                        f"Host-managed approval is required for {tool_name}.",
+                        denial_code="approval_required",
+                    )
                 # GitHub writes require the host's exact account/repository/operation approval.
                 # The host owns this approval after validating its immutable session binding.
             if action in {"tasks.run", "debug.start"} and not unified_host_approvals:
                 if persona_write_scope_active:
                     raise AgentRuntimeError(
                         f"Blocked while persona write scope is active: {tool_name}. "
-                        "Opaque IDE executions cannot be constrained to persona paths."
+                        "Opaque IDE executions cannot be constrained to persona paths.",
+                        denial_code="persona_write_scope_denied",
                     )
                 if mode == "readonly":
-                    raise AgentRuntimeError(f"Blocked in readonly mode: {tool_name}")
+                    raise AgentRuntimeError(
+                        f"Blocked in readonly mode: {tool_name}", denial_code="readonly_denied"
+                    )
                 elif not host_managed_approvals:
                     raise AgentRuntimeError(
-                        f"Explicit one-time IDE approval is required for {tool_name}."
+                        f"Explicit one-time IDE approval is required for {tool_name}.",
+                        denial_code="approval_required",
                     )
                 else:
                     identifier_field = "task_id" if action == "tasks.run" else "configuration_id"
@@ -6088,7 +6160,8 @@ def build_tools(
                         raise ApprovalDeclinedError(tool_name)
                     if decision.allow_for_session:
                         raise AgentRuntimeError(
-                            f"Session approval cannot authorize opaque IDE execution: {tool_name}."
+                            f"Session approval cannot authorize opaque IDE execution: {tool_name}.",
+                            denial_code="approval_required",
                         )
             return host_action_handler(action, normalized)
         except HostActionError as exc:
@@ -6949,6 +7022,21 @@ def build_tools(
             )
     if scoped_access.enabled and scoped_access.access_store is not None:
         _append_builtin_tool("sandbox_permissions", run=scoped_access.manage)
+    from ..chat_messaging_runtime import CHAT_TOOL_SPECS, ChatToolClient, messaging_enabled
+
+    if (
+        messaging_enabled(cfg)
+        and store.enabled
+        and not no_log
+        and subagent_depth == 0
+        and not one_shot_execution
+        and resolved_runtime_kind == RuntimeKind.INTERACTIVE_CHAT
+    ):
+        chat_client = ChatToolClient(store, root, surface=surface)
+        for chat_name, _, _, _ in CHAT_TOOL_SPECS:
+            _append_builtin_tool(
+                chat_name, run=lambda args, name=chat_name: chat_client.run(name, args)
+            )
     active_tools = {t.name: t for t in tools}
     if tool_dispatch_guard is not None:
 

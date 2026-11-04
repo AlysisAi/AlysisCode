@@ -2,15 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..tools.errors import ToolError
 
-class AgentRuntimeError(RuntimeError):
-    def __init__(
-        self,
-        *args: object,
-        result_payload: dict[str, Any] | None = None,
-    ) -> None:
-        self.result_payload = result_payload
-        super().__init__(*args)
+
+class AgentRuntimeError(ToolError):
+    pass
 
 
 class ApprovalDeclinedError(AgentRuntimeError):
@@ -23,7 +19,9 @@ class ApprovalDeclinedError(AgentRuntimeError):
     ) -> None:
         self.approval_kind = str(approval_kind or "approval").strip() or "approval"
         super().__init__(
-            message or f"User declined: {self.approval_kind}", result_payload=result_payload
+            message or f"User declined: {self.approval_kind}",
+            result_payload=result_payload,
+            denial_code="approval_denied",
         )
 
 
@@ -44,6 +42,7 @@ class ApprovalReviewDeniedError(AgentRuntimeError):
         )
         super().__init__(
             message,
+            denial_code="approval_review_denied",
             result_payload={
                 "error": message,
                 "error_code": "approval_review_denied",

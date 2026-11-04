@@ -1745,7 +1745,8 @@ def test_interrupt_queues_work_until_retiring_worker_fully_unwinds(
     def feed(pipe: Any) -> None:
         pipe.send_text("first\r")
         assert first_started.wait(timeout=2)
-        pipe.send_text("\x1b")
+        # Exercise worker retirement without waiting for Escape prefix resolution.
+        pipe.send_text("\x03")
         assert first_cancelled.wait(timeout=2)
 
         # Session-replacing commands and ordinary prompts remain accepted by

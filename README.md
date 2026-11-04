@@ -101,6 +101,7 @@ In the desktop app, both paths live under **Models & keys** in the account menu.
 - **Free web search.** Works with any model, no API key needed.
 - **Computer use.** Our own, built in. The agent can operate apps you allow.
 - **Sandboxed by default.** Shell commands run in a sandbox enforced outside the model: Seatbelt on macOS, Bubblewrap or Docker on Linux and WSL, a native sandbox on Windows x64. Check yours with `alysis sandbox doctor --smoke`. [Sandbox modes](https://alysiscode.com/docs/safety/sandbox-modes)
+  Verification commands also default to strict sandboxing. Strict mode refuses execution when no backend is available. [Shell sandbox](docs/shell_sandbox.md)
 - **Any model.** Switch providers per task, mix in local models, or route roles to different models. [Models and providers](https://alysiscode.com/docs/config/models)
 - **Permissions you choose.** `readonly`, `review`, `auto` or `fullaccess`, switched with **Shift+Tab**. A persona (`code`, `architect`, `ask`, `debug`) can narrow what the agent does but never widen it. [Permissions](https://alysiscode.com/docs/safety/approval-prompts) · [Personas](https://alysiscode.com/docs/concepts/personas)
 - **Forge.** Turns a goal into a reviewed plan of dependent tasks, each with its own checks, so you get verified changes instead of one long chat. It uses a lot of tokens, so start small. [Forge guide](docs/forge.md)

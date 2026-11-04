@@ -2638,6 +2638,7 @@ class StdioBridge:
         session_ref["session"] = bridge_session
         with self._state_lock:
             self._sessions[session_id] = bridge_session
+        self._bind_chat_mailbox(bridge_session)
         return {
             "session_id": session_id,
             "workspace_root": os.fspath(root),
@@ -2777,6 +2778,45 @@ class StdioBridge:
         except (ConfigError, RuntimeError) as exc:
             raise _mcp_lifecycle_protocol_error(exc, request_id=request.id) from exc
         return {**result, "session_id": session.session_id}
+
+    def _bind_chat_mailbox(self, session):
+        endpoint = getattr(session.agent_session, "chat_endpoint", None)
+        if endpoint is None:
+            return
+
+        def dispatch(message_id):
+            with self._state_lock:
+                if (
+                    self._closed
+                    or session.closed
+                    or session.close_when_idle
+                    or _session_busy(session)
+                    or _session_transition_pending(session)
+                ):
+                    return
+                queued = self._prompt_queue.enqueue(
+                    session_id=session.session_id,
+                    idempotency_key="peer_" + message_id,
+                    payload={
+                        "message": "Incoming peer chat message",
+                        "peer_message_id": message_id,
+                        "image_paths": [],
+                        "basket_image_paths": [],
+                        "context_prompt": "",
+                    },
+                )
+                if queued.item.state in {
+                    PromptState.CANCELLED,
+                    PromptState.FAILED,
+                    PromptState.COMPLETED,
+                }:
+                    endpoint.store.abort_pending(
+                        endpoint.id, message_id, "peer_job_" + queued.item.state.value
+                    )
+                    return
+            self._drain_prompt_queue(session)
+
+        endpoint.dispatch = dispatch
 
     def _p2_negotiate(self, session):
         plugin_admission.negotiate(session, self._runtime_capabilities_payload())
@@ -3086,6 +3126,12 @@ class StdioBridge:
                     )
                     self._jobs[job.job_id] = job
                 idle = not _session_busy(session)
+
+        # An admitted human message takes priority over an automatically
+        # activated peer turn. Invalid sends and idempotent replays do not.
+        endpoint = getattr(session.agent_session, "chat_endpoint", None)
+        if queued.created and endpoint is not None:
+            endpoint.interrupt_peer()
 
         def _start() -> None:
             session.surface.emit_activity(
@@ -4330,6 +4376,11 @@ class StdioBridge:
                 ),
                 kwargs={
                     "skill": payload.get("skill"),
+                    **(
+                        {"peer_message_id": payload["peer_message_id"]}
+                        if "peer_message_id" in payload
+                        else {}
+                    ),
                     "memory_scope": payload.get("memory_scope"),
                     "project_folders": payload.get("project_folders"),
                     "task_relation": task_relation,
@@ -4372,10 +4423,12 @@ class StdioBridge:
         memory_scope: dict[str, Any] | None = None,
         project_folders: list[str] | None = None,
         task_relation: str | None = None,
+        peer_message_id: str | None = None,
     ) -> None:
         session.surface.with_job(job.job_id)
-        session.agent_session.memory_scope = memory_scope
-        session.agent_session.project_folders = project_folders or []
+        if peer_message_id is None:
+            session.agent_session.memory_scope = memory_scope
+            session.agent_session.project_folders = project_folders or []
         host_image_binding = job.host_image_binding
         heartbeat_stop = threading.Event()
         heartbeat_lost = threading.Event()
@@ -4493,7 +4546,18 @@ class StdioBridge:
                     session.github_repository_policy is not None
                     and session.github_repository_policy.mode == "allow_list"
                 ):
-                    if image_paths:
+                    if peer_message_id is not None:
+                        endpoint = getattr(session.agent_session, "chat_endpoint", None)
+                        if endpoint is None:
+                            raise RuntimeError("Peer messaging is unavailable for this session.")
+                        exit_code = int(
+                            endpoint.run_peer_turn(
+                                peer_message_id,
+                                cancellation_token=BridgeCancellationToken(job.cancellation_event),
+                            )
+                            or 0
+                        )
+                    elif image_paths:
                         exit_code = int(
                             _run_agent_turn_with_optional_cancellation(
                                 session.agent_session,
@@ -5644,6 +5708,10 @@ class StdioBridge:
             raise ProtocolError(
                 "prompt_queue_recovery_failed", str(exc), request_id=request.id
             ) from exc
+        from ..chat_messaging_runtime import rebind_chat_messaging
+
+        rebind_chat_messaging(session.agent_session, normalized_target)
+        self._bind_chat_mailbox(session)
         return {
             "session_id": session.session_id,
             "resumed_session_id": normalized_target,

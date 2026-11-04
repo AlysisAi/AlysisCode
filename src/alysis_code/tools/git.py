@@ -214,7 +214,9 @@ def _resolve_git_path(root: Path, user_path: str) -> str:
     try:
         rel = target.relative_to(root_abs)
     except ValueError as e:
-        raise GitError(f"Path escapes root: {user_path}") from e
+        raise GitError(
+            f"Path escapes root: {user_path}", denial_code="path_escapes_workspace"
+        ) from e
     return os.fspath(rel).replace("\\", "/")
 
 
