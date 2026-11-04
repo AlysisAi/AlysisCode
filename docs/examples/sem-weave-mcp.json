@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "servers": {
+    "sem": {
+      "transport": "stdio",
+      "command": "sem",
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "SEM_REPO": "/absolute/path/to/repo",
+        "SEM_CLOUD": "0"
+      },
+      "trust": "explicit",
+      "enabled_in": [
+        "interactive_chat",
+        "one_shot"
+      ],
+      "allowed_tools": [
+        "sem_find",
+        "sem_grep",
+        "sem_graph",
+        "sem_impact",
+        "sem_diff"
+      ]
+    },
+    "weave": {
+      "transport": "stdio",
+      "command": "weave-mcp",
+      "env": {
+        "WEAVE_REPO": "/absolute/path/to/repo"
+      },
+      "trust": "explicit",
+      "enabled": false,
+      "enabled_in": [
+        "interactive_chat",
+        "one_shot"
+      ],
+      "allowed_tools": [
+        "weave_edit",
+        "weave_preview"
+      ]
+    }
+  }
+}
