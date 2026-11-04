@@ -452,10 +452,30 @@ def test_ci_python_jobs_use_the_frozen_release_toolchain() -> None:
     assert "pip install" not in workflow
     assert "pipx" not in workflow
     assert "twine" not in workflow
-    assert (
-        workflow.count("astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0") == 6
+    jobs = yaml.safe_load(workflow)["jobs"]
+    setup_steps = [
+        (job_id, step)
+        for job_id, job in jobs.items()
+        for step in job["steps"]
+        if step.get("uses", "").startswith("astral-sh/setup-uv@")
+    ]
+    assert len(setup_steps) == 7
+    assert {job_id for job_id, _ in setup_steps} == {
+        "preflight",
+        "test",
+        "reliability-qualification",
+        "macos-smoke",
+        "vscode-extension",
+        "uv-project-workflow",
+        "package",
+    }
+    for _, step in setup_steps:
+        assert step["uses"] == "astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b"
+        assert step["with"]["version"] == "0.11.23"
+    assert any(
+        step.get("run") == 'uv sync --frozen --python "3.12" --extra dev'
+        for step in jobs["preflight"]["steps"]
     )
-    assert workflow.count('version: "0.11.23"') == 6
     assert "reliability-qualification:" in workflow
     assert "scripts/qa/qualify_production_reliability.py --require-clean" in " ".join(
         workflow.split()
@@ -464,7 +484,6 @@ def test_ci_python_jobs_use_the_frozen_release_toolchain() -> None:
         'uv sync --frozen --no-editable --python "${{ matrix.python-version }}" --extra dev'
         in workflow
     )
-    jobs = yaml.safe_load(workflow)["jobs"]
     for job_id in ("reliability-qualification", "macos-smoke", "vscode-extension"):
         sync_commands = [
             step["run"]

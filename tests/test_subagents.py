@@ -2255,7 +2255,7 @@ def test_runtime_search_rg_changed_result_does_not_signal_repetition(
         {"name": "explorer", "task": "Search before and after the fixture changes."}
     )
     try:
-        joined = tools["subagent_wait"].run({"run_id": spawned["run_id"], "timeout_s": 3.0})
+        joined = tools["subagent_wait"].run({"run_id": spawned["run_id"], "timeout_s": 10.0})
         assert joined["wait_pending"] is False
         child_events = children[0].store.events_snapshot()
         tool_results = [

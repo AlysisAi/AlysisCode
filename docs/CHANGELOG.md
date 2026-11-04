@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.1 - 2026-11-04
+
 - Add typed VS Code bridge calls for skill imports and updates, skill and hook
   documents, reviewed plugin descriptors, and completed job output paths.
 - Keep host interpreter examples out of native document capability responses.
@@ -12,6 +14,11 @@
 - Record machine-readable reasons for policy, approval, and hook denials in
   engine-owned tool-result metadata. The codes remain available in session logs
   when large tool outputs are stored separately.
+- Run public source checks once before the Python test matrix and retain
+  test timing reports for each Python version.
+
+## 0.16.0 - 2026-11-01
+
 - Update provider models, reasoning controls, and context limits across CLI
   settings and requests. Keep NVIDIA tool catalogs within request limits and
   preserve conversation history when switching to Reflection.
