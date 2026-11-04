@@ -618,6 +618,7 @@ def test_canonical_runtime_runs_real_planner_approval_agent_pytest_git_and_repla
         return int(real_run_agent(**kwargs))
 
     monkeypatch.setattr(forge_impl, "run_agent", observed_agent)
+    monkeypatch.setattr(cli_mod, "run_agent", observed_agent)
 
     initial_identity = runtime.service.identity
     plan_request = _request(
