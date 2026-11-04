@@ -639,6 +639,7 @@
         "report",
         "sandbox",
         "sessions",
+        "sessions messaging",
         "skill",
         "tool",
         "update",
@@ -654,6 +655,20 @@
       "name": "server",
       "status": "intentionally_cli_only",
       "rationale": "The server namespace is intentionally CLI-only until lifecycle, authentication, and port exposure policy exists for IDE hosts."
+    },
+    {
+      "id": "cli.commands.session_messaging",
+      "surface": "cli_command",
+      "names": [
+        "sessions messaging close",
+        "sessions messaging link",
+        "sessions messaging list",
+        "sessions messaging serve",
+        "sessions messaging status",
+        "sessions messaging unlink"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "The terminal commands manage local chat links and the standalone receiver. The engine bridge handles message delivery to active sessions."
     },
     {
       "id": "cli.commands.extension_workflows",

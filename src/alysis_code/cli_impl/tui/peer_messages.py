@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from rich.console import Console
 from rich.text import Text
 
+from ...surface.console import make_console
 from .tool_trace import clean_text, preformatted_rows
 
 
@@ -24,7 +24,7 @@ def peer_message_rows(entry: str, width: int) -> list[list[tuple[str, str]]]:
     body_width = max(1, width - (2 if rail else 0))
     # Prose wraps at word boundaries; long URLs, identifiers and scripts
     # without spaces still fold by terminal cells. Text() keeps markup literal.
-    wrapped = Text(body).wrap(Console(width=body_width), body_width, overflow="fold")
+    wrapped = Text(body).wrap(make_console(width=body_width), body_width, overflow="fold")
     rows.extend(rail + row for line in wrapped for row in preformatted_rows(line.plain, body_width))
     error = message.get("error")
     if isinstance(error, str) and error:
