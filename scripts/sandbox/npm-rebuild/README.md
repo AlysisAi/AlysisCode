@@ -1,7 +1,7 @@
 # Sandbox npm runtime rebuild
 
 This is a sandbox-only rebuild of npm `11.20.0` as
-`11.20.0-alysis.1`, used by the sandbox Dockerfile. It is not published to the
+`11.20.0-alysis.2`, used by the sandbox Dockerfile. It is not published to the
 npm registry. Image promotion requires the public workflow's scans,
 qualification and signatures.
 
@@ -10,7 +10,7 @@ The rebuild updates four runtime dependencies:
 | Runtime dependency | Upstream bundle | Rebuild | Findings addressed |
 | --- | --- | --- | --- |
 | brace-expansion | 5.0.9 | 5.0.12 | CVE-2026-102276, CVE-2026-102278, GHSA-q2hr-2g5m-vwhr |
-| undici | 6.28.0 | 6.28.1 | CVE-2026-19534 |
+| undici | 6.28.0 | 6.29.1 | CVE-2026-19534; GHSA-xjj6-f33q-929c, GHSA-2m5v-pch6-74hx, GHSA-qrxm-fqhp-jwvm |
 | http-cache-semantics | 4.2.0 | 4.3.0 | GHSA-ch52-4w7c-c8xp |
 | ip-address | 10.5.0 | 10.7.3 | GHSA-rpw4-54j3-4h4q, GHSA-2vr4-cq9g-pvrc, GHSA-j6r3-76f7-8jcv, GHSA-h3mg-xc3c-68pw |
 

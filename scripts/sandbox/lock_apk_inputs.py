@@ -105,10 +105,12 @@ def main() -> None:
     (args.output_dir / "packages.lock").write_text(
         "".join(f"{row['name']}={row['version']}\n" for row in records),
         encoding="utf-8",
+        newline="\n",
     )
     (args.output_dir / "SHA256SUMS").write_text(
         "".join(f"{row['sha256']}  {row['filename']}\n" for row in records),
         encoding="utf-8",
+        newline="\n",
     )
     manifest = {
         "schema_version": 1,
@@ -117,7 +119,9 @@ def main() -> None:
         "inventory_sha256": hashlib.sha256(inventory).hexdigest(),
         "packages": records,
     }
-    (args.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (args.output_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
     print(
         json.dumps(
             {

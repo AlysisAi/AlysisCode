@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "x86_64",
   "repository": "https://apk.cgr.dev/chainguard",
-  "inventory_sha256": "74ca3707f674307ac4aae1cbd5a5209aedf98e861fd53a36800aefcd367fd029",
+  "inventory_sha256": "a0418d099b849b48c2389c722ba8ec75e54b728476513279150fb16a982712a6",
   "packages": [
     {
       "name": "apk-tools",
@@ -326,33 +326,33 @@
     },
     {
       "name": "libbrotlicommon1",
-      "version": "1.2.0-r5",
+      "version": "1.2.0-r7",
       "architecture": "x86_64",
-      "installed_checksum": "Q1icgzYK/eaiyI3fMivc5yEX96MM0=",
-      "filename": "libbrotlicommon1-1.2.0-r5.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/libbrotlicommon1-1.2.0-r5.apk",
-      "size": 78255,
-      "sha256": "ce2bbe259d5906f2d12592ea71e175f5d23f6437ad736a6506c1ec4f022926c9"
+      "installed_checksum": "Q1SwA7zD4dE5obL6+bjR5z2kUCBHc=",
+      "filename": "libbrotlicommon1-1.2.0-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/libbrotlicommon1-1.2.0-r7.apk",
+      "size": 79697,
+      "sha256": "33227d8494e635d6e38407e3f7229eeced413827bc89ca7681c1d92f1079977f"
     },
     {
       "name": "libbrotlidec1",
-      "version": "1.2.0-r5",
+      "version": "1.2.0-r7",
       "architecture": "x86_64",
-      "installed_checksum": "Q1gTMms7l/MTY1Dnuh1jjqSBnpBPw=",
-      "filename": "libbrotlidec1-1.2.0-r5.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/libbrotlidec1-1.2.0-r5.apk",
-      "size": 41538,
-      "sha256": "c21ea670f748f1d2b32c17199f8e1bc7e5188a5e2e9325adbffc05f3d8a7f074"
+      "installed_checksum": "Q1T5kh9c/JKjTIbUZd5WjvTKuvLh8=",
+      "filename": "libbrotlidec1-1.2.0-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/libbrotlidec1-1.2.0-r7.apk",
+      "size": 42982,
+      "sha256": "072073b20da38ee5bced85a653f0f991319b183f6c70c1e053239e591d3aebfa"
     },
     {
       "name": "libbrotlienc1",
-      "version": "1.2.0-r5",
+      "version": "1.2.0-r7",
       "architecture": "x86_64",
-      "installed_checksum": "Q1Hg59cAy8AgyswFzw9eUYSpES/oE=",
-      "filename": "libbrotlienc1-1.2.0-r5.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/libbrotlienc1-1.2.0-r5.apk",
-      "size": 440856,
-      "sha256": "de57f1002a3a764854757e8d22da91be457db133fc5e63df8503a99e83006ac8"
+      "installed_checksum": "Q1ZAIiod3pAjV5FdPTjfkrheCpjws=",
+      "filename": "libbrotlienc1-1.2.0-r7.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/libbrotlienc1-1.2.0-r7.apk",
+      "size": 442300,
+      "sha256": "60a271af5f45f4de7cf075ed1f8edc810f81e701b3b998094e3bad67919beeb1"
     },
     {
       "name": "libbsd",
@@ -436,13 +436,13 @@
     },
     {
       "name": "libexpat1",
-      "version": "2.8.5-r0",
+      "version": "2.10.0-r0",
       "architecture": "x86_64",
-      "installed_checksum": "Q1ENblxdz9v/S21ko27YObba0KxnQ=",
-      "filename": "libexpat1-2.8.5-r0.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/libexpat1-2.8.5-r0.apk",
-      "size": 111148,
-      "sha256": "f03a3a9e45818e6472fdb1ccee423d00bbbd7252c38bd804f2b6cb8491db0dd8"
+      "installed_checksum": "Q1b6cfhcZTuCWkWG9CszEkNmvVOtM=",
+      "filename": "libexpat1-2.10.0-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/libexpat1-2.10.0-r0.apk",
+      "size": 120112,
+      "sha256": "abdf731e120c0c6bff9715db8a3c05dd617b5b66796a2df01bf7e8577434f86a"
     },
     {
       "name": "libffi",
@@ -776,23 +776,23 @@
     },
     {
       "name": "openssl-4.0-libcrypto",
-      "version": "4.0.2-r2",
+      "version": "4.0.3-r0",
       "architecture": "x86_64",
-      "installed_checksum": "Q1BZ4+UCUNixlXE3r729appshsa/M=",
-      "filename": "openssl-4.0-libcrypto-4.0.2-r2.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/openssl-4.0-libcrypto-4.0.2-r2.apk",
-      "size": 2393798,
-      "sha256": "3c5d0dae91639f1bf7acf5cfce32a4c3957cfc7bf9eecb013c397701be062e1b"
+      "installed_checksum": "Q1LDvYoezVwq9vBD4if/pbfiha5GE=",
+      "filename": "openssl-4.0-libcrypto-4.0.3-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/openssl-4.0-libcrypto-4.0.3-r0.apk",
+      "size": 2396557,
+      "sha256": "80ad0300a74d2b455be3993b860bf8908ab96b413b3ac16c777259c9da1490f3"
     },
     {
       "name": "openssl-4.0-libssl",
-      "version": "4.0.2-r2",
+      "version": "4.0.3-r0",
       "architecture": "x86_64",
-      "installed_checksum": "Q1I3kDhnXCcCGE6MdRruOA4MPiQeI=",
-      "filename": "openssl-4.0-libssl-4.0.2-r2.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/openssl-4.0-libssl-4.0.2-r2.apk",
-      "size": 567447,
-      "sha256": "dc2590bf9818c37e870747dc6c25c9fac7e6f277b49ac7d34a7d0e7b6bc2e23d"
+      "installed_checksum": "Q1AnfP+inzDlD81NdZ+MBOB6IpKxc=",
+      "filename": "openssl-4.0-libssl-4.0.3-r0.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/openssl-4.0-libssl-4.0.3-r0.apk",
+      "size": 570114,
+      "sha256": "467791f8c1cd9cc81e1539bbfc68f0e7b21f1fab2977390964efceeb9f76ed94"
     },
     {
       "name": "openssl-provider-legacy-allowed",
@@ -826,33 +826,33 @@
     },
     {
       "name": "py3-pip-wheel",
-      "version": "26.2.1-r2",
+      "version": "26.2.2-r2",
       "architecture": "x86_64",
-      "installed_checksum": "Q1sC68D3uZBrwqleABakLTII1584A=",
-      "filename": "py3-pip-wheel-26.2.1-r2.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/py3-pip-wheel-26.2.1-r2.apk",
-      "size": 1822304,
-      "sha256": "60995c2dc5598c2428c0c14623377db8a03bc97c081f521b1e2317a1f614487a"
+      "installed_checksum": "Q1BWb5vwrbg4NJu9UjvsQh38ETTAc=",
+      "filename": "py3-pip-wheel-26.2.2-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/py3-pip-wheel-26.2.2-r2.apk",
+      "size": 1845334,
+      "sha256": "623147e8782f0e9353f75759a32a4c9a9674ecddaaf934eaa89fcdf7354a45d6"
     },
     {
       "name": "py3.12-pip",
-      "version": "26.2.1-r2",
+      "version": "26.2.2-r2",
       "architecture": "x86_64",
-      "installed_checksum": "Q1ORH1FW9wr93DCxBx2PanJmIQGvk=",
-      "filename": "py3.12-pip-26.2.1-r2.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/py3.12-pip-26.2.1-r2.apk",
-      "size": 15168,
-      "sha256": "a67755b6d37ee8b13f0036c4c209782eac34d4df387210a21347712792d40003"
+      "installed_checksum": "Q1o7zlNtumaEtBmtJxLNLxl9jZTCI=",
+      "filename": "py3.12-pip-26.2.2-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/py3.12-pip-26.2.2-r2.apk",
+      "size": 46259,
+      "sha256": "141d32f15c28e94560642a428395746c8d2df8359470cbaf1c27bc5e84596521"
     },
     {
       "name": "py3.12-pip-base",
-      "version": "26.2.1-r2",
+      "version": "26.2.2-r2",
       "architecture": "x86_64",
-      "installed_checksum": "Q1+1wAj1OYQmGrqvC6wRqD5mohakE=",
-      "filename": "py3.12-pip-base-26.2.1-r2.apk",
-      "url": "https://apk.cgr.dev/chainguard/x86_64/py3.12-pip-base-26.2.1-r2.apk",
-      "size": 4013091,
-      "sha256": "e6bfbf96dde34014a40af91629e50037c4952556664ed0cb0d37c51409424eb7"
+      "installed_checksum": "Q1oTD1CJ72quBR7MIKw1jELASyYIk=",
+      "filename": "py3.12-pip-base-26.2.2-r2.apk",
+      "url": "https://apk.cgr.dev/chainguard/x86_64/py3.12-pip-base-26.2.2-r2.apk",
+      "size": 4014417,
+      "sha256": "a38a5a2048ac0ee6382bace48c1dacd29f9c4d0d8f45b8a9d6e5a1e96599cf16"
     },
     {
       "name": "py3.12-setuptools",

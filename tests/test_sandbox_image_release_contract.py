@@ -60,8 +60,8 @@ def test_both_published_architectures_are_individually_scanned_and_smoked() -> N
     workflow = _workflow()
 
     assert "platforms: linux/amd64,linux/arm64" in workflow
-    assert workflow.count("TRIVY_PLATFORM: linux/amd64") == 1
-    assert workflow.count("TRIVY_PLATFORM: linux/arm64") == 1
+    assert workflow.count("TRIVY_PLATFORM: linux/amd64") == 2
+    assert workflow.count("TRIVY_PLATFORM: linux/arm64") == 2
     assert "image-ref: ${{ steps.platforms.outputs.amd64_ref }}" in workflow
     assert "image-ref: ${{ steps.platforms.outputs.arm64_ref }}" in workflow
     assert 'docker run --rm --platform linux/amd64 "${AMD64_REF}"' in workflow
@@ -75,8 +75,10 @@ def test_security_provenance_and_signature_gates_are_not_best_effort() -> None:
 
     assert "continue-on-error:" not in workflow
     assert "ignore-unfixed: true" not in workflow
-    assert workflow.count("ignore-unfixed: false") == 3
+    assert workflow.count("ignore-unfixed: false") == 6
     assert workflow.count('exit-code: "1"') == 3
+    assert workflow.count("scripts/sandbox/assess_vulnerabilities.py") == 3
+    assert workflow.count("TRIVY_VEX:") == 3
     assert "Attest candidate build provenance" in workflow
     assert "Keyless sign verified candidate digest" in workflow
     assert workflow.count("cosign verify") == 2
@@ -184,8 +186,8 @@ def test_docker_toolchains_and_external_images_are_immutable_inputs() -> None:
     assert "python /opt/npm-rebuild-source/build.py" in dockerfile
     npm_install = dockerfile.split("FROM dev-tools AS dev", 1)[1].split("FROM dev AS server", 1)[0]
     assert npm_install.index('e["archive_sha256"]') < npm_install.index("tar -xzf")
-    assert 'test "$(npm --version)" = "11.20.0-alysis.1"' in npm_install
-    assert 'test "$(npx --version)" = "11.20.0-alysis.1"' in npm_install
+    assert 'test "$(npm --version)" = "11.20.0-alysis.2"' in npm_install
+    assert 'test "$(npx --version)" = "11.20.0-alysis.2"' in npm_install
     assert re.search(r"ARG GO_LINUX_AMD64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG GO_LINUX_ARM64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG RUSTUP_LINUX_AMD64_SHA256=[0-9a-f]{64}", dockerfile)

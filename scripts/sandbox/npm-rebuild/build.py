@@ -18,7 +18,7 @@ UPSTREAM_URL = "https://registry.npmjs.org/npm/-/npm-11.20.0.tgz"
 UPSTREAM_SHA256 = "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483"
 SECURITY_FIXES = {
     "brace-expansion": "5.0.12",
-    "undici": "6.28.1",
+    "undici": "6.29.1",
     "http-cache-semantics": "4.3.0",
     "ip-address": "10.7.3",
 }

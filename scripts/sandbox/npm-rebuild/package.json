@@ -1,5 +1,5 @@
 {
-  "version": "11.20.0-alysis.1",
+  "version": "11.20.0-alysis.2",
   "name": "npm",
   "description": "a package manager for JavaScript",
   "files": [
@@ -112,7 +112,7 @@
   },
   "overrides": {
     "brace-expansion": "5.0.12",
-    "undici": "6.28.1",
+    "undici": "6.29.1",
     "http-cache-semantics": "4.3.0",
     "ip-address": "10.7.3"
   },
