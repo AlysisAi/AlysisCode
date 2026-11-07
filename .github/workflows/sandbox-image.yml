@@ -141,6 +141,28 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Enable content-addressed local images for assessment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker info --format '{{json .DriverStatus}}' | grep -q 'io.containerd.snapshotter.v1'; then
+            exit 0
+          fi
+          # Fresh hosted PR runners only. Preserve other daemon settings.
+          # The classic image store omits RepoDigests for loaded local images,
+          # so Trivy cannot bind OpenVEX to an immutable image PURL.
+          sudo python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('/etc/docker/daemon.json')
+          config = json.loads(path.read_text()) if path.exists() else {}
+          config.setdefault('features', {})['containerd-snapshotter'] = True
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(config) + '\n')
+          PY
+          sudo systemctl restart docker
+          docker info --format '{{json .DriverStatus}}' | grep -q 'io.containerd.snapshotter.v1'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -164,10 +186,45 @@ jobs:
             GIT_SHA=${{ github.sha }}
             VERSION=pr-${{ github.sha }}
 
-      - name: Run blocking Trivy vulnerability scan
-        id: trivy
+      - name: Collect unfiltered vulnerability evidence
+        id: trivy-report
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
+          version: v0.74.0
+          scanners: vuln
+          image-ref: alysis-sandbox-pr:${{ github.sha }}
+          format: json
+          output: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.raw.json
+          exit-code: "0"
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          trivyignores: .github/.trivyignore
+          cache: true
+
+
+      - name: Bind reviewed applicability evidence to the scanned image
+        env:
+          IMAGE_REF: alysis-sandbox-pr:${{ github.sha }}
+          RAW_REPORT: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.raw.json
+          BOM_REPORT: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.cdx.json
+          VEX_REPORT: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.vex.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy convert --format cyclonedx --output "${BOM_REPORT}" "${RAW_REPORT}"
+          python3 scripts/sandbox/assess_vulnerabilities.py \
+            --image "${IMAGE_REF}" --report "${RAW_REPORT}" \
+            --bom "${BOM_REPORT}" --output "${VEX_REPORT}"
+
+      - name: Run blocking Trivy vulnerability scan
+        id: trivy
+        env:
+          TRIVY_VEX: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.vex.json
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          version: v0.74.0
+          scanners: vuln
           image-ref: alysis-sandbox-pr:${{ github.sha }}
           format: sarif
           output: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.sarif
@@ -195,7 +252,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}-sarif
-          path: trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.sarif
+          path: |
+            trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.sarif
+            trivy-pr-${{ matrix.variant }}-${{ matrix.platform.arch }}.*.json
           if-no-files-found: error
           retention-days: 30
 
@@ -343,12 +402,49 @@ jobs:
           validate_sbom linux/amd64 amd64
           validate_sbom linux/arm64 arm64
 
-      - name: Scan linux/amd64 candidate manifest
-        id: trivy-amd64
+      - name: Collect unfiltered vulnerability evidence
+        id: trivy-amd64-report
         env:
           TRIVY_PLATFORM: linux/amd64
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
+          version: v0.74.0
+          scanners: vuln
+          image-ref: ${{ steps.platforms.outputs.amd64_ref }}
+          format: json
+          output: trivy-${{ matrix.variant }}-amd64.raw.json
+          exit-code: "0"
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          trivyignores: .github/.trivyignore
+          cache: true
+
+
+      - name: Bind reviewed applicability evidence to the scanned image
+        env:
+          IMAGE_REF: ${{ steps.platforms.outputs.amd64_ref }}
+          RAW_REPORT: trivy-${{ matrix.variant }}-amd64.raw.json
+          BOM_REPORT: trivy-${{ matrix.variant }}-amd64.cdx.json
+          VEX_REPORT: trivy-${{ matrix.variant }}-amd64.vex.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "${IMAGE_REF}"
+          trivy convert --format cyclonedx --output "${BOM_REPORT}" "${RAW_REPORT}"
+          python3 scripts/sandbox/assess_vulnerabilities.py \
+            --image "${IMAGE_REF}" --report "${RAW_REPORT}" \
+            --bom "${BOM_REPORT}" --output "${VEX_REPORT}"
+
+      - name: Scan linux/amd64 candidate manifest
+        id: trivy-amd64
+        env:
+          TRIVY_VEX: trivy-${{ matrix.variant }}-amd64.vex.json
+          TRIVY_PLATFORM: linux/amd64
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          version: v0.74.0
+          scanners: vuln
           image-ref: ${{ steps.platforms.outputs.amd64_ref }}
           format: sarif
           output: trivy-${{ matrix.variant }}-amd64.sarif
@@ -360,12 +456,49 @@ jobs:
           limit-severities-for-sarif: true
           cache: true
 
-      - name: Scan linux/arm64 candidate manifest
-        id: trivy-arm64
+      - name: Collect unfiltered vulnerability evidence
+        id: trivy-arm64-report
         env:
           TRIVY_PLATFORM: linux/arm64
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
+          version: v0.74.0
+          scanners: vuln
+          image-ref: ${{ steps.platforms.outputs.arm64_ref }}
+          format: json
+          output: trivy-${{ matrix.variant }}-arm64.raw.json
+          exit-code: "0"
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          trivyignores: .github/.trivyignore
+          cache: true
+
+
+      - name: Bind reviewed applicability evidence to the scanned image
+        env:
+          IMAGE_REF: ${{ steps.platforms.outputs.arm64_ref }}
+          RAW_REPORT: trivy-${{ matrix.variant }}-arm64.raw.json
+          BOM_REPORT: trivy-${{ matrix.variant }}-arm64.cdx.json
+          VEX_REPORT: trivy-${{ matrix.variant }}-arm64.vex.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/arm64 "${IMAGE_REF}"
+          trivy convert --format cyclonedx --output "${BOM_REPORT}" "${RAW_REPORT}"
+          python3 scripts/sandbox/assess_vulnerabilities.py \
+            --image "${IMAGE_REF}" --report "${RAW_REPORT}" \
+            --bom "${BOM_REPORT}" --output "${VEX_REPORT}"
+
+      - name: Scan linux/arm64 candidate manifest
+        id: trivy-arm64
+        env:
+          TRIVY_VEX: trivy-${{ matrix.variant }}-arm64.vex.json
+          TRIVY_PLATFORM: linux/arm64
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          version: v0.74.0
+          scanners: vuln
           image-ref: ${{ steps.platforms.outputs.arm64_ref }}
           format: sarif
           output: trivy-${{ matrix.variant }}-arm64.sarif
@@ -459,7 +592,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trivy-${{ matrix.variant }}-${{ needs.validate-source.outputs.sha12 }}-sarif
-          path: trivy-${{ matrix.variant }}-*.sarif
+          path: |
+            trivy-${{ matrix.variant }}-*.sarif
+            trivy-${{ matrix.variant }}-*.*.json
           if-no-files-found: error
           retention-days: 30
 

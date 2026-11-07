@@ -8,6 +8,10 @@ repository or passed on the command line.
 
 1. Start from a clean commit on `main` with all required checks passing.
 2. Update the version in `pyproject.toml`, `src/alysis_code/__init__.py`, and `uv.lock`.
+   Keep `MIN_RECOMMENDED_ALYSIS_CLI_VERSION` in
+   `extensions/vscode-alysis/src/client/compatibility.ts` and the tested CLI
+   version in `extensions/vscode-alysis/docs/architecture.md` in step. The
+   extension compatibility test verifies these against `pyproject.toml`.
 3. Move user-facing entries from `Unreleased` into a dated section in `docs/CHANGELOG.md`.
 4. Run the release checks locally, including the focused [release checklist](release_checklist.md):
 
@@ -20,7 +24,16 @@ repository or passed on the command line.
    uv run --frozen --no-sync python scripts/release/validate_python_distributions.py dist/python
    ```
 
-5. Commit the release metadata and obtain review.
+5. Run the extension compile, lint and unit checks from `extensions/vscode-alysis`:
+
+   ```bash
+   npm ci
+   npm run compile
+   npm run lint
+   npm test
+   ```
+
+   Commit the release metadata and obtain review.
 6. Create and push the version tag:
 
    ```bash

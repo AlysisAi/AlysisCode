@@ -167,15 +167,15 @@ FROM dev-tools AS dev
 USER root
 # Copy only the rebuilt distribution and public receipts. The bootstrap npm,
 # original vulnerable dependencies, and retained input cache stay in the builder.
-COPY --from=npm-builder /opt/npm-rebuild/npm-11.20.0-alysis.1.tgz /tmp/npm-rebuilt.tgz
+COPY --from=npm-builder /opt/npm-rebuild/npm-11.20.0-alysis.2.tgz /tmp/npm-rebuilt.tgz
 COPY --from=npm-builder /opt/npm-rebuild/npm-rebuild-evidence.json /opt/npm-rebuild/package-lock.json /opt/npm-rebuild/dependency-inventory.json /usr/local/share/alysis/npm-rebuild/
 RUN python -c 'import hashlib,json; from pathlib import Path; e=json.loads(Path("/usr/local/share/alysis/npm-rebuild/npm-rebuild-evidence.json").read_text()); assert hashlib.sha256(Path("/tmp/npm-rebuilt.tgz").read_bytes()).hexdigest() == e["archive_sha256"]'; \
     rm -rf /usr/local/lib/node_modules/npm; \
     mkdir -p /usr/local/lib/node_modules/npm; \
     tar -xzf /tmp/npm-rebuilt.tgz -C /usr/local/lib/node_modules/npm --strip-components=1; \
     rm /tmp/npm-rebuilt.tgz; \
-    test "$(npm --version)" = "11.20.0-alysis.1"; \
-    test "$(npx --version)" = "11.20.0-alysis.1"
+    test "$(npm --version)" = "11.20.0-alysis.2"; \
+    test "$(npx --version)" = "11.20.0-alysis.2"
 USER alysis
 
 FROM dev AS server

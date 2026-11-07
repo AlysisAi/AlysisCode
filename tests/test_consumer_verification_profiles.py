@@ -266,11 +266,13 @@ def test_library_imports_only_staged_artifact_from_fresh_context(tmp_path, monke
 
 def test_import_time_computation_is_a_real_consumer_failure(tmp_path):
     (tmp_path / "product.py").write_text("import time; time.sleep(30)\n", encoding="utf-8")
+    # Allow staging on loaded Windows runners; the 30-second import must still
+    # be stopped by the shared profile deadline, with bounded cleanup below.
     before = time.monotonic()
     result = run_profile(
         tmp_path,
         {"profile": "library", "artifacts": ["product.py"], "python_module": "product"},
-        timeout=0.4,
+        timeout=2,
     )
     assert not result["profile_passed"]
     assert time.monotonic() - before < 4

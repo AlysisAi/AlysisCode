@@ -17,8 +17,8 @@ async function main() {
     NPM_CONFIG_UPDATE_NOTIFIER: 'false', NPM_CONFIG_AUDIT: 'false', NPM_CONFIG_FUND: 'false' };
   const run = (script, args, cwd = tmp) => execFileSync(process.execPath, [script, ...args],
     { cwd, env, encoding: 'utf8', timeout: 30000 }).trim();
-  assert.equal(run(npm, ['--version']), '11.20.0-alysis.1');
-  assert.equal(run(npx, ['--version']), '11.20.0-alysis.1');
+  assert.equal(run(npm, ['--version']), '11.20.0-alysis.2');
+  assert.equal(run(npx, ['--version']), '11.20.0-alysis.2');
   const { expand } = require(path.join(root, 'node_modules/brace-expansion'));
   assert.deepEqual(expand('src/{cli,ide}/{a,b}.js'),
     ['src/cli/a.js', 'src/cli/b.js', 'src/ide/a.js', 'src/ide/b.js']);

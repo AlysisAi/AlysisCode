@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.16.2 - 2026-11-07
+
+- Align the VS Code extension's tested CLI version and documentation with the
+  Python package version, fixing the release compatibility check.
+- Refresh the sandbox's frozen OS packages and rebuilt npm runtime to address
+  newly reported high-severity dependency findings, keeping vulnerability scans
+  and authenticated, hash-pinned inputs required.
+- Include the linked-chat messaging, structured guardrail denials and editor
+  bridge improvements listed under 0.16.1. Version 0.16.1 was tagged but was not
+  published to PyPI; its source tag remains unchanged.
+
 ## 0.16.1 - 2026-11-04
 
 - Add typed VS Code bridge calls for skill imports and updates, skill and hook

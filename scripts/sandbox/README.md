@@ -26,7 +26,7 @@ attestations as described in the sandbox guide.
 - Node, Go, and rustup downloads are version-pinned and SHA-256 verified for
   both `linux/amd64` and `linux/arm64`. Rust's manifest and minimal components are
   hash-pinned and installed from a local mirror with networking disabled.
-- npm is a [complete locked rebuild](npm-rebuild/README.md), `11.20.0-alysis.1`,
+- npm is a [complete locked rebuild](npm-rebuild/README.md), `11.20.0-alysis.2`,
   with four reviewed dependency fixes. Node's original bundled npm is removed in
   the installation layer. The bootstrap npm and retained input cache stay in the
   separate builder. Final `npm`/`npx`, offline operations and complete dependency
@@ -35,6 +35,9 @@ attestations as described in the sandbox guide.
   replacement Python interpreter disabled.
 - Release candidates are scanned and runtime-smoked on both architectures
   before any moving or release alias is promoted.
+- [Reviewed applicability evidence](ASSESSMENTS.md) is bound to each exact image.
+  Original findings are retained; changed evidence and unassessed HIGH/CRITICAL
+  findings remain blocking.
 - Actual Docker-default ACL boundary checks and complete filesystem inventories
   run on both native architectures for every variant before promotion. Retain
   inputs and receipts for every supported release throughout its supported
