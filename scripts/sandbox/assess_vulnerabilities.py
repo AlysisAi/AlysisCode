@@ -45,7 +45,7 @@ def assess(
     properties = {item["name"]: item["value"] for item in root["properties"]}
     if properties.get("aquasecurity:trivy:ImageID") != image_id:
         raise ValueError("The SBOM does not describe the inspected image")
-    product = root["purl"]
+    product = root.get("purl", "")
     if not product.startswith("pkg:oci/") or "@sha256:" not in product:
         raise ValueError("OpenVEX must bind an immutable container image")
 

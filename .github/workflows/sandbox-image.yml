@@ -141,6 +141,28 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Enable content-addressed local images for assessment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker info --format '{{json .DriverStatus}}' | grep -q 'io.containerd.snapshotter.v1'; then
+            exit 0
+          fi
+          # Fresh hosted PR runners only. Preserve other daemon settings.
+          # The classic image store omits RepoDigests for loaded local images,
+          # so Trivy cannot bind OpenVEX to an immutable image PURL.
+          sudo python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('/etc/docker/daemon.json')
+          config = json.loads(path.read_text()) if path.exists() else {}
+          config.setdefault('features', {})['containerd-snapshotter'] = True
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(config) + '\n')
+          PY
+          sudo systemctl restart docker
+          docker info --format '{{json .DriverStatus}}' | grep -q 'io.containerd.snapshotter.v1'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
