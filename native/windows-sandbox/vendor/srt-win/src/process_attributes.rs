@@ -16,13 +16,14 @@ pub(crate) struct ProcThreadAttrs<'a> {
     handles: Option<Box<[HANDLE]>>,
     job: Option<Box<[HANDLE; 1]>>,
     capabilities_set: bool,
+    all_packages_policy: Option<Box<u32>>,
     _referents: PhantomData<&'a ()>,
 }
 
 impl<'a> ProcThreadAttrs<'a> {
     pub(crate) fn new(count: u32) -> Result<Self> {
         ensure!(
-            (1..=4).contains(&count),
+            (1..=5).contains(&count),
             "unsupported process attribute count"
         );
         let mut bytes = 0usize;
@@ -49,12 +50,37 @@ impl<'a> ProcThreadAttrs<'a> {
             handles: None,
             job: None,
             capabilities_set: false,
+            all_packages_policy: None,
             _referents: PhantomData,
         })
     }
 
     pub(crate) fn list(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
         LPPROC_THREAD_ATTRIBUTE_LIST(self.storage.as_mut_ptr().cast())
+    }
+
+    /// Remove ambient ALL APPLICATION PACKAGES access, including brokered
+    /// services. Keep the DWORD alive until the native list is deleted.
+    pub(crate) fn set_less_privileged_appcontainer(&mut self) -> Result<()> {
+        ensure!(
+            self.all_packages_policy.is_none(),
+            "LPAC attribute already attempted"
+        );
+        // PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK (winnt.h).
+        self.all_packages_policy = Some(Box::new(1));
+        let pointer = self.all_packages_policy.as_deref().unwrap() as *const u32;
+        unsafe {
+            UpdateProcThreadAttribute(
+                self.list(),
+                0,
+                PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY as usize,
+                Some(pointer.cast()),
+                size_of::<u32>(),
+                None,
+                None,
+            )
+            .context("require less privileged AppContainer")
+        }
     }
 
     pub(crate) fn set_mitigation_policy(&mut self, policy: &u64) -> Result<()> {

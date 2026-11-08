@@ -48,11 +48,11 @@ def main() -> None:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     manifest = {
         "protocol": 3,
-        "security_revision": 5,
-        "version": "0.3.4",
+        "security_revision": 6,
+        "version": "0.3.5",
         "network_modes": ["off", "on"],
         "platform": "win32-x64",
-        "containment": "appcontainer-write-restricted",
+        "containment": "lpac-write-restricted",
         "sha256": digest,
         "qualification": "experimental-unqualified",
         "upstream": "https://github.com/anthropics/sandbox-runtime",

@@ -23,7 +23,7 @@ fn main() {
         }
         if std::env::args().nth(1).as_deref() == Some("protocol") {
             println!(
-                r#"{{"protocol":3,"security_revision":5,"implementation":"alysis-windows-sandbox","version":"0.3.4","containment":"appcontainer-write-restricted","network_modes":["off","on"],"qualification":"experimental"}}"#
+                r#"{{"protocol":3,"security_revision":6,"implementation":"alysis-windows-sandbox","version":"0.3.5","containment":"lpac-write-restricted","network_modes":["off","on"],"qualification":"experimental"}}"#
             );
             return;
         }

@@ -30,6 +30,19 @@ impl NetworkAccess {
     }
 }
 
+/// PowerShell's CLR needs registry reads in LPAC. This restores only that
+/// capability; no COM, identity-service or implicit network capability is added.
+/// Account candidates retain their separate policy and do not call this helper.
+pub(crate) fn shell_capabilities(network: NetworkAccess) -> Result<Vec<crate::sid::LocalPsid>> {
+    let mut sids = network
+        .capability_sids()
+        .iter()
+        .map(|sid| crate::sid::LocalPsid::from_string(sid))
+        .collect::<Result<Vec<_>>>()?;
+    sids.push(crate::sid::LocalPsid::from_capability("registryRead")?);
+    Ok(sids)
+}
+
 pub struct ContainerSid(PSID);
 impl ContainerSid {
     pub fn raw(&self) -> PSID {

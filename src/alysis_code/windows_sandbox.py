@@ -28,8 +28,8 @@ from .skills.discovery import project_skill_root_relative_paths
 
 _ASSETS = Path(__file__).parent / "assets" / "windows-sandbox"
 PROTOCOL_VERSION = 3
-SECURITY_REVISION = 5
-CONTAINMENT = "appcontainer-write-restricted"
+SECURITY_REVISION = 6
+CONTAINMENT = "lpac-write-restricted"
 _PROTECTED_DIRS = (".git", ".alysis", ".sylliptor", ".codex", ".claude", ".agents")
 _PROTECTED_FILES = PROTECTED_INSTRUCTION_FILES
 # Fixed trusted compatibility flags, never inherited from the host or caller.

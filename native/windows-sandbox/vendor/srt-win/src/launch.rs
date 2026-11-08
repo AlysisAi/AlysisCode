@@ -22,9 +22,9 @@ use windows::Win32::System::Console::{
 };
 use windows::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    CreateProcessAsUserW, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
-    PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    CreateProcessAsUserW, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, PROCESS_CREATION_FLAGS,
+    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    TerminateProcess, WaitForSingleObject,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -226,11 +226,11 @@ fn run_isolated(
 ) -> Result<u32> {
     crate::job::require_compatible_host_job()?;
     // SID allocations and the array must outlive profile/process creation.
-    let capability_sids = network
-        .capability_sids()
-        .iter()
-        .map(|sid| crate::sid::LocalPsid::from_string(sid))
-        .collect::<Result<Vec<_>>>()?;
+    let capability_sids = if appcontainer_name.is_some() {
+        crate::appcontainer::shell_capabilities(network)?
+    } else {
+        Vec::new()
+    };
     let mut capabilities: Vec<_> = capability_sids
         .iter()
         .map(|sid| windows::Win32::Security::SID_AND_ATTRIBUTES {
@@ -391,7 +391,7 @@ fn run_isolated(
             CapabilityCount: capabilities.len() as u32,
             ..Default::default()
         });
-    let mut attrs = ProcThreadAttrs::new(if caps.is_some() { 4 } else { 3 })?;
+    let mut attrs = ProcThreadAttrs::new(if caps.is_some() { 5 } else { 3 })?;
     attrs.set_mitigation_policy(&mitigation)?;
     attrs.set_handle_list(&mut handle_list)?;
     // Atomic job assignment closes the broker-crash window between creating
@@ -399,6 +399,7 @@ fn run_isolated(
     // creation itself if it cannot place the child in this job.
     attrs.set_job(&job)?;
     if let Some(caps) = &caps {
+        attrs.set_less_privileged_appcontainer()?;
         // Original package/capability SID allocations precede this list and
         // remain alive on success and every error-unwind path.
         unsafe {

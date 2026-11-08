@@ -42,6 +42,9 @@ use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use crate::sid::LocalPsid;
 use crate::util::{pcwstr, wstr};
 
+#[path = "account_token_lpac_observation.rs"]
+mod lpac_attribute;
+
 /// Medium IL (`SECURITY_MANDATORY_MEDIUM_RID`). The sandbox child
 /// runs at Medium — same as normal user processes — so Schannel /
 /// LSA / registry edge cases that fire at Low IL don't apply.
@@ -314,6 +317,7 @@ pub fn verify_appcontainer_process(
         OpenProcessToken(process, TOKEN_QUERY, &mut handle)?;
     }
     let token = crate::util::OwnedHandle(handle);
+    lpac_attribute::Observation::observe(token.raw()).require_enabled()?;
     let info = get_token_info(token.raw(), TokenIsAppContainer)?;
     anyhow::ensure!(
         unsafe { *(info.as_ptr() as *const u32) } == 1,
@@ -328,15 +332,14 @@ pub fn verify_appcontainer_process(
     );
     let info = get_token_info(token.raw(), TokenCapabilities)?;
     let groups = unsafe { &*(info.as_ptr() as *const TOKEN_GROUPS) };
-    let expected = network.capability_sids();
+    let expected = crate::appcontainer::shell_capabilities(network)?;
     anyhow::ensure!(
         groups.GroupCount as usize == expected.len(),
         "unexpected AppContainer capabilities"
     );
     let groups =
         unsafe { std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize) };
-    for expected in expected {
-        let sid = LocalPsid::from_string(expected)?;
+    for sid in expected {
         anyhow::ensure!(
             groups.iter().any(|group| {
                 group.Attributes & 0x4 != 0

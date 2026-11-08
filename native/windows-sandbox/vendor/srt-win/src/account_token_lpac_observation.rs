@@ -31,6 +31,17 @@ pub(super) struct Attribute {
 }
 
 impl Observation {
+    /// Missing/unsupported observations must never authorize a production LPAC.
+    pub(super) fn require_enabled(&self) -> Result<()> {
+        ensure!(
+            matches!(self, Self::Observed { attribute: Some(Attribute {
+            value_type: 2, count: 1, value: 1, flags
+        }) } if flags & 0x14 == 0),
+            "child lacks verified less privileged AppContainer attribute"
+        );
+        Ok(())
+    }
+
     pub(super) fn require(&self) -> Result<()> {
         match self {
             Self::QueryFailed { hresult } => {
@@ -208,6 +219,38 @@ mod tests {
         put(&mut b, 96, &name);
         put(&mut b, 144, &value.to_le_bytes());
         b
+    }
+
+    #[test]
+    fn production_lpac_requires_positive_enabled_kernel_observation() {
+        for value in [0, 1, u64::MAX] {
+            let observation = Observation::Observed {
+                attribute: parse(&fixture(value), BASE).unwrap(),
+            };
+            assert_eq!(observation.require_enabled().is_ok(), value == 1);
+        }
+        assert!(
+            Observation::Observed { attribute: None }
+                .require_enabled()
+                .is_err()
+        );
+        assert!(Observation::InvalidBuffer.require_enabled().is_err());
+        assert!(
+            Observation::QueryFailed { hresult: -1 }
+                .require_enabled()
+                .is_err()
+        );
+        for flags in [4u32, 16] {
+            let mut bytes = fixture(1);
+            put(&mut bytes, 36, &flags.to_le_bytes());
+            assert!(
+                Observation::Observed {
+                    attribute: parse(&bytes, BASE).unwrap()
+                }
+                .require_enabled()
+                .is_err()
+            );
+        }
     }
 
     #[test]
