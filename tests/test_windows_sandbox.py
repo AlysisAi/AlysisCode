@@ -211,12 +211,15 @@ def test_secrets_and_startup_injection_are_not_forwarded(workspace, monkeypatch)
         "NODE_OPTIONS",
         "AWS_SECRET_ACCESS_KEY",
         "HTTPS_PROXY",
+        "PSModulePath",
     ):
         monkeypatch.setenv(name, "never-forward-this")
     assert "never-forward-this" not in json.dumps(request(workspace)["env"])
     assert dict(request(workspace)["env"])["NODE_OPTIONS"] == (
         "--preserve-symlinks --preserve-symlinks-main"
     )
+    result = request(workspace)
+    assert dict(result["env"])["PSMODULEPATH"] == str(Path(result["argv"][0]).parent / "Modules")
     with pytest.raises(ConfigError, match="not allowed"):
         request(workspace, env_overrides={"PYTHONPATH": str(workspace)})
     with pytest.raises(ConfigError, match="not allowed"):

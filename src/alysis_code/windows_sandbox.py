@@ -416,6 +416,10 @@ def build_request(
     env["NODE_OPTIONS"] = _NODE_OPTIONS
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     shell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    # The isolated profile cannot discover host-user modules. Resolve built-in
+    # cmdlets from this Windows PowerShell installation, just as the trusted
+    # policy query does; never inherit a caller's module search path.
+    env["PSMODULEPATH"] = str(shell.parent / "Modules")
     # Executable discovery and filesystem access must agree. Never inherit an
     # arbitrary host/project executable merely because it appears on PATH.
     configured_paths = [Path(p) for p in env.get("PATH", "").split(os.pathsep) if p]
