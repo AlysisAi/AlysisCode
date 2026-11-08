@@ -1007,10 +1007,11 @@ def test_installed_cancellation_acknowledges_original_process_exit(tmp_path, sta
     def cancel():
         nonlocal checks
         checks += 1
-        # The first two callbacks precede spawning. The third exercises native
-        # cancellation while the request is being delivered/processed.
+        # The first two callbacks precede spawning; the third precedes the
+        # first write. Cancel after one wait slice has delivered the request,
+        # so the real broker must acknowledge cleanup (not the pre-write path).
         if stage == "request":
-            return checks >= 3
+            return checks >= 4
         if not all((tmp_path / name).exists() for name in ("parent.pid", "child.pid")):
             return False
         for name in ("parent.pid", "child.pid"):
