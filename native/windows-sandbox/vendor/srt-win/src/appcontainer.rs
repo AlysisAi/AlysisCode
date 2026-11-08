@@ -30,8 +30,9 @@ impl NetworkAccess {
     }
 }
 
-/// PowerShell's CLR needs registry reads in LPAC. This restores only that
-/// capability; no COM, identity-service or implicit network capability is added.
+/// PowerShell needs registry reads and ETW provider registration in LPAC.
+/// Without instrumentation its PSEtwLog initializer aborts before the command.
+/// No COM, identity-service or implicit network capability is added.
 /// Account candidates retain their separate policy and do not call this helper.
 pub(crate) fn shell_capabilities(network: NetworkAccess) -> Result<Vec<crate::sid::LocalPsid>> {
     let mut sids = network
@@ -40,6 +41,9 @@ pub(crate) fn shell_capabilities(network: NetworkAccess) -> Result<Vec<crate::si
         .map(|sid| crate::sid::LocalPsid::from_string(sid))
         .collect::<Result<Vec<_>>>()?;
     sids.push(crate::sid::LocalPsid::from_capability("registryRead")?);
+    sids.push(crate::sid::LocalPsid::from_capability(
+        "lpacInstrumentation",
+    )?);
     Ok(sids)
 }
 
