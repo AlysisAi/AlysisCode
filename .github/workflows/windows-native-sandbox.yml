@@ -151,10 +151,13 @@ jobs:
           REQUIRE_ALL_CHECKS: ${{ inputs.require_all_checks }}
           SANDBOX_RUNTIME_WIN_DEBUG: '1'
         run: |
-          ./scripts/test_windows_sandbox.ps1 -Installed -HostDiagnostics -Internet:($env:QUALIFY_INTERNET -eq 'true') -RequireAllChecks:($env:REQUIRE_ALL_CHECKS -eq 'true') -Python (Resolve-Path .venv/Scripts/python.exe).Path
+          ./scripts/test_windows_sandbox_hosted.ps1 -Internet:($env:QUALIFY_INTERNET -eq 'true') -RequireAllChecks:($env:REQUIRE_ALL_CHECKS -eq 'true')
       - name: Diagnose host PowerShell startup after boundary failure
         if: failure() && steps.boundary_qualification.outcome == 'failure'
         run: uv run --no-sync python scripts/windows_sandbox_policy_diagnostics.py --output native/windows-sandbox/target/policy-startup-diagnostics.json
+      - name: Stop any remaining hosted qualification task
+        if: always()
+        run: ./scripts/test_windows_sandbox_hosted.ps1 -Cleanup
       - name: Recover and remove test installation
         if: always()
         run: |
@@ -172,6 +175,7 @@ jobs:
           name: native-sandbox-qualification-${{ matrix.os }}
           path: |
             native/windows-sandbox/target/installed-release-tests.xml
+            native/windows-sandbox/target/hosted-qualification.log
             native/windows-sandbox/target/policy-startup-diagnostics.json
             native/windows-sandbox/target/bundle/release/manifest.json
           if-no-files-found: warn
