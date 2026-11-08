@@ -449,9 +449,17 @@ def build_request(
     relative_cwd = str(cwd.relative_to(cwd_root)).replace("/", "\\")
     ps_cwd = ("Alysis:\\" + ("" if relative_cwd == "." else relative_cwd)).replace("'", "''")
     source = (
-        f"New-PSDrive -Name Alysis -PSProvider FileSystem -Root '{ps_root}' "
-        "-Scope Global -ErrorAction Stop | Out-Null; "
-        f"Set-Location -LiteralPath '{ps_cwd}' -ErrorAction Stop; " + cmd
+        # Unqualified command discovery scans every installed module before
+        # finding these built-ins on a fresh, isolated profile. Import only our
+        # bootstrap dependencies by their trusted installation paths first.
+        r"Microsoft.PowerShell.Core\Import-Module -Name "
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1", '
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1" '
+        "-ErrorAction Stop; "
+        f"$null = Microsoft.PowerShell.Management\\New-PSDrive -Name Alysis "
+        f"-PSProvider FileSystem -Root '{ps_root}' -Scope Global -ErrorAction Stop; "
+        f"Microsoft.PowerShell.Management\\Set-Location -LiteralPath '{ps_cwd}' "
+        "-ErrorAction Stop; " + cmd
     )
     argv = [
         str(shell),

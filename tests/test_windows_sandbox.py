@@ -68,6 +68,33 @@ def test_workspace_write_keeps_metadata_protected(workspace):
     assert "-NoProfile" in result["argv"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell bootstrap")
+def test_bootstrap_loads_standard_cmdlets_without_module_discovery(workspace, monkeypatch):
+    # Exercise the generated command in real Windows PowerShell. An isolated
+    # module analysis cache must not make first-use command discovery exceed
+    # the normal command deadline. The installed suite repeats this under the
+    # restricted token; this control isolates the PowerShell startup itself.
+    monkeypatch.setenv("PSModulePath", str(workspace / "untrusted-modules"))
+    nested = workspace / "nested's folder"
+    nested.mkdir()
+    result = request(workspace, cwd=nested)
+    result["argv"][-1] += "; [Console]::Out.WriteLine((Get-Location).Path)"
+    environment = dict(result["env"])
+    environment["PSModuleAnalysisCachePath"] = str(workspace / "fresh-module-cache")
+    completed = subprocess.run(
+        result["argv"],
+        cwd=workspace,
+        env=environment,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not completed.stderr
+    assert completed.stdout.splitlines() == ["hello; & world", "Alysis:\\nested's folder"]
+
+
 def test_all_discovered_project_skill_roots_are_reserved(workspace):
     from alysis_code.skills.discovery import project_skill_root_relative_paths
 

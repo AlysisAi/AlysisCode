@@ -131,7 +131,10 @@ jobs:
     # Every preview PR exercises a fresh installation on disposable runners.
     # Strict release qualification additionally rejects known failures/skips.
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v-sandbox-') || inputs.installed
-    needs: [native-build, engine-tests]
+    # This job builds its own helper. Run alongside native tests for earlier
+    # installed-runtime feedback; signing still requires both through the
+    # mxc-candidate-build and installed-qualification dependencies.
+    needs: engine-tests
     strategy:
       fail-fast: false
       matrix:
