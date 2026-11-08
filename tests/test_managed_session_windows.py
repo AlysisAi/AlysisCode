@@ -16,25 +16,27 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="native Windows filesyst
 
 def _acl(path: Path) -> dict:
     # Inspect through an independent OS client, not the implementation's ctypes structs.
-    # A Python child of pwsh inherits PS7's module path, which breaks WinPS5
-    # cmdlet loading. Let Windows PowerShell construct its own module path.
+    # A Python child of pwsh inherits PS7's module path. Bind the WinPS5 module
+    # root and qualify cmdlets to avoid slow discovery across unrelated modules.
     environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+    shell_root = Path(os.environ["SYSTEMROOT"]) / "System32/WindowsPowerShell/v1.0"
+    environment["PSModulePath"] = str(shell_root / "Modules")
     environment["ALYSIS_TEST_ACL_PATH"] = str(path)
     result = subprocess.run(
         [
-            "powershell.exe",
+            str(shell_root / "powershell.exe"),
             "-NoProfile",
             "-NonInteractive",
             "-Command",
             "$ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest; "
-            "$acl = Get-Acl -LiteralPath $env:ALYSIS_TEST_ACL_PATH; "
+            "$acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $env:ALYSIS_TEST_ACL_PATH; "
             "$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; "
             "$rules = @($acl.GetAccessRules($true,$true,"
             "[System.Security.Principal.SecurityIdentifier]) | ForEach-Object { "
             "@{sid=$_.IdentityReference.Value; inherited=$_.IsInherited; "
             "type=$_.AccessControlType.ToString()} }); "
             "@{owner=$owner; protected=$acl.AreAccessRulesProtected; rules=$rules} | "
-            "ConvertTo-Json -Depth 4 -Compress",
+            "Microsoft.PowerShell.Utility\\ConvertTo-Json -Depth 4 -Compress",
         ],
         env=environment,
         capture_output=True,
