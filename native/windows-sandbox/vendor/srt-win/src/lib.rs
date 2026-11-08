@@ -22,6 +22,7 @@ pub mod wfp;
 
 pub mod execution_lease;
 pub mod job;
+pub mod lifecycle;
 pub mod launch;
 mod process_attributes;
 pub mod local_account_host;

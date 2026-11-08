@@ -10,6 +10,8 @@ on:
       - 'native/windows-sandbox/**'
       - 'src/alysis_code/windows_sandbox.py'
       - 'src/alysis_code/_windows_sandbox_bookkeeping.py'
+      - 'src/alysis_code/_windows_native_lifecycle.py'
+      - 'src/alysis_code/_windows_sandbox_job.py'
       - 'src/alysis_code/_windows_managed_session.py'
       - 'src/alysis_code/_windows_session_files.py'
       - 'src/alysis_code/managed_session.py'
@@ -104,7 +106,10 @@ jobs:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Install locked engine test dependencies
-        run: uv sync --locked --python 3.13 --extra dev
+        # Qualify new native sources before replacing the signed release bundle.
+        # The harness imports this checkout explicitly; normal package CI still
+        # enforces the signed bundle/source inventory and is never bypassed.
+        run: uv sync --frozen --no-install-project --python 3.13 --extra dev
       - name: Test native engine integration without provisioning
         run: ./scripts/test_windows_sandbox.ps1 -Python (Resolve-Path .venv/Scripts/python.exe).Path
       - name: Test sanitized policy diagnostics
@@ -130,7 +135,7 @@ jobs:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Install locked test dependencies
-        run: uv sync --locked --python 3.13 --extra dev
+        run: uv sync --frozen --no-install-project --python 3.13 --extra dev
       - name: Build release helper with pinned Rust
         # The bundler must consume the exact Cargo output it just built, even
         # when the invoking environment points Cargo at a different directory.
@@ -177,3 +182,30 @@ jobs:
             native/windows-sandbox/target/policy-startup-diagnostics.json
             native/windows-sandbox/target/bundle/release/manifest.json
           if-no-files-found: warn
+
+  mxc-candidate-build:
+    # Preserve an unsigned, source-bound candidate for the separate protected
+    # signing step. This never changes release pins or publishes a release.
+    needs: native-build
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Build source-bound MXC candidate
+        run: |
+          python src/alysis_code/windows_mxc_candidate_builder.py --output "$env:RUNNER_TEMP/mxc-candidate"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item src/alysis_code/assets/windows-mxc/LICENSE.mxc "$env:RUNNER_TEMP/mxc-candidate/LICENSE.mxc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-mxc-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/mxc-candidate/
+          if-no-files-found: error
+          retention-days: 14

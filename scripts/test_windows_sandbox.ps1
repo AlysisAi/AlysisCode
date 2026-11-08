@@ -49,6 +49,7 @@ try {
     $ownerScope = [AlysisSandboxTests.DefaultOwnerScope]::EnterCurrentUser()
     $regressions = @(
         'tests/test_windows_sandbox.py', 'tests/test_windows_sandbox_doctor.py',
+        'tests/test_windows_sandbox_cancellation.py', 'tests/test_windows_sandbox_job.py',
         'tests/test_windows_sandbox_https_probe.py',
         'tests/test_sandbox_settings_background.py',
         'tests/test_sandbox_doctor.py', 'tests/test_sandbox_cli.py',

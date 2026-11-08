@@ -32,7 +32,7 @@ def test_native_capabilities_needs_no_setup_or_configuration(tmp_path, monkeypat
     assert payload["contract"] == "alysis.windows-sandbox.capabilities"
     assert payload["schema_version"] == 1
     assert payload["protocol"] == 3
-    assert payload["security_revision"] == 4
+    assert payload["security_revision"] == 5
     assert payload["platforms"] == ["win32-x64"]
     assert payload["network_modes"] == ["off", "on"]
     assert payload["features"]["durable_services"] is False

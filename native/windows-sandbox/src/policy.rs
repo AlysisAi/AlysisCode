@@ -31,6 +31,15 @@ struct Request {
     network: srt_win::appcontainer::NetworkAccess,
     parent_pid: u32,
     parent_created: u64,
+    #[serde(default)]
+    lifecycle: Option<Lifecycle>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Lifecycle {
+    cancel: usize,
+    complete: usize,
 }
 
 pub(crate) use srt_win::execution_lease::ExecutionLease as Lease;
@@ -213,6 +222,8 @@ impl Drop for Grants {
     fn drop(&mut self) {
         if let Err(e) = self.cleanup() {
             eprintln!("alysis-sandbox: ACL recovery required: {e:#}");
+            // Keep the journal and withhold the private completion signal.
+            std::process::exit(125);
         }
     }
 }
@@ -290,6 +301,10 @@ pub fn run() -> Result<i32> {
         .read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 1024 * 1024, "request exceeds 1 MiB");
     let request: Request = serde_json::from_slice(&bytes).context("invalid execution request")?;
+    if let Some(events) = &request.lifecycle {
+        unsafe { srt_win::lifecycle::install(events.cancel, events.complete)? };
+        srt_win::lifecycle::check()?;
+    }
     ensure!(
         request.protocol == 3 && !request.argv.is_empty(),
         "unsupported protocol or empty argv"

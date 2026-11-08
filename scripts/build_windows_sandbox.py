@@ -48,8 +48,8 @@ def main() -> None:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     manifest = {
         "protocol": 3,
-        "security_revision": 4,
-        "version": "0.3.3",
+        "security_revision": 5,
+        "version": "0.3.4",
         "network_modes": ["off", "on"],
         "platform": "win32-x64",
         "containment": "appcontainer-write-restricted",

@@ -984,8 +984,57 @@ def test_installed_timeout_kills_descendants(tmp_path):
     try:
         with pytest.raises(subprocess.TimeoutExpired):
             runner.run(root=tmp_path, cwd=tmp_path, cmd=_TREE_COMMAND, timeout_s=10)
-        assert_tree_stopped(tmp_path)
+        assert_tree_stopped(tmp_path, timeout_ms=0)
     finally:
+        recover(tmp_path)
+
+
+@pytest.mark.parametrize("stage", ["request", "running-tree"])
+def test_installed_cancellation_acknowledges_original_process_exit(tmp_path, stage):
+    import ctypes
+    from ctypes import wintypes
+
+    from alysis_code.process_reaping import CommandCancelledError
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handles = []
+    checks = 0
+
+    def cancel():
+        nonlocal checks
+        checks += 1
+        # The first two callbacks precede spawning. The third exercises native
+        # cancellation while the request is being delivered/processed.
+        if stage == "request":
+            return checks >= 3
+        if not all((tmp_path / name).exists() for name in ("parent.pid", "child.pid")):
+            return False
+        for name in ("parent.pid", "child.pid"):
+            handle = kernel.OpenProcess(0x100000, False, int((tmp_path / name).read_text()))
+            assert handle, "Could not pin original live test process"
+            handles.append(handle)
+        return True
+
+    try:
+        runner = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native"))
+        with pytest.raises(CommandCancelledError):
+            runner.run(
+                root=tmp_path, cwd=tmp_path, cmd=_TREE_COMMAND, timeout_s=60, cancel_check=cancel
+            )
+        assert all(kernel.WaitForSingleObject(handle, 0) == 0 for handle in handles)
+        if stage == "running-tree":
+            assert len(handles) == 2
+            assert not Path((tmp_path / "profile-path.txt").read_text().strip()).exists()
+        assert not (
+            Path(os.environ["LOCALAPPDATA"]) / "alysis-sandbox/execution-pending.json"
+        ).exists()
+    finally:
+        for handle in handles:
+            kernel.CloseHandle(handle)
         recover(tmp_path)
 
 

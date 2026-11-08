@@ -72,7 +72,7 @@ try {
 $protocolOutput = (& $nestedHelper protocol | Out-String);
 if ($LASTEXITCODE -ne 0) { throw 'Nested helper execution control failed' };
 $protocol = $protocolOutput | ConvertFrom-Json;
-if ($protocol.protocol -ne 3 -or $protocol.security_revision -ne 4) { throw 'Wrong nested helper' };
+if ($protocol.protocol -ne 3 -or $protocol.security_revision -ne 5) { throw 'Wrong nested helper' };
 $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe';
 $ErrorActionPreference='Continue';
 """

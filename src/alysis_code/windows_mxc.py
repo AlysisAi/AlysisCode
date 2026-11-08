@@ -114,6 +114,10 @@ def _python_tool_root() -> Path | None:
 
 
 class WindowsMxcRunner(WindowsNativeRunner):
+    def _uses_native_lifecycle(self) -> bool:
+        # MXC uses the engine's non-breakaway observer job and its own protocol.
+        return False
+
     def _execution_context(self, argv: list[str], request: bytes) -> str:
         """Bind reruns to the actual admitted policy, never child-reported data."""
         policy = json.loads(request)

@@ -414,7 +414,7 @@ def test_helper_integrity_and_platform_are_enforced(tmp_path, monkeypatch):
 def _helper_metadata():
     return {
         "protocol": 3,
-        "security_revision": 4,
+        "security_revision": 5,
         "implementation": "alysis-windows-sandbox",
         "containment": "appcontainer-write-restricted",
         "network_modes": ["off", "on"],
@@ -431,7 +431,8 @@ def _helper_metadata():
         {"security_revision": 1},
         {"security_revision": 2},
         {"security_revision": 3},
-        {"security_revision": 4.0},
+        {"security_revision": 4},
+        {"security_revision": 5.0},
         {"implementation": "other-helper"},
         {"containment": "restricted-token"},
         {"network_modes": ["off"]},

@@ -22,7 +22,7 @@ use windows::Win32::System::Console::{
 };
 use windows::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    CreateProcessAsUserW, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
+    CreateProcessAsUserW, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
     PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
     STARTUPINFOEXW, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
@@ -282,6 +282,7 @@ fn run_isolated(
     });
     let primary = OwnedHandle(to_primary(restricted.raw()).context("to_primary")?);
 
+    crate::lifecycle::check()?;
     // 3) Job. `breakaway_ok = false` — this is the load-bearing
     //    containment Job; the child must NOT be able to break away.
     let job = match appcontainer_name {
@@ -510,7 +511,7 @@ fn run_isolated(
     }
 
     // 11) Wait + collect exit code.
-    wait_for_process_exit(child.process(), INFINITE)?;
+    crate::lifecycle::wait(child.process())?;
     let mut code: u32 = 0;
     unsafe {
         GetExitCodeProcess(child.process(), &mut code).context("GetExitCodeProcess")?;
