@@ -28,6 +28,7 @@ on:
       - 'src/alysis_code/durable_service_manager.py'
       - 'scripts/*windows_sandbox*'
       - 'scripts/windows_test_owner_scope.ps1'
+      - 'scripts/windows_desktop_test_host.ps1'
       - 'tests/test_windows_sandbox*.py'
       - 'tests/fixtures/windows_native_https_probe*.cjs'
       - 'tests/test_windows_managed_session.py'
@@ -155,9 +156,6 @@ jobs:
       - name: Diagnose host PowerShell startup after boundary failure
         if: failure() && steps.boundary_qualification.outcome == 'failure'
         run: uv run --no-sync python scripts/windows_sandbox_policy_diagnostics.py --output native/windows-sandbox/target/policy-startup-diagnostics.json
-      - name: Stop any remaining hosted qualification task
-        if: always()
-        run: ./scripts/test_windows_sandbox_hosted.ps1 -Cleanup
       - name: Recover and remove test installation
         if: always()
         run: |
