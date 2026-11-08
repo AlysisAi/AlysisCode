@@ -840,6 +840,11 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
             // stamping step below (env reads + a stat per entry).
             let ambient_targets = srt_win::ambient::ambient_deny_targets();
             let name_changed = existing.as_ref().is_some_and(|s| s.sandbox_user != name);
+            let null_ready = existing
+                .as_ref()
+                .map(|s| srt_win::null_device::ready(&s.sandbox_user_sid))
+                .transpose()?
+                .unwrap_or(false);
             if !force
                 && let Ok(st) = wfp::filter_status(&sl)
                 && st.state == "installed"
@@ -888,6 +893,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
                     && us.in_sandbox_group
                     && mv == Some(install::SETUP_VERSION)
                     && install::cred_present()
+                    && null_ready
                     && ambient_ok()
                 {
                     // Re-assert the logon-type denials BEFORE the
@@ -927,6 +933,10 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
             // write_setup_info clears the old row. The account
             // itself is left for the operator.
             if force && name_changed {
+                srt_win::null_device::configure(
+                    &existing.as_ref().unwrap().sandbox_user_sid,
+                    false,
+                )?;
                 let old = &existing.as_ref().unwrap().sandbox_user;
                 eprintln!(
                     "srt-win: WARNING: replacing install with \
@@ -959,6 +969,10 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
                     std::process::exit(14);
                 }
             };
+            // Record the identity before granting device access so interrupted
+            // setup/uninstall can remove only this installation's capability.
+            srt_win::null_device::configure(&pu.sid, true)
+                .context("grant sandbox access to the fixed null device")?;
             // Ambient write-deny stamps: Windows' stock world-
             // writable system dirs (`ambient.rs`), stamped
             // `(D;OICI;WriteDeny)` for the sandbox SID only and
@@ -1088,6 +1102,8 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
                 }
                 if let Some(s) = &recorded {
                     // Recheck immediately before the destructive operation.
+                    srt_win::null_device::configure(&s.sandbox_user_sid, false)
+                        .context("remove installation null-device grant")?;
                     srt_win::install::validate_account_ownership(
                         recorded.as_ref(),
                         &s.sandbox_user,

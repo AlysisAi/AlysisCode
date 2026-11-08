@@ -25,7 +25,7 @@ use crate::{dpapi, logon, runner, user};
 /// compares this to the on-disk marker and refuses with a "re-run
 /// `srt-win install`" message on mismatch; `install` treats a stale
 /// marker as a partial install and completes the missing steps.
-pub const SETUP_VERSION: u32 = 3;
+pub const SETUP_VERSION: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct SetupInfo {

@@ -227,7 +227,10 @@ fn run_isolated(
     crate::job::require_compatible_host_job()?;
     // SID allocations and the array must outlive profile/process creation.
     let capability_sids = if appcontainer_name.is_some() {
-        crate::appcontainer::shell_capabilities(network)?
+        crate::appcontainer::shell_capabilities(
+            network,
+            owner_sid.context("missing write identity")?,
+        )?
     } else {
         Vec::new()
     };
@@ -473,6 +476,7 @@ fn run_isolated(
             network,
         )?;
         token::verify_child_filesystem(child.process(), protected, protected_ancestors)?;
+        token::verify_child_null_device(child.process())?;
     }
 
     // 10) Verify atomic job assignment → resume. ResumeThread returns the

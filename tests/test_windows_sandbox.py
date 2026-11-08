@@ -600,7 +600,7 @@ def test_doctor_does_not_claim_ready_from_setup_presence(monkeypatch, present):
             "user": {
                 "user": {"exists": True},
                 "cred_present": True,
-                "marker_version": 3,
+                "marker_version": 4,
                 "real_user_sid": "owner",
                 "owner_user_sid": "owner",
             },

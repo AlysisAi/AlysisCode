@@ -55,6 +55,7 @@ pub mod account_token;
 pub mod acl;
 pub mod ambient;
 pub mod appcontainer;
+pub mod null_device;
 pub mod ntfs_identity_evidence;
 pub mod path_id;
 pub mod reg;

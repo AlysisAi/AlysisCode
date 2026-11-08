@@ -354,6 +354,10 @@ pub fn run() -> Result<i32> {
     );
     let cred = srt_win::install::read_cred()?;
     let sid = setup.sandbox_user_sid;
+    ensure!(
+        srt_win::null_device::ready(&sid)?,
+        "null-device access needs repair (device permissions can reset after reboot); rerun elevated native setup"
+    );
     let ambient = srt_win::install::ambient_recorded_paths()?;
     ensure!(
         !ambient.is_empty(),

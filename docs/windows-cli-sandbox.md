@@ -47,6 +47,24 @@ with this backend; use session-owned background commands.
 
 ## Release maintenance
 
+### Experimental `windows-native` backend
+
+The separately selected `windows-native` preview requires elevated native setup.
+Its revision-6 helper uses a less privileged AppContainer and preserves the
+independent write restrictions. PowerShell receives registry-read and event-
+instrumentation capabilities; network capability still follows explicit off/on
+policy. General COM and identity-service capabilities are not granted.
+
+Setup version 4 also grants an installation-specific capability read/write access
+to the fixed Windows null device, which Git and subprocess redirection require.
+The grant has no effect on other devices or files. Commands verify access using
+the actual suspended child token; ordinary execution never changes device ACLs.
+Uninstall removes only the installation's grant. Windows can reset device ACLs
+after a reboot. If readiness reports missing null-device access, rerun
+`alysis sandbox setup --native-windows` with elevation before using this preview.
+This setup requirement applies to the experimental backend, separately from the
+default `windows-mxc` installation described above.
+
 ### Local source qualification
 
 When current native source has advanced beyond the signed payload, build a fresh

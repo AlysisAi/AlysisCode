@@ -34,7 +34,10 @@ impl NetworkAccess {
 /// Without instrumentation its PSEtwLog initializer aborts before the command.
 /// No COM, identity-service or implicit network capability is added.
 /// Account candidates retain their separate policy and do not call this helper.
-pub(crate) fn shell_capabilities(network: NetworkAccess) -> Result<Vec<crate::sid::LocalPsid>> {
+pub(crate) fn shell_capabilities(
+    network: NetworkAccess,
+    account_sid: &str,
+) -> Result<Vec<crate::sid::LocalPsid>> {
     let mut sids = network
         .capability_sids()
         .iter()
@@ -44,6 +47,7 @@ pub(crate) fn shell_capabilities(network: NetworkAccess) -> Result<Vec<crate::si
     sids.push(crate::sid::LocalPsid::from_capability(
         "lpacInstrumentation",
     )?);
+    sids.push(crate::null_device::capability(account_sid)?);
     Ok(sids)
 }
 

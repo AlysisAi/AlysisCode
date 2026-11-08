@@ -332,7 +332,7 @@ pub fn verify_appcontainer_process(
     );
     let info = get_token_info(token.raw(), TokenCapabilities)?;
     let groups = unsafe { &*(info.as_ptr() as *const TOKEN_GROUPS) };
-    let expected = crate::appcontainer::shell_capabilities(network)?;
+    let expected = crate::appcontainer::shell_capabilities(network, write_sid)?;
     anyhow::ensure!(
         groups.GroupCount as usize == expected.len(),
         "unexpected AppContainer capabilities"
@@ -379,6 +379,18 @@ pub fn verify_child_filesystem(
     paths: &[String],
     delete_paths: &[String],
 ) -> Result<()> {
+    with_child_token(process, || {
+        crate::runner::probe_filesystem(paths)
+            .and_then(|()| crate::runner::probe_delete_protection(delete_paths))
+    })
+    .context("actual child filesystem enforcement probe failed; no command was launched")
+}
+
+pub(crate) fn verify_child_null_device(process: HANDLE) -> Result<()> {
+    with_child_token(process, crate::null_device::probe)
+}
+
+fn with_child_token(process: HANDLE, check: impl FnOnce() -> Result<()>) -> Result<()> {
     use windows::Win32::Security::{
         ImpersonateLoggedOnUser, RevertToSelf, TOKEN_DUPLICATE, TOKEN_QUERY,
     };
@@ -399,10 +411,9 @@ pub fn verify_child_filesystem(
     unsafe { ImpersonateLoggedOnUser(token.raw()) }
         .context("impersonate suspended sandbox token")?;
     let revert = Revert;
-    let result = crate::runner::probe_filesystem(paths)
-        .and_then(|()| crate::runner::probe_delete_protection(delete_paths));
+    let result = check();
     drop(revert);
-    result.context("actual child filesystem enforcement probe failed; no command was launched")
+    result
 }
 
 /// Every privilege LUID in `base` except those named in `keep`.
