@@ -40,12 +40,18 @@ $command = @"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 # Do not forward GitHub tokens, provider credentials, or other runner secrets.
 $hostEnvironment = @{}
-foreach ($name in @('SystemRoot', 'SystemDrive', 'WINDIR', 'COMSPEC', 'PATH',
+foreach ($name in @('SystemRoot', 'SystemDrive', 'WINDIR', 'COMSPEC', 'PATH', 'PATHEXT',
+        'OS', 'USERNAME', 'USERDOMAIN',
         'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA',
         'LOCALAPPDATA', 'PROGRAMDATA', 'ProgramFiles', 'ProgramFiles(x86)',
         'PSModulePath', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS')) {
     $value = [Environment]::GetEnvironmentVariable($name)
     if ($null -ne $value) { $hostEnvironment[$name] = $value }
+}
+# PowerShell uses PATHEXT even for explicit executable paths. Without it,
+# Python can be opened through ShellExecute without output or an exit status.
+if (($hostEnvironment['PATHEXT'] -split ';') -notcontains '.EXE') {
+    throw 'The host PATHEXT must identify .EXE as a native executable.'
 }
 $environmentBlock = (($hostEnvironment.Keys | Sort-Object | ForEach-Object {
     "$_=$($hostEnvironment[$_])"

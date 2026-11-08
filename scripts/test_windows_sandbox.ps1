@@ -45,7 +45,7 @@ try {
     # Exercise restoration before normalizing this process's default owner;
     # otherwise elevated CI children would already inherit the normalized owner.
     & $Python -m pytest tests/test_windows_sandbox_test_harness.py -q --tb=short
-    if ($LASTEXITCODE -ne 0) { throw 'Sandbox owner-scope regression tests failed.' }
+    if ($LASTEXITCODE -ne 0) { throw "Sandbox owner-scope regression tests failed (Python exit: $LASTEXITCODE)." }
     $ownerScope = [AlysisSandboxTests.DefaultOwnerScope]::EnterCurrentUser()
     $regressions = @(
         'tests/test_windows_sandbox.py', 'tests/test_windows_sandbox_doctor.py',
