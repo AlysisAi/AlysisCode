@@ -29,7 +29,7 @@ def verify_archive(path: Path, pin: dict) -> None:
 
 def download_verified_archive(path: Path, pin: dict) -> None:
     """Retry incomplete transfers while requiring the same size and digest every time."""
-    for attempt in range(3):
+    for attempt in range(6):
         try:
             with (
                 urllib.request.urlopen(pin["url"], timeout=120) as response,
@@ -43,13 +43,13 @@ def download_verified_archive(path: Path, pin: dict) -> None:
             return
         except (urllib.error.URLError, http.client.IncompleteRead, TimeoutError, ValueError):
             path.unlink(missing_ok=True)
-            if attempt == 2:
+            if attempt == 5:
                 raise
             print(
                 "Python archive download failed verification; retrying pinned download.",
                 file=sys.stderr,
             )
-            time.sleep(attempt + 1)
+            time.sleep(min(2 ** (attempt + 1), 30))
 
 
 def validate_runtime(facts: dict, target: str, version: str) -> None:

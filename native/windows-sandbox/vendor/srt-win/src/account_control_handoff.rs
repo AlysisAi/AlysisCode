@@ -681,13 +681,20 @@ pub(super) mod tests {
         wrong.purpose = Purpose::TrustedSelfCheckV1;
         assert!(address(&wrong).is_err());
     }
+    fn assert_peer_closed(server: HANDLE) {
+        // A closed handle value may already belong to another test thread.
+        // Observe the original pipe through its still-owned server endpoint.
+        let error = unsafe { PeekNamedPipe(server, None, 0, None, None, None) }
+            .expect_err("client endpoint must be closed");
+        assert_eq!(error.code(), ERROR_BROKEN_PIPE.to_hresult());
+    }
+
     #[test]
     fn account_handoff_first_frame_refuses_wrong_header_and_closes_connection() {
         for offset in [0, 4, 5, 21] {
             let (server, address) = ControlServer::prepare("S-1-5-21-1-2-3-9999").unwrap();
             let client = PendingClient::connect(&address).unwrap();
             let server = server.accept(me(), TIMEOUT).unwrap();
-            let raw = client.handle.raw();
             let mut header = header(&address, 1);
             header[offset] ^= 1;
             io::transfer(
@@ -699,8 +706,7 @@ pub(super) mod tests {
             .unwrap();
             let error = client.first(TIMEOUT).err().unwrap();
             assert!(error.to_string().contains("identity differs"));
-            let mut flags = 0;
-            assert!(unsafe { GetHandleInformation(raw, &mut flags) }.is_err());
+            assert_peer_closed(server.handle.raw());
         }
     }
     #[test]
@@ -708,7 +714,6 @@ pub(super) mod tests {
         let (server, address) = ControlServer::prepare("S-1-5-21-1-2-3-9999").unwrap();
         let client = PendingClient::connect(&address).unwrap();
         let server = server.accept(me(), TIMEOUT).unwrap();
-        let raw = client.handle.raw();
         let mut partial = header(&address, 32);
         partial.extend_from_slice(b"synthetic");
         io::transfer(
@@ -719,8 +724,7 @@ pub(super) mod tests {
         )
         .unwrap();
         assert!(client.first(Duration::from_millis(10)).is_err());
-        let mut flags = 0;
-        assert!(unsafe { GetHandleInformation(raw, &mut flags) }.is_err());
+        assert_peer_closed(server.handle.raw());
         assert_eq!(FRAME_SCRUB_AUDIT.get(), Some((32, true, true)));
     }
     #[test]
@@ -731,14 +735,12 @@ pub(super) mod tests {
         let mut server = server.accept(me(), TIMEOUT).unwrap();
         server.send(b"first", TIMEOUT).unwrap();
         let (client, _frame) = client.first(TIMEOUT).unwrap();
-        let raw = client.handle.raw();
         let error = client
             .promote(ExpectedPeer::retain(original.process()).unwrap())
             .err()
             .unwrap();
         assert!(error.to_string().contains("different process"));
-        let mut flags = 0;
-        assert!(unsafe { GetHandleInformation(raw, &mut flags) }.is_err());
+        assert_peer_closed(server.handle.raw());
     }
     #[test]
     fn account_handoff_promotion_preserves_original_pipe_sequence_and_byte_counters() {

@@ -69,7 +69,7 @@ def test_retry_never_accepts_a_mismatched_python_archive(
     archive = tmp_path / "python.tar.gz"
     with pytest.raises(ValueError, match="size|SHA-256"):
         installer.download_verified_archive(archive, pin)
-    assert len(calls) == 3
+    assert len(calls) == 6
     assert not archive.exists()
 
 
@@ -93,3 +93,30 @@ def test_unpatched_runtime_cannot_satisfy_the_version_pin() -> None:
     validate_runtime(
         {"version": "3.12.15", "platform": "linux", "machine": "aarch64"}, "linux-arm64", "3.12.15"
     )
+
+
+def test_gateway_failures_back_off_before_retrying_the_pinned_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    complete = b"verified archive"
+    pin = {
+        "url": "https://example.test/python.tar.gz",
+        "size": len(complete),
+        "sha256": hashlib.sha256(complete).hexdigest(),
+    }
+    attempts = []
+    delays = []
+
+    def download(url: str, *, timeout: int) -> io.BytesIO:
+        attempts.append(url)
+        if len(attempts) <= 3:
+            raise installer.urllib.error.HTTPError(url, 504, "Gateway timeout", {}, None)
+        return io.BytesIO(complete)
+
+    monkeypatch.setattr(installer.urllib.request, "urlopen", download)
+    monkeypatch.setattr(installer.time, "sleep", delays.append)
+    archive = tmp_path / "python.tar.gz"
+    installer.download_verified_archive(archive, pin)
+    assert archive.read_bytes() == complete
+    assert attempts == [pin["url"]] * 4
+    assert delays == [2, 4, 8]

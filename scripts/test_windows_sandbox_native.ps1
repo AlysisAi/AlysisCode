@@ -9,9 +9,28 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $repoRoot
 $ownerScope = $null
+$originalCargoTarget = $env:CARGO_TARGET_DIR
 try {
     . (Join-Path $PSScriptRoot 'windows_test_owner_scope.ps1')
     $ownerScope = [AlysisSandboxTests.DefaultOwnerScope]::EnterCurrentUser()
+    # Runner workspaces can grant Authenticated Users write access. Build test
+    # executables in a fresh private directory so image-admission tests exercise
+    # protected binaries without weakening their native ACL checks.
+    $testTarget = Join-Path ([IO.Path]::GetTempPath()) ("alysis-native-tests-" + [guid]::NewGuid())
+    $null = New-Item -ItemType Directory -Path $testTarget
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl.SetOwner($user)
+    foreach ($sid in @($user, [Security.Principal.SecurityIdentifier]'S-1-5-18',
+            [Security.Principal.SecurityIdentifier]'S-1-5-32-544')) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $testTarget -AclObject $acl
+    $env:CARGO_TARGET_DIR = $testTarget
+    Write-Host "Native test artifacts: $testTarget"
     & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/Cargo.toml --locked
     if ($LASTEXITCODE -ne 0) { throw 'Native policy wrapper tests failed.' }
     & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/vendor/srt-win/Cargo.toml --lib --locked
@@ -25,5 +44,8 @@ finally {
     try {
         if ($null -ne $ownerScope) { $ownerScope.Dispose() }
     }
-    finally { Pop-Location }
+    finally {
+        $env:CARGO_TARGET_DIR = $originalCargoTarget
+        Pop-Location
+    }
 }

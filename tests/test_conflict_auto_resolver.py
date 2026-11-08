@@ -1085,10 +1085,10 @@ def test_attempt_auto_resolve_conflict_uses_structured_node_text_refinement(
     assert captured["verify_commands"] == ["node --test"]
 
 
-@pytest.mark.parametrize("context_tokens", [9948, 13_500])
+@pytest.mark.parametrize("instruction_tokens", [1000, 3000])
 def test_conflict_instruction_bundle_preserves_scope_and_unmerged_files_under_tight_budget(
     tmp_path: Path,
-    context_tokens: int,
+    instruction_tokens: int,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1131,7 +1131,7 @@ def test_conflict_instruction_bundle_preserves_scope_and_unmerged_files_under_ti
                 "resolver-model": {
                     # The smaller budget must reject the full required task;
                     # the fitting case may reduce only supplementary plan context.
-                    "context_window_tokens": context_tokens,
+                    "context_window_tokens": 100_000,
                     "max_output_tokens": 2048,
                     "supports_vision": False,
                 }
@@ -1170,7 +1170,15 @@ def test_conflict_instruction_bundle_preserves_scope_and_unmerged_files_under_ti
         ],
     )
 
-    if context_tokens == 9948:
+    # Measure the real prefix/tool overhead instead of assuming a fixed model
+    # window will leave the same instruction allowance as tool contracts evolve.
+    reference = build_task_execution_instruction_bundle(**bundle_args)
+    budget = reference.budget
+    cfg.extra_fields["model_metadata_overrides"]["models"]["resolver-model"][
+        "context_window_tokens"
+    ] = budget.context_window_tokens - budget.final_instruction_budget + instruction_tokens
+
+    if instruction_tokens == 1000:
         with pytest.raises(ExecutionContextBudgetError) as caught:
             build_task_execution_instruction_bundle(**bundle_args)
         assert caught.value.required_tokens > caught.value.available_tokens

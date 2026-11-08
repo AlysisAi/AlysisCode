@@ -186,11 +186,16 @@ jobs:
             GIT_SHA=${{ github.sha }}
             VERSION=pr-${{ github.sha }}
 
+      - name: Install checksum-pinned Trivy with download retries
+        shell: bash
+        run: bash scripts/sandbox/install-trivy.sh
+
       - name: Collect unfiltered vulnerability evidence
         id: trivy-report
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           version: v0.74.0
+          skip-setup-trivy: true
           scanners: vuln
           image-ref: alysis-sandbox-pr:${{ github.sha }}
           format: json
@@ -224,6 +229,7 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           version: v0.74.0
+          skip-setup-trivy: true
           scanners: vuln
           image-ref: alysis-sandbox-pr:${{ github.sha }}
           format: sarif
@@ -402,6 +408,10 @@ jobs:
           validate_sbom linux/amd64 amd64
           validate_sbom linux/arm64 arm64
 
+      - name: Install checksum-pinned Trivy with download retries
+        shell: bash
+        run: bash scripts/sandbox/install-trivy.sh
+
       - name: Collect unfiltered vulnerability evidence
         id: trivy-amd64-report
         env:
@@ -409,6 +419,7 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           version: v0.74.0
+          skip-setup-trivy: true
           scanners: vuln
           image-ref: ${{ steps.platforms.outputs.amd64_ref }}
           format: json
@@ -444,6 +455,7 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           version: v0.74.0
+          skip-setup-trivy: true
           scanners: vuln
           image-ref: ${{ steps.platforms.outputs.amd64_ref }}
           format: sarif
@@ -463,6 +475,7 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           version: v0.74.0
+          skip-setup-trivy: true
           scanners: vuln
           image-ref: ${{ steps.platforms.outputs.arm64_ref }}
           format: json
@@ -498,6 +511,7 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           version: v0.74.0
+          skip-setup-trivy: true
           scanners: vuln
           image-ref: ${{ steps.platforms.outputs.arm64_ref }}
           format: sarif
