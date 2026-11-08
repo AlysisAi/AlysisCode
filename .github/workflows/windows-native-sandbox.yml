@@ -113,6 +113,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Inspect null-device access without changing permissions
+        # Read-only diagnostic evidence, never a substitute for qualification.
+        continue-on-error: true
+        run: ./scripts/windows_sandbox_device_diagnostics.ps1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
