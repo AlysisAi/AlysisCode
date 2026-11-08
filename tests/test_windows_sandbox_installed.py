@@ -697,6 +697,34 @@ def test_installed_cannot_delete_or_rename_metadata(tmp_path, command):
     assert not (tmp_path / "moved-metadata").exists()
 
 
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+def test_installed_readonly_runtime_cannot_be_replaced_through_writable_parent(tmp_path, operation):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    canary = runtime / "canary.txt"
+    canary.write_text("protected", encoding="utf-8")
+    command = (
+        f"Remove-Item -LiteralPath {quote(canary)} -ErrorAction Stop"
+        if operation == "delete"
+        else f"Rename-Item -LiteralPath {quote(runtime)} -NewName moved-runtime -ErrorAction Stop"
+    )
+    runner = WindowsNativeRunner(
+        ShellSandboxSettings(backend="windows-native", windows_read_roots=(str(runtime),))
+    )
+    result = runner.run(
+        root=workspace,
+        cwd=workspace,
+        cmd="Set-Content started.txt 'started' -ErrorAction Stop; " + command,
+        timeout_s=60,
+    )
+    assert (workspace / "started.txt").read_text().strip() == "started", result.stderr
+    assert_command_denied(result)
+    assert canary.read_text() == "protected"
+    assert not (tmp_path / "moved-runtime").exists()
+
+
 def test_installed_cannot_write_metadata_alternate_stream(tmp_path):
     metadata = tmp_path / ".git"
     metadata.mkdir()

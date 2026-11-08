@@ -21,6 +21,9 @@ struct Object {
     grant: Option<String>,
     deny: Option<String>,
     deny_fdc: bool,
+    // Read-only verification, never an ACL mutation/recovery intent.
+    #[serde(default)]
+    system_parent: bool,
 }
 
 impl ContainerPolicy {
@@ -77,13 +80,19 @@ impl ContainerPolicy {
         let objects = map
             .into_iter()
             .map(|(path, (grant, deny, deny_fdc))| {
-                let file_id = capture_file_id(&path)?.as_bytes().to_vec();
+                let id = capture_file_id(&path)?;
+                let system_parent = grant.is_none()
+                    && deny.is_none()
+                    && deny_fdc
+                    && srt_win::acl::system_parent_protected(&path, id)?;
+                let file_id = id.as_bytes().to_vec();
                 Ok(Object {
                     path,
                     file_id,
                     grant,
                     deny,
                     deny_fdc,
+                    system_parent,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -95,12 +104,29 @@ impl ContainerPolicy {
             srt_win::appcontainer::derive(&self.name)?.string()? == self.sid,
             "AppContainer recovery identity mismatch"
         );
+        for object in &self.objects {
+            ensure!(
+                !object.system_parent
+                    || (object.grant.is_none() && object.deny.is_none() && object.deny_fdc),
+                "system parent cannot contain ACL mutation intent"
+            );
+        }
         Ok(())
     }
 
     pub fn apply(&self) -> Result<()> {
         self.validate()?;
         for object in &self.objects {
+            if object.system_parent {
+                ensure!(
+                    srt_win::acl::system_parent_protected(
+                        &object.path,
+                        FileId::from_bytes(&object.file_id)?,
+                    )?,
+                    "system parent protection changed before execution"
+                );
+                continue;
+            }
             let grant = match object.grant.as_deref() {
                 Some("traverse") => Some(GrantMask::Traverse),
                 Some("read") => Some(GrantMask::ReadOnly),
@@ -132,6 +158,9 @@ impl ContainerPolicy {
     pub fn cleanup(&self) -> Result<()> {
         self.validate()?;
         for object in &self.objects {
+            if object.system_parent {
+                continue; // No ACE was installed, even if the descriptor changed later.
+            }
             let expected = FileId::from_bytes(&object.file_id)?;
             let path = match capture_file_id(&object.path) {
                 Ok(actual) if actual == expected => object.path.clone(),
@@ -161,5 +190,42 @@ impl ContainerPolicy {
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verified_system_parent_is_never_mutated_or_recovered() {
+        let path = std::env::var("ProgramFiles").unwrap();
+        let (path, _) = canonicalize_path(&path).unwrap();
+        let mut policy = ContainerPolicy::build(&[], &[], &[], &[], &[]).unwrap();
+        policy.objects.push(Object {
+            file_id: capture_file_id(&path).unwrap().as_bytes().to_vec(),
+            path,
+            grant: None,
+            deny: None,
+            deny_fdc: true,
+            system_parent: true,
+        });
+        policy.apply().unwrap();
+        policy.cleanup().unwrap();
+        // Recovery must not touch the path even after it becomes unavailable:
+        // no mutation intent was ever recorded for this object.
+        policy.objects[0].path = r"C:\not-a-recorded-mutation".into();
+        policy.cleanup().unwrap();
+        policy.objects[0].grant = Some("read".into());
+        assert!(policy.validate().is_err());
+    }
+
+    #[test]
+    fn older_recovery_objects_still_require_acl_cleanup() {
+        let object: Object = serde_json::from_value(serde_json::json!({
+            "path": r"C:\old-parent", "file_id": [0], "grant": null,
+            "deny": null, "deny_fdc": true
+        })).unwrap();
+        assert!(!object.system_parent);
     }
 }
