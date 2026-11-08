@@ -390,7 +390,7 @@ pub fn run() -> Result<i32> {
         "stamp",
         Some(json!({"denyRead":request.deny_read,"denyWrite":request.deny_write})),
     )?;
-    let protected_ancestors = protected_ancestors(&request.write, &request.deny_write)?;
+    let mut protected_ancestors = protected_ancestors(&request.write, &request.deny_write)?;
     grants.command("stamp", Some(json!({"denyDelete":protected_ancestors})))?;
     grants.command(
         "grant",
@@ -407,6 +407,7 @@ pub fn run() -> Result<i32> {
     let container_name = container.name.clone();
     grants.set_container(container.clone())?;
     container.apply()?;
+    protected_ancestors.extend(container.system_parents());
     let mut protected = ambient;
     protected.extend(protected_objects(&request.deny_write)?);
     // Some Windows system directories deny READ_CONTROL to the real user.

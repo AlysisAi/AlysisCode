@@ -155,6 +155,15 @@ impl ContainerPolicy {
         Ok(())
     }
 
+    /// Include inspected parents in effective-access probes under both the
+    /// dedicated account and the actual suspended AppContainer child token.
+    pub fn system_parents(&self) -> impl Iterator<Item = String> + '_ {
+        self.objects
+            .iter()
+            .filter(|object| object.system_parent)
+            .map(|object| object.path.clone())
+    }
+
     pub fn cleanup(&self) -> Result<()> {
         self.validate()?;
         for object in &self.objects {
@@ -211,6 +220,10 @@ mod tests {
             system_parent: true,
         });
         policy.apply().unwrap();
+        assert_eq!(
+            policy.system_parents().collect::<Vec<_>>(),
+            vec![policy.objects[0].path.clone()]
+        );
         policy.cleanup().unwrap();
         // Recovery must not touch the path even after it becomes unavailable:
         // no mutation intent was ever recorded for this object.
@@ -225,7 +238,8 @@ mod tests {
         let object: Object = serde_json::from_value(serde_json::json!({
             "path": r"C:\old-parent", "file_id": [0], "grant": null,
             "deny": null, "deny_fdc": true
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(!object.system_parent);
     }
 }

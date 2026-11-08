@@ -4,8 +4,7 @@ use super::*;
 use crate::path_id::FileId;
 use windows::Win32::Security::INHERIT_ONLY_ACE;
 
-const TRUSTED_INSTALLER: &str =
-    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
 fn system_principal(sid: &str) -> bool {
     matches!(sid, SID_SYSTEM | SID_BUILTIN_ADMINS | TRUSTED_INSTALLER)
@@ -31,7 +30,8 @@ fn protected_descriptor(owner: &str, dacl: *const ACL) -> Result<bool> {
             return false;
         }
         let mask = u32::from_le_bytes(body[4..8].try_into().unwrap());
-        let sid = crate::sid::psid_to_string(PSID(unsafe { body.as_ptr().add(8) }.cast_mut().cast()));
+        let sid =
+            crate::sid::psid_to_string(PSID(unsafe { body.as_ptr().add(8) }.cast_mut().cast()));
         // Adding a new subdirectory alone cannot replace an existing child.
         // Reject every other write right, including generic rights, DELETE,
         // parent DELETE_CHILD, ownership/DACL edits and reparse-point writes.
@@ -48,7 +48,9 @@ fn protected_descriptor(owner: &str, dacl: *const ACL) -> Result<bool> {
 /// handles. A protected leaf alone is insufficient: an attacker could rename
 /// it through a writable ancestor. Neither host-user ownership nor a deny ACE
 /// cancelling a broad allow is accepted as system protection. The sandbox
-/// tokens disable Administrators and cannot act as SYSTEM/TrustedInstaller.
+/// account token disables Administrators; AppContainer write restrictions
+/// require the sandbox SID or Everyone, neither of which receives mutation
+/// grants here. Both tokens are also kernel-probed before user code starts.
 /// Trusted administrators changing these ACLs remain outside the threat model.
 pub fn system_parent_protected(path: &str, expected: FileId) -> Result<bool> {
     use windows::Win32::Storage::FileSystem::{
@@ -60,7 +62,10 @@ pub fn system_parent_protected(path: &str, expected: FileId) -> Result<bool> {
     chain.reverse();
     let mut pins = Vec::with_capacity(chain.len());
     for component in chain {
-        pins.push(LockedAclTarget::open_component(component, Mask::READ_CONTROL.bits())?);
+        pins.push(LockedAclTarget::open_component(
+            component,
+            Mask::READ_CONTROL.bits(),
+        )?);
     }
     ensure!(
         crate::path_id::file_id_from_handle(pins.last().context("empty parent chain")?.raw())?
@@ -72,13 +77,24 @@ pub fn system_parent_protected(path: &str, expected: FileId) -> Result<bool> {
     for pin in pins.iter().rev() {
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         unsafe { GetFileInformationByHandle(pin.raw(), &mut info)? };
-        ensure!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0, "parent is not a directory");
+        ensure!(
+            info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+            "parent is not a directory"
+        );
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
         let mut owner = PSID::default();
         win32_ok(
             unsafe {
-                GetSecurityInfo(pin.raw(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
-                    Some(&mut owner), None, None, None, Some(&mut descriptor))
+                GetSecurityInfo(
+                    pin.raw(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION,
+                    Some(&mut owner),
+                    None,
+                    None,
+                    None,
+                    Some(&mut descriptor),
+                )
             },
             "read system parent owner",
         )?;
@@ -116,20 +132,39 @@ mod tests {
     #[test]
     fn system_parent_proof_requires_system_owner_and_no_untrusted_mutation() {
         for owner in [SID_SYSTEM, SID_BUILTIN_ADMINS, TRUSTED_INSTALLER] {
-            assert!(admits(&format!("O:{owner}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)(A;OICIIO;GA;;;CO)")));
+            assert!(admits(&format!(
+                "O:{owner}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)(A;OICIIO;GA;;;CO)"
+            )));
             // The drive root commonly permits new subdirectories, but not
             // deletion/replacement of existing system directories.
             assert!(admits(&format!("O:{owner}D:P(A;;0x4;;;AU)(A;;FA;;;SY)")));
-            for mask in [0x10000000u32, 0x40000000, 0x10000, 0x40000, 0x80000, 0x40, 0x100, 0x10, 0x2] {
+            for mask in [
+                0x10000000u32,
+                0x40000000,
+                0x10000,
+                0x40000,
+                0x80000,
+                0x40,
+                0x100,
+                0x10,
+                0x2,
+            ] {
                 for trustee in ["BU", "AU", "WD", "OW", "S-1-5-21-1-2-3-1000"] {
-                    assert!(!admits(&format!("O:{owner}D:P(A;;0x{mask:x};;;{trustee})(A;;FA;;;SY)")), "{owner} {trustee} {mask:x}");
+                    assert!(
+                        !admits(&format!(
+                            "O:{owner}D:P(A;;0x{mask:x};;;{trustee})(A;;FA;;;SY)"
+                        )),
+                        "{owner} {trustee} {mask:x}"
+                    );
                 }
             }
         }
         assert!(!admits("O:S-1-5-21-1-2-3-1000D:P(A;;FR;;;WD)"));
         assert!(!admits("O:SYD:NO_ACCESS_CONTROL"));
         assert!(!admits("O:SYD:P(D;;FA;;;BU)(A;;FA;;;BU)"));
-        assert!(!admits("O:SYD:P(OA;;FR;00000000-0000-0000-0000-000000000001;;BU)"));
+        assert!(!admits(
+            "O:SYD:P(OA;;FR;00000000-0000-0000-0000-000000000001;;BU)"
+        ));
         assert!(admits("O:SYD:P")); // An empty DACL denies everyone.
     }
 
@@ -139,7 +174,9 @@ mod tests {
         let path = std::env::var("ProgramFiles").unwrap();
         let (path, _) = crate::path_id::canonicalize_path(&path).unwrap();
         let id = crate::path_id::capture_file_id(&path).unwrap();
-        let pin = LockedAclTarget::open_component(std::path::Path::new(&path), Mask::READ_CONTROL.bits()).unwrap();
+        let pin =
+            LockedAclTarget::open_component(std::path::Path::new(&path), Mask::READ_CONTROL.bits())
+                .unwrap();
         let before = RawFileDacl::read(pin.raw()).unwrap();
         assert!(system_parent_protected(&path, id).unwrap());
         assert_eq!(before, RawFileDacl::read(pin.raw()).unwrap());
