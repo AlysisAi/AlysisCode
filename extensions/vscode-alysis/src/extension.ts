@@ -97,6 +97,7 @@ export interface AlysisExtensionApi {
     /** Resolves once background runtime validation and the initial bridge check have settled. */
     whenReady(): Promise<void>;
     state(): {
+      bridgeCanRestart: boolean;
       chat: ReturnType<ChatController["testState"]> | null;
       forge: ReturnType<ForgeController["testState"]> | null;
       browser: ReturnType<BrowserCockpitController["state"]> | null;
@@ -902,7 +903,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     installedProductionQaEnabled,
     getConfig,
     hostActionController,
-    backgroundActivation
+    backgroundActivation,
+    bridgeClient
   );
 }
 
@@ -964,7 +966,8 @@ function createExtensionApi(
   installedProductionQaEnabled: boolean,
   getConfig: () => AlysisConfig,
   hostActionController: HostActionController,
-  backgroundActivation: Promise<void>
+  backgroundActivation: Promise<void>,
+  bridgeClient: AlysisBridgeClient
 ): AlysisExtensionApi | undefined {
   if (
     context.extensionMode === vscode.ExtensionMode.Production &&
@@ -993,6 +996,7 @@ function createExtensionApi(
       // assert post-handshake state await this instead of racing the background task.
       whenReady: () => backgroundActivation,
       state: () => ({
+        bridgeCanRestart: bridgeClient.canRestartSafely(),
         chat: chatController.testState(),
         forge: forgeController.testState(),
         browser: browserController.state(),
