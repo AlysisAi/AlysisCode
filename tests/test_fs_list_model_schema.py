@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -101,8 +102,8 @@ def test_prepared_parent_and_child_schemas_retain_listing_scope_contract(
             schema = child["schema"]
             assert schema["name"] == parent["name"]
             assert schema["parameters"] == parent["parameters"]
-            # Approval guidance differs by mode: a readonly explorer must not
-            # advertise the interactive parent's outside-project access path.
+            # Scoped access is available to interactive macOS children only.
+            # Windows limits it to the parent; Linux has no scoped dispatcher.
             for contract in (
                 "Files only under root_path",
                 "Empty/omitted globs: '**/*' recursively",
@@ -112,7 +113,7 @@ def test_prepared_parent_and_child_schemas_retain_listing_scope_contract(
             ):
                 assert contract in schema["description"]
             assert ("requests scoped access" in schema["description"]) == (
-                not one_shot and child["mode"] == "auto"
+                sys.platform == "darwin" and not one_shot and child["mode"] == "auto"
             )
     finally:
         session.close()
