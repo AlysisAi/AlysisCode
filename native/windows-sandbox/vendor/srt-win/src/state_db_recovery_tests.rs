@@ -30,14 +30,20 @@ impl Fixture {
                 "fixture ancestry must remain within engine checkout"
             );
         }
-        let root = base.join(format!(
-            "{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // Windows clock values can repeat across concurrently created fixtures.
+        // Random identities keep every recovery ledger on its own fresh tree.
+        let mut random = [0u8; 16];
+        unsafe {
+            windows::Win32::Security::Cryptography::BCryptGenRandom(
+                None,
+                &mut random,
+                windows::Win32::Security::Cryptography::BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+            .ok()
+            .unwrap();
+        }
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let root = base.join(format!("{}-{suffix}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let owner = crate::sid::current_user_sid().unwrap();
         acl::set_path_dacl_from_sddl(

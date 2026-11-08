@@ -22,14 +22,14 @@ from alysis_code.tools.shell import ShellError, shell_run
 from alysis_code.windows_mxc import WindowsMxcRunner
 
 _HELPER = """
-import json, pathlib, sys, time
+import json, os, pathlib, sys, time
 request = json.load(sys.stdin)
 assert request['nonce'] == 'request-sent-once'
 sys.stdout.buffer.write('partial caf\\u00e9\\n'.encode('utf-8'))
 sys.stdout.buffer.flush()
 sys.stderr.buffer.write(b'partial stderr \\xff\\n')
 sys.stderr.buffer.flush()
-pathlib.Path('ready').write_text('ready')
+pathlib.Path('ready').write_text(str(os.getpid()))
 if request['cmd'] == 'unacknowledged-exit':
     sys.exit(125)
 events = request.get('lifecycle')
@@ -38,13 +38,20 @@ if events:
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
     kernel.SetEvent.argtypes = [wintypes.HANDLE]
+    kernel.SetEvent.restype = wintypes.BOOL
     until = time.monotonic() + (0.25 if request['cmd'] == 'complete' else 30)
     while time.monotonic() < until:
-        if kernel.WaitForSingleObject(events['cancel'], 10) == 0:
-            assert kernel.SetEvent(events['complete'])
+        status = kernel.WaitForSingleObject(events['cancel'], 10)
+        if status == 0xffffffff:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if status == 0:
+            if not kernel.SetEvent(events['complete']):
+                raise ctypes.WinError(ctypes.get_last_error())
             sys.exit(125)
-    assert kernel.SetEvent(events['complete'])
+    if not kernel.SetEvent(events['complete']):
+        raise ctypes.WinError(ctypes.get_last_error())
 else:
     time.sleep(0.25 if request['cmd'] == 'complete' else 30)
 sys.stdout.buffer.write(b'complete\\n')
@@ -57,7 +64,10 @@ def runner(request, monkeypatch: pytest.MonkeyPatch):
     runner_type = request.param
 
     def prepare(self, *, root, cwd, cmd):
-        return [sys.executable, "-u", "-c", _HELPER], json.dumps(
+        # A Windows venv launcher spawns another process. Private duplicated
+        # handles must reach this fixture itself, just like the real native exe.
+        executable = getattr(sys, "_base_executable", None) or sys.executable
+        return [executable, "-u", "-c", _HELPER], json.dumps(
             {"nonce": "request-sent-once", "cmd": cmd}
         ).encode()
 
@@ -94,6 +104,7 @@ def test_sliced_wait_sends_one_complete_request_and_keeps_output(runner, process
     assert result.stdout == "partial caf\u00e9\ncomplete\n"
     assert result.stderr == "partial stderr \ufffd\n"
     assert len(processes) == 1 and processes[0].poll() == 0
+    assert int((tmp_path / "ready").read_text()) == processes[0].pid
 
 
 def test_lazy_runner_cancellation_reports_decoded_partial_output(runner, processes, tmp_path):

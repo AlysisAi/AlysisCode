@@ -103,6 +103,16 @@ jobs:
         run: ./scripts/test_windows_sandbox_native.ps1
       - name: Build helper
         run: cargo +1.90.0 build --manifest-path native/windows-sandbox/Cargo.toml --release --locked
+
+  engine-tests:
+    # The request-protocol regressions do not need a compiled or provisioned
+    # helper. Report their failures promptly while Rust qualification runs.
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
@@ -121,7 +131,7 @@ jobs:
     # Every preview PR exercises a fresh installation on disposable runners.
     # Strict release qualification additionally rejects known failures/skips.
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v-sandbox-') || inputs.installed
-    needs: native-build
+    needs: [native-build, engine-tests]
     strategy:
       fail-fast: false
       matrix:
