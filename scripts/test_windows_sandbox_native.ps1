@@ -35,14 +35,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Native policy wrapper tests failed.' }
     & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/vendor/srt-win/Cargo.toml --lib --locked
     if ($LASTEXITCODE -ne 0) { throw 'Native primitive tests failed.' }
-    # Handoff tests assert that consumed raw handle values are closed. Windows
-    # can reuse those values in parallel tests, so run this complete family in
-    # a separate single-threaded process. Every test still runs; bundled native
-    # source remains byte-for-byte bound to the shipped helper's source receipt.
-    & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/vendor/srt-win/Cargo.toml --lib --locked --features account-appcontainer-candidate account_ -- --skip account_handoff_
+    # Control-channel tests inspect process-wide handle counts and consumed raw
+    # handle values. Other test threads can change either observation, so run
+    # the whole module in a separate single-threaded process. Every test still
+    # runs; bundled native source remains bound to the shipped source receipt.
+    & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/vendor/srt-win/Cargo.toml --lib --locked --features account-appcontainer-candidate account_ -- --skip account_control::
     if ($LASTEXITCODE -ne 0) { throw 'Disabled account candidate tests failed.' }
-    & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/vendor/srt-win/Cargo.toml --lib --locked --features account-appcontainer-candidate account_handoff_ -- --test-threads=1
-    if ($LASTEXITCODE -ne 0) { throw 'Account handoff tests failed.' }
+    & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/vendor/srt-win/Cargo.toml --lib --locked --features account-appcontainer-candidate account_control:: -- --test-threads=1
+    if ($LASTEXITCODE -ne 0) { throw 'Account control tests failed.' }
     & $Cargo "+$Toolchain" test --manifest-path native/windows-sandbox/vendor/srt-win/Cargo.toml --lib --locked --features account-appcontainer-candidate object_grants
     if ($LASTEXITCODE -ne 0) { throw 'Disabled object grant tests failed.' }
 }

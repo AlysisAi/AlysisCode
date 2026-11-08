@@ -12,7 +12,14 @@ $opensslUrl = "https://github.com/openssl/openssl/releases/download/openssl-$ope
 $opensslArchive = Join-Path $env:RUNNER_TEMP "openssl-$opensslVersion.tar.gz"
 $opensslSource = Join-Path $env:RUNNER_TEMP "openssl-$opensslVersion"
 $opensslPrefix = Join-Path $env:RUNNER_TEMP 'alysis-openssl-arm64'
-Invoke-WebRequest -Uri $opensslUrl -OutFile $opensslArchive
+& curl.exe --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 180 `
+    --output $opensslArchive $opensslUrl
+if ($LASTEXITCODE -ne 0) {
+    & curl.exe --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 180 `
+        --header 'Accept: application/octet-stream' --output $opensslArchive `
+        'https://api.github.com/repos/openssl/openssl/releases/assets/598377651'
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned OpenSSL source download failed.' }
+}
 if ((Get-FileHash -LiteralPath $opensslArchive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $opensslSha256) {
     throw 'OpenSSL source checksum mismatch.'
 }
