@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.16.3 - 2026-11-08
+
+- Install the required `jsonschema` dependency for ordinary CLI installations,
+  fixing the first-request crash reported in #46.
+- Give the ordinary terminal chat's slash-command menu a dark background and
+  green selection, matching the full-screen interface (#44).
+- Validate release wheels in a fresh virtual environment with runtime dependencies
+  only, including a complete first agent turn with a local model-response fixture.
+
 ## 0.16.2 - 2026-11-07
 
 - Align the VS Code extension's tested CLI version and documentation with the

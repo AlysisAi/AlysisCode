@@ -20,8 +20,6 @@ repository or passed on the command line.
    uv run --frozen --no-sync ruff check .
    uv run --frozen --no-sync ruff format --check .
    uv run --frozen --no-sync pytest -q
-   uv build --clear --no-create-gitignore --no-build-isolation --no-sources --out-dir dist/python
-   uv run --frozen --no-sync python scripts/release/validate_python_distributions.py dist/python
    ```
 
 5. Run the extension compile, lint and unit checks from `extensions/vscode-alysis`:
@@ -33,7 +31,18 @@ repository or passed on the command line.
    npm test
    ```
 
-   Commit the release metadata and obtain review.
+   Commit the release metadata and obtain review. From the clean candidate commit,
+   generate its build identity and validate the exact release archives:
+
+   ```bash
+   uv run --frozen --no-sync python scripts/generate_build_info.py --require-clean --no-fetch
+   uv build --clear --no-create-gitignore --no-build-isolation --no-sources --out-dir dist/python
+   uv run --frozen --no-sync python scripts/release/validate_python_distributions.py dist/python \
+     --expected-commit "$(git rev-parse HEAD)"
+   ```
+
+   The generated `src/alysis_code/_build_info.py` is a build input, not a source change
+   to commit. Restore its original contents after building; CI does this automatically.
 6. Create and push the version tag:
 
    ```bash
@@ -53,6 +62,11 @@ After publication:
 - verify the version and files on PyPI;
 - install the wheel in a clean environment; and
 - run `alysis-code --version` and `alysis-code --help`.
+
+The distribution validator installs the exact wheel and its declared runtime dependencies
+in a fresh virtual environment, without development extras or inherited Python paths.
+It checks help, version, simulated hosted login, and an ordinary first agent turn with
+a local model-response fixture. No real account or paid model call is needed.
 
 Never move or reuse a published version tag. If a release is defective, fix the problem and publish
 a new patch version. Yank a PyPI release only when leaving it available would harm users.

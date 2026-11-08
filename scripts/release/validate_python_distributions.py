@@ -446,7 +446,13 @@ def _smoke_wheel(
     if uv is None:
         raise DistributionValidationError("uv is required for the isolated wheel smoke install.")
     with tempfile.TemporaryDirectory(prefix="alysis-wheel-smoke-") as directory:
-        target = Path(directory) / "site"
+        target = Path(directory) / "venv"
+        subprocess.run(
+            [uv, "venv", "--python", sys.executable, os.fspath(target)],
+            check=True,
+            timeout=60,
+        )
+        python = target / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         subprocess.run(
             [
                 uv,
@@ -454,24 +460,24 @@ def _smoke_wheel(
                 os.fspath(Path(directory) / "uv-cache"),
                 "pip",
                 "install",
-                "--no-deps",
-                "--target",
-                os.fspath(target),
-                os.fspath(wheel),
+                "--python",
+                os.fspath(python),
+                os.fspath(wheel.resolve()),
             ],
             check=True,
+            timeout=300,
         )
         environment = os.environ.copy()
-        environment["PYTHONPATH"] = os.pathsep.join(
-            [os.fspath(target), environment.get("PYTHONPATH", "")]
-        ).rstrip(os.pathsep)
+        environment.pop("PYTHONPATH", None)
+        environment.pop("PYTHONHOME", None)
         for argument in ("--help", "--version"):
             completed = subprocess.run(
-                [sys.executable, "-m", "alysis_code", argument],
+                [os.fspath(python), "-I", "-m", "alysis_code", argument],
                 check=True,
                 capture_output=True,
                 text=True,
                 env=environment,
+                cwd=directory,
                 timeout=30,
             )
             output = f"{completed.stdout}\n{completed.stderr}"
@@ -485,18 +491,20 @@ def _smoke_wheel(
                         raise DistributionValidationError(
                             "Installed wheel did not report its expected clean build identity."
                         )
-        subprocess.run(
-            [
-                sys.executable,
-                os.fspath(Path(__file__).with_name("smoke_hosted_login.py")),
-                "--expected-root",
-                os.fspath(target),
-            ],
-            cwd=directory,
-            env=environment,
-            check=True,
-            timeout=60,
-        )
+        for script in ("smoke_hosted_login.py", "smoke_first_turn.py"):
+            subprocess.run(
+                [
+                    os.fspath(python),
+                    "-I",
+                    os.fspath(Path(__file__).resolve().with_name(script)),
+                    "--expected-root",
+                    os.fspath(target),
+                ],
+                cwd=directory,
+                env=environment,
+                check=True,
+                timeout=60,
+            )
 
 
 def main() -> int:

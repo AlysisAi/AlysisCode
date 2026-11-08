@@ -181,9 +181,14 @@ def test_archive_identity_must_match_installed_version_output(
         with pytest.raises(DistributionValidationError, match="expected clean build identity"):
             validate_distributions(dist, project_file=project, expected_commit=COMMIT)
     assert calls[0][0] == "fixture-uv"
+    assert calls[0][1] == "venv"
+    install = next(call for call in calls if "install" in call)
+    assert "--no-deps" not in install
+    assert "--target" not in install
     assert any(call[-1] == "--version" for call in calls)
     if accepted:
         assert any("smoke_hosted_login.py" in str(part) for call in calls for part in call)
+        assert any("smoke_first_turn.py" in str(part) for call in calls for part in call)
 
 
 def test_accepts_exact_safe_wheel_and_sdist(tmp_path: Path) -> None:

@@ -67,6 +67,7 @@ def _maybe_make_chat_prompt_session(
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.styles import Style
 
         from ..chat_slash_completer import ChatSlashCompleter
     except Exception:
@@ -131,6 +132,19 @@ def _maybe_make_chat_prompt_session(
         "completer": completer,
         "complete_while_typing": True,
         "reserve_space_for_menu": _chat_prompt_completion_menu_height(_completion_mode()),
+        # Match the full-screen chat's dark panel and green selection. Without
+        # an explicit style, the ordinary prompt uses prompt_toolkit's defaults.
+        "style": Style.from_dict(
+            {
+                "completion-menu": "bg:#0d1117",
+                "completion-menu.completion": "bg:#0d1117 #c9d1d9",
+                "completion-menu.completion.current": "bg:#21262d bold #3fb950",
+                "completion-menu.meta.completion": "bg:#0d1117 #6e7681",
+                "completion-menu.meta.completion.current": "bg:#21262d #c9d1d9",
+                "scrollbar.background": "bg:#1a1a1a",
+                "scrollbar.button": "bg:#3fb950",
+            }
+        ),
     }
     try:
         history_path = default_chat_history_path()
