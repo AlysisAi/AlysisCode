@@ -5,6 +5,8 @@ defaults:
     shell: pwsh
 
 on:
+  push:
+    tags: ['v-sandbox-*']
   pull_request:
     paths:
       - 'native/windows-sandbox/**'
@@ -118,7 +120,7 @@ jobs:
   installed-qualification:
     # Every preview PR exercises a fresh installation on disposable runners.
     # Strict release qualification additionally rejects known failures/skips.
-    if: github.event_name == 'pull_request' || inputs.installed
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v-sandbox-') || inputs.installed
     needs: native-build
     strategy:
       fail-fast: false
@@ -153,7 +155,7 @@ jobs:
       - name: Verify installed boundary and CLI diagnostics
         id: boundary_qualification
         env:
-          QUALIFY_INTERNET: ${{ github.event_name == 'pull_request' || inputs.internet }}
+          QUALIFY_INTERNET: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v-sandbox-') || inputs.internet }}
           REQUIRE_ALL_CHECKS: ${{ inputs.require_all_checks }}
           SANDBOX_RUNTIME_WIN_DEBUG: '1'
         run: |
@@ -209,3 +211,95 @@ jobs:
           path: ${{ runner.temp }}/mxc-candidate/
           if-no-files-found: error
           retention-days: 14
+
+  sign-mxc-candidate:
+    # Candidate tags never publish a package or update release pins. The same
+    # exact-source native tests must pass before the existing reviewer gate.
+    if: github.repository == 'AlysisAi/AlysisCode' && startsWith(github.ref, 'refs/tags/v-sandbox-')
+    needs: [installed-qualification, mxc-candidate-build]
+    runs-on: windows-2022
+    timeout-minutes: 15
+    environment: managed-cli-native-signing
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Revalidate protected signing policy after approval
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          environment=managed-cli-native-signing
+          gh api "repos/${GITHUB_REPOSITORY}/environments/${environment}" > environment.json
+          gh api "repos/${GITHUB_REPOSITORY}/environments/${environment}/deployment-branch-policies?per_page=100" > policies.json
+          python scripts/release/validate_github_environment_policy.py environment.json policies.json --environment "$environment" --required-pattern 'v*'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: windows-mxc-unsigned-${{ github.sha }}
+          path: mxc-candidate
+      - name: Verify candidate against the exact checked-out source
+        run: python scripts/release/prepare_windows_sandbox_signature.py mxc-candidate --expected-commit $env:GITHUB_SHA
+      - name: Validate protected Azure signing configuration
+        env:
+          SIGNING_ENDPOINT: ${{ vars.ALYSIS_AZURE_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.ALYSIS_AZURE_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.ALYSIS_AZURE_SIGNING_CERTIFICATE_PROFILE }}
+          EXPECTED_SUBJECT: ${{ vars.ALYSIS_WINDOWS_SIGNING_SUBJECT }}
+        run: |
+          if ($env:SIGNING_ENDPOINT -cne 'https://weu.codesigning.azure.net/' -or
+              $env:SIGNING_ACCOUNT -cne 'alysis-code-signing' -or
+              $env:SIGNING_PROFILE -notmatch '^[A-Za-z0-9-]{1,100}$' -or
+              [string]::IsNullOrWhiteSpace($env:EXPECTED_SUBJECT) -or $env:EXPECTED_SUBJECT -match '[\r\n]') {
+            throw 'Protected signing configuration is missing or invalid.'
+          }
+      - name: Authenticate with the protected GitHub OIDC identity
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        env:
+          AZURE_CORE_OUTPUT: none
+        with:
+          client-id: ${{ vars.ALYSIS_AZURE_SIGNING_CLIENT_ID }}
+          tenant-id: ${{ vars.ALYSIS_AZURE_SIGNING_TENANT_ID }}
+          subscription-id: ${{ vars.ALYSIS_AZURE_SIGNING_SUBSCRIPTION_ID }}
+      - name: Sign the qualified helper
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.ALYSIS_AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ALYSIS_AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ALYSIS_AZURE_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}/mxc-candidate/alysis-sandbox.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+          cache-dependencies: false
+      - name: Verify publisher and bind the signed bytes
+        env:
+          EXPECTED_SUBJECT: ${{ vars.ALYSIS_WINDOWS_SIGNING_SUBJECT }}
+        run: |
+          ./scripts/release/verify_windows_runtime.ps1 -Executable mxc-candidate/alysis-sandbox.exe -Target win32-x64 -ExpectedSubject $env:EXPECTED_SUBJECT -OutputPath mxc-signature.json
+          python scripts/release/prepare_windows_sandbox_signature.py mxc-candidate --expected-commit $env:GITHUB_SHA --signature mxc-signature.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-mxc-signed-${{ github.sha }}
+          path: |
+            mxc-candidate/
+            mxc-signature.json
+          if-no-files-found: error
+          retention-days: 30

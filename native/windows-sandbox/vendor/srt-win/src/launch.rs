@@ -289,7 +289,8 @@ fn run_isolated(
         Some(name) => Job::for_execution(name),
         None => Job::new(false),
     }
-    .context("create containment job")?;
+    .context("create containment job")?
+    .with_verified_exit();
 
     // `on_default` gates the fail-closed assertion; the breakaway
     // flag is gated separately on `IsProcessInJob(self)`. Computed

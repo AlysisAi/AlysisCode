@@ -148,7 +148,7 @@ fn wait_until_empty(handle: HANDLE) -> Result<()> {
 /// RAII job object. `Drop` closes the handle; with
 /// `KILL_ON_JOB_CLOSE` set, that terminates every process still in
 /// the job.
-pub struct Job(HANDLE);
+pub struct Job(HANDLE, bool);
 
 impl Job {
     /// Create an unnamed job with kill-on-close + full UI lockdown.
@@ -231,7 +231,7 @@ impl Job {
         };
         // Wrap the raw handle in `Self` immediately so a `?` from
         // either `SetInformationJobObject` below still closes it.
-        let job = Self(raw);
+        let job = Self(raw, false);
         unsafe {
             let mut ext: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
             ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -276,6 +276,14 @@ impl Job {
         Ok(job)
     }
 
+    /// The legacy foreground broker must verify original process termination
+    /// before it acknowledges cleanup. Account-candidate jobs have a separate
+    /// retirement protocol that requires their containment flags to stay fixed.
+    pub(crate) fn with_verified_exit(mut self) -> Self {
+        self.1 = true;
+        self
+    }
+
     /// Raw job handle (for `IsProcessInJob` diagnostics).
     pub fn raw(&self) -> HANDLE {
         self.0
@@ -291,6 +299,10 @@ impl Job {
     /// denies or remove the execution profile. Callers must close child
     /// process/thread handles first so they do not retain job accounting refs.
     pub(crate) fn terminate_and_wait(&self) -> Result<()> {
+        if !self.1 {
+            unsafe { TerminateJobObject(self.0, 1).context("TerminateJobObject")? };
+            return wait_until_empty(self.0);
+        }
         // Stop descendant creation before retaining original process handles.
         // Zero job accounting can precede handle signaling; both are required
         // before cleanup or cancellation may be acknowledged.

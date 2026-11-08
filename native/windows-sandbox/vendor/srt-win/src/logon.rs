@@ -268,7 +268,7 @@ pub fn spawn_runner(
     // runner's own Job, which requires every containing job to
     // allow it.
     crate::lifecycle::check()?;
-    let job = Job::new(true).context("broker→runner job")?;
+    let job = Job::new(true).context("broker→runner job")?.with_verified_exit();
 
     let mut si: STARTUPINFOW = unsafe { zeroed() };
     si.cb = size_of::<STARTUPINFOW>() as u32;
