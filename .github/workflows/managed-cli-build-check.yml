@@ -54,7 +54,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.11"
+          # Bootstrap only; the packaged interpreter remains checksum-pinned.
+          python-version: ${{ matrix.target == 'win32-arm64' && '3.13' || '3.11' }}
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.23"
