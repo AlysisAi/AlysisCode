@@ -86,7 +86,12 @@ try {
         $env:ALYSIS_SHELL_SANDBOX_MODE = 'strict'
         $env:ALYSIS_SHELL_SANDBOX_NETWORK = 'off'
         & $Python -m alysis_code sandbox doctor --smoke
-        if ($LASTEXITCODE -ne 0) { throw 'Installed sandbox smoke check failed.' }
+        if ($LASTEXITCODE -ne 0) {
+            if ($HostDiagnostics) {
+                & $Python scripts/windows_sandbox_startup_diagnostics.py
+            }
+            throw 'Installed sandbox smoke check failed.'
+        }
         if ($Internet) {
             $env:ALYSIS_SHELL_SANDBOX_NETWORK = 'on'
             & $Python -m alysis_code sandbox doctor --smoke

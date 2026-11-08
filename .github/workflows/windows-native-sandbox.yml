@@ -199,6 +199,7 @@ jobs:
             native/windows-sandbox/target/installed-release-tests.xml
             native/windows-sandbox/target/hosted-qualification.log
             native/windows-sandbox/target/policy-startup-diagnostics.json
+            native/windows-sandbox/target/startup-diagnostics.json
             native/windows-sandbox/target/bundle/release/manifest.json
           if-no-files-found: warn
 
