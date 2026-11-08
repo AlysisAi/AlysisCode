@@ -236,7 +236,16 @@ try {
             "make_sandbox_token: CreateRestrictedToken(disable=[Admins, logon-SIDs])" in error
             and "0x80070057" in error
         )
-        assert token_refused or "Access is denied" in error or "0x80070005" in error, error
+        # The lifecycle repair checks the enclosing job before token creation.
+        # A nested runner must not break away from the outer containment job.
+        job_refused = (
+            "native Windows sandbox cannot start from this host" in error
+            and "its Windows job forbids child breakaway" in error
+            and "Containment limits remain required" in error
+        )
+        assert (
+            job_refused or token_refused or "Access is denied" in error or "0x80070005" in error
+        ), error
         assert any(
             stage in error
             for stage in (
@@ -245,6 +254,7 @@ try {
                 "create containment job",
                 "CreateProcessAsUserW",
                 "OpenProcessToken",
+                "its Windows job forbids child breakaway",
             )
         ), error
         assert "RAW_RUNNER_REMAINS_CONTAINED" not in out

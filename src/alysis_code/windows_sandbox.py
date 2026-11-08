@@ -454,7 +454,8 @@ def build_request(
         # bootstrap dependencies by their trusted installation paths first.
         r"Microsoft.PowerShell.Core\Import-Module -Name "
         r'"$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1", '
-        r'"$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1" '
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1", '
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" '
         "-ErrorAction Stop; "
         f"$null = Microsoft.PowerShell.Management\\New-PSDrive -Name Alysis "
         f"-PSProvider FileSystem -Root '{ps_root}' -Scope Global -ErrorAction Stop; "

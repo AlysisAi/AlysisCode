@@ -35,16 +35,22 @@ def quote(path: Path) -> str:
     return "'" + str(path).replace("'", "''") + "'"
 
 
+def powershell_environment(shell: Path) -> dict[str, str]:
+    # Windows environment names are case-insensitive, unlike a copied dict.
+    environment = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    environment["PSModulePath"] = str(shell.parent / "Modules")
+    return environment
+
+
 def assert_command_denied(result) -> None:
     # A setup failure (125), crash or missing executable is not proof that the
     # requested operation was contained. PowerShell must report access denied.
     assert result.returncode == 1, result.stderr
     # Rename-Item reports access denial as an IOException/WriteError, whereas
     # content operations use UnauthorizedAccessException/PermissionDenied.
-    assert any(word in result.stderr for word in ("UnauthorizedAccess", "PermissionDenied")) or (
-        "RenameItemIOError" in result.stderr
-        and "Access to the path" in result.stderr
-        and "is denied." in result.stderr
+    error = " ".join(result.stderr.split())
+    assert any(word in error for word in ("UnauthorizedAccess", "PermissionDenied")) or (
+        "RenameItemIOError" in error and "Access to the path" in error and "is denied." in error
     ), result.stderr
 
 
@@ -63,7 +69,11 @@ def test_installed_script_files_preserve_host_policy_and_nested_inheritance(
     policy = _powershell_execution_policy(shell)
     record_property("effective_host_execution_policy", policy)
     body = (
-        "Write-Output ('EFFECTIVE_POLICY=' + (Get-ExecutionPolicy).ToString()); "
+        # Qualify the policy query in both host and nested PowerShell controls;
+        # module discovery is not evidence of the effective execution policy.
+        "$ErrorActionPreference='Stop'; "
+        "Microsoft.PowerShell.Utility\\Write-Output ('EFFECTIVE_POLICY=' + "
+        "(Microsoft.PowerShell.Security\\Get-ExecutionPolicy).ToString()); "
         "Write-Output 'ACTUAL_SCRIPT_FILE_RAN'\n"
     )
     local = tmp_path / "local.ps1"
@@ -73,8 +83,7 @@ def test_installed_script_files_preserve_host_policy_and_nested_inheritance(
     Path(str(remote) + ":Zone.Identifier").write_text(
         "[ZoneTransfer]\nZoneId=3\n", encoding="ascii"
     )
-    host_env = os.environ.copy()
-    host_env["PSModulePath"] = str(shell.parent / "Modules")
+    host_env = powershell_environment(shell)
     runner = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native", network=network))
     for script in (local, remote):
         host = subprocess.run(
@@ -110,7 +119,7 @@ def test_installed_script_files_preserve_host_policy_and_nested_inheritance(
                 assert result.stdout.splitlines() == [
                     f"EFFECTIVE_POLICY={policy}",
                     "ACTUAL_SCRIPT_FILE_RAN",
-                ]
+                ], result.stderr
             else:
                 assert "ACTUAL_SCRIPT_FILE_RAN" not in result.stdout
                 assert "UnauthorizedAccess" in host.stderr and "UnauthorizedAccess" in result.stderr
@@ -433,14 +442,14 @@ def test_installed_junction_attempt_cannot_expose_private_target(tmp_path, locat
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                f"(Get-Acl -LiteralPath {quote(private)}).Sddl; "
-                f"(Get-Acl -LiteralPath {quote(canary)}).Sddl",
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(private)}).Sddl; "
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(canary)}).Sddl",
             ],
             capture_output=True,
             text=True,
             timeout=15,
             # Do not import PowerShell 7-only modules into Windows PowerShell.
-            env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+            env=powershell_environment(shell),
         )
         assert control.returncode == 0, control.stderr
         return control.stdout
@@ -503,13 +512,13 @@ def test_installed_new_private_hardlink_cannot_expose_or_repermission_target(tmp
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                f"(Get-Acl -LiteralPath {quote(private)}).Sddl; "
-                f"(Get-Acl -LiteralPath {quote(canary)}).Sddl",
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(private)}).Sddl; "
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(canary)}).Sddl",
             ],
             capture_output=True,
             text=True,
             timeout=15,
-            env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+            env=powershell_environment(shell),
         )
         assert result.returncode == 0, result.stderr
         return result.stdout
@@ -645,7 +654,7 @@ def test_installed_command_cannot_use_dns_service_for_egress(tmp_path):
 
             def command(name):
                 return (
-                    f"Resolve-DnsName '{name}' -Server 127.0.0.1 -Type A "
+                    f"DnsClient\\Resolve-DnsName '{name}' -Server 127.0.0.1 -Type A "
                     "-DnsOnly -NoHostsFile -QuickTimeout -ErrorAction Stop"
                 )
 
@@ -657,6 +666,7 @@ def test_installed_command_cannot_use_dns_service_for_egress(tmp_path):
                 capture_output=True,
                 text=True,
                 timeout=15,
+                env=powershell_environment(shell),
             )
             assert any(host_name.split(".")[0].encode() in p for p in received), (
                 "DNS host control did not reach listener"
@@ -668,7 +678,8 @@ def test_installed_command_cannot_use_dns_service_for_egress(tmp_path):
                 + command(sandbox_name),
                 timeout_s=30,
             )
-            assert result.returncode != 125, result.stderr
+            assert result.returncode == 1, result.stderr
+            assert "Microsoft.DnsClient.Commands.ResolveDnsName" in result.stderr, result.stderr
             assert (tmp_path / "dns-started.txt").read_text().strip() == "started", result.stderr
             assert not any(sandbox_name.split(".")[0].encode() in p for p in received), (
                 "Windows DNS service transmitted the sandbox canary despite network=off"
@@ -1126,12 +1137,53 @@ def test_installed_quoted_subdirectory_and_native_working_directory(tmp_path):
     assert Path(result.stdout.strip()) == cwd
 
 
-def test_installed_native_node_and_git_compatibility(tmp_path):
+def test_installed_native_node_and_git_compatibility(tmp_path, record_property):
     import shutil
 
     node = shutil.which("node")
     git = shutil.which("git")
     assert node and git, "Qualification requires installed Node.js and Git"
+    # Read-only diagnostic of the fixed null device, not a permission change.
+    # Git's /dev/null error and Node's ignored-stdio failures otherwise obscure
+    # whether the independent write check or tool startup is failing.
+    null_probe = r"""
+Microsoft.PowerShell.Utility\Add-Type -TypeDefinition 'using System;
+using System.Runtime.InteropServices;
+public static class NullDeviceProbe {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security,
+   uint disposition, uint flags, IntPtr template);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+ public static int Open(uint access) {
+  var h=CreateFileW("NUL", access, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+  if (h == new IntPtr(-1)) return Marshal.GetLastWin32Error();
+  if (!CloseHandle(h)) throw new System.ComponentModel.Win32Exception();
+  return 0;
+ }
+}' -ErrorAction Stop;
+foreach ($access in @(0x80000000L, 0x40000000L, 0xc0000000L)) {
+ [Console]::Out.WriteLine([NullDeviceProbe]::Open([uint32]$access));
+}
+"""
+    shell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    control = subprocess.run(
+        [str(shell), "-NoProfile", "-NonInteractive", "-Command", null_probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=powershell_environment(shell),
+    )
+    assert control.returncode == 0 and control.stdout.splitlines() == ["0", "0", "0"], (
+        control.stdout + control.stderr
+    )
+    probe = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native")).run(
+        root=tmp_path, cwd=tmp_path, cmd=null_probe, timeout_s=30
+    )
+    assert probe.returncode == 0, probe.stderr
+    null_access = [int(code) for code in probe.stdout.splitlines()]
+    assert len(null_access) == 3
+    record_property("null_device_read_write_readwrite_errors", json.dumps(null_access))
     # The system-wide Node installation on this host has no AppContainer read
     # ACE. Use a disposable, user-owned portable tool directory with an explicit
     # read root; never broaden Program Files permissions for the test.
@@ -1160,7 +1212,7 @@ def test_installed_native_node_and_git_compatibility(tmp_path):
         ),
         timeout_s=60,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, f"null-device access errors={null_access}\n{result.stderr}"
     assert (tmp_path / "node.txt").read_text() == "ok"
     assert result.stdout.startswith("git version ")
 
@@ -1450,7 +1502,7 @@ try {
         capture_output=True,
         text=True,
         timeout=40,
-        env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+        env=powershell_environment(shell),
     )
     assert control.returncode == 0 and control.stdout.strip() == "PUBLIC_HTTPS_OK", control.stderr
     result = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native", network="on")).run(

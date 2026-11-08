@@ -78,7 +78,10 @@ def test_bootstrap_loads_standard_cmdlets_without_module_discovery(workspace, mo
     nested = workspace / "nested's folder"
     nested.mkdir()
     result = request(workspace, cwd=nested)
-    result["argv"][-1] += "; [Console]::Out.WriteLine((Get-Location).Path)"
+    result["argv"][-1] += (
+        "; [Console]::Out.WriteLine((Get-Location).Path); "
+        "[Console]::Out.WriteLine((Get-ExecutionPolicy).ToString())"
+    )
     environment = dict(result["env"])
     environment["PSModuleAnalysisCachePath"] = str(workspace / "fresh-module-cache")
     completed = subprocess.run(
@@ -92,7 +95,11 @@ def test_bootstrap_loads_standard_cmdlets_without_module_discovery(workspace, mo
     )
     assert completed.returncode == 0, completed.stderr
     assert not completed.stderr
-    assert completed.stdout.splitlines() == ["hello; & world", "Alysis:\\nested's folder"]
+    assert completed.stdout.splitlines() == [
+        "hello; & world",
+        "Alysis:\\nested's folder",
+        "RemoteSigned",
+    ]
 
 
 def test_all_discovered_project_skill_roots_are_reserved(workspace):
