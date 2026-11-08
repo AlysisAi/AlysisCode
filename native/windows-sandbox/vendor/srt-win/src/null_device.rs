@@ -61,8 +61,10 @@ fn open(access: u32) -> Result<OwnedHandle> {
     let status = unsafe { NtOpenFile(&mut handle, access | 0x100000, &attrs, &mut io, 3, 0x60) };
     status.ok().context("open fixed null device")?;
     let handle = OwnedHandle(handle);
+    // NtOpenFile cannot create the object. Unlike filesystem creates, a device
+    // open need not report FILE_OPENED in Information (Null reports zero).
     ensure!(
-        status.0 == 0 && unsafe { io.Anonymous.Status.0 } == 0 && io.Information == 1,
+        status.0 == 0 && unsafe { io.Anonymous.Status.0 } == 0,
         "null device did not open synchronously"
     );
     Ok(handle)
