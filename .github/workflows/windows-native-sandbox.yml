@@ -31,6 +31,7 @@ on:
       - 'src/alysis_code/background_runner.py'
       - 'src/alysis_code/durable_service_manager.py'
       - 'scripts/*windows_sandbox*'
+      - 'scripts/windows_sandbox_stacks/**'
       - 'scripts/windows_test_owner_scope.ps1'
       - 'scripts/windows_desktop_test_host.ps1'
       - 'tests/test_windows_sandbox*.py'

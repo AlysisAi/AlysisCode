@@ -30,11 +30,9 @@ impl NetworkAccess {
     }
 }
 
-/// PowerShell uses registry reads, ETW provider registration and COM apartments.
+/// PowerShell needs registry reads and ETW provider registration in LPAC.
 /// Without instrumentation its PSEtwLog initializer aborts before the command.
-/// LPAC requires explicit COM access even for runtime apartment initialization.
-/// No identity-service or implicit network capability is added; installed
-/// qualification must independently reject DNS-service egress with network off.
+/// No COM, identity-service or implicit network capability is added.
 /// Account candidates retain their separate policy and do not call this helper.
 pub(crate) fn shell_capabilities(
     network: NetworkAccess,
@@ -49,7 +47,6 @@ pub(crate) fn shell_capabilities(
     sids.push(crate::sid::LocalPsid::from_capability(
         "lpacInstrumentation",
     )?);
-    sids.push(crate::sid::LocalPsid::from_capability("lpacCom")?);
     sids.push(crate::null_device::capability(account_sid)?);
     Ok(sids)
 }

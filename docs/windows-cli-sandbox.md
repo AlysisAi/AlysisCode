@@ -51,11 +51,9 @@ with this backend; use session-owned background commands.
 
 The separately selected `windows-native` preview requires elevated native setup.
 Its revision-6 helper uses a less privileged AppContainer and preserves the
-independent write restrictions. PowerShell receives registry-read, event-
-instrumentation and COM capabilities for runtime initialization. Network
-capability still follows explicit off/on policy; identity-service capabilities
-are not granted. This candidate remains unqualified until the installed tests
-verify both startup and denial of DNS-service egress with network disabled.
+independent write restrictions. PowerShell receives registry-read and event-
+instrumentation capabilities; network capability still follows explicit off/on
+policy. General COM and identity-service capabilities are not granted.
 
 Setup version 4 also grants an installation-specific capability read/write access
 to the fixed Windows null device, which Git and subprocess redirection require.

@@ -1,7 +1,7 @@
 """Two fixed, contained startup observations after an installed smoke failure.
 
 Uses the real request policy and lifecycle. Only the diagnostic PowerShell
-source differs. No permissions, deadlines or production commands are changed.
+source differs. No permissions, production deadlines or commands are changed.
 Failed workspaces are retained; pending recovery prevents further launches.
 """
 
@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +26,27 @@ ENTRY = "ALYSIS_DIAGNOSTIC_POWERSHELL_ENTRY"
 DONE = "ALYSIS_DIAGNOSTIC_BOOTSTRAP_DONE"
 
 
+def stack_observer() -> Path | None:
+    """Build the host-only observer in a disposable directory, only after failure."""
+    if not shutil.which("dotnet"):
+        return None
+    project = Path(tempfile.mkdtemp(prefix="alysis-stack-observer-"))
+    source = Path(__file__).with_name("windows_sandbox_stacks")
+    for name in ("Stacks.csproj", "Program.cs"):
+        shutil.copyfile(source / name, project / name)
+    try:
+        result = subprocess.run(
+            ["dotnet", "build", str(project / "Stacks.csproj"), "-o", str(project / "out")],
+            capture_output=True,
+            timeout=90,
+        )
+        if result.returncode == 0:
+            return project / "out/Stacks.dll"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 def main() -> None:
     report: dict[str, object] = {"schema": 1, "diagnostic_only": True, "cases": []}
     if os.name != "nt" or os.environ.get("ALYSIS_RUN_INSTALLED_SANDBOX_TESTS") != "1":
@@ -32,6 +55,9 @@ def main() -> None:
         return
     journal = Path(os.environ["LOCALAPPDATA"]) / "alysis-sandbox/execution-pending.json"
     original_builder = native.build_request
+    original_popen = subprocess.Popen
+    observer = stack_observer()
+    report["stack_observer_available"] = observer is not None
     cases = []
     for kind in ("powershell_entry", "production_bootstrap"):
         if journal.exists():
@@ -49,22 +75,73 @@ def main() -> None:
             payload["argv"][-1] = source
             return payload
 
-        record: dict[str, object] = {"query": kind, "timeout_seconds": 15}
+        record: dict[str, object] = {"query": kind, "timeout_seconds": 30}
         output: str | bytes = ""
+        stderr: str | bytes = ""
+        observations = []
+        threads = []
+        finished = threading.Event()
+
+        def observe(process, finished=finished, observations=observations):
+            if finished.wait(5) or process.poll() is not None:
+                return
+            try:
+                with original_popen(
+                    ["dotnet", str(observer), str(process.pid)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                ) as reader:
+                    try:
+                        stdout, _ = reader.communicate(timeout=15)
+                        observations.append(json.loads(stdout))
+                    except (subprocess.SubprocessError, ValueError):
+                        reader.kill()
+                        reader.communicate(timeout=5)
+                        observations.append({"category": "observation_failed"})
+            except OSError:
+                observations.append({"category": "observer_launch_failed"})
+
+        def popen(argv, *args, _observe=observe, _threads=threads, **kwargs):
+            process = original_popen(argv, *args, **kwargs)
+            if observer is not None and argv == [
+                os.environ["ALYSIS_WINDOWS_SANDBOX_HELPER"],
+                "run-request",
+            ]:
+                thread = threading.Thread(target=_observe, args=(process,), daemon=True)
+                _threads.append(thread)
+                thread.start()
+            return process
+
         try:
-            with patch.object(native, "build_request", request):
+            with (
+                patch.object(native, "build_request", request),
+                patch.object(subprocess, "Popen", popen),
+            ):
                 result = native.WindowsNativeRunner(
                     ShellSandboxSettings(backend="windows-native", network="off")
-                ).run(root=root, cwd=root, cmd=f"[Console]::Out.WriteLine('{DONE}')", timeout_s=15)
+                ).run(root=root, cwd=root, cmd=f"[Console]::Out.WriteLine('{DONE}')", timeout_s=30)
             output = result.stdout
+            stderr = result.stderr
             record.update(category="completed", returncode=result.returncode)
         except subprocess.TimeoutExpired as error:
             output = error.output or ""
+            stderr = error.stderr or ""
             record["category"] = "timeout"
         except (ConfigError, OSError, subprocess.SubprocessError):
             record["category"] = "launch_or_cleanup_failed"
+        finally:
+            finished.set()
+            for thread in threads:
+                thread.join(timeout=20)
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        record["helper_entered_launch"] = "srt-win: run_lockdown: caller_in_job=" in stderr
+        record["child_resumed"] = "assigned+resumed" in stderr
+        record["stdout_length"] = len(output)
+        record["stderr_length"] = len(stderr)
+        record["managed_stacks"] = observations
         record["powershell_entry_reached"] = ENTRY in output.splitlines()
         record["bootstrap_completed"] = DONE in output.splitlines()
         record["recovery_pending"] = journal.exists()
