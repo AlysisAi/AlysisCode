@@ -66,6 +66,7 @@ def thread_probe() -> Path | None:
             "EVENT",
             "SEMAPHORE",
             "THREAD",
+            "COM_MTA",
             "POOL_QUEUE",
             "POOL_COMPLETED",
             "SELF_WORKER_ACCESS",
@@ -190,7 +191,7 @@ def main() -> None:
         if kind == "clr_threads":
             record["runtime_probe_lines"] = [
                 line[:160] for line in output.splitlines() if line.startswith("ALYSIS_CLR_")
-            ][:16]
+            ][:20]
         record["powershell_entry_reached"] = ENTRY in output.splitlines()
         record["bootstrap_completed"] = DONE in output.splitlines()
         record["recovery_pending"] = journal.exists()

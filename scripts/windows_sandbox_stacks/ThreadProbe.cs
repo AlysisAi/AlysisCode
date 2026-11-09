@@ -16,6 +16,10 @@ static class ThreadProbe
     static extern uint GetCurrentProcessId();
     [DllImport("kernel32.dll")]
     static extern bool CloseHandle(IntPtr handle);
+    [DllImport("ole32.dll")]
+    static extern int CoInitializeEx(IntPtr reserved, uint model);
+    [DllImport("ole32.dll")]
+    static extern void CoUninitialize();
     static void Report(string name, Func<bool> probe)
     {
         try { Console.WriteLine("ALYSIS_CLR_" + name + "=" + probe()); }
@@ -40,6 +44,18 @@ static class ThreadProbe
             var thread = new Thread(delegate() {});
             thread.IsBackground = true;
             thread.Start(); return thread.Join(2000);
+        });
+        Report("COM_MTA", delegate {
+            int hr = int.MinValue;
+            var thread = new Thread(delegate() {
+                hr = CoInitializeEx(IntPtr.Zero, 0);
+                if (hr >= 0) CoUninitialize();
+            });
+            thread.IsBackground = true;
+            thread.Start();
+            bool finished = thread.Join(2000);
+            Console.WriteLine("ALYSIS_CLR_COM_HRESULT=" + hr);
+            return finished && hr >= 0;
         });
         int worker, completion;
         ThreadPool.GetMinThreads(out worker, out completion);
