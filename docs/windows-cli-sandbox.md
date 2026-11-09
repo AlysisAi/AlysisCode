@@ -53,8 +53,9 @@ The separately selected `windows-native` preview requires elevated native setup.
 Its revision-6 helper uses a less privileged AppContainer and preserves the
 independent write restrictions. PowerShell receives registry-read, event-
 instrumentation and COM capabilities; .NET Framework workers require COM
-initialization. The write restriction check preserves these explicit capabilities
-while retaining account-based filesystem denies. Commands verify effective
+initialization. The write restriction includes the ordinary user identity needed
+for Windows capability checks while retaining account-based filesystem denies.
+LPAC grants still constrain which resources that user can access. Commands verify effective
 capability access under the suspended child token before running. Network
 capability still follows explicit off/on policy; identity-service capabilities
 are not granted.

@@ -450,14 +450,9 @@ mod tests {
         std::fs::write(&file, b"unchanged containment canary")?;
         let owner = crate::sid::current_user_sid()?;
         let original = OwnedHandle(crate::token::open_self_token()?);
-        let capabilities = crate::appcontainer::shell_capabilities(
-            crate::appcontainer::NetworkAccess::Off,
-            RESTRICTING_SID,
-        )?;
         let restricted = OwnedHandle(crate::token::make_write_restricted_token(
             original.raw(),
             RESTRICTING_SID,
-            &capabilities,
         )?);
         let rights = [
             FILE_ADD_FILE,

@@ -278,7 +278,6 @@ fn run_isolated(
         token::make_write_restricted_token(
             self_tok.raw(),
             owner_sid.context("missing write identity")?,
-            &capability_sids,
         )?
     } else {
         token::make_sandbox_token_for_owner(self_tok.raw(), owner_sid)
