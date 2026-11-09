@@ -67,7 +67,8 @@ test('successful fixed HTTPS request retains default TLS and emits bounded stage
   assert.deepEqual(f.exits, [0]);
   assert.deepEqual(f.out, ['PUBLIC_HTTPS_OK']);
   assert.deepEqual(f.result(), {last_stage: 'end', dns_ms: 2, connect_ms: 4, tls_ms: 6,
-    http_ms: 8, end_ms: 10, elapsed_ms: 10, http_status: 200, exit_code: 0, error_code: null});
+    http_ms: 8, end_ms: 10, elapsed_ms: 10, http_status: 200, exit_code: 0, error_code: null,
+    system_errno: null, system_error: null});
   f.timeout();
   f.request.emit('error', {code: PRIVATE, message: PRIVATE});
   assert.equal(f.err.length, 1); assert.deepEqual(f.exits, [0]); assert.equal(f.calls.length, 1);
@@ -107,6 +108,15 @@ for (const code of ['EACCES', 'EPERM', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'C
     assert.equal(f.calls.length, 1);
   });
 }
+
+test('numeric system error is observable without accepting an unknown failure', () => {
+  const f = fixture();
+  f.request.emit('error', {code: PRIVATE, errno: -3004, message: PRIVATE});
+  assert.deepEqual(f.exits, [1]);
+  assert.equal(f.result().system_errno, -3004);
+  assert.equal(f.result().system_error, require('util').getSystemErrorName(-3004));
+  assert.equal(f.result().error_code, 'OTHER');
+});
 
 for (const [label, status, body, code] of [
   ['malformed JSON', 200, '{"token":"' + PRIVATE, 'INVALID_JSON'],

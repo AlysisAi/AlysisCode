@@ -3,6 +3,7 @@
 // Test fixture only. Direct execution keeps the endpoint, TLS defaults and
 // overall deadline fixed; dependency injection is used solely by offline tests.
 const https = require('https');
+const {getSystemErrorName} = require('util');
 const URL = 'https://registry.npmjs.org/is-number/7.0.0';
 const TAG = 'ALYSIS_HTTPS_STAGE ';
 const BLOCKED = new Set(['EACCES', 'EPERM', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT']);
@@ -28,12 +29,13 @@ function runProbe(dependencies = {}) {
       lastStage = stage;
     }
   };
-  const finish = (code, errorCode = null) => {
+  const finish = (code, errorCode = null, systemErrno = null) => {
     if (finished) return;
     finished = true;
     clearTimer(deadline);
     stderr(TAG + JSON.stringify({last_stage: lastStage, ...stages, elapsed_ms: elapsed(),
-      http_status: status, exit_code: code, error_code: errorCode}));
+      http_status: status, exit_code: code, error_code: errorCode,
+      system_errno: systemErrno, system_error: systemErrno === null ? null : getSystemErrorName(systemErrno)}));
     if (code === 0) stdout('PUBLIC_HTTPS_OK');
     else if (code === 31) stdout('NETWORK_BLOCKED');
     exit(code);
@@ -41,7 +43,11 @@ function runProbe(dependencies = {}) {
   const fail = error => {
     // Never stringify unknown errors, messages, addresses, headers or bodies.
     const code = SAFE_ERRORS.has(error?.code) ? error.code : 'OTHER';
-    finish(BLOCKED.has(code) ? 31 : 1, code);
+    // Derive a canonical name from a bounded OS error number. Never publish
+    // arbitrary error.code strings or treat an unfamiliar failure as blocked.
+    const errno = Number.isInteger(error?.errno) && error.errno < 0 && error.errno >= -2147483648
+      ? error.errno : null;
+    finish(BLOCKED.has(code) ? 31 : 1, code, errno);
   };
   // Preserve the qualification deadline; diagnostics never add a retry.
   const deadline = setTimer(() => fail({code: 'ETIMEDOUT'}), 25000);

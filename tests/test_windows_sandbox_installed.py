@@ -603,11 +603,13 @@ def test_installed_command_cannot_send_udp_to_host(tmp_path, family, address, ne
         assert listener.recvfrom(32)[0] == b"host-control"
         address_family = "InterNetworkV6" if family == socket.AF_INET6 else "InterNetwork"
         command = (
+            "$ErrorActionPreference='Stop'; $s=$null; try { "
             f"$s=[Net.Sockets.UdpClient]::new([Net.Sockets.AddressFamily]::{address_family}); "
             f"$ep=[Net.IPEndPoint]::new([Net.IPAddress]::Parse('{address}'), {port}); "
-            "try { $s.Send([byte[]](65,66,67), 3, $ep) | Out-Null; exit 9 } "
+            "$s.Send([byte[]](65,66,67), 3, $ep) | Out-Null; exit 9 } "
             "catch { $e=$_.Exception; while ($e.InnerException) { $e=$e.InnerException }; "
-            "if ($e.NativeErrorCode -eq 10013) { Write-Output 'BLOCKED'; exit 0 }; throw }"
+            "if ($e.NativeErrorCode -eq 10013) { Write-Output 'BLOCKED'; exit 0 }; throw } "
+            "finally { if ($s) { $s.Dispose() } }"
         )
         result = WindowsNativeRunner(
             ShellSandboxSettings(backend="windows-native", network=network)
@@ -798,13 +800,14 @@ def test_installed_command_cannot_connect_to_host(tmp_path, family, address, net
             accepted, _ = listener.accept()
             accepted.close()
         cmd = (
+            "$ErrorActionPreference='Stop'; $s=$null; try { "
             f"$s = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::{address_family}); "
-            f"try {{ $a=$s.BeginConnect([System.Net.IPAddress]::Parse('{address}'), {port}, $null, $null); "
+            f"$a=$s.BeginConnect([System.Net.IPAddress]::Parse('{address}'), {port}, $null, $null); "
             "if (-not $a.AsyncWaitHandle.WaitOne(2000)) { 'BLOCKED'; exit 0 }; "
             "$s.EndConnect($a); exit 9 } "
             "catch { $e=$_.Exception; while ($e.InnerException) { $e=$e.InnerException }; "
             "if ($e.NativeErrorCode -eq 10013) { Write-Output 'BLOCKED'; exit 0 }; throw } "
-            "finally { $s.Dispose() }"
+            "finally { if ($s) { $s.Dispose() } }"
         )
         result = WindowsNativeRunner(
             ShellSandboxSettings(backend="windows-native", network=network)
@@ -1487,6 +1490,14 @@ try {
   'PUBLIC_HTTPS_OK'
  } finally { $response.Dispose() }
 } catch {
+ $chain=@(); $current=$_.Exception;
+ while ($current -and $chain.Count -lt 12) {
+  $nativeCode=$null;
+  if ($current -is [ComponentModel.Win32Exception]) { $nativeCode=$current.NativeErrorCode };
+  $chain += @{type=$current.GetType().FullName; hresult=$current.HResult; native_code=$nativeCode};
+  $current=$current.InnerException
+ };
+ [Console]::Error.WriteLine('ALYSIS_SCHANNEL_ERROR ' + (ConvertTo-Json -InputObject $chain -Compress));
  if ($_.Exception.GetBaseException().NativeErrorCode -eq -2146893042) {
   'UNSUPPORTED_SCHANNEL:0x8009030e'; exit 35
  };
