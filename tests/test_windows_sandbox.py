@@ -68,6 +68,40 @@ def test_workspace_write_keeps_metadata_protected(workspace):
     assert "-NoProfile" in result["argv"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell bootstrap")
+def test_bootstrap_loads_standard_cmdlets_without_module_discovery(workspace, monkeypatch):
+    # Exercise the generated command in real Windows PowerShell. An isolated
+    # module analysis cache must not make first-use command discovery exceed
+    # the normal command deadline. The installed suite repeats this under the
+    # restricted token; this control isolates the PowerShell startup itself.
+    monkeypatch.setenv("PSModulePath", str(workspace / "untrusted-modules"))
+    nested = workspace / "nested's folder"
+    nested.mkdir()
+    result = request(workspace, cwd=nested)
+    result["argv"][-1] += (
+        "; [Console]::Out.WriteLine((Get-Location).Path); "
+        "[Console]::Out.WriteLine((Get-ExecutionPolicy).ToString())"
+    )
+    environment = dict(result["env"])
+    environment["PSModuleAnalysisCachePath"] = str(workspace / "fresh-module-cache")
+    completed = subprocess.run(
+        result["argv"],
+        cwd=workspace,
+        env=environment,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not completed.stderr
+    assert completed.stdout.splitlines() == [
+        "hello; & world",
+        "Alysis:\\nested's folder",
+        "RemoteSigned",
+    ]
+
+
 def test_all_discovered_project_skill_roots_are_reserved(workspace):
     from alysis_code.skills.discovery import project_skill_root_relative_paths
 
@@ -211,12 +245,15 @@ def test_secrets_and_startup_injection_are_not_forwarded(workspace, monkeypatch)
         "NODE_OPTIONS",
         "AWS_SECRET_ACCESS_KEY",
         "HTTPS_PROXY",
+        "PSModulePath",
     ):
         monkeypatch.setenv(name, "never-forward-this")
     assert "never-forward-this" not in json.dumps(request(workspace)["env"])
     assert dict(request(workspace)["env"])["NODE_OPTIONS"] == (
         "--preserve-symlinks --preserve-symlinks-main"
     )
+    result = request(workspace)
+    assert dict(result["env"])["PSMODULEPATH"] == str(Path(result["argv"][0]).parent / "Modules")
     with pytest.raises(ConfigError, match="not allowed"):
         request(workspace, env_overrides={"PYTHONPATH": str(workspace)})
     with pytest.raises(ConfigError, match="not allowed"):
@@ -414,9 +451,9 @@ def test_helper_integrity_and_platform_are_enforced(tmp_path, monkeypatch):
 def _helper_metadata():
     return {
         "protocol": 3,
-        "security_revision": 4,
+        "security_revision": 6,
         "implementation": "alysis-windows-sandbox",
-        "containment": "appcontainer-write-restricted",
+        "containment": "lpac-write-restricted",
         "network_modes": ["off", "on"],
     }
 
@@ -431,7 +468,9 @@ def _helper_metadata():
         {"security_revision": 1},
         {"security_revision": 2},
         {"security_revision": 3},
-        {"security_revision": 4.0},
+        {"security_revision": 4},
+        {"security_revision": 5},
+        {"security_revision": 6.0},
         {"implementation": "other-helper"},
         {"containment": "restricted-token"},
         {"network_modes": ["off"]},
@@ -561,7 +600,7 @@ def test_doctor_does_not_claim_ready_from_setup_presence(monkeypatch, present):
             "user": {
                 "user": {"exists": True},
                 "cred_present": True,
-                "marker_version": 3,
+                "marker_version": 4,
                 "real_user_sid": "owner",
                 "owner_user_sid": "owner",
             },

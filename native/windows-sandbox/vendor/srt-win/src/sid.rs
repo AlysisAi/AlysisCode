@@ -24,6 +24,51 @@ use crate::util::{from_pwstr, local_free, pcwstr, wstr};
 pub struct LocalPsid(PSID);
 
 impl LocalPsid {
+    /// Derive an OS capability, retaining only its capability SID (not the
+    /// separate service-group SID). Windows allocates every result with LocalAlloc.
+    pub fn from_capability(name: &str) -> Result<Self> {
+        struct SidArray {
+            pointer: *mut PSID,
+            count: u32,
+        }
+        impl Drop for SidArray {
+            fn drop(&mut self) {
+                if !self.pointer.is_null() {
+                    unsafe {
+                        for sid in std::slice::from_raw_parts(self.pointer, self.count as usize) {
+                            let _ = LocalFree(Some(HLOCAL(sid.0)));
+                        }
+                        let _ = LocalFree(Some(HLOCAL(self.pointer.cast())));
+                    }
+                }
+            }
+        }
+        let mut groups = SidArray {
+            pointer: std::ptr::null_mut(),
+            count: 0,
+        };
+        let mut capabilities = SidArray {
+            pointer: std::ptr::null_mut(),
+            count: 0,
+        };
+        let wide = wstr(name);
+        unsafe {
+            windows::Win32::Security::DeriveCapabilitySidsFromName(
+                pcwstr(&wide),
+                &mut groups.pointer,
+                &mut groups.count,
+                &mut capabilities.pointer,
+                &mut capabilities.count,
+            )?;
+        }
+        anyhow::ensure!(
+            capabilities.count == 1 && !capabilities.pointer.is_null(),
+            "unexpected capability SID result"
+        );
+        // Copy via the existing checked conversion; both OS arrays remain RAII-owned.
+        Self::from_string(&psid_to_string(unsafe { *capabilities.pointer })?)
+    }
+
     /// Parse a string SID like `"S-1-5-32-544"`.
     pub fn from_string(sid_str: &str) -> Result<Self> {
         let mut sid = PSID::default();

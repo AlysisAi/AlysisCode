@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import http.client
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -29,10 +30,17 @@ def verify_archive(path: Path, pin: dict) -> None:
 
 def download_verified_archive(path: Path, pin: dict) -> None:
     """Retry incomplete transfers while requiring the same size and digest every time."""
-    for attempt in range(3):
+    for attempt in range(6):
         try:
+            # GitHub's browser asset route can remain unavailable while the
+            # official asset API works. Both routes must satisfy the same pin.
+            source = pin["url"]
+            if attempt >= 3 and pin.get("api_url"):
+                source = urllib.request.Request(
+                    pin["api_url"], headers={"Accept": "application/octet-stream"}
+                )
             with (
-                urllib.request.urlopen(pin["url"], timeout=120) as response,
+                urllib.request.urlopen(source, timeout=120) as response,
                 path.open("xb") as output,
             ):
                 while chunk := response.read(1024 * 1024):
@@ -43,13 +51,13 @@ def download_verified_archive(path: Path, pin: dict) -> None:
             return
         except (urllib.error.URLError, http.client.IncompleteRead, TimeoutError, ValueError):
             path.unlink(missing_ok=True)
-            if attempt == 2:
+            if attempt == 5:
                 raise
             print(
-                "Python archive download failed verification; retrying pinned download.",
+                "Python archive download or verification failed; retrying pinned download.",
                 file=sys.stderr,
             )
-            time.sleep(attempt + 1)
+            time.sleep(min(2 ** (attempt + 1), 30))
 
 
 def validate_runtime(facts: dict, target: str, version: str) -> None:
@@ -79,6 +87,11 @@ def main() -> None:
         "https://github.com/astral-sh/python-build-standalone/releases/download/"
     ):
         raise ValueError("Python download is outside the approved upstream repository")
+    if pin.get("api_url") and not re.fullmatch(
+        r"https://api\.github\.com/repos/astral-sh/python-build-standalone/releases/assets/[0-9]+",
+        pin["api_url"],
+    ):
+        raise ValueError("Python asset API is outside the approved upstream repository")
     destination = args.destination.resolve()
     destination.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="alysis-python-download-") as temporary:

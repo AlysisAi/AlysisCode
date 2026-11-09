@@ -67,7 +67,8 @@ test('successful fixed HTTPS request retains default TLS and emits bounded stage
   assert.deepEqual(f.exits, [0]);
   assert.deepEqual(f.out, ['PUBLIC_HTTPS_OK']);
   assert.deepEqual(f.result(), {last_stage: 'end', dns_ms: 2, connect_ms: 4, tls_ms: 6,
-    http_ms: 8, end_ms: 10, elapsed_ms: 10, http_status: 200, exit_code: 0, error_code: null});
+    http_ms: 8, end_ms: 10, elapsed_ms: 10, http_status: 200, exit_code: 0, error_code: null,
+    system_errno: null, system_error: null});
   f.timeout();
   f.request.emit('error', {code: PRIVATE, message: PRIVATE});
   assert.equal(f.err.length, 1); assert.deepEqual(f.exits, [0]); assert.equal(f.calls.length, 1);
@@ -100,10 +101,33 @@ for (const code of ['EACCES', 'EPERM', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'C
     const f = fixture();
     f.tick(3);
     f.request.emit('error', {code, message: PRIVATE, address: PRIVATE, stack: PRIVATE});
-    const blocked = ['EACCES', 'EPERM', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT'].includes(code);
+    const blocked = ['EACCES', 'EPERM', 'ETIMEDOUT'].includes(code);
     assert.deepEqual(f.exits, [blocked ? 31 : 1]);
     assert.deepEqual(f.out, blocked ? ['NETWORK_BLOCKED'] : []);
     assert.equal(f.result().error_code, blocked ? code : 'OTHER');
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+test('numeric system error is observable without accepting an unknown failure', () => {
+  const f = fixture();
+  f.request.emit('error', {code: PRIVATE, errno: -3004, message: PRIVATE});
+  assert.deepEqual(f.exits, [1]);
+  assert.equal(f.result().system_errno, -3004);
+  assert.equal(f.result().system_error, require('util').getSystemErrorName(-3004));
+  assert.equal(f.result().error_code, 'OTHER');
+});
+
+for (const code of ['EAI_FAIL', 'EAI_AGAIN', 'ENOTFOUND', PRIVATE]) {
+  test('failed lookup is observed independently of the platform error name ' + (code === PRIVATE ? 'unknown' : code), () => {
+    const f = fixture();
+    const error = {code, message: PRIVATE};
+    f.socket.emit('lookup', error, PRIVATE, 4, PRIVATE);
+    f.request.emit('error', error);
+    assert.deepEqual(f.exits, [32]);
+    assert.deepEqual(f.out, ['DNS_LOOKUP_FAILED']);
+    assert.equal(f.result().error_code, 'DNS_LOOKUP_FAILED');
+    assert.equal(f.result().connect_ms, null);
     assert.equal(f.calls.length, 1);
   });
 }

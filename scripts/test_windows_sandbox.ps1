@@ -45,10 +45,11 @@ try {
     # Exercise restoration before normalizing this process's default owner;
     # otherwise elevated CI children would already inherit the normalized owner.
     & $Python -m pytest tests/test_windows_sandbox_test_harness.py -q --tb=short
-    if ($LASTEXITCODE -ne 0) { throw 'Sandbox owner-scope regression tests failed.' }
+    if ($LASTEXITCODE -ne 0) { throw "Sandbox owner-scope regression tests failed (Python exit: $LASTEXITCODE)." }
     $ownerScope = [AlysisSandboxTests.DefaultOwnerScope]::EnterCurrentUser()
     $regressions = @(
         'tests/test_windows_sandbox.py', 'tests/test_windows_sandbox_doctor.py',
+        'tests/test_windows_sandbox_cancellation.py', 'tests/test_windows_sandbox_job.py',
         'tests/test_windows_sandbox_https_probe.py',
         'tests/test_sandbox_settings_background.py',
         'tests/test_sandbox_doctor.py', 'tests/test_sandbox_cli.py',
@@ -85,12 +86,26 @@ try {
         $env:ALYSIS_SHELL_SANDBOX_MODE = 'strict'
         $env:ALYSIS_SHELL_SANDBOX_NETWORK = 'off'
         & $Python -m alysis_code sandbox doctor --smoke
-        if ($LASTEXITCODE -ne 0) { throw 'Installed sandbox smoke check failed.' }
+        if ($LASTEXITCODE -ne 0) {
+            if ($HostDiagnostics) {
+                & $Python scripts/windows_sandbox_startup_diagnostics.py
+            }
+            throw 'Installed sandbox smoke check failed.'
+        }
         if ($Internet) {
             $env:ALYSIS_SHELL_SANDBOX_NETWORK = 'on'
             & $Python -m alysis_code sandbox doctor --smoke
             if ($LASTEXITCODE -ne 0) { throw 'Online sandbox launch smoke check failed.' }
             $env:ALYSIS_SHELL_SANDBOX_NETWORK = 'off'
+            # Get network-boundary failures before the long subprocess matrix.
+            # Success still requires the complete suite and its JUnit gate below.
+            & $Python -m pytest `
+                tests/test_windows_sandbox_installed.py::test_installed_command_cannot_send_udp_to_host `
+                tests/test_windows_sandbox_installed.py::test_installed_command_cannot_connect_to_host `
+                tests/test_windows_sandbox_installed.py::test_installed_https_access_is_explicit_and_does_not_persist `
+                tests/test_windows_sandbox_installed.py::test_installed_schannel_https_compatibility `
+                -q --tb=short
+            if ($LASTEXITCODE -ne 0) { throw 'Installed network qualification failed.' }
         }
         & $Python -m pytest tests/test_windows_sandbox_installed.py tests/test_windows_sandbox_agent_installed.py tests/test_windows_sandbox_registry_installed.py tests/test_windows_sandbox_nested_helper_installed.py -q --tb=short -rx `
             --junitxml=native/windows-sandbox/target/installed-release-tests.xml

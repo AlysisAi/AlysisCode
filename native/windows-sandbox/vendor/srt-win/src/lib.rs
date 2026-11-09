@@ -22,6 +22,7 @@ pub mod wfp;
 
 pub mod execution_lease;
 pub mod job;
+pub mod lifecycle;
 pub mod launch;
 mod process_attributes;
 pub mod local_account_host;
@@ -54,6 +55,7 @@ pub mod account_token;
 pub mod acl;
 pub mod ambient;
 pub mod appcontainer;
+pub mod null_device;
 pub mod ntfs_identity_evidence;
 pub mod path_id;
 pub mod reg;

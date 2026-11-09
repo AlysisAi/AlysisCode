@@ -35,16 +35,22 @@ def quote(path: Path) -> str:
     return "'" + str(path).replace("'", "''") + "'"
 
 
+def powershell_environment(shell: Path) -> dict[str, str]:
+    # Windows environment names are case-insensitive, unlike a copied dict.
+    environment = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    environment["PSModulePath"] = str(shell.parent / "Modules")
+    return environment
+
+
 def assert_command_denied(result) -> None:
     # A setup failure (125), crash or missing executable is not proof that the
     # requested operation was contained. PowerShell must report access denied.
     assert result.returncode == 1, result.stderr
     # Rename-Item reports access denial as an IOException/WriteError, whereas
     # content operations use UnauthorizedAccessException/PermissionDenied.
-    assert any(word in result.stderr for word in ("UnauthorizedAccess", "PermissionDenied")) or (
-        "RenameItemIOError" in result.stderr
-        and "Access to the path" in result.stderr
-        and "is denied." in result.stderr
+    error = " ".join(result.stderr.split())
+    assert any(word in error for word in ("UnauthorizedAccess", "PermissionDenied")) or (
+        "RenameItemIOError" in error and "Access to the path" in error and "is denied." in error
     ), result.stderr
 
 
@@ -63,7 +69,11 @@ def test_installed_script_files_preserve_host_policy_and_nested_inheritance(
     policy = _powershell_execution_policy(shell)
     record_property("effective_host_execution_policy", policy)
     body = (
-        "Write-Output ('EFFECTIVE_POLICY=' + (Get-ExecutionPolicy).ToString()); "
+        # Qualify the policy query in both host and nested PowerShell controls;
+        # module discovery is not evidence of the effective execution policy.
+        "$ErrorActionPreference='Stop'; "
+        "Microsoft.PowerShell.Utility\\Write-Output ('EFFECTIVE_POLICY=' + "
+        "(Microsoft.PowerShell.Security\\Get-ExecutionPolicy).ToString()); "
         "Write-Output 'ACTUAL_SCRIPT_FILE_RAN'\n"
     )
     local = tmp_path / "local.ps1"
@@ -73,8 +83,7 @@ def test_installed_script_files_preserve_host_policy_and_nested_inheritance(
     Path(str(remote) + ":Zone.Identifier").write_text(
         "[ZoneTransfer]\nZoneId=3\n", encoding="ascii"
     )
-    host_env = os.environ.copy()
-    host_env["PSModulePath"] = str(shell.parent / "Modules")
+    host_env = powershell_environment(shell)
     runner = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native", network=network))
     for script in (local, remote):
         host = subprocess.run(
@@ -110,7 +119,7 @@ def test_installed_script_files_preserve_host_policy_and_nested_inheritance(
                 assert result.stdout.splitlines() == [
                     f"EFFECTIVE_POLICY={policy}",
                     "ACTUAL_SCRIPT_FILE_RAN",
-                ]
+                ], result.stderr
             else:
                 assert "ACTUAL_SCRIPT_FILE_RAN" not in result.stdout
                 assert "UnauthorizedAccess" in host.stderr and "UnauthorizedAccess" in result.stderr
@@ -433,14 +442,14 @@ def test_installed_junction_attempt_cannot_expose_private_target(tmp_path, locat
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                f"(Get-Acl -LiteralPath {quote(private)}).Sddl; "
-                f"(Get-Acl -LiteralPath {quote(canary)}).Sddl",
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(private)}).Sddl; "
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(canary)}).Sddl",
             ],
             capture_output=True,
             text=True,
             timeout=15,
             # Do not import PowerShell 7-only modules into Windows PowerShell.
-            env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+            env=powershell_environment(shell),
         )
         assert control.returncode == 0, control.stderr
         return control.stdout
@@ -503,13 +512,13 @@ def test_installed_new_private_hardlink_cannot_expose_or_repermission_target(tmp
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                f"(Get-Acl -LiteralPath {quote(private)}).Sddl; "
-                f"(Get-Acl -LiteralPath {quote(canary)}).Sddl",
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(private)}).Sddl; "
+                f"(Microsoft.PowerShell.Security\\Get-Acl -LiteralPath {quote(canary)}).Sddl",
             ],
             capture_output=True,
             text=True,
             timeout=15,
-            env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+            env=powershell_environment(shell),
         )
         assert result.returncode == 0, result.stderr
         return result.stdout
@@ -594,11 +603,13 @@ def test_installed_command_cannot_send_udp_to_host(tmp_path, family, address, ne
         assert listener.recvfrom(32)[0] == b"host-control"
         address_family = "InterNetworkV6" if family == socket.AF_INET6 else "InterNetwork"
         command = (
+            "$ErrorActionPreference='Stop'; $s=$null; try { "
             f"$s=[Net.Sockets.UdpClient]::new([Net.Sockets.AddressFamily]::{address_family}); "
             f"$ep=[Net.IPEndPoint]::new([Net.IPAddress]::Parse('{address}'), {port}); "
-            "try { $s.Send([byte[]](65,66,67), 3, $ep) | Out-Null; exit 9 } "
+            "$s.Send([byte[]](65,66,67), 3, $ep) | Out-Null; exit 9 } "
             "catch { $e=$_.Exception; while ($e.InnerException) { $e=$e.InnerException }; "
-            "if ($e.NativeErrorCode -eq 10013) { Write-Output 'BLOCKED'; exit 0 }; throw }"
+            "if ($e.NativeErrorCode -eq 10013) { Write-Output 'BLOCKED'; exit 0 }; throw } "
+            "finally { if ($s) { $s.Dispose() } }"
         )
         result = WindowsNativeRunner(
             ShellSandboxSettings(backend="windows-native", network=network)
@@ -645,7 +656,7 @@ def test_installed_command_cannot_use_dns_service_for_egress(tmp_path):
 
             def command(name):
                 return (
-                    f"Resolve-DnsName '{name}' -Server 127.0.0.1 -Type A "
+                    f"DnsClient\\Resolve-DnsName '{name}' -Server 127.0.0.1 -Type A "
                     "-DnsOnly -NoHostsFile -QuickTimeout -ErrorAction Stop"
                 )
 
@@ -657,6 +668,7 @@ def test_installed_command_cannot_use_dns_service_for_egress(tmp_path):
                 capture_output=True,
                 text=True,
                 timeout=15,
+                env=powershell_environment(shell),
             )
             assert any(host_name.split(".")[0].encode() in p for p in received), (
                 "DNS host control did not reach listener"
@@ -668,7 +680,8 @@ def test_installed_command_cannot_use_dns_service_for_egress(tmp_path):
                 + command(sandbox_name),
                 timeout_s=30,
             )
-            assert result.returncode != 125, result.stderr
+            assert result.returncode == 1, result.stderr
+            assert "Microsoft.DnsClient.Commands.ResolveDnsName" in result.stderr, result.stderr
             assert (tmp_path / "dns-started.txt").read_text().strip() == "started", result.stderr
             assert not any(sandbox_name.split(".")[0].encode() in p for p in received), (
                 "Windows DNS service transmitted the sandbox canary despite network=off"
@@ -695,6 +708,34 @@ def test_installed_cannot_delete_or_rename_metadata(tmp_path, command):
     assert_command_denied(result)
     assert config.read_text() == "protected"
     assert not (tmp_path / "moved-metadata").exists()
+
+
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+def test_installed_readonly_runtime_cannot_be_replaced_through_writable_parent(tmp_path, operation):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    canary = runtime / "canary.txt"
+    canary.write_text("protected", encoding="utf-8")
+    command = (
+        f"Remove-Item -LiteralPath {quote(canary)} -ErrorAction Stop"
+        if operation == "delete"
+        else f"Rename-Item -LiteralPath {quote(runtime)} -NewName moved-runtime -ErrorAction Stop"
+    )
+    runner = WindowsNativeRunner(
+        ShellSandboxSettings(backend="windows-native", windows_read_roots=(str(runtime),))
+    )
+    result = runner.run(
+        root=workspace,
+        cwd=workspace,
+        cmd="Set-Content started.txt 'started' -ErrorAction Stop; " + command,
+        timeout_s=60,
+    )
+    assert (workspace / "started.txt").read_text().strip() == "started", result.stderr
+    assert_command_denied(result)
+    assert canary.read_text() == "protected"
+    assert not (tmp_path / "moved-runtime").exists()
 
 
 def test_installed_cannot_write_metadata_alternate_stream(tmp_path):
@@ -759,13 +800,14 @@ def test_installed_command_cannot_connect_to_host(tmp_path, family, address, net
             accepted, _ = listener.accept()
             accepted.close()
         cmd = (
+            "$ErrorActionPreference='Stop'; $s=$null; try { "
             f"$s = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::{address_family}); "
-            f"try {{ $a=$s.BeginConnect([System.Net.IPAddress]::Parse('{address}'), {port}, $null, $null); "
+            f"$a=$s.BeginConnect([System.Net.IPAddress]::Parse('{address}'), {port}, $null, $null); "
             "if (-not $a.AsyncWaitHandle.WaitOne(2000)) { 'BLOCKED'; exit 0 }; "
             "$s.EndConnect($a); exit 9 } "
             "catch { $e=$_.Exception; while ($e.InnerException) { $e=$e.InnerException }; "
             "if ($e.NativeErrorCode -eq 10013) { Write-Output 'BLOCKED'; exit 0 }; throw } "
-            "finally { $s.Dispose() }"
+            "finally { if ($s) { $s.Dispose() } }"
         )
         result = WindowsNativeRunner(
             ShellSandboxSettings(backend="windows-native", network=network)
@@ -984,8 +1026,58 @@ def test_installed_timeout_kills_descendants(tmp_path):
     try:
         with pytest.raises(subprocess.TimeoutExpired):
             runner.run(root=tmp_path, cwd=tmp_path, cmd=_TREE_COMMAND, timeout_s=10)
-        assert_tree_stopped(tmp_path)
+        assert_tree_stopped(tmp_path, timeout_ms=0)
     finally:
+        recover(tmp_path)
+
+
+@pytest.mark.parametrize("stage", ["request", "running-tree"])
+def test_installed_cancellation_acknowledges_original_process_exit(tmp_path, stage):
+    import ctypes
+    from ctypes import wintypes
+
+    from alysis_code.process_reaping import CommandCancelledError
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handles = []
+    checks = 0
+
+    def cancel():
+        nonlocal checks
+        checks += 1
+        # The first two callbacks precede spawning; the third precedes the
+        # first write. Cancel after one wait slice has delivered the request,
+        # so the real broker must acknowledge cleanup (not the pre-write path).
+        if stage == "request":
+            return checks >= 4
+        if not all((tmp_path / name).exists() for name in ("parent.pid", "child.pid")):
+            return False
+        for name in ("parent.pid", "child.pid"):
+            handle = kernel.OpenProcess(0x100000, False, int((tmp_path / name).read_text()))
+            assert handle, "Could not pin original live test process"
+            handles.append(handle)
+        return True
+
+    try:
+        runner = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native"))
+        with pytest.raises(CommandCancelledError):
+            runner.run(
+                root=tmp_path, cwd=tmp_path, cmd=_TREE_COMMAND, timeout_s=60, cancel_check=cancel
+            )
+        assert all(kernel.WaitForSingleObject(handle, 0) == 0 for handle in handles)
+        if stage == "running-tree":
+            assert len(handles) == 2
+            assert not Path((tmp_path / "profile-path.txt").read_text().strip()).exists()
+        assert not (
+            Path(os.environ["LOCALAPPDATA"]) / "alysis-sandbox/execution-pending.json"
+        ).exists()
+    finally:
+        for handle in handles:
+            kernel.CloseHandle(handle)
         recover(tmp_path)
 
 
@@ -1048,12 +1140,53 @@ def test_installed_quoted_subdirectory_and_native_working_directory(tmp_path):
     assert Path(result.stdout.strip()) == cwd
 
 
-def test_installed_native_node_and_git_compatibility(tmp_path):
+def test_installed_native_node_and_git_compatibility(tmp_path, record_property):
     import shutil
 
     node = shutil.which("node")
     git = shutil.which("git")
     assert node and git, "Qualification requires installed Node.js and Git"
+    # Read-only diagnostic of the fixed null device, not a permission change.
+    # Git's /dev/null error and Node's ignored-stdio failures otherwise obscure
+    # whether the independent write check or tool startup is failing.
+    null_probe = r"""
+Microsoft.PowerShell.Utility\Add-Type -TypeDefinition 'using System;
+using System.Runtime.InteropServices;
+public static class NullDeviceProbe {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security,
+   uint disposition, uint flags, IntPtr template);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+ public static int Open(uint access) {
+  var h=CreateFileW("NUL", access, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+  if (h == new IntPtr(-1)) return Marshal.GetLastWin32Error();
+  if (!CloseHandle(h)) throw new System.ComponentModel.Win32Exception();
+  return 0;
+ }
+}' -ErrorAction Stop;
+foreach ($access in @(0x80000000L, 0x40000000L, 0xc0000000L)) {
+ [Console]::Out.WriteLine([NullDeviceProbe]::Open([uint32]$access));
+}
+"""
+    shell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    control = subprocess.run(
+        [str(shell), "-NoProfile", "-NonInteractive", "-Command", null_probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=powershell_environment(shell),
+    )
+    assert control.returncode == 0 and control.stdout.splitlines() == ["0", "0", "0"], (
+        control.stdout + control.stderr
+    )
+    probe = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native")).run(
+        root=tmp_path, cwd=tmp_path, cmd=null_probe, timeout_s=30
+    )
+    assert probe.returncode == 0, probe.stderr
+    null_access = [int(code) for code in probe.stdout.splitlines()]
+    assert len(null_access) == 3
+    record_property("null_device_read_write_readwrite_errors", json.dumps(null_access))
     # The system-wide Node installation on this host has no AppContainer read
     # ACE. Use a disposable, user-owned portable tool directory with an explicit
     # read root; never broaden Program Files permissions for the test.
@@ -1082,7 +1215,7 @@ def test_installed_native_node_and_git_compatibility(tmp_path):
         ),
         timeout_s=60,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, f"null-device access errors={null_access}\n{result.stderr}"
     assert (tmp_path / "node.txt").read_text() == "ok"
     assert result.stdout.startswith("git version ")
 
@@ -1326,10 +1459,16 @@ def test_installed_https_access_is_explicit_and_does_not_persist(tmp_path, recor
             timeout_s=60,
         )
         record_timing(f"sandbox_{index}_{network}", result)
-        assert result.returncode == (0 if network == "on" else 31), result.stderr
-        assert result.stdout.strip() == (
-            "PUBLIC_HTTPS_OK" if network == "on" else "NETWORK_BLOCKED"
-        )
+        if network == "on":
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "PUBLIC_HTTPS_OK"
+        else:
+            # A failed lookup prevents HTTPS too. Both surrounding network-on
+            # controls must succeed; separate local canaries prove no DNS egress.
+            assert (result.returncode, result.stdout.strip()) in {
+                (31, "NETWORK_BLOCKED"),
+                (32, "DNS_LOOKUP_FAILED"),
+            }, result.stderr
 
 
 @pytest.mark.skipif(
@@ -1357,6 +1496,14 @@ try {
   'PUBLIC_HTTPS_OK'
  } finally { $response.Dispose() }
 } catch {
+ $chain=@(); $current=$_.Exception;
+ while ($current -and $chain.Count -lt 12) {
+  $nativeCode=$null;
+  if ($current -is [ComponentModel.Win32Exception]) { $nativeCode=$current.NativeErrorCode };
+  $chain += @{type=$current.GetType().FullName; hresult=$current.HResult; native_code=$nativeCode};
+  $current=$current.InnerException
+ };
+ [Console]::Error.WriteLine('ALYSIS_SCHANNEL_ERROR ' + (ConvertTo-Json -InputObject $chain -Compress));
  if ($_.Exception.GetBaseException().NativeErrorCode -eq -2146893042) {
   'UNSUPPORTED_SCHANNEL:0x8009030e'; exit 35
  };
@@ -1372,7 +1519,7 @@ try {
         capture_output=True,
         text=True,
         timeout=40,
-        env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+        env=powershell_environment(shell),
     )
     assert control.returncode == 0 and control.stdout.strip() == "PUBLIC_HTTPS_OK", control.stderr
     result = WindowsNativeRunner(ShellSandboxSettings(backend="windows-native", network="on")).run(
@@ -1385,4 +1532,36 @@ try {
         pytest.xfail(
             "Known release gate: restricted-token Schannel SEC_E_NO_CREDENTIALS; filesystem protection must not be removed to bypass it"
         )
+    if result.returncode != 0:
+        # Diagnose only after the real host/contained HTTPS attempts. The fixed
+        # native API probe does not request credentials or modify the boundary.
+        compiler = Path(os.environ["SystemRoot"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+        source = Path(__file__).parent / "fixtures" / "WindowsSchannelProbe.cs"
+        executable = tmp_path / "SchannelProbe.exe"
+        build = subprocess.run(
+            [str(compiler), "/nologo", "/platform:x64", f"/out:{executable}", str(source)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        print(f"Schannel diagnostic build returncode={build.returncode}")
+        if build.returncode == 0:
+            host_probe = subprocess.run(
+                [str(executable)], capture_output=True, text=True, timeout=15
+            )
+            sandbox_probe = WindowsNativeRunner(
+                ShellSandboxSettings(backend="windows-native", network="on")
+            ).run(
+                root=tmp_path,
+                cwd=tmp_path,
+                cmd=f"& {quote(executable)}; exit $LASTEXITCODE",
+                timeout_s=30,
+            )
+            for label, probe in (("host", host_probe), ("sandbox", sandbox_probe)):
+                lines = [
+                    line[:100]
+                    for line in probe.stdout.splitlines()
+                    if line.startswith("ALYSIS_SSPI_")
+                ][:5]
+                print(f"Schannel diagnostic {label}: {probe.returncode} {lines}")
     assert result.returncode == 0 and result.stdout.strip() == "PUBLIC_HTTPS_OK", result.stderr

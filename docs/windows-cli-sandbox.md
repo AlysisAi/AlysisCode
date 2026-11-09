@@ -47,6 +47,42 @@ with this backend; use session-owned background commands.
 
 ## Release maintenance
 
+### Experimental `windows-native` backend
+
+The separately selected `windows-native` preview requires elevated native setup.
+Its revision-6 helper uses a less privileged AppContainer and preserves the
+independent write restrictions. PowerShell receives registry-read, event-
+instrumentation and COM capabilities; .NET Framework workers require COM
+initialization. The write restriction includes the ordinary user identity needed
+for Windows capability checks while retaining account-based filesystem denies.
+LPAC grants still constrain which resources that user can access. Commands verify effective
+capability access under the suspended child token before running. Network
+capability still follows explicit off/on policy. Network-on also grants
+`lpacIdentityServices`, needed to discover Schannel's TLS package through the
+Windows security service. Network-off omits it and verifies effective denial.
+Enterprise authentication, shared user certificates, private-network and server
+capabilities remain absent and are checked under the actual child token.
+
+This preview still has compatibility limits. Schannel HTTPS (including Windows
+PowerShell web requests and Windows curl) fails with `SEC_E_NO_CREDENTIALS`
+under the independent write-restricted token. Node HTTPS uses a separate TLS
+implementation and passes the explicit network-on/off/on checks. Node builds
+with libuv older than 1.53 can hang when launching subprocesses because they use
+an ordinary pipe namespace that AppContainer denies. These are existing expected
+failures in preview CI, not evidence of full compatibility. The default
+`windows-mxc` backend is separate; passing preview jobs does not promote the
+experimental backend to release-qualified status.
+
+Setup version 4 also grants an installation-specific capability read/write access
+to the fixed Windows null device, which Git and subprocess redirection require.
+The grant has no effect on other devices or files. Commands verify access using
+the actual suspended child token; ordinary execution never changes device ACLs.
+Uninstall removes only the installation's grant. Windows can reset device ACLs
+after a reboot. If readiness reports missing null-device access, rerun
+`alysis sandbox setup --native-windows` with elevation before using this preview.
+This setup requirement applies to the experimental backend, separately from the
+default `windows-mxc` installation described above.
+
 ### Local source qualification
 
 When current native source has advanced beyond the signed payload, build a fresh

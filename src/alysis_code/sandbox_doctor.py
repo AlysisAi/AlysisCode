@@ -644,7 +644,7 @@ def _diagnose_windows_native(
         if (
             not provisioned.get("exists")
             or not user.get("cred_present")
-            or user.get("marker_version") != 3
+            or user.get("marker_version") != 4
         ):
             raise ConfigError("Native sandbox account is missing or setup requires repair.")
         if user.get("owner_user_sid") != user.get("real_user_sid"):

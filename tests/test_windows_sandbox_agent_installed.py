@@ -10,11 +10,12 @@ import json
 import os
 import platform
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+import alysis_code.cli as cli_mod
 from scripts.qa import mock_llm
 
 pytestmark = pytest.mark.skipif(
@@ -120,31 +121,34 @@ try {
                 "NO_COLOR": "1",
             }
         )
-        result = subprocess.run(
+        # Exercise the real CLI approval prompt with terminal input. --yes in
+        # a noninteractive process cannot authorize an opaque PowerShell
+        # operation; that production refusal is intentional. Only terminal
+        # availability is simulated, not the approval decision or shell runner.
+        monkeypatch.setattr(cli_mod, "_is_non_interactive_terminal", lambda: False)
+        for key in tuple(os.environ):
+            if key.upper().startswith(("ALYSIS_", "SYLLIPTOR_", "OPENAI_", "ANTHROPIC_")):
+                monkeypatch.delenv(key)
+        monkeypatch.chdir(root)
+        result = CliRunner().invoke(
+            cli_mod.app,
             [
-                sys.executable,
-                "-m",
-                "alysis_code",
                 "run",
                 "Run the shell diagnostic and report its result. This is observation only, not an implementation task.",
                 "--path",
                 str(root),
                 "--mode",
                 "auto",
-                "--yes",
                 "--no-stream",
                 "--no-subagents",
                 "--max-steps",
                 "4",
                 "--no-log",
+                "--deadline-seconds",
+                "90",
             ],
-            cwd=root,
             env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=90,
-            check=False,
+            input="y\n",
         )
         tool_results = [
             message.get("content", "")
@@ -152,7 +156,8 @@ try {
             for message in request.get("messages", [])
             if message.get("role") == "tool"
         ]
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.exit_code == 0, result.output
+    assert "Unverified PowerShell command resolution" in result.output
     # The serialized result also echoes cmd/effective_cmd, which contain the
     # marker even when execution fails. Only successful child stdout is proof.
     parsed_results = []
@@ -169,7 +174,7 @@ try {
         and isinstance(payload.get("stdout"), str)
         and payload["stdout"].strip() == "NATIVE_AGENT_APPCONTAINER_CONFIRMED"
         for payload in parsed_results
-    ), json.dumps(parsed_results, indent=2) + "\n" + result.stdout + "\n" + result.stderr
+    ), json.dumps(parsed_results, indent=2) + "\n" + result.output
     assert not (
         Path(os.environ["LOCALAPPDATA"]) / "alysis-sandbox" / "execution-pending.json"
     ).exists()

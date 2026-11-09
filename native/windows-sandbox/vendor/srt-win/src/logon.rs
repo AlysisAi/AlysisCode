@@ -26,15 +26,15 @@ use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_DIRECTORY, ERROR_LOGON_FAILURE, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS,
-    SetHandleInformation, WAIT_OBJECT_0,
+    SetHandleInformation,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{GetDriveTypeW, ReadFile, WriteFile};
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithLogonW,
-    GetExitCodeProcess, INFINITE, LOGON_WITH_PROFILE, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOW, WaitForSingleObject,
+    GetExitCodeProcess, LOGON_WITH_PROFILE, PROCESS_INFORMATION, ResumeThread,
+    STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -267,7 +267,8 @@ pub fn spawn_runner(
     // past the inherited [seclogon, broker] job stack onto the
     // runner's own Job, which requires every containing job to
     // allow it.
-    let job = Job::new(true).context("broker→runner job")?;
+    crate::lifecycle::check()?;
+    let job = Job::new(true).context("broker→runner job")?.with_verified_exit();
 
     let mut si: STARTUPINFOW = unsafe { zeroed() };
     si.cb = size_of::<STARTUPINFOW>() as u32;
@@ -431,10 +432,7 @@ pub fn spawn_runner(
         }
     });
 
-    let rc = unsafe { WaitForSingleObject(child.process(), INFINITE) };
-    if rc != WAIT_OBJECT_0 {
-        eprintln!("srt-win: WaitForSingleObject(runner) returned 0x{:x}", rc.0);
-    }
+    crate::lifecycle::wait(child.process())?;
     let _ = t_out.join();
     let _ = t_err.join();
     let mut code: u32 = 1;

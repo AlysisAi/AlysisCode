@@ -31,6 +31,15 @@ struct Request {
     network: srt_win::appcontainer::NetworkAccess,
     parent_pid: u32,
     parent_created: u64,
+    #[serde(default)]
+    lifecycle: Option<Lifecycle>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Lifecycle {
+    cancel: usize,
+    complete: usize,
 }
 
 pub(crate) use srt_win::execution_lease::ExecutionLease as Lease;
@@ -213,6 +222,8 @@ impl Drop for Grants {
     fn drop(&mut self) {
         if let Err(e) = self.cleanup() {
             eprintln!("alysis-sandbox: ACL recovery required: {e:#}");
+            // Keep the journal and withhold the private completion signal.
+            std::process::exit(125);
         }
     }
 }
@@ -290,6 +301,10 @@ pub fn run() -> Result<i32> {
         .read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 1024 * 1024, "request exceeds 1 MiB");
     let request: Request = serde_json::from_slice(&bytes).context("invalid execution request")?;
+    if let Some(events) = &request.lifecycle {
+        unsafe { srt_win::lifecycle::install(events.cancel, events.complete)? };
+        srt_win::lifecycle::check()?;
+    }
     ensure!(
         request.protocol == 3 && !request.argv.is_empty(),
         "unsupported protocol or empty argv"
@@ -339,6 +354,10 @@ pub fn run() -> Result<i32> {
     );
     let cred = srt_win::install::read_cred()?;
     let sid = setup.sandbox_user_sid;
+    ensure!(
+        srt_win::null_device::ready(&sid)?,
+        "null-device access needs repair (device permissions can reset after reboot); rerun elevated native setup"
+    );
     let ambient = srt_win::install::ambient_recorded_paths()?;
     ensure!(
         !ambient.is_empty(),
@@ -375,7 +394,7 @@ pub fn run() -> Result<i32> {
         "stamp",
         Some(json!({"denyRead":request.deny_read,"denyWrite":request.deny_write})),
     )?;
-    let protected_ancestors = protected_ancestors(&request.write, &request.deny_write)?;
+    let mut protected_ancestors = protected_ancestors(&request.write, &request.deny_write)?;
     grants.command("stamp", Some(json!({"denyDelete":protected_ancestors})))?;
     grants.command(
         "grant",
@@ -392,6 +411,7 @@ pub fn run() -> Result<i32> {
     let container_name = container.name.clone();
     grants.set_container(container.clone())?;
     container.apply()?;
+    protected_ancestors.extend(container.system_parents());
     let mut protected = ambient;
     protected.extend(protected_objects(&request.deny_write)?);
     // Some Windows system directories deny READ_CONTROL to the real user.

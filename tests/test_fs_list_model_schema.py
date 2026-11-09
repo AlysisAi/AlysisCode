@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +98,22 @@ def test_prepared_parent_and_child_schemas_retain_listing_scope_contract(
         # Each explicit generic parent density uses the same general child
         # base, even though the configured model is normally in the GPT family.
         assert all(child["profile"] == "general-subagent" for child in children)
-        assert all(child["schema"] == parent for child in children)
+        for child in children:
+            schema = child["schema"]
+            assert schema["name"] == parent["name"]
+            assert schema["parameters"] == parent["parameters"]
+            # Scoped access is available to interactive macOS children only.
+            # Windows limits it to the parent; Linux has no scoped dispatcher.
+            for contract in (
+                "Files only under root_path",
+                "Empty/omitted globs: '**/*' recursively",
+                "'*': direct files",
+                "ignore: exact path components",
+                "Truncation covers filtered scope",
+            ):
+                assert contract in schema["description"]
+            assert ("requests scoped access" in schema["description"]) == (
+                sys.platform == "darwin" and not one_shot and child["mode"] == "auto"
+            )
     finally:
         session.close()

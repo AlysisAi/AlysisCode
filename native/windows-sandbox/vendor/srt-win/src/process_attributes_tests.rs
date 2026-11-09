@@ -132,7 +132,7 @@ fn attribute_owned_values_survive_source_mutation_and_wrapper_move() {
 #[test]
 fn attribute_duplicate_and_failed_registration_preserve_prior_buffers() {
     assert!(ProcThreadAttrs::new(0).is_err());
-    assert!(ProcThreadAttrs::new(5).is_err());
+    assert!(ProcThreadAttrs::new(6).is_err());
     let job = Job::new(false).unwrap();
     let mut attrs = ProcThreadAttrs::new(1).unwrap();
     assert!(attrs.set_handle_list(&[]).is_err());

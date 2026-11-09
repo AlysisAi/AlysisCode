@@ -30,14 +30,20 @@ impl Fixture {
                 "fixture ancestry must remain within engine checkout"
             );
         }
-        let root = base.join(format!(
-            "{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // Windows clock values can repeat across concurrently created fixtures.
+        // Random identities keep every recovery ledger on its own fresh tree.
+        let mut random = [0u8; 16];
+        unsafe {
+            windows::Win32::Security::Cryptography::BCryptGenRandom(
+                None,
+                &mut random,
+                windows::Win32::Security::Cryptography::BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+            .ok()
+            .unwrap();
+        }
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let root = base.join(format!("{}-{suffix}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let owner = crate::sid::current_user_sid().unwrap();
         acl::set_path_dacl_from_sddl(
@@ -588,6 +594,54 @@ fn recovery_preflight_refuses_new_critical_target_without_intent() {
             assert_eq!(all_acl_rows(db), (0, 0));
             assert_eq!(raw_fixture_dacl(&target), before);
         }
+    });
+    fixture.cleanup();
+}
+
+#[test]
+fn system_parent_verification_has_no_ledger_or_acl_mutation() {
+    let path = std::path::PathBuf::from(std::env::var("ProgramFiles").unwrap());
+    let canon = canonical(&path);
+    let before = raw_fixture_dacl(&path);
+    with_mem_db(|db| {
+        let (witnesses, failed) = db
+            .apply_aces(FIXTURE_SID, &[(canon.clone(), SbAce::DenyFdc)])
+            .unwrap();
+        assert_eq!(failed, 0);
+        assert!(witnesses.is_empty());
+        assert_eq!(all_acl_rows(db), (0, 0));
+        assert_eq!(raw_fixture_dacl(&path), before);
+    });
+}
+
+#[test]
+fn writable_parent_still_gets_durable_delete_child_deny() {
+    let fixture = Fixture::new();
+    let child = fixture.root.join("protected");
+    std::fs::create_dir(&child).unwrap();
+    let parent = canonical(&fixture.root);
+    let child = canonical(&child);
+    assert!(
+        !acl::system_parent_protected(&parent, path_id::capture_file_id(&parent).unwrap()).unwrap()
+    );
+    with_mem_db(|db| {
+        let (witnesses, failed) = db
+            .apply_aces(
+                FIXTURE_SID,
+                &[(child, SbAce::Deny(acl::DenyMask::WriteDeny))],
+            )
+            .unwrap();
+        assert_eq!(failed, 0);
+        assert!(
+            witnesses
+                .iter()
+                .any(|w| w.canon == parent && matches!(w.ace, SbAce::DenyFdc))
+        );
+        assert_eq!(all_acl_rows(db), (2, 2));
+        assert_eq!(fixture_aces(&fixture.root), 1);
+        db.release_one_ace(&parent, "deny_fdc", FIXTURE_SID)
+            .unwrap();
+        // Fixture cleanup below uses host rights; no installed account is used.
     });
     fixture.cleanup();
 }

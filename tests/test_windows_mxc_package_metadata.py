@@ -7,6 +7,7 @@ copies; the signed assets, hook and SOURCE inventory are never repaired here.
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,23 @@ def selected_comparisons(root):
         if name.startswith("native/windows-sandbox/")
         or name in {"src/alysis_code/windows_mxc_contract.py", BUILDER}
     }
-    assert len(selected) == 289  # Public native inputs; private qualification reports excluded.
+    tracked = (
+        subprocess.check_output(
+            [
+                "git",
+                "ls-files",
+                "-z",
+                "--",
+                "native/windows-sandbox/",
+                "src/alysis_code/windows_mxc_contract.py",
+                BUILDER,
+            ],
+            cwd=ROOT,
+        )
+        .decode()
+        .split("\0")
+    )
+    assert set(selected) == set(filter(None, tracked))
     return {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest() == expected
         for name, expected in selected.items()

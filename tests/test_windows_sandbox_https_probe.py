@@ -34,4 +34,10 @@ def test_fixed_native_https_probe_failure_and_redaction_controls():
     assert result.returncode == 0, result.stdout + result.stderr
     assert "# fail 0" in result.stdout
     assert "# skipped 0" in result.stdout
-    assert "# tests 20" in result.stdout
+    totals = [
+        re.search(pattern, result.stdout, re.MULTILINE)
+        for pattern in (r"^1\.\.(\d+)$", r"^# tests (\d+)$", r"^# pass (\d+)$")
+    ]
+    assert all(totals), result.stdout
+    counts = [int(total.group(1)) for total in totals if total is not None]
+    assert counts[0] > 0 and len(set(counts)) == 1, result.stdout

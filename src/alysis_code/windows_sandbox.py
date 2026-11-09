@@ -28,8 +28,8 @@ from .skills.discovery import project_skill_root_relative_paths
 
 _ASSETS = Path(__file__).parent / "assets" / "windows-sandbox"
 PROTOCOL_VERSION = 3
-SECURITY_REVISION = 4
-CONTAINMENT = "appcontainer-write-restricted"
+SECURITY_REVISION = 6
+CONTAINMENT = "lpac-write-restricted"
 _PROTECTED_DIRS = (".git", ".alysis", ".sylliptor", ".codex", ".claude", ".agents")
 _PROTECTED_FILES = PROTECTED_INSTRUCTION_FILES
 # Fixed trusted compatibility flags, never inherited from the host or caller.
@@ -416,6 +416,10 @@ def build_request(
     env["NODE_OPTIONS"] = _NODE_OPTIONS
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     shell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    # The isolated profile cannot discover host-user modules. Resolve built-in
+    # cmdlets from this Windows PowerShell installation, just as the trusted
+    # policy query does; never inherit a caller's module search path.
+    env["PSMODULEPATH"] = str(shell.parent / "Modules")
     # Executable discovery and filesystem access must agree. Never inherit an
     # arbitrary host/project executable merely because it appears on PATH.
     configured_paths = [Path(p) for p in env.get("PATH", "").split(os.pathsep) if p]
@@ -445,9 +449,18 @@ def build_request(
     relative_cwd = str(cwd.relative_to(cwd_root)).replace("/", "\\")
     ps_cwd = ("Alysis:\\" + ("" if relative_cwd == "." else relative_cwd)).replace("'", "''")
     source = (
-        f"New-PSDrive -Name Alysis -PSProvider FileSystem -Root '{ps_root}' "
-        "-Scope Global -ErrorAction Stop | Out-Null; "
-        f"Set-Location -LiteralPath '{ps_cwd}' -ErrorAction Stop; " + cmd
+        # Unqualified command discovery scans every installed module before
+        # finding these built-ins on a fresh, isolated profile. Import only our
+        # bootstrap dependencies by their trusted installation paths first.
+        r"Microsoft.PowerShell.Core\Import-Module -Name "
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1", '
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1", '
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" '
+        "-ErrorAction Stop; "
+        f"$null = Microsoft.PowerShell.Management\\New-PSDrive -Name Alysis "
+        f"-PSProvider FileSystem -Root '{ps_root}' -Scope Global -ErrorAction Stop; "
+        f"Microsoft.PowerShell.Management\\Set-Location -LiteralPath '{ps_cwd}' "
+        "-ErrorAction Stop; " + cmd
     )
     argv = [
         str(shell),
@@ -619,6 +632,9 @@ class WindowsNativeRunner:
     def _execution_context(self, argv: list[str], request: bytes) -> str | None:
         return None
 
+    def _uses_native_lifecycle(self) -> bool:
+        return True
+
     def run(
         self,
         *,
@@ -634,29 +650,58 @@ class WindowsNativeRunner:
         execution_context = self._execution_context(argv, request)
         if cancel_check is not None and cancel_check():
             raise CommandCancelledError(cmd)
-        # The trusted helper waits for its JSON request before launching work.
-        # Attach an engine-owned job before sending that request, so cancellation
-        # can acknowledge all descendants have drained, not just helper exit.
+        # The native broker owns UI-restricted jobs that cannot be nested under
+        # an engine observer job. Its private completion event proves that the
+        # native process guards unwound; exit alone is never cancellation proof.
         with subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd
         ) as child:
             job = None
+            lifecycle = None
+            request_may_have_started = False
+
+            def check_cancelled() -> bool:
+                nonlocal request_may_have_started
+                assert cancel_check is not None
+                cancelled = cancel_check()
+                if not cancelled:
+                    # The sliced wait sends input immediately after this check.
+                    # Conservatively require native proof from this point on.
+                    request_may_have_started = True
+                return cancelled
+
             try:
-                if os.name == "nt":
+                if os.name == "nt" and self._uses_native_lifecycle():
+                    from ._windows_native_lifecycle import WindowsNativeLifecycle
+
+                    lifecycle = WindowsNativeLifecycle(child, request)
+                    request = lifecycle.request
+                elif os.name == "nt":
                     from ._windows_sandbox_job import WindowsSandboxJob
 
                     job = WindowsSandboxJob(child)
                 try:
                     if cancel_check is None:
+                        request_may_have_started = True
                         stdout, stderr = child.communicate(request, timeout=timeout_s)
                     else:
                         stdout, stderr = communicate_until_cancelled(
-                            child, input=request, timeout=timeout_s, cancel_check=cancel_check
+                            child, input=request, timeout=timeout_s, cancel_check=check_cancelled
                         )
                 except BaseException as exc:
                     drain_error = None
                     try:
-                        if job is not None:
+                        if lifecycle is not None:
+                            if request_may_have_started:
+                                lifecycle.cancel()
+                                stdout, stderr = child.communicate(timeout=75)
+                                lifecycle.verify()
+                            else:
+                                # The trusted broker cannot spawn before its
+                                # request. Cancellation won the first check,
+                                # so no execution authority was delivered.
+                                child.kill()
+                        elif job is not None:
                             job.terminate_and_drain()
                         else:
                             child.kill()
@@ -684,12 +729,23 @@ class WindowsNativeRunner:
                     raise
                 if job is not None:
                     job.wait_empty()
+                if lifecycle is not None:
+                    try:
+                        lifecycle.verify()
+                    except RuntimeError as error:
+                        raise CommandCleanupError(
+                            cmd,
+                            stdout=stdout.decode("utf-8", errors="replace"),
+                            stderr=stderr.decode("utf-8", errors="replace"),
+                        ) from error
             finally:
                 if job is not None:
                     job.close()
                 if child.poll() is None:
                     child.kill()
                     child.communicate(timeout=10)
+                if lifecycle is not None:
+                    lifecycle.close()
         completed = subprocess.CompletedProcess(
             cmd,
             child.returncode,

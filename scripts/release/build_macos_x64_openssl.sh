@@ -9,9 +9,13 @@ openssl_version=3.5.9
 openssl_sha256=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
 archive="$RUNNER_TEMP/openssl-$openssl_version.tar.gz"
 prefix="$RUNNER_TEMP/alysis-openssl-x64"
-curl --fail --location --retry 3 \
+if ! curl --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 180 \
   "https://github.com/openssl/openssl/releases/download/openssl-$openssl_version/openssl-$openssl_version.tar.gz" \
-  --output "$archive"
+  --output "$archive"; then
+  curl --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 180 \
+    --header 'Accept: application/octet-stream' --output "$archive" \
+    'https://api.github.com/repos/openssl/openssl/releases/assets/598377651'
+fi
 test "$(shasum -a 256 "$archive" | awk '{print $1}')" = "$openssl_sha256"
 tar -xzf "$archive" -C "$RUNNER_TEMP"
 cd "$RUNNER_TEMP/openssl-$openssl_version"

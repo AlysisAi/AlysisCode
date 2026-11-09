@@ -69,7 +69,7 @@ def test_retry_never_accepts_a_mismatched_python_archive(
     archive = tmp_path / "python.tar.gz"
     with pytest.raises(ValueError, match="size|SHA-256"):
         installer.download_verified_archive(archive, pin)
-    assert len(calls) == 3
+    assert len(calls) == 6
     assert not archive.exists()
 
 
@@ -93,3 +93,64 @@ def test_unpatched_runtime_cannot_satisfy_the_version_pin() -> None:
     validate_runtime(
         {"version": "3.12.15", "platform": "linux", "machine": "aarch64"}, "linux-arm64", "3.12.15"
     )
+
+
+def test_gateway_failures_back_off_before_retrying_the_pinned_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    complete = b"verified archive"
+    pin = {
+        "url": "https://example.test/python.tar.gz",
+        "size": len(complete),
+        "sha256": hashlib.sha256(complete).hexdigest(),
+    }
+    attempts = []
+    delays = []
+
+    def download(url: str, *, timeout: int) -> io.BytesIO:
+        attempts.append(url)
+        if len(attempts) <= 3:
+            raise installer.urllib.error.HTTPError(url, 504, "Gateway timeout", {}, None)
+        return io.BytesIO(complete)
+
+    monkeypatch.setattr(installer.urllib.request, "urlopen", download)
+    monkeypatch.setattr(installer.time, "sleep", delays.append)
+    archive = tmp_path / "python.tar.gz"
+    installer.download_verified_archive(archive, pin)
+    assert archive.read_bytes() == complete
+    assert attempts == [pin["url"]] * 4
+    assert delays == [2, 4, 8]
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_official_asset_api_fallback_requires_the_original_archive_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corrupt: bool
+) -> None:
+    complete = b"verified archive"
+    pin = {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/test/python.tar.gz",
+        "api_url": "https://api.github.com/repos/astral-sh/python-build-standalone/releases/assets/123",
+        "size": len(complete),
+        "sha256": hashlib.sha256(complete).hexdigest(),
+    }
+    calls = []
+
+    def download(source, *, timeout: int) -> io.BytesIO:
+        if isinstance(source, str):
+            calls.append(source)
+            raise installer.urllib.error.HTTPError(source, 504, "Gateway timeout", {}, None)
+        calls.append(source.full_url)
+        assert source.get_header("Accept") == "application/octet-stream"
+        return io.BytesIO(b"x" * len(complete) if corrupt else complete)
+
+    monkeypatch.setattr(installer.urllib.request, "urlopen", download)
+    monkeypatch.setattr(installer.time, "sleep", lambda _seconds: None)
+    archive = tmp_path / "python.tar.gz"
+    if corrupt:
+        with pytest.raises(ValueError, match="SHA-256"):
+            installer.download_verified_archive(archive, pin)
+        assert not archive.exists()
+    else:
+        installer.download_verified_archive(archive, pin)
+        assert archive.read_bytes() == complete
+    assert calls == [pin["url"]] * 3 + [pin["api_url"]] * (3 if corrupt else 1)

@@ -22,15 +22,38 @@ from alysis_code.tools.shell import ShellError, shell_run
 from alysis_code.windows_mxc import WindowsMxcRunner
 
 _HELPER = """
-import json, pathlib, sys, time
+import json, os, pathlib, sys, time
 request = json.load(sys.stdin)
 assert request['nonce'] == 'request-sent-once'
 sys.stdout.buffer.write('partial caf\\u00e9\\n'.encode('utf-8'))
 sys.stdout.buffer.flush()
 sys.stderr.buffer.write(b'partial stderr \\xff\\n')
 sys.stderr.buffer.flush()
-pathlib.Path('ready').write_text('ready')
-time.sleep(0.25 if request['cmd'] == 'complete' else 30)
+pathlib.Path('ready').write_text(str(os.getpid()))
+if request['cmd'] == 'unacknowledged-exit':
+    sys.exit(125)
+events = request.get('lifecycle')
+if events:
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.SetEvent.argtypes = [wintypes.HANDLE]
+    kernel.SetEvent.restype = wintypes.BOOL
+    until = time.monotonic() + (0.25 if request['cmd'] == 'complete' else 30)
+    while time.monotonic() < until:
+        status = kernel.WaitForSingleObject(events['cancel'], 10)
+        if status == 0xffffffff:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if status == 0:
+            if not kernel.SetEvent(events['complete']):
+                raise ctypes.WinError(ctypes.get_last_error())
+            sys.exit(125)
+    if not kernel.SetEvent(events['complete']):
+        raise ctypes.WinError(ctypes.get_last_error())
+else:
+    time.sleep(0.25 if request['cmd'] == 'complete' else 30)
 sys.stdout.buffer.write(b'complete\\n')
 sys.stdout.buffer.flush()
 """
@@ -41,7 +64,10 @@ def runner(request, monkeypatch: pytest.MonkeyPatch):
     runner_type = request.param
 
     def prepare(self, *, root, cwd, cmd):
-        return [sys.executable, "-u", "-c", _HELPER], json.dumps(
+        # A Windows venv launcher spawns another process. Private duplicated
+        # handles must reach this fixture itself, just like the real native exe.
+        executable = getattr(sys, "_base_executable", None) or sys.executable
+        return [executable, "-u", "-c", _HELPER], json.dumps(
             {"nonce": "request-sent-once", "cmd": cmd}
         ).encode()
 
@@ -78,6 +104,7 @@ def test_sliced_wait_sends_one_complete_request_and_keeps_output(runner, process
     assert result.stdout == "partial caf\u00e9\ncomplete\n"
     assert result.stderr == "partial stderr \ufffd\n"
     assert len(processes) == 1 and processes[0].poll() == 0
+    assert int((tmp_path / "ready").read_text()) == processes[0].pid
 
 
 def test_lazy_runner_cancellation_reports_decoded_partial_output(runner, processes, tmp_path):
@@ -124,6 +151,20 @@ def test_callback_exception_reaps_the_original_helper(runner, processes, tmp_pat
     assert len(processes) == 1 and processes[0].poll() is not None
 
 
+def test_cancellation_before_first_request_write_never_starts_work(runner, processes, tmp_path):
+    checks = 0
+
+    def cancel():
+        nonlocal checks
+        checks += 1
+        return checks == 3
+
+    with pytest.raises(CommandCancelledError):
+        runner.run(root=tmp_path, cwd=tmp_path, cmd="wait", timeout_s=5, cancel_check=cancel)
+    assert not (tmp_path / "ready").exists()
+    assert len(processes) == 1 and processes[0].poll() is not None
+
+
 @pytest.mark.parametrize("before_prepare", [True, False], ids=["before-prepare", "before-spawn"])
 def test_already_cancelled_command_never_launches(
     runner, processes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_prepare: bool
@@ -153,6 +194,8 @@ def test_already_cancelled_command_never_launches(
 def test_job_assignment_failure_never_delivers_the_workload(
     runner, processes, tmp_path, monkeypatch
 ):
+    if runner._uses_native_lifecycle():
+        pytest.skip("Native cancellation uses private events; covered separately")
     from alysis_code import _windows_sandbox_job as jobs
 
     class UnavailableJob:
@@ -176,7 +219,15 @@ def test_failed_drain_reaps_helper_without_acknowledging_cancellation(
         def terminate_and_drain(self):
             raise OSError("synthetic observation failure")
 
-    monkeypatch.setattr(jobs, "WindowsSandboxJob", FailedDrainJob)
+    if runner._uses_native_lifecycle():
+        from alysis_code._windows_native_lifecycle import WindowsNativeLifecycle
+
+        def fail_verify(self):
+            raise OSError("synthetic observation failure")
+
+        monkeypatch.setattr(WindowsNativeLifecycle, "verify", fail_verify)
+    else:
+        monkeypatch.setattr(jobs, "WindowsSandboxJob", FailedDrainJob)
     with pytest.raises(CommandCleanupError, match="cleanup could not be confirmed") as caught:
         runner.run(
             root=tmp_path,
@@ -191,6 +242,37 @@ def test_failed_drain_reaps_helper_without_acknowledging_cancellation(
     assert len(processes) == 1 and processes[0].poll() is not None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows native private event protocol")
+def test_native_helper_exit_without_completion_signal_is_not_cleanup_proof(
+    runner, processes, tmp_path
+):
+    if not runner._uses_native_lifecycle():
+        pytest.skip("MXC uses the engine-owned observer job")
+    with pytest.raises(CommandCleanupError) as caught:
+        runner.run(root=tmp_path, cwd=tmp_path, cmd="unacknowledged-exit", timeout_s=5)
+    assert caught.value.stdout == "partial caf\u00e9\n"
+    assert caught.value.stderr == "partial stderr \ufffd\n"
+    assert len(processes) == 1 and processes[0].poll() == 125
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native private event protocol")
+def test_native_lifecycle_setup_failure_never_delivers_the_workload(
+    runner, processes, tmp_path, monkeypatch
+):
+    if not runner._uses_native_lifecycle():
+        pytest.skip("MXC uses the engine-owned observer job")
+    from alysis_code._windows_native_lifecycle import WindowsNativeLifecycle
+
+    def unavailable(self, process, request):
+        raise OSError("synthetic lifecycle setup failure")
+
+    monkeypatch.setattr(WindowsNativeLifecycle, "__init__", unavailable)
+    with pytest.raises(OSError, match="synthetic lifecycle setup failure"):
+        runner.run(root=tmp_path, cwd=tmp_path, cmd="wait", timeout_s=5)
+    assert not (tmp_path / "ready").exists()
+    assert len(processes) == 1 and processes[0].poll() is not None
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows lifetime job contract")
 @pytest.mark.parametrize("timeout", [False, True], ids=["cancelled", "timed-out"])
 def test_failed_drain_surfaces_output_without_acknowledging_cleanup(
@@ -202,7 +284,15 @@ def test_failed_drain_surfaces_output_without_acknowledging_cleanup(
         def terminate_and_drain(self):
             raise OSError("synthetic observation failure")
 
-    monkeypatch.setattr(jobs, "WindowsSandboxJob", FailedDrainJob)
+    if runner._uses_native_lifecycle():
+        from alysis_code._windows_native_lifecycle import WindowsNativeLifecycle
+
+        def fail_verify(self):
+            raise OSError("synthetic observation failure")
+
+        monkeypatch.setattr(WindowsNativeLifecycle, "verify", fail_verify)
+    else:
+        monkeypatch.setattr(jobs, "WindowsSandboxJob", FailedDrainJob)
     with pytest.raises(ShellError) as caught:
         shell_run(
             root=tmp_path,

@@ -137,14 +137,20 @@ These checks do not qualify other-machine LAN access or external ingress.
   terminates the broker and closes its jobs.
 - Process creation atomically assigns the child to a named containment job;
   there is no create-then-assign orphan window. Normal cleanup terminates remaining
-  children and verifies zero active job processes before removing filesystem
-  protections or the execution profile. Crash recovery checks that same job and
+  children, verifies zero active job processes, and waits for captured original
+  process handles before removing filesystem protections or the execution profile.
+  Foreground cancellation uses private non-inherited events duplicated into the
+  trusted broker. The engine reports cancellation only after broker cleanup is
+  acknowledged and the broker exits; forced exit or missing acknowledgment is a
+  cleanup failure. This avoids nesting an incompatible observer job around the
+  broker. MXC retains its separate engine-owned observer-job protocol.
+  Crash recovery checks that same job and
   pins the original broker by PID and creation time before removing protections.
   Failed verification retains the recovery journal and exits the broker.
 - Failed/interrupted cleanup blocks further use until explicit recovery.
 - Helper SHA-256, protocol and security-revision validation before setup or
-  execution; no executable lookup through PATH. Helper v0.3.3 uses protocol 3,
-  security revision 4 and recovery journal version 2.
+  execution; no executable lookup through PATH. Helper v0.3.4 uses protocol 3,
+  security revision 5 and recovery journal version 2.
 - The machine-encrypted account credential is readable only by the recorded
   Windows owner, SYSTEM and administrators. The opened registry key's actual
   owner and protected ACL are checked before reading its credential value.

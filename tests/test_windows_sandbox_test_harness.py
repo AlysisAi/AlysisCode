@@ -120,12 +120,23 @@ $ErrorActionPreference = 'Stop'
 $beforeOwner = [AlysisSandboxTests.DefaultOwnerScope]::CurrentDefaultOwnerSid()
 $beforeIdentity = (& whoami.exe /all /fo csv | Out-String)
 $beforeLocation = (Get-Location).Path
+$env:CARGO_TARGET_DIR = 'caller-target-canary'
 $global:alysisNativeInvocationCount = 0
 function global:Invoke-AlysisExpectedNativeFailure {
     $global:alysisNativeInvocationCount++
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if ([AlysisSandboxTests.DefaultOwnerScope]::CurrentDefaultOwnerSid() -ne $user) {
         throw 'Native test command started without the fixture owner scope'
+    }
+    if ($env:CARGO_TARGET_DIR -eq 'caller-target-canary') {
+        throw 'Native test command did not get its isolated build directory'
+    }
+    $acl = Get-Acl -LiteralPath $env:CARGO_TARGET_DIR
+    if (-not $acl.AreAccessRulesProtected) { throw 'Build ACL inherits runner grants' }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference.Value -notin @($user, 'S-1-5-18', 'S-1-5-32-544')) {
+            throw 'Build directory grants an untrusted principal access'
+        }
     }
     $global:LASTEXITCODE = if ($global:alysisNativeInvocationCount -eq 1) { 0 } else { 19 }
 }
@@ -145,6 +156,7 @@ if ((& whoami.exe /all /fo csv | Out-String) -ne $beforeIdentity) {
     throw 'Failed native harness changed token identity, groups, privileges or elevation'
 }
 if ((Get-Location).Path -ne $beforeLocation) { throw 'Native harness did not restore location' }
+if ($env:CARGO_TARGET_DIR -ne 'caller-target-canary') { throw 'Native harness did not restore Cargo target' }
 """,
         tmp_path,
     )

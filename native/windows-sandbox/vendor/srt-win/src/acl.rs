@@ -56,6 +56,10 @@ use windows::Win32::System::SystemServices::{
 use crate::sid::LocalPsid;
 use crate::util::{OwnedSd, pcwstr, win32_ok, wstr};
 
+#[path = "system_parent.rs"]
+mod system_parent;
+pub use system_parent::system_parent_protected;
+
 // Deliberately isolated from the baseline inheritable-ACL implementation.
 #[cfg(feature = "account-appcontainer-candidate")]
 #[path = "object_grants.rs"]

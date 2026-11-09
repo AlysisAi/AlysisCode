@@ -57,6 +57,9 @@ def test_chat_prompt_session_passes_dynamic_reserve_space_for_menu(
 
     import prompt_toolkit  # type: ignore[import-not-found]
 
+    # Materialize the legacy CLI bindings before patching the split module, so
+    # this test also runs independently of other CLI tests.
+    assert cli_mod._maybe_make_chat_prompt_session is not None
     monkeypatch.setattr(prompt_toolkit, "PromptSession", _PromptSessionStub)
     monkeypatch.setattr(prompt_helpers_mod, "_is_non_interactive_terminal", lambda: False)
     monkeypatch.setattr(cli_mod, "_is_non_interactive_terminal", lambda: False)
@@ -67,7 +70,6 @@ def test_chat_prompt_session_passes_dynamic_reserve_space_for_menu(
     )
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path))
 
-    assert cli_mod._maybe_make_chat_prompt_session is not None
     session = prompt_helpers_mod._maybe_make_chat_prompt_session(
         console=Console(),
         root=tmp_path,
@@ -77,6 +79,12 @@ def test_chat_prompt_session_passes_dynamic_reserve_space_for_menu(
 
     assert session is not None
     assert captured[0]["reserve_space_for_menu"] == 8
+    style = captured[0]["style"]
+    selected = style.get_attrs_for_style_str("class:completion-menu.completion.current")
+    ordinary = style.get_attrs_for_style_str("class:completion-menu.completion")
+    assert selected.color == "3fb950" and selected.bold
+    assert selected.bgcolor != ordinary.bgcolor
+    assert ordinary.bgcolor == "0d1117"
 
 
 def test_chat_prompt_session_completion_count_covers_mode_switching() -> None:

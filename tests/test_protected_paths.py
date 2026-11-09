@@ -143,7 +143,12 @@ def test_git_apply_patch_blocks_git_dir_case_insensitive(tmp_path: Path) -> None
         tools["git_apply_patch"].run({"patch": patch})
 
 
-def test_fs_write_fullaccess_retains_sensitive_redaction_without_a_prompt(tmp_path: Path) -> None:
+def test_fs_write_fullaccess_retains_sensitive_redaction_without_a_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Full access controls approval prompts; it does not disable an explicitly
+    # retained OS sandbox. This test exercises redaction after an allowed write.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     tools = _tools(tmp_path, mode="fullaccess")
     content = "#!/bin/sh\necho fullaccess\n"
     result = tools["fs_write"].run({"path": ".git/hooks/pre-commit", "content": content})

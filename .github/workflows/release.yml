@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+      # Native helper candidates use the protected signing environment but
+      # must never trigger Python package publication.
+      - "!v-sandbox-*"
   workflow_dispatch:
     inputs:
       release_tag:

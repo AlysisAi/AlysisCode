@@ -525,7 +525,20 @@ impl Locked {
             let mut witnesses = Vec::with_capacity(targets.len());
             let mut failed = 0usize;
             let mut one = |canon: &str, ace: SbAce| -> bool {
-                match db.ensure_ace(canon, ace, sandbox_sid) {
+                // A system-owned, already protected parent needs no mutation
+                // or recovery row. Never infer protection from access denied.
+                let protection = if matches!(ace, SbAce::DenyFdc) {
+                    path_id::capture_file_id(canon)
+                        .and_then(|id| acl::system_parent_protected(canon, id))
+                } else {
+                    Ok(false)
+                };
+                let result = match protection {
+                    Ok(true) => return true,
+                    Ok(false) => db.ensure_ace(canon, ace, sandbox_sid),
+                    Err(error) => Err(error),
+                };
+                match result {
                     Ok(w) => {
                         witnesses.push(w);
                         true

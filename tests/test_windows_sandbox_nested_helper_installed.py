@@ -72,7 +72,7 @@ try {
 $protocolOutput = (& $nestedHelper protocol | Out-String);
 if ($LASTEXITCODE -ne 0) { throw 'Nested helper execution control failed' };
 $protocol = $protocolOutput | ConvertFrom-Json;
-if ($protocol.protocol -ne 3 -or $protocol.security_revision -ne 4) { throw 'Wrong nested helper' };
+if ($protocol.protocol -ne 3 -or $protocol.security_revision -ne 6) { throw 'Wrong nested helper' };
 $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe';
 $ErrorActionPreference='Continue';
 """
@@ -236,7 +236,16 @@ try {
             "make_sandbox_token: CreateRestrictedToken(disable=[Admins, logon-SIDs])" in error
             and "0x80070057" in error
         )
-        assert token_refused or "Access is denied" in error or "0x80070005" in error, error
+        # The lifecycle repair checks the enclosing job before token creation.
+        # A nested runner must not break away from the outer containment job.
+        job_refused = (
+            "native Windows sandbox cannot start from this host" in error
+            and "its Windows job forbids child breakaway" in error
+            and "Containment limits remain required" in error
+        )
+        assert (
+            job_refused or token_refused or "Access is denied" in error or "0x80070005" in error
+        ), error
         assert any(
             stage in error
             for stage in (
@@ -245,6 +254,7 @@ try {
                 "create containment job",
                 "CreateProcessAsUserW",
                 "OpenProcessToken",
+                "its Windows job forbids child breakaway",
             )
         ), error
         assert "RAW_RUNNER_REMAINS_CONTAINED" not in out

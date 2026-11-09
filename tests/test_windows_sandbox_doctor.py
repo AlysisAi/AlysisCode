@@ -26,7 +26,7 @@ def diagnostic(monkeypatch, tmp_path):
             "user": {
                 "user": {"exists": True},
                 "cred_present": True,
-                "marker_version": 3,
+                "marker_version": 4,
                 "real_user_sid": "owner",
                 "owner_user_sid": "owner",
             },

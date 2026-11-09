@@ -148,7 +148,7 @@ fn wait_until_empty(handle: HANDLE) -> Result<()> {
 /// RAII job object. `Drop` closes the handle; with
 /// `KILL_ON_JOB_CLOSE` set, that terminates every process still in
 /// the job.
-pub struct Job(HANDLE);
+pub struct Job(HANDLE, bool);
 
 impl Job {
     /// Create an unnamed job with kill-on-close + full UI lockdown.
@@ -231,7 +231,7 @@ impl Job {
         };
         // Wrap the raw handle in `Self` immediately so a `?` from
         // either `SetInformationJobObject` below still closes it.
-        let job = Self(raw);
+        let job = Self(raw, false);
         unsafe {
             let mut ext: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
             ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -276,6 +276,14 @@ impl Job {
         Ok(job)
     }
 
+    /// The legacy foreground broker must verify original process termination
+    /// before it acknowledges cleanup. Account-candidate jobs have a separate
+    /// retirement protocol that requires their containment flags to stay fixed.
+    pub(crate) fn with_verified_exit(mut self) -> Self {
+        self.1 = true;
+        self
+    }
+
     /// Raw job handle (for `IsProcessInJob` diagnostics).
     pub fn raw(&self) -> HANDLE {
         self.0
@@ -291,8 +299,90 @@ impl Job {
     /// denies or remove the execution profile. Callers must close child
     /// process/thread handles first so they do not retain job accounting refs.
     pub(crate) fn terminate_and_wait(&self) -> Result<()> {
+        if !self.1 {
+            unsafe { TerminateJobObject(self.0, 1).context("TerminateJobObject")? };
+            return wait_until_empty(self.0);
+        }
+        // Stop descendant creation before retaining original process handles.
+        // Zero job accounting can precede handle signaling; both are required
+        // before cleanup or cancellation may be acknowledged.
+        let mut limits = read_job_limits(Some(self.0))?;
+        limits.BasicLimitInformation.LimitFlags |=
+            windows::Win32::System::JobObjects::JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        unsafe {
+            SetInformationJobObject(
+                self.0,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )?;
+        }
+        let actual = read_job_limits(Some(self.0))?;
+        ensure!(
+            actual.BasicLimitInformation.LimitFlags == limits.BasicLimitInformation.LimitFlags
+                && actual.BasicLimitInformation.ActiveProcessLimit == 1,
+            "job process admission did not close"
+        );
+        let processes = original_members(self.0)?;
         unsafe { TerminateJobObject(self.0, 1).context("TerminateJobObject")? };
-        wait_until_empty(self.0)
+        wait_until_empty(self.0)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for process in processes {
+            let remaining = deadline.saturating_duration_since(Instant::now()).as_millis() as u32;
+            ensure!(
+                unsafe { windows::Win32::System::Threading::WaitForSingleObject(process.raw(), remaining) }
+                    == windows::Win32::Foundation::WAIT_OBJECT_0,
+                "original job process termination is unverified"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn original_members(job: HANDLE) -> Result<Vec<crate::util::OwnedHandle>> {
+    use windows::Win32::Foundation::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, WAIT_OBJECT_0};
+    use windows::Win32::System::JobObjects::{JobObjectBasicProcessIdList, JOBOBJECT_BASIC_PROCESS_ID_LIST};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    let mut capacity = 32usize;
+    loop {
+        // Aligned storage for the DWORD header followed by ULONG_PTR entries.
+        let bytes = 8 + capacity * size_of::<usize>();
+        let mut buffer = vec![0usize; bytes.div_ceil(size_of::<usize>())];
+        let result = unsafe {
+            QueryInformationJobObject(Some(job), JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(), bytes as u32, None)
+        };
+        let list = unsafe { &*(buffer.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST) };
+        let assigned = list.NumberOfAssignedProcesses as usize;
+        let count = list.NumberOfProcessIdsInList as usize;
+        if let Err(error) = &result {
+            if error.code() != ERROR_MORE_DATA.to_hresult() {
+                return Err(error.clone()).context("snapshot original job members");
+            }
+        }
+        if result.is_err() || count != assigned || count > capacity {
+            ensure!(capacity < 65536, "incomplete job membership snapshot");
+            capacity = (capacity * 2).max(assigned).max(count).min(65536);
+            continue;
+        }
+        let ids = unsafe { std::slice::from_raw_parts(list.ProcessIdList.as_ptr(), count) };
+        let mut processes = Vec::new();
+        for &pid in ids {
+            let process = match unsafe {
+                OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid.try_into()?)
+            } {
+                Ok(handle) => crate::util::OwnedHandle(handle),
+                Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => continue,
+                Err(error) => return Err(error).context("pin original job process"),
+            };
+            let mut member = windows::core::BOOL::default();
+            unsafe { IsProcessInJob(process.raw(), Some(job), &mut member)? };
+            ensure!(member.as_bool() || unsafe { WaitForSingleObject(process.raw(), 0) } == WAIT_OBJECT_0,
+                "job member identity changed before termination");
+            processes.push(process);
+        }
+        return Ok(processes);
     }
 }
 

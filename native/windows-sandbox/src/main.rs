@@ -23,7 +23,7 @@ fn main() {
         }
         if std::env::args().nth(1).as_deref() == Some("protocol") {
             println!(
-                r#"{{"protocol":3,"security_revision":4,"implementation":"alysis-windows-sandbox","version":"0.3.3","containment":"appcontainer-write-restricted","network_modes":["off","on"],"qualification":"experimental"}}"#
+                r#"{{"protocol":3,"security_revision":6,"implementation":"alysis-windows-sandbox","version":"0.3.5","containment":"lpac-write-restricted","network_modes":["off","on"],"qualification":"experimental"}}"#
             );
             return;
         }
@@ -41,6 +41,12 @@ fn main() {
                     125
                 }
             };
+            // A forced/emergency exit never reaches this point. All native
+            // child/job guards have completed before acknowledging the engine.
+            if let Err(error) = srt_win::lifecycle::acknowledge() {
+                eprintln!("alysis-sandbox: {error:#}");
+                std::process::exit(125);
+            }
             std::process::exit(code);
         }
         std::process::exit(srt_win::run_from_args(std::env::args_os()));

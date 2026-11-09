@@ -140,6 +140,9 @@ suite("Alysis Code Extension Host", () => {
 
   test("Managed Browser completes public and direct-loopback verified lifecycles", async () => {
     await vscode.commands.executeCommand("alysis.showBrowser");
+    // Opening the sidebar starts background catalog requests. The first owner
+    // session upgrades the credential-free bridge and must not interrupt them.
+    await waitForState((candidate) => candidate.bridgeCanRestart);
     await api.browserStart();
 
     let browser = api.state().browser;
