@@ -30,9 +30,9 @@ impl NetworkAccess {
     }
 }
 
-/// PowerShell needs registry reads and ETW provider registration in LPAC.
-/// Without instrumentation its PSEtwLog initializer aborts before the command.
-/// No COM, identity-service or implicit network capability is added.
+/// PowerShell needs registry reads, ETW registration and COM apartments in LPAC.
+/// Framework workers initialize COM before executing queued PowerShell tasks.
+/// No identity-service or implicit network capability is added.
 /// Account candidates retain their separate policy and do not call this helper.
 pub(crate) fn shell_capabilities(
     network: NetworkAccess,
@@ -47,6 +47,7 @@ pub(crate) fn shell_capabilities(
     sids.push(crate::sid::LocalPsid::from_capability(
         "lpacInstrumentation",
     )?);
+    sids.push(crate::sid::LocalPsid::from_capability("lpacCom")?);
     sids.push(crate::null_device::capability(account_sid)?);
     Ok(sids)
 }

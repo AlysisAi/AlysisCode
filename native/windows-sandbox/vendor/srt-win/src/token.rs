@@ -147,22 +147,29 @@ pub fn make_sandbox_token_for_owner(base: HANDLE, owner_sid: Option<&str>) -> Re
 /// primary).
 /// Add an independent write check while preserving the logon groups needed by
 /// AppContainer process initialization. Reads are still constrained by lowbox.
-pub fn make_write_restricted_token(base: HANDLE, write_sid: &str) -> Result<HANDLE> {
+pub fn make_write_restricted_token(
+    base: HANDLE,
+    write_sid: &str,
+    capabilities: &[LocalPsid],
+) -> Result<HANDLE> {
     let sid = LocalPsid::from_string(write_sid)?;
     // CLR IPC uses Everyone ACLs. This SID does not bypass the independent
     // AppContainer check, and a sandbox-account deny still wins in the write
     // restriction check. Omitting it prevents CLR startup on supported hosts.
     let world = LocalPsid::from_string("S-1-1-0")?;
-    let restrictions = [
-        SID_AND_ATTRIBUTES {
-            Sid: sid.as_psid(),
+    // Capability checks also perform an access check. Keeping only account
+    // and Everyone here rejects capability-only ACLs even when the LPAC token
+    // contains the capability (notably COM initialization for CLR workers).
+    // Preserve only capabilities explicitly granted to this execution. The
+    // account SID remains present, so its filesystem DENY ACEs still win.
+    let restrictions = [sid.as_psid(), world.as_psid()]
+        .into_iter()
+        .chain(capabilities.iter().map(LocalPsid::as_psid))
+        .map(|sid| SID_AND_ATTRIBUTES {
+            Sid: sid,
             Attributes: 0,
-        },
-        SID_AND_ATTRIBUTES {
-            Sid: world.as_psid(),
-            Attributes: 0,
-        },
-    ];
+        })
+        .collect::<Vec<_>>();
     let mut output = HANDLE::default();
     unsafe {
         CreateRestrictedToken(
@@ -339,25 +346,31 @@ pub fn verify_appcontainer_process(
     );
     let groups =
         unsafe { std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize) };
-    for sid in expected {
+    for sid in &expected {
         anyhow::ensure!(
             groups.iter().any(|group| {
                 group.Attributes & 0x4 != 0
                     && group.Attributes & 0x10 == 0
                     && unsafe { EqualSid(group.Sid, sid.as_psid()).is_ok() }
             }),
-            "requested network capability missing or disabled"
+            "requested AppContainer capability missing or disabled"
         );
     }
     let info = get_token_info(token.raw(), windows::Win32::Security::TokenRestrictedSids)?;
     let groups = unsafe { &*(info.as_ptr() as *const TOKEN_GROUPS) };
+    let write_identity = LocalPsid::from_string(write_sid)?;
+    let world = LocalPsid::from_string("S-1-1-0")?;
+    let expected_restrictions = [&write_identity, &world]
+        .into_iter()
+        .chain(expected.iter())
+        .collect::<Vec<_>>();
     anyhow::ensure!(
-        groups.GroupCount == 2,
+        groups.GroupCount as usize == expected_restrictions.len(),
         "missing independent write restrictions"
     );
-    let groups = unsafe { std::slice::from_raw_parts(groups.Groups.as_ptr(), 2) };
-    for expected in [write_sid, "S-1-1-0"] {
-        let sid = LocalPsid::from_string(expected)?;
+    let groups =
+        unsafe { std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize) };
+    for sid in expected_restrictions {
         anyhow::ensure!(
             groups
                 .iter()
@@ -369,7 +382,19 @@ pub fn verify_appcontainer_process(
     let sid = unsafe { (*(info.as_ptr() as *const TOKEN_MANDATORY_LABEL)).Label.Sid };
     let level = unsafe { *GetSidSubAuthority(sid, (*GetSidSubAuthorityCount(sid) - 1) as u32) };
     anyhow::ensure!(level <= 0x1000, "AppContainer integrity exceeds Low");
-    Ok(())
+    with_child_token(process, || {
+        for sid in &expected {
+            let mut present = windows::core::BOOL::default();
+            unsafe {
+                windows::Win32::Security::CheckTokenCapability(None, sid.as_psid(), &mut present)?;
+            }
+            anyhow::ensure!(
+                present.as_bool(),
+                "requested capability is not effective in child token"
+            );
+        }
+        Ok(())
+    })
 }
 
 /// Check protected objects with the actual suspended child's token. The older
@@ -450,6 +475,59 @@ fn privileges_except(base: HANDLE, keep: &[&str]) -> Result<Vec<LUID_AND_ATTRIBU
 mod tests {
     use super::*;
     use windows::Win32::Foundation::CloseHandle;
+
+    #[test]
+    fn write_restrictions_preserve_explicit_capability_access_checks() {
+        use windows::Win32::Security::{CheckTokenCapability, TOKEN_QUERY, TokenImpersonation};
+        let base = crate::util::OwnedHandle(open_self_token().unwrap());
+        // No account or profile is created. This distinct SID models the
+        // filesystem restriction identity independently of the host user.
+        let write_sid = "S-1-5-21-11-22-33-4401";
+        let capabilities = crate::appcontainer::shell_capabilities(
+            crate::appcontainer::NetworkAccess::Off,
+            write_sid,
+        )
+        .unwrap();
+        for preserve in [false, true] {
+            let supplied = if preserve {
+                capabilities.as_slice()
+            } else {
+                &[]
+            };
+            let restricted = crate::util::OwnedHandle(
+                make_write_restricted_token(base.raw(), write_sid, supplied).unwrap(),
+            );
+            let mut duplicate = HANDLE::default();
+            unsafe {
+                DuplicateTokenEx(
+                    restricted.raw(),
+                    TOKEN_QUERY,
+                    None,
+                    SecurityImpersonation,
+                    TokenImpersonation,
+                    &mut duplicate,
+                )
+                .unwrap();
+            }
+            let duplicate = crate::util::OwnedHandle(duplicate);
+            for capability in &capabilities {
+                let mut effective = windows::core::BOOL::default();
+                unsafe {
+                    CheckTokenCapability(
+                        Some(duplicate.raw()),
+                        capability.as_psid(),
+                        &mut effective,
+                    )
+                    .unwrap();
+                }
+                assert_eq!(
+                    effective.as_bool(),
+                    preserve,
+                    "capability access must survive the independent restriction check only when explicitly preserved"
+                );
+            }
+        }
+    }
 
     #[test]
     fn restricted_token_builds() {
