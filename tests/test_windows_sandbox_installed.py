@@ -1459,10 +1459,16 @@ def test_installed_https_access_is_explicit_and_does_not_persist(tmp_path, recor
             timeout_s=60,
         )
         record_timing(f"sandbox_{index}_{network}", result)
-        assert result.returncode == (0 if network == "on" else 31), result.stderr
-        assert result.stdout.strip() == (
-            "PUBLIC_HTTPS_OK" if network == "on" else "NETWORK_BLOCKED"
-        )
+        if network == "on":
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "PUBLIC_HTTPS_OK"
+        else:
+            # A failed lookup prevents HTTPS too. Both surrounding network-on
+            # controls must succeed; separate local canaries prove no DNS egress.
+            assert (result.returncode, result.stdout.strip()) in {
+                (31, "NETWORK_BLOCKED"),
+                (32, "DNS_LOOKUP_FAILED"),
+            }, result.stderr
 
 
 @pytest.mark.skipif(
@@ -1526,4 +1532,36 @@ try {
         pytest.xfail(
             "Known release gate: restricted-token Schannel SEC_E_NO_CREDENTIALS; filesystem protection must not be removed to bypass it"
         )
+    if result.returncode != 0:
+        # Diagnose only after the real host/contained HTTPS attempts. The fixed
+        # native API probe does not request credentials or modify the boundary.
+        compiler = Path(os.environ["SystemRoot"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+        source = Path(__file__).parent / "fixtures" / "WindowsSchannelProbe.cs"
+        executable = tmp_path / "SchannelProbe.exe"
+        build = subprocess.run(
+            [str(compiler), "/nologo", "/platform:x64", f"/out:{executable}", str(source)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        print(f"Schannel diagnostic build returncode={build.returncode}")
+        if build.returncode == 0:
+            host_probe = subprocess.run(
+                [str(executable)], capture_output=True, text=True, timeout=15
+            )
+            sandbox_probe = WindowsNativeRunner(
+                ShellSandboxSettings(backend="windows-native", network="on")
+            ).run(
+                root=tmp_path,
+                cwd=tmp_path,
+                cmd=f"& {quote(executable)}; exit $LASTEXITCODE",
+                timeout_s=30,
+            )
+            for label, probe in (("host", host_probe), ("sandbox", sandbox_probe)):
+                lines = [
+                    line[:100]
+                    for line in probe.stdout.splitlines()
+                    if line.startswith("ALYSIS_SSPI_")
+                ][:5]
+                print(f"Schannel diagnostic {label}: {probe.returncode} {lines}")
     assert result.returncode == 0 and result.stdout.strip() == "PUBLIC_HTTPS_OK", result.stderr

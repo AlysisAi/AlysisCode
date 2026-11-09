@@ -6,7 +6,7 @@ const https = require('https');
 const {getSystemErrorName} = require('util');
 const URL = 'https://registry.npmjs.org/is-number/7.0.0';
 const TAG = 'ALYSIS_HTTPS_STAGE ';
-const BLOCKED = new Set(['EACCES', 'EPERM', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT']);
+const BLOCKED = new Set(['EACCES', 'EPERM', 'ETIMEDOUT']);
 const SAFE_ERRORS = new Set([...BLOCKED, 'OVERSIZED', 'RESPONSE', 'INVALID_JSON']);
 
 function runProbe(dependencies = {}) {
@@ -38,16 +38,18 @@ function runProbe(dependencies = {}) {
       system_errno: systemErrno, system_error: systemErrno === null ? null : getSystemErrorName(systemErrno)}));
     if (code === 0) stdout('PUBLIC_HTTPS_OK');
     else if (code === 31) stdout('NETWORK_BLOCKED');
+    else if (code === 32) stdout('DNS_LOOKUP_FAILED');
     exit(code);
   };
-  const fail = error => {
+  const fail = (error, lookupFailure = false) => {
     // Never stringify unknown errors, messages, addresses, headers or bodies.
     const code = SAFE_ERRORS.has(error?.code) ? error.code : 'OTHER';
     // Derive a canonical name from a bounded OS error number. Never publish
     // arbitrary error.code strings or treat an unfamiliar failure as blocked.
     const errno = Number.isInteger(error?.errno) && error.errno < 0 && error.errno >= -2147483648
       ? error.errno : null;
-    finish(BLOCKED.has(code) ? 31 : 1, code, errno);
+    finish(lookupFailure ? 32 : BLOCKED.has(code) ? 31 : 1,
+      lookupFailure ? 'DNS_LOOKUP_FAILED' : code, errno);
   };
   // Preserve the qualification deadline; diagnostics never add a retry.
   const deadline = setTimer(() => fail({code: 'ETIMEDOUT'}), 25000);
@@ -79,7 +81,13 @@ function runProbe(dependencies = {}) {
       });
     });
     request.on('socket', socket => {
-      socket.once('lookup', () => mark('dns_ms', 'dns'));
+      socket.once('lookup', error => {
+        mark('dns_ms', 'dns');
+        // Observe the failed operation instead of maintaining an OS-specific
+        // DNS error allowlist. This proves no HTTPS connection was established,
+        // not that DNS itself sent no packets; the local DNS canary tests that.
+        if (error) fail(error, true);
+      });
       socket.once('connect', () => mark('connect_ms', 'connect'));
       socket.once('secureConnect', () => mark('tls_ms', 'tls'));
     });
