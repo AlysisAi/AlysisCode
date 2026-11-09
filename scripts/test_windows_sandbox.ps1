@@ -97,6 +97,15 @@ try {
             & $Python -m alysis_code sandbox doctor --smoke
             if ($LASTEXITCODE -ne 0) { throw 'Online sandbox launch smoke check failed.' }
             $env:ALYSIS_SHELL_SANDBOX_NETWORK = 'off'
+            # Get network-boundary failures before the long subprocess matrix.
+            # Success still requires the complete suite and its JUnit gate below.
+            & $Python -m pytest `
+                tests/test_windows_sandbox_installed.py::test_installed_command_cannot_send_udp_to_host `
+                tests/test_windows_sandbox_installed.py::test_installed_command_cannot_connect_to_host `
+                tests/test_windows_sandbox_installed.py::test_installed_https_access_is_explicit_and_does_not_persist `
+                tests/test_windows_sandbox_installed.py::test_installed_schannel_https_compatibility `
+                -q --tb=short
+            if ($LASTEXITCODE -ne 0) { throw 'Installed network qualification failed.' }
         }
         & $Python -m pytest tests/test_windows_sandbox_installed.py tests/test_windows_sandbox_agent_installed.py tests/test_windows_sandbox_registry_installed.py tests/test_windows_sandbox_nested_helper_installed.py -q --tb=short -rx `
             --junitxml=native/windows-sandbox/target/installed-release-tests.xml
