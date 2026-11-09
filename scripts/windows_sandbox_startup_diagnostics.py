@@ -1,4 +1,4 @@
-"""Two fixed, contained startup observations after an installed smoke failure.
+"""Fixed, contained startup observations after an installed smoke failure.
 
 Uses the real request policy and lifecycle. Only the diagnostic PowerShell
 source differs. No permissions, production deadlines or commands are changed.
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -47,7 +48,13 @@ def stack_observer() -> Path | None:
     return None
 
 
-def thread_probe() -> Path | None:
+def probe_lines(output: str | bytes) -> list[str]:
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    return [line[:160] for line in output.splitlines() if line.startswith("ALYSIS_CLR_")][:24]
+
+
+def thread_probe(report: dict[str, object]) -> Path | None:
     directory = Path(tempfile.mkdtemp(prefix="alysis-clr-thread-probe-"))
     executable = directory / "ThreadProbe.exe"
     compiler = Path(os.environ["SystemRoot"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
@@ -59,8 +66,23 @@ def thread_probe() -> Path | None:
             timeout=30,
         )
         if build.returncode != 0:
+            report.update(
+                category="compile_failed",
+                returncode=build.returncode,
+                compiler_codes=sorted(
+                    {
+                        code.decode("ascii")
+                        for code in re.findall(rb"\bCS\d{4}\b", build.stdout + build.stderr)
+                    }
+                ),
+            )
             return None
         control = subprocess.run([str(executable)], capture_output=True, text=True, timeout=15)
+        report.update(
+            category="host_control_failed",
+            returncode=control.returncode,
+            runtime_probe_lines=probe_lines(control.stdout),
+        )
         expected = [
             "ENTRY",
             "EVENT",
@@ -76,9 +98,14 @@ def thread_probe() -> Path | None:
         if control.returncode == 0 and all(
             f"ALYSIS_CLR_{name}=True" in control.stdout.splitlines() for name in expected
         ):
+            report["category"] = "passed"
             return executable
-    except (OSError, subprocess.SubprocessError):
-        pass
+    except subprocess.TimeoutExpired as error:
+        report.update(
+            category="host_control_timeout", runtime_probe_lines=probe_lines(error.output or "")
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        report.update(category="unavailable", exception_type=type(error).__name__)
     return None
 
 
@@ -92,7 +119,9 @@ def main() -> None:
     original_builder = native.build_request
     original_popen = subprocess.Popen
     observer = stack_observer()
-    probe = thread_probe()
+    probe_control: dict[str, object] = {}
+    probe = thread_probe(probe_control)
+    report["thread_probe_host_control"] = probe_control
     report["stack_observer_available"] = observer is not None
     report["thread_probe_host_control_passed"] = probe is not None
     cases = []
@@ -189,9 +218,7 @@ def main() -> None:
         record["stderr_length"] = len(stderr)
         record["managed_stacks"] = observations
         if kind == "clr_threads":
-            record["runtime_probe_lines"] = [
-                line[:160] for line in output.splitlines() if line.startswith("ALYSIS_CLR_")
-            ][:20]
+            record["runtime_probe_lines"] = probe_lines(output)
         record["powershell_entry_reached"] = ENTRY in output.splitlines()
         record["bootstrap_completed"] = DONE in output.splitlines()
         record["recovery_pending"] = journal.exists()
