@@ -36,6 +36,7 @@ on:
       - 'scripts/windows_desktop_test_host.ps1'
       - 'tests/test_windows_sandbox*.py'
       - 'tests/fixtures/windows_native_https_probe*.cjs'
+      - 'tests/fixtures/WindowsSchannelProbe.cs'
       - 'tests/test_windows_managed_session.py'
       - 'tests/test_managed_session_persistence.py'
       - 'tests/test_managed_session_recovery.py'

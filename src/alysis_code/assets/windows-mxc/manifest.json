@@ -16,7 +16,7 @@
   "security_revision": 11,
   "upstream_commit": "c6f301d53a1430c4c921a05c57af838f7392348f",
   "platform": "win32-x64",
-  "sha256": "b977585de545b26f58fb7dd40e2793e3283ba1e30f9708a1c024c87e6eb6dfb8",
-  "source_commit": "ae3e9a1e494506a99782cbda16080228e090a11f",
-  "source_inventory_sha256": "edef0a786f566ec01bfff00150c1b7726bc87eab5435e4a20258b874b98e8efc"
+  "sha256": "37cc363f76a30d718fa35a90414ce99743b2588471dc3323eef56e32fccffae6",
+  "source_commit": "b87ffdb2862f228c7ed2f17359ff2823f1ffa2df",
+  "source_inventory_sha256": "d271233922f25a415bab3169df62beea90be4c3ea0d4d1899f568d9852327c5b"
 }
