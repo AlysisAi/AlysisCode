@@ -41,10 +41,16 @@ try
                 using var runtime = version.CreateRuntime(dac);
                 records.Add(new {
                     runtime = version.Version.ToString(),
+                    native_thread_count = process.Threads.Count,
+                    pool_initialized = runtime.ThreadPool?.Initialized,
+                    pool_min_threads = runtime.ThreadPool?.MinThreads,
+                    pool_max_threads = runtime.ThreadPool?.MaxThreads,
+                    pool_active_workers = runtime.ThreadPool?.ActiveWorkerThreads,
+                    pool_idle_workers = runtime.ThreadPool?.IdleWorkerThreads,
                     threads = runtime.Threads.Where(t => t.IsAlive).Take(32).Select(t => new {
                         id = t.OSThreadId,
                         frames = t.EnumerateStackTrace().Take(48)
-                            .Select(f => f.Method?.Signature ?? f.Kind.ToString()).ToArray()
+                            .Select(f => f.Method?.Signature ?? f.FrameName ?? f.Kind.ToString()).ToArray()
                     }).ToArray()
                 });
             }

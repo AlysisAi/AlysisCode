@@ -47,6 +47,30 @@ def stack_observer() -> Path | None:
     return None
 
 
+def thread_probe() -> Path | None:
+    directory = Path(tempfile.mkdtemp(prefix="alysis-clr-thread-probe-"))
+    executable = directory / "ThreadProbe.exe"
+    compiler = Path(os.environ["SystemRoot"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+    source = Path(__file__).with_name("windows_sandbox_stacks") / "ThreadProbe.cs"
+    try:
+        build = subprocess.run(
+            [str(compiler), "/nologo", "/platform:x64", f"/out:{executable}", str(source)],
+            capture_output=True,
+            timeout=30,
+        )
+        if build.returncode != 0:
+            return None
+        control = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
+        expected = ["ENTRY", "EVENT", "SEMAPHORE", "THREAD", "POOL_QUEUE", "POOL_COMPLETED"]
+        if control.returncode == 0 and all(
+            f"ALYSIS_CLR_{name}=True" in control.stdout.splitlines() for name in expected
+        ):
+            return executable
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 def main() -> None:
     report: dict[str, object] = {"schema": 1, "diagnostic_only": True, "cases": []}
     if os.name != "nt" or os.environ.get("ALYSIS_RUN_INSTALLED_SANDBOX_TESTS") != "1":
@@ -57,9 +81,13 @@ def main() -> None:
     original_builder = native.build_request
     original_popen = subprocess.Popen
     observer = stack_observer()
+    probe = thread_probe()
     report["stack_observer_available"] = observer is not None
+    report["thread_probe_host_control_passed"] = probe is not None
     cases = []
-    for kind in ("powershell_entry", "production_bootstrap"):
+    for kind in ("powershell_entry", "production_bootstrap", "clr_threads"):
+        if kind == "clr_threads" and probe is None:
+            continue
         if journal.exists():
             report["category"] = "recovery_pending_no_further_launch"
             break
@@ -67,6 +95,9 @@ def main() -> None:
 
         def request(*args, _kind=kind, **kwargs):
             payload = original_builder(*args, **kwargs)
+            if _kind == "clr_threads":
+                payload["argv"] = [str(probe)]
+                return payload
             if payload["argv"][-2] != "-Command":
                 raise ValueError("unexpected diagnostic shell argument layout")
             source = f"[Console]::Out.WriteLine('{ENTRY}'); "
@@ -118,7 +149,11 @@ def main() -> None:
                 patch.object(subprocess, "Popen", popen),
             ):
                 result = native.WindowsNativeRunner(
-                    ShellSandboxSettings(backend="windows-native", network="off")
+                    ShellSandboxSettings(
+                        backend="windows-native",
+                        network="off",
+                        windows_read_roots=(str(probe.parent),) if kind == "clr_threads" else (),
+                    )
                 ).run(root=root, cwd=root, cmd=f"[Console]::Out.WriteLine('{DONE}')", timeout_s=30)
             output = result.stdout
             stderr = result.stderr
@@ -137,11 +172,15 @@ def main() -> None:
             output = output.decode("utf-8", errors="replace")
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
-        record["helper_entered_launch"] = "srt-win: run_lockdown: caller_in_job=" in stderr
-        record["child_resumed"] = "assigned+resumed" in stderr
+        record["helper_launch_marker_observed"] = "srt-win: run_lockdown: caller_in_job=" in stderr
+        record["child_resumed_marker_observed"] = "assigned+resumed" in stderr
         record["stdout_length"] = len(output)
         record["stderr_length"] = len(stderr)
         record["managed_stacks"] = observations
+        if kind == "clr_threads":
+            record["runtime_probe_lines"] = [
+                line[:160] for line in output.splitlines() if line.startswith("ALYSIS_CLR_")
+            ][:16]
         record["powershell_entry_reached"] = ENTRY in output.splitlines()
         record["bootstrap_completed"] = DONE in output.splitlines()
         record["recovery_pending"] = journal.exists()
