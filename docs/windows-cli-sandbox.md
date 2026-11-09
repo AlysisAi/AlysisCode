@@ -57,8 +57,11 @@ initialization. The write restriction includes the ordinary user identity needed
 for Windows capability checks while retaining account-based filesystem denies.
 LPAC grants still constrain which resources that user can access. Commands verify effective
 capability access under the suspended child token before running. Network
-capability still follows explicit off/on policy; identity-service capabilities
-are not granted.
+capability still follows explicit off/on policy. Network-on also grants
+`lpacIdentityServices`, needed to discover Schannel's TLS package through the
+Windows security service. Network-off omits it and verifies effective denial.
+Enterprise authentication, shared user certificates, private-network and server
+capabilities remain absent and are checked under the actual child token.
 
 Setup version 4 also grants an installation-specific capability read/write access
 to the fixed Windows null device, which Git and subprocess redirection require.

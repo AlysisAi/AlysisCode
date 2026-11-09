@@ -32,7 +32,9 @@ impl NetworkAccess {
 
 /// PowerShell needs registry reads, ETW registration and COM apartments in LPAC.
 /// Framework workers initialize COM before executing queued PowerShell tasks.
-/// No identity-service or implicit network capability is added.
+/// Schannel discovers its TLS package through SSPISRV, whose LPAC service ACL
+/// requires lpacIdentityServices. Grant that service only with explicit network
+/// access; it is not enterpriseAuthentication or sharedUserCertificates.
 /// Account candidates retain their separate policy and do not call this helper.
 pub(crate) fn shell_capabilities(
     network: NetworkAccess,
@@ -49,6 +51,11 @@ pub(crate) fn shell_capabilities(
     )?);
     sids.push(crate::sid::LocalPsid::from_capability("lpacCom")?);
     sids.push(crate::null_device::capability(account_sid)?);
+    if network == NetworkAccess::On {
+        sids.push(crate::sid::LocalPsid::from_capability(
+            "lpacIdentityServices",
+        )?);
+    }
     Ok(sids)
 }
 
@@ -135,6 +142,31 @@ mod tests {
         }
         let sid = crate::sid::psid_to_string(PSID(bytes.as_mut_ptr().cast())).unwrap();
         assert_eq!(NetworkAccess::On.capability_sids(), &[sid]);
+    }
+
+    #[test]
+    fn shell_tls_service_access_requires_explicit_network_access() {
+        use windows::Win32::Security::EqualSid;
+        let identity = crate::sid::LocalPsid::from_capability("lpacIdentityServices").unwrap();
+        for network in [NetworkAccess::Off, NetworkAccess::On] {
+            let capabilities = shell_capabilities(network, "S-1-5-21-11-22-33-4401").unwrap();
+            let contains = |sid: &crate::sid::LocalPsid| {
+                capabilities.iter().any(|capability| unsafe {
+                    EqualSid(capability.as_psid(), sid.as_psid()).is_ok()
+                })
+            };
+            assert_eq!(contains(&identity), network == NetworkAccess::On);
+            for forbidden in [
+                "enterpriseAuthentication",
+                "sharedUserCertificates",
+                "privateNetworkClientServer",
+                "internetClientServer",
+            ] {
+                assert!(!contains(
+                    &crate::sid::LocalPsid::from_capability(forbidden).unwrap()
+                ));
+            }
+        }
     }
 }
 

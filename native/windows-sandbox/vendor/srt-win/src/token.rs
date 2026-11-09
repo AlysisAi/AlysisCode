@@ -385,8 +385,17 @@ pub fn verify_appcontainer_process(
     let sid = unsafe { (*(info.as_ptr() as *const TOKEN_MANDATORY_LABEL)).Label.Sid };
     let level = unsafe { *GetSidSubAuthority(sid, (*GetSidSubAuthorityCount(sid) - 1) as u32) };
     anyhow::ensure!(level <= 0x1000, "AppContainer integrity exceeds Low");
-    let mut forbidden = vec![LocalPsid::from_capability("lpacIdentityServices")?];
+    let mut forbidden = [
+        "enterpriseAuthentication",
+        "sharedUserCertificates",
+        "privateNetworkClientServer",
+        "internetClientServer",
+    ]
+    .into_iter()
+    .map(LocalPsid::from_capability)
+    .collect::<Result<Vec<_>>>()?;
     if network == crate::appcontainer::NetworkAccess::Off {
+        forbidden.push(LocalPsid::from_capability("lpacIdentityServices")?);
         for sid in crate::appcontainer::NetworkAccess::On.capability_sids() {
             forbidden.push(LocalPsid::from_string(sid)?);
         }
