@@ -60,8 +60,18 @@ def thread_probe() -> Path | None:
         )
         if build.returncode != 0:
             return None
-        control = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
-        expected = ["ENTRY", "EVENT", "SEMAPHORE", "THREAD", "POOL_QUEUE", "POOL_COMPLETED"]
+        control = subprocess.run([str(executable)], capture_output=True, text=True, timeout=15)
+        expected = [
+            "ENTRY",
+            "EVENT",
+            "SEMAPHORE",
+            "THREAD",
+            "POOL_QUEUE",
+            "POOL_COMPLETED",
+            "SELF_WORKER_ACCESS",
+            "NATIVE_POOL_QUEUE",
+            "NATIVE_POOL_COMPLETED",
+        ]
         if control.returncode == 0 and all(
             f"ALYSIS_CLR_{name}=True" in control.stdout.splitlines() for name in expected
         ):

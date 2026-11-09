@@ -42,7 +42,9 @@ try
                 records.Add(new {
                     runtime = version.Version.ToString(),
                     native_thread_count = process.Threads.Count,
-                    pool_initialized = runtime.ThreadPool?.Initialized,
+                    pool_legacy_data = runtime.ThreadPool?.HasLegacyData,
+                    pool_uses_windows = runtime.ThreadPool?.UsingWindowsThreadPool,
+                    pool_native_workers = runtime.ThreadPool?.WindowsThreadPoolThreadCount,
                     pool_min_threads = runtime.ThreadPool?.MinThreads,
                     pool_max_threads = runtime.ThreadPool?.MaxThreads,
                     pool_active_workers = runtime.ThreadPool?.ActiveWorkerThreads,

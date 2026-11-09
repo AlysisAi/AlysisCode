@@ -2,9 +2,20 @@
 // bounded observations only; this is never a replacement shell or release test.
 using System;
 using System.Threading;
+using System.Runtime.InteropServices;
 
 static class ThreadProbe
 {
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    delegate uint Callback(IntPtr argument);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool QueueUserWorkItem(Callback callback, IntPtr argument, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")]
+    static extern uint GetCurrentProcessId();
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
     static void Report(string name, Func<bool> probe)
     {
         try { Console.WriteLine("ALYSIS_CLR_" + name + "=" + probe()); }
@@ -41,6 +52,26 @@ static class ThreadProbe
             return ThreadPool.QueueUserWorkItem(delegate { done.Set(); });
         });
         Console.WriteLine("ALYSIS_CLR_POOL_COMPLETED=" + done.WaitOne(3000));
+        Report("SELF_WORKER_ACCESS", delegate {
+            // PROCESS_CREATE_THREAD | PROCESS_DUP_HANDLE, on this process only.
+            IntPtr handle = OpenProcess(0x42, false, GetCurrentProcessId());
+            if (handle == IntPtr.Zero) {
+                Console.WriteLine("ALYSIS_CLR_SELF_WORKER_ERROR=" + Marshal.GetLastWin32Error());
+                return false;
+            }
+            return CloseHandle(handle);
+        });
+        var nativeDone = new ManualResetEvent(false);
+        Callback callback = delegate { nativeDone.Set(); return 0; };
+        Report("NATIVE_POOL_QUEUE", delegate {
+            bool queued = QueueUserWorkItem(callback, IntPtr.Zero, 0);
+            if (!queued)
+                Console.WriteLine("ALYSIS_CLR_NATIVE_POOL_ERROR=" + Marshal.GetLastWin32Error());
+            return queued;
+        });
+        Console.WriteLine("ALYSIS_CLR_NATIVE_POOL_COMPLETED=" + nativeDone.WaitOne(3000));
+        GC.KeepAlive(callback);
+        GC.KeepAlive(nativeDone);
         GC.KeepAlive(done);
     }
 }
