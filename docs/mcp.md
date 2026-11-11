@@ -154,6 +154,48 @@ project overrides. Free-tier rate limits can also prevent calls; wait before
 retrying according to the server response. Remove the `parallel` entry or set
 `"enabled": false` to disable it.
 
+## deed.page publishing MCP example
+
+[deed.page](https://deed.page) publishes HTML or static files that an agent
+writes to a public `*.deed.page` URL. Its MCP endpoint needs no API key, OAuth
+login, or account; the first publish returns an owner token that the agent
+must keep to update or delete the page.
+
+Merge the `deed-page` server from
+[`examples/deed-page-mcp.json`](examples/deed-page-mcp.json) into the `servers`
+object in your **user MCP file** (see [Config Files](#config-files)), retaining
+your other servers:
+
+```json
+{
+  "schema_version": 1,
+  "servers": {
+    "deed-page": {
+      "transport": "http",
+      "url": "https://deed.page/mcp",
+      "trust": "explicit",
+      "enabled_in": ["interactive_chat", "one_shot"],
+      "allowed_tools": ["publish_site", "get_site", "delete_site"]
+    }
+  }
+}
+```
+
+`allowed_tools` keeps the server to publishing, reading back, and deleting a
+page; remove it only if you want the server's other site-management tools.
+Check the connection with `alysis-code mcp status`, then start a new session.
+Status should show `deed-page` with `loaded:3` tools. In a write-capable
+session, ask: "Write a one-page HTML summary of this repository's README and
+publish it with `mcp__deed_page__publish_site` using `ttl_seconds` 3600, then
+tell me the URL and keep the returned token." The server id `deed-page` becomes
+the `mcp__deed_page__` alias prefix. Without `ttl_seconds` the page
+does not expire.
+
+Published pages are public to anyone with the URL, so do not publish secrets,
+credentials, or private workspace content. Size limits and the full tool list
+are in the [deed.page documentation](https://deed.page/docs). Remove the
+`deed-page` entry or set `"enabled": false` to disable it.
+
 ## Project Overrides
 
 Project config can narrow an existing user server:
