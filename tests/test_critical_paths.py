@@ -93,6 +93,8 @@ def test_targets_resolve_against_the_working_folder(layout) -> None:  # type: ig
 @pytest.mark.parametrize("dialect", ["posix", "cmd", "powershell"])
 def test_another_spelling_of_the_project_folder_is_the_project_folder(layout, dialect) -> None:  # type: ignore[no-untyped-def]
     other = Path(str(layout["project"]).upper())
+    if dialect == "cmd" and not other.drive:
+        pytest.skip("cmd absolute paths require a Windows drive")
     try:
         same = other.samefile(layout["project"])
     except OSError:
