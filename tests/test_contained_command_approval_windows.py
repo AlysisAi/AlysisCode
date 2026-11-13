@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import os
 import subprocess
+import sys
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -182,6 +183,15 @@ def mxc_selected(monkeypatch):
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    # Simulate this module's Windows eligibility checks without changing the
+    # host's os.name (which would make pathlib construct unusable WindowsPaths).
+    monkeypatch.setattr(
+        "alysis_code.agent.tools_assembly.os", SimpleNamespace(**{**vars(os), "name": "nt"})
+    )
+    monkeypatch.setattr(
+        "alysis_code.agent.tools_assembly.sys",
+        SimpleNamespace(**{**vars(sys), "platform": "win32"}),
+    )
     root = tmp_path / "project"
     root.mkdir()
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))

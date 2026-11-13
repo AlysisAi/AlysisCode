@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from test_agent_loop_one_shot_follow_through import _failed_edit_response, _ScriptedClient
+from test_approval_review import _Surface
 
 import alysis_code.agent_loop as agent_loop_mod
 from alysis_code.agent.turn.core import file_change_evidence_is_owed
@@ -24,6 +25,7 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
+from alysis_code.surface import StandingApproval
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="requires git")
 
@@ -115,6 +117,9 @@ def _turns(tmp_path: Path, root: Path, script: list[list[LLMResponse]], *, one_s
         verification_enabled=False,
         session_log_dir_override=sessions,
         session_id_override="turn-end-evidence",
+        # These fixed commands exercise file evidence in a disposable workspace.
+        # Give them an explicit test approval rather than calling a live reviewer.
+        surface=_Surface(standing=StandingApproval("allow", "test-owned workspace commands")),
     )
     try:
         for index, responses in enumerate(script):

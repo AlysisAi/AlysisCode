@@ -419,7 +419,11 @@ def test_credentials_always_keep_the_reason():
         {"protect_repo_meta": False},
     ],
 )
-def test_every_widening_field_opens_the_scope(change):
+def test_every_widening_field_opens_the_scope(change, monkeypatch):
+    monkeypatch.setattr(
+        "alysis_code.sandbox_runner.select_shell_sandbox_backend",
+        lambda _: SimpleNamespace(backend="seatbelt", requires_command_approval=False),
+    )
     assert seatbelt_scope_has_no_remote_route(CLOSED)
     assert seatbelt_scope_has_no_remote_route(SeatbeltShellRunner())
     assert not seatbelt_scope_has_no_remote_route(replace(CLOSED, **change))

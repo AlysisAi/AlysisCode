@@ -713,7 +713,7 @@ _BUILTIN_MODEL_DESCRIPTIONS: dict[str, str] = {
         "Stopped after timeout_s seconds (default 60; max 600)."
     ),
     "shell_background": (
-        "Run a command with a short description for the person; killed when this session ends."
+        "Run a titled command for the session lifetime; killed when this session ends."
     ),
     "shell_service_start": (
         "Start a durable service with durable lifetime; keeps running after this session ends."

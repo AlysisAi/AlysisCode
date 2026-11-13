@@ -155,7 +155,7 @@ def test_runtime_identity(record_property):
                 "pytest": pytest.__version__,
                 "engine": str(Path(alysis_code.__file__).resolve()),
                 "HOME": os.environ["HOME"],
-                "TMPDIR": os.environ["TMPDIR"],
+                "TMPDIR": os.environ.get("TMPDIR"),
             },
             sort_keys=True,
         ),

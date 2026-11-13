@@ -18,11 +18,15 @@ repository before any push.
 4. Run the release checks locally, including the focused [release checklist](release_checklist.md):
 
    ```bash
-   uv sync --frozen --extra dev
+   uv sync --frozen --extra dev --extra documents --extra server --extra azure-host --extra shared-database --extra cloud-storage
    uv run --frozen --no-sync ruff check .
    uv run --frozen --no-sync ruff format --check .
    uv run --frozen --no-sync pytest -q
    ```
+
+   The full suite imports the optional hosted-compute, database, and storage
+   adapters. Install their declared extras for qualification even when external
+   integration tests have no configured service and skip intentionally.
 
 5. Run the extension compile, lint and unit checks from `extensions/vscode-alysis`:
 

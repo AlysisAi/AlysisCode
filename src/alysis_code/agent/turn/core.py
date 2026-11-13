@@ -1370,9 +1370,17 @@ def run_turn(
             # Where the conversation ends now: the reply comes right after.
             note_session_receipt(self, receipt)
 
+        request_messages = kwargs["messages"]
         messages, inputs = prepare_request(
-            kwargs["messages"], artifact_resolver=lambda value: artifact_source(self, value)
+            request_messages, artifact_resolver=lambda value: artifact_source(self, value)
         )
+        # Cleanup owns the caller's transient request list. Keep the transport's
+        # filtered objects in that list so its finally block scrubs exactly what
+        # the provider consumed, including any references the adapter retained.
+        # Persistent conversation metadata must remain available to the host.
+        if request_messages is not self.messages:
+            request_messages[:] = messages
+            messages = request_messages
         # A conversation that has never received any memory records needs no
         # historical ledger. Retain subsequent empty snapshots after it has.
         record_inputs = inputs and (any(s["records"] for s in inputs) or session_receipts(self))

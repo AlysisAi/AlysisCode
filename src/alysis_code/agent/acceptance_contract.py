@@ -1420,7 +1420,7 @@ _PATH_START_RE = re.compile(r"[A-Za-z]:[\\/]|[\\/]{1,2}|\.{1,2}[\\/]|~[\\/]")
 _DEVELOPER_TOOLS = frozenset(
     {
         *_COMMAND_HEADS,
-        "bun", "bundle", "cmake", "composer", "ctest", "deno", "docker", "dotnet", "eslint",
+        "bun", "bundle", "cd", "cmake", "composer", "ctest", "deno", "docker", "dotnet", "eslint",
         "gh", "git", "gradle", "helm", "java", "jest", "kubectl", "mvn", "mypy", "ninja", "nox",
         "npx", "php", "pip", "pip3", "pipenv", "poetry", "rake", "ruby", "ruff", "swift",
         "terraform", "tox", "tsc", "vitest",

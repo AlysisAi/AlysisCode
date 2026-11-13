@@ -100,7 +100,7 @@ jobs:
           version: "0.11.23"
 
       - name: Sync locked test dependencies
-        run: uv sync --frozen --no-editable --python "${{ matrix.python-version }}" --extra dev --extra documents --extra server
+        run: uv sync --frozen --no-editable --python "${{ matrix.python-version }}" --extra dev --extra documents --extra server --extra azure-host --extra shared-database --extra cloud-storage
 
       - name: Install native sandbox for real CLI qualification
         run: |

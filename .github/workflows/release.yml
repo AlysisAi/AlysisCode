@@ -179,7 +179,7 @@ jobs:
           version: "0.11.23"
 
       - name: Install frozen development and build dependencies
-        run: uv sync --frozen --no-editable --extra dev --extra documents
+        run: uv sync --frozen --no-editable --extra dev --extra documents --extra server --extra azure-host --extra shared-database --extra cloud-storage
 
       - name: Reject vulnerable or unapproved locked dependencies
         run: uv run --frozen --no-sync python scripts/release/audit_locked_dependencies.py

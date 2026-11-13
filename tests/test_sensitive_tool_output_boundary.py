@@ -3035,7 +3035,10 @@ def _make_session(
     return session, (client, surface, hooks, diagnostics, store)
 
 
-def test_sensitive_policy_redacts_every_durable_and_display_boundary(tmp_path: Path) -> None:
+@pytest.mark.parametrize("host_memory_metadata", [False, True])
+def test_sensitive_policy_redacts_every_durable_and_display_boundary(
+    tmp_path: Path, host_memory_metadata: bool
+) -> None:
     result = {
         "path": ".env",
         "content": _CANARY,
@@ -3047,6 +3050,8 @@ def test_sensitive_policy_redacts_every_durable_and_display_boundary(tmp_path: P
         },
     }
     session, captures = _make_session(tmp_path, tool_result=result)
+    if host_memory_metadata:
+        session.messages[0]["_memory_turn_id"] = "host-only-turn"
     client, surface, hooks, diagnostics, store = captures
     log_path = store.path
     try:
@@ -3086,6 +3091,9 @@ def test_sensitive_policy_redacts_every_durable_and_display_boundary(tmp_path: P
     assert "environment_file" in combined
     assert ".env" in combined
     assert client.saw_canary_during_call == [False, True]
+    if host_memory_metadata:
+        assert "host-only-turn" not in _serialized(client.request_references)
+        assert session.messages[0]["_memory_turn_id"] == "host-only-turn"
 
 
 def test_provider_echo_of_approved_secret_is_taint_redacted_before_every_boundary(

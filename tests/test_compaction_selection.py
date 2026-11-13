@@ -302,7 +302,13 @@ def test_a_hooks_lines_are_not_taken_for_the_request(tmp_path: Path, request_tex
         session.close()
     assert len(hook_lines) == 12 and all(m.get(TOOL_CONTEXT_MESSAGE_KEY) for m in hook_lines)
     assert any(m.get("content") == request_text for m in compacted)
-    assert request_text[:60] not in archived and "hook line 1:" in archived
+    assert request_text[:60] not in archived and "hook line 0:" in archived
+    # A chunk can end at a completed tool pair. The following hook context
+    # belongs to the next unit and remains live until that unit is archived.
+    kept = json.dumps(compacted, ensure_ascii=False)
+    for line in hook_lines:
+        text = line["content"]
+        assert (text in archived) != (text in kept)
     assert _pins(compacted) == []
 
 
