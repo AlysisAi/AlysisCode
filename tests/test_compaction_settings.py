@@ -24,14 +24,9 @@ def test_compaction_settings_reads_env(monkeypatch) -> None:
     monkeypatch.setenv("ALYSIS_COMPACTION_SAFETY_MARGIN_TOKENS", "700")
     monkeypatch.setenv("ALYSIS_EXECUTION_COMPACTION_MIN_REMOVABLE_MESSAGES", "5")
     monkeypatch.setenv("ALYSIS_EXECUTION_COMPACTION_MIN_REMOVABLE_TOKENS", "2048")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_ENABLED", "0")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_STRATEGY", "oldest")
-    monkeypatch.setenv("ALYSIS_PIN_SCORE_THRESHOLD", "4.5")
     monkeypatch.setenv("ALYSIS_MAX_PINS", "11")
     monkeypatch.setenv("ALYSIS_MAX_PINS_CHARS", "2222")
     monkeypatch.setenv("ALYSIS_PIN_SNIPPET_CHARS", "333")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_USE_LLM", "true")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_LLM_MAX_TURNS", "9")
     monkeypatch.setenv("ALYSIS_CACHE_AWARE_COMPACTION", "false")
     monkeypatch.setenv("ALYSIS_CACHE_AWARE_MIN_TRIGGER_RATIO", "0.81")
 
@@ -48,14 +43,9 @@ def test_compaction_settings_reads_env(monkeypatch) -> None:
     assert settings.safety_margin_tokens == 700
     assert settings.execution_min_removable_messages == 5
     assert settings.execution_min_removable_tokens == 2048
-    assert settings.importance_enabled is False
-    assert settings.importance_strategy == "oldest"
-    assert settings.pin_score_threshold == 4.5
     assert settings.max_pins == 11
     assert settings.max_pins_chars == 2222
     assert settings.pin_snippet_chars == 333
-    assert settings.importance_use_llm is True
-    assert settings.importance_llm_max_turns == 9
     assert settings.cache_aware_compaction is False
     assert settings.cache_aware_min_trigger_ratio == 0.81
 
@@ -76,14 +66,9 @@ def test_compaction_settings_cfg_overrides_env(monkeypatch) -> None:
             "safety_margin_tokens": 333,
             "execution_min_removable_messages": 4,
             "execution_min_removable_tokens": 4096,
-            "importance_enabled": True,
-            "importance_strategy": "lowest_density",
-            "pin_score_threshold": 8.5,
             "max_pins": 7,
             "max_pins_chars": 4444,
             "pin_snippet_chars": 111,
-            "importance_use_llm": False,
-            "importance_llm_max_turns": 15,
             "cache_aware_compaction": False,
             "cache_aware_min_trigger_ratio": 0.79,
         }
@@ -100,14 +85,9 @@ def test_compaction_settings_cfg_overrides_env(monkeypatch) -> None:
     monkeypatch.setenv("ALYSIS_COMPACTION_SAFETY_MARGIN_TOKENS", "1000")
     monkeypatch.setenv("ALYSIS_EXECUTION_COMPACTION_MIN_REMOVABLE_MESSAGES", "2")
     monkeypatch.setenv("ALYSIS_EXECUTION_COMPACTION_MIN_REMOVABLE_TOKENS", "1500")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_ENABLED", "0")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_STRATEGY", "oldest")
-    monkeypatch.setenv("ALYSIS_PIN_SCORE_THRESHOLD", "1.0")
     monkeypatch.setenv("ALYSIS_MAX_PINS", "30")
     monkeypatch.setenv("ALYSIS_MAX_PINS_CHARS", "9000")
     monkeypatch.setenv("ALYSIS_PIN_SNIPPET_CHARS", "700")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_USE_LLM", "true")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_LLM_MAX_TURNS", "2")
     monkeypatch.setenv("ALYSIS_CACHE_AWARE_COMPACTION", "true")
     monkeypatch.setenv("ALYSIS_CACHE_AWARE_MIN_TRIGGER_RATIO", "0.82")
 
@@ -124,14 +104,9 @@ def test_compaction_settings_cfg_overrides_env(monkeypatch) -> None:
     assert settings.safety_margin_tokens == 333
     assert settings.execution_min_removable_messages == 4
     assert settings.execution_min_removable_tokens == 4096
-    assert settings.importance_enabled is True
-    assert settings.importance_strategy == "lowest_density"
-    assert settings.pin_score_threshold == 8.5
     assert settings.max_pins == 7
     assert settings.max_pins_chars == 4444
     assert settings.pin_snippet_chars == 111
-    assert settings.importance_use_llm is False
-    assert settings.importance_llm_max_turns == 15
     assert settings.cache_aware_compaction is False
     assert settings.cache_aware_min_trigger_ratio == 0.79
 
@@ -152,14 +127,9 @@ def test_compaction_settings_invalid_values_fall_back_to_defaults(monkeypatch) -
             "safety_margin_tokens": 0,
             "execution_min_removable_messages": -1,
             "execution_min_removable_tokens": "oops",
-            "importance_enabled": "bad",
-            "importance_strategy": "weird",
-            "pin_score_threshold": "nan",
             "max_pins": 0,
             "max_pins_chars": -1,
             "pin_snippet_chars": "bad",
-            "importance_use_llm": "???",
-            "importance_llm_max_turns": 0,
             "cache_aware_compaction": "bad",
             "cache_aware_min_trigger_ratio": 1.0,
         }
@@ -176,16 +146,53 @@ def test_compaction_settings_invalid_values_fall_back_to_defaults(monkeypatch) -
     monkeypatch.setenv("ALYSIS_COMPACTION_SAFETY_MARGIN_TOKENS", "0")
     monkeypatch.setenv("ALYSIS_EXECUTION_COMPACTION_MIN_REMOVABLE_MESSAGES", "0")
     monkeypatch.setenv("ALYSIS_EXECUTION_COMPACTION_MIN_REMOVABLE_TOKENS", "-10")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_ENABLED", "invalid")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_STRATEGY", "not-a-strategy")
-    monkeypatch.setenv("ALYSIS_PIN_SCORE_THRESHOLD", "-1")
     monkeypatch.setenv("ALYSIS_MAX_PINS", "0")
     monkeypatch.setenv("ALYSIS_MAX_PINS_CHARS", "0")
     monkeypatch.setenv("ALYSIS_PIN_SNIPPET_CHARS", "-4")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_USE_LLM", "invalid")
-    monkeypatch.setenv("ALYSIS_IMPORTANCE_LLM_MAX_TURNS", "-2")
     monkeypatch.setenv("ALYSIS_CACHE_AWARE_COMPACTION", "invalid")
     monkeypatch.setenv("ALYSIS_CACHE_AWARE_MIN_TRIGGER_RATIO", "0.99")
 
     settings = resolve_compaction_settings(cfg)
     assert settings == CompactionSettings()
+
+
+def test_retired_scoring_settings_are_accepted_and_ignored(monkeypatch) -> None:
+    """Configs written for the removed word scoring still load; the keys do nothing."""
+    plain = resolve_compaction_settings(AppConfig(model="gpt-5-nano"))
+    cfg = AppConfig(model="gpt-5-nano")
+    cfg.extra_fields = {
+        "compaction": {
+            "importance_enabled": True,
+            "importance_strategy": "lowest_density",
+            "pin_score_threshold": 8.5,
+            "importance_use_llm": True,
+            "importance_llm_max_turns": 3,
+        }
+    }
+    monkeypatch.setenv("ALYSIS_IMPORTANCE_ENABLED", "1")
+    monkeypatch.setenv("ALYSIS_IMPORTANCE_STRATEGY", "lowest_density")
+    monkeypatch.setenv("ALYSIS_PIN_SCORE_THRESHOLD", "2.5")
+    monkeypatch.setenv("ALYSIS_IMPORTANCE_USE_LLM", "1")
+    monkeypatch.setenv("ALYSIS_IMPORTANCE_LLM_MAX_TURNS", "9")
+
+    settings = resolve_compaction_settings(cfg)
+
+    assert settings == plain
+    assert not hasattr(settings, "importance_strategy")
+    assert not hasattr(settings, "pin_score_threshold")
+
+
+def test_recent_tail_messages_is_optional_and_may_be_zero(monkeypatch) -> None:
+    """Unset, the count follows the chunk size; 0 keeps no recent tail at all."""
+    assert resolve_compaction_settings(AppConfig(model="gpt-5-nano")).recent_tail_messages is None
+
+    monkeypatch.setenv("ALYSIS_COMPACTION_RECENT_TAIL_MESSAGES", "6")
+    assert resolve_compaction_settings(AppConfig(model="gpt-5-nano")).recent_tail_messages == 6
+
+    cfg = AppConfig(model="gpt-5-nano")
+    cfg.extra_fields = {"compaction": {"recent_tail_messages": 0}}
+    assert resolve_compaction_settings(cfg).recent_tail_messages == 0
+
+    for not_a_count in ("many", 0.5, -1):
+        cfg.extra_fields = {"compaction": {"recent_tail_messages": not_a_count}}
+        assert resolve_compaction_settings(cfg).recent_tail_messages == 6  # the environment's

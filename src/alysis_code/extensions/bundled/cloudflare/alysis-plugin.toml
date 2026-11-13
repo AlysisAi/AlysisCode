@@ -1,0 +1,56 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.cloudflare"
+name = "Cloudflare"
+version = "1.0.0"
+description = "Search Cloudflare documentation and API schemas, then inspect or change DNS, Workers and R2 through approved API calls."
+author = "Alysis AI (integration); Cloudflare (service)"
+license = "MIT"
+homepage = "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/"
+keywords = ["cloudflare", "code"]
+
+[compatibility]
+alysis = ">=0.14.2"
+
+# Reviewed 2026-11-07 against the official provider tool reference.
+[[components.verified_connector]]
+id = "cloudflare"
+url = "https://mcp.cloudflare.com/mcp"
+resource = "https://mcp.cloudflare.com/mcp"
+oauth_issuer = "https://mcp.cloudflare.com"
+oauth_sign_in_origins = []
+oauth_client = "dynamic"
+transport = "mcp"
+oauth_scopes = ["offline_access", "user:read", "account:read", "zone.read", "dns.read", "dns.write", "workers-scripts.read", "workers-scripts.write", "workers-r2.read", "workers-r2.write"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "search"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "docs"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "execute"
+reads_only = false
+
+[[components.plugin_skill]]
+name = "inspect-services"
+title = "Inspect Cloudflare services"
+description = "Find the exact API operation and account before inspecting Cloudflare resources."
+uses_tools = ["search", "docs"]
+text = "Use docs for product guidance and search for current API operation signatures. Resolve the account and zone IDs from returned data. The execute tool runs provider-side code and can write, so EVERY execute call requires approval even when the proposed operation reads only. Do not claim search/docs establish account access or that connection means a deployment succeeded. Bound returned fields and never retrieve secrets or API token values. Use only connected tools and their current schemas. Never invent IDs or report success before a successful provider result. Respect cancellation and rate-limit retry delays; do not loop on permission failures. Never request credentials in chat."
+
+[[components.plugin_skill]]
+name = "change-services"
+title = "Change DNS, Workers or storage"
+description = "Prepare and verify a bounded change to the requested Cloudflare resource."
+uses_tools = ["execute"]
+text = "Before execute, state the exact account, zone, method, resource and effect. Inspect the current state first. Use only DNS, Workers or R2 operations within the connection grant. Keep production and preview resources distinct. Do not delete data, change account access, create credentials or purchase resources unless the user explicitly requests and approves that action. Do not combine unrelated mutations in one program. After an uncertain result read the target before retrying; verify changes through a separate read. Use only connected tools and their current schemas. Never invent IDs or report success before a successful provider result. Respect cancellation and rate-limit retry delays; do not loop on permission failures. Never request credentials in chat."
+
+[security]
+contact = "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/"

@@ -48,7 +48,7 @@ _AUTHORITY_CLAIMS = re.compile(
     re.IGNORECASE,
 )
 _URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s<>\"')\]]+|\bwww\.[^\s<>\"')\]]+", re.IGNORECASE)
-_TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
 def _origin(url: str) -> str | None:
@@ -87,7 +87,7 @@ def lint_plugin_skill(
     if len(json.dumps(text, ensure_ascii=False)) > MAX_SKILL_TEXT_JSON_CHARS:
         problems.append(f"text: longer than {MAX_SKILL_TEXT_JSON_CHARS} characters once encoded")
     for tool in uses_tools:
-        if not _TOOL_NAME.fullmatch(tool) or _ENGINE_TOOL_NAMES.fullmatch(tool):
+        if not _TOOL_NAME.fullmatch(tool) or _ENGINE_TOOL_NAMES.match(tool):
             problems.append(f"uses_tools: {tool!r} is not one of this plugin's tool names")
     return problems
 

@@ -21,6 +21,67 @@ _NON_INTERACTIVE_GIT_ENV = {
 }
 
 
+def separate_git_directories(
+    root: Path, *, name_rule: bool = True, enclosing: bool = False
+) -> tuple[Path, ...]:
+    """Git directories that ``root``'s ``.git`` file points to outside any ``.git`` folder.
+
+    ``git init --separate-git-dir`` and some worktree layouts leave a ``.git``
+    file in the folder and keep the repository somewhere else. Protecting the
+    name ``.git`` does not cover that directory, yet Git run on ``root`` takes
+    its configuration and hooks from there. The pointer is read as text; Git
+    is not run. A directory already under a ``.git`` folder is left out,
+    because a caller that protects the name ``.git`` wherever it appears
+    already covers it. A caller that protects exact paths only has no such
+    rule and passes ``name_rule=False`` to be given those directories too.
+
+    A pointer that names ``root`` itself or a folder containing it is left out
+    as well: it cannot be write-protected without stopping every write. A
+    caller that needs to know such a pointer exists passes ``enclosing=True``.
+    """
+
+    def head(path: Path) -> str:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(4096)
+
+    pointer = root / ".git"
+    try:
+        if pointer.is_symlink() or not pointer.is_file():
+            return ()
+        first = (head(pointer).splitlines() or [""])[0]
+        value = first[len("gitdir:") :].strip() if first.startswith("gitdir:") else ""
+        if not value:
+            return ()
+        workspace = root.resolve()
+        gitdir = (root / value).resolve()
+        candidates = [gitdir]
+        common = gitdir / "commondir"
+        try:
+            shared = head(common).strip() if common.is_file() else ""
+        except OSError:
+            if os.name != "nt":
+                raise
+            # On Windows a Git command that is running keeps this name from
+            # being created: it is listed and cannot be opened. The Git
+            # directory itself is still one to report.
+            shared = ""
+        if shared:
+            candidates.append((gitdir / shared).resolve())
+        return tuple(
+            dict.fromkeys(
+                candidate
+                for candidate in candidates
+                if candidate.is_dir()
+                and not (name_rule and any(part.casefold() == ".git" for part in candidate.parts))
+                # Not the workspace itself or a folder containing it, unless
+                # asked: protecting that would stop every write.
+                and (enclosing or not workspace.is_relative_to(candidate))
+            )
+        )
+    except (OSError, RuntimeError, ValueError):
+        return ()
+
+
 def git_hooks_enabled(env: Mapping[str, str] | None = None) -> bool:
     source = env if env is not None else os.environ
     raw = str(env_get_from(source, "ALYSIS_GIT_HOOKS") or "").strip().lower()
@@ -39,9 +100,31 @@ def resolve_disabled_hooks_dir(root: Path, env: Mapping[str, str] | None = None)
     return target
 
 
+# Host-side Git inspects folders the agent can write, outside any sandbox, so it
+# must not run what such a folder supplies. A directory that merely contains
+# HEAD, objects and refs is a repository only when named explicitly, and a
+# repository's filesystem-monitor program is never started.
+_HOST_GIT_CONFIG = (("safe.bareRepository", "explicit"), ("core.fsmonitor", "false"))
+
+
 def build_git_process_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     source = dict(os.environ if env is None else env)
     source.update(_NON_INTERACTIVE_GIT_ENV)
+    try:
+        count = max(0, int(source.get("GIT_CONFIG_COUNT") or 0))
+    except ValueError:
+        count = 0
+    # The last entry for a key wins, so append unless ours already is the last.
+    effective = {
+        source.get(f"GIT_CONFIG_KEY_{index}", "").lower(): source.get(f"GIT_CONFIG_VALUE_{index}")
+        for index in range(count)
+    }
+    for key, value in _HOST_GIT_CONFIG:
+        if effective.get(key.lower()) != value:
+            source[f"GIT_CONFIG_KEY_{count}"] = key
+            source[f"GIT_CONFIG_VALUE_{count}"] = value
+            count += 1
+    source["GIT_CONFIG_COUNT"] = str(count)
     return source
 
 

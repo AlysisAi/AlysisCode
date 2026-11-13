@@ -1,5 +1,8 @@
 # Plugins
 
+Desktop release policy (2026-11-05): expose the 18 non-Google integrations and hide all eight Google entries until provider approval. Google descriptors and draft guidance stay in the engine for later use; the desktop excludes their catalog entries and host bindings. Catalog presence does not override provider or account prerequisites.
+
+
 An Alysis Code plugin is a declarative bundle that contributes one or more skills, custom tools, MCP servers, and hooks through a single `alysis-plugin.toml` file at the plugin root.
 
 Plugins are intentionally explicit. They are installed from pinned sources, validated before use, and enabled only after trust is recorded for the relevant user or workspace. Cloning a repository or copying a directory onto disk does not activate a plugin by itself.
@@ -73,6 +76,10 @@ alysis ext disable acme.demo --project
 
 User-scope enablement is global. Project-scope enablement writes `.alysis/extensions.json` in the workspace and affects only sessions started in that workspace. A plugin must be installed in at least one scope before it can be enabled or disabled.
 
+Plugin install and removal honor `ALYSIS_CONFIG_DIR` for component files, including bundled
+skills, unless the caller explicitly supplies `user_config_dir`. An isolated profile must
+not install skills into the operating system's default Alysis profile.
+
 The effective-enabled set is computed at session start. Alysis Code starts with globally enabled plugins, applies project `disabled[]` removals, then applies project `enabled[]` additions. Because project enables are applied last, a plugin listed in both project arrays ends up enabled. A project disable can turn off a globally enabled plugin for that workspace only.
 
 ## Workspace Trust
@@ -117,6 +124,29 @@ effective activation. Their `workspace_trust` field explains that state. See
 [the GitHub MCP contract](github-mcp-plugin.md) for the host interface.
 
 ## Manifest Reference
+
+### Bundled GitHub MCP integration
+
+`alysis ext install alysis.github` installs the bundled, content-pinned descriptor
+for GitHub's official remote MCP server. The ordinary install trust review still
+applies; no network clone or executable download is needed for this descriptor.
+The catalog and installed record expose `source_kind: "bundled"`,
+`package_sha256`, `manifest_sha256`, and a separate `upstream_commit` documenting
+the inspected upstream source. The legacy `commit` field holds a `sha256:...`
+package content pin in this case, **not a Git commit**. This pins the integration
+descriptor; GitHub's hosted service is updated by GitHub and is not pinned by it.
+
+Desktop main owns the selected-account connection and tool discovery. Python
+receives no GitHub token. Tools are available only in sessions with the installed,
+enabled and unmodified trusted descriptor and a negotiated main-owned MCP catalog.
+Disable/removal must revoke active desktop operations and rebuild their sessions.
+Engine dispatch also rechecks activation and descriptor integrity. Standalone CLI
+can manage this package but cannot execute its host-managed server without a host.
+See [the desktop MCP contract](github-mcp-plugin.md) for the exact interface.
+
+`ext.list` and `ext.info` report effective activation with untrusted workspace
+overrides ignored, matching ordinary noninteractive runtime bootstrap. Their
+`workspace_trust` field explains when project overrides have not been accepted.
 
 ### Top level
 
@@ -286,6 +316,11 @@ reads_only = true                          # Alysis's review; required for every
 - Tools are `mcp__<name>__<tool>` (for example `mcp__notion__notion_search`). Every call to a tool
   not marked `reads_only` asks a person in every mode, as for custom connectors.
 
+The bundled catalog includes Intercom (US). It uses the `mcp` scope and the site-root
+resource `https://mcp.intercom.com`; its reviewed tools cover support search, articles
+and internal notes, excluding customer replies and Fin Operator. Changes require
+approval for every call. See the descriptor for the complete pinned tool list.
+
 ### `[[components.tool]]`
 
 | Field | Type | Required | Description |
@@ -350,3 +385,36 @@ A metadata-only plugin with zero components does not fail validation, but it emi
 `schema_version` is a hard compatibility boundary. Alysis Code only accepts manifests whose schema version it explicitly understands. A future breaking manifest format will increment `schema_version`, and older Alysis Code builds will reject that manifest instead of guessing how to interpret it.
 
 This means plugin authors should treat schema upgrades as explicit migrations, not silent extensions. If you need to support multiple Alysis Code generations, publish separate manifests or release lines that target the correct schema version rather than trying to write one manifest that relies on undefined fallback behavior.
+
+### Figma read integration
+
+`alysis.figma` prepares the official remote Figma MCP server with nine reviewed read
+tools. Live registration returned HTTP 403 because Figma requires client approval.
+The desktop disables installation and connection until Alysis receives that
+approval; this descriptor is not evidence of a functioning live connection.
+It requests `mcp:connect`; its tool projection excludes design writes,
+uploads and code execution. The OAuth issuer is `https://api.figma.com`, with
+`https://www.figma.com` pinned for the browser consent page. See
+https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/.
+
+### Stripe, Neon and Miro expansion (2026-11-04)
+
+- `alysis.stripe` (Code): five reviewed read tools against `https://mcp.stripe.com`.
+  The MCP scope is broad; generic writes and all money movement are excluded by
+  Alysis’s tool allowlist. [Official tools](https://docs.stripe.com/mcp).
+- `alysis.neon` (Code): 22 read tools against
+  `https://mcp.neon.tech/mcp?readonly=true`, requesting OAuth `read`. Metadata,
+  schemas and diagnostics are included; arbitrary SQL, connection strings,
+  mutations and feedback are excluded. Follow Neon’s development/test-only
+  guidance. [Official tools](https://neon.com/docs/ai/neon-mcp-server).
+- `alysis.miro` (Docs & files): 20 reads and 11 changes against
+  `https://mcp.miro.com/`, using `boards:read boards:write`. Canvas updates can delete
+  items and comments can notify colleagues, disclosed before connection. Every
+  change asks for approval. Sharing, team transfers and upload slots are excluded.
+  [Official tools](https://developers.miro.com/docs/miro-mcp-tools).
+
+The descriptors and registry hashes are pinned together. Provider read-only hints
+never expand the reviewed list or bypass approval. These additions reuse the
+protected OAuth store; no credentials are placed in descriptors or model context.
+See the app’s `PLUGIN_COVERAGE_20261104.md` for live test status and the Grok Bot gap
+analysis; passing discovery does not establish account access or tool execution.

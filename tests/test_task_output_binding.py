@@ -412,3 +412,53 @@ def test_untrusted_working_directory_cannot_rebase_an_interpretation_outside_sco
                 ]
             },
         )
+
+
+def test_a_session_output_folder_wins_over_the_launch_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALYSIS_DESKTOP_TASK_OUTPUT_DIRECTORY", "outputs/from-launch")
+    assert host_output_directory(tmp_path) == "outputs/from-launch"
+    assert host_output_directory(tmp_path, session_value="outputs/from-session") == (
+        "outputs/from-session"
+    )
+    assert host_output_directory(
+        tmp_path, relative_to="package", session_value="outputs/current"
+    ) == ("package/outputs/current")
+    monkeypatch.delenv("ALYSIS_DESKTOP_TASK_OUTPUT_DIRECTORY")
+    assert host_output_directory(tmp_path) is None
+    assert host_output_directory(tmp_path, session_value="outputs/x") == "outputs/x"
+    # Checked exactly as the environment value is: inside the task, no traversal.
+    with pytest.raises(ValueError):
+        host_output_directory(tmp_path, session_value="../outside")
+
+
+def test_session_create_keeps_the_host_task_output_directory_per_session(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import alysis_code.ide.stdio_bridge as module
+    from alysis_code.config import AppConfig
+    from alysis_code.ide.health import capabilities_payload
+    from alysis_code.ide.protocol import ProtocolError, ProtocolRequest
+
+    monkeypatch.setattr(module, "load_config", lambda: AppConfig(model="test-model"))
+    created: list[SimpleNamespace] = []
+
+    def create_session(**_kwargs):
+        created.append(SimpleNamespace(close=lambda: None))
+        return created[-1]
+
+    bridge = module.StdioBridge(create_session_fn=create_session)
+
+    def request(session_id, extra):
+        params = {"session_id": session_id, "workspace": str(tmp_path), "mode": "review", **extra}
+        return ProtocolRequest(
+            id=session_id, method="session.create", params=params, protocol_version="1"
+        )
+
+    bridge._session_create(request("with-folder", {"task_output_directory": "outputs/chat-1"}))
+    bridge._session_create(request("without", {}))
+    assert created[0].host_task_output_directory == "outputs/chat-1"
+    assert not hasattr(created[1], "host_task_output_directory")
+    for bad in (42, "", "   ", "a\x00b"):
+        with pytest.raises(ProtocolError):
+            bridge._session_create(request(f"bad-{len(created)}", {"task_output_directory": bad}))
+    assert capabilities_payload()["features"]["session_task_output_directory"] == {"version": 1}

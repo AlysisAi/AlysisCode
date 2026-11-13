@@ -5,6 +5,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import pytest
 from rich.console import Console
 
 from alysis_code.agent_loop import build_tools, create_session
@@ -298,9 +299,8 @@ def test_discover_skills_project_beats_user_and_user_precedence_is_deterministic
     assert research.source_family == ".claude/skills"
 
 
-def test_discover_skills_includes_bundled_pack_by_default(
-    tmp_path: Path, mac_computer_use_protocol
-) -> None:
+@pytest.mark.usefixtures("mac_computer_use_protocol")
+def test_discover_skills_includes_bundled_pack_by_default(tmp_path: Path) -> None:
     discovered = discover_skills(
         focus_path=tmp_path,
         workspace_root=tmp_path,
@@ -313,9 +313,8 @@ def test_discover_skills_includes_bundled_pack_by_default(
     assert all(skill.source_kind == "bundled" for skill in bundled.values())
 
 
-def test_skill_catalog_advertises_every_bundled_skill_beside_project_skills(
-    tmp_path: Path, mac_computer_use_protocol
-) -> None:
+@pytest.mark.usefixtures("mac_computer_use_protocol")
+def test_skill_catalog_advertises_every_bundled_skill_beside_project_skills(tmp_path: Path) -> None:
     for number in range(8):
         folder = tmp_path / ".alysis_skills" / f"project-{number}"
         folder.mkdir(parents=True)
@@ -341,9 +340,8 @@ def test_skill_catalog_advertises_every_bundled_skill_beside_project_skills(
     assert _BUNDLED_SKILL_NAMES | {f"project-{number}" for number in range(8)} <= advertised
 
 
-def test_discover_skills_bundled_kill_switch_removes_exactly_the_pack(
-    tmp_path: Path, mac_computer_use_protocol
-) -> None:
+@pytest.mark.usefixtures("mac_computer_use_protocol")
+def test_discover_skills_bundled_kill_switch_removes_exactly_the_pack(tmp_path: Path) -> None:
     enabled = discover_skills(
         focus_path=tmp_path,
         workspace_root=tmp_path,

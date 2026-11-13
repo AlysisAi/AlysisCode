@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
+import httpx
+
 from ..cancellation import CooperativeCancellationError
 from ..failure_category import is_provider_throttling_error, provider_unavailable_retry_reason
 from ..provider_url import known_provider_key_from_base_url
@@ -248,21 +250,21 @@ def run_provider_limited_call(
     on_retry: Callable[[int, str, float], None] | None = None,
     on_retry_event: Callable[[dict[str, object]], None] | None = None,
     retry_deadline_allows: Callable[[float], bool] | None = None,
-    retry_wall_clock_cap_seconds: float | None = None,
+    retry_wall_clock_cap_seconds: float | None = DEFAULT_PROVIDER_RETRY_WALL_CLOCK_CAP_SECONDS,
     clock_fn: Callable[[], float] | None = None,
     cancellation_token: Any | None = None,
 ) -> T:
     """Run ``call`` under the provider concurrency cap, retrying transient failures.
 
     Retry budgets: every retryable class gets ``retry_settings.max_retries``
-    (the general budget, default 1). A connection dropped mid-response gets
-    ``max(general, DEFAULT_CONNECTION_DROP_MAX_RETRIES)`` -- 5 unless a caller
-    already configured more. Both maxima are recorded in the config snapshot
-    (``provider_retry_snapshot_values``).
+    (the general budget, default 6). A connection dropped mid-response gets
+    ``max(general, DEFAULT_CONNECTION_DROP_MAX_RETRIES)``. Both maxima are
+    recorded in the config snapshot (``provider_retry_snapshot_values``).
 
-    ``retry_wall_clock_cap_seconds`` bounds how long the no-progress,
-    unavailable, truncated-stream and connection-drop classes may keep
-    retrying. Its window opens at the call's first failure, not at the start
+    ``retry_wall_clock_cap_seconds`` bounds how long the throttled,
+    no-progress, unavailable, truncated-stream and connection-drop classes may
+    keep retrying. It applies by default, so every adapter is bounded; pass
+    ``None`` for no window. Its window opens at the call's first failure, not at the start
     of the first attempt: a request that failed after 900 s still gets its
     retry, while fast failures keep retrying only until the window closes. A
     retry may start only if it would begin, after its backoff, inside the
@@ -316,7 +318,8 @@ def run_provider_limited_call(
             #
             # Every other reason keeps the configured budget untouched, and a
             # campaign that already raised max_retries keeps its larger value.
-            connection_drop = is_connection_drop_error(exc)
+            connection_setup = _is_pre_send_connect_failure(exc)
+            connection_drop = not connection_setup and is_connection_drop_error(exc)
             retries_allowed = (
                 connection_drop_retry_budget(settings.max_retries)
                 if connection_drop
@@ -335,7 +338,9 @@ def run_provider_limited_call(
                 retry_reason = RETRY_REASON_TRANSPORT_CONNECTION_DROP
                 wait_seconds = connection_drop_delay_seconds(retries_used, jitter_sample=jitter())
             else:
-                wait_seconds = _retry_delay_seconds(settings, retries_used, jitter)
+                wait_seconds = _retry_delay_seconds(
+                    settings, retries_used, jitter, connection_setup=connection_setup
+                )
             failed_at = clock() if retry_wall_clock_cap_seconds is not None else None
             if cap_window_started_at is None:
                 cap_window_started_at = failed_at
@@ -387,6 +392,10 @@ def run_provider_limited_call(
                             "provider": canonical_key or "unknown",
                             "attempt": retries_used + 2,
                             "reason": retry_reason,
+                            "delay_ms": round(wait_seconds * 1000),
+                            "failure_phase": (
+                                "connection_setup" if connection_setup else "provider_request"
+                            ),
                             "elapsed_ms": max(
                                 0,
                                 int((clock() - retry_started_at) * 1000),
@@ -479,6 +488,8 @@ def _provider_retry_reason(exc: Exception) -> str | None:
         return "provider_no_progress"
     if is_provider_throttling_error(exc):
         return "provider_throttled"
+    if any(isinstance(item, httpx.ConnectTimeout) for item in _iter_exception_chain(exc)):
+        return "provider_unavailable"
     transport_reason = _transient_transport_retry_reason(exc)
     if transport_reason is not None:
         return transport_reason
@@ -513,6 +524,15 @@ _TRANSIENT_TRANSPORT_MARKERS = (
     "temporary failure in name resolution",
     "timed out",
 )
+
+
+def _is_pre_send_connect_failure(exc: BaseException) -> bool:
+    # Trust the transport's typed phase, never text like "connection reset":
+    # that can also describe a response lost after the provider accepted work.
+    for item in _iter_exception_chain(exc):
+        if isinstance(item, httpx.RequestError):
+            return isinstance(item, (httpx.ConnectError, httpx.ConnectTimeout))
+    return False
 
 
 def _transient_transport_retry_reason(exc: BaseException) -> str | None:
@@ -659,9 +679,16 @@ def _retry_delay_seconds(
     settings: ProviderRetrySettings,
     retry_index: int,
     random_fn: Callable[[], float],
+    *,
+    connection_setup: bool = False,
 ) -> float:
     base = max(settings.base_delay_seconds, 0.0)
     max_delay = max(settings.max_delay_seconds, base)
+    if connection_setup:
+        # Nothing was sent, so retry quickly, but leave a returning network
+        # several seconds: 0.2, 0.4, 0.8, 1.6, 3.2, 6.4.
+        base = min(base, 0.2)
+        max_delay = min(max_delay, 8.0)
     raw_delay = min(max_delay, base * (2**retry_index))
     jitter_sample = min(max(float(random_fn()), 0.0), 1.0)
     jitter_offset = (jitter_sample - 0.5) * 2.0 * _JITTER_RATIO * raw_delay

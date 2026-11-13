@@ -58,6 +58,10 @@ def test_project_mcp_refusal_precedes_review_noop_and_live_mutation(
 def test_user_direct_install_retains_existing_behavior(tmp_path, monkeypatch):
     _env(monkeypatch, tmp_path)
     _mock_clone(monkeypatch)
+    monkeypatch.setattr(
+        "alysis_code.skills.paths.canonical_user_config_dir",
+        lambda: pytest.fail("Plugin skills escaped the configured profile"),
+    )
     prompts = []
     result = installer.install_plugin(
         source="git+https://example.invalid/p.git@" + "a" * 40,
@@ -69,6 +73,11 @@ def test_user_direct_install_retains_existing_behavior(tmp_path, monkeypatch):
     assert result.components_installed.mcp_server_ids == ("demo_server",)
     config = json.loads((tmp_path / "config/mcp.json").read_text())
     assert any(row.get("command") == "python" for row in config["servers"].values())
+    # All components, not only MCP, must honor the selected profile on every OS.
+    assert (tmp_path / "config/skills/demo-skill/SKILL.md").is_file()
+    assert (tmp_path / "config/skills.json").is_file()
+    installer.uninstall_plugin(plugin_id=result.plugin_id, repo_root=tmp_path)
+    assert not (tmp_path / "config/skills/demo-skill").exists()
 
 
 @pytest.mark.parametrize("plugin_id", ["alysis.github", "alysis.google_drive"])

@@ -1354,288 +1354,74 @@ def test_verify_command_resolution_keeps_cli_and_nondefault_config_higher_priori
     )
 
 
-def test_generic_configured_verify_preset_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["pytest -q", "ruff check ."])
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("pytest -q", "ruff check ."),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_pytest_plus_plain_ruff_check_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["pytest -q", "ruff check"])
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("pytest -q", "ruff check"),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_uv_run_pytest_and_plain_ruff_check_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "ruff check"])
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("uv run pytest -q", "ruff check"),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_uv_run_pytest_and_uv_run_ruff_check_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "uv run ruff check"])
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("uv run pytest -q", "uv run ruff check"),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_python_m_pytest_and_python_m_ruff_check_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=["python -m pytest -q", "python -m ruff check ."],
-    )
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("python -m pytest -q", "python -m ruff check ."),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_uv_run_python_m_pytest_and_ruff_check_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=["uv run python -m pytest -q", "uv run python -m ruff check ."],
-    )
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("uv run python -m pytest -q", "uv run python -m ruff check ."),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_py_m_pytest_and_py_m_ruff_check_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=["py -m pytest -q", "py -m ruff check ."],
-    )
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("py -m pytest -q", "py -m ruff check ."),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_windows_backslash_python_exe_generic_preset_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=[
-            r"C:\Python311\python.exe -m pytest -q",
-            r"C:\Python311\python.exe -m ruff check .",
-        ],
-    )
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(
-            r"C:\Python311\python.exe -m pytest -q",
-            r"C:\Python311\python.exe -m ruff check .",
+@pytest.mark.parametrize(
+    "commands",
+    [
+        pytest.param(["pytest -q", "ruff check ."], id="pytest-ruff-dot"),
+        pytest.param(["pytest -q", "ruff check"], id="pytest-ruff"),
+        pytest.param(["uv run pytest -q", "ruff check"], id="uv-pytest"),
+        pytest.param(["uv run pytest -q", "uv run ruff check"], id="uv-pytest-ruff"),
+        pytest.param(["python -m pytest -q", "python -m ruff check ."], id="python-module"),
+        pytest.param(
+            ["uv run python -m pytest -q", "uv run python -m ruff check ."], id="uv-python-module"
         ),
-        source="config.verify_commands_generic_preset",
-    )
-
-
-def test_quoted_windows_python_exe_generic_preset_is_not_authoritative_for_managed_resolution(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=[
-            r'"C:\Program Files\Python311\python.exe" -m pytest -q',
-            r'"C:\Program Files\Python311\python.exe" -m ruff check .',
-        ],
-    )
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(
-            r'"C:\Program Files\Python311\python.exe" -m pytest -q',
-            r'"C:\Program Files\Python311\python.exe" -m ruff check .',
+        pytest.param(["py -m pytest -q", "py -m ruff check ."], id="py-launcher"),
+        pytest.param(
+            ["C:\\Python311\\python.exe -m pytest -q", "C:\\Python311\\python.exe -m ruff check ."],
+            id="windows-python",
         ),
+        pytest.param(
+            [
+                '"C:\\Program Files\\Python311\\python.exe" -m pytest -q',
+                '"C:\\Program Files\\Python311\\python.exe" -m ruff check .',
+            ],
+            id="quoted-windows-python",
+        ),
+    ],
+)
+def test_generic_configured_verify_presets_are_fallback_candidates(
+    tmp_path: Path, commands: list[str]
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = AppConfig(model="test-model", verify_commands=commands)
+
+    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
+
+    assert resolved == ResolvedVerifyCommands(
+        commands=tuple(commands),
         source="config.verify_commands_generic_preset",
     )
 
 
-def test_generic_configured_verify_preset_still_allows_repo_inference(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "commands",
+    [
+        pytest.param(["pytest -q", "ruff check ."], id="pytest-ruff-dot"),
+        pytest.param(["pytest -q", "ruff check"], id="pytest-ruff"),
+        pytest.param(["uv run pytest -q", "ruff check"], id="uv-pytest"),
+        pytest.param(["uv run pytest -q", "uv run ruff check"], id="uv-pytest-ruff"),
+        pytest.param(
+            ["uv run python -m pytest -q", "uv run python -m ruff check ."], id="uv-python-module"
+        ),
+        pytest.param(
+            ["C:\\Python311\\python.exe -m pytest -q", "C:\\Python311\\python.exe -m ruff check ."],
+            id="windows-python",
+        ),
+    ],
+)
+def test_repo_inference_takes_precedence_over_generic_verify_presets(
+    tmp_path: Path, commands: list[str]
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "package.json").write_text(
-        '{"scripts":{"test":"vitest run"}}\n',
-        encoding="utf-8",
-    )
-    cfg = AppConfig(model="test-model", verify_commands=["pytest -q", "ruff check ."])
+    (repo / "package.json").write_text('{"scripts":{"test":"vitest run"}}\n', encoding="utf-8")
+    cfg = AppConfig(model="test-model", verify_commands=commands)
 
     resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
 
     assert resolved == ResolvedVerifyCommands(
-        commands=("npm test",),
-        source="repo_scan.likely_test_commands",
-    )
-
-
-def test_pytest_plus_plain_ruff_check_still_allows_repo_inference(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "package.json").write_text(
-        '{"scripts":{"test":"vitest run"}}\n',
-        encoding="utf-8",
-    )
-    cfg = AppConfig(model="test-model", verify_commands=["pytest -q", "ruff check"])
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("npm test",),
-        source="repo_scan.likely_test_commands",
-    )
-
-
-def test_repo_inference_beats_uv_run_pytest_generic_preset_in_js_repo(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "package.json").write_text(
-        '{"scripts":{"test":"vitest run"}}\n',
-        encoding="utf-8",
-    )
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "ruff check"])
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("npm test",),
-        source="repo_scan.likely_test_commands",
-    )
-
-
-def test_repo_inference_beats_uv_run_pytest_and_uv_run_ruff_check_generic_preset_in_js_repo(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "package.json").write_text(
-        '{"scripts":{"test":"vitest run"}}\n',
-        encoding="utf-8",
-    )
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "uv run ruff check"])
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("npm test",),
-        source="repo_scan.likely_test_commands",
-    )
-
-
-def test_repo_inference_beats_module_invoked_generic_preset_in_js_repo(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "package.json").write_text(
-        '{"scripts":{"test":"vitest run"}}\n',
-        encoding="utf-8",
-    )
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=["uv run python -m pytest -q", "uv run python -m ruff check ."],
-    )
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("npm test",),
-        source="repo_scan.likely_test_commands",
-    )
-
-
-def test_repo_inference_beats_windows_launcher_generic_preset_in_js_repo(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "package.json").write_text(
-        '{"scripts":{"test":"vitest run"}}\n',
-        encoding="utf-8",
-    )
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=[
-            r"C:\Python311\python.exe -m pytest -q",
-            r"C:\Python311\python.exe -m ruff check .",
-        ],
-    )
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=("npm test",),
-        source="repo_scan.likely_test_commands",
+        commands=("npm test",), source="repo_scan.likely_test_commands"
     )
 
 
@@ -1673,82 +1459,22 @@ def test_explicit_repo_specific_config_verify_commands_remain_authoritative(
 @pytest.mark.parametrize(
     "commands",
     [
+        # Targeted paths and explicit Ruff flags.
         ["ruff check app.py"],
         ["ruff check src tests"],
         ["ruff check --config pyproject.toml ."],
         ["ruff check --select F401 ."],
         ["ruff check src/app.py"],
-    ],
-)
-def test_targeted_or_flagged_ruff_config_verify_commands_remain_authoritative(
-    tmp_path: Path,
-    commands: list[str],
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=commands)
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=tuple(commands),
-        source="config.verify_commands",
-    )
-
-
-@pytest.mark.parametrize(
-    "commands",
-    [
+        # Runner prefixes and environment assignments.
         ["uv run pytest tests/api/test_users.py -q"],
         ["poetry run pytest -m smoke -q"],
         ["pipenv run pytest tests/custom.py -q"],
         ["uv run PYTHONPATH=src pytest -q"],
-    ],
-)
-def test_targeted_or_env_runner_prefixed_pytest_commands_remain_authoritative(
-    tmp_path: Path,
-    commands: list[str],
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=commands)
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=tuple(commands),
-        source="config.verify_commands",
-    )
-
-
-@pytest.mark.parametrize(
-    "commands",
-    [
         ["uv run ruff check src/app.py"],
         ["poetry run ruff check src tests"],
         ["pipenv run ruff check --config pyproject.toml ."],
         ["uv run ruff check --select F401 ."],
-    ],
-)
-def test_targeted_runner_prefixed_ruff_commands_remain_authoritative(
-    tmp_path: Path,
-    commands: list[str],
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=commands)
-
-    resolved = resolve_verify_command_selection(cfg=cfg, verify_cmd=None, root=repo)
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=tuple(commands),
-        source="config.verify_commands",
-    )
-
-
-@pytest.mark.parametrize(
-    "commands",
-    [
+        # Module invocation, including Windows paths and nested runners.
         ["python -m pytest tests/api/test_users.py -q"],
         [r"C:\Python311\python.exe -m pytest tests/api/test_users.py -q"],
         [r'"C:\Program Files\Python311\python.exe" -m pytest -m smoke -q'],
@@ -1765,8 +1491,9 @@ def test_targeted_runner_prefixed_ruff_commands_remain_authoritative(
         [r'uv run "C:\Program Files\Python311\python.exe" -m pytest tests/custom.py -q'],
         ["uv run py -m pytest tests/api/test_users.py -q"],
     ],
+    ids=lambda commands: commands[0],
 )
-def test_targeted_module_invoked_commands_remain_authoritative(
+def test_targeted_config_verify_commands_remain_authoritative(
     tmp_path: Path,
     commands: list[str],
 ) -> None:
@@ -1944,26 +1671,72 @@ def test_verify_command_refinement_suppresses_generic_fallback_for_js_bootstrap_
     )
 
 
-def test_task_aware_verify_resolution_returns_no_authoritative_for_js_bootstrap_under_generic_preset(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("commands", "paths"),
+    [
+        pytest.param(
+            ["pytest -q", "ruff check ."], ["package.json", "src/index.js"], id="js-pytest-ruff-dot"
+        ),
+        pytest.param(
+            ["pytest -q", "ruff check"], ["README.md", "docs/usage.md"], id="docs-pytest-ruff"
+        ),
+        pytest.param(
+            ["pytest -q", "ruff check"], ["package.json", "src/index.js"], id="js-pytest-ruff"
+        ),
+        pytest.param(
+            ["uv run pytest -q", "ruff check"], ["README.md", "docs/usage.md"], id="docs-uv-pytest"
+        ),
+        pytest.param(
+            ["uv run pytest -q", "ruff check"], ["package.json", "src/index.js"], id="js-uv-pytest"
+        ),
+        pytest.param(
+            ["uv run pytest -q", "uv run ruff check"],
+            ["README.md", "docs/usage.md"],
+            id="docs-uv-pytest-ruff",
+        ),
+        pytest.param(
+            ["uv run pytest -q", "uv run ruff check"],
+            ["package.json", "src/index.js"],
+            id="js-uv-pytest-ruff",
+        ),
+        pytest.param(
+            ["uv run python -m pytest -q", "uv run python -m ruff check ."],
+            ["README.md", "docs/usage.md"],
+            id="docs-uv-python-module",
+        ),
+        pytest.param(
+            ["uv run python -m pytest -q", "uv run python -m ruff check ."],
+            ["package.json", "src/index.js"],
+            id="js-uv-python-module",
+        ),
+        pytest.param(
+            ["C:\\Python311\\python.exe -m pytest -q", "C:\\Python311\\python.exe -m ruff check ."],
+            ["README.md", "docs/usage.md"],
+            id="docs-windows-python",
+        ),
+        pytest.param(
+            ["C:\\Python311\\python.exe -m pytest -q", "C:\\Python311\\python.exe -m ruff check ."],
+            ["package.json", "src/index.js"],
+            id="js-windows-python",
+        ),
+    ],
+)
+def test_task_refinement_rejects_unrelated_generic_verify_presets(
+    tmp_path: Path, commands: list[str], paths: list[str]
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["pytest -q", "ruff check ."])
+    cfg = AppConfig(model="test-model", verify_commands=commands)
 
     resolved = resolve_task_aware_verify_command_selection(
         cfg=cfg,
         verify_cmd=None,
         root=repo,
-        task={
-            "estimated_files": ["package.json", "src/index.js"],
-            "write_scope": ["package.json", "src/index.js"],
-        },
+        task={"estimated_files": list(paths), "write_scope": list(paths)},
     )
 
     assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
+        commands=(), source="task_refinement.no_authoritative_commands"
     )
 
 
@@ -2092,254 +1865,6 @@ def test_task_aware_verify_resolution_prefers_explicit_pytest_doctest_command(
     assert resolved == ResolvedVerifyCommands(
         commands=("pytest --doctest-glob=README.md -q",),
         source="task_refinement.explicit_pytest",
-    )
-
-
-def test_docs_only_task_under_pytest_plus_plain_ruff_check_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["pytest -q", "ruff check"])
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["README.md", "docs/usage.md"],
-            "write_scope": ["README.md", "docs/usage.md"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_js_bootstrap_task_under_pytest_plus_plain_ruff_check_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["pytest -q", "ruff check"])
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["package.json", "src/index.js"],
-            "write_scope": ["package.json", "src/index.js"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_docs_only_task_under_uv_run_pytest_and_ruff_check_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "ruff check"])
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["README.md", "docs/usage.md"],
-            "write_scope": ["README.md", "docs/usage.md"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_js_bootstrap_task_under_uv_run_pytest_and_ruff_check_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "ruff check"])
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["package.json", "src/index.js"],
-            "write_scope": ["package.json", "src/index.js"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_docs_only_task_under_uv_run_pytest_and_uv_run_ruff_check_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "uv run ruff check"])
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["README.md", "docs/usage.md"],
-            "write_scope": ["README.md", "docs/usage.md"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_js_bootstrap_task_under_uv_run_pytest_and_uv_run_ruff_check_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(model="test-model", verify_commands=["uv run pytest -q", "uv run ruff check"])
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["package.json", "src/index.js"],
-            "write_scope": ["package.json", "src/index.js"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_docs_only_task_under_uv_run_python_m_pytest_and_ruff_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=["uv run python -m pytest -q", "uv run python -m ruff check ."],
-    )
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["README.md", "docs/usage.md"],
-            "write_scope": ["README.md", "docs/usage.md"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_js_bootstrap_task_under_uv_run_python_m_pytest_and_ruff_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=["uv run python -m pytest -q", "uv run python -m ruff check ."],
-    )
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["package.json", "src/index.js"],
-            "write_scope": ["package.json", "src/index.js"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_docs_only_task_under_windows_launcher_generic_preset_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=[
-            r"C:\Python311\python.exe -m pytest -q",
-            r"C:\Python311\python.exe -m ruff check .",
-        ],
-    )
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["README.md", "docs/usage.md"],
-            "write_scope": ["README.md", "docs/usage.md"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
-    )
-
-
-def test_js_bootstrap_task_under_windows_launcher_generic_preset_resolves_to_no_authoritative_commands(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cfg = AppConfig(
-        model="test-model",
-        verify_commands=[
-            r"C:\Python311\python.exe -m pytest -q",
-            r"C:\Python311\python.exe -m ruff check .",
-        ],
-    )
-
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=None,
-        root=repo,
-        task={
-            "estimated_files": ["package.json", "src/index.js"],
-            "write_scope": ["package.json", "src/index.js"],
-        },
-    )
-
-    assert resolved == ResolvedVerifyCommands(
-        commands=(),
-        source="task_refinement.no_authoritative_commands",
     )
 
 

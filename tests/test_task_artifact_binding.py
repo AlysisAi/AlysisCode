@@ -10,14 +10,15 @@ from alysis_code.agent.acceptance_contract import (
     finalize_acceptance_contract,
 )
 from alysis_code.agent.task_artifact_binding import (
+    bind_declared_requirements,
     bind_path_interpretation,
     path_binding_identity,
     retained_user_instructions,
 )
 
 
-def binding(name, quote, role="required_output", directory=""):
-    return {"name": name, "directory": directory, "role": role, "evidence_quote": quote}
+def binding(name, quote, role="required_output", directory="", **fields):
+    return {"name": name, "directory": directory, "role": role, "evidence_quote": quote, **fields}
 
 
 @pytest.mark.parametrize(
@@ -42,19 +43,25 @@ def test_remote_resource_is_not_a_local_artifact(tmp_path, remote):
         )
 
 
-def interpret(root, instruction, entries):
+def interpret(root, instruction, entries, **requirements):
     baseline = build_acceptance_contract(root=root, instruction=instruction)
+    arguments = {"paths": entries, **requirements}
+    entry_refs = []
     refs = bind_path_interpretation(
         root=root,
         instruction=instruction,
-        arguments={"paths": entries},
+        arguments=arguments,
         prior_refs=baseline.path_refs,
+        entry_refs=entry_refs,
     )
     return build_acceptance_contract(
         root=root,
         instruction=instruction,
         workspace_snapshot=baseline.snapshot,
         interpreted_path_refs=refs,
+        declared=bind_declared_requirements(
+            instruction=instruction, arguments=arguments, refs=refs, entry_refs=entry_refs
+        ),
     )
 
 
@@ -68,28 +75,41 @@ def test_sentence_punctuation_does_not_make_an_exact_binding_look_omitted(tmp_pa
 
 
 @pytest.mark.parametrize(
-    "quote", [None, "result.json", "Create result.json", "Create result.json as plain text."]
+    "instruction",
+    [
+        "Create result.json as valid JSON.",
+        "Φτιάξε το result.json ως έγκυρο JSON.",
+        "创建 result.json, 必须是合法的 JSON",
+    ],
 )
-def test_short_binding_quote_cannot_weaken_explicit_format(tmp_path, quote):
-    instruction = "Create result.json as valid JSON."
-    entry = binding("result.json", quote)
-    if quote is None:
-        del entry["evidence_quote"]
-    contract = interpret(tmp_path, instruction, [entry])
+def test_a_declared_format_is_required_and_a_suffix_alone_is_not(tmp_path, instruction):
     (tmp_path / "result.json").write_text("invalid JSON")
-    finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=set())
-    criterion = next(
-        c for c in contract.criteria if c.kind == AcceptanceCriterionKind.CONTENT_FORMAT_SCHEMA
+
+    def format_criterion(contract):
+        finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=set())
+        return next(
+            c for c in contract.criteria if c.kind == AcceptanceCriterionKind.CONTENT_FORMAT_SCHEMA
+        )
+
+    # The model read the request and declared the format: a requirement.
+    declared = interpret(
+        tmp_path, instruction, [binding("result.json", instruction, format="json")]
     )
+    criterion = format_criterion(declared)
     assert criterion.required_for_finalization
     assert criterion.status == AcceptanceCriterionStatus.FAILED
-    assert contract.problem_names()
+    assert declared.problem_names()
+    # No declared format: the .json suffix is only a hint, whatever the wording.
+    undeclared = interpret(tmp_path, instruction, [binding("result.json", instruction)])
+    assert not format_criterion(undeclared).required_for_finalization
 
 
 @pytest.mark.parametrize("name", ["result; final.custom", "result and save.custom"])
-def test_host_binding_context_preserves_filename_punctuation(tmp_path, name):
+def test_a_declared_format_keeps_filename_punctuation(tmp_path, name):
     instruction = f'Create "{name}" in "reports" as valid JSON.'
-    contract = interpret(tmp_path, instruction, [binding(name, instruction, directory="reports")])
+    contract = interpret(
+        tmp_path, instruction, [binding(name, instruction, directory="reports", format="json")]
+    )
     criterion = next(
         c for c in contract.criteria if c.kind == AcceptanceCriterionKind.CONTENT_FORMAT_SCHEMA
     )
@@ -104,13 +124,13 @@ def test_host_binding_context_preserves_filename_punctuation(tmp_path, name):
         'In "json-output", create "result.custom" as valid JSON; in "csv-output", create "result.custom" as valid CSV.',
     ],
 )
-def test_binding_formats_stay_scoped_to_each_basename_and_directory(tmp_path, instruction):
+def test_declared_formats_stay_with_each_basename_and_directory(tmp_path, instruction):
     contract = interpret(
         tmp_path,
         instruction,
         [
-            binding("result.custom", "result.custom", directory="json-output"),
-            binding("result.custom", "result.custom", directory="csv-output"),
+            binding("result.custom", "result.custom", directory="json-output", format="json"),
+            binding("result.custom", "result.custom", directory="csv-output", format="csv"),
         ],
     )
     formats = [
@@ -125,6 +145,15 @@ def test_binding_formats_stay_scoped_to_each_basename_and_directory(tmp_path, in
     assert any(
         c.paths == ("csv-output/result.custom",) and "csv" in c.description.lower() for c in formats
     )
+
+
+def test_a_format_needs_a_declared_output(tmp_path):
+    with pytest.raises(ValueError, match="format belongs to one required_output"):
+        interpret(
+            tmp_path,
+            "Read data.json.",
+            [binding("data.json", "Read data.json.", role="existing_input", format="json")],
+        )
 
 
 @pytest.mark.parametrize(
@@ -230,10 +259,12 @@ def test_ungrounded_or_invalid_bindings_never_create_requirements(tmp_path, entr
         interpret(tmp_path, "Create result.txt.", entries)
 
 
-def test_binding_cannot_omit_another_recognized_user_path(tmp_path):
+def test_a_declaration_may_leave_out_a_detected_mention(tmp_path):
+    # Detections are hints. What the request's files are is the model's reading.
     instruction = "Create first.txt and second.txt."
-    with pytest.raises(ValueError, match="omitted"):
-        interpret(tmp_path, instruction, [binding("first.txt", instruction)])
+    contract = interpret(tmp_path, instruction, [binding("first.txt", instruction)])
+    assert [ref.raw_text for ref in contract.path_refs] == ["first.txt"]
+    assert contract.allowed_output_paths == {"first.txt"}
 
 
 @pytest.mark.parametrize("setting", ["user.name", "παράμετρος.όνομα", "属性.名称"])
@@ -254,12 +285,20 @@ def test_explicit_non_path_interpretation_removes_false_positive_without_access(
     assert not (tmp_path / "result.txt").exists()
 
 
-def test_false_positive_classification_cannot_silently_omit_a_different_candidate(tmp_path):
-    instruction = "Set user.name, then create result.txt."
-    with pytest.raises(ValueError, match="omitted.*result.txt"):
-        interpret(tmp_path, instruction, [binding("user.name", instruction, role="non_path")])
-    with pytest.raises(ValueError, match="omitted.*result.txt"):
-        interpret(tmp_path, instruction, [binding(instruction, instruction, role="non_path")])
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Set user.name, then create result.txt.",
+        "Όρισε το user.name και μετά φτιάξε το result.txt.",
+    ],
+)
+def test_a_left_out_mention_carries_no_requirement(tmp_path, instruction):
+    contract = interpret(
+        tmp_path, instruction, [binding("user.name", instruction, role="non_path")]
+    )
+    assert contract.path_refs == []
+    assert not contract.allowed_output_paths
+    assert not [item for item in contract.criteria if item.path_refs]
 
 
 def test_additional_verbatim_non_path_mentions_are_harmless(tmp_path):
@@ -308,9 +347,9 @@ def test_non_path_literal_uses_same_identity_normalization_as_detector(tmp_path,
         ],
     )
     assert [ref.raw_text for ref in contract.path_refs] == ["result.txt"]
-    with pytest.raises(ValueError) as exc:
-        interpret(tmp_path, instruction, [binding("result.txt", "result.txt")])
-    assert repr(literal) in str(exc.value)
+    # Leaving the literal out says the same thing as classifying it.
+    contract = interpret(tmp_path, instruction, [binding("result.txt", "result.txt")])
+    assert [ref.raw_text for ref in contract.path_refs] == ["result.txt"]
 
 
 def test_legacy_quote_is_ignored_but_shortened_absolute_name_is_rejected(tmp_path):
@@ -625,6 +664,51 @@ def test_component_sliced_from_full_written_path_is_not_a_separate_literal(tmp_p
         interpret(tmp_path, instruction, [binding(name, instruction)])
 
 
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Make every module in pkg/ meet its docstring.",
+        "Θα δουλέψουμε στον φάκελο pkg/. Μην αλλάξεις τίποτα άλλο.",
+        "Look in pkg/, then stop.",
+        "把 `pkg/` 里的模块整理一下",
+        "The work is all in pkg/",
+        # Closing quotes, brackets and sentence punctuation of other scripts.
+        "Ο φάκελος «pkg/» έχει τα πάντα.",
+        "The folder “pkg/” has it all.",
+        "先看 pkg/。然后停下",
+        "先看 pkg/、再看别的",
+        "انظر في pkg/؟",
+        "Everything is in pkg/…",
+        '(It is all in "pkg/.")',
+    ],
+)
+def test_a_folder_written_with_its_separator_is_that_folder(tmp_path, instruction):
+    (tmp_path / "pkg").mkdir()
+    contract = interpret(
+        tmp_path, instruction, [binding("pkg", instruction, role="location_context")]
+    )
+    assert [ref.display_path for ref in contract.path_refs] == ["pkg"]
+
+
+@pytest.mark.parametrize(
+    "instruction,name",
+    [
+        ("Read pkg/mod.py first.", "pkg"),  # a path goes on after the separator
+        ("Read pkg/*.py first.", "pkg"),
+        ("Delete tmp/?.bak files.", "tmp"),
+        ("Read pkg/.hidden first.", "pkg"),
+        ("Work under src/app/ only.", "src"),  # a parent sliced from a longer folder
+        ("Work under src/app/ only.", "app"),
+        ("Remove the // TODO lines from src/app.py.", "/"),  # a comment marker is not the root
+        (r"Open My\ Documents/report.txt.", "My"),  # an escaped space is not a separator
+        ("See https://host/path/ for the docs.", "path"),
+    ],
+)
+def test_a_separator_does_not_let_a_component_be_sliced_from_a_path(tmp_path, instruction, name):
+    with pytest.raises(ValueError, match="verbatim"):
+        interpret(tmp_path, instruction, [binding(name, instruction, role="location_context")])
+
+
 @pytest.mark.parametrize("name", ["records", "result.txt", "result", "txt"])
 def test_short_quote_cannot_hide_a_path_component_boundary(tmp_path, name):
     instruction = 'Create "C:/records/result.txt".'
@@ -671,3 +755,98 @@ def test_split_components_cannot_relocate_or_shorten_a_written_path(tmp_path, di
     instruction = 'Create "records/result.json" as valid JSON.'
     with pytest.raises(ValueError, match="verbatim"):
         interpret(tmp_path, instruction, [binding(name, instruction, directory=directory)])
+
+
+@pytest.mark.parametrize(
+    "written,entry",
+    [
+        ("/outside/https/allowed_signers", binding("allowed_signers", "", "existing_input")),
+        (
+            "/outside/https/allowed_signers",
+            binding("allowed_signers", "", "existing_input", "https"),
+        ),
+        ("C:/records/result.txt", binding("result.txt", "", "existing_input")),
+        (r"C:\records\result.txt", binding("result.txt", "", "existing_input")),
+        ("資料/δεδομένα.txt", binding("δεδομένα.txt", "", "existing_input")),
+    ],
+)
+def test_rejected_shortened_path_names_the_complete_written_path(tmp_path, written, entry):
+    instruction = f'Inspect "{written}" and report its value.'
+    with pytest.raises(ValueError, match="complete written path") as rejected:
+        interpret(tmp_path, instruction, [entry])
+    assert f"The request writes it as {written!r}" in str(rejected.value)
+    # The hint is the declaration the binder accepts, with the role unchanged.
+    contract = interpret(tmp_path, instruction, [binding(written, "", "existing_input")])
+    assert [ref.raw_text for ref in contract.path_refs] == [written]
+
+
+def test_rejected_joined_name_names_the_separately_written_parts(tmp_path):
+    instruction = "In clone create a branch, then write done to ui-parity.txt."
+    for name in ("clone/ui-parity.txt", str(tmp_path / "clone" / "ui-parity.txt")):
+        with pytest.raises(ValueError, match="verbatim") as rejected:
+            interpret(tmp_path, instruction, [binding(name, "")])
+        assert "declare name 'ui-parity.txt' with directory 'clone'" in str(rejected.value)
+    contract = interpret(tmp_path, instruction, [binding("ui-parity.txt", "", directory="clone")])
+    assert contract.allowed_output_paths == {"clone/ui-parity.txt"}
+
+
+@pytest.mark.parametrize(
+    "instruction,entry,earlier",
+    [
+        ("Inspect input.txt.", binding("secret.txt", "", "existing_input"), ()),
+        ("Inspect input.txt.", binding("other/input.txt", "", "existing_input"), ()),
+        # Parts written in different messages are never offered as one path.
+        (
+            "Use deploy.",
+            binding("/outside/deploy", "", "existing_input"),
+            ("Use folder /outside.",),
+        ),
+    ],
+)
+def test_rejection_hint_never_offers_text_the_user_did_not_write(
+    tmp_path, instruction, entry, earlier
+):
+    baseline = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    with pytest.raises(ValueError) as rejected:
+        bind_path_interpretation(
+            root=tmp_path,
+            instruction=instruction,
+            earlier_instructions=earlier,
+            arguments={"paths": [entry]},
+            prior_refs=baseline.path_refs,
+        )
+    assert str(rejected.value).endswith("not a basename sliced from it.")
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "There is a bug in calc.py: add(2, 3) returns -1. Fix it.",
+        "Fix calc.py - it returns the wrong sum.",
+        "The file to fix is calc.py:",
+        "Fix this one (calc.py:) first.",
+    ],
+)
+def test_name_followed_by_prose_punctuation_is_the_complete_name(tmp_path, instruction):
+    contract = interpret(tmp_path, instruction, [binding("calc.py", "", "existing_input")])
+    assert [ref.raw_text for ref in contract.path_refs] == ["calc.py"]
+
+
+@pytest.mark.parametrize(
+    "instruction,name",
+    [
+        ("Open calc.py:12 and fix it.", "calc.py"),
+        (r"Create C:\records\result.txt.", "C"),
+        ("Copy host:project/calc.py here.", "host"),
+        ("Fix calc.py-old before the release.", "calc.py"),
+        ("Fix calc.py.bak before the release.", "calc.py"),
+    ],
+)
+def test_punctuation_followed_by_more_path_still_continues_it(tmp_path, instruction, name):
+    with pytest.raises(ValueError, match="verbatim"):
+        bind_path_interpretation(
+            root=tmp_path,
+            instruction=instruction,
+            arguments={"paths": [binding(name, "", "existing_input")]},
+            prior_refs=[],
+        )

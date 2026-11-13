@@ -1604,6 +1604,74 @@ def resolve_task_aware_verify_command_selection(
     )
 
 
+def resolve_project_verify_command_selection(
+    *,
+    cfg: AppConfig,
+    root: Path | None = None,
+    repo_scan: RepoScanResult | None = None,
+) -> ResolvedVerifyCommands:
+    """A turn's check, taken only from configuration and from the project itself.
+
+    Nothing about the request is read: not its words, not a command it quotes
+    and not the paths it mentions. A command configured for the run or for the
+    project stands. A bare test-runner line in configuration is a default, not
+    a decision about this project: it applies only where the project backs it
+    (the scan found the project's own test command, or a Node project has
+    package.json scripts). Where nothing backs it, the answer is that no check
+    is known, with the reason the project's own files give.
+
+    Whether the check applies to a particular turn is a separate question,
+    answered afterwards from the files that turn changed.
+    """
+    selection = resolve_verify_command_selection(
+        cfg=cfg,
+        verify_cmd=None,
+        root=root,
+        repo_scan=repo_scan,
+        allow_empty_config=True,
+    )
+    if not is_generic_fallback_verify_command_selection(selection):
+        return selection
+    scan = repo_scan
+    if scan is None and root is not None:
+        try:
+            scan = scan_workspace(context=resolve_workspace_context(root))
+        except (WorkspaceContextError, OSError):
+            scan = None
+    resolved: ResolvedVerifyCommands | None = None
+    # In a project that is also Python the scripts say nothing about most of
+    # its files, so they are not taken as the project's check.
+    if (
+        root is not None
+        and scan is not None
+        and _repo_has_node_hints(scan)
+        and not _repo_has_python_hints(scan)
+    ):
+        scripts = normalize_verify_command_list(
+            _infer_node_project_script_verify_commands(root=root, repo_scan=scan)
+        )
+        if scripts:
+            resolved = _resolved_verify_commands(
+                commands=scripts,
+                source="repo_scan.likely_test_commands",
+                reason="repo scan discovered package.json verification scripts",
+            )
+    if resolved is None:
+        # What kind of project this is, as its own files show, gives the reason.
+        resolved = _repo_grounded_no_authoritative_selection(scan) or _resolved_verify_commands(
+            commands=(),
+            source=REPO_SCAN_NO_AUTHORITATIVE_SOURCE,
+            reason=(
+                "no check was configured and none was found in the project; "
+                "a default is not assumed"
+            ),
+            contract_type="unavailable",
+        )
+    # As at session start: a command the engine cannot use degrades the
+    # selection instead of becoming the turn's contract.
+    return repair_invalid_verify_command_selection(resolved, root=root, repo_scan=scan).selection
+
+
 def resolve_authoritative_task_verify_command_selection(
     *,
     cfg: AppConfig,
@@ -2111,6 +2179,20 @@ def _build_pytest_module_fallback_command(command: str) -> str | None:
 
 def _token_has_shell_glob(token: str) -> bool:
     return any(char in token for char in "*?[")
+
+
+def glob_expansion_may_yield_git(command: str) -> bool:
+    """Whether glob expansion could turn ``command`` into a different Git command.
+
+    Expansion replaces a pattern with file names and re-quotes every word, and
+    a file name can be an option. The command guard judges the text it was
+    given, so it must not treat a Git command that may be rewritten, or a
+    command whose program is itself a pattern, as the one that will run.
+    """
+    parts = _split_shell_command_parts(command)
+    if not parts or not any(_token_has_shell_glob(token) for token in parts):
+        return False
+    return _token_has_shell_glob(parts[0]) or Path(parts[0]).name.lower() in {"git", "git.exe"}
 
 
 def _expand_verification_command_globs(command: str, *, root: Path) -> str:

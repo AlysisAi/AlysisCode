@@ -15,6 +15,8 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 
 def _shell(
     root: Path,
@@ -209,7 +211,12 @@ def test_shell_completion_replays_accepted_python3_then_unavailable_python(
     required = "python -m unittest discover"
     accepted = "python3 -m unittest discover -s tests -v"
     session = create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only", verify_commands=[required]),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            verify_commands=[required],
+            extra_fields={"shell_sandbox": {"mode": "off"}},
+        ),
         root=tmp_path,
         mode="fullaccess",
         yes=True,

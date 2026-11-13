@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+# Always select a local Unix-socket engine, never the user's active remote context.
+context="${ALYSIS_DEV_DOCKER_CONTEXT:-desktop-linux}"
+endpoint="$(docker context inspect "$context" --format '{{.Endpoints.docker.Host}}')"
+if [[ "$endpoint" != unix://* ]]; then
+  echo 'Cloud dev requires a local Docker Unix socket.' >&2
+  exit 1
+fi
+compose=(docker --context "$context" compose --project-name alysis-cloud-dev --env-file /dev/null -f compose.yaml)
+case "${1:-help}" in
+  up)
+    "${compose[@]}" up --build --detach --wait --wait-timeout 120
+    echo 'Linux desktop: http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale'
+    ;;
+  check)
+    "${compose[@]}" exec -T linux python /opt/cloud-dev/check.py smoke
+    ;;
+  persistence)
+    "${compose[@]}" exec -T linux python /opt/cloud-dev/check.py prepare-persistence
+    "${compose[@]}" up --detach --no-build --force-recreate --wait --wait-timeout 120
+    "${compose[@]}" exec -T linux python /opt/cloud-dev/check.py verify-persistence
+    ;;
+  shell) "${compose[@]}" exec linux bash ;;
+  logs) "${compose[@]}" logs --tail 100 ;;
+  status) "${compose[@]}" ps ;;
+  stop) "${compose[@]}" stop ;;
+  down) "${compose[@]}" down ;;
+  *)
+    echo 'Usage: scripts/cloud-dev/dev {up|check|persistence|shell|logs|status|stop|down}'
+    echo 'stop/down preserve the named data volume; persistence recreates this lab container.'
+    [[ "${1:-help}" == help ]]
+    ;;
+esac

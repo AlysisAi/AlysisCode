@@ -2040,3 +2040,13 @@ def test_build_tools_does_not_emit_web_search_runtime_unavailable_event_by_defau
     assert [
         event for event in events if event.get("type") == "web_search_runtime_unavailable"
     ] == []
+
+
+def test_command_tools_offer_an_optional_step_description() -> None:
+    from alysis_code.tools.registry import iter_builtin_tool_metadata
+
+    specs = {spec.name: spec for spec in iter_builtin_tool_metadata()}
+    for name in ("shell_run", "shell_background"):
+        parameters = specs[name].parameters
+        assert parameters["properties"]["description"]["type"] == "string"
+        assert "description" not in parameters["required"]

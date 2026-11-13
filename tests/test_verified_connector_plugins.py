@@ -342,7 +342,8 @@ def test_the_bundled_notion_descriptor_carries_the_reviewed_tools_and_marks():
     assert not set(NOTION_LEFT_OUT) & set(marks)
     # Ships no skills now, and nothing that runs on the computer.
     components = manifest.components
-    assert not (components.plugin_skill or components.mcp_server or components.tool)
+    assert [skill.name for skill in components.plugin_skill] == ["page-work"]
+    assert not (components.mcp_server or components.tool)
 
 
 def test_the_catalog_entry_pins_the_notion_descriptor():
@@ -434,6 +435,8 @@ def _expected_block() -> dict[str, Any]:
     connector = _parse(_notion_bytes().decode("utf-8")).components.verified_connector[0]
     return {
         "id": "notion",
+        "oauth_client": "dynamic",
+        "transport": "mcp",
         "url": "https://mcp.notion.com/mcp",
         "resource": "https://mcp.notion.com/mcp",
         "oauth_issuer": "https://mcp.notion.com",
@@ -454,7 +457,7 @@ def test_the_plugin_page_carries_the_verified_connector_from_the_pinned_descript
     assert extension["connects_to"] == ["https://mcp.notion.com/mcp"]
     assert extension["categories"] == ["notes-wiki"]
     assert extension["tier"] == "alysis" and extension["catalog_source"] == "built-in"
-    assert extension["skills"] == []
+    assert [skill["name"] for skill in extension["skills"]] == ["notion:page-work"]
     found = handle_management_method("ext.search", {"query": "notion"}, request_id=2)
     [entry] = found["extensions"]
     assert entry["verified_connector"] == _expected_block()
@@ -596,7 +599,7 @@ def test_the_engine_advertises_the_verified_plugins_it_can_bind():
         "session_param": "connector_mcp",
         "credential_authority": "host",
         "management_method": "ext.custom.save",
-        "max_plugins": 16,
+        "max_plugins": 32,
         "verified_plugins": list(VERIFIED_CONNECTOR_PLUGIN_IDS),
     }
     assert VERIFIED_CONNECTOR_PLUGIN_IDS[0] == "alysis.notion"
@@ -864,7 +867,16 @@ def _start(out, bridge, captured) -> None:
     bridge.process_line(_request("chat.send", {"session_id": session_id, "message": "run"}, "chat"))
 
 
-def _prepared(bridge, out, *, write: bool, letter: str, tool: str, label: str = "Verified") -> None:
+def _prepared(
+    bridge,
+    out,
+    *,
+    write: bool,
+    letter: str,
+    tool: str,
+    label: str = "Verified",
+    effect: str | None = None,
+) -> None:
     from tests.test_ide_host_actions import _respond, _wait_for
 
     prepared = _wait_for(out, lambda line: line.get("type") == "host_action_requested")
@@ -886,6 +898,7 @@ def _prepared(bridge, out, *, write: bool, letter: str, tool: str, label: str = 
                 if write
                 else {}
             ),
+            **({"effect": effect} if effect is not None else {}),
         },
     )
 
@@ -935,6 +948,82 @@ def test_every_notion_write_asks_a_person_even_in_full_access(root: Path, monkey
         _respond(bridge, discard, request_id="discarded", result={"discarded": True})
         _wait_for(out, lambda line: line.get("type") == "message_end")
         assert not results and errors and errors[0].dispatch_state == "not_dispatched"
+    finally:
+        bridge.close()
+
+
+# A reviewed change in the person's own account follows the approval mode (2026-11-10).
+
+
+def test_a_change_in_your_own_account_follows_full_access(root: Path, monkeypatch):
+    from tests.test_custom_plugins import _next
+
+    _install(root)
+    out, bridge, captured, _results, _errors = _bridge(
+        root, monkeypatch, _catalog(), mode="fullaccess"
+    )
+    try:
+        _start(out, bridge, captured)
+        _prepared(
+            bridge, out, write=True, letter="a", tool="notion-create-pages", effect="own_change"
+        )
+        execute = _next(out)
+        assert execute["type"] == "host_action_requested", execute
+        assert execute["payload"]["phase"] == "execute"
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("mode", ["review", "auto"])
+def test_a_change_in_your_own_account_asks_like_any_action(root: Path, monkeypatch, mode: str):
+    from tests.test_custom_plugins import _next
+
+    _install(root)
+    out, bridge, captured, _results, _errors = _bridge(root, monkeypatch, _catalog(), mode=mode)
+    try:
+        _start(out, bridge, captured)
+        _prepared(
+            bridge, out, write=True, letter="b", tool="notion-create-pages", effect="own_change"
+        )
+        prompt = _next(out)
+        assert prompt["type"] == "prompt_for_input", prompt
+        metadata = prompt["payload"]["metadata"]
+        # No reviewer is connected in this fixture, so the person is asked, but without the
+        # always-ask rule: saved rules, the reviewer and Full access apply as for other actions.
+        assert "always_ask_person" not in metadata
+        assert "mandatory_explicit_approval" not in metadata
+        assert "tool_server_rule" not in metadata
+        assert metadata["connector_effect"] == "own_change"
+        assert metadata["access"] == "write" and metadata["host_action"] == CONNECTOR_MCP_ACTION
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize(
+    ("tool", "write", "effect"),
+    [
+        ("notion-create-pages", True, "reaches_people"),
+        ("notion-search", False, "own_change"),
+    ],
+)
+def test_main_can_only_describe_a_reviewed_change_as_your_own(
+    root: Path, monkeypatch, tool: str, write: bool, effect: str
+):
+    from tests.test_custom_plugins import _next
+    from tests.test_ide_host_actions import _respond, _wait_for
+
+    _install(root)
+    out, bridge, captured, results, errors = _bridge(
+        root, monkeypatch, _catalog(), mode="fullaccess", tool=tool
+    )
+    try:
+        _start(out, bridge, captured)
+        _prepared(bridge, out, write=write, letter="9", tool=tool, effect=effect)
+        discard = _next(out)
+        assert discard["payload"]["phase"] == "discard"
+        _respond(bridge, discard, request_id="discarded", result={"discarded": True})
+        _wait_for(out, lambda line: line.get("type") == "message_end")
+        assert not results and errors[0].code == "invalid_host_preparation"
     finally:
         bridge.close()
 
@@ -1114,8 +1203,11 @@ def test_skill_projection_accepts_the_verified_plugins_it_can_bind(root: Path):
     with pytest.raises(projection.PluginSkillUnavailable) as refused:
         projection.verified(root, NOTION, "0" * 64)
     assert refused.value.reason == "pin_mismatch"
-    # Notion ships no skills now.
-    assert plugin_skills.active_plugin_skills(root, connector_mcp=[{"plugin_id": NOTION}]) == ()
+    # The bundled guide is available only through the verified binding.
+    assert [
+        skill.name
+        for skill in plugin_skills.active_plugin_skills(root, connector_mcp=[{"plugin_id": NOTION}])
+    ] == ["notion:page-work"]
 
 
 def test_a_verified_plugins_skills_come_from_its_verified_descriptor(root: Path, monkeypatch):

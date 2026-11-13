@@ -785,7 +785,12 @@ def _fake_shell_run_tracking_the_fix(root: Path):
 
 def _session(tmp_path: Path, session_id: str, *, task_shape: str = "bug_fix") -> Any:
     session = create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only", verify_commands=["pytest -q"]),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            verify_commands=["pytest -q"],
+            extra_fields={"shell_sandbox": {"mode": "off"}, "verify_sandbox": {"mode": "off"}},
+        ),
         root=tmp_path,
         mode="auto",
         yes=True,
@@ -803,6 +808,7 @@ def _session(tmp_path: Path, session_id: str, *, task_shape: str = "bug_fix") ->
 _REPRO_SOURCE = "from src.textutil import slugify\nassert slugify('a--b--') == 'a-b-'\n"
 
 
+@pytest.mark.usefixtures("approved_local_checks")
 def test_scripted_run_reports_a_satisfied_reproduction(
     buggy_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -892,6 +898,7 @@ def test_scripted_run_reports_a_satisfied_reproduction(
     assert "one_shot_completion_gate_repro_unconfirmed" not in types
 
 
+@pytest.mark.usefixtures("approved_local_checks")
 def test_supplemental_check_after_silent_authoritative_verify_finalizes_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -950,7 +957,11 @@ def test_supplemental_check_after_silent_authoritative_verify_finalizes_once(
     monkeypatch.setattr(agent_loop_mod, "run_task_verification", silent_verify)
     session_id = "required-output-silent-authoritative"
     session = create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only"),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            extra_fields={"shell_sandbox": {"mode": "off"}, "verify_sandbox": {"mode": "off"}},
+        ),
         root=tmp_path,
         mode="auto",
         yes=True,
@@ -965,6 +976,27 @@ def test_supplemental_check_after_silent_authoritative_verify_finalizes_once(
     final_text = "Preserved title case and resolved T1 and T2. Verification passed."
     session.client = _ScriptedClient(
         [
+            # The request writes a path that does not exist yet, so the model
+            # is asked what it is.
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="tc0",
+                        name="task_artifacts",
+                        arguments={
+                            "paths": [
+                                {
+                                    "name": "REVIEW_RESPONSES.md",
+                                    "directory": "",
+                                    "role": "required_output",
+                                }
+                            ]
+                        },
+                    )
+                ],
+                raw={},
+            ),
             LLMResponse(
                 content="",
                 tool_calls=[
@@ -1060,7 +1092,7 @@ def test_supplemental_check_after_silent_authoritative_verify_finalizes_once(
     try:
         exit_code = session.run_turn(
             "Fix normalize_title so it preserves case, run python checks.py, and write "
-            "REVIEW_RESPONSES.md mapping T1 and T2 to their resolutions."
+            "`REVIEW_RESPONSES.md` mapping T1 and T2 to their resolutions."
         )
     finally:
         session.close()
@@ -1075,7 +1107,7 @@ def test_supplemental_check_after_silent_authoritative_verify_finalizes_once(
     ]
 
     assert exit_code == 0
-    assert session.client.calls == 8
+    assert session.client.calls == 9
     assert len(verify_results) == 1
     assert len(finalizations) == 1
     finalization = dict(finalizations[0].get("payload") or {})

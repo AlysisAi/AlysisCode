@@ -119,6 +119,12 @@
     }
   ],
   "methods": {
+    "session.outputArtifacts": {
+      "required_params": [
+        "session_id",
+        "job_id"
+      ]
+    },
     "bridge.shutdown": {
       "mutates": true
     },
@@ -140,7 +146,8 @@
         "session_id",
         "workspace_trusted",
         "host_capabilities",
-        "reasoning_trace"
+        "reasoning_trace",
+        "task_output_directory"
       ]
     },
     "chat.send": {
@@ -1335,6 +1342,15 @@
       ],
       "optional_params": [
         "yes"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true
+    },
+    "profile.selectModel": {
+      "required_params": [
+        "name",
+        "model",
+        "workspace_trusted"
       ],
       "mutates": true,
       "workspace_trust_required": true
@@ -2581,6 +2597,24 @@
         "route_scope": "Opaque fingerprint from the same fresh, verified provider status; no tokens or account label."
       }
     },
+    "provider.auth.reasoning": {
+      "required_params": [
+        "model",
+        "profile"
+      ]
+    },
+    "provider.auth.selectModel": {
+      "required_params": [
+        "provider_id",
+        "model",
+        "workspace_trusted"
+      ],
+      "optional_params": [
+        "reasoning_effort"
+      ],
+      "mutates": true,
+      "workspace_trust_required": true
+    },
     "skill.import.preview": {
       "required_params": [
         "workspace_trusted"
@@ -2764,27 +2798,6 @@
       "mutates": true,
       "workspace_trust_required": true,
       "workspace_required": true
-    },
-    "session.outputArtifacts": {
-      "required_params": [
-        "session_id",
-        "job_id"
-      ],
-      "mutates": false,
-      "workspace_required": false,
-      "workspace_trust_required": false,
-      "result": {
-        "required": [
-          "session_id",
-          "job_id",
-          "task_id",
-          "paths"
-        ]
-      },
-      "errors": [
-        "invalid_params",
-        "output_artifacts_unavailable"
-      ]
     }
   },
   "roles": {

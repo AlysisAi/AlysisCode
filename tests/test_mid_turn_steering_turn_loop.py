@@ -12,6 +12,7 @@ from alysis_code.agent.prompt_context import (
 from alysis_code.agent.steering import SteerInbox, steer_inbox_for
 from alysis_code.agent.tools_assembly import ToolDef
 from alysis_code.agent_loop import create_session
+from alysis_code.cli_impl.commands.chat_resume_helpers import _load_chat_resume_messages
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.llm.types import LLMError
@@ -309,7 +310,7 @@ def test_broken_inbox_cannot_fail_the_turn(tmp_path: Path) -> None:
     assert warnings
 
 
-def test_rollback_after_llm_error_returns_the_note_to_the_inbox(tmp_path: Path) -> None:
+def test_llm_error_keeps_delivered_note_in_history_without_requeuing(tmp_path: Path) -> None:
     class FailingClient(_ScriptedClient):
         def chat(self, **kwargs: Any) -> LLMResponse:  # type: ignore[override]
             self.calls.append({"messages": list(kwargs.get("messages") or [])})
@@ -317,28 +318,30 @@ def test_rollback_after_llm_error_returns_the_note_to_the_inbox(tmp_path: Path) 
 
     client = FailingClient([])
     session = _make_session(tmp_path, client)
-    restored_notifications: list[list[str]] = []
-    session.surface.on_steer_messages_restored = lambda messages: restored_notifications.append(
-        list(messages)
-    )
     inbox = steer_inbox_for(session, create=True)
     assert inbox is not None
     inbox.send(STEER_TEXT)
     try:
         with pytest.raises(LLMError, match="provider exploded"):
             session.run_turn("Do the thing.")
-        recovered = inbox.drain()
+        assert inbox.pending_count() == 0
+        next_client = _ScriptedClient([LLMResponse(content="Done.", tool_calls=[], raw={})])
+        session.client = next_client  # type: ignore[assignment]
+        session.run_turn("Please continue.")
+        request_contents = _contents(next_client.calls[0]["messages"])
+        assert request_contents.count(f"{STEER_MARKER} {STEER_TEXT}") == 1
+        assert (
+            request_contents.index("Do the thing.")
+            < request_contents.index(f"{STEER_MARKER} {STEER_TEXT}")
+            < request_contents.index("Please continue.")
+        )
+        resumed = _contents(_load_chat_resume_messages(session.store.path))
+        assert resumed.count(f"{STEER_MARKER} {STEER_TEXT}") == 1
     finally:
         session.close()
 
-    assert recovered == [STEER_TEXT]
-    assert restored_notifications == [[STEER_TEXT]]
-    assert not any(
-        STEER_MARKER in str(message.get("content") or "") for message in session.messages
-    )
 
-
-def test_rollback_restores_drained_note_before_newer_arrival(tmp_path: Path) -> None:
+def test_llm_error_preserves_delivered_note_and_leaves_newer_arrival_queued(tmp_path: Path) -> None:
     newer_text = "newer message sent during the failed request"
 
     class FailingClient(_ScriptedClient):
@@ -357,11 +360,17 @@ def test_rollback_restores_drained_note_before_newer_arrival(tmp_path: Path) -> 
     try:
         with pytest.raises(LLMError, match="provider exploded"):
             session.run_turn("Do the thing.")
-        recovered = inbox.drain()
+        assert inbox.pending_count() == 1
+        next_client = _ScriptedClient([LLMResponse(content="Done.", tool_calls=[], raw={})])
+        session.client = next_client  # type: ignore[assignment]
+        session.run_turn("Please continue.")
+        request_contents = _contents(next_client.calls[0]["messages"])
+        old_message, new_message = (f"{STEER_MARKER} {text}" for text in (STEER_TEXT, newer_text))
+        assert request_contents.count(old_message) == request_contents.count(new_message) == 1
+        assert request_contents.index(old_message) < request_contents.index(new_message)
+        assert inbox.pending_count() == 0
     finally:
         session.close()
-
-    assert recovered == [STEER_TEXT, newer_text]
 
 
 def test_multiple_mid_turn_notes_arrive_in_order(tmp_path: Path) -> None:

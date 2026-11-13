@@ -6,8 +6,8 @@ from .conversation_compactor import (
     estimate_request_tokens,
     sanitize_messages_for_estimation,
 )
-from .importance import ScoredTurn, extract_text, score_text, score_turn
 from .settings import CompactionSettings, resolve_compaction_settings
+from .spans import TurnSpan, UserMessage, user_side_text
 from .tool_output_offload import OffloadResult, ToolOutputOffloader
 
 __all__ = [
@@ -17,12 +17,11 @@ __all__ = [
     "CompactionState",
     "ConversationCompactor",
     "OffloadResult",
-    "ScoredTurn",
     "ToolOutputOffloader",
+    "TurnSpan",
+    "UserMessage",
     "estimate_request_tokens",
-    "extract_text",
     "resolve_compaction_settings",
     "sanitize_messages_for_estimation",
-    "score_text",
-    "score_turn",
+    "user_side_text",
 ]

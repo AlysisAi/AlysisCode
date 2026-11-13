@@ -349,7 +349,7 @@ def test_system_prompt_answers_environment_questions_from_the_block() -> None:
 
     assert "without commands" in rule
     for field in ("os", "shell", "date", "mode"):
-        assert re.search(rf"\b{field}\b", rule, re.IGNORECASE)
+        assert re.search(rf"\b{field}\b", rule, flags=re.IGNORECASE)
         assert any(line.startswith(f"{field}: ") for line in block)
 
 
@@ -363,24 +363,26 @@ def _store(root: Path) -> SessionStore:
     )
 
 
+_SHELL_RUN_DESCRIPTION = (
+    "Run a policy-checked shell command with a short description for the person. "
+    "Stopped after timeout_s seconds (default 60; max 600)."
+)
+
+
 @pytest.mark.parametrize(
     ("shell_environment", "expected"),
     [
         (
             "cmd.exe (host)",
-            "Run a policy-checked shell command. "
-            "Commands run in cmd.exe (host), so use that shell's syntax.",
+            f"{_SHELL_RUN_DESCRIPTION} Commands run in cmd.exe (host), so use that shell's syntax.",
         ),
         (
             "sh (Docker sandbox)",
-            "Run a policy-checked shell command. "
+            f"{_SHELL_RUN_DESCRIPTION} "
             "Commands run in sh (Docker sandbox), so use that shell's syntax.",
         ),
-        (
-            "none (shell commands are disabled in this session)",
-            "Run a policy-checked shell command.",
-        ),
-        (None, "Run a policy-checked shell command."),
+        ("none (shell commands are disabled in this session)", _SHELL_RUN_DESCRIPTION),
+        (None, _SHELL_RUN_DESCRIPTION),
     ],
 )
 def test_shell_run_description_names_the_shell(

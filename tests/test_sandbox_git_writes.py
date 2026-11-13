@@ -199,9 +199,32 @@ def test_git_policy_line_describes_native_mac_scope(monkeypatch) -> None:
     cfg = AppConfig(model="test-model")
     cfg.extra_fields["shell_sandbox"] = {"safe_git_writes": True, "protect_repo_meta": True}
     line = _sandbox_git_policy_line(cfg)
-    assert line and "real Git under Seatbelt" in line and "&&, || or ;" in line
+    assert line and line.startswith("git_policy: literal Git commands") and "&&, || or ;" in line
+    # What runs without approval, what never does, and how to ask for the rest.
+    assert "without approval" in line and "plain git init on its own" in line
+    assert "never its config, hooks, rebase state or the .git entry" in line
+    assert "permissions.git_metadata=true, which a person approves" in line
     assert "github_auth" in line and "credentials" in line
     assert "network_domains" in line and "unix_sockets" in line
+
+
+def test_git_policy_line_describes_the_windows_git_job(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "alysis_code.sandbox_runner.select_shell_sandbox_backend",
+        lambda _: SimpleNamespace(backend="windows-mxc"),
+    )
+    cfg = AppConfig(model="test-model")
+    cfg.extra_fields["shell_sandbox"] = {"safe_git_writes": True, "protect_repo_meta": True}
+    line = _sandbox_git_policy_line(cfg)
+    assert line and line.startswith("git_policy: use separate literal commands for Git")
+    # What follows the mode, what never does, and how to ask for the rest.
+    assert "follow the session's mode" in line
+    assert "configuration, hooks, a rebase in progress" in line
+    assert "permissions.git_metadata=true on that literal Git command" in line
+    assert "git config and git remote can read and not write" in line
+    assert "--no-track" in line and "plain git init needs nothing" in line
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap unavailable")

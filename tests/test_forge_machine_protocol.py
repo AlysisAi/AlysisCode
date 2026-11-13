@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import typer
+from rich.text import Text
 from typer.testing import CliRunner
 
 from alysis_code import cli as cli_mod
@@ -265,9 +266,9 @@ def test_every_forge_command_accepts_machine_flag() -> None:
     for command in ALL_FORGE_COMMANDS:
         result = runner.invoke(alysis_app, ["forge", command, "--help"])
         assert result.exit_code == 0, f"forge {command} --help failed"
-        assert any(
-            "--machine" in parameter.opts for parameter in forge_group.commands[command].params
-        ), f"forge {command} is missing --machine"
+        assert "--machine" in Text.from_ansi(result.stdout).plain, (
+            f"forge {command} is missing --machine"
+        )
 
 
 def test_show_emits_ndjson_only_on_success(tmp_path: Path) -> None:

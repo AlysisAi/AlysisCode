@@ -49,6 +49,22 @@ def test_registered_terminal_actions_have_exact_semantics_without_exposing_input
     assert "private command input" not in json.dumps(event)
 
 
+@pytest.mark.parametrize(
+    "name,title",
+    [
+        ("connection_status", "Check account connection"),
+        ("github_repositories", "List GitHub repositories"),
+        ("offer_plugin_connection", "Show Connect card"),
+    ],
+)
+def test_desktop_connection_tools_say_what_they_did(name, title):
+    event = tool_activity(
+        call_id="connection", name=name, status="succeeded", arguments={"plugin": "Linear"}
+    ).to_payload()
+    assert event["display_title"] == title
+    assert event["display_title"] != "Use developer tool"
+
+
 def test_internal_tool_names_become_stable_friendly_semantics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -296,3 +312,83 @@ def test_protocol_surface_legacy_delivery_does_not_double_emit_activity() -> Non
 
     assert [event["type"] for event in emitted].count("activity_update") == 2
     assert emitted[1]["payload"]["metadata"] == {"step": 2, "worker_id": None}
+
+
+@pytest.mark.parametrize("tool_name", ["shell_run", "shell_background", "bash"])
+def test_command_step_takes_the_models_own_words_for_the_person(tool_name: str) -> None:
+    activity = tool_activity(
+        call_id="call-1",
+        name=tool_name,
+        arguments={
+            "cmd": "python -X utf8 scratch/q.py",
+            "description": "Σύγκριση πωλήσεων ανά τρίμηνο",
+        },
+    ).to_payload()
+
+    assert activity["display_title"] == "Σύγκριση πωλήσεων ανά τρίμηνο"
+    assert activity["kind"] == "command"
+    assert "scratch/q.py" not in json.dumps(activity, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "description", [None, "", "   ", 42, ["Profile data"], "rs.internal helper"]
+)
+def test_command_step_without_usable_words_keeps_the_generic_title(description: object) -> None:
+    arguments: dict[str, object] = {"cmd": "pytest -q"}
+    if description is not None:
+        arguments["description"] = description
+
+    activity = tool_activity(call_id="call-1", name="shell_run", arguments=arguments).to_payload()
+
+    assert activity["display_title"] == "Run command"
+
+
+def test_command_step_words_are_one_bounded_line_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOOL_API_KEY", "activity-secret-value")
+
+    activity = tool_activity(
+        call_id="call-1",
+        name="shell_run",
+        arguments={
+            "cmd": "curl https://example.invalid",
+            "description": "Check the export\n\twith key activity-secret-value " + "x" * 300,
+        },
+    ).to_payload()
+
+    title = activity["display_title"]
+    assert "\n" not in title and "\t" not in title
+    assert title.startswith("Check the export with key ")
+    assert "activity-secret-value" not in json.dumps(activity)
+    assert len(title) <= 120
+
+
+def test_other_tools_ignore_a_stray_description_argument() -> None:
+    activity = tool_activity(
+        call_id="call-1",
+        name="fs_read",
+        arguments={"path": "notes.md", "description": "Something else"},
+    ).to_payload()
+
+    assert activity["display_title"] == "Read file"
+
+
+def test_command_step_words_survive_completion_on_the_canonical_path() -> None:
+    emitted: list[dict] = []
+    surface = ProtocolEventSurface(
+        context=EventContext(session_id="session-1"),
+        emit=emitted.append,
+        semantic_activity_events=True,
+    )
+
+    surface.emit_tool_call_started(
+        "call-run",
+        "shell_run",
+        json.dumps({"cmd": "python report.py", "description": "Build the weekly report"}),
+    )
+    surface.emit_tool_call_completed("call-run", True, json.dumps({"exit_code": 0}))
+
+    activities = [event["payload"] for event in emitted if event["type"] == "activity_update"]
+    assert [activity["status"] for activity in activities] == ["running", "succeeded"]
+    assert {activity["display_title"] for activity in activities} == {"Build the weekly report"}

@@ -113,7 +113,12 @@ def test_provider_http_error_url_secrets_never_reach_source_log_or_display(
         store.close()
     source_log = (tmp_path / "provider-url-privacy.jsonl").read_text(encoding="utf-8")
 
-    for rendered in (error_text, display_text, source_log):
+    for rendered in (
+        error_text,
+        display_text,
+        source_log,
+        getattr(exc_info.value, "provider_error_body", ""),
+    ):
         assert sentinel not in rendered
         assert bearer_secret not in rendered
         assert api_key_secret not in rendered

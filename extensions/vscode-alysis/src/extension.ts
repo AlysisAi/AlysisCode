@@ -58,6 +58,7 @@ import { registerSessionCommands } from "./commands/sessionCommands";
 import { ForgeDiffContentProvider } from "./forge/ForgeDiffContentProvider";
 import { ForgeController } from "./forge/ForgeController";
 import { AlysisSecretStore } from "./secrets/secretStorage";
+import { probeSecretStorageRoundTrip } from "./secrets/secretStorageProbe";
 import { evaluateProcessExecutionCommand } from "./security/commandGuards";
 import { SlashCommandRouter } from "./slash/SlashCommandRouter";
 import { availableSlashCommands } from "./slash/SlashCommandRegistry";
@@ -84,7 +85,6 @@ import { createVsCodeDiagnosticsSource } from "./verification/VsCodeDiagnosticsS
 import { HostActionController } from "./hostActions/HostActionController";
 import { VsCodeTasksHostAdapter, createVsCodeTasksApi } from "./hostActions/VsCodeTasksHostAdapter";
 import { VsCodeDebugHostAdapter, createVsCodeDebugApi } from "./hostActions/VsCodeDebugHostAdapter";
-import { migrateLegacySettings } from "./migration/legacySettings";
 
 let activeChatController: ChatController | undefined;
 let activeForgeController: ForgeController | undefined;
@@ -141,20 +141,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     context.extensionMode === vscode.ExtensionMode.Production
   );
   const output = vscode.window.createOutputChannel("Alysis Code");
-
-  // Runs before anything reads configuration, so a user upgrading from the
-  // Sylliptor-named extension keeps their cliPath and model settings.
-  try {
-    const migration = await migrateLegacySettings(context);
-    if (migration.migrated.length > 0) {
-      output.appendLine(
-        `Migrated settings from the previous extension name: ${migration.migrated.join(", ")}`
-      );
-    }
-  } catch (error) {
-    // Never block activation on the migration; the settings UI is still there.
-    output.appendLine(`Could not migrate legacy settings: ${String(error)}`);
-  }
 
   const statusBar = new AlysisStatusBar();
   const runtime = new CockpitRuntimeState();
@@ -989,7 +975,6 @@ function createExtensionApi(
   if (context.extensionMode !== vscode.ExtensionMode.Test) {
     return undefined;
   }
-  const testSecrets = new AlysisSecretStore(context.secrets, "alysis.test.apiKey");
   return {
     test: {
       // Activation no longer blocks on runtime validation or the first health probe; tests that
@@ -1015,14 +1000,7 @@ function createExtensionApi(
       browserScreenshot: (fullPage = false) => browserController.screenshot(fullPage),
       browserDiagnostics: () => browserController.diagnostics(),
       browserClose: () => browserController.close(),
-      secretStorageRoundTrip: async () => {
-        await testSecrets.deleteApiKey();
-        await testSecrets.setApiKey("test-secret-value");
-        const stored = await testSecrets.getApiKey();
-        await testSecrets.deleteApiKey();
-        const cleared = await testSecrets.getApiKey();
-        return { stored: stored === "test-secret-value", cleared: cleared === undefined };
-      },
+      secretStorageRoundTrip: () => probeSecretStorageRoundTrip(context.secrets),
       hostActions: () => hostActionController.snapshot()
     }
   };

@@ -1377,7 +1377,6 @@ def forge_plan(
         events.emit(EVENT_RUN_STARTED, {"command": "forge.plan", "path": os.fspath(path)})
         console = _console()
         cli = _cli_module()
-        cli._require_active_subscription_ready(model=model, base_url=base_url)
         from ...forge_host_cli import (
             ForgeHostCliError,
             infer_intent_kind,
@@ -1960,7 +1959,7 @@ def forge_run(
     max_steps: int | None = typer.Option(
         None,
         "--max-steps",
-        help="Optional safety limit on each managed agent task.",
+        help="Must match the immutable limit captured by `forge plan`.",
     ),
     trusted_pytest: Path | None = typer.Option(
         None, "--trusted-pytest", help="Exact engine-trusted pytest executable."

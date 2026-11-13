@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import json
 import subprocess
-from dataclasses import replace
 
 import httpx
 import pytest
@@ -23,7 +22,7 @@ from alysis_code.cli_impl.tui.tool_trace import (
 )
 from alysis_code.cli_impl.tui.transcript import TuiTranscript
 from alysis_code.config import AppConfig
-from alysis_code.profile_presets import PROFILE_PRESETS, make_profile_from_preset
+from alysis_code.profile_presets import get_preset, make_profile_from_preset
 from alysis_code.session_store import SessionStore
 from alysis_code.surface.hidden_surface import NestedSubagentSurface
 from alysis_code.surface.types import ApprovalDecision, PatchEvent, ToolOutputEvent, ToolStartEvent
@@ -48,7 +47,7 @@ def _tools(root, surface, *, mode="auto"):
             cwd=str(root),
             repo_root=str(root),
         ),
-        cfg=AppConfig(model="test-model"),
+        cfg=AppConfig(model="test-model", extra_fields={"shell_sandbox": {"mode": "off"}}),
         mode=mode,
         yes=mode == "auto",
         non_interactive=False,
@@ -232,20 +231,32 @@ def test_denied_or_stale_write_never_claims_applied(tmp_path, stale, name):
     assert path.read_text(encoding="utf-8") == ("external edit\n" if stale else "before\n")
 
 
-@pytest.mark.parametrize("preset", PROFILE_PRESETS, ids=lambda preset: preset.key)
+@pytest.mark.parametrize(
+    ("preset_key", "protocol"),
+    [
+        ("openai", "openai_compat"),
+        ("openai-responses", "openai_responses"),
+        ("anthropic", "anthropic_messages"),
+        ("gemini", "gemini_generate_content"),
+    ],
+)
 @pytest.mark.parametrize("stream", [False, True])
-def test_every_provider_decodes_tools_into_real_edits_and_full_trace(tmp_path, preset, stream):
+def test_protocols_decode_tools_into_real_edits_and_full_trace(
+    tmp_path, preset_key, protocol, stream
+):
     from test_agent_loop_event_emission import _make_session
     from test_llm_factory_profiles import _cfg_with_profile
     from test_provider_trace_contract import _response
 
     from alysis_code.llm.factory import make_llm_client, resolve_model_protocol
 
+    # Preset routing and trace policy are covered by test_provider_trace_contract.
+    # Exercise real edits and TUI rendering once per wire protocol and stream mode.
+    preset = get_preset(preset_key)
+    assert preset is not None
     profile = make_profile_from_preset(preset)
-    if not profile.base_url:
-        profile = replace(profile, base_url="https://custom.example/v1")
     model = profile.default_model or "test-model"
-    protocol = resolve_model_protocol(
+    assert protocol == resolve_model_protocol(
         provider_key=preset.provider_key, protocol=profile.protocol, model=model
     )
     args = {"path": "new.py", "content": "def hello():\n    return 42\n"}
@@ -292,22 +303,6 @@ def test_every_provider_decodes_tools_into_real_edits_and_full_trace(tmp_path, p
                     "finishReason": "STOP",
                 }
             ]
-        },
-        "gemini_interactions": {
-            "id": "interaction_write",
-            "steps": [
-                {
-                    "type": "model_output",
-                    "content": [
-                        {
-                            "type": "function_call",
-                            "id": "call_write",
-                            "name": "fs_write",
-                            "arguments": args,
-                        }
-                    ],
-                }
-            ],
         },
     }
     requests = []

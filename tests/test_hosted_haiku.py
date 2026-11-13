@@ -16,6 +16,8 @@ from alysis_code.profiles import add_profile, set_active_profile
 from alysis_code.reasoning_contracts import reasoning_contract_for
 from alysis_code.tools.registry import iter_builtin_tool_metadata
 
+pytestmark = pytest.mark.usefixtures("authorized_hosted_models")
+
 MODEL = "claude-haiku-5-5"
 pytestmark = pytest.mark.usefixtures("configured_hosted_api", "authorized_hosted_models")
 
@@ -37,7 +39,7 @@ def test_authorized_picker_metadata_and_efforts():
     for provider in ("alysis", "anthropic"):
         meta = ModelRegistry(cfg=config(provider)).get(MODEL)
         assert (meta.context_window_tokens, meta.max_output_tokens) == (1_000_000, 128_000)
-        assert meta.supports_vision is (provider == "anthropic")
+        assert meta.supports_vision is True
         assert meta.supports_reasoning is True
         assert meta.input_cost_per_token == 0.0000001
         assert meta.output_cost_per_token == 0.0000005
@@ -54,7 +56,7 @@ def test_authorized_picker_metadata_and_efforts():
 
 
 @pytest.mark.parametrize("effort", [None, "none", "low", "medium", "high", "xhigh", "max"])
-def test_all_efforts_and_full_coding_tools_use_native_messages(effort):
+def test_all_efforts_and_full_coding_tools_form_gateway_payload(effort):
     cfg = config()
     cfg.llm_reasoning_effort = effort
     cfg.prompt_cache_mode = "auto"

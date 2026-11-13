@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -83,7 +84,10 @@ def test_wsl_browser_commands_keep_url_as_one_argument(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("exit_code", [0, 1])
-def test_quiet_browser_contains_real_launcher_output(tmp_path, monkeypatch, capfd, exit_code):
+@pytest.mark.parametrize("frozen", [False, True])
+def test_quiet_browser_contains_real_launcher_output(
+    tmp_path, monkeypatch, capfd, exit_code, frozen
+):
     launched = tmp_path / "received-url.txt"
     launcher = tmp_path / "noisy-browser.py"
     launcher.write_text(
@@ -104,6 +108,20 @@ def test_quiet_browser_contains_real_launcher_output(tmp_path, monkeypatch, capf
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
     monkeypatch.setattr(host_browser, "is_wsl", lambda: False)
+    monkeypatch.setattr(host_browser.sys, "frozen", frozen, raising=False)
+    if frozen:
+        entry = Path(__file__).resolve().parents[1] / "scripts/release/managed_cli_entry.py"
+        run = host_browser.subprocess.run
+
+        def run_managed_entry(command, **kwargs):
+            # Execute the actual packaged entry point with the arguments it
+            # receives in a frozen build. -S also proves the helper needs no CLI
+            # dependencies or startup; the fake browser is the only extra module.
+            assert command[0] == host_browser.sys.executable
+            assert "-c" not in command
+            return run([command[0], "-S", str(entry), *command[1:]], **kwargs)
+
+        monkeypatch.setattr(host_browser.subprocess, "run", run_managed_entry)
     url = "https://example.test/draft?title=feedback&body=one%20two%23three"
 
     assert host_browser.open_url(url, quiet=True) is (exit_code == 0)

@@ -1,0 +1,56 @@
+name: alysis-bots-dev
+services:
+  bots:
+    image: ${ALYSIS_BOTS_IMAGE:-alysis-bots-dev:local}
+    build:
+      context: ../..
+      dockerfile: scripts/cloud-dev/Dockerfile
+    command: [python, -m, alysis_code.bots.bootstrap]
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 1
+    mem_limit: 512m
+    pids_limit: 64
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=32m,mode=1777"]
+    ports: ["127.0.0.1:${ALYSIS_BOTS_PORT:-7080}:7080"]
+    volumes: ["bots-state:/var/lib/alysis"]
+    # Outbound HTTPS serves the operator-selected model provider. The bot has
+    # no shell or network tool. This is not a production tenant boundary.
+    networks: [models, workers]
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+  coding:
+    image: ${ALYSIS_BOTS_IMAGE:-alysis-bots-dev:local}
+    profiles: [coding]
+    command: [python, -m, alysis_code.bots.linux_worker]
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    # Same nested namespace profile as the existing local Linux lab.
+    # Development isolation only; production tenant qualification is separate.
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=${ALYSIS_BOTS_SECCOMP:-../cloud-dev/seccomp.json}
+      - systempaths=unconfined
+    cpus: 1
+    mem_limit: 1g
+    pids_limit: 128
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=128m,mode=1777"]
+    volumes: ["coding-state:/var/lib/alysis"]
+    networks: [workers]
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+
+networks:
+  models:
+  workers:
+    internal: true
+volumes:
+  bots-state:
+  coding-state:

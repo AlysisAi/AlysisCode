@@ -35,6 +35,34 @@ def _summary(*, decisions: list[str]) -> dict[str, Any]:
     }
 
 
+def test_refreshed_summary_retires_completed_and_superseded_state():
+    old = {
+        "goal": "Prepare release",
+        "constraints": ["Use the draft date"],
+        "decisions": ["Release Friday"],
+        "work_done": ["Draft prepared"],
+        "open_threads": ["Confirm release date"],
+        "next_steps": ["Ask the team"],
+    }
+    new = {
+        "goal": "Release scheduled",
+        "constraints": [],
+        "decisions": ["Release Monday"],
+        "work_done": ["Date confirmed"],
+        "open_threads": [],
+        "next_steps": [],
+    }
+    result = compactor_mod._normalize_summary(new, old)
+    assert result["constraints"] == []
+    assert result["decisions"] == ["Release Monday"]
+    assert result["open_threads"] == result["next_steps"] == []
+    assert [item["summary"] for item in result["work_done"]] == ["Date confirmed"]
+    # Missing/malformed fields cannot silently erase prior valid state.
+    partial = compactor_mod._normalize_summary({"next_steps": None}, old)
+    assert partial["next_steps"] == old["next_steps"]
+    assert partial["decisions"] == old["decisions"]
+
+
 def _workspace_change_semantics(
     instruction: str,
     *,
@@ -798,7 +826,6 @@ def test_overflow_compaction_relaxes_recent_window_but_preserves_latest_turn(
 ) -> None:
     cfg = _make_cfg()
     cfg.extra_fields["compaction"]["recent_user_turns_to_keep"] = 8  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
     session = create_session(
         cfg=cfg,
         root=tmp_path,
@@ -912,7 +939,6 @@ def test_execution_profile_compacts_single_instruction_run_and_preserves_instruc
     tmp_path: Path,
 ) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
     session = create_session(
         cfg=cfg,
         root=tmp_path,
@@ -974,7 +1000,6 @@ def test_execution_profile_compacts_single_instruction_run_and_preserves_instruc
 
 def test_execution_compaction_skips_partial_multi_tool_exchange(tmp_path: Path) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     session = create_session(
         cfg=cfg,
@@ -1031,7 +1056,6 @@ def test_execution_compaction_skips_partial_multi_tool_exchange(tmp_path: Path) 
 
 def test_execution_compaction_tail_boundary_keeps_multi_tool_bundle_intact(tmp_path: Path) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     session = create_session(
         cfg=cfg,
@@ -1105,7 +1129,6 @@ def test_execution_compaction_tail_boundary_keeps_multi_tool_bundle_intact(tmp_p
 
 def test_execution_compaction_leaves_active_tool_messages_valid(tmp_path: Path) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_tokens"] = 1  # type: ignore[index]
     session = create_session(
@@ -1179,8 +1202,6 @@ def test_execution_compaction_leaves_active_tool_messages_valid(tmp_path: Path) 
 
 def test_execution_compaction_tiny_candidate_no_progress_is_skipped(tmp_path: Path) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = True  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_strategy"] = "lowest_density"  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_messages"] = 1  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_tokens"] = 1  # type: ignore[index]
@@ -1224,18 +1245,16 @@ def test_execution_compaction_tiny_candidate_no_progress_is_skipped(tmp_path: Pa
         session.close()
 
 
-def test_execution_compaction_retries_larger_safe_window_after_no_progress_preview(
+def test_execution_compaction_takes_the_whole_oldest_window_in_one_request(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = True  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_strategy"] = "lowest_density"  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_messages"] = 1  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_tokens"] = 1  # type: ignore[index]
     retry_summary = _summary(decisions=["R" * 3200])
-    fake_compactor = _FakeCompactorClient([retry_summary, retry_summary])
+    fake_compactor = _FakeCompactorClient([retry_summary])
 
     def _deterministic_request_tokens(
         messages: list[dict[str, Any]],
@@ -1269,7 +1288,7 @@ def test_execution_compaction_retries_larger_safe_window_after_no_progress_previ
         no_log=False,
         api_key_override="x",
         session_log_dir_override=tmp_path / "session-artifacts",
-        session_id_override="compaction-execution-retry-larger-window",
+        session_id_override="compaction-execution-oldest-window",
         compaction_profile="execution",
     )
     try:
@@ -1288,11 +1307,13 @@ def test_execution_compaction_retries_larger_safe_window_after_no_progress_previ
             messages=session.messages,
             tool_list=session.tool_list,
             main_model=session.client.model,
-            focus="execution-retry-larger-window",
+            focus="execution-oldest-window",
         )
 
         assert changed is True
-        assert fake_compactor.calls == 2
+        # No smaller window is tried first: nothing ranks one old note above
+        # the other, so both go in the first request.
+        assert fake_compactor.calls == 1
         serialized = json.dumps(compacted, ensure_ascii=False)
         assert older_note_a not in serialized
         assert older_note_b not in serialized
@@ -1309,25 +1330,20 @@ def test_execution_compaction_retries_larger_safe_window_after_no_progress_previ
             for line in session.store.path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-        no_progress_events = [
+        assert not [
             event
             for event in events
             if event.get("type") == "compaction_warning"
             and event.get("payload", {}).get("warning") == "compaction_no_progress"
         ]
-        assert no_progress_events
-        assert any(
-            event.get("payload", {}).get("chunk_strategy") == "execution_lowest_density"
-            for event in no_progress_events
-        )
+        updates = [e for e in events if e.get("type") == "conversation_summary_updated"]
+        assert [e["payload"]["chunk_strategy"] for e in updates] == ["execution_oldest_activity"]
     finally:
         session.close()
 
 
 def test_execution_compaction_no_progress_rolls_back_state_and_artifacts(tmp_path: Path) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = True  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_strategy"] = "lowest_density"  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_messages"] = 1  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_tokens"] = 1  # type: ignore[index]
@@ -1394,7 +1410,6 @@ def test_execution_compaction_artifact_publish_failure_rolls_back(
     monkeypatch,
 ) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     existing_summary = _summary(decisions=["keep-existing-summary"])
     existing_pin = {
@@ -1493,8 +1508,6 @@ def test_execution_compaction_artifact_publish_failure_rolls_back(
 
 def test_execution_compaction_enforces_minimum_removal_thresholds(tmp_path: Path) -> None:
     cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["importance_enabled"] = True  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_strategy"] = "lowest_density"  # type: ignore[index]
     cfg.extra_fields["compaction"]["max_chunk_messages"] = 8  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_messages"] = 3  # type: ignore[index]
     cfg.extra_fields["compaction"]["execution_min_removable_tokens"] = 1500  # type: ignore[index]
@@ -1538,69 +1551,9 @@ def test_execution_compaction_enforces_minimum_removal_thresholds(tmp_path: Path
         session.close()
 
 
-def test_compaction_prefers_low_importance_turn_first(tmp_path: Path) -> None:
+def test_the_persons_message_is_pinned_when_its_turn_is_compacted(tmp_path: Path) -> None:
     cfg = _make_cfg()
     cfg.extra_fields["compaction"]["recent_user_turns_to_keep"] = 1  # type: ignore[index]
-    cfg.extra_fields["compaction"]["max_chunk_messages"] = 2  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_enabled"] = True  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_strategy"] = "lowest_density"  # type: ignore[index]
-
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="x",
-        session_log_dir_override=tmp_path / "session-artifacts",
-        session_id_override="compaction-importance",
-    )
-    try:
-        assert session.conversation_compactor is not None
-        session.conversation_compactor.compactor_client = _FakeCompactorClient(  # type: ignore[assignment]
-            [_summary(decisions=["d1"])]
-        )
-
-        high_signal = "MUST keep API stable. Acceptance criteria: pytest -q passes. " + ("H" * 1400)
-        low_signal = "ok thanks " + ("L" * 1400)
-        recent_signal = "recent turn " + ("R" * 1400)
-        session.messages.extend(
-            [
-                {"role": "user", "content": high_signal},
-                {"role": "assistant", "content": "Will do"},
-                {"role": "user", "content": low_signal},
-                {"role": "assistant", "content": "ok"},
-                {"role": "user", "content": recent_signal},
-                {"role": "assistant", "content": "recent response"},
-            ]
-        )
-
-        compacted, changed = session.conversation_compactor.compact_now(
-            messages=session.messages,
-            tool_list=session.tool_list,
-            main_model=session.client.model,
-            focus="importance-test",
-        )
-        assert changed is True
-        first_chunk = _compaction_session_dir(session) / "history" / "chunk_0001.jsonl"
-        assert first_chunk.exists()
-        chunk_payload = first_chunk.read_text(encoding="utf-8")
-        assert low_signal in chunk_payload
-        assert high_signal not in chunk_payload
-
-        serialized = json.dumps(compacted, ensure_ascii=False)
-        assert recent_signal in serialized
-    finally:
-        session.close()
-
-
-def test_pins_preserved_when_high_signal_turn_compacted(tmp_path: Path) -> None:
-    cfg = _make_cfg()
-    cfg.extra_fields["compaction"]["recent_user_turns_to_keep"] = 1  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_strategy"] = "oldest"  # type: ignore[index]
-    cfg.extra_fields["compaction"]["pin_score_threshold"] = 5.0  # type: ignore[index]
 
     session = create_session(
         cfg=cfg,
@@ -1664,7 +1617,7 @@ def test_pins_preserved_when_high_signal_turn_compacted(tmp_path: Path) -> None:
         session.close()
 
 
-def test_summary_normalization_unions_previous_items(tmp_path: Path) -> None:
+def test_summary_replacement_can_retire_previous_items(tmp_path: Path) -> None:
     cfg = _make_cfg()
     cfg.extra_fields["compaction"]["recent_user_turns_to_keep"] = 1  # type: ignore[index]
 
@@ -1710,7 +1663,8 @@ def test_summary_normalization_unions_previous_items(tmp_path: Path) -> None:
 
         decisions = session.conversation_compactor.state.summary.get("decisions", [])
         assert "d1" in decisions
-        assert "d2" in decisions
+        assert "d2" not in decisions
+        assert fake_compactor.captured_payloads[1]["existing_summary"]["decisions"] == ["d1", "d2"]
     finally:
         session.close()
 
@@ -1718,9 +1672,6 @@ def test_summary_normalization_unions_previous_items(tmp_path: Path) -> None:
 def test_compactor_failure_preserves_chunk_and_writes_no_partial_artifacts(tmp_path: Path) -> None:
     cfg = _make_cfg()
     cfg.extra_fields["compaction"]["recent_user_turns_to_keep"] = 1  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
-    cfg.extra_fields["compaction"]["importance_strategy"] = "oldest"  # type: ignore[index]
-    cfg.extra_fields["compaction"]["pin_score_threshold"] = 1.0  # type: ignore[index]
     cfg.extra_fields["compaction"]["trigger_ratio"] = 0.2  # type: ignore[index]
     cfg.extra_fields["compaction"]["target_ratio"] = 0.1  # type: ignore[index]
 
@@ -1985,3 +1936,168 @@ def test_reinject_context_messages_without_restored_state_is_a_no_op(
         isinstance(event, dict) and str(event.get("type") or "") == "compaction_context_reinjected"
         for event in events
     )
+
+
+def _append_tool_steps(session: AgentSession, *, count: int, prefix: str) -> None:
+    for idx in range(count):
+        call_id = f"{prefix}-call-{idx}"
+        session.messages.append(
+            {
+                "role": "assistant",
+                "content": f"{prefix} step {idx}",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "fs_read",
+                            "arguments": json.dumps({"path": f"notes-{idx}.txt"}),
+                        },
+                    }
+                ],
+            }
+        )
+        session.messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": f"{prefix}-result-{idx} " + ("r" * 1600),
+            }
+        )
+
+
+def _tool_transcript_is_paired(messages: list[dict[str, Any]]) -> bool:
+    calls = {call["id"] for message in messages for call in message.get("tool_calls") or []}
+    results = [message["tool_call_id"] for message in messages if message.get("role") == "tool"]
+    return bool(results) and set(results) <= calls
+
+
+def test_one_long_request_compacts_its_own_oldest_steps(tmp_path: Path) -> None:
+    cfg = _make_cfg()
+    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
+    session = create_session(
+        cfg=cfg,
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=2,
+        no_log=True,
+        api_key_override="x",
+        session_log_dir_override=tmp_path / "logs",
+        session_id_override="compaction-active-turn",
+    )
+    try:
+        compactor = session.conversation_compactor
+        assert compactor is not None
+        compactor.compactor_client = _FakeCompactorClient(  # type: ignore[assignment]
+            [_summary(decisions=["older steps summarized"])]
+        )
+        request = "Find the three products whose sales dropped most " + ("q" * 200)
+        session.messages.append({"role": "user", "content": request})
+        _append_tool_steps(session, count=30, prefix="task")
+
+        compacted, changed = compactor.compact_now(
+            messages=session.messages,
+            tool_list=session.tool_list,
+            main_model=session.client.model,
+        )
+
+        serialized = json.dumps(compacted, ensure_ascii=False)
+        assert changed is True
+        assert request in serialized
+        assert "task-result-0 " not in serialized
+        assert "task-result-29 " in serialized
+        assert _tool_transcript_is_paired(compacted)
+    finally:
+        session.close()
+
+
+def test_a_provider_refusal_lowers_the_budget_for_that_model(tmp_path: Path) -> None:
+    cfg = _make_cfg()
+    cfg.extra_fields["compaction"]["importance_enabled"] = False  # type: ignore[index]
+    # The shipped ratios. With this file's small ones the instructions and tools alone are
+    # over the target of a ceiling this size, and a ceiling nothing can be planned under
+    # is not learned.
+    cfg.extra_fields["compaction"].update(trigger_ratio=0.9, target_ratio=0.7)  # type: ignore[union-attr]
+    session = create_session(
+        cfg=cfg,
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=2,
+        no_log=True,
+        api_key_override="x",
+        session_log_dir_override=tmp_path / "logs",
+        session_id_override="compaction-learned-ceiling",
+    )
+    try:
+        compactor = session.conversation_compactor
+        assert compactor is not None
+        compactor.compactor_client = _FakeCompactorClient(  # type: ignore[assignment]
+            [_summary(decisions=["kept"])]
+        )
+        model = session.client.model
+        advertised = compactor._input_budget(model)
+        session.messages.append({"role": "user", "content": "Compare the three payment providers"})
+        _append_tool_steps(session, count=30, prefix="web")
+        refused = list(session.messages)
+        # Far below the advertised window, as when a plan accepts less than the model's window.
+        assert compactor.request_fits_input_budget(
+            messages=refused, tool_list=session.tool_list, main_model=model
+        )
+        _, changed_before = compactor.maybe_compact(
+            messages=refused, tool_list=session.tool_list, main_model=model
+        )
+        assert changed_before is False
+
+        compacted, changed = compactor.compact_for_overflow(
+            messages=refused,
+            tool_list=session.tool_list,
+            main_model=model,
+        )
+
+        assert changed is True
+        assert _tool_transcript_is_paired(compacted)
+        assert compactor._input_budget(model) < advertised
+        # From now on the model's budget sits below the refused size, so a request that large
+        # is compacted before it is sent again.
+        _, changed_after = compactor.maybe_compact(
+            messages=refused, tool_list=session.tool_list, main_model=model
+        )
+        assert changed_after is True
+    finally:
+        session.close()
+
+
+def test_a_refusal_of_a_short_conversation_teaches_no_ceiling(tmp_path: Path) -> None:
+    """Instructions and tools alone would be over its target: nothing could be planned."""
+    cfg = _make_cfg()
+    cfg.extra_fields["compaction"].update(trigger_ratio=0.9, target_ratio=0.7)  # type: ignore[union-attr]
+    session = create_session(
+        cfg=cfg,
+        root=tmp_path,
+        mode="auto",
+        yes=True,
+        max_steps=2,
+        no_log=True,
+        api_key_override="x",
+        session_log_dir_override=tmp_path / "logs",
+        session_id_override="compaction-ceiling-ignored",
+    )
+    try:
+        compactor = session.conversation_compactor
+        assert compactor is not None
+        compactor.compactor_client = _FakeCompactorClient(  # type: ignore[assignment]
+            [_summary(decisions=["kept"])]
+        )
+        model = session.client.model
+        advertised = compactor._input_budget(model)
+        session.messages.append({"role": "user", "content": "Compare the three payment providers"})
+        _append_tool_steps(session, count=3, prefix="web")
+        compactor.compact_for_overflow(
+            messages=list(session.messages), tool_list=session.tool_list, main_model=model
+        )
+        # Every later step would otherwise remove all it may and still be over.
+        assert compactor._input_budget(model) == advertised
+    finally:
+        session.close()

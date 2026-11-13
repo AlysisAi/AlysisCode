@@ -13,7 +13,6 @@ from test_ide_computer_use_host import (
     _wait_for_event,
 )
 
-from alysis_code import computer_use_platform_policy
 from alysis_code.agent.browser_start import (
     BrowserStartHandoff,
     build_browser_start_tool,
@@ -30,11 +29,7 @@ from alysis_code.ide.stdio_bridge import (
 )
 from alysis_code.llm.types import LLMResponse, ToolCall
 
-
-@pytest.fixture(autouse=True)
-def mac_browser_protocol(monkeypatch):
-    """Exercise the inert Mac host exchange on each CI platform."""
-    monkeypatch.setattr(computer_use_platform_policy, "sys", SimpleNamespace(platform="darwin"))
+pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
 
 
 def binding():

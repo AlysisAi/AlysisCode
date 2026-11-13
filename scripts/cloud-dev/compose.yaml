@@ -1,0 +1,81 @@
+name: alysis-cloud-dev
+services:
+  linux:
+    image: alysis-cloud-dev-linux:local
+    build:
+      context: ../..
+      dockerfile: scripts/cloud-dev/Dockerfile
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp.json
+      # Nested unprivileged bubblewrap must be able to mount its own /proc.
+      # This is a trusted local lab, not the production tenant boundary.
+      - systempaths=unconfined
+    cpus: 2
+    mem_limit: 3g
+    pids_limit: 512
+    shm_size: 512m
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=1g,mode=1777
+      - /home/alysis:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700
+    environment:
+      DISPLAY: ":99"
+      LANG: C.UTF-8
+      ALYSIS_SERVER_WORKER_BACKEND: bwrap
+      ALYSIS_SERVER_WORKER_SANDBOX_MODE: strict
+      ALYSIS_SERVER_WORKER_NETWORK: "off"
+      ALYSIS_SERVER_MAX_JOBS: "1"
+    volumes:
+      - state:/var/lib/alysis
+    networks: [offline]
+    healthcheck:
+      test: [CMD, python, /opt/cloud-dev/check.py, health]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  viewer:
+    image: alysis-cloud-dev-linux:local
+    pull_policy: never
+    command: [/usr/bin/websockify, --web, /usr/share/novnc, "0.0.0.0:6080", "linux:5900"]
+    depends_on:
+      linux:
+        condition: service_healthy
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 0.5
+    mem_limit: 128m
+    pids_limit: 64
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=16m,mode=1777"]
+    ports:
+      - "127.0.0.1:6080:6080"
+    networks: [offline, viewer]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6080/vnc.html', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+networks:
+  offline:
+    internal: true
+  viewer:
+volumes:
+  state:

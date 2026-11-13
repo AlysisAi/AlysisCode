@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import threading
+import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -15,7 +16,6 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..cancellation import CooperativeCancellationError
-from ..computer_use_diagnostics import set_safe_provider_error_fields
 from ..error_text import sanitize_error_text_for_output
 from ..execution_deadline import DeadlineExhausted
 from ..failure_category import provider_unavailable_retry_reason
@@ -36,6 +36,7 @@ from ..reasoning_contracts import (
 )
 from ..request_estimation import estimate_provider_payload_tokens
 from ..run_provenance import active_sampling_settings, apply_sampling_to_payload
+from ..task_budget import current_task_budget
 from ..transport_retry import RETRY_REASON_TRANSPORT_CONNECTION_DROP
 from . import resolved_entry
 from .base import (
@@ -58,8 +59,14 @@ from .cache_control_blocks import (
 )
 from .cache_policy import merge_cache_policy_metadata
 from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
+from .error_metadata import apply_provider_error_metadata
 from .hosted_request_limits import hosted_chat_capacity_ratio, validate_hosted_chat_capacity
-from .http_cancellation import cancellable_httpx_request, raise_if_cancelled
+from .http_cancellation import (
+    cancellable_httpx_request,
+    complete_http1_response,
+    raise_if_cancelled,
+)
+from .http_pool import ProviderHTTPPool
 from .metadata import (
     DEEPSEEK_REASONING_CONTENT_KEY as _DEEPSEEK_REASONING_CONTENT_KEY,
 )
@@ -98,6 +105,7 @@ from .metadata import (
 from .metadata import (
     merge_provider_metadata as _merge_provider_metadata,
 )
+from .output_limit import chat_completion_hit_output_limit
 from .protocols import (
     OPENAI_COMPAT_PROTOCOL,
     ReasoningTraceCapability,
@@ -1351,6 +1359,10 @@ def _parse_tool_calls(tool_calls_raw: list[dict[str, Any]]) -> list[ToolCall]:
     return tool_calls
 
 
+# Smallest output allowance named after a reply was cut off at an unstated provider default.
+_MIN_RAISED_OUTPUT_ALLOWANCE = 16_384
+
+
 def _parse_stream_tool_calls(tool_chunks: dict[int, dict[str, Any]]) -> list[ToolCall]:
     out: list[ToolCall] = []
     for idx in sorted(tool_chunks):
@@ -1918,15 +1930,23 @@ def _plan_allowance_used_up(status_code: int, body: str) -> bool:
     return str(error.get("code") or "") == "1308" or message.startswith("usage limit reached")
 
 
-def _error_from_status_body(*, status_code: int, body: str) -> LLMError:
+def _error_from_status_body(
+    *, status_code: int, body: str, headers: Mapping[str, str] | None = None
+) -> LLMError:
     safe_body = sanitize_error_text_for_output(body)
     err = LLMError(f"LLM error {status_code}: {_display_error_body(safe_body)}")
     err.provider_status_code = int(status_code)
     err.provider_error_body = safe_body
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        data = None
+    detail = data.get("error") if isinstance(data, dict) else None
+    detail = detail if isinstance(detail, dict) else {}
     if _plan_allowance_used_up(status_code, body):
         # The hard-quota code is never retried (provider_limits) and names the cause (QA-011).
-        set_safe_provider_error_fields(err, status=status_code, code="usage_limit_reached")
-    return err
+        detail = {**detail, "code": "usage_limit_reached"}
+    return apply_provider_error_metadata(err, status=status_code, detail=detail, headers=headers)
 
 
 # Error codes and types that providers send in the ``error`` object of an SSE
@@ -1934,6 +1954,9 @@ def _error_from_status_body(*, status_code: int, body: str) -> LLMError:
 # are used as they are; any other value leaves the error to be classified from
 # its text, like every other provider error.
 _STREAM_ERROR_STATUS_BY_CODE = {
+    "insufficient_quota": 429,
+    "usage_limit_reached": 429,
+    "billing_hard_limit_reached": 429,
     "rate_limit_exceeded": 429,
     "rate_limit_error": 429,
     "server_error": 500,
@@ -1974,7 +1997,11 @@ def _error_from_stream_error_event(error: Any) -> LLMError:
     if status_code is not None:
         return _error_from_status_body(status_code=status_code, body=body)
     safe_body = sanitize_error_text_for_output(body)
-    return LLMError(f"LLM stream returned an error event: {_display_error_body(safe_body)}")
+    return apply_provider_error_metadata(
+        LLMError(f"LLM stream returned an error event: {_display_error_body(safe_body)}"),
+        status=None,
+        detail=error if isinstance(error, Mapping) else {},
+    )
 
 
 def _response_with_stream_restart_metadata(
@@ -2039,10 +2066,15 @@ class OpenAICompatClient:
         stream_progress_clock: Callable[[], float] | None = None,
         inflight_deadline_grace_s: float = 10.0,
         stream_assembly: str | None = STREAM_ASSEMBLY_AUTO,
+        output_token_ceiling: int | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self._output_token_ceiling: tuple[str, int] | None = None
+        self.set_output_token_ceiling(output_token_ceiling)
+        self._output_allowances: dict[str, int] = {}
+        self._output_allowance_lock = threading.Lock()
         self.timeout_s = timeout_s
         self.temperature = temperature
         self.prompt_cache_key = str(prompt_cache_key or "").strip() or None
@@ -2053,6 +2085,8 @@ class OpenAICompatClient:
         self.enable_thinking = enable_thinking
         self.reasoning_effort = str(reasoning_effort or "").strip().lower() or None
         self._transport = transport
+        self._http_pool = ProviderHTTPPool()
+        weakref.finalize(self, self._http_pool.close)
         self._wire_request_diagnostics = WireRequestDiagnostics()
         self.extra_headers = canonicalize_extra_headers(extra_headers)
         self.provider_key = str(provider_key or "").strip() or None
@@ -2125,6 +2159,20 @@ class OpenAICompatClient:
         self._tool_choice_compat_lock = threading.Lock()
         self._tool_calling_compat_disabled: set[tuple[str, str, str]] = set()
         self._tool_calling_compat_lock = threading.Lock()
+
+    def _http_client_context(self, *, url: str, headers: dict[str, str]) -> Any:
+        timeout = _httpx_request_timeout(self.timeout_s)
+        if self._transport is not None or current_task_budget() is not None:
+            return provider_httpx_client(timeout=timeout, transport=self._transport)
+        scope = credential_scope_fingerprint(json.dumps([url, headers], sort_keys=True))
+        return self._http_pool.lease(scope=scope, timeout=timeout)
+
+    def close_http_connections(self) -> None:
+        """Release session transport state, including any returning active lease."""
+        self._http_pool.clear()
+
+    def close(self) -> None:
+        self._http_pool.close()
 
     @property
     def reasoning_active(self) -> bool | None:
@@ -2706,6 +2754,11 @@ class OpenAICompatClient:
             payload["tool_choice"] = tool_choice
         if response_format:
             payload["response_format"] = response_format
+        requested_max_tokens = max_tokens
+        if max_tokens is None:
+            # Once a reply was cut off at the provider's unstated default, later requests from
+            # this client name the larger allowance chosen then (_raise_output_allowance).
+            max_tokens = self._raised_output_allowance()
         if max_tokens is not None:
             output_limit_field = (
                 "max_completion_tokens"
@@ -2938,10 +2991,7 @@ class OpenAICompatClient:
                         cancellation_token=cancellation_token,
                     )
                     if cancellation_token is not None and not stream
-                    else provider_httpx_client(
-                        timeout=_httpx_request_timeout(self.timeout_s),
-                        transport=self._transport,
-                    )
+                    else self._http_client_context(url=url, headers=headers)
                 )
                 with client_context as client:
                     while True:
@@ -3333,7 +3383,7 @@ class OpenAICompatClient:
                     ) from e
                 raise LLMError(f"LLM request failed: {sanitize_error_text_for_output(e)}") from e
 
-        return stamp_response_for_route(
+        result = stamp_response_for_route(
             telemetry.run(
                 lambda: run_provider_limited_call(
                     call=_send_request,
@@ -3356,6 +3406,54 @@ class OpenAICompatClient:
             ),
             self.route_identity,
         )
+        # The reply is returned as before; the agent turn recognizes the cut-off itself.
+        if requested_max_tokens is None and chat_completion_hit_output_limit(result.raw):
+            self._raise_output_allowance(result)
+        return result
+
+    def set_output_token_ceiling(self, ceiling: int | None) -> None:
+        """Record the current model's catalogued output ceiling, with the model it belongs to.
+
+        Callers that switch this client's model in place refresh it; a ceiling recorded for
+        another model is ignored.
+        """
+        self._output_token_ceiling = (
+            (self.model, int(ceiling))
+            if isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0
+            else None
+        )
+
+    def _raised_output_allowance(self) -> int | None:
+        lock = getattr(self, "_output_allowance_lock", None)
+        allowances = getattr(self, "_output_allowances", None)
+        if lock is None or not isinstance(allowances, dict):
+            return None
+        with lock:
+            return allowances.get(self.model)
+
+    def _raise_output_allowance(self, response: LLMResponse) -> None:
+        """Give later requests room after a reply was cut off at the provider's default.
+
+        The request named no output limit, so the provider applied its own. Later requests name
+        twice what this reply used (at least _MIN_RAISED_OUTPUT_ALLOWANCE), never above the
+        model's catalogued output ceiling. Without a known ceiling the default stays, since a
+        larger value could be refused outright.
+        """
+        ceiling_entry = getattr(self, "_output_token_ceiling", None)
+        lock = getattr(self, "_output_allowance_lock", None)
+        allowances = getattr(self, "_output_allowances", None)
+        if ceiling_entry is None or ceiling_entry[0] != self.model:
+            return
+        if lock is None or not isinstance(allowances, dict):
+            return
+        ceiling = ceiling_entry[1]
+        used = response.usage.completion_tokens if response.usage is not None else None
+        with lock:
+            current = allowances.get(self.model, 0)
+            reached = max(current, used if isinstance(used, int) and used > 0 else 0)
+            proposed = min(ceiling, max(_MIN_RAISED_OUTPUT_ALLOWANCE, 2 * reached))
+            if proposed > reached:
+                allowances[self.model] = proposed
 
     @staticmethod
     def _parse_non_stream_response(
@@ -3410,7 +3508,9 @@ class OpenAICompatClient:
             body = resp.text
         except Exception:
             body = "<unable to read response body>"
-        return _error_from_status_body(status_code=resp.status_code, body=body)
+        return _error_from_status_body(
+            status_code=resp.status_code, body=body, headers=resp.headers
+        )
 
     def _parse_stream_response(
         self,
@@ -3425,7 +3525,9 @@ class OpenAICompatClient:
     ) -> LLMResponse:
         if resp.status_code >= 400:
             body = self._safe_error_body(resp)
-            raise _error_from_status_body(status_code=resp.status_code, body=body)
+            raise _error_from_status_body(
+                status_code=resp.status_code, body=body, headers=resp.headers
+            )
 
         # Register response.close only for the lifetime of this parse. Every
         # exit path (success, provider error, timeout, deadline or cancel) must
@@ -3474,6 +3576,7 @@ class OpenAICompatClient:
         saw_reasoning_content = False
         reasoning_details: list[Any] = []
         mistral_content_chunks: list[dict[str, Any]] = []
+        finish_reason: str | None = None
         saw_done = False
         progress_clock = self._stream_progress_clock
         last_meaningful_progress = progress_clock()
@@ -3512,8 +3615,10 @@ class OpenAICompatClient:
                     f"{self.stream_no_progress_timeout_s:g}s."
                 )
 
+        body_chunks = resp.iter_bytes()
+
         def _observed_byte_chunks() -> Iterator[bytes]:
-            for chunk in resp.iter_bytes():
+            for chunk in body_chunks:
                 attempt.increment("byte_chunk_count")
                 attempt.increment("body_bytes_received", len(chunk))
                 if chunk:
@@ -3536,6 +3641,7 @@ class OpenAICompatClient:
                 if event is None:
                     last_meaningful_progress = progress_clock()
                     saw_done = True
+                    complete_http1_response(resp, body_chunks, cancellation_token)
                     break
 
                 if event.get("error") is not None:
@@ -3569,6 +3675,7 @@ class OpenAICompatClient:
                 choice0 = choices[0] if isinstance(choices, list) and choices else None
                 if isinstance(choice0, dict) and choice0.get("finish_reason") is not None:
                     attempt.values["finish_reason_observed"] = True
+                    finish_reason = str(choice0.get("finish_reason"))
                 delta = choice0.get("delta") if isinstance(choice0, dict) else None
                 if isinstance(delta, dict):
                     reasoning_delta = delta.get(_DEEPSEEK_REASONING_CONTENT_KEY)
@@ -3691,6 +3798,8 @@ class OpenAICompatClient:
             "content": mistral_content_chunks,
         }
         stream_raw: dict[str, Any] = {"stream": True, "events": event_count}
+        if finish_reason is not None:
+            stream_raw["finish_reason"] = finish_reason
         if system_fingerprint:
             # Added only when the provider actually sent one, so a provider
             # that never emits it leaves ``raw`` exactly as before.

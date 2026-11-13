@@ -77,19 +77,6 @@ VALID_EXTENSION_COMMAND_ROUTE_TYPES = {
     "tree_refresh",
 }
 
-# These integrations require a desktop host controller. They remain bridge-only
-# and are exempt from typed VS Code client coverage.
-DESKTOP_HOST_ONLY_METHODS = {
-    "browser_start.respond",
-    "computer.respond",
-    "computer_start_resolved.respond",
-    "task_budget.respond",
-    "host.action.dispatched",
-    "session.userQuestions.get",
-    "session.userQuestions.answer",
-    "session.userQuestions.touch",
-}
-
 TS_CLIENT_COVERAGE_EXEMPT_METHODS = {
     "health",
     "getCapabilities",
@@ -646,16 +633,48 @@ def _extract_static_string_sequence(path: Path, name: str) -> set[str]:
             continue
         if not any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
             continue
-        if not isinstance(node.value, (ast.Tuple, ast.List, ast.Set)):
+        value_node = node.value
+        if (
+            isinstance(value_node, ast.Call)
+            and isinstance(value_node.func, ast.Name)
+            and value_node.func.id == "frozenset"
+            and len(value_node.args) == 1
+            and not value_node.keywords
+        ):
+            value_node = value_node.args[0]
+        if not isinstance(value_node, (ast.Tuple, ast.List, ast.Set)):
             raise ExtractionError(f"TODO: {name} must remain a static tuple/list/set")
         values: set[str] = set()
-        for element in node.value.elts:
+        for element in value_node.elts:
             value = _literal_str(element)
             if value is None:
                 raise ExtractionError(f"TODO: non-literal entry in {name}")
             values.add(value)
         return values
     raise ExtractionError(f"TODO: {name} is missing from {path.relative_to(REPO_ROOT)}")
+
+
+def extract_desktop_host_response_methods() -> set[str]:
+    # These responses belong to the capability-negotiated desktop host boundary.
+    # The matrix must declare each of them desktop_host_only, so that boundary
+    # stays in sync with the production platform policy.
+    return _extract_static_string_sequence(
+        REPO_ROOT / "src" / "alysis_code" / "computer_use_platform_policy.py", "CU_METHODS"
+    )
+
+
+def desktop_host_only_methods(matrix: dict[str, Any]) -> set[str]:
+    """Bridge methods the matrix declares for the desktop host alone.
+
+    The matrix is the one place that says so (``"desktop_host_only": true`` on a
+    bridge-only entry). These methods are exempt from typed VS Code client
+    coverage; bridge dispatch and protocol documentation stay required.
+    """
+    return {
+        str(entry["name"])
+        for entry in expanded_parity_entries(matrix)
+        if entry["surface"] == "ide_bridge_method" and entry.get("desktop_host_only") is True
+    }
 
 
 def extract_ts_protocol_method_features() -> set[FeatureRef]:
@@ -1367,6 +1386,15 @@ def validate_parity_matrix() -> list[str]:
                 metadata_errors.append(
                     f"{entry_id}: implemented_in_bridge_only requires bridge_only_rationale"
                 )
+        if "desktop_host_only" in entry and not (
+            entry["desktop_host_only"] is True
+            and entry.get("surface") == "ide_bridge_method"
+            and status == "implemented_in_bridge_only"
+        ):
+            metadata_errors.append(
+                f"{entry_id}: desktop_host_only must be true on an "
+                "implemented_in_bridge_only ide_bridge_method entry, or absent"
+            )
     if metadata_errors:
         errors.append(
             "Parity entries with unresolved or bridge-only statuses must carry "
@@ -1512,7 +1540,15 @@ def validate_parity_matrix() -> list[str]:
         )
 
     ts_protocol_methods = extract_ts_protocol_method_features()
-    extension_methods = {ref for ref in health_methods if ref.name not in DESKTOP_HOST_ONLY_METHODS}
+    desktop_only = desktop_host_only_methods(matrix)
+    undeclared_host_responses = extract_desktop_host_response_methods() - desktop_only
+    if undeclared_host_responses:
+        errors.append(
+            "computer_use_platform_policy.py CU_METHODS lists desktop host responses the "
+            "parity matrix does not declare desktop_host_only:\n"
+            + _format_commands(undeclared_host_responses)
+        )
+    extension_methods = {ref for ref in health_methods if ref.name not in desktop_only}
     missing_ts_protocol_methods = extension_methods - ts_protocol_methods
     if missing_ts_protocol_methods:
         errors.append(
@@ -1529,6 +1565,13 @@ def validate_parity_matrix() -> list[str]:
         errors.append(
             "AlysisBridgeClient.ts is missing typed request coverage for "
             "advertised IDE bridge methods:\n" + _format_refs(missing_ts_client_methods)
+        )
+    desktop_only_in_client = {ref for ref in ts_client_methods if ref.name in desktop_only}
+    if desktop_only_in_client:
+        errors.append(
+            "AlysisBridgeClient.ts requests methods the parity matrix declares "
+            "desktop_host_only; remove the declaration or the request:\n"
+            + _format_refs(desktop_only_in_client)
         )
 
     protocol_contract_methods = extract_protocol_contract_method_features()

@@ -92,13 +92,27 @@ def test_unverified_or_mismatched_signature_receipt_cannot_bind_binary(candidate
         validate_candidate(bundle, inventory, signature=signature)
 
 
-def test_public_candidate_tag_requires_qualification_and_protected_signing_without_publication():
+def test_candidate_workflow_respects_repository_signing_boundary():
     root = Path(__file__).resolve().parents[1]
     native = yaml.safe_load((root / ".github/workflows/windows-native-sandbox.yml").read_text())
     release = yaml.safe_load((root / ".github/workflows/release.yml").read_text())
     # YAML 1.1 represents GitHub's "on" key as True.
     assert native[True]["push"]["tags"] == ["v-sandbox-*"]
     assert "!v-sandbox-*" in release[True]["push"]["tags"]
+    if (root / "internal/sync-boundary.json").is_file():
+        # Private imports retain qualification, but public-only signing actions
+        # cannot be loaded under the private repository's action allowlist.
+        assert set(native["jobs"]) == {
+            "native-build",
+            "engine-tests",
+            "installed-qualification",
+            "mxc-candidate-build",
+        }
+        assert native["permissions"] == {"contents": "read"}
+        for private_job in native["jobs"].values():
+            assert "environment" not in private_job
+            assert "permissions" not in private_job
+        return
     job = native["jobs"]["sign-mxc-candidate"]
     assert job["environment"] == "managed-cli-native-signing"
     assert set(job["needs"]) == {"installed-qualification", "mxc-candidate-build"}

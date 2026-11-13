@@ -44,6 +44,8 @@ def shell_run(
     runner: Any | None = None,
     capture_pipeline_status: bool = False,
     cancel_check: Callable[[], bool] | None = None,
+    timeout_guidance: str | None = None,
+    git_whole_metadata: bool = False,
 ) -> dict[str, Any]:
     base = root.resolve()
     if cwd:
@@ -76,70 +78,70 @@ def shell_run(
         run_kwargs["cancel_check"] = cancel_check
 
     def _run(command_text: str) -> tuple[Any, list[int] | None, str]:
+        metadata_withheld = False
         if os.name == "nt":
-            from ..git_native import native_argv
-            from ..git_shell_inspection import inspection_argv
+            from ..git_native import shell_git_route
             from ..sandbox_runner import LazyShellRunner
             from ..windows_mxc import WindowsMxcRunner
 
-            argv = inspection_argv(command_text)
-            mutation = native_argv(command_text)
-            native_read = native_argv(command_text, inspection=True)
+            # One answer decides where a literal Git command runs. The command
+            # guard asks the same function, so it judges the route taken here.
+            route = shell_git_route(command_text)
+            # A command a person approved Git's own metadata for can also be
+            # one of the verbs that write nothing else (config, remote).
+            approved_route = route or shell_git_route(command_text, metadata_access=True)
             # The desktop retains a lazy runner. Resolve its actual authorized
             # backend, not mutable config or a guessed backend string. Loading
             # validates the helper; it does not prepare a writable command.
             actual_runner = (
                 runner._resolve_runner()
-                if (argv is not None or mutation is not None or native_read is not None)
-                and isinstance(runner, LazyShellRunner)
+                if approved_route is not None and isinstance(runner, LazyShellRunner)
                 else runner
             )
-            if native_read is not None and isinstance(actual_runner, WindowsMxcRunner):
-                from ..git_native import run
-
+            if isinstance(actual_runner, WindowsMxcRunner) and getattr(
+                actual_runner.settings, "git_metadata_access", False
+            ):
+                route = approved_route
+            # A Git command that only changes configuration or remotes, run
+            # without that approval: the general shell can read them.
+            metadata_withheld = (
+                route is None
+                and approved_route is not None
+                and isinstance(actual_runner, WindowsMxcRunner)
+            )
+            if route is not None and isinstance(actual_runner, WindowsMxcRunner):
+                kind, argv = route
                 roots = [base, *(Path(p).resolve() for p in runner_workspace_roots(runner))]
                 granted_root = next(p for p in roots if cwd_path.is_relative_to(p))
+                if kind == "reader":
+                    from ..contained_read_tools import ContainedReadTools
+
+                    # Keep the existing approval and cwd checks above. Select the
+                    # narrower read-only worker before shell setup can reserve files.
+                    result = ContainedReadTools(actual_runner.settings, granted_root).run(
+                        "git_shell_inspect",
+                        {"argv": argv, "cwd": str(cwd_path.relative_to(granted_root))},
+                        cancel_check=cancel_check,
+                        timeout_s=max(1, int(timeout_s)),
+                    )
+                    completed = subprocess.CompletedProcess(
+                        command_text, result["exit_code"], result["stdout"], result["stderr"]
+                    )
+                    completed.inspection_truncated = result["truncated"]
+                    completed.inspection_backend = "contained-readonly-git"
+                    return completed, [completed.returncode], completed.stderr
+                from ..git_native import run
+
                 completed = run(
                     settings=actual_runner.settings,
                     root=granted_root,
                     cwd=cwd_path,
-                    argv=native_read,
+                    argv=argv,
                     timeout_s=max(1, int(timeout_s)),
                     cancel_check=cancel_check,
-                    inspection=True,
-                )
-                return completed, [completed.returncode], completed.stderr
-            if argv is not None and isinstance(actual_runner, WindowsMxcRunner):
-                from ..contained_read_tools import ContainedReadTools
-
-                # Keep the existing approval and cwd checks above. Select the
-                # narrower read-only worker before shell setup can reserve files.
-                roots = [base, *(Path(p).resolve() for p in runner_workspace_roots(runner))]
-                granted_root = next(p for p in roots if cwd_path.is_relative_to(p))
-                result = ContainedReadTools(actual_runner.settings, granted_root).run(
-                    "git_shell_inspect",
-                    {"argv": argv, "cwd": str(cwd_path.relative_to(granted_root))},
-                    cancel_check=cancel_check,
-                    timeout_s=max(1, int(timeout_s)),
-                )
-                completed = subprocess.CompletedProcess(
-                    command_text, result["exit_code"], result["stdout"], result["stderr"]
-                )
-                completed.inspection_truncated = result["truncated"]
-                completed.inspection_backend = "contained-readonly-git"
-                return completed, [completed.returncode], completed.stderr
-            if mutation is not None and isinstance(actual_runner, WindowsMxcRunner):
-                from ..git_native import run
-
-                roots = [base, *(Path(p).resolve() for p in runner_workspace_roots(runner))]
-                granted_root = next(p for p in roots if cwd_path.is_relative_to(p))
-                completed = run(
-                    settings=actual_runner.settings,
-                    root=granted_root,
-                    cwd=cwd_path,
-                    argv=mutation,
-                    timeout_s=max(1, int(timeout_s)),
-                    cancel_check=cancel_check,
+                    # A person decided on this command (the caller says so).
+                    **({"inspection": True} if kind == "native-read" else {}),
+                    **({"whole_metadata": True} if git_whole_metadata else {}),
                 )
                 return completed, [completed.returncode], completed.stderr
         run_cmd = (
@@ -148,6 +150,21 @@ def shell_run(
         completed = runner.run(
             root=base, cwd=cwd_path, cmd=run_cmd, timeout_s=timeout_s, **run_kwargs
         )
+        if (
+            metadata_withheld
+            and completed.returncode
+            and not getattr(completed, "sandbox_policy", None)
+        ):
+            completed.sandbox_policy = {
+                "backend": "windows-mxc",
+                "git_metadata": "protected",
+                "guidance": (
+                    "Policy context, not a diagnosis of this exit code: this command ran where "
+                    "Git's configuration and remotes can be read and not written. If it was "
+                    "meant to change them, run the same literal Git command with operation-only "
+                    "permissions.git_metadata=true, which a person approves."
+                ),
+            }
         if wants_capture:
             status, cleaned_stderr = extract_pipeline_status(completed.stderr or "")
             return completed, status, cleaned_stderr
@@ -197,6 +214,9 @@ def shell_run(
         stdout, stdout_truncated = _truncate(output_text(e.stdout))
         stderr, stderr_truncated = _truncate(output_text(e.stderr))
         message = f"Command timed out after {timeout_s:g}s"
+        if timeout_guidance:
+            # Say how to continue: the caller knows which options the model has.
+            message = f"{message} and was stopped. {timeout_guidance}"
         return ShellError(
             message,
             result_payload={

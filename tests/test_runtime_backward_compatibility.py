@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from alysis_code import agent_loop
 from alysis_code.agent import _patchable
 from alysis_code.agent_loop import (
@@ -33,9 +35,10 @@ class _Store:
     def append(self, event_type: str, payload: dict[str, Any]) -> None:
         self.events.append((event_type, payload))
 
-    def events_since(self, cursor: int):
+    def events_since(self, cursor: int) -> tuple[list[dict[str, Any]], int]:
         return [
-            {"type": kind, "payload": payload} for kind, payload in self.events[max(0, cursor) :]
+            {"type": kind, "payload": payload}
+            for kind, payload in self.events[max(0, int(cursor)) :]
         ], len(self.events)
 
     def configure_web_fetch_trusted_domains(self, domains: Any) -> tuple[str, ...]:
@@ -199,6 +202,7 @@ def test_shell_run_tool_uses_agent_loop_monkeypatch_and_keeps_legacy_keys(
     assert result["verification_evidence_category"] == "NOT_VERIFICATION"
 
 
+@pytest.mark.usefixtures("approved_local_checks")
 def test_verify_run_tool_uses_agent_loop_monkeypatch_and_keeps_legacy_keys(
     tmp_path: Path,
     monkeypatch,

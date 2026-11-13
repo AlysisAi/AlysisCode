@@ -196,6 +196,12 @@ P-256 `EC PRIVATE KEY` PEM, compares its derived public PEM byte-for-byte, and e
 public fingerprint/match fields. It neither uploads a secret nor configures GitHub.
 The actual protected signing workflow must still verify the provisioned key.
 
+The legacy repository secret `ALYSIS_MANAGED_CLI_SIGNING_KEY` was last updated
+29 July 2026 at 14:04:26 UTC according to GitHub's read-only metadata. GitHub cannot
+return its value, and this timestamp does not identify its owner or prove a key match.
+Preserve it while establishing custody; do not dispatch a diagnostic workflow to
+extract it or silently substitute it for the environment key.
+
 - Store `ALYSIS_MANAGED_CLI_SIGNING_KEY` only in the protected GitHub environment
   `managed-cli-signing`; never use a repository, organization-wide, local `.env`, or runner file
   secret for the production key.

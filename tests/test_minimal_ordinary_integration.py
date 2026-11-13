@@ -18,28 +18,26 @@ from alysis_code.sandbox_settings import ShellSandboxSettings
         r"\\server\share\Windows App\alpha.txt",
     ],
 )
-@pytest.mark.parametrize("verb", ["Read", "Read from"])
-def test_bare_read_and_existing_read_from_keep_input_role(tmp_path, source, verb):
+@pytest.mark.parametrize("verb", ["Read", "Read from", "Διάβασε το"])
+def test_mentions_keep_their_spelling_and_get_no_role_from_the_wording(tmp_path, source, verb):
     contract = build_acceptance_contract(
         root=tmp_path, instruction=f"{verb} {source} and create result.txt."
     )
     roles = {ref.display_path: ref.role for ref in contract.path_refs}
-    assert roles[source.replace("\\", "/")] == AcceptancePathRole.EXISTING_INPUT
-    assert roles["result.txt"] == AcceptancePathRole.REQUIRED_OUTPUT
-    # A declaration neither creates files nor authorizes reading an external root.
+    assert roles == {
+        source.replace("\\", "/"): AcceptancePathRole.UNKNOWN_REFERENCE,
+        "result.txt": AcceptancePathRole.UNKNOWN_REFERENCE,
+    }
+    # Detection neither creates files nor authorizes reading an external root.
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize(
-    "instruction,role",
-    [
-        ("Discuss docs/read.txt.", AcceptancePathRole.UNKNOWN_REFERENCE),
-        ("Create docs/read.txt.", AcceptancePathRole.REQUIRED_OUTPUT),
-    ],
-)
-def test_read_word_in_filename_is_not_an_input_predicate(tmp_path, instruction, role):
+@pytest.mark.parametrize("instruction", ["Discuss docs/read.txt.", "Create docs/read.txt."])
+def test_a_verb_in_a_filename_or_before_it_is_not_a_role(tmp_path, instruction):
     contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
-    assert {ref.display_path: ref.role for ref in contract.path_refs} == {"docs/read.txt": role}
+    assert {ref.display_path: ref.role for ref in contract.path_refs} == {
+        "docs/read.txt": AcceptancePathRole.UNKNOWN_REFERENCE
+    }
     assert list(tmp_path.iterdir()) == []
 
 

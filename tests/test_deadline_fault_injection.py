@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -112,7 +113,19 @@ def test_hard_deadline_interrupts_real_network_fault(phase: str, stream: bool) -
             worker.join(2)
         elapsed = time.monotonic() - started
         # This is the supported local regression threshold, not a universal SLA.
-        assert not worker.is_alive(), f"{phase} outlived hard deadline"
+        if worker.is_alive():
+            frames = sys._current_frames()
+            stacks = []
+            for active in threading.enumerate():
+                frame = frames.get(active.ident)
+                if frame is not None:
+                    stacks.append(
+                        f"Thread {active.name}:\n{''.join(traceback.format_stack(frame))}"
+                    )
+            pytest.fail(
+                f"{phase} outlived hard deadline; cancelled={token.is_cancelled}\n"
+                + "\n".join(stacks)
+            )
         assert elapsed < 2
     assert len(errors) == 1
     assert isinstance(errors[0], CooperativeCancellationError)

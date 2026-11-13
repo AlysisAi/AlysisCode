@@ -62,8 +62,7 @@ FIRST_PARTY_NATIVE_PRESET_KEYS: tuple[str, ...] = (
     "gemini",
 )
 FIRST_CLASS_SETUP_PRESET_KEYS: tuple[str, ...] = (
-    # "alysis" (hosted MiMo) deliberately absent: while no campaign is
-    # running it stays off the primary picker entirely (advanced picker only).
+    # The account-gated "alysis" preset uses the advanced picker.
     *FIRST_PARTY_NATIVE_PRESET_KEYS,
 )
 FIRST_PARTY_COMPATIBILITY_PRESET_KEYS: tuple[str, ...] = (
@@ -165,7 +164,6 @@ _ANTHROPIC_CACHE_CONTROL_CAPABILITY = CacheCapabilitySpec(
         ("claude-opus-4-6", _cache_minimum(4096)),
         ("claude-opus-4-5", _cache_minimum(4096)),
         ("claude-haiku-4-5", _cache_minimum(4096)),
-        ("claude-haiku-5-5", _cache_minimum(512)),
     ),
     source="preset",
 )
@@ -297,7 +295,7 @@ def _advanced_only_preset_keys() -> frozenset[str]:
     surfaced directly so users are not limited to the big-three brands. Only the
     OpenAI-compatible duplicates of the native first-party providers, local
     endpoints (Ollama/LM Studio/vLLM), the manual custom-URL entry, the
-    one-release legacy aliases, and the account-gated hosted MiMo preset
+    one-release legacy aliases, and the account-gated hosted Alysis preset
     (no hosted campaign is running, so it is not a provider choice) stay
     behind the advanced picker.
     """
@@ -318,7 +316,7 @@ def provider_selection_presets() -> list[ProfilePreset]:
     Native first-party providers lead — the best defaults for new users —
     followed by every other hosted provider in registration order.
     Compatibility duplicates, local endpoints, the custom-URL entry,
-    one-release legacy aliases, and the account-gated hosted MiMo preset are
+    one-release legacy aliases, and the account-gated hosted Alysis preset are
     the only presets held back for the advanced picker, so the user sees the
     full range of hosted providers up front instead of just
     OpenAI/Anthropic/Gemini.
@@ -341,7 +339,7 @@ def advanced_provider_selection_presets() -> list[ProfilePreset]:
     These are exactly the presets held off the primary provider picker: the
     OpenAI-compatible duplicates of the native first-party providers, local
     endpoints (Ollama/LM Studio/vLLM), the manual custom-URL entry, the
-    one-release legacy aliases, and the account-gated hosted MiMo preset.
+    one-release legacy aliases, and the account-gated hosted Alysis preset.
     """
     by_key = PRESET_BY_KEY
     first_party_compat = [

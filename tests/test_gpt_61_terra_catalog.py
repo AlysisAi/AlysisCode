@@ -142,7 +142,7 @@ def test_terra_prices_limits_and_invalid_effort(preset):
     metadata = ModelRegistry(cfg=config(preset)).get(MODEL, include_provider_auth=False)
     assert metadata.context_window_tokens == 1_050_000
     assert metadata.max_output_tokens == 128_000
-    assert metadata.supports_vision is (preset != "alysis")
+    assert metadata.supports_vision is True
     assert metadata.input_cost_per_token == 1 / 1_000_000
     assert metadata.output_cost_per_token == 5 / 1_000_000
     assert metadata.cache_read_input_cost_per_token == pytest.approx(0.05 / 1_000_000)
@@ -156,8 +156,12 @@ def test_account_catalog_exposes_context_output_and_hosted_modalities(model, con
     capabilities = hosted_model_capabilities(model)
     assert capabilities["context_window_tokens"] == context
     assert capabilities["max_output_tokens"] == output
-    assert capabilities["supports_vision"] is False
-    assert capabilities["input_modalities"] == ["text"]
+    assert capabilities["supports_vision"] is True
+    assert capabilities["input_modalities"] == ["text", "image"]
+    assisted = model in {"reflection-beam", "nemotron-3.5-super-vl"}
+    assert capabilities["image_input"] == ("assisted" if assisted else "native")
+    if assisted:
+        assert capabilities["image_helper"] == "gpt-6-luna"
 
 
 def test_preset_json_carries_metadata_and_does_not_read_user_overrides_or_keys(monkeypatch):

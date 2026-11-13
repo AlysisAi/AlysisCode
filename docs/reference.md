@@ -165,7 +165,7 @@ Common interactive commands:
 - `/skill`: list discovered skills
 - `$<skill> [task]`: at an idle prompt, show skill info or attach it for one turn
 - `/forge [resume]`: enter or resume Forge for the workspace
-- `/report [text]`: create a local feedback bundle
+- `/report [text]`: open the report panel (private delivery to Alysis, optional diagnostics, local export, and GitHub preview)
 - `/exit`: quit chat
 
 Trace controls presentation, independently of reasoning effort. In normal turns and
@@ -474,58 +474,6 @@ telemetry and reverts the directives and gate policy.
 `role_models.router` overrides the model used for lightweight routing. Leave it
 unset to inherit `model`, or set it to a smaller/cheaper model while keeping the
 main coding model stronger.
-
-## AgentBox Telemetry
-
-AgentBox telemetry is opt-in, metadata-only, and built into Alysis Code. No
-AgentBox package or sibling source checkout is required:
-
-```bash
-python -m pip install alysis-code
-```
-
-From a contributor checkout, the normal `python -m pip install -e ".[dev]"`
-installation includes the integration.
-
-On an enrolled computer, Alysis Code reads the machine URL, token, identity, and
-privacy detail setting from `~/.agentbox/config.toml`. Set only the opt-in switch:
-
-```bash
-export AGENTBOX_ENABLED=1
-```
-
-Use `AGENTBOX_CONFIG` to select another enrollment config. Environment
-variables override config values when an explicit per-process override is
-needed:
-
-```bash
-export AGENTBOX_ENABLED=1
-export AGENTBOX_PLANE_URL=https://agentbox.example.com
-export AGENTBOX_TOKEN="<this machine's ingest token>"
-export AGENTBOX_MACHINE_ID="<this machine's ID>"
-# optional overrides:
-export AGENTBOX_AGENT_ID="<unique Alysis Code agent ID>"
-export AGENTBOX_TASK_DETAIL=category
-export AGENTBOX_QUEUE_DIR=~/.agentbox/alysis-sdk-queue
-```
-
-Each computer must be enrolled separately. Do not copy another machine's token
-or identity. By default, the enrolled Alysis Code agent ID is
-`<machine-id>_alysis`, so computers appear as distinct agents.
-
-Alysis Code uses its dedicated `~/.agentbox/sdk-queue` rather than the
-connector shipper's `~/.agentbox/queue`. Set `AGENTBOX_QUEUE_DIR` only when a
-separate Alysis Code-specific queue location is required.
-
-Network failures leave events in that queue for replay and do not fail the
-Alysis Code run. Scrubbed client errors are written to
-`~/.agentbox/alysis-agentbox.log`; URLs and filesystem paths are removed.
-
-When disabled or missing required configuration, Alysis Code does not create the
-AgentBox client and emits nothing. When enabled, it sends session lifecycle,
-short sanitized task objectives, turn token/cost totals, and tool activity
-categories only. Prompts, diffs, tool arguments, outputs, file contents, and
-full paths are never sent.
 
 ## Profiles
 
@@ -1143,8 +1091,11 @@ running it.
   Provide the URL explicitly or enable a supported search backend.
 - If the workspace is not what you expected, run `/pwd` in chat or start again
   with `--path`.
-- If clipboard image paste does not work, install a supported clipboard backend
-  for your platform.
+- If clipboard image paste does not work, ensure the clipboard contains image
+  data. On macOS, native clipboard access is built in; copy a screenshot with
+  **Control+Shift+Command+4**, then use **Ctrl+V** or `/image`. On Linux, install
+  `wl-paste` (Wayland) or `xclip` (X11). Windows/WSL uses Windows PowerShell.
+  You can also attach a saved image with `/image <path>`.
 
 ## Detailed Guides
 

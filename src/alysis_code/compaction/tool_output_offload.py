@@ -221,6 +221,12 @@ class ToolOutputOffloader:
                 for key in ("diff_id", "offset", "next_offset", "total_chars")
                 if key in result
             }
+        if tool_name == "memory_read" and isinstance(result, dict):
+            continuation_metadata = {
+                key: result[key]
+                for key in ("generation", "next_cursor", "next_offset", "total", "general_total")
+                if key in result
+            }
         if tool_name in {
             "embedded_browser_open",
             "embedded_browser_read",

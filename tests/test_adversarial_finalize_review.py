@@ -25,6 +25,8 @@ from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 _VERIFY_OK_COMMAND = "pytest tests/test_cli.py -q"
 
 
@@ -132,6 +134,7 @@ def _run_turn(
             model="test-model",
             routing_mode="code_only",
             verify_commands=[_VERIFY_OK_COMMAND],
+            extra_fields={"shell_sandbox": {"mode": "off"}},
         ),
         root=tmp_path,
         mode="auto",

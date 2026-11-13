@@ -64,7 +64,10 @@ async def safe_http_request(
     content: bytes | None = None,
     _transport: httpx.AsyncBaseTransport | None = None,
     _resolver: Resolver | None = None,
+    truncate: bool = False,
 ) -> httpx.Response:
+    """``truncate`` keeps the first ``max_bytes`` of a longer body instead of failing;
+    the response's extensions then hold ``alysis_truncated: True``."""
     if max_bytes < 0:
         raise SafeHttpError("max_bytes must be non-negative.")
     if max_redirects < 0:
@@ -99,6 +102,7 @@ async def safe_http_request(
                     json=request_json,
                     content=request_content,
                     max_bytes=max_bytes,
+                    truncate=truncate,
                 )
             except httpx.DecodingError as exc:
                 raise SafeHttpError(
@@ -144,6 +148,7 @@ async def _single_request(
     json: Any,
     content: bytes | None,
     max_bytes: int,
+    truncate: bool = False,
 ) -> httpx.Response:
     outbound_headers = dict(headers)
     outbound_headers["Host"] = target.host_header
@@ -166,9 +171,13 @@ async def _single_request(
             if not chunk:
                 continue
             if len(body) + len(chunk) > max_bytes:
-                raise SafeHttpError(
-                    f"Response body exceeded max_bytes={max_bytes}.", recoverable=True
-                )
+                if not truncate:
+                    raise SafeHttpError(
+                        f"Response body exceeded max_bytes={max_bytes}.", recoverable=True
+                    )
+                body.extend(chunk[: max_bytes - len(body)])
+                extensions["alysis_truncated"] = True
+                break
             body.extend(chunk)
     return httpx.Response(
         status_code=status_code,

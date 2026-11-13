@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import ceil
+
 import pytest
 
 from alysis_code.agent_loop import create_session
@@ -297,7 +299,9 @@ def test_execution_instruction_bundle_budget_accounts_for_trusted_system_prompt_
         "model_metadata_overrides": {
             "models": {
                 "budget-model": {
-                    "context_window_tokens": 12000,
+                    # Fit the complete native-platform prefix and task. This
+                    # test compares overrides, not undersized-window rejection.
+                    "context_window_tokens": 18000,
                     "max_output_tokens": 1500,
                     "supports_vision": False,
                 }
@@ -457,8 +461,6 @@ def test_authoritative_verification_context_adds_docs_and_packaging_guidance(tmp
 def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
     tmp_path,
 ) -> None:
-    from math import ceil
-
     cfg = AppConfig(model="managed-8k")
     cfg.extra_fields = {
         "compaction": {
@@ -527,7 +529,7 @@ def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
     # tool schemas differ by host; the required instructions must still fit.
     reduction = ceil(
         (baseline["startup_target_tokens"] - baseline["initial_request_token_estimate"] + 100)
-        / 0.85
+        / cfg.extra_fields["compaction"]["trigger_ratio"]
     )
     cfg.extra_fields["model_metadata_overrides"]["models"]["managed-8k"][
         "context_window_tokens"
@@ -578,9 +580,10 @@ def test_managed_execution_startup_headroom_skips_adjustment_when_request_alread
         "model_metadata_overrides": {
             "models": {
                 "managed-8k": {
-                    # Keep this the already-fitting case after retaining
-                    # parameter contracts; the dense case above has more optional context.
-                    "context_window_tokens": 14_800,
+                    # Leave room for native-platform guidance and temporary
+                    # path lengths: this case exercises an already-fitting request.
+                    # The dense case above exercises headroom adjustment.
+                    "context_window_tokens": 20_000,
                     "max_output_tokens": 1024,
                     "supports_vision": False,
                 }

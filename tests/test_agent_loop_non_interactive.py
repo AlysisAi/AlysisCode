@@ -78,10 +78,10 @@ def test_non_interactive_auto_blocks_sensitive_shell_confirmation(tmp_path: Path
         tools["shell_run"].run({"cmd": "git push origin main"})
 
 
-def test_fullaccess_still_requires_person_for_unresolved_shell_effects(tmp_path: Path) -> None:
+def test_fullaccess_mode_still_requires_person_approval_for_unknown_effects(tmp_path: Path) -> None:
     class _Runner:
         def run(self, *, root: Path, cwd: Path, cmd: str, timeout_s: int):
-            pytest.fail("An unresolved command must not dispatch without person approval")
+            pytest.fail("An unapproved command must not reach the runner")
 
     tools = build_tools(
         root=tmp_path,
@@ -94,7 +94,7 @@ def test_fullaccess_still_requires_person_for_unresolved_shell_effects(tmp_path:
     )
 
     with pytest.raises(
-        AgentRuntimeError, match="Unresolved command effects require a separate person"
+        AgentRuntimeError, match="Unresolved command effects require a separate person approval"
     ):
         tools["shell_run"].run({"cmd": "rm -rf /definitely-not-a-real-path-for-tests"})
 

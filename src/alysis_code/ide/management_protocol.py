@@ -14,7 +14,11 @@ from urllib.parse import urlparse
 
 from .. import __version__
 from ..atomic_io import atomic_write_text
-from ..cli_impl.commands.auth import native_provider_status_payload
+from ..cli_impl.commands.auth import (
+    native_provider_status_payload,
+    native_reasoning_capabilities,
+    select_native_subscription_model,
+)
 from ..cli_impl.commands.hooks import (
     _HOOK_SESSION_SOURCES,
     _HOOKS_INIT_TEMPLATE,
@@ -32,6 +36,7 @@ from ..cli_impl.commands.mcp import (
     _require_http_oauth_server_for_auth,
     _resolve_mcp_server_by_id,
 )
+from ..cli_impl.commands.profile import select_api_profile_model
 from ..computer_use_attribution import phase
 from ..config import (
     AppConfig,
@@ -95,6 +100,7 @@ from ..hooks import (
     trust_project_hooks_config,
     untrust_project_hooks_config,
 )
+from ..llm.metadata import credential_scope_fingerprint
 from ..mcp.oauth_store import delete_oauth_token_record
 from ..profile_presets import (
     PROFILE_PRESETS,
@@ -202,6 +208,8 @@ MANAGEMENT_METHODS = (
     "hooks.document.read",
     "hooks.document.save",
     "provider.auth.status",
+    "provider.auth.reasoning",
+    "provider.auth.selectModel",
     "config.get",
     "config.set",
     "config.schema",
@@ -211,6 +219,7 @@ MANAGEMENT_METHODS = (
     "profile.add",
     "profile.remove",
     "profile.use",
+    "profile.selectModel",
     "profile.rename",
     "profile.presets",
     "profile.preset",
@@ -285,6 +294,8 @@ MUTATING_MANAGEMENT_METHODS = frozenset(
         "profile.add",
         "profile.remove",
         "profile.use",
+        "profile.selectModel",
+        "provider.auth.selectModel",
         "profile.rename",
         "profile.preset",
         "profile.convert",
@@ -631,15 +642,44 @@ def _provider_auth_status(params: dict[str, Any], request_id: RequestId) -> dict
     }
 
 
+def _provider_auth_select_model(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    # ``alysis auth select-model`` without a new process (one shared implementation).
+    payload = select_native_subscription_model(
+        _required_str(params, "provider_id", request_id=request_id),
+        _required_str(params, "model", request_id=request_id),
+        _optional_str(params, "reasoning_effort", default="auto"),
+    )
+    return {**payload, "changed": True, "secret_values_included": False}
+
+
+def _provider_auth_reasoning(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    # ``alysis auth reasoning MODEL --profile PROFILE``: the model's effort choices, saving nothing.
+    capabilities = native_reasoning_capabilities(
+        _required_str(params, "model", request_id=request_id),
+        _required_str(params, "profile", request_id=request_id),
+    )
+    return {"models": [capabilities], "secret_values_included": False}
+
+
 def _config_get(_params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     with phase("config"):
         cfg = load_config()
+        api_key = resolve_api_key(cfg)
         return {
             "config": _safe_config_payload(cfg),
             "active_profile": str((cfg.extra_fields or {}).get("active_profile") or ""),
-            "api_key": _api_key_status(resolve_api_key(cfg)),
+            "api_key": _api_key_status(api_key),
+            # `config show`'s credential_id: the one-way route fingerprint of the key in use
+            # (empty without one), never the key. With it the desktop app reads the account
+            # here instead of starting a CLI process for every account read. As with
+            # provider.auth.status, its wire name keeps clear of the credential-field
+            # redactor, which hides any `credential*` field.
+            "route_scope": credential_scope_fingerprint(api_key.key),
             "config_path": str(config_path()),
             "credentials_path": str(credentials_path()),
+            # The saved-keys file (`credentials_path` above is hidden by that redactor): the
+            # app watches it for key changes. A file location, not credential material.
+            "saved_keys_path": str(credentials_path()),
             "secret_values_included": False,
         }
 
@@ -862,6 +902,16 @@ def _profile_use(params: dict[str, Any], request_id: RequestId) -> dict[str, Any
         "changed": True,
         "secret_values_included": False,
     }
+
+
+def _profile_select_model(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    # ``alysis profile select-model`` without a new process: the same single locked write that
+    # activates the API profile, keeps the model as its default and routes execution natively.
+    payload = select_api_profile_model(
+        _required_str(params, "name", request_id=request_id),
+        _required_str(params, "model", request_id=request_id),
+    )
+    return {**payload, "changed": True, "secret_values_included": False}
 
 
 def _profile_rename(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
@@ -2799,6 +2849,8 @@ def _bundled_verified_connector(entry: Any) -> dict[str, Any]:
             "oauth_issuer": connector.oauth_issuer,
             "oauth_sign_in_origins": list(connector.oauth_sign_in_origins),
             "oauth_scopes": list(connector.oauth_scopes),
+            "oauth_client": connector.oauth_client,
+            "transport": connector.transport,
             "max_argument_bytes": connector.max_argument_bytes,
             "host_arguments": [
                 {"name": argument.name, "source": argument.source}
@@ -3938,6 +3990,8 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
     "hooks.document.read": _hooks_document_read,
     "hooks.document.save": _hooks_document_save,
     "provider.auth.status": _provider_auth_status,
+    "provider.auth.reasoning": _provider_auth_reasoning,
+    "provider.auth.selectModel": _provider_auth_select_model,
     "config.get": _config_get,
     "config.set": _config_set,
     "config.schema": _config_schema,
@@ -3947,6 +4001,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
     "profile.add": _profile_add,
     "profile.remove": _profile_remove,
     "profile.use": _profile_use,
+    "profile.selectModel": _profile_select_model,
     "profile.rename": _profile_rename,
     "profile.presets": _profile_presets,
     "profile.preset": _profile_preset,

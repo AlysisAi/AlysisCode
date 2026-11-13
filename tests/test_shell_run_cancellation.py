@@ -307,13 +307,15 @@ def test_verify_starts_no_further_check_after_a_cancel(
     assert not (tmp_path / "second-ran").exists()
 
 
-def test_the_turn_hands_its_cancellation_to_shell_run(tmp_path: Path, shell_approval) -> None:
+@pytest.mark.usefixtures("approved_local_checks")
+def test_the_turn_hands_its_cancellation_to_shell_run(tmp_path: Path) -> None:
     # The turn gives the token to the tools in this set (``_run_tool_with_turn_cancellation``).
     assert {"shell_run", "verify_run"} <= _SHELL_CANCELLABLE_WAIT_TOOL_NAMES
     cfg = AppConfig(model="test-model")
     cfg.extra_fields = {"shell_sandbox": {"mode": "off"}}
     session = create_session(
         cfg=cfg,
+        surface=NoopSurface(),
         root=tmp_path,
         mode="auto",
         yes=True,
@@ -362,13 +364,13 @@ def test_timeout_preserves_partial_output_and_directory(tmp_path: Path, bytes_ou
     }
 
 
-def test_failed_shell_keeps_partial_edits_in_tool_receipt(
-    tmp_path: Path, monkeypatch, shell_approval
-) -> None:
+@pytest.mark.usefixtures("approved_local_checks")
+def test_failed_shell_keeps_partial_edits_in_tool_receipt(tmp_path: Path, monkeypatch) -> None:
     cfg = AppConfig(model="test-model")
     cfg.extra_fields = {"shell_sandbox": {"mode": "off"}}
     session = create_session(
         cfg=cfg,
+        surface=NoopSurface(),
         root=tmp_path,
         mode="auto",
         yes=True,

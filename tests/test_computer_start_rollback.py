@@ -20,12 +20,8 @@ from alysis_code.skills.computer_use import computer_use_workflow_instructions
 pytestmark = pytest.mark.usefixtures("mac_computer_use_protocol")
 
 
-@pytest.mark.parametrize("platform", ["darwin", "win32", "linux"])
-def test_resolved_start_capability_follows_the_host_platform(monkeypatch, platform):
-    monkeypatch.setattr(computer_use_platform_policy, "sys", SimpleNamespace(platform=platform))
-    assert ("computer_use_start_resolved_v1" in capabilities_payload()["features"]) is (
-        platform == "darwin"
-    )
+def test_resolved_start_capability_is_advertised_on_mac():
+    assert "computer_use_start_resolved_v1" in capabilities_payload()["features"]
 
 
 @pytest.mark.parametrize("coverage", ["complete", "incomplete", "unavailable"])

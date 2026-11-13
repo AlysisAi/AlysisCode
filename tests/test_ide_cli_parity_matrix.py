@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -312,9 +313,8 @@ def test_advertised_ide_methods_have_dispatch_docs_protocol_and_client_coverage(
     ts_protocol_methods = parity.extract_ts_protocol_method_features()
     ts_client_methods = parity.extract_ts_bridge_client_method_features()
     protocol_contract_methods = parity.extract_protocol_contract_method_features()
-    extension_methods = {
-        ref for ref in health_methods if ref.name not in parity.DESKTOP_HOST_ONLY_METHODS
-    }
+    desktop_only = parity.desktop_host_only_methods(parity.load_parity_matrix())
+    extension_methods = {ref for ref in health_methods if ref.name not in desktop_only}
     client_required_methods = {
         ref for ref in extension_methods if ref.name not in parity.TS_CLIENT_COVERAGE_EXEMPT_METHODS
     }
@@ -323,6 +323,81 @@ def test_advertised_ide_methods_have_dispatch_docs_protocol_and_client_coverage(
     assert extension_methods <= ts_protocol_methods
     assert health_methods == protocol_contract_methods
     assert client_required_methods <= ts_client_methods
+
+
+def test_desktop_host_responses_have_explicit_bridge_only_policy() -> None:
+    desktop_host_responses = parity.extract_desktop_host_response_methods()
+    assert desktop_host_responses == {
+        "browser_start.respond",
+        "computer.respond",
+        "computer_start_resolved.respond",
+        "task_budget.respond",
+    }
+    assert desktop_host_responses <= parity.desktop_host_only_methods(parity.load_parity_matrix())
+    for method in desktop_host_responses:
+        entry = _matrix_entry("ide_bridge_method", method)
+        assert entry["status"] == "implemented_in_bridge_only"
+        assert "desktop" in str(entry["bridge_only_rationale"]).lower()
+
+
+def test_desktop_only_methods_are_declared_in_the_matrix_and_absent_from_the_vscode_client():
+    desktop_only = parity.desktop_host_only_methods(parity.load_parity_matrix())
+    # The desktop app's settings calls: VS Code keeps its own typed provider controls.
+    assert {
+        "profile.selectModel",
+        "provider.auth.reasoning",
+        "provider.auth.selectModel",
+    } <= desktop_only
+    advertised = {ref.name for ref in parity.extract_ide_method_features()}
+    client = {ref.name for ref in parity.extract_ts_bridge_client_method_features()}
+    assert desktop_only <= advertised
+    assert not desktop_only & client
+    for method in desktop_only:
+        entry = _matrix_entry("ide_bridge_method", method)
+        assert entry["status"] == "implemented_in_bridge_only"
+        assert str(entry["bridge_only_rationale"]).strip()
+
+
+def _validation_errors_with(monkeypatch, change) -> str:
+    matrix = copy.deepcopy(parity.load_parity_matrix())
+    change({entry["id"]: entry for entry in matrix["entries"]})
+    monkeypatch.setattr(parity, "load_parity_matrix", lambda: matrix)
+    return "\n".join(parity.validate_parity_matrix())
+
+
+def test_a_bridge_method_without_the_desktop_only_declaration_needs_the_vscode_client(
+    monkeypatch,
+):
+    def undeclare(entries):
+        del entries["ide.methods.desktop_model_selection"]["desktop_host_only"]
+
+    errors = _validation_errors_with(monkeypatch, undeclare)
+    assert "AlysisProtocol.ts is missing advertised IDE bridge methods" in errors
+    assert "AlysisBridgeClient.ts is missing typed request coverage" in errors
+    assert "provider.auth.selectModel" in errors
+
+
+def test_desktop_host_responses_must_be_declared_desktop_only(monkeypatch):
+    def undeclare(entries):
+        del entries["ide.methods.desktop_host_responses"]["desktop_host_only"]
+
+    errors = _validation_errors_with(monkeypatch, undeclare)
+    assert "does not declare desktop_host_only" in errors
+    assert "- computer.respond" in errors
+
+
+def test_the_desktop_only_declaration_is_refused_where_it_does_not_apply(monkeypatch):
+    def misdeclare(entries):
+        # A method the VS Code client requests, and a CLI command.
+        entries["ide.methods.host_dispatch_receipt"]["desktop_host_only"] = True
+        entries["cli.commands.upgrade"]["desktop_host_only"] = True
+        entries["ide.methods.turn_user_questions"]["desktop_host_only"] = False
+
+    errors = _validation_errors_with(monkeypatch, misdeclare)
+    assert "declares desktop_host_only; remove the declaration or the request" in errors
+    assert "- ide_bridge_method: host.action.dispatched" in errors
+    assert "cli.commands.upgrade: desktop_host_only must be true" in errors
+    assert "ide.methods.turn_user_questions: desktop_host_only must be true" in errors
 
 
 def test_vscode_package_commands_are_represented_in_parity_matrix() -> None:

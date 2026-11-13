@@ -139,7 +139,10 @@ class _ThreadedMcpHttpServer:
                         time.sleep(response.linger_after_body_s)
 
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _RequestHandler)
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        # Poll for shutdown promptly without changing request or timeout behavior.
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self._thread.start()
 
     @property

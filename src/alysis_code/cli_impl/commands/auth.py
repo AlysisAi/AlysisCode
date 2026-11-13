@@ -475,6 +475,79 @@ def auth_models(
     _console().print(table)
 
 
+def select_native_subscription_model(
+    runtime_id: str, model: str, reasoning_effort: str = "auto"
+) -> dict[str, Any]:
+    """Atomically activate a native subscription and choose its model; raises when it cannot.
+
+    The one implementation behind `alysis auth select-model` and the IDE bridge's
+    `provider.auth.selectModel`, which the desktop app asks its running settings engine instead
+    of starting this CLI, so the two can never disagree.
+    """
+    resolved = str(runtime_id or "").strip()
+    selected_model = str(model or "").strip()
+    selected_effort = str(reasoning_effort or "auto").strip().lower() or "auto"
+    if not _is_direct_provider(resolved):
+        raise ProviderAuthError("Unknown native subscription connection.")
+    if not selected_model:
+        raise ProviderAuthError("A subscription model is required.")
+    adapter = create_provider_auth(resolved)
+    status = adapter.account_status()
+    if not status.connected or not status.verified:
+        raise ProviderAuthError(status.detail or "The subscription account is not connected.")
+    models = tuple(adapter.list_models(refresh=True))
+    chosen = next((candidate for candidate in models if candidate.id == selected_model), None)
+    if chosen is None:
+        raise ProviderAuthError("The selected model is not available to this account.")
+    supported_efforts = {effort.id for effort in chosen.reasoning_efforts}
+    if selected_effort != "auto" and selected_effort not in supported_efforts:
+        raise ProviderAuthError("The selected reasoning effort is not supported by this model.")
+
+    # Provider I/O above stays outside the lock. Only the fresh config read,
+    # route mutation, and one durable write form the serialized transaction.
+    with config_transaction(
+        loader=_patchable("load_config", load_config),
+        saver=_patchable("save_config", save_config),
+    ) as cfg:
+        subscription_profile = get_profile(cfg, str(adapter.profile_name))
+        if subscription_profile is None or subscription_profile.auth_provider != resolved:
+            raise ProviderAuthError("Connect this subscription before choosing its model.")
+
+        set_active_profile(cfg, subscription_profile.name)
+        update_active_profile_defaults(
+            cfg,
+            default_model=selected_model,
+            reasoning_effort=selected_effort,
+            allow_subscription_selection=True,
+        )
+        cfg.execution.backend = "native"
+        cfg.execution.runtime = None
+        cfg.extra_fields.pop(SUBSCRIPTION_SELECTION_REQUIRED_KEY, None)
+        cfg.extra_fields.pop("subscription_reconnect_required", None)
+        cfg.extra_fields["onboarded"] = True
+        active = get_active_profile(cfg)
+    return {
+        "id": resolved,
+        "profile_name": active.name,
+        "model": selected_model,
+        "reasoning_effort": selected_effort,
+    }
+
+
+def native_reasoning_capabilities(model: str, profile_name: str) -> dict[str, Any]:
+    """The effort choices of `model` on `profile_name`, saving nothing; raises when unknown.
+
+    Behind `alysis auth reasoning` and the IDE bridge's `provider.auth.reasoning`.
+    """
+    from ...config import clone_cfg
+    from ...model_reasoning import model_reasoning_capabilities
+
+    cfg = clone_cfg(_patchable("load_config", load_config)())
+    set_active_profile(cfg, profile_name)
+    cfg.model = model
+    return model_reasoning_capabilities(cfg)
+
+
 @auth_app.command("select-model")
 def auth_select_model(
     runtime_id: str = typer.Argument(..., help="Native subscription connection id."),
@@ -505,50 +578,10 @@ def auth_select_model(
         )
 
     try:
-        adapter = create_provider_auth(resolved)
-        status = adapter.account_status()
-        if not status.connected or not status.verified:
-            raise ProviderAuthError(status.detail or "The subscription account is not connected.")
-        models = tuple(adapter.list_models(refresh=True))
-        chosen = next((candidate for candidate in models if candidate.id == selected_model), None)
-        if chosen is None:
-            raise ProviderAuthError("The selected model is not available to this account.")
-        supported_efforts = {effort.id for effort in chosen.reasoning_efforts}
-        if selected_effort != "auto" and selected_effort not in supported_efforts:
-            raise ProviderAuthError("The selected reasoning effort is not supported by this model.")
-
-        # Provider I/O above stays outside the lock. Only the fresh config read,
-        # route mutation, and one durable write form the serialized transaction.
-        with config_transaction(
-            loader=_patchable("load_config", load_config),
-            saver=_patchable("save_config", save_config),
-        ) as cfg:
-            subscription_profile = get_profile(cfg, str(adapter.profile_name))
-            if subscription_profile is None or subscription_profile.auth_provider != resolved:
-                raise ProviderAuthError("Connect this subscription before choosing its model.")
-
-            set_active_profile(cfg, subscription_profile.name)
-            update_active_profile_defaults(
-                cfg,
-                default_model=selected_model,
-                reasoning_effort=selected_effort,
-                allow_subscription_selection=True,
-            )
-            cfg.execution.backend = "native"
-            cfg.execution.runtime = None
-            cfg.extra_fields.pop(SUBSCRIPTION_SELECTION_REQUIRED_KEY, None)
-            cfg.extra_fields.pop("subscription_reconnect_required", None)
-            cfg.extra_fields["onboarded"] = True
-            active = get_active_profile(cfg)
+        payload = select_native_subscription_model(resolved, selected_model, selected_effort)
     except (ConfigError, ProviderAuthError) as exc:
         _auth_command_error(str(exc), json_output=json_output, code=1, cause=exc)
 
-    payload = {
-        "id": resolved,
-        "profile_name": active.name,
-        "model": selected_model,
-        "reasoning_effort": selected_effort,
-    }
     if json_output:
         _emit_json(payload)
         return
@@ -561,14 +594,8 @@ def auth_reasoning(
     profile_name: str = typer.Option(..., "--profile", help="Selected provider profile."),
 ) -> None:
     """Read effort capabilities without mutating the saved provider selection."""
-    from ...config import clone_cfg
-    from ...model_reasoning import model_reasoning_capabilities
-
     try:
-        cfg = clone_cfg(_patchable("load_config", load_config)())
-        set_active_profile(cfg, profile_name)
-        cfg.model = model
-        _emit_json([model_reasoning_capabilities(cfg)])
+        _emit_json([native_reasoning_capabilities(model, profile_name)])
     except (ConfigError, ProviderAuthError) as exc:
         _auth_command_error(str(exc), json_output=True, code=1, cause=exc)
 

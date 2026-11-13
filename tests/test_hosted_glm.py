@@ -37,7 +37,7 @@ def test_hosted_glm_metadata_and_reasoning_match_the_gateway():
     meta = ModelRegistry(cfg=cfg).get("glm-5.3-flash")
     assert meta.context_window_tokens == 1_000_000
     assert meta.max_output_tokens == 131_072
-    assert meta.supports_vision is False
+    assert meta.supports_vision is True
     assert meta.input_cost_per_token == 0.00000015
     assert meta.cache_read_input_cost_per_token == 0.00000003
     assert meta.output_cost_per_token == 0.0000005

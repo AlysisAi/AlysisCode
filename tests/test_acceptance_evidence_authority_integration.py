@@ -13,22 +13,41 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acceptance_declared import declared_contract
 
 from alysis_code.agent.acceptance_contract import (
     AcceptanceCriterionKind,
     AcceptanceCriterionStatus,
     EvidenceOrigin,
-    build_acceptance_contract,
     finalize_acceptance_contract,
 )
 from alysis_code.agent.verification import TurnExecutionState, _record_tool_effect
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
-from alysis_code.llm.openai_compat import LLMResponse
+from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.sandbox_runner import HostShellRunner
 from alysis_code.tools.fs import fs_read, fs_write
 from alysis_code.tools.shell import shell_run
 from alysis_code.verify_gate import run_task_verification, verify_run_result_to_payload
+
+
+def _declared(
+    root: Path,
+    objective: str,
+    commands: list[str],
+    *,
+    roles: dict[str, str] | None = None,
+    **options: Any,
+):
+    """The contract for a request whose written commands and files the model declared."""
+    written = " ".join(objective.split())
+    return declared_contract(
+        root=root,
+        instruction=objective,
+        roles=roles or {},
+        commands=[command for command in commands if command in written],
+        **options,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -49,15 +68,23 @@ def python_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _state(root: Path, commands: list[str], *, objective: str | None = None) -> TurnExecutionState:
+def _state(
+    root: Path,
+    commands: list[str],
+    *,
+    objective: str | None = None,
+    roles: dict[str, str] | None = None,
+) -> TurnExecutionState:
     if objective is None:
         objective = "Update the implementation. " + " ".join(f"Run `{cmd}`." for cmd in commands)
     state = TurnExecutionState(
         execution_requested=True,
         expected_verification_commands=set(commands),
-        acceptance_contract=build_acceptance_contract(
-            root=root,
-            instruction=objective,
+        acceptance_contract=_declared(
+            root,
+            objective,
+            commands,
+            roles=roles,
             authoritative_verification_commands=commands,
             effective_verification_commands=commands,
         ),
@@ -176,7 +203,12 @@ def test_required_text_artifact_edit_invalidates_its_explicit_check(tmp_path: Pa
         encoding="utf-8",
     )
     command = "python check.py"
-    state = _state(tmp_path, [command], objective="Create actual.txt. Run `python check.py`.")
+    state = _state(
+        tmp_path,
+        [command],
+        objective="Create actual.txt. Run `python check.py`.",
+        roles={"actual.txt": "required_output"},
+    )
     assert _verify(tmp_path, state, [command])["status"] == "passed"
     criterion = _command_criterion(state, command)
     assert criterion.status == AcceptanceCriterionStatus.PASSED
@@ -224,7 +256,10 @@ def test_check_that_mutates_declared_text_artifact_cannot_claim_coverage(
     )
     command = "python required_check.py"
     state = _state(
-        tmp_path, [command], objective="Create actual.txt. Run `python required_check.py`."
+        tmp_path,
+        [command],
+        objective="Create actual.txt. Run `python required_check.py`.",
+        roles={"actual.txt": "required_output"},
     )
     if tool_name == "shell_run":
         arguments = {"cmd": command}
@@ -323,9 +358,10 @@ def test_explicit_artifact_checker_is_independent_of_unrun_repo_checks(
     state = TurnExecutionState(
         execution_requested=True,
         expected_verification_commands={repo_command},
-        acceptance_contract=build_acceptance_contract(
-            root=python_repo,
-            instruction=objective,
+        acceptance_contract=_declared(
+            python_repo,
+            objective,
+            [command],
             effective_verification_commands=[repo_command],
         ),
     )
@@ -483,9 +519,10 @@ def test_requested_informational_command_satisfies_its_own_criterion(
     state = TurnExecutionState(
         execution_requested=True,
         expected_verification_commands={command},
-        acceptance_contract=build_acceptance_contract(
-            root=tmp_path,
-            instruction=objective,
+        acceptance_contract=_declared(
+            tmp_path,
+            objective,
+            [command],
             effective_verification_commands=[command],
         ),
     )
@@ -518,8 +555,8 @@ def test_requested_informational_command_elsewhere_does_not_satisfy_it(tmp_path:
     state = TurnExecutionState(
         execution_requested=True,
         expected_verification_commands={command},
-        acceptance_contract=build_acceptance_contract(
-            root=tmp_path, instruction=objective, effective_verification_commands=[command]
+        acceptance_contract=_declared(
+            tmp_path, objective, [command], effective_verification_commands=[command]
         ),
     )
     arguments = {"cmd": command, "cwd": "other"}
@@ -592,12 +629,39 @@ def test_current_request_replaces_previous_turn_acceptance(tmp_path):
         ):
             assert session.run_turn(instruction) == 0
             contract = _latest_contract(session)
-            assert set(contract["allowed_output_paths"]) == paths
+            assert {ref["display_path"] for ref in contract["path_refs"]} == paths
+            assert contract["allowed_output_paths"] == []
     finally:
         session.close()
 
 
-def test_new_task_selects_its_explicit_check_instead_of_previous_task_check(tmp_path: Path) -> None:
+class _DeclaringClient:
+    """Declares the command the request writes, then answers."""
+
+    model = "test-model"
+    temperature = 0.2
+
+    def __init__(self) -> None:
+        self.command: str | None = None
+
+    def chat(self, **_: Any) -> LLMResponse:
+        if self.command is not None:
+            command, self.command = self.command, None
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="declare",
+                        name="task_artifacts",
+                        arguments={"paths": [], "commands": [command]},
+                    )
+                ],
+                raw={},
+            )
+        return LLMResponse(content="Nothing was run.", tool_calls=[], raw={})
+
+
+def test_a_new_request_replaces_the_previous_requests_declared_command(tmp_path: Path) -> None:
     for name in ("one.py", "two.py"):
         (tmp_path / name).write_text("assert True\n", encoding="utf-8")
     session = create_session(
@@ -611,19 +675,24 @@ def test_new_task_selects_its_explicit_check_instead_of_previous_task_check(tmp_
         one_shot_execution=True,
         session_log_dir_override=tmp_path / ".sessions",
     )
-    session.client = _RecordingClient()
-    try:
-        assert session.run_turn("Run `python one.py`.") == 0
-        assert session.effective_verification_commands == ["python one.py"]
+    session.client = client = _DeclaringClient()
 
-        assert session.run_turn("Run `python two.py`.") == 0
-
-        assert session.effective_verification_commands == ["python two.py"]
+    def required_commands() -> set[str]:
         contract = _latest_contract(session)
-        assert {command for item in contract["criteria"] for command in item["commands"]} == {
-            "python two.py"
-        }
+        return {command for item in contract["criteria"] for command in item["commands"]}
+
+    try:
+        client.command = "python one.py"
+        assert session.run_turn("Run `python one.py`.") == 0
+        assert required_commands() == {"python one.py"}
+
+        client.command = "python two.py"
+        assert session.run_turn("Run `python two.py`.") == 0
+        assert required_commands() == {"python two.py"}
+
+        # A request that writes no command has none to require, and the
+        # declaration is not on offer.
         assert session.run_turn("continue") == 0
-        assert session.effective_verification_commands == []
+        assert required_commands() == set()
     finally:
         session.close()

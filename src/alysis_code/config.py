@@ -523,6 +523,10 @@ class AppConfig(BaseModel):
     provider_retry_max_retries: int = DEFAULT_PROVIDER_RETRY_MAX_RETRIES
     provider_retry_base_delay_seconds: float = DEFAULT_PROVIDER_RETRY_BASE_DELAY_SECONDS
     provider_retry_max_delay_seconds: float = DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS
+    # Set once old built-in retry values saved by earlier releases have been
+    # replaced, and by any explicit retry choice. See
+    # _migrate_serialized_provider_retry_defaults.
+    provider_retry_defaults_applied: bool = False
     model_metadata_policy: str = "warn"
     default_mode: str = "review"  # review|auto|readonly|fullaccess
     # Default persona for interactive chat: code|architect|ask|debug. Personas
@@ -1075,6 +1079,7 @@ def load_config() -> AppConfig:
     }
     cfg = AppConfig(**known)
     cfg.extra_fields = unknown
+    _migrate_serialized_provider_retry_defaults(cfg)
     from .profiles import migrate_legacy_to_profiles, sync_active_profile_to_config
 
     migrate_legacy_to_profiles(cfg)
@@ -1098,6 +1103,34 @@ def load_config() -> AppConfig:
     sync_active_profile_to_config(cfg)
     _canonicalize_active_profile_model(cfg)
     return cfg
+
+
+# What releases before the six-retry policy wrote into every saved config.
+_SERIALIZED_LEGACY_PROVIDER_RETRY = (1, 10.0, 120.0)
+
+
+def _migrate_serialized_provider_retry_defaults(cfg: AppConfig) -> None:
+    """Replace old built-in retry settings that were saved without being chosen.
+
+    ``save_config`` writes every field, so each existing config holds the old
+    defaults (one retry after 10 seconds) as if they were a choice, and a new
+    built-in default alone would never reach an existing installation. A config
+    that holds exactly those three values gets the current defaults, once.
+    Customised values are kept, and so is any choice made after this
+    migration, including setting the old values again. Nothing is written
+    here; the marker is saved with the next ordinary save.
+    """
+    if cfg.provider_retry_defaults_applied:
+        return
+    cfg.provider_retry_defaults_applied = True
+    if (
+        cfg.provider_retry_max_retries,
+        cfg.provider_retry_base_delay_seconds,
+        cfg.provider_retry_max_delay_seconds,
+    ) == _SERIALIZED_LEGACY_PROVIDER_RETRY:
+        cfg.provider_retry_max_retries = DEFAULT_PROVIDER_RETRY_MAX_RETRIES
+        cfg.provider_retry_base_delay_seconds = DEFAULT_PROVIDER_RETRY_BASE_DELAY_SECONDS
+        cfg.provider_retry_max_delay_seconds = DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS
 
 
 def _migrate_delegated_codex_subscription(
@@ -2188,16 +2221,6 @@ def _coerce_non_negative_int(value: str, *, key: str) -> int:
     return parsed
 
 
-def _coerce_min_int(value: str, *, key: str, minimum: int) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as e:
-        raise ConfigError(f"{key} must be an integer") from e
-    if parsed < minimum:
-        raise ConfigError(f"{key} must be >= {minimum}")
-    return parsed
-
-
 def _resolve_positive_timeout(raw: Any) -> float | None:
     try:
         parsed = float(raw)
@@ -3212,6 +3235,7 @@ def set_config_value(
 
     if key == "provider_retry_max_retries":
         cfg.provider_retry_max_retries = _coerce_non_negative_int(value, key=key)
+        cfg.provider_retry_defaults_applied = True  # an explicit choice is kept
         return cfg
 
     if key in {
@@ -3219,6 +3243,7 @@ def set_config_value(
         "provider_retry_max_delay_seconds",
     }:
         setattr(cfg, key, _coerce_positive_float(value, key=key))
+        cfg.provider_retry_defaults_applied = True  # an explicit choice is kept
         return cfg
 
     if key == "model_metadata_policy":

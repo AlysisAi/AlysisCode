@@ -42,7 +42,10 @@ from alysis_code.transport_retry import is_connection_drop_error
 
 # The exception text such a drop produces, verbatim.
 DROP_TEXT = "peer closed connection without sending complete message body (incomplete chunked read)"
+# An explicit window for the first-failure arithmetic below; the production
+# default is asserted separately.
 CAP_SECONDS = 60.0
+DEFAULT_CAP_SECONDS = 180.0
 
 
 class _FakeTime:
@@ -369,9 +372,9 @@ def test_e_a_failure_after_900s_gets_its_retry_through_the_real_client(
 
     response = client.chat(messages=[{"role": "user", "content": "hi"}])
 
-    # Production defaults: 60 s cap, general budget 1, connection drops 5.
-    assert client._provider_retry_wall_clock_cap_seconds == CAP_SECONDS
-    assert client.provider_retry_settings.max_retries == 1
+    # Production defaults: 180 s window, general budget 6, connection drops max(6, 5).
+    assert client._provider_retry_wall_clock_cap_seconds == DEFAULT_CAP_SECONDS
+    assert client.provider_retry_settings.max_retries == 6
     assert response.content == "ok"
     assert starts == [0.0, 902.0]
     assert fake.sleeps == [2.0]
@@ -383,7 +386,7 @@ def test_e_a_failure_after_900s_gets_its_retry_through_the_real_client(
 @pytest.mark.parametrize(
     ("configured", "expected_general", "expected_connection_drop"),
     [
-        pytest.param(None, 1, 5, id="defaults"),
+        pytest.param(None, 6, 6, id="defaults"),
         pytest.param(7, 7, 7, id="larger-general-budget-wins"),
     ],
 )
@@ -425,5 +428,5 @@ def test_config_snapshot_records_both_retry_budgets_and_where_the_cap_starts(
     effective = snapshots[0]["payload"]["effective"]
     assert effective["provider_retry_max_retries"] == expected_general
     assert effective["connection_drop_retry_max_retries"] == expected_connection_drop
-    assert effective["provider_retry_wall_clock_cap_seconds"] == CAP_SECONDS
+    assert effective["provider_retry_wall_clock_cap_seconds"] == DEFAULT_CAP_SECONDS
     assert effective["provider_retry_wall_clock_cap_starts_at"] == "first_failure"

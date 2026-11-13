@@ -30,7 +30,7 @@ from alysis_code.mcp.connector_host import (
 from tests.test_verified_connector_plugins import NOTION_LEFT_OUT, NOTION_READS, NOTION_WRITES
 
 #: Built-in plugins: GitHub, eight Google services, and the verified plugins below.
-BUNDLED_PLUGINS = 9 + 10
+BUNDLED_PLUGINS = 9 + 28
 
 REVIEWED: dict[str, dict[str, Any]] = {
     "alysis.notion": {
@@ -377,7 +377,611 @@ REVIEWED: dict[str, dict[str, Any]] = {
             "delete_automation test_automation_webhook_trigger"
         ).split(),
     },
+    "alysis.intercom": {
+        "name": "Intercom (US)",
+        "category": "mail-chat",
+        "connector": {
+            "id": "intercom",
+            "url": "https://mcp.intercom.com/mcp",
+            "resource": "https://mcp.intercom.com",
+            "oauth_issuer": "https://mcp.intercom.com",
+            "oauth_sign_in_origins": [],
+            "oauth_scopes": ["mcp"],
+            "max_argument_bytes": 32768,
+            "host_arguments": [],
+        },
+        "reads": "search fetch search_conversations get_conversation search_contacts get_contact list_companies get_company list_articles search_articles get_article".split(),
+        "writes": "create_article update_article add_internal_note".split(),
+        "left_out": "send_operator_message get_operator_response get_proposal_details apply_proposals reject_proposals".split(),
+    },
+    "alysis.figma": {
+        "name": "Figma",
+        "category": "docs-files",
+        "connector": {
+            "id": "figma",
+            "url": "https://mcp.figma.com/mcp",
+            "resource": "https://mcp.figma.com/mcp",
+            "oauth_issuer": "https://api.figma.com",
+            "oauth_sign_in_origins": ["https://www.figma.com"],
+            "oauth_scopes": ["mcp:connect"],
+            "max_argument_bytes": 32768,
+            "host_arguments": [],
+        },
+        "reads": [
+            "whoami",
+            "get_design_context",
+            "get_metadata",
+            "get_screenshot",
+            "get_variable_defs",
+            "get_figjam",
+            "get_code_connect_map",
+            "get_libraries",
+            "search_design_system",
+        ],
+        "writes": [],
+        "left_out": ["generate_diagram", "add_code_connect_map", "create_new_file", "use_figma"],
+    },
+    "alysis.stripe": {
+        "name": "Stripe",
+        "category": "code",
+        "connector": {
+            "id": "stripe",
+            "url": "https://mcp.stripe.com",
+            "resource": "https://mcp.stripe.com",
+            "oauth_issuer": "https://access.stripe.com/mcp",
+            "oauth_sign_in_origins": ["https://access.stripe.com"],
+            "oauth_scopes": ["mcp"],
+            "max_argument_bytes": 32768,
+            "host_arguments": [],
+        },
+        "reads": [
+            "stripe_api_search",
+            "stripe_api_details",
+            "stripe_api_read",
+            "get_stripe_account_info",
+            "search_stripe_documentation",
+        ],
+        "writes": [],
+        "left_out": [
+            "stripe_api_write",
+            "convert_currency",
+            "send_money",
+            "setup_recipient",
+            "transfer_money",
+            "atlas_company_formation",
+            "send_stripe_feedback",
+            "stripe_analytics",
+        ],
+    },
+    "alysis.neon": {
+        "name": "Neon",
+        "category": "code",
+        "connector": {
+            "id": "neon",
+            "url": "https://mcp.neon.tech/mcp?readonly=true",
+            "resource": "https://mcp.neon.tech",
+            "oauth_issuer": "https://mcp.neon.tech",
+            "oauth_sign_in_origins": [],
+            "oauth_scopes": ["read"],
+            "max_argument_bytes": 32768,
+            "host_arguments": [],
+        },
+        "reads": [
+            "list_organizations",
+            "list_projects",
+            "describe_project",
+            "list_regions",
+            "list_branches",
+            "get_branch",
+            "get_default_branch",
+            "describe_branch",
+            "get_database_tables",
+            "describe_table_schema",
+            "compare_database_schema",
+            "list_postgres_databases",
+            "get_postgres_database",
+            "list_postgres_endpoints",
+            "list_branch_computes",
+            "get_postgres_endpoint",
+            "list_operations",
+            "get_operation",
+            "list_slow_queries",
+            "inspect_database",
+            "search_docs",
+            "get_doc",
+        ],
+        "writes": [],
+        "left_out": [
+            "run_sql",
+            "run_sql_transaction",
+            "explain_sql_statement",
+            "get_connection_string",
+            "send_feedback",
+            "create_project",
+            "delete_project",
+            "create_branch",
+            "reset_from_parent",
+            "prepare_database_migration",
+        ],
+    },
+    "alysis.miro": {
+        "name": "Miro",
+        "category": "docs-files",
+        "connector": {
+            "id": "miro",
+            "url": "https://mcp.miro.com/",
+            "resource": "https://mcp.miro.com/",
+            "oauth_issuer": "https://mcp.miro.com/",
+            "oauth_sign_in_origins": [],
+            "oauth_scopes": ["boards:read", "boards:write"],
+            "max_argument_bytes": 32768,
+            "host_arguments": [],
+        },
+        "reads": [
+            "canvas_read_as_svg",
+            "canvas_search",
+            "canvas_get_canvas_composer_skill",
+            "canvas_load_format_skill",
+            "board_search_boards",
+            "board_get_space",
+            "content_item_list_roles",
+            "space_list",
+            "space_list_boards",
+            "space_list_children",
+            "blog_post_list",
+            "table_list_rows",
+            "table_get_latest_update_history",
+            "comment_list_comments",
+            "image_get_data",
+            "image_get_url",
+            "prototype_read",
+            "user_who_am_i",
+            "user_search_organization_users",
+            "get_brand_context",
+        ],
+        "writes": [
+            "canvas_create_from_svg",
+            "canvas_update_from_svg",
+            "board_create",
+            "board_create_format",
+            "board_update_metadata",
+            "table_create",
+            "table_sync_rows",
+            "table_update_view",
+            "comment_create",
+            "comment_reply",
+            "comment_resolve",
+        ],
+        "left_out": [
+            "board_share",
+            "board_role_update",
+            "space_share",
+            "space_role_update",
+            "board_move_to_team",
+            "section_delete",
+            "canvas_get_html_upload_url",
+            "image_get_upload_url",
+            "prototype_get_upload_url",
+            "image_create",
+            "prototype_create",
+            "import-claude-design-from-url",
+            "board_list_items",
+        ],
+    },
 }
+
+
+REVIEWED.update(
+    {
+        "alysis.slack": {
+            "name": "Slack",
+            "category": "mail-chat",
+            "connector": {
+                "id": "slack",
+                "url": "https://mcp.slack.com/mcp",
+                "resource": "https://mcp.slack.com",
+                "oauth_issuer": "https://mcp.slack.com",
+                "oauth_sign_in_origins": ["https://slack.com"],
+                "oauth_scopes": [
+                    "canvases:read",
+                    "canvases:write",
+                    "channels:history",
+                    "groups:history",
+                    "im:history",
+                    "mpim:history",
+                    "chat:write",
+                    "files:read",
+                    "search:read.files",
+                    "search:read.im",
+                    "search:read.mpim",
+                    "search:read.private",
+                    "search:read.public",
+                    "search:read.users",
+                    "users:read",
+                    "users:read.email",
+                ],
+                "oauth_client": "publisher",
+                "transport": "mcp",
+                "max_argument_bytes": 32768,
+                "host_arguments": [],
+            },
+            "reads": [
+                "slack_search_public_and_private",
+                "slack_search_users",
+                "slack_search_channels",
+                "slack_search_public",
+                "slack_read_channel",
+                "slack_read_thread",
+                "slack_read_canvas",
+                "slack_read_user_profile",
+            ],
+            "writes": ["slack_send_message", "slack_create_canvas", "slack_update_canvas"],
+            "left_out": ["slack_delete_message"],
+        },
+        "alysis.microsoft365": {
+            "name": "Microsoft 365",
+            "category": "mail-chat",
+            "connector": {
+                "id": "microsoft365",
+                "url": "https://graph.microsoft.com/v1.0",
+                "resource": "https://graph.microsoft.com",
+                "oauth_issuer": "https://login.microsoftonline.com/organizations/v2.0",
+                "oauth_sign_in_origins": ["https://login.microsoftonline.com"],
+                "oauth_scopes": [
+                    "offline_access",
+                    "User.Read",
+                    "Mail.ReadWrite",
+                    "Calendars.ReadWrite",
+                    "Files.Read",
+                    "Chat.Read",
+                    "ChatMessage.Send",
+                    "Team.ReadBasic.All",
+                    "Channel.ReadBasic.All",
+                    "ChannelMessage.Read.All",
+                    "ChannelMessage.Send",
+                ],
+                "oauth_client": "publisher",
+                "transport": "microsoft_graph",
+                "max_argument_bytes": 32768,
+                "host_arguments": [],
+            },
+            "reads": [
+                "get_profile",
+                "list_mail",
+                "get_mail",
+                "list_calendars",
+                "list_calendar_events",
+                "get_calendar_event",
+                "list_drive_items",
+                "get_drive_item",
+                "search_drive_items",
+                "list_teams",
+                "list_team_channels",
+                "list_channel_messages",
+                "list_chats",
+                "list_chat_messages",
+            ],
+            "writes": [
+                "create_mail_draft",
+                "create_calendar_event",
+                "send_chat_message",
+                "send_channel_message",
+            ],
+            "left_out": ["delete_mail", "send_mail"],
+        },
+    }
+)
+
+# Each service has an independent grant, tool namespace and consent boundary.
+for short, name, category, audience, scopes, reads, writes in [
+    (
+        "outlook_mail",
+        "Outlook Email",
+        "mail-chat",
+        "common",
+        ["Mail.ReadWrite"],
+        ["get_profile", "list_mail", "get_mail"],
+        ["create_mail_draft"],
+    ),
+    (
+        "outlook_calendar",
+        "Outlook Calendar",
+        "calendar",
+        "common",
+        ["Calendars.ReadWrite"],
+        ["get_profile", "list_calendars", "list_calendar_events", "get_calendar_event"],
+        ["create_calendar_event"],
+    ),
+    (
+        "onedrive",
+        "OneDrive",
+        "docs-files",
+        "common",
+        ["Files.Read"],
+        ["get_profile", "list_drive_items", "get_drive_item", "search_drive_items"],
+        [],
+    ),
+    (
+        "microsoft_todo",
+        "Microsoft To Do",
+        "tasks-projects",
+        "common",
+        ["Tasks.Read"],
+        ["get_profile", "list_task_lists", "get_task_list", "list_tasks", "get_task"],
+        [],
+    ),
+    (
+        "outlook_contacts",
+        "Outlook Contacts",
+        "mail-chat",
+        "common",
+        ["Contacts.Read"],
+        ["get_profile", "list_contact_folders", "list_contacts", "get_contact"],
+        [],
+    ),
+    (
+        "teams",
+        "Teams",
+        "mail-chat",
+        "organizations",
+        [
+            "Chat.Read",
+            "ChatMessage.Send",
+            "Team.ReadBasic.All",
+            "Channel.ReadBasic.All",
+            "ChannelMessage.Read.All",
+            "ChannelMessage.Send",
+        ],
+        [
+            "get_profile",
+            "list_teams",
+            "list_team_channels",
+            "list_channel_messages",
+            "list_chats",
+            "list_chat_messages",
+        ],
+        ["send_chat_message", "send_channel_message"],
+    ),
+]:
+    REVIEWED[f"alysis.{short}"] = {
+        "name": name,
+        "category": category,
+        "connector": {
+            "id": short,
+            "url": "https://graph.microsoft.com/v1.0",
+            "resource": "https://graph.microsoft.com",
+            "oauth_issuer": f"https://login.microsoftonline.com/{audience}/v2.0",
+            "oauth_sign_in_origins": ["https://login.microsoftonline.com"],
+            "oauth_scopes": ["offline_access", "User.Read", *scopes],
+            "oauth_client": "publisher",
+            "transport": "microsoft_graph",
+            "max_argument_bytes": 32768,
+            "host_arguments": [],
+        },
+        "reads": reads,
+        "writes": writes,
+        "left_out": [
+            tool
+            for tool in [
+                "get_mail",
+                "list_calendars",
+                "list_drive_items",
+                "list_teams",
+                "send_mail",
+                "delete_mail",
+            ]
+            if tool not in reads + writes
+        ],
+    }
+
+REVIEWED["alysis.canva"] = {
+    "name": "Canva",
+    "category": "docs-files",
+    "connector": {
+        "id": "canva",
+        "url": "https://api.canva.com/connect/v1/mcp",
+        "resource": "https://api.canva.com/connect/v1/mcp",
+        "oauth_issuer": "https://www.canva.com",
+        "oauth_sign_in_origins": ["https://api.canva.com"],
+        "oauth_client": "publisher",
+        "transport": "mcp",
+        "max_argument_bytes": 32768,
+        "host_arguments": [],
+        "oauth_scopes": [
+            "profile:read",
+            "design:meta:read",
+            "design:content:read",
+            "design:content:write",
+            "folder:read",
+            "asset:read",
+            "comment:read",
+        ],
+    },
+    "reads": [
+        "search-designs",
+        "get-design",
+        "get-design-pages",
+        "get-design-content",
+        "get-presenter-notes",
+        "get-export-formats",
+        "get-design-thumbnail",
+        "get-create-design-async-job",
+        "search-folders",
+        "list-folder-items",
+        "list-comments",
+        "list-replies",
+        "get-assets",
+    ],
+    "writes": [
+        "generate-design",
+        "create-design-from-candidate",
+        "create-design",
+        "copy-design",
+        "export-design",
+        "start-editing-transaction",
+        "perform-editing-operations",
+        "commit-editing-transaction",
+        "cancel-editing-transaction",
+    ],
+    "left_out": [
+        "upload-asset-from-url",
+        "create-upload-url",
+        "comment-on-design",
+        "reply-to-comment",
+        "publish-brand-template",
+        "create-folder",
+        "move-item-to-folder",
+    ],
+}
+
+REVIEWED.update(
+    {
+        "alysis.vercel": {
+            "name": "Vercel",
+            "category": "code",
+            "connector": {
+                "id": "vercel",
+                "url": "https://mcp.vercel.com",
+                "resource": "https://mcp.vercel.com/",
+                "oauth_issuer": "https://vercel.com",
+                "oauth_sign_in_origins": ["https://vercel.com", "https://api.vercel.com"],
+                "oauth_client": "publisher",
+                "transport": "mcp",
+                "oauth_scopes": ["openid", "offline_access"],
+                "max_argument_bytes": 32768,
+                "host_arguments": [],
+            },
+            "reads": [
+                "list_teams",
+                "list_projects",
+                "get_project",
+                "list_deployments",
+                "get_deployment",
+                "get_deployment_build_logs",
+                "list_deployment_events",
+                "list_deployment_files",
+                "get_deployment_file_contents",
+                "get_runtime_logs",
+                "get_runtime_errors",
+                "search_vercel_documentation",
+            ],
+            "writes": ["create_deployment", "cancel_deployment"],
+            "left_out": [
+                "get_access_to_vercel_url",
+                "upload_file",
+                "create_git_project",
+                "deploy_to_vercel",
+            ],
+        },
+        "alysis.cloudflare": {
+            "name": "Cloudflare",
+            "category": "code",
+            "connector": {
+                "id": "cloudflare",
+                "url": "https://mcp.cloudflare.com/mcp",
+                "resource": "https://mcp.cloudflare.com/mcp",
+                "oauth_issuer": "https://mcp.cloudflare.com",
+                "oauth_sign_in_origins": [],
+                "oauth_client": "dynamic",
+                "transport": "mcp",
+                "oauth_scopes": [
+                    "offline_access",
+                    "user:read",
+                    "account:read",
+                    "zone.read",
+                    "dns.read",
+                    "dns.write",
+                    "workers-scripts.read",
+                    "workers-scripts.write",
+                    "workers-r2.read",
+                    "workers-r2.write",
+                ],
+                "max_argument_bytes": 32768,
+                "host_arguments": [],
+            },
+            "reads": ["search", "docs"],
+            "writes": ["execute"],
+            "left_out": ["create_api_token"],
+        },
+        "alysis.railway": {
+            "name": "Railway",
+            "category": "code",
+            "connector": {
+                "id": "railway",
+                "url": "https://mcp.railway.com",
+                "resource": "https://mcp.railway.com",
+                "oauth_issuer": "https://backboard.railway.com",
+                "oauth_sign_in_origins": ["https://backboard.railway.com"],
+                "oauth_client": "dynamic",
+                "transport": "mcp",
+                "oauth_scopes": ["workspace:member", "offline_access"],
+                "max_argument_bytes": 32768,
+                "host_arguments": [],
+            },
+            "reads": [
+                "whoami",
+                "list-projects",
+                "list-services",
+                "list-feature-flags",
+                "get-feature-flag",
+            ],
+            "writes": ["create-project", "redeploy", "accept-deploy", "set-feature-flag"],
+            "left_out": ["railway-agent", "delete-feature-flag"],
+        },
+        "alysis.asana": {
+            "name": "Asana",
+            "category": "tasks-projects",
+            "connector": {
+                "id": "asana",
+                "url": "https://mcp.asana.com/v2/mcp",
+                "resource": "https://mcp.asana.com/v2/mcp",
+                "oauth_issuer": "https://app.asana.com",
+                "oauth_sign_in_origins": ["https://app.asana.com"],
+                "oauth_client": "publisher",
+                "transport": "mcp",
+                "oauth_scopes": ["default"],
+                "max_argument_bytes": 32768,
+                "host_arguments": [],
+            },
+            "reads": [
+                "search_objects",
+                "get_task",
+                "get_task_stories",
+                "get_tasks",
+                "get_my_tasks",
+                "search_tasks",
+                "get_project",
+                "get_projects",
+                "get_portfolio",
+                "get_portfolios",
+                "get_items_for_portfolio",
+                "get_status_overview",
+                "get_attachments",
+                "get_me",
+                "get_users",
+                "get_teams",
+            ],
+            "writes": [
+                "create_tasks",
+                "update_tasks",
+                "add_comment",
+                "create_project_status_update",
+            ],
+            "left_out": [
+                "delete_task",
+                "update_project",
+                "create_project",
+                "create_project_from_template",
+                "create_table",
+                "delete_record",
+            ],
+        },
+    }
+)
+
+for _review in REVIEWED.values():
+    _review["connector"].setdefault("oauth_client", "dynamic")
+    _review["connector"].setdefault("transport", "mcp")
 
 
 def _content(plugin_id: str) -> bytes:
@@ -427,7 +1031,8 @@ def test_the_descriptor_is_exactly_the_reviewed_one(plugin_id: str):
     assert connector.effective_resource == expected["resource"]
     assert connector.oauth_issuer == expected["oauth_issuer"]
     assert connector.oauth_sign_in_origins == expected["oauth_sign_in_origins"]
-    assert connector.oauth_client == "dynamic"
+    assert connector.oauth_client == expected["oauth_client"]
+    assert connector.transport == expected["transport"]
     assert connector.oauth_scopes == expected["oauth_scopes"]
     assert connector.max_argument_bytes == expected["max_argument_bytes"]
     assert [a.model_dump() for a in connector.host_arguments] == expected["host_arguments"]
@@ -832,7 +1437,18 @@ def _catalog(plugin_id: str, *names: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     ("plugin_id", "tool"),
-    [(plugin_id, tool) for plugin_id in BATCH3 for tool in REVIEWED[plugin_id]["left_out"]],
+    [
+        (plugin_id, tool)
+        for plugin_id in (
+            *BATCH3,
+            "alysis.intercom",
+            "alysis.figma",
+            "alysis.stripe",
+            "alysis.neon",
+            "alysis.miro",
+        )
+        for tool in REVIEWED[plugin_id]["left_out"]
+    ],
 )
 def test_a_batch3_tool_alysis_left_out_fails_the_session(
     root: Path, monkeypatch, plugin_id: str, tool: str
@@ -848,7 +1464,10 @@ def test_a_batch3_tool_alysis_left_out_fails_the_session(
     assert captured["create"]["ok"], captured["create"]
 
 
-@pytest.mark.parametrize("plugin_id", BATCH3)
+@pytest.mark.parametrize(
+    "plugin_id",
+    (*BATCH3, "alysis.intercom", "alysis.figma", "alysis.stripe", "alysis.neon", "alysis.miro"),
+)
 def test_a_batch3_read_runs_without_asking(root: Path, monkeypatch, plugin_id: str):
     from tests.test_custom_plugins import _next
     from tests.test_verified_connector_plugins import _bridge, _prepared, _start
@@ -873,6 +1492,8 @@ def test_a_batch3_read_runs_without_asking(root: Path, monkeypatch, plugin_id: s
 
 # The changes each plugin's text names; every one asks a person, in every mode.
 BATCH3_RISKY = {
+    "alysis.miro": ("canvas_update_from_svg", "comment_create", "table_sync_rows"),
+    "alysis.intercom": ("create_article", "update_article", "add_internal_note"),
     "alysis.gitlab": ("accept_merge_request", "add_commit", "save_pipeline"),
     "alysis.clickup": (
         "clickup_send_chat_message",

@@ -5,6 +5,7 @@ import os
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -14,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def _controlled_qualification(tmp_path, monkeypatch):
     from scripts.qa import qualify_production_reliability as qualification
 
+    # Keep process doubles local: platform.platform() also uses stdlib subprocess.
+    monkeypatch.setattr(qualification, "subprocess", SimpleNamespace(**vars(subprocess)))
     project = tmp_path / "project"
     tests = project / "tests"
     tests.mkdir(parents=True)

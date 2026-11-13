@@ -625,6 +625,43 @@ class ToolDispatchGuard(Protocol):
     ) -> None: ...
 
 
+SHELL_RUN_DEFAULT_TIMEOUT_SECONDS = 60.0
+SHELL_RUN_MAX_TIMEOUT_SECONDS = 600.0
+
+
+def shell_run_timeout_seconds(requested: Any) -> float:
+    """The limit the model chose for one command, kept inside the supported range.
+
+    The model knows whether it is starting a quick check or a slow build, so it
+    sets the limit. Anything that is not a usable number means the default; a
+    number outside the range is moved to its nearest end rather than refused.
+    """
+    if isinstance(requested, str):
+        try:
+            requested = float(requested.strip())
+        except ValueError:
+            return SHELL_RUN_DEFAULT_TIMEOUT_SECONDS
+    if isinstance(requested, bool) or not isinstance(requested, (int, float)):
+        return SHELL_RUN_DEFAULT_TIMEOUT_SECONDS
+    if requested != requested or requested in (float("inf"), float("-inf")):
+        return SHELL_RUN_DEFAULT_TIMEOUT_SECONDS
+    return float(min(max(float(requested), 1.0), SHELL_RUN_MAX_TIMEOUT_SECONDS))
+
+
+def shell_run_timeout_guidance(limit_seconds: float) -> str:
+    """What the model can do when a command reached ``limit_seconds``."""
+    longer = (
+        f"If it needs longer, run it again with a larger timeout_s (at most "
+        f"{SHELL_RUN_MAX_TIMEOUT_SECONDS:g}), or start"
+        if limit_seconds < SHELL_RUN_MAX_TIMEOUT_SECONDS
+        else "Start"
+    )
+    return (
+        f"{longer} it with shell_background and wait for it with shell_wait, "
+        "where those tools are available."
+    )
+
+
 def _shell_run_model_description(shell_environment: str | None) -> str:
     """The shell_run description, naming the session's shell when it has one."""
     base = _BUILTIN_MODEL_DESCRIPTIONS["shell_run"]
@@ -671,8 +708,13 @@ _BUILTIN_MODEL_DESCRIPTIONS: dict[str, str] = {
         "Pass requested commands; omit both fields only to use appropriate selected defaults. "
         "Managed restrictions apply."
     ),
-    "shell_run": "Run a policy-checked shell command.",
-    "shell_background": ("Run a session lifetime command; killed when this session ends."),
+    "shell_run": (
+        "Run a policy-checked shell command with a short description for the person. "
+        "Stopped after timeout_s seconds (default 60; max 600)."
+    ),
+    "shell_background": (
+        "Run a titled command for the session lifetime; killed when this session ends."
+    ),
     "shell_service_start": (
         "Start a durable service with durable lifetime; keeps running after this session ends."
     ),
@@ -816,6 +858,10 @@ _READONLY_TOP_LEVEL_SUBAGENT_TOOL_NAMES = frozenset(
 _MAX_SHELL_WAIT_SECONDS = 900.0
 
 _SHELL_CANCELLATION_TOKEN_ARG = object()
+_FOLDER_DELETE_HINT = (
+    "fs_delete deletes files, and {path} is a folder. "
+    "Remove a folder and everything in it with one shell command instead."
+)
 
 # Tools whose dispatch can block on a running process, and which therefore need
 # the cancellation token so PR2's watchdog can preempt a wait already in flight.
@@ -857,7 +903,11 @@ def _built_in_tool_exposed_in_mode(
     if normalized_mode != "readonly":
         return True
     normalized_tool_name = str(tool_name or "").strip()
-    if subagent_depth == 0 and normalized_tool_name in {"request_user_input", "wait_user_input"}:
+    if subagent_depth == 0 and normalized_tool_name in {
+        "request_user_input",
+        "wait_user_input",
+        "suggest_next_steps",
+    }:
         return True
     if subagent_depth == 0 and normalized_tool_name in {
         "list_chats",
@@ -1257,7 +1307,7 @@ def build_tools(
     # reviewer: a person. "Approve for me" (auto): the reviewer, unless a standing rule
     # decides first or the request always needs a person. See agent/approval_review.py.
     # The reviewer stands in for a person, so it only answers where a person could be asked:
-    # unattended runs (Forge workers and one-shot runs without a host) keep failing
+    # unattended runs (Forge workers, one-shot runs without a host) keep failing
     # closed, as before.
     can_ask_person = not non_interactive or host_managed_approvals
     unified_host_approvals = getattr(surface, "host_action_approval_protocol", 0) == 1
@@ -1330,7 +1380,12 @@ def build_tools(
             )
         return decision
 
-    from .scoped_access import PERMISSIONS_SCHEMA, ExecutionDirectoryIdentity, ScopedAccess
+    from .scoped_access import (
+        PERMISSIONS_SCHEMA,
+        ExecutionDirectoryIdentity,
+        ScopedAccess,
+        git_metadata_description,
+    )
 
     def _validate_reused_access(request: ApprovalRequest) -> None:
         handler = getattr(surface, "standing_approval", None)
@@ -1441,10 +1496,12 @@ def build_tools(
     if artifact_output_access_sink is not None:
         artifact_output_access_sink(_artifact_output_access)
 
-    def _critical_delete_reason(cmd: str, cwd: str | None) -> str | None:
+    def _critical_delete_reason(cmd: str, cwd: str | None, dialect=None) -> str | None:
         try:
             working_folder = (root / cwd).resolve() if cwd else root
-            targets = critical_delete_targets(cmd, cwd=working_folder, workspace_root=root)
+            targets = critical_delete_targets(
+                cmd, cwd=working_folder, workspace_root=root, dialect=dialect
+            )
         except Exception:  # noqa: BLE001 - the circuit breaker never breaks a command
             return None
         if not targets:
@@ -1464,18 +1521,59 @@ def build_tools(
                 described.append(f"{target}")
         return "This command deletes " + "; ".join(described)
 
+    def _contained_delete_reason(
+        cmd: str, refusal: str, *, tool_name: str, access_grant, durable_execution: bool
+    ) -> str | None:
+        """Why a refused recursive delete is decided instead, or ``None`` to keep the refusal.
+
+        A forced recursive delete is refused outright, because without a
+        boundary one wrong path removes the person's files. In the Windows
+        MXC sandbox the command can delete only inside the approved folders
+        and its own scratch folder, so who decides is the mode's question, as
+        a forced delete is in Codex: the reviewer in "Approve for me", the
+        person in "Ask for approval". It is never waived, also not by --yes.
+        A delete of a drive, a system folder or a profile stays refused, and
+        one aimed at the project or home folder still asks as before
+        (``_critical_delete_reason``). Other backends are unchanged.
+        """
+        from ..windows_command_policy import most_severe_windows_finding
+
+        try:
+            finding = most_severe_windows_finding(cmd)
+        except Exception:  # noqa: BLE001 - not being able to tell keeps the refusal
+            return None
+        if (
+            finding is None
+            or finding.severity != "dangerous"
+            or finding.reason != refusal
+            or not refusal.startswith("Recursive delete")
+        ):
+            return None
+        if _bounding_sandbox(cmd, tool_name, access_grant, durable=durable_execution) != (
+            "windows-mxc"
+        ):
+            return None
+        return (
+            f"{refusal}. It runs in the sandbox, so it can remove files only in the "
+            "approved folders; whether these should be removed is the question."
+        )
+
     verify_commands_need_approval = False
+    # What a verification command runs under; None where that cannot be known here.
+    verify_scope_settings = None
     if cfg is not None:
         try:
             verify_sandbox_mode = resolve_verify_sandbox_mode(cfg)
+            verify_scope_settings = replace(
+                resolve_shell_sandbox_settings(cfg), mode=verify_sandbox_mode
+            )
             verify_commands_need_approval = (
                 verify_sandbox_mode != "off"
-                and select_shell_sandbox_backend(
-                    replace(resolve_shell_sandbox_settings(cfg), mode=verify_sandbox_mode)
-                ).requires_command_approval
+                and select_shell_sandbox_backend(verify_scope_settings).requires_command_approval
             )
         except (ConfigError, VerifyError):
             verify_commands_need_approval = False  # the verification run reports the error
+            verify_scope_settings = None
 
     def _approve_unsandboxed_command(
         cmd: str,
@@ -1523,6 +1621,25 @@ def build_tools(
                     seen_deny_prefixes.add(normalized)
                     deny_prefixes.append(cleaned)
     deny_prefixes_cf = [pref.casefold() for pref in deny_prefixes]
+    # A .git file can keep the repository in a folder with another name.
+    protected_git_directories: tuple[Path, ...] = ()
+    if not is_full_access_mode:
+        from ..git_safe import separate_git_directories
+
+        protected_git_directories = tuple(
+            dict.fromkeys(
+                directory
+                for folder in (root, *host_file_settings.additional_workspace_roots)
+                for directory in separate_git_directories(Path(folder))
+            )
+        )
+
+    def _is_protected_git_directory(target: Path) -> bool:
+        return any(
+            target == directory or target.is_relative_to(directory)
+            for directory in protected_git_directories
+        )
+
     allow_pattern_groups: list[list[str]] = []
     allowed_ancestor_dir_groups_cf: list[set[str]] = []
     if not is_full_access_mode:
@@ -1709,7 +1826,7 @@ def build_tools(
                 "Additional folders are unavailable under this restricted write scope.",
                 denial_code="write_scope_denied",
             )
-        if _is_denied_path(protected_relative):
+        if _is_denied_path(protected_relative) or _is_protected_git_directory(target):
             raise AgentRuntimeError(
                 f"Blocked write to protected path: {rel_path}", denial_code="protected_path_denied"
             )
@@ -1955,42 +2072,149 @@ def build_tools(
         if not decision.allow:
             raise ApprovalDeclinedError(tool_name)
 
-    def _require_github_write_approval(
-        cmd: str,
-        *,
-        tool_name: str,
-        cwd: str | None = None,
-        access_grant=None,
-        scoped_execution: bool = False,
-        durable_execution: bool = False,
-    ) -> ExecutionDirectoryIdentity | None:
-        from ..command_review_rules import github_write_reason
+    def _bounding_sandbox(
+        cmd: str, tool_name: str, access_grant, *, durable: bool = False
+    ) -> str | None:
+        """The proven sandbox that bounds this command, if one does.
 
-        credential_access = access_grant is not None and bool(
+        Judged from what executes the command: the launcher's settings, the
+        operation's own settings, and the default runner (the real one once
+        loaded, otherwise the settings its loader captured). They must all be
+        the same proven sandbox. A host or unknown runner, a durable service
+        and every tool whose runner is not inspected here keep the person
+        decision.
+
+        A literal Git command that changes the repository is contained like
+        the rest: the runner gives it the metadata without what a later Git
+        would run. Under MXC that is the Git job, which says itself when a
+        command gets more than that (``git_native.programs_exposed``). A
+        literal push keeps the person there too: what it changes is a remote.
+
+        Seatbelt bounds a command that has no route to a remote, so any grant
+        keeps the person. MXC bounds a command as Codex's sandbox does: extra
+        access (network, a local preview, folders) is requested and goes
+        through the access review, and that review is the decision about it.
+        Credentials are never part of that and keep the person.
+        """
+        from ..background_runner import LazyBackgroundShellRunner
+        from ..sandbox_runner import LazyShellRunner, contained_backend
+
+        reviewed = None
+        if tool_name == "verify_run":
+            scopes: list[object] = [verify_scope_settings]
+        elif (
+            tool_name in {"shell_run", "shell_background"}
+            and access_grant is not None
+            and not durable
+        ):
+            if access_grant.settings != host_file_settings:
+                if contained_backend(access_grant.settings, reviewed_access=True) != "windows-mxc":
+                    return None
+                reviewed = access_grant.settings
+            if tool_name == "shell_run":
+                runner = shell_runner
+                if isinstance(runner, LazyShellRunner):
+                    runner = runner.resolved_runner or runner.execution_settings
+            else:
+                # Only the MXC background runner is inspected: it is the same
+                # runner class and builds the same sandbox request.
+                if contained_backend(host_file_settings) != "windows-mxc":
+                    return None
+                runner = getattr(terminal_manager, "_runner", None)
+                if isinstance(runner, LazyBackgroundShellRunner):
+                    runner = runner.resolved_runner or runner.execution_settings
+            scopes = [host_file_settings, runner]
+        else:
+            return None
+        backend = None
+        for scope in scopes:
+            # Stop at the first scope that is not contained, as before: a later
+            # scope is not asked anything once the answer is known.
+            found = contained_backend(scope)
+            if found is None or backend not in {None, found}:
+                return None
+            backend = found
+        if backend == "seatbelt":
+            if tool_name == "verify_run":
+                from ..verify_gate import glob_expansion_may_yield_git
+
+                # Verification expands globs after this judgement, which can turn
+                # the command into a Git command this judgement never saw.
+                if glob_expansion_may_yield_git(cmd):
+                    return None
+            # A literal Git command that changes the repository is contained
+            # like the rest: the runner gives it the metadata without what a
+            # later Git would run.
+            return backend
+        if backend == "windows-mxc":
+            from ..git_native import git_metadata_writes, programs_exposed, writes_a_remote
+            from ..windows_sandbox import git_directory_left_writable
+
+            # A .git file can name a Git directory that is itself an approved
+            # folder, which the sandbox cannot write-protect.
+            if git_directory_left_writable(root, reviewed or host_file_settings):
+                return None
+            # Only the shell tool sends a literal Git command to the Git job.
+            # The job lets it write the repository's objects, refs and index
+            # and nothing a later Git would run, so it is contained like the
+            # rest. It is not where a person approved the whole metadata for
+            # it, or where it creates the repository it writes. Everything
+            # else, Git reached any other way included, runs where the
+            # metadata is write-protected.
+            if tool_name == "shell_run" and programs_exposed(cmd, reviewed or host_file_settings):
+                return None
+            # A literal push states a remote write. It keeps the person, as it
+            # does on macOS and did here while every Git write kept the person.
+            if tool_name == "shell_run" and writes_a_remote(cmd):
+                return None
+            # Nothing here can ask for permissions.git_metadata (Full access,
+            # a subagent, a one-shot run), and a person can be asked. A Git
+            # change keeps the person there and gets the whole metadata, as
+            # it always did: otherwise a rebase could not be run at all.
+            if (
+                tool_name == "shell_run"
+                and not scoped_access.enabled
+                and can_ask_person
+                and git_metadata_writes(cmd)
+            ):
+                return None
+            return backend
+        return None
+
+    def _credential_access(access_grant) -> bool:
+        return access_grant is not None and bool(
             access_grant.settings.additional_read_files
             or access_grant.settings.forward_env
             or access_grant.settings.ssh_agent_socket
             or access_grant.settings.github_auth
         )
-        if credential_access and (
-            access_grant.command != cmd
-            or access_grant.tool != tool_name
-            or access_grant.cwd != str((root / cwd).resolve() if cwd else root.resolve())
-        ):
-            raise AgentRuntimeError(
-                "Authentication approval does not match this command/tool/cwd.",
-                denial_code="approval_scope_mismatch",
-            )
+
+    def _executing_dialect(
+        access_grant=None,
+        *,
+        tool_name: str = "shell_run",
+        scoped_execution: bool = False,
+        durable_execution: bool = False,
+    ):
+        """The dialect of the shell that will run a command, for every check that reads one.
+
+        Native/MXC runners execute PowerShell, unlike the host Windows cmd
+        default. Inspect captured launcher/backend authority without resolving
+        a lazy helper. Mixed/uncertain Windows backend hints conservatively
+        keep the PowerShell decision; config never downgrades a real runner.
+
+        ``tool_name`` picks the runner that executes the command. Access that
+        was granted counts only where the command runs with it
+        (``scoped_execution``) or carries credentials, and a durable service's
+        settings only where that service runs it.
+        """
         from ..background_runner import HostBackgroundRunner
         from ..sandbox_runner import HostShellRunner, LazyShellRunner
         from ..sandbox_settings import ShellSandboxSettings
         from ..shell_command_lexer import host_dialect
         from ..windows_sandbox import WindowsNativeRunner
 
-        # Native/MXC runners execute PowerShell, unlike the host Windows cmd
-        # default. Inspect captured launcher/backend authority without resolving
-        # a lazy helper. Mixed/uncertain Windows backend hints conservatively
-        # keep the PowerShell decision; config never downgrades a real runner.
+        credential_access = _credential_access(access_grant)
         dialect = host_dialect()
         selected_runner = (
             shell_runner
@@ -2034,25 +2258,100 @@ def build_tools(
                 )
             ):
                 dialect = "powershell"
-        remote_write = github_write_reason(
-            cmd,
-            dialect=dialect,
-            credential_access=credential_access,
-            # Exact files and selected env inputs may configure executables.
-            # Do not inspect values or infer that arbitrary inputs are harmless.
-            opaque_authentication_inputs=credential_access
-            and bool(
-                access_grant.settings.additional_read_files or access_grant.settings.forward_env
-            ),
+        return dialect
+
+    def _require_github_write_approval(
+        cmd: str,
+        *,
+        tool_name: str,
+        cwd: str | None = None,
+        access_grant=None,
+        scoped_execution: bool = False,
+        durable_execution: bool = False,
+    ) -> ExecutionDirectoryIdentity | None:
+        from ..command_review_rules import github_write_reason
+
+        credential_access = _credential_access(access_grant)
+        if credential_access and (
+            access_grant.command != cmd
+            or access_grant.tool != tool_name
+            or access_grant.cwd != str((root / cwd).resolve() if cwd else root.resolve())
+        ):
+            raise AgentRuntimeError(
+                "Authentication approval does not match this command/tool/cwd.",
+                denial_code="approval_scope_mismatch",
+            )
+        dialect = _executing_dialect(
+            access_grant,
+            tool_name=tool_name,
+            scoped_execution=scoped_execution,
+            durable_execution=durable_execution,
         )
-        if remote_write:
+        contained_by = _bounding_sandbox(cmd, tool_name, access_grant, durable=durable_execution)
+        if contained_by == "seatbelt" and dialect != "posix":
+            # Seatbelt runs /bin/sh. A PowerShell hint means something that
+            # executes commands here is not the sandbox that was certified.
+            contained_by = None
+        inherited_route = None
+        if contained_by == "windows-mxc" and not credential_access:
+            # The sandbox, and whatever access was reviewed for this command,
+            # is the boundary. What PowerShell resolves the text to no longer
+            # decides whether a person is needed.
+            remote_write = None
+            if (
+                access_grant is not None
+                and (
+                    access_grant.settings.network != "off"
+                    or access_grant.settings.preview_access != "auto"
+                )
+                and not (
+                    access_grant.command == cmd
+                    and access_grant.tool == tool_name
+                    and access_grant.cwd == str((root / cwd).resolve() if cwd else root.resolve())
+                )
+            ):
+                # A route out of the sandbox that was approved for another
+                # command, for the turn, for the session or as a saved profile.
+                # That review said nothing about this command, so this one is
+                # decided now: by the reviewer in "Approve for me", by a
+                # person in "Ask for approval".
+                routes = [
+                    name
+                    for name, opened in (
+                        ("network access", access_grant.settings.network != "off"),
+                        (
+                            "access to servers on this computer",
+                            access_grant.settings.preview_access != "auto",
+                        ),
+                    )
+                    if opened
+                ]
+                inherited_route = (
+                    "Runs with "
+                    + " and ".join(routes)
+                    + " that was approved earlier, not for this command."
+                )
+        else:
+            remote_write = github_write_reason(
+                cmd,
+                dialect=dialect,
+                credential_access=credential_access,
+                # Exact files and selected env inputs may configure executables.
+                # Do not inspect values or infer that arbitrary inputs are harmless.
+                opaque_authentication_inputs=credential_access
+                and bool(
+                    access_grant.settings.additional_read_files or access_grant.settings.forward_env
+                ),
+                remote_unreachable=contained_by == "seatbelt",
+            )
+        if remote_write or inherited_route:
             execution_directory = ExecutionDirectoryIdentity.capture(
                 str((root / cwd).resolve() if cwd else root.resolve())
             )
             choice = _request_action_approval(
                 ApprovalRequest(
                     kind=tool_name,
-                    reason=remote_write,
+                    reason=remote_write or inherited_route,
                     preview=cmd,
                     command=cmd,
                     metadata={
@@ -2060,17 +2359,43 @@ def build_tools(
                         "always_ask_person": True,
                         "allow_for_session_disabled": True,
                         "cwd": execution_directory.path,
-                    },
+                    }
+                    if remote_write
+                    # Not a mandatory-person request: the reviewer may answer it.
+                    else {"access": "network", "cwd": execution_directory.path},
                     allow_for_session_scope=None,
                 )
             )
             if not choice.allow:
                 raise ApprovalDeclinedError(tool_name)
             execution_directory.check()
-            # The exact command was separately approved by a person. Continue
-            # deny/fallback checks, but do not ask a duplicate mode-level card.
+            if remote_write and tool_name == "shell_run":
+                person_decided.append((tool_name, cmd))
+            # The exact command was separately approved. Continue deny/fallback
+            # checks, but do not ask a duplicate mode-level card.
             return execution_directory
         return None
+
+    # The command the mandatory person card was just answered for with a yes,
+    # for the shell handler that asked. An entry lost between two handlers
+    # only means the command runs without the whole metadata.
+    person_decided: list[tuple[str, str]] = []
+
+    def _whole_git_metadata(cmd: str) -> bool:
+        """Whether a person just decided on this literal Git command.
+
+        The Windows Git job keeps what a later Git runs from a command that
+        follows the mode. A command a person decided on gets the whole
+        metadata, as every Git change did while each one needed a person.
+        Only the Git job reads the answer.
+        """
+        decided = ("shell_run", cmd) in person_decided
+        person_decided.clear()
+        if not decided or os.name != "nt":
+            return False
+        from ..git_native import git_metadata_writes
+
+        return git_metadata_writes(cmd)
 
     def _with_write_directory_checks(
         directories: Collection[ExecutionDirectoryIdentity | None], operation: Callable[[], Any]
@@ -2120,7 +2445,15 @@ def build_tools(
             raise AgentRuntimeError(
                 f"Blocked in readonly mode: {tool_name}", denial_code="readonly_denied"
             )
-        critical = _critical_delete_reason(cmd, cwd)
+        # The checks below read the command. They must read it as the shell that
+        # runs it does: in cmd `a; b` is one command, in PowerShell it is two.
+        dialect = _executing_dialect(
+            access_grant,
+            tool_name=tool_name,
+            scoped_execution=scoped_execution,
+            durable_execution=durable_execution,
+        )
+        critical = _critical_delete_reason(cmd, cwd, dialect)
         operation_approved = (
             critical is None
             and access_grant is not None
@@ -2132,11 +2465,32 @@ def build_tools(
             if critical:
                 _ask_person_before_critical_delete(cmd, tool_name=tool_name, concern=critical)
             return remote_write
-        decision = evaluate_shell_command(cmd)
+        decision = evaluate_shell_command(cmd, dialect=dialect)
+        contained_delete = None
         if not decision.allowed:
-            raise AgentRuntimeError(
-                f"Blocked command: {decision.reason}", denial_code="shell_policy_denied"
+            contained_delete = _contained_delete_reason(
+                cmd,
+                decision.reason,
+                tool_name=tool_name,
+                access_grant=access_grant,
+                durable_execution=durable_execution,
             )
+            if contained_delete is None:
+                raise AgentRuntimeError(
+                    f"Blocked command: {decision.reason}", denial_code="shell_policy_denied"
+                )
+        # A folder removed with everything in it is decided every time: by the
+        # reviewer in "Approve for me", by a person where the mode asks one.
+        # --yes does not answer it, access reviewed for this same command was a
+        # decision about the access, and it may not be allowed for the session,
+        # because what the folder holds changes. Two rules say so: the policy,
+        # for rm with its recursive and force options, and the Windows sandbox,
+        # for the Windows spellings it bounds.
+        each_time = contained_delete or (
+            f"sensitive command: {decision.reason}" if not decision.waivable else None
+        )
+        if each_time:
+            operation_approved = False
         if _shell_commands_need_approval():
             # Host fallback replaces the sandbox only after approval, including for
             # read-only commands. Whoever answers sees every reason it was flagged.
@@ -2144,13 +2498,14 @@ def build_tools(
                 cmd,
                 tool_name=tool_name,
                 concern=critical
+                or each_time
                 or (f"sensitive command: {decision.reason}" if decision.needs_confirm else None),
-                session_grant_allowed=critical is None,
+                session_grant_allowed=critical is None and each_time is None,
             )
             return remote_write
-        if remote_write and critical is None:
+        if remote_write and critical is None and each_time is None:
             return remote_write
-        if critical is None and is_read_only_command(cmd):
+        if critical is None and each_time is None and is_read_only_command(cmd, dialect=dialect):
             # Commands that only look need no mode-level approval once the runner's
             # sandbox/fallback requirements are satisfied; see read_only_commands.
             return remote_write
@@ -2163,11 +2518,13 @@ def build_tools(
             decision = _request_action_approval(
                 ApprovalRequest(
                     kind=tool_name,
-                    reason=critical or "review mode requires confirmation for shell commands",
+                    reason=critical
+                    or each_time
+                    or "review mode requires confirmation for shell commands",
                     preview=cmd,
                     command=cmd,
                     allow_for_session_scope=None
-                    if critical
+                    if critical or each_time
                     else exact_command_scope(cmd, kind=tool_name),
                 ),
                 operation_approved=operation_approved,
@@ -2175,12 +2532,27 @@ def build_tools(
             if not decision.allow:
                 raise ApprovalDeclinedError(tool_name)
             return remote_write
-        # auto mode: a delete aimed at the project or home folder is reviewed even with --yes.
-        concern = critical or (
-            f"sensitive command: {decision.reason}" if decision.needs_confirm and not yes else None
+        # auto mode: a delete aimed at the project or home folder is reviewed even with
+        # --yes, and so is a command that removes a folder with everything in it.
+        concern = (
+            critical
+            or each_time
+            or (
+                f"sensitive command: {decision.reason}"
+                if decision.needs_confirm and not yes
+                else None
+            )
         )
         if concern:
             if _approver_unavailable():
+                if yes:
+                    # --yes was given and does not answer this one.
+                    raise AgentRuntimeError(
+                        f"Blocked: {critical or decision.reason}. This needs a decision each "
+                        "time and nobody can be asked in this run. Remove single files with "
+                        "fs_delete instead.",
+                        denial_code="approval_required",
+                    )
                 raise AgentRuntimeError(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
                     denial_code="approval_required",
@@ -2192,7 +2564,7 @@ def build_tools(
                     preview=cmd,
                     command=cmd,
                     allow_for_session_scope=None
-                    if critical
+                    if critical or each_time
                     else exact_command_scope(cmd, kind=tool_name),
                 ),
                 operation_approved=operation_approved,
@@ -2240,9 +2612,11 @@ def build_tools(
             )
 
         sensitive_reason: str | None = None
+        verify_dialect = _executing_dialect(tool_name="verify_run")
         for command in commands:
-            decision = evaluate_shell_command(command)
-            if not decision.allowed:
+            decision = evaluate_shell_command(command, dialect=verify_dialect)
+            # A check has no folder to remove: what --yes cannot answer is refused here.
+            if not decision.allowed or not decision.waivable:
                 raise AgentRuntimeError(
                     f"Blocked command: {decision.reason}", denial_code="shell_policy_denied"
                 )
@@ -2646,9 +3020,16 @@ def build_tools(
                     "read_files",
                     "environment",
                     "ssh_agent",
-                    "git_metadata",
                 ):
                     permission_schema["properties"].pop(field)
+                if sys.platform != "win32" or name != "shell_run":
+                    # Windows MXC takes it for one literal Git command, which
+                    # only shell_run sends to the Git job; see its description.
+                    permission_schema["properties"].pop("git_metadata")
+            if "git_metadata" in permission_schema["properties"]:
+                permission_schema["properties"]["git_metadata"]["description"] = (
+                    git_metadata_description(sys.platform)
+                )
             parameters["properties"]["permissions"] = permission_schema
             model_description = (model_description or _BUILTIN_MODEL_DESCRIPTIONS.get(name, "")) + (
                 " When the task needs internet, external file contents or a local preview, request "
@@ -2874,6 +3255,18 @@ def build_tools(
             return result
 
         _append_builtin_tool("wait_user_input", run=_collect_user_answers)
+
+    # One-click next steps under the final reply: only for a host that shows them. The steps are
+    # display text; a click sends one as the user's own message, so the tool grants nothing.
+    if (
+        getattr(surface, "host_renders_next_steps", False) is True
+        and subagent_depth == 0
+        and not one_shot_execution
+        and resolved_runtime_kind == RuntimeKind.INTERACTIVE_CHAT
+    ):
+        from ..next_steps import suggest_next_steps
+
+        _append_builtin_tool("suggest_next_steps", run=suggest_next_steps)
 
     # report_blocker is a top-level completion-gate control signal, not a
     # repository action. Keep the runtime-kind check here as a fail-closed
@@ -3169,17 +3562,17 @@ def build_tools(
         # approval that lists every file, instead of one prompt per file.
         raw_paths = args.get("paths")
         raw_single = args.get("path")
-        if raw_paths is not None and raw_single is not None:
-            raise AgentRuntimeError("fs_delete accepts either path or paths, not both.")
         if raw_paths is None:
             raw_entries: list[Any] = [raw_single]
         else:
             if not isinstance(raw_paths, list) or not raw_paths:
                 raise AgentRuntimeError("fs_delete paths must be a non-empty list of file paths.")
-            if len(raw_paths) > 200:
+            # Both fields together name one list of files; the answer is the batch form.
+            raw_entries = [*([raw_single] if raw_single is not None else []), *raw_paths]
+            if len(raw_entries) > 200:
                 raise AgentRuntimeError("fs_delete paths accepts at most 200 files per call.")
-            raw_entries = list(raw_paths)
         resolved: list[str] = []
+        folders: list[str] = []
         seen: set[str] = set()
         for raw_entry in raw_entries:
             path = _resolve_workspace_relative_path(
@@ -3198,6 +3591,28 @@ def build_tools(
                     or not is_non_material_untracked_path(path)
                 ):
                     raise
+            try:
+                is_folder = (root / path).is_dir()
+            except OSError:
+                is_folder = False
+            if is_folder:
+                # A protected folder is refused as protected, as before.
+                _guard_host_file_path(path, write=True)
+                # This tool removes one file at a time, each checked against what
+                # was read. A folder is said to be one: deleting it failed further
+                # down as an unusual file, or with the operating system's words
+                # for it ("[WinError 5] Access is denied" on Windows), which reads
+                # as a permission problem to retry. Nobody is asked to approve
+                # what cannot happen, and the files listed beside it are still
+                # removed.
+                if raw_paths is None:
+                    raise AgentRuntimeError(
+                        _FOLDER_DELETE_HINT.format(path=path), denial_code="fs_delete_folder"
+                    )
+                if path not in seen:
+                    seen.add(path)
+                    folders.append(path)
+                continue
             if path not in seen:
                 seen.add(path)
                 resolved.append(path)
@@ -3241,7 +3656,10 @@ def build_tools(
                 return _stale_file_result(error)
             read_ledger.invalidate(resolved[0])
             return _mark_sensitive_result(result, sensitive)
-        entries: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = [
+            {"path": path, "ok": False, "error": _FOLDER_DELETE_HINT.format(path=path)}
+            for path in folders
+        ]
         deleted_count = 0
         for path in resolved:
             try:
@@ -3259,7 +3677,9 @@ def build_tools(
             except StaleFileError as error:
                 entries.append({"path": path, "ok": False, **_stale_file_result(error)})
                 continue
-            except AgentRuntimeError as error:
+            except (AgentRuntimeError, ConfigError, FsError) as error:
+                # One file that is missing or refused does not undo the others,
+                # and the answer says which files were removed.
                 entries.append({"path": path, "ok": False, "error": str(error)})
                 continue
             read_ledger.invalidate(path)
@@ -3269,9 +3689,9 @@ def build_tools(
                 entry["bytes"] = result["bytes"]
             entries.append(entry)
         batch_result: dict[str, Any] = {
-            "ok": deleted_count == len(resolved),
+            "ok": deleted_count == len(resolved) and not folders,
             "deleted_count": deleted_count,
-            "requested_count": len(resolved),
+            "requested_count": len(resolved) + len(folders),
             "results": entries,
         }
         return _mark_sensitive_result(batch_result, sensitive)
@@ -3363,7 +3783,7 @@ def build_tools(
         )
         if _is_allowed_ancestor_dir_creation(path):
             _guard_host_file_path(path, write=True)
-            if _is_denied_path(path):
+            if _is_denied_path(path) or _is_protected_git_directory((root / path).resolve()):
                 raise AgentRuntimeError(
                     f"Blocked write to protected path: {path}", denial_code="protected_path_denied"
                 )
@@ -4942,7 +5362,9 @@ def build_tools(
                 start_decision=deadline_decision,
             )
         try:
-            shell_timeout_s = _deadline_timeout(60, operation="shell_run")
+            shell_timeout_s = _deadline_timeout(
+                shell_run_timeout_seconds(args.get("timeout_s")), operation="shell_run"
+            )
         except DeadlineExhausted:
             return _deadline_error(
                 "shell_run skipped because the run deadline is exhausted or too close."
@@ -4970,6 +5392,7 @@ def build_tools(
                 else None
             ),
         )
+        person_decided.clear()
         write_directory = guard_shell(
             cmd,
             cwd=effective_cwd,
@@ -4977,6 +5400,7 @@ def build_tools(
             scoped_execution=has_scoped_access,
         )
         operation_runner = shell_runner
+        whole_git_metadata = _whole_git_metadata(cmd)
         if has_scoped_access:
             from ..sandbox_runner import build_shell_runner_from_settings, with_closed_stdin
 
@@ -5041,6 +5465,8 @@ def build_tools(
                         "timeout_s": shell_timeout_s,
                         "capture_pipeline_status": _evidence_v2_enabled(cfg),
                         "cancel_check": cancel_check,
+                        "timeout_guidance": shell_run_timeout_guidance(shell_timeout_s),
+                        **({"git_whole_metadata": True} if whole_git_metadata else {}),
                     },
                 )
             except ShellError as exc:
@@ -5642,6 +6068,7 @@ def build_tools(
             cwd=effective_cwd_relpath,
             access_grant=access_grant,
             scoped_execution=has_scoped_access,
+            # A durable service is started by another manager with its own settings.
             durable_execution=bool(args.get("persist")),
         )
         cwd_path = root if not effective_cwd_relpath else (root / effective_cwd_relpath).resolve()

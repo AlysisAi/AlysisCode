@@ -78,7 +78,9 @@ class _StubDeviceFlowServer:
                 self.send_error(404)
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self._thread.start()
 
     @property
@@ -468,7 +470,9 @@ class _StubModelsServer:
                 self.wfile.write(body)
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self._thread.start()
 
     @property
@@ -500,3 +504,262 @@ def test_list_trial_models_empty_when_unreachable(tmp_path: Path, monkeypatch) -
     stub.close()  # nothing is listening now -> connection refused
     monkeypatch.setenv("ALYSIS_GATEWAY_URL", f"{base_url}/v1")
     assert account_login.list_trial_models(load_config()) == []
+
+
+# ---------------------------------------------------------------------------
+# Browser sign-in: /connect hands the key back to 127.0.0.1 (no code to compare)
+# ---------------------------------------------------------------------------
+import base64  # noqa: E402
+import hashlib  # noqa: E402
+import http.client  # noqa: E402
+from urllib.parse import parse_qs, urlsplit  # noqa: E402
+
+_SESSION_ID = "30000000-0000-4000-8000-000000000001"
+_ONE_TIME_CODE = "c" * 64
+
+
+class _StubDesktopSignInServer:
+    """Stands in for the `desktop-sign-in` edge function (and, for fallbacks, nothing else)."""
+
+    def __init__(self, *, token_status: str = "approved") -> None:
+        self.started: list[dict] = []
+        self.tokens: list[dict] = []
+        outer = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args: object) -> None:  # noqa: A002
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if not self.path.endswith("/desktop-sign-in"):
+                    self.send_error(404)
+                    return
+                if body.get("action") == "start":
+                    outer.started.append(body)
+                    reply = {
+                        "session_id": _SESSION_ID,
+                        "url": "https://example.test/connect",
+                        "expires_in": 600,
+                    }
+                elif body.get("action") == "token":
+                    outer.tokens.append(body)
+                    reply = (
+                        {"status": "approved", "key": _GATEWAY_KEY}
+                        if token_status == "approved"
+                        else {"status": token_status}
+                    )
+                else:
+                    self.send_error(400)
+                    return
+                data = json.dumps(reply).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        self._thread.start()
+
+    @property
+    def base_url(self) -> str:
+        host, port = self._server.server_address
+        return f"http://{host}:{port}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+
+
+class _FakeWebsite:
+    """The person on /connect pressing Continue: the browser is sent to the CLI's loopback page."""
+
+    def __init__(
+        self, stub: _StubDesktopSignInServer, *, states: list[str | None] | None = None
+    ) -> None:
+        self.stub = stub
+        self.opened: list[str] = []
+        self.locations: list[str] = []
+        self.states = states or [None]
+        self._threads: list[threading.Thread] = []
+
+    def __call__(self, url: str) -> bool:
+        self.opened.append(url)
+        start = self.stub.started[-1]
+        for state in self.states:
+            thread = threading.Thread(
+                target=self._visit,
+                args=(start["redirect_port"], state or start["state"]),
+                daemon=True,
+            )
+            thread.start()
+            if state:  # an old tab: answered at once, before the real visit
+                thread.join(timeout=5)
+            self._threads.append(thread)
+        return True
+
+    def _visit(self, port: int, state: str) -> None:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        connection.request("GET", f"/callback?code={_ONE_TIME_CODE}&state={state}")
+        response = connection.getresponse()
+        self.locations.append(f"{response.status} {response.getheader('Location')}")
+        connection.close()
+
+    def join(self) -> None:
+        for thread in self._threads:
+            thread.join(timeout=10)
+
+
+def _browser_env(monkeypatch: pytest.MonkeyPatch, stub_url: str) -> None:
+    monkeypatch.setenv("ALYSIS_CLOUD_API_URL", f"{stub_url}/functions/v1")
+    monkeypatch.setattr(account_login, "_browser_sign_in_possible", lambda: True)
+
+
+def test_browser_sign_in_hands_the_key_back_without_a_code(tmp_path: Path, monkeypatch) -> None:
+    _config_env(tmp_path, monkeypatch)
+    stub = _StubDesktopSignInServer()
+    _browser_env(monkeypatch, stub.base_url)
+    website = _FakeWebsite(stub)
+    printed: list[str] = []
+    try:
+        result = account_login.login(
+            load_config(), browser_opener=website, output_write=printed.append, timeout_s=30
+        )
+        website.join()
+        # The page is on our site, whatever the server said, and no code is shown anywhere.
+        assert website.opened == [f"{alysis_cloud.site_url()}/connect?session={_SESSION_ID}"]
+        assert not any("one-time code" in line.lower() for line in printed)
+        assert any(line.startswith("Continue in your browser:") for line in printed)
+        # PKCE: the verifier redeemed is the one whose S256 started the session.
+        start, token = stub.started[0], stub.tokens[0]
+        digest = hashlib.sha256(token["code_verifier"].encode()).digest()
+        assert start["code_challenge"] == base64.urlsafe_b64encode(digest).decode().rstrip("=")
+        assert 43 <= len(token["code_verifier"]) <= 128
+        assert token["code"] == _ONE_TIME_CODE
+        assert 1024 <= start["redirect_port"] <= 65535
+        assert start["installation_id"] and start["client_name"].startswith("alysis-cli @ ")
+        # The browser tab ends on the website's outcome page.
+        assert website.locations == [f"302 {alysis_cloud.site_url()}/connect/done"]
+        assert result.profile_name == "alysis"
+        assert load_persisted_profile_keys()["alysis"] == _GATEWAY_KEY
+    finally:
+        stub.close()
+
+
+def test_browser_sign_in_ignores_another_tab_and_reports_an_expired_code(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config_env(tmp_path, monkeypatch)
+    stub = _StubDesktopSignInServer(token_status="expired")
+    _browser_env(monkeypatch, stub.base_url)
+    # An old tab with another state first; it must not end the sign-in.
+    website = _FakeWebsite(stub, states=["another-state-from-an-old-tab", None])
+    try:
+        with pytest.raises(account_login.AlysisLoginError, match="expired"):
+            account_login.login(load_config(), browser_opener=website, timeout_s=30)
+        website.join()
+        done = f"{alysis_cloud.site_url()}/connect/done?status=failed"
+        assert website.locations == [f"302 {done}", f"302 {done}"]
+        assert len(stub.tokens) == 1
+        assert "alysis" not in load_persisted_profile_keys()
+    finally:
+        stub.close()
+
+
+def test_browser_sign_in_times_out_when_the_browser_never_comes_back(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config_env(tmp_path, monkeypatch)
+    stub = _StubDesktopSignInServer()
+    _browser_env(monkeypatch, stub.base_url)
+    try:
+        with pytest.raises(account_login.AlysisLoginError, match="Timed out"):
+            account_login.login(load_config(), browser_opener=_noop_browser([]), timeout_s=1)
+        assert stub.tokens == []
+    finally:
+        stub.close()
+
+
+def test_backend_without_browser_sign_in_falls_back_to_the_code(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config_env(tmp_path, monkeypatch)
+    stub = _StubDeviceFlowServer()  # answers 404 to desktop-sign-in, like an older backend
+    _browser_env(monkeypatch, stub.base_url)
+    opened: list[str] = []
+    try:
+        account_login.login(load_config(), browser_opener=_noop_browser(opened), timeout_s=10)
+        assert len(opened) == 1 and "/activate?code=" in opened[0]
+        assert load_persisted_profile_keys()["alysis"] == _GATEWAY_KEY
+    finally:
+        stub.close()
+
+
+def test_device_option_uses_the_code_even_with_a_browser(tmp_path: Path, monkeypatch) -> None:
+    _config_env(tmp_path, monkeypatch)
+    desktop = _StubDesktopSignInServer()
+    device = _StubDeviceFlowServer()
+    _browser_env(monkeypatch, device.base_url)
+    opened: list[str] = []
+    try:
+        account_login.login(
+            load_config(), browser_opener=_noop_browser(opened), timeout_s=10, use_code=True
+        )
+        assert "/activate?code=" in opened[0]
+        assert desktop.started == [] and len(device.code_requests) == 1
+    finally:
+        desktop.close()
+        device.close()
+
+
+@pytest.mark.parametrize(
+    ("env", "wsl", "platform_name", "expected"),
+    [
+        ({}, False, "win32", True),
+        ({}, False, "darwin", True),
+        ({"DISPLAY": ":0"}, False, "linux", True),
+        ({"WAYLAND_DISPLAY": "wayland-0"}, False, "linux", True),
+        ({}, False, "linux", False),
+        ({"SSH_CONNECTION": "10.0.0.2 5000 10.0.0.1 22"}, False, "darwin", False),
+        ({"SSH_TTY": "/dev/pts/1", "DISPLAY": ":0"}, False, "linux", False),
+        ({"DISPLAY": ":0"}, True, "linux", False),
+    ],
+)
+def test_browser_sign_in_only_where_a_local_browser_can_reach_loopback(
+    monkeypatch, env, wsl, platform_name, expected
+) -> None:
+    for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(account_login, "is_wsl", lambda: wsl)
+    monkeypatch.setattr(account_login.sys, "platform", platform_name)
+    assert account_login._browser_sign_in_possible() is expected
+
+
+def test_loopback_page_answers_only_its_callback() -> None:
+    callback = account_login._LoopbackCallback(
+        state="s" * 32, done_url="https://alysiscode.test/connect/done"
+    )
+    try:
+        for path in ("/", "/favicon.ico", "/callback/../x"):
+            connection = http.client.HTTPConnection("127.0.0.1", callback.port, timeout=5)
+            connection.request("GET", path)
+            assert connection.getresponse().status == 404
+            connection.close()
+        connection = http.client.HTTPConnection("127.0.0.1", callback.port, timeout=5)
+        connection.request("GET", "/callback?code=not-hex&state=" + "s" * 32)
+        response = connection.getresponse()
+        assert response.status == 302
+        assert parse_qs(urlsplit(response.getheader("Location")).query) == {"status": ["failed"]}
+        assert response.getheader("Referrer-Policy") == "no-referrer"
+        connection.close()
+        assert callback.wait(0.1) is None
+    finally:
+        callback.close()

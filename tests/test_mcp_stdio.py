@@ -31,8 +31,11 @@ from alysis_code.runtime_kind import RuntimeKind
 _FIXTURE_SERVER = (
     Path(__file__).resolve().parent / "fixtures" / "mcp_servers" / "minimal_stdio_server.py"
 )
-_REPEAT_TRANSPORT_RACE_CASES = 8
-_REPEAT_FATAL_STDERR_CASES = 4
+# Routine CI covers every scenario once. Full-matrix, release, and default local
+# runs retain repeated race probes; only an explicit "0" opts out of stress.
+_TRANSPORT_STRESS = os.environ.get("ALYSIS_TEST_MCP_STRESS", "1") != "0"
+_REPEAT_TRANSPORT_RACE_CASES = 8 if _TRANSPORT_STRESS else 1
+_REPEAT_FATAL_STDERR_CASES = 4 if _TRANSPORT_STRESS else 1
 _DELAYED_INITIALIZED_OUTPUT_S = 0.4
 _CHAINED_FOLLOW_UP_NOTIFICATION_DELAY_S = 0.07
 _CHAINED_FOLLOW_UP_UNSUPPORTED_REQUEST_DELAY_S = 0.05

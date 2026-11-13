@@ -214,6 +214,32 @@ def _history(*, turns: int = 1) -> list[dict[str, Any]]:
     return messages
 
 
+def test_isolated_compactor_receives_historical_receipts_bound_to_the_correct_turn(tmp_path):
+    from alysis_code.memory_evidence import EVENT, delivery, source
+
+    client = _client("compat", [])
+    compactor = _compactor(tmp_path, main_client=client, compactor_client=client)
+    supplied = source("local:test", [{"id": "entry", "revision": 1, "content": "private-body"}])
+    old = delivery([supplied], "Same answer", turn_id="old")
+    selected = delivery([supplied], "Same answer", turn_id="selected")
+    compactor._store.append(EVENT, old)
+    compactor._store.append(EVENT, selected)
+    messages = [
+        {"role": "user", "content": "Question", "_memory_turn_id": "selected"},
+        {"role": "assistant", "content": "Same answer"},
+    ]
+    prepared = compactor._prepare_chunk_messages_for_compactor(messages, 10000)
+    text = json.dumps(prepared)
+    assert selected["id"] in text and old["id"] not in text
+    assert "private-body" not in text and "current_comparison" not in text
+    response = next(i for i, m in enumerate(prepared) if m["content"] == "Same answer")
+    assert selected["id"] in prepared[response - 1]["content"]
+    summary_message = compactor._memory_message(SUMMARY)
+    payload = json.loads(summary_message["content"].split("\n", 1)[1])
+    assert payload["_provenance"]["kind"] == "model_generated_historical_summary"
+    assert payload["goal"] == SUMMARY["goal"]
+
+
 def _compactor(
     tmp_path: Path,
     *,
@@ -247,7 +273,6 @@ def _compactor(
         settings=CompactionSettings(
             recent_user_turns_to_keep=1,
             max_chunk_messages=24,
-            importance_enabled=False,
             cache_aware_compaction=False,
             execution_min_removable_tokens=1,
         ),
@@ -270,7 +295,7 @@ def _prefix_request(
 ) -> Any:
     return compactor._build_prefix_compactor_request(
         working=working,
-        chunk_plan=_ChunkPlan(start=1, end=end, scored_turns=[], strategy="oldest"),
+        chunk_plan=_ChunkPlan(start=1, end=end, spans=[], strategy="oldest"),
         tool_list=copy.deepcopy(TOOLS),
         main_model="test-model",
         cache_policy=copy.deepcopy(CACHE),
@@ -380,7 +405,7 @@ def test_prefix_reuse_declines_unproven_or_oversized_request(tmp_path: Path, cha
 
     built = compactor._build_prefix_compactor_request(
         working=working,
-        chunk_plan=_ChunkPlan(start=1, end=5, scored_turns=[], strategy="oldest"),
+        chunk_plan=_ChunkPlan(start=1, end=5, spans=[], strategy="oldest"),
         tool_list=tool_list,
         main_model="test-model",
         cache_policy=cache,
@@ -600,7 +625,7 @@ def test_summary_prefix_cannot_enable_server_executed_tools(tmp_path: Path, surf
     assert (
         compactor._build_prefix_compactor_request(
             working=_history(),
-            chunk_plan=_ChunkPlan(start=1, end=5, scored_turns=[], strategy="oldest"),
+            chunk_plan=_ChunkPlan(start=1, end=5, spans=[], strategy="oldest"),
             tool_list=tool_list,
             main_model="test-model",
             cache_policy=copy.deepcopy(CACHE),
@@ -649,7 +674,7 @@ def test_responses_prefix_preserves_tools_with_none_after_final_auth_projection(
     main.chat(messages=working, tools=tools, stream=False)
     built = compactor._build_prefix_compactor_request(
         working=working,
-        chunk_plan=_ChunkPlan(start=1, end=len(working), scored_turns=[], strategy="oldest"),
+        chunk_plan=_ChunkPlan(start=1, end=len(working), spans=[], strategy="oldest"),
         tool_list=tools,
         main_model=main.model,
         cache_policy=copy.deepcopy(CACHE),
@@ -693,7 +718,7 @@ def test_unenforced_tool_choice_cannot_enable_promoted_search(tmp_path: Path) ->
     assert (
         compactor._build_prefix_compactor_request(
             working=_history(),
-            chunk_plan=_ChunkPlan(start=1, end=5, scored_turns=[], strategy="oldest"),
+            chunk_plan=_ChunkPlan(start=1, end=5, spans=[], strategy="oldest"),
             tool_list=tools,
             main_model=main.model,
             cache_policy=copy.deepcopy(CACHE),

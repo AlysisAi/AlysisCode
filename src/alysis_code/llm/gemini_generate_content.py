@@ -55,6 +55,7 @@ from .streaming import SSEFrame, iter_sse_frames, parse_sse_json_frame
 from .temperature_compat import documented_temperature_omit_reason
 from .types import (
     InputTokenCount,
+    LLMEmptyResponseError,
     LLMError,
     LLMResponse,
     LLMUsage,
@@ -2869,7 +2870,7 @@ class GeminiGenerateContentClient:
         if not text and not tool_calls:
             finish_reason = str(candidate.get("finishReason") or "").strip()
             suffix = f" (finish_reason={finish_reason})" if finish_reason else ""
-            raise LLMError(
+            raise LLMEmptyResponseError(
                 f"Gemini GenerateContent returned no assistant text or tool calls{suffix}"
             )
         parsed_response = LLMResponse(

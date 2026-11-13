@@ -27,14 +27,10 @@ class CompactionSettings:
     safety_margin_tokens: int = 512
     execution_min_removable_messages: int = 2
     execution_min_removable_tokens: int = 1024
-    importance_enabled: bool = True
-    importance_strategy: str = "lowest_density"
-    pin_score_threshold: float = 6.0
+    recent_tail_messages: int | None = None
     max_pins: int = 20
     max_pins_chars: int = 8000
     pin_snippet_chars: int = 600
-    importance_use_llm: bool = False
-    importance_llm_max_turns: int = 12
     cache_aware_compaction: bool = True
     cache_aware_min_trigger_ratio: float = 0.72
 
@@ -60,20 +56,11 @@ def _resolve_ratio(*, raw: Any, fallback: float) -> float:
     return parsed
 
 
-def _resolve_non_negative_float(*, raw: Any, fallback: float) -> float:
+def _resolve_optional_count(*, raw: Any, fallback: int | None) -> int | None:
     parsed = parse_non_negative_float(raw)
-    if parsed is None:
+    if parsed is None or not math.isfinite(parsed) or parsed != int(parsed):
         return fallback
-    if not math.isfinite(parsed):
-        return fallback
-    return parsed
-
-
-def _resolve_importance_strategy(*, raw: Any, fallback: str) -> str:
-    value = str(raw).strip().lower()
-    if value in {"oldest", "lowest_density"}:
-        return value
-    return fallback
+    return int(parsed)
 
 
 def resolve_compaction_settings(cfg: AppConfig) -> CompactionSettings:
@@ -136,17 +123,9 @@ def resolve_compaction_settings(cfg: AppConfig) -> CompactionSettings:
         raw=env_get("ALYSIS_EXECUTION_COMPACTION_MIN_REMOVABLE_TOKENS"),
         fallback=settings.execution_min_removable_tokens,
     )
-    importance_enabled = _resolve_bool(
-        raw=env_get("ALYSIS_IMPORTANCE_ENABLED"),
-        fallback=settings.importance_enabled,
-    )
-    importance_strategy = _resolve_importance_strategy(
-        raw=env_get("ALYSIS_IMPORTANCE_STRATEGY"),
-        fallback=settings.importance_strategy,
-    )
-    pin_score_threshold = _resolve_non_negative_float(
-        raw=env_get("ALYSIS_PIN_SCORE_THRESHOLD"),
-        fallback=settings.pin_score_threshold,
+    recent_tail_messages = _resolve_optional_count(
+        raw=env_get("ALYSIS_COMPACTION_RECENT_TAIL_MESSAGES"),
+        fallback=settings.recent_tail_messages,
     )
     max_pins = _resolve_positive_int(
         raw=env_get("ALYSIS_MAX_PINS"),
@@ -159,14 +138,6 @@ def resolve_compaction_settings(cfg: AppConfig) -> CompactionSettings:
     pin_snippet_chars = _resolve_positive_int(
         raw=env_get("ALYSIS_PIN_SNIPPET_CHARS"),
         fallback=settings.pin_snippet_chars,
-    )
-    importance_use_llm = _resolve_bool(
-        raw=env_get("ALYSIS_IMPORTANCE_USE_LLM"),
-        fallback=settings.importance_use_llm,
-    )
-    importance_llm_max_turns = _resolve_positive_int(
-        raw=env_get("ALYSIS_IMPORTANCE_LLM_MAX_TURNS"),
-        fallback=settings.importance_llm_max_turns,
     )
     cache_aware_compaction = _resolve_bool(
         raw=env_get("ALYSIS_CACHE_AWARE_COMPACTION"),
@@ -226,17 +197,9 @@ def resolve_compaction_settings(cfg: AppConfig) -> CompactionSettings:
             raw=raw_compaction.get("execution_min_removable_tokens"),
             fallback=execution_min_removable_tokens,
         )
-        importance_enabled = _resolve_bool(
-            raw=raw_compaction.get("importance_enabled"),
-            fallback=importance_enabled,
-        )
-        importance_strategy = _resolve_importance_strategy(
-            raw=raw_compaction.get("importance_strategy"),
-            fallback=importance_strategy,
-        )
-        pin_score_threshold = _resolve_non_negative_float(
-            raw=raw_compaction.get("pin_score_threshold"),
-            fallback=pin_score_threshold,
+        recent_tail_messages = _resolve_optional_count(
+            raw=raw_compaction.get("recent_tail_messages"),
+            fallback=recent_tail_messages,
         )
         max_pins = _resolve_positive_int(
             raw=raw_compaction.get("max_pins"),
@@ -249,14 +212,6 @@ def resolve_compaction_settings(cfg: AppConfig) -> CompactionSettings:
         pin_snippet_chars = _resolve_positive_int(
             raw=raw_compaction.get("pin_snippet_chars"),
             fallback=pin_snippet_chars,
-        )
-        importance_use_llm = _resolve_bool(
-            raw=raw_compaction.get("importance_use_llm"),
-            fallback=importance_use_llm,
-        )
-        importance_llm_max_turns = _resolve_positive_int(
-            raw=raw_compaction.get("importance_llm_max_turns"),
-            fallback=importance_llm_max_turns,
         )
         cache_aware_compaction = _resolve_bool(
             raw=raw_compaction.get("cache_aware_compaction"),
@@ -284,14 +239,10 @@ def resolve_compaction_settings(cfg: AppConfig) -> CompactionSettings:
         safety_margin_tokens=safety_margin_tokens,
         execution_min_removable_messages=execution_min_removable_messages,
         execution_min_removable_tokens=execution_min_removable_tokens,
-        importance_enabled=importance_enabled,
-        importance_strategy=importance_strategy,
-        pin_score_threshold=pin_score_threshold,
+        recent_tail_messages=recent_tail_messages,
         max_pins=max_pins,
         max_pins_chars=max_pins_chars,
         pin_snippet_chars=pin_snippet_chars,
-        importance_use_llm=importance_use_llm,
-        importance_llm_max_turns=importance_llm_max_turns,
         cache_aware_compaction=cache_aware_compaction,
         cache_aware_min_trigger_ratio=cache_aware_min_trigger_ratio,
     )

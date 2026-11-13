@@ -14,33 +14,39 @@ from alysis_code.agent.acceptance_contract import (
 
 
 @pytest.mark.parametrize("quote", ['"', "'", "`"])
-def test_quoted_path_keeps_clause_words_and_literal_spacing(quote: str) -> None:
+def test_quoted_path_is_never_split_and_keeps_its_spacing(quote: str) -> None:
     path = "out/input; and save  two.txt"
     first = f"Read {quote}{path}{quote}"
-    assert _iter_clauses([first + " and create report.txt."]) == [
+    # Passages follow layout only (line, semicolon, sentence end). A quoted path
+    # may contain those characters, and no word of any language splits a passage.
+    assert _iter_clauses([first + " and create report.txt."]) == [first + " and create report.txt."]
+    assert _iter_clauses([first + "; then create report.txt. Stop."]) == [
         first,
-        "create report.txt.",
+        "then create report.txt.",
+        "Stop.",
     ]
-    text = first + " and create report.txt."
-    assert _iter_clauses([text], split_actions=False) == [text]
 
 
-def test_protected_literal_cannot_supply_attempt_predicate() -> None:
+def test_protected_literal_is_never_split() -> None:
     literal = "attempt to read; and save  literal"
-    first = f"Discuss {literal}"
-    assert _iter_clauses([first + " and create report.txt."], protected_literals=(literal,)) == [
-        first,
-        "create report.txt.",
+    text = f"Discuss {literal} and create report.txt."
+    assert _iter_clauses([text], protected_literals=(literal,)) == [text]
+    assert _iter_clauses([text]) == [
+        "Discuss attempt to read",
+        "and save  literal and create report.txt.",
     ]
 
 
-@pytest.mark.parametrize("quote", ['"', "'", "`"])
-def test_attempt_words_in_quoted_filename_do_not_supply_predicate(quote: str) -> None:
-    first = f"Read {quote}out/attempt to read  input.txt{quote}"
-    assert _iter_clauses([first + " and create report.txt."]) == [
-        first,
-        "create report.txt.",
-    ]
+@pytest.mark.parametrize(
+    "text,passages",
+    [
+        ("Φτιάξε το a.txt. Μετά το b.txt.", ["Φτιάξε το a.txt.", "Μετά το b.txt."]),
+        ("写 a.txt。然后 b.txt", ["写 a.txt。", "然后 b.txt"]),
+        ("first line\nsecond line", ["first line", "second line"]),
+    ],
+)
+def test_passages_follow_layout_in_any_language(text: str, passages: list[str]) -> None:
+    assert _iter_clauses([text]) == passages
 
 
 @pytest.mark.parametrize("quote", ["", '"', "'", "`"])
@@ -57,16 +63,17 @@ def test_attempt_words_in_quoted_filename_do_not_supply_predicate(quote: str) ->
         ),
     ],
 )
-def test_drive_and_unc_paths_keep_input_output_roles(
+def test_drive_and_unc_paths_are_whole_mentions_without_roles(
     tmp_path: Path, quote: str, source: str, target: str
 ) -> None:
     contract = build_acceptance_contract(
         root=tmp_path,
         instruction=f"Read {quote}{source}{quote} and create {quote}{target}{quote}.",
     )
+    # Each path is one mention with its spaces; the words around it give no role.
     assert {ref.display_path: ref.role for ref in contract.path_refs} == {
-        source.replace("\\", "/"): AcceptancePathRole.EXISTING_INPUT,
-        target.replace("\\", "/"): AcceptancePathRole.REQUIRED_OUTPUT,
+        source.replace("\\", "/"): AcceptancePathRole.UNKNOWN_REFERENCE,
+        target.replace("\\", "/"): AcceptancePathRole.UNKNOWN_REFERENCE,
     }
 
 
@@ -74,17 +81,18 @@ def test_attempted_continuation_keeps_references_without_required_output(tmp_pat
     clause = "Attempt to read outside/input.txt and create outside/denied.txt"
     assert _iter_clauses([clause + "; then create report.txt."]) == [
         clause,
-        "create report.txt.",
+        "then create report.txt.",
     ]
     contract = build_acceptance_contract(
         root=tmp_path,
         instruction=clause + "; then create report.txt.",
     )
     roles = {ref.display_path: ref.role for ref in contract.path_refs}
-    assert roles["outside/input.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
-    assert roles["outside/denied.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
-    assert roles["report.txt"] == AcceptancePathRole.REQUIRED_OUTPUT
-    assert contract.allowed_output_paths == {"report.txt"}
+    assert roles == dict.fromkeys(
+        ["outside/input.txt", "outside/denied.txt", "report.txt"],
+        AcceptancePathRole.UNKNOWN_REFERENCE,
+    )
+    assert contract.allowed_output_paths == set()
 
 
 def test_git_and_shell_compatibility_exports_keep_canonical_error_objects() -> None:

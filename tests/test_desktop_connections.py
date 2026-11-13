@@ -108,6 +108,63 @@ def test_bounded_repository_metadata_rejects_credentials_or_foreign_urls():
         )
 
 
+OFFER = {
+    "plugin": "alysis.linear",
+    "name": "Linear",
+    "status": "offered",
+    "shown": True,
+    "next_step": "A Connect card is now in this chat.",
+}
+
+
+def test_the_connect_card_offer_is_a_negotiated_read(tmp_path: Path):
+    calls = []
+    tools = _build_tools(
+        tmp_path,
+        mode="readonly",
+        actions=ACTIONS,
+        handler=lambda action, args: calls.append((action, args)) or OFFER,
+    )
+    offer = {"plugin": "Linear", "reason": "To read your issues"}
+    assert tools["offer_plugin_connection"].run(offer) == OFFER
+    assert calls == [("connectors.plugins.offer", offer)]
+    older_app = _build_tools(
+        tmp_path, mode="auto", actions=("connectors.status",), handler=lambda *_: STATUS
+    )
+    assert "offer_plugin_connection" not in older_app
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {},
+        {"plugin": ""},
+        {"plugin": "x" * 81},
+        {"plugin": ["Linear"]},
+        {"plugin": "Linear", "reason": "x" * 301},
+        {"plugin": "Linear", "install": True},
+    ],
+)
+def test_the_model_can_only_name_a_plugin_to_offer(args):
+    with pytest.raises(HostActionError):
+        normalize_host_action_arguments("connectors.plugins.offer", args)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"shown": False},
+        {"status": "installed"},
+        {"status": "connected"},
+        {"token": "never"},
+        {"name": None},
+    ],
+)
+def test_a_malformed_offer_result_is_rejected(change):
+    with pytest.raises(HostActionError):
+        normalize_host_action_result("connectors.plugins.offer", {**OFFER, **change})
+
+
 def test_production_bridge_round_trip_and_untrusted_workspace(tmp_path: Path, monkeypatch):
     out, bridge, session_id, captured, results, errors = _make_bridge(
         tmp_path,

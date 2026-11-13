@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "alysis-code"
-version = "0.16.3"
+version = "0.17.0"
 description = "Open-source AI coding agent for your terminal. Bring any model, sandboxed by default."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -52,7 +52,7 @@ dependencies = [
   "ddgs>=9.0.0",
   "dulwich==1.2.19; sys_platform == 'win32'",
   "httpcore>=1.0.0,<2.0.0",
-  "httpx>=0.27.0",
+  "httpx[http2]>=0.27.0",
   "jsonschema>=4.23.0",
   "keyring>=25.0.0",
   "markdown-it-py>=4.2.0,<5.0.0",
@@ -80,6 +80,15 @@ Security = "https://github.com/AlysisAi/AlysisCode/blob/main/.github/SECURITY.md
 Source = "https://github.com/AlysisAi/AlysisCode"
 
 [project.optional-dependencies]
+azure-host = [
+  "azure-identity>=1.25,<2",
+]
+shared-database = [
+  "psycopg[binary,pool]>=3.2,<4",
+]
+cloud-storage = [
+  "azure-storage-blob>=12.25.1,<13",
+]
 documents = [
   "reportlab==4.4.9",
   "pypdfium2==5.13.0",
@@ -151,6 +160,8 @@ markers = [
 ]
 
 [tool.ruff]
+# Historical live-evaluation input: preserve its exact bytes and known defects.
+extend-exclude = ["scripts/qa/fixtures/bots_coding_context"]
 line-length = 100
 target-version = "py311"
 

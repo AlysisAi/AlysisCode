@@ -19,6 +19,8 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 
 def _scope_for_new_test(state: TurnExecutionState, root: Path) -> None:
     state.blast_radius_scope = select_blast_radius_scope(
@@ -108,7 +110,12 @@ def test_first_edit_advisory_uses_observed_unittest_and_honest_created_file_cove
     (tmp_path / "tests/test_smoke.py").write_text("import app\n")
     command = "python3 -m unittest discover -s tests -v"
     session = create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only", verify_commands=[command]),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            verify_commands=[command],
+            extra_fields={"shell_sandbox": {"mode": "off"}},
+        ),
         root=tmp_path,
         mode="fullaccess",
         yes=True,

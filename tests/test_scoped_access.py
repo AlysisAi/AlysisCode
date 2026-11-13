@@ -4,6 +4,7 @@ import io
 import json
 import os
 import socket
+import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -95,6 +96,30 @@ def test_grant_is_exact_reviewed_temporary_and_strict(access):
     assert json.loads(requests[0].preview)["lan_ingress"] is False
     assert events[0][0] == "sandbox_access_granted"
     assert manager.prepare(None, command="next", tool="shell_run").settings is baseline
+
+
+def test_a_folder_let_written_for_one_command_is_not_made_a_project(access, tmp_path):
+    """Names are reserved in projects. In the person's "Reports" folder they broke copies and zips."""
+    manager, extra, _, _ = access
+    grant = manager.prepare({"write_folders": [str(extra)]}, command="copy", tool="shell_run")
+    assert grant.settings.additional_workspace_roots == (str(extra),)
+    assert grant.settings.windows_plain_write_roots == (str(extra),)
+    assert not manager.settings.windows_plain_write_roots
+    # A folder that is attached to the session is a project and stays one.
+    attached = ScopedAccess(
+        root=manager.root,
+        settings=replace(manager.settings, additional_workspace_roots=(str(extra),)),
+        enabled=True,
+        policy=HostFilePolicy((), ()),
+        approve=lambda req: ApprovalDecision(True),
+        record=lambda *event: None,
+    )
+    other = tmp_path / "other"
+    other.mkdir()
+    grant = attached.prepare(
+        {"write_folders": [str(extra), str(other)]}, command="copy", tool="shell_run"
+    )
+    assert grant.settings.windows_plain_write_roots == (str(other),)
 
 
 @pytest.mark.parametrize(
@@ -257,6 +282,158 @@ def test_turn_grant_rechecks_folder_identity(access):
     with pytest.raises(ConfigError, match="changed"):
         manager.prepare(None, command="second", tool="shell_run")
     assert manager.prepare(None, command="third", tool="shell_run").settings is manager.settings
+
+
+def _turn_store(manager, extra):
+    store = SessionStore(
+        enabled=False,
+        sessions_dir=extra,
+        session_id="turn",
+        cwd=str(manager.root),
+        repo_root=str(manager.root),
+    )
+    manager.events_since = store.events_since
+    store.append("user_message", {"content": "Summarize these assets"})
+    return store
+
+
+@pytest.mark.parametrize("backend", ["windows-mxc", "seatbelt"])
+def test_file_tools_ask_once_per_turn_to_read_an_external_folder(access, monkeypatch, backend):
+    manager, extra, requests, events = access
+    monkeypatch.setattr(
+        "alysis_code.sandbox_runner.select_shell_sandbox_backend",
+        lambda _: SimpleNamespace(backend=backend),
+    )
+    manager.settings = replace(manager.settings, backend=backend)
+    store = _turn_store(manager, extra)
+    rechecked = []
+    manager.validate_reuse = lambda request: rechecked.append(request)
+    first = manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    assert first.path == str(extra) and len(requests) == 1
+    # Whoever decides is told the real duration and its limits.
+    assert requests[0].metadata["access"] == "read"
+    assert "file-tool reads until the next user message" in requests[0].reason
+    scope = json.loads(requests[0].preview)["scope"]
+    assert "until the next user message" in scope and "commands and writes get no access" in scope
+    assert events[0][1]["scope"] == scope
+    # Other files and listings under the approved folder are not asked again;
+    # explicit ask/deny rules are still rechecked for each of them.
+    assert manager.external_file_root("fs_read", {"path": str(extra / "b.txt")}) == first
+    assert manager.external_file_root("fs_list", {"root_path": str(extra)}) == first
+    assert len(requests) == 1 and len(rechecked) == 2
+    assert rechecked[0].metadata == {"access": "read"} and rechecked[0].files == [str(extra)]
+    # Commands inherit nothing from a remembered file read.
+    assert manager.prepare(None, command="cat a.txt", tool="shell_run").settings is manager.settings
+    # Reading never admits a write to the same folder, and a write is one operation.
+    manager.external_file_root("fs_write", {"path": str(extra / "out.txt"), "content": "x"})
+    assert len(requests) == 2 and requests[1].metadata["access"] == "write"
+    assert "this operation" in requests[1].reason
+    assert json.loads(requests[1].preview)["write_folders"] == [str(extra)]
+    manager.external_file_root("fs_write", {"path": str(extra / "out.txt"), "content": "y"})
+    assert len(requests) == 3
+    # The next user message ends it.
+    store.append("user_message", {"content": "Next task"})
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    assert len(requests) == 4
+
+
+def test_a_second_external_folder_is_still_reviewed(access, tmp_path):
+    manager, extra, requests, _ = access
+    _turn_store(manager, extra)
+    other = tmp_path / "other"
+    other.mkdir()
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    manager.external_file_root("fs_read", {"path": str(other / "b.txt")})
+    assert len(requests) == 2
+    assert json.loads(requests[1].preview)["read_folders"] == [str(other)]
+    manager.external_file_root("fs_read", {"path": str(extra / "c.txt")})
+    manager.external_file_root("fs_read", {"path": str(other / "d.txt")})
+    assert len(requests) == 2
+
+
+def test_parent_of_an_approved_folder_is_still_reviewed(access):
+    manager, extra, requests, _ = access
+    _turn_store(manager, extra)
+    nested = extra / "nested"
+    nested.mkdir()
+    manager.external_file_root("fs_read", {"path": str(nested / "a.txt")})
+    manager.external_file_root("fs_read", {"path": str(nested / "deeper.txt")})
+    assert len(requests) == 1
+    manager.external_file_root("fs_read", {"path": str(extra / "sibling.txt")})
+    assert len(requests) == 2 and json.loads(requests[1].preview)["read_folders"] == [str(extra)]
+
+
+def test_file_reads_are_asked_each_time_without_a_turn_boundary(access):
+    manager, extra, requests, _ = access
+    assert manager.events_since is None
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    manager.external_file_root("fs_read", {"path": str(extra / "b.txt")})
+    assert len(requests) == 2
+    assert all("this operation" in request.reason for request in requests)
+
+
+def test_declined_file_read_is_not_remembered(access):
+    manager, extra, requests, events = access
+    _turn_store(manager, extra)
+    manager.approve = lambda req: requests.append(req) or ApprovalDecision(False)
+    for _ in range(2):
+        with pytest.raises(ApprovalDeclinedError):
+            manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    assert len(requests) == 2 and not events
+
+
+def test_replaced_folder_is_reviewed_again(access):
+    manager, extra, requests, _ = access
+    _turn_store(manager, extra)
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    extra.rename(extra.with_name("old-assets"))
+    extra.mkdir()
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    assert len(requests) == 2
+
+
+def test_remembered_file_read_still_obeys_permission_rules(access):
+    manager, extra, requests, _ = access
+    _turn_store(manager, extra)
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+
+    def refuse(_):
+        raise ApprovalDeclinedError("sandbox_access")
+
+    manager.validate_reuse = refuse
+    with pytest.raises(ApprovalDeclinedError):
+        manager.external_file_root("fs_read", {"path": str(extra / "b.txt")})
+    assert len(requests) == 1
+
+
+def test_revoking_permissions_forgets_remembered_file_reads(access):
+    manager, extra, requests, _ = access
+    _turn_store(manager, extra)
+    manager.access_store = SimpleNamespace(
+        save=lambda *a: None, load=lambda *a: None, profiles=lambda: {}
+    )
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    manager.manage({"action": "revoke"})
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "proposal", [{"write_folders": "same"}, {"network": True}, {"scope": "turn"}, {}]
+)
+def test_only_plain_read_folders_can_be_remembered(access, proposal):
+    manager, extra, requests, _ = access
+    _turn_store(manager, extra)
+    if proposal.get("write_folders") == "same":
+        proposal = {"write_folders": [str(extra)]}
+    with pytest.raises(ConfigError, match="Remembered file reads"):
+        manager.prepare(
+            {"read_folders": [str(extra)], **proposal} if proposal else {"network": True},
+            command="fs_read {}",
+            tool="fs_read",
+            file_reads_for_turn=True,
+        )
+    assert not requests
 
 
 def test_failed_grant_record_cannot_leave_turn_permissions(access):
@@ -539,6 +716,70 @@ def test_scope_uses_real_reviewer_without_human_prompt(access, decision):
     assert not surface.requests and len(client.calls) == 1
 
 
+def test_reviewer_is_asked_once_per_turn_for_reads_under_one_folder(access):
+    manager, extra, _, _ = access
+    allow = {"decision": "allow", "risk": "low", "reason": "The user asked for these files."}
+    reviewer, client, store = _reviewer(
+        manager.root, [allow, allow], user_message=f"Summarize the notes in {extra}"
+    )
+    manager.events_since = store.events_since
+    surface = _Surface(allow=False)
+    manager.approve = lambda req: decide_action_approval(
+        req, mode="auto", root=manager.root, surface=surface, can_ask_person=True, reviewer=reviewer
+    )
+    for name in ("a.txt", "b.txt", "c.txt"):
+        manager.external_file_root("fs_read", {"path": str(extra / name)})
+    assert len(client.calls) == 1 and not surface.requests
+    # The reviewed request states the duration it was approved for.
+    assert "file-tool reads until the next user message" in str(client.calls[0])
+    store.append("user_message", {"content": "Thanks. Now check the project only."})
+    manager.external_file_root("fs_read", {"path": str(extra / "a.txt")})
+    assert len(client.calls) == 2 and not surface.requests
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS tool assembly")
+def test_macos_file_tool_reads_one_review_per_turn_through_tool_assembly(access, monkeypatch):
+    manager, extra, _, _ = access
+    monkeypatch.setattr(
+        "alysis_code.sandbox_runner.select_shell_sandbox_backend",
+        lambda _: SimpleNamespace(backend="seatbelt"),
+    )
+    monkeypatch.setattr(
+        "alysis_code.contained_read_tools.ContainedReadTools.for_settings", lambda *a: None
+    )
+    allow = {"decision": "allow", "risk": "low", "reason": "The user asked for these files."}
+    reviewer, client, store = _reviewer(
+        manager.root, [allow, allow], user_message=f"Compare the two reports in {extra}"
+    )
+    surface = _Surface(allow=False)
+    tools = build_tools(
+        root=manager.root,
+        console=Console(file=io.StringIO()),
+        surface=surface,
+        store=store,
+        mode="auto",
+        yes=False,
+        shell_runner=HostShellRunner(),
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+        approval_reviewer=reviewer,
+        verification_enabled=False,
+    )
+    (extra / "first.txt").write_text("first report\n")
+    (extra / "second.txt").write_text("second report\n")
+    assert "first report" in str(tools["fs_read"].run({"path": str(extra / "first.txt")}))
+    assert "second report" in str(tools["fs_read"].run({"path": str(extra / "second.txt")}))
+    assert len(client.calls) == 1 and not surface.requests
+    granted = [
+        e["payload"] for e in store.events_snapshot() if e["type"] == "sandbox_access_granted"
+    ]
+    assert len(granted) == 1 and granted[0]["read_folders"] == [str(extra)]
+    assert "until the next user message" in granted[0]["scope"]
+    assert "commands and writes get no access" in granted[0]["scope"]
+    store.append("user_message", {"content": "Read the first one again."})
+    assert "first report" in str(tools["fs_read"].run({"path": str(extra / "first.txt")}))
+    assert len(client.calls) == 2 and not surface.requests
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Native Windows tool assembly")
 def test_shell_scoped_runner_never_changes_following_command(access, monkeypatch):
     manager, extra, _, _ = access
@@ -575,6 +816,12 @@ def test_shell_scoped_runner_never_changes_following_command(access, monkeypatch
     assert permissions["scope"]["enum"] == ["operation", "turn", "session"]
     assert "profile" in permissions and "save_as" in permissions
     assert "network_domains" not in permissions and "unix_sockets" not in permissions
+    # A commit needs none; what decides which programs a later Git runs does.
+    assert "configuration, hooks, a rebase" in permissions["git_metadata"]["description"]
+    assert "Windows: for one literal Git command" in permissions["git_metadata"]["description"]
+    # Only shell_run sends a Git command to the Git job.
+    background = tools["shell_background"].parameters["properties"]["permissions"]["properties"]
+    assert "git_metadata" not in background and "network" in background
     assert "sandbox_permissions" in tools
     assert tools["sandbox_permissions"].run({"action": "list"}) == {"session": None, "profiles": {}}
     tools["shell_run"].run({"cmd": "echo scoped", "permissions": {"network": True}})
@@ -722,3 +969,17 @@ def test_missing_write_folder_requires_existing_parent(access):
             tool="shell_run",
         )
     assert not requests
+
+
+def test_each_system_describes_the_git_permission_for_itself():
+    """The text is part of every request, and macOS shows it on two tools."""
+    from alysis_code.agent.scoped_access import PERMISSIONS_SCHEMA, git_metadata_description
+
+    windows, macos = git_metadata_description("win32"), git_metadata_description("darwin")
+    assert "Windows: for one literal Git command" in windows and "macOS" not in windows
+    assert "configuration, hooks, a rebase" in windows
+    assert "Windows" not in macos and "hooks" in macos and "A person approves" in macos
+    assert len(macos) < len(windows)
+    # Anywhere else the schema's own text, which names both systems.
+    both = PERMISSIONS_SCHEMA["properties"]["git_metadata"]["description"]
+    assert git_metadata_description("linux") == both and "macOS:" in both and "Windows:" in both

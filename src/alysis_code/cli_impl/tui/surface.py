@@ -133,7 +133,6 @@ class TuiSurface:
         on_subagent_activities: Callable[[tuple[str, ...]], None] | None = None,
         on_subagent_run_started: Callable[[SubagentStartEvent], None] | None = None,
         before_visible_output: Callable[[], None] | None = None,
-        on_steer_messages_restored: Callable[[list[str]], None] | None = None,
     ) -> None:
         self._t = transcript
         self.user_questions = UserQuestionBroker(
@@ -187,7 +186,6 @@ class TuiSurface:
         self._on_subagent_activities = on_subagent_activities
         self._on_subagent_run_started = on_subagent_run_started
         self._before_visible_output = before_visible_output
-        self._on_steer_messages_restored = on_steer_messages_restored
         self._subagent_stack: list[tuple[int, str, str, str]] = []
         self._subagent_activity: dict[str, str] = {}
 
@@ -250,19 +248,6 @@ class TuiSurface:
             return
         try:
             callback()
-        except Exception:
-            pass
-
-    def on_steer_messages_restored(self, messages: list[str]) -> None:
-        """Reconcile TUI metadata when the core rolls drained steers back."""
-
-        if _worker_cancelled():
-            return
-        callback = self._on_steer_messages_restored
-        if callback is None:
-            return
-        try:
-            callback(list(messages))
         except Exception:
             pass
 

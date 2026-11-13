@@ -65,7 +65,7 @@ def test_terra_remains_catalog_gated_and_exposes_the_verified_reasoning_contract
     meta = ModelRegistry(cfg=config()).get("gpt-6.1-terra")
     assert meta.context_window_tokens == 1_050_000
     assert meta.max_output_tokens == 128_000
-    assert meta.supports_vision is False
+    assert meta.supports_vision is True
 
 
 @pytest.mark.parametrize("stream", [False, True])

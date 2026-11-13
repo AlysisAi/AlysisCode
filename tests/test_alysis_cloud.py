@@ -60,6 +60,9 @@ def test_default_login_reaches_the_device_flow(monkeypatch, tmp_path):
         return {"status": "approved", "key": "slk_synthetic-onboarding"}
 
     monkeypatch.setattr(account_login, "_post_json", post)
+    # Where a browser can hand the key back, sign-in goes through /connect instead
+    # (tests/test_account_login.py); this checks the code flow every other computer uses.
+    monkeypatch.setattr(account_login, "_browser_sign_in_possible", lambda: False)
     result = account_login.login(AppConfig(), browser_opener=lambda url: opened.append(url) or True)
     assert calls == [cloud.device_code_url(), cloud.device_token_url()]
     assert opened == [f"{cloud.activate_url()}?code=TEST-CODE"]

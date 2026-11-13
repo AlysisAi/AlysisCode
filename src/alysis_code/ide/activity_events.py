@@ -108,6 +108,9 @@ class ActivityEvent:
     patch: str | None = None
     patch_truncated: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # "model" when display_title is the model's own words for the step, written for the person in
+    # the conversation's language; hosts show those as written and name other steps themselves.
+    title_source: str = "host"
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -127,6 +130,8 @@ class ActivityEvent:
             "patch_truncated": bool(self.patch_truncated),
             "metadata": sanitize_activity_metadata(self.metadata),
         }
+        if self.title_source == "model":
+            payload["title_source"] = "model"
         return redact_secrets(payload)
 
 
@@ -203,6 +208,17 @@ _TOOL_SEMANTICS: dict[str, ToolSemantic] = {
     "artifact_check": ToolSemantic("test", "check_artifact", "Check file", ("path",)),
     "asset_view": ToolSemantic("read", "view_asset", "Inspect image or video", ("path",)),
     "tool_search": ToolSemantic("search", "discover_tools", "Search connected tools", ("query",)),
+    "suggest_next_steps": ToolSemantic("plan", "suggest_next_steps", "Suggest next steps"),
+    # The desktop connection tools (desktop_connections.CONNECTION_TOOLS).
+    "connection_status": ToolSemantic(
+        "plan", "check_account_connection", "Check account connection", ("connector",)
+    ),
+    "github_repositories": ToolSemantic(
+        "read", "list_github_repositories", "List GitHub repositories"
+    ),
+    "offer_plugin_connection": ToolSemantic(
+        "plan", "offer_plugin_connection", "Show Connect card", ("plugin",)
+    ),
 }
 
 # These are the document tool's declared API actions, not guesses from filenames
@@ -284,11 +300,17 @@ def tool_activity(
         if isinstance(action, str):
             semantic = _DOCUMENT_ACTION_SEMANTICS.get(action, semantic)
     target = _target_from_arguments(safe_arguments, semantic.target_fields)
+    # Command tools accept the model's own few words for the step, written for the person in the
+    # conversation's language; the generic title remains the fallback.
+    described = (
+        _step_description(safe_arguments) if public_name in _DESCRIBED_COMMAND_TOOLS else None
+    )
     return ActivityEvent(
         activity_id=call_id,
         kind=semantic.kind,
         operation=semantic.operation,
-        display_title=semantic.display_title,
+        display_title=described or semantic.display_title,
+        title_source="model" if described else "host",
         status=safe_status,
         target=target,
         summary=summary,
@@ -415,6 +437,17 @@ def _files_target(files: tuple[str, ...]) -> str | None:
     if len(files) == 1:
         return files[0]
     return f"{files[0]} and {len(files) - 1} more"
+
+
+_DESCRIBED_COMMAND_TOOLS = frozenset({"shell_run", "shell_background"})
+
+
+def _step_description(arguments: Mapping[str, Any]) -> str | None:
+    value = arguments.get("description")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    title = _safe_title(" ".join(value.split()))
+    return None if title == "Developer activity" else title
 
 
 def _safe_title(value: str) -> str:

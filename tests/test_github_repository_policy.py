@@ -167,6 +167,37 @@ def test_forbidden_target_fails_before_target_id_exists():
         )
 
 
+@pytest.mark.parametrize("owner,repo", [("Acme", "Allowed"), ("ACME", "ALLOWED")])
+def test_explicit_target_uses_case_insensitive_github_identity(owner, repo):
+    bound = policy.RepositoryPolicy.parse(payload())
+    assert bound.target(dict(scope="repository", owner=owner, repo=repo)) == ("acme", "allowed")
+
+
+@pytest.mark.parametrize(
+    "owner,repo",
+    [
+        ("Acme", "Forbidden"),
+        (" Acme", "Allowed"),
+        ("Acme", "Allowed/"),
+        ("ACME", "\u212a"),
+        (7, "allowed"),
+    ],
+)
+def test_target_normalization_does_not_expand_repository_access(owner, repo):
+    value = payload()
+    value["repositories"].append(dict(owner="acme", repo="k"))
+    bound = policy.RepositoryPolicy.parse(value)
+    with pytest.raises(HostActionError):
+        bound.target(dict(scope="repository", owner=owner, repo=repo))
+
+
+def test_private_policy_repository_names_remain_canonical():
+    with pytest.raises(HostActionError):
+        policy.RepositoryPolicy.parse(
+            {**payload(), "repositories": [dict(owner="Acme", repo="Allowed")]}
+        )
+
+
 @pytest.mark.parametrize(
     "raw",
     [

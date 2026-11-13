@@ -54,6 +54,64 @@ def test_windows_sandbox_discloses_windows_powershell_without_starting_helper(
     assert "successful helper validation" in line
 
 
+def test_windows_sandbox_line_states_what_a_command_meets_there() -> None:
+    """Facts the model otherwise learns one failed command at a time."""
+    line = prompt_context._shell_execution_context_line(_config(backend="windows-mxc"), mode="auto")
+    for fact in (
+        "Windows PowerShell 5.1: && and || do not exist",
+        "line 2 is the first line of your command",
+        "Git Bash, sh and WSL do not start in this sandbox",
+        "Programs on the user's PATH are available, with what they keep in the user's home",
+        "those are the user's real folders, readable and never writable",
+        "browser and chat-app profiles and the user's own local application data are not",
+        "request permissions.read_folders for that folder",
+        "LOCALAPPDATA and TEMP are private scratch",
+        "request permissions.write_folders for that one folder",
+        "cargo cannot resolve host names with permissions.network alone",
+        "Not reachable from the sandbox: the clipboard, other programs through COM",
+        "[System.IO.DriveInfo] does",
+        "Without permissions.local_preview every connection to 127.0.0.1 is refused",
+        "AGENTS.md, CLAUDE.md, CONVENTIONS.md, .git,",
+        "do not edit or delete it",
+    ):
+        assert fact in line
+    assert line.endswith("Backend startup still requires successful helper validation.")
+
+
+def test_windows_sandbox_line_names_only_what_is_reserved() -> None:
+    """``.github/skills`` is reserved; ``.github`` holds the person's workflows."""
+    line = prompt_context._shell_execution_context_line(_config(backend="windows-mxc"), mode="auto")
+    reserved = line.split("reserves these paths in the project folder: ")[1].split(". ")[0]
+    assert reserved.split(", ") == [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CONVENTIONS.md",
+        ".git",
+        ".alysis",
+        ".sylliptor",
+        ".codex",
+        ".claude",
+        ".agents",
+        ".alysis_skills",
+        ".github/skills",
+    ]
+    assert "an empty folder above a nested one" in line
+    # They go again when the last background command in the project stops.
+    assert "for as long as a background command runs" in line
+    assert "stay after a background command" not in line
+
+
+def test_legacy_windows_helper_line_is_unchanged() -> None:
+    line = prompt_context._shell_execution_context_line(
+        _config(backend="windows-native"), mode="auto"
+    )
+    assert line == (
+        "shell_run: backend=windows-native; shell=Windows PowerShell (powershell.exe, "
+        "not pwsh); use Windows PowerShell syntax, not cmd.exe or POSIX shell syntax. "
+        "Backend startup still requires successful helper validation."
+    )
+
+
 @pytest.mark.parametrize("comspec", [None, r"C:\Windows\System32\cmd.exe"])
 def test_windows_host_discloses_cmd_not_the_users_interactive_shell(
     comspec: str | None, monkeypatch: pytest.MonkeyPatch

@@ -884,6 +884,7 @@ def test_production_factory_runs_real_executor_pytest_git_and_sealed_host_lifecy
         return client
 
     monkeypatch.setattr(agent_session_mod, "make_llm_client", scripted_client_factory)
+    forge_impl.build_host_task_executor(cli_mod)
     real_run_agent = forge_impl.run_agent
     agent_calls: list[dict[str, object]] = []
 

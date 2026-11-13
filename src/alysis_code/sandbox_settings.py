@@ -30,6 +30,11 @@ class ShellSandboxSettings:
     network: str = "off"
     filesystem_access: str = "workspace-write"
     windows_read_roots: tuple[str, ...] = ()
+    # Folders on Windows that a command was let write for one operation
+    # (permissions.write_folders). They are also in additional_workspace_roots,
+    # which makes them writable, but they are not projects: no names are
+    # reserved in them. Never loaded from project configuration.
+    windows_plain_write_roots: tuple[str, ...] = ()
     # Shell discovery is metadata-only. Fixed contained file workers need only
     # their explicit roots, including runtime paths beside private app state.
     windows_directory_discovery: bool = True

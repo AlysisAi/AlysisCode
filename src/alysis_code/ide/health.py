@@ -21,7 +21,7 @@ from ..host_actions import (
     HOST_ACTION_PROTOCOL_VERSION,
     HOST_ACTIONS,
 )
-from ..mcp.connector_host import VERIFIED_CONNECTOR_PLUGIN_IDS
+from ..mcp.connector_host import MAX_CONNECTOR_PLUGINS, VERIFIED_CONNECTOR_PLUGIN_IDS
 from ..surface.events import EVENT_REGISTRY
 from .activity_events import activity_capabilities
 from .approval_binding import (
@@ -188,8 +188,11 @@ SUPPORTED_METHODS = (
     "profile.show",
     "profile.add",
     "provider.auth.status",
+    "provider.auth.reasoning",
+    "provider.auth.selectModel",
     "profile.remove",
     "profile.use",
+    "profile.selectModel",
     "profile.rename",
     "profile.presets",
     "profile.preset",
@@ -319,6 +322,7 @@ def capabilities_payload() -> dict[str, Any]:
                 "opt_in": "session.create.user_questions",
                 "sensitive_sessions": False,
             },
+            "next_steps": {"version": 1, "opt_in": "session.create.next_steps"},
             "desktop_session_controls": {
                 "version": 1,
                 "persistent_compaction": True,
@@ -327,6 +331,8 @@ def capabilities_payload() -> dict[str, Any]:
             },
             "desktop_connections": {"version": 1, "read_only": True},
             "host_mcp_instructions": {"version": 1},
+            # session.create accepts task_output_directory (see _task_output_directory_param).
+            "session_task_output_directory": {"version": 1},
             "github_host_actions": {
                 "version": 1,
                 "actions": [action for action in HOST_ACTIONS if action.startswith("github.")],
@@ -350,7 +356,7 @@ def capabilities_payload() -> dict[str, Any]:
                 "session_param": "connector_mcp",
                 "credential_authority": "host",
                 "management_method": "ext.custom.save",
-                "max_plugins": 16,
+                "max_plugins": MAX_CONNECTOR_PLUGINS,
                 # Alysis-reviewed vendor plugins bound through the same channel.
                 "verified_plugins": list(VERIFIED_CONNECTOR_PLUGIN_IDS),
             },

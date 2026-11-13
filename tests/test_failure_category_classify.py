@@ -2,8 +2,8 @@
 
 These lock the observability-spine contract: an arbitrary exception is mapped onto
 exactly one real :class:`FailureCategory` (never the old ``"llm_error"`` literal), so
-the diagnostic vocabulary joins across the chat/run path, Forge workers, and delegated
-agents. A readable-but-permanent provider status (auth / bad-request / model) is
+the diagnostic vocabulary joins across the chat/run path and Forge workers.
+A readable-but-permanent provider status (auth / bad-request / model) is
 reported as ``PROVIDER_ERROR`` and kept distinct from transient outages and from
 genuine agent-implementation failures.
 """

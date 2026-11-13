@@ -47,6 +47,7 @@ from .metadata import (
     merge_canonical_headers,
     stamp_response_for_route,
 )
+from .output_limit import anthropic_reply_hit_output_limit, finished_text_blocks
 from .protocols import reasoning_trace_callback
 from .provider_limits import (
     DEFAULT_PROVIDER_CONCURRENCY_CAPS,
@@ -61,7 +62,9 @@ from .streaming import SSEFrame, iter_sse_frames, parse_sse_json_frame
 from .temperature_compat import documented_temperature_omit_reason
 from .types import (
     InputTokenCount,
+    LLMEmptyResponseError,
     LLMError,
+    LLMOutputLimitError,
     LLMResponse,
     LLMUsage,
     ReasoningOutput,
@@ -1262,6 +1265,18 @@ def _anthropic_provider_metadata(data: dict[str, Any]) -> dict[str, Any] | None:
     return {_ANTHROPIC_METADATA_KEY: metadata} if metadata else None
 
 
+def _unusable_interrupted_reply(data: Any, *, text: str, has_tool_calls: bool) -> bool:
+    """A reply the output limit cut off that used to be an error: a tool input that never
+    parsed, or nothing finished at all."""
+    if not anthropic_reply_hit_output_limit(data):
+        return False
+    stream_metadata = data.get("stream_metadata")
+    unparsed = isinstance(stream_metadata, Mapping) and bool(
+        stream_metadata.get("unparsed_tool_inputs")
+    )
+    return unparsed or (not text and not has_tool_calls)
+
+
 def _response_from_json(data: dict[str, Any]) -> httpx.Response:
     return httpx.Response(200, json=data)
 
@@ -1291,6 +1306,9 @@ class _AnthropicStreamAccumulator:
         }
         self.content_blocks: dict[int, dict[str, Any]] = {}
         self.input_json_chunks: dict[int, list[str]] = {}
+        # Tool inputs whose JSON did not parse. Whether that is an error depends on why the
+        # message stopped, which is known only at the end of the stream.
+        self.unparsed_tool_inputs: dict[int, str] = {}
         self.usage: dict[str, Any] = {}
         self.unknown_events: list[dict[str, Any]] = []
         self.event_count = 0
@@ -1430,10 +1448,11 @@ class _AnthropicStreamAccumulator:
             checked = github_policy_arguments(joined, str(block.get("name") or ""))
             parsed = checked if checked is not None else json.loads(joined)
         except json.JSONDecodeError as exc:
-            raise LLMError(
-                "Anthropic Messages stream emitted malformed tool input JSON "
-                f"for content block {index}: {exc.msg}"
-            ) from exc
+            # A reply cut off by the output limit ends in the middle of its arguments.
+            block["input"] = {}
+            self.unparsed_tool_inputs[index] = exc.msg
+            return
+        self.unparsed_tool_inputs.pop(index, None)
         block["input"] = parsed if isinstance(parsed, dict) else {"_raw_arguments": parsed}
 
     def _handle_message_delta(self, data: dict[str, Any]) -> None:
@@ -1453,6 +1472,12 @@ class _AnthropicStreamAccumulator:
             raise LLMError("Anthropic Messages stream ended before message_stop")
         for index in tuple(self.input_json_chunks):
             self._handle_content_block_stop({"index": index})
+        if self.unparsed_tool_inputs and not anthropic_reply_hit_output_limit(self.message):
+            index, message = min(self.unparsed_tool_inputs.items())
+            raise LLMError(
+                "Anthropic Messages stream emitted malformed tool input JSON "
+                f"for content block {index}: {message}"
+            )
         content = [
             self._public_content_block(block)
             for _index, block in sorted(self.content_blocks.items(), key=lambda item: item[0])
@@ -1461,6 +1486,8 @@ class _AnthropicStreamAccumulator:
         if self.usage:
             self.message["usage"] = copy.deepcopy(self.usage)
         stream_metadata: dict[str, Any] = {"events": self.event_count}
+        if self.unparsed_tool_inputs:
+            stream_metadata["unparsed_tool_inputs"] = sorted(self.unparsed_tool_inputs)
         if self.unknown_events:
             stream_metadata["unknown_events"] = copy.deepcopy(self.unknown_events)
         self.message["stream_metadata"] = stream_metadata
@@ -2396,7 +2423,7 @@ class AnthropicMessagesClient:
                 active_request_plan_metadata,
             )
 
-        return stamp_response_for_route(
+        result = stamp_response_for_route(
             telemetry.run(
                 lambda: run_provider_limited_call(
                     call=_send_request,
@@ -2418,6 +2445,14 @@ class AnthropicMessagesClient:
             ),
             self.route_identity,
         )
+        if _unusable_interrupted_reply(
+            result.raw, text=result.content, has_tool_calls=bool(result.tool_calls)
+        ):
+            # Raised after normalization, accounting and route stamping, and outside transport
+            # retries, as the Responses client does. Callers that catch LLMError see the error
+            # they saw before; the agent turn recovers from it.
+            raise LLMOutputLimitError(result)
+        return result
 
     @staticmethod
     def _parse_stream_response(
@@ -2480,9 +2515,17 @@ class AnthropicMessagesClient:
 
         text = _text_from_content_blocks(content)
         tool_calls = _parse_tool_calls(content)
-        if not text and not tool_calls:
+        if _unusable_interrupted_reply(data, text=text, has_tool_calls=bool(tool_calls)):
+            # Still reported as an error (chat() raises LLMOutputLimitError), now carrying only
+            # what may be kept: the finished text.
+            data = {**data, "content": finished_text_blocks(content)}
+            text = _text_from_content_blocks(data["content"])
+            tool_calls = []
+        elif not text and not tool_calls:
             suffix = f" (stop_reason={stop_reason})" if stop_reason else ""
-            raise LLMError(f"Anthropic Messages returned no assistant text or tool calls{suffix}")
+            raise LLMEmptyResponseError(
+                f"Anthropic Messages returned no assistant text or tool calls{suffix}"
+            )
 
         summaries = _thinking_summaries_from_content_blocks(content) if reasoning_is_summary else []
         if on_reasoning_delta is not None:

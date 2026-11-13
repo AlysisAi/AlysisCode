@@ -150,7 +150,9 @@ class ContainedReadTools:
                 "No qualified contained file worker is available; no host fallback was used"
             )
         if choice.backend in {"windows-mxc", "windows-native"}:
-            command = "& " + " ".join("'" + item.replace("'", "''") + "'" for item in argv)
+            from .windows_sandbox import powershell_literal
+
+            command = "& " + " ".join("'" + powershell_literal(item) + "'" for item in argv)
             command += "; exit $LASTEXITCODE"
         else:
             command = shlex.join(argv)

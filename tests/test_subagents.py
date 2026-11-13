@@ -1704,6 +1704,8 @@ def test_child_provider_retry_is_recorded_live_without_request_content(
                 "attempt": 2,
                 "reason": "provider_unavailable",
                 "elapsed_ms": retry_events[0]["elapsed_ms"],
+                "delay_ms": 2000,
+                "failure_phase": "provider_request",
             }
         ]
         assert retry_events[0]["elapsed_ms"] >= 0
@@ -1996,6 +1998,7 @@ def test_runtime_search_rg_repetition_wakes_parent_and_changed_pattern_resets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     (fixture_dir / "sample.txt").write_text(
@@ -2100,6 +2103,7 @@ def test_runtime_search_rg_alternation_nudges_child_and_wakes_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     inbox = SteerInbox()
@@ -2206,6 +2210,7 @@ def test_runtime_search_rg_changed_result_does_not_signal_repetition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     fixture_file = fixture_dir / "sample.txt"
@@ -5942,6 +5947,7 @@ def test_subagent_live_tool_events_are_forwarded_to_parent_surface(
     assert parent_surface.subagent_ends[0].steps_completed == 1
 
 
+@pytest.mark.usefixtures("approved_local_checks")
 def test_subagent_runtime_shell_mutations_are_reported_to_the_child_turn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5972,7 +5978,7 @@ def test_subagent_runtime_shell_mutations_are_reported_to_the_child_turn(
         store=_RecordingStore(),  # type: ignore[arg-type]
         mode="auto",
         yes=True,
-        cfg=AppConfig(model="test-model"),
+        cfg=AppConfig(model="test-model", extra_fields={"shell_sandbox": {"mode": "off"}}),
         api_key="test-key",
         subagent_depth=1,
         runtime_kind=RuntimeKind.SUBAGENT,

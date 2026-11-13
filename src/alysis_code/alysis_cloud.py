@@ -1,7 +1,9 @@
 """Endpoints and identifiers for the hosted Alysis Code Pro service.
 
-`alysis login` runs an RFC 8628-style device flow against the configured hosted API (`device-code` / `device-token`); the user approves the code on the
-account website's /activate page. The CLI receives a gateway key (``slk_…``)
+`alysis login` signs in through the browser: on a computer with one, the
+website's /connect page hands the sign-in back to 127.0.0.1 (`desktop-sign-in`);
+otherwise an RFC 8628-style device flow (`device-code` / `device-token`) has
+the user approve a code on the website's /activate page. The CLI receives a gateway key (``slk_…``)
 and talks to the Alysis Code LLM gateway — an OpenAI-compatible proxy that meters
 the subscription's credits server-side. The CLI never holds upstream provider
 keys for Pro; BYOK profiles are configured separately and take precedence.
@@ -21,8 +23,8 @@ from .branding import env_get
 # ---------------------------------------------------------------------------
 # Everything user-visible that names the site derives from _DEFAULT_SITE_URL —
 # help text, proxy error messages, the /activate and /account links, and the
-# tests asserting on them. Keep it that way: re-hardcoding the host anywhere
-# else is caught by test_rebrand_compatibility.py.
+# tests asserting on them. test_branding.py checks that site overrides reach
+# account links in proxy errors.
 #
 # The device-login flow depends on this host actually serving /activate against
 # the configured hosted API. The CLI sends Pro users there to approve a login
@@ -104,6 +106,13 @@ def _function_url(name: str) -> str:
     return f"{base}/{name}"
 
 
+def _project_url() -> str:
+    """The hosted project's base address; its storage sits beside the functions."""
+    base = cloud_api_url()
+    suffix = "/functions/v1"
+    return base[: -len(suffix)] if base.endswith(suffix) else base
+
+
 def site_url() -> str:
     return _checked(env_get("ALYSIS_SITE_URL") or _DEFAULT_SITE_URL)
 
@@ -146,6 +155,11 @@ def device_token_url() -> str:
     return _function_url("device-token")
 
 
+def desktop_sign_in_url() -> str:
+    """POST here for the browser sign-in that hands the key back to 127.0.0.1 (no code to compare)."""
+    return _function_url("desktop-sign-in")
+
+
 def feedback_url() -> str:
     """Private feedback intake, authenticated with the saved Alysis device key."""
     return _function_url("feedback")
@@ -154,6 +168,26 @@ def feedback_url() -> str:
 def account_status_url() -> str:
     """Read the website billing summary with the saved Alysis device key."""
     return _function_url("account-status")
+
+
+def account_profile_url() -> str:
+    """Change the account's name and photo with the saved Alysis device key."""
+    return _function_url("account-profile")
+
+
+def project_avatar_url() -> str:
+    """Draw a project's owl icon for the desktop sidebar with the saved Alysis device key."""
+    return _function_url("project-avatar")
+
+
+def avatar_url_prefix() -> str:
+    """Where account photos chosen in the app are served from (public, unguessable paths)."""
+    return f"{_project_url()}/storage/v1/object/public/avatars/"
+
+
+def cloud_bots_url() -> str:
+    """Account-scoped Cloud Bots access and service discovery."""
+    return _function_url("cloud-bots")
 
 
 def activate_url() -> str:

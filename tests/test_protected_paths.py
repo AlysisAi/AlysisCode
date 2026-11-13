@@ -7,6 +7,7 @@ import pytest
 from rich.console import Console
 
 from alysis_code.agent_loop import AgentRuntimeError, build_tools
+from alysis_code.config import AppConfig
 from alysis_code.session_store import SessionStore
 
 
@@ -20,7 +21,7 @@ def _store(root: Path) -> SessionStore:
     )
 
 
-def _tools(root: Path, *, mode: str = "auto"):
+def _tools(root: Path, *, mode: str = "auto", cfg: AppConfig | None = None):
     return build_tools(
         root=root,
         console=Console(file=io.StringIO()),
@@ -28,6 +29,7 @@ def _tools(root: Path, *, mode: str = "auto"):
         mode=mode,
         yes=True,
         non_interactive=True,
+        cfg=cfg,
     )
 
 

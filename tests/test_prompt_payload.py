@@ -420,9 +420,18 @@ def test_create_session_respects_explicit_skills_auto_invoke_false_for_discovery
 # 14,252/14,827/15,833. Keep a small fixed allowance, not a dynamic self-budget.
 # One-shot adds a separate fixed 450 below.
 # Windows native sandbox permissions, shell schemas and boundary guidance add
-# about 3,064 units. Seatbelt folder, network and Git contracts add about
+# about 3,878 units, including the PowerShell runtime and reserved-path contracts.
+# Seatbelt folder, network and Git contracts add about
 # 4,847 units on macOS. Keep fixed allowances for these required contracts.
-_NATIVE_BOOTSTRAP_ALLOWANCE = {"win32": 3_100, "darwin": 4_900}
+_NATIVE_BOOTSTRAP_ALLOWANCE = {"win32": 3_900, "darwin": 4_900}
+# Two lines of work each added model-visible text within the limits below and
+# then met in the 0.17.0 release: step descriptions for commands, next steps,
+# the connected-plugin sentence and the documentation skill on one side; the
+# command timeout and the Git and sandbox notes on the other. Together they
+# measure up to 236 units over on macOS, where the release line alone was 125
+# over. Keep their shared allowance separate from the native-platform contracts
+# measured above; Linux and Windows also qualify against this fixed allowance.
+_MERGED_FEATURES_ALLOWANCE = 250
 _BOOTSTRAP_PROFILE_LIMITS = [
     pytest.param(None, 15_850, id="unknown-expanded-default"),
     pytest.param("compact", 14_275, id="compact"),
@@ -506,7 +515,7 @@ def test_interactive_bootstrap_payload_stays_bounded(
         assert render_guidance("workflow", expected_profile) in _system_prompt(session)
         _assert_dependency_scout_visible(session)
         platform_allowance = _NATIVE_BOOTSTRAP_ALLOWANCE.get(sys.platform, 0)
-        assert estimated_tokens <= token_limit + platform_allowance
+        assert estimated_tokens <= token_limit + platform_allowance + _MERGED_FEATURES_ALLOWANCE
     finally:
         session.close()
 

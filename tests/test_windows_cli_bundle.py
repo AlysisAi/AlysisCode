@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import shutil
@@ -39,34 +40,31 @@ def test_checked_in_bundle_is_complete_and_pinned():
     assert set(path.name for path in helper.parent.iterdir()) == set(bundle.BUNDLE_FILES)
 
 
-def test_release_hook_refuses_modified_native_sources(tmp_path, monkeypatch):
-    import json
-
+def test_release_hook_refuses_source_changes_after_bundle_was_signed(tmp_path, monkeypatch):
     from hatch_build import CustomBuildHook
 
     monkeypatch.delenv("ALYSIS_LOCAL_CANDIDATE", raising=False)
-    root = Path(__file__).resolve().parents[1]
-    candidate = tmp_path / "release"
-    module = Path("src/alysis_code/windows_mxc_bundle.py")
-    (candidate / module).parent.mkdir(parents=True)
-    shutil.copy2(root / module, candidate / module)
-    assets = Path("src/alysis_code/assets/windows-mxc")
-    shutil.copytree(root / assets, candidate / assets)
-    inventory = json.loads((root / assets / "SOURCE.json").read_text(encoding="utf-8"))
-    inputs = [
+    repository = Path(__file__).resolve().parents[1]
+    root = tmp_path / "release-source"
+    inventory = json.loads((bundle.BUNDLE_ROOT / "SOURCE.json").read_text())
+    source_files = [
         name
         for name in inventory["files"]
         if name.startswith("native/windows-sandbox/")
         or name in {"src/alysis_code/windows_mxc_contract.py", "scripts/build_windows_mxc.py"}
     ]
-    for name in inputs:
-        relative = Path(name)
-        assert not relative.is_absolute() and ".." not in relative.parts
-        (candidate / relative).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(root / relative, candidate / relative)
-    changed = candidate / next(name for name in inputs if name.startswith("native/"))
-    changed.write_bytes(changed.read_bytes() + b"\n# modified after qualification\n")
-    hook = CustomBuildHook(str(candidate), {}, None, None, "unused", "wheel")
+    for name in source_files:
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repository / name, target)
+    module = root / "src/alysis_code/windows_mxc_bundle.py"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(bundle.__file__), module)
+    shutil.copytree(bundle.BUNDLE_ROOT, module.parent / "assets/windows-mxc", dirs_exist_ok=True)
+    hook = CustomBuildHook(str(root), {}, None, None, "unused", "wheel")
+    hook.initialize("standard", {})
+    changed = root / next(name for name in source_files if name.startswith("native/"))
+    changed.write_bytes(changed.read_bytes() + b"\n")
     with pytest.raises(ValueError, match="Rebuild/sign the bundled sandbox"):
         hook.initialize("standard", {})
 

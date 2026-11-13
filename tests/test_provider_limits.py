@@ -474,7 +474,7 @@ def test_backoff_success_after_transient_provider_unavailable_error() -> None:
     assert sleeps == [1.0, 2.0]
 
 
-def test_default_provider_retry_schedule_caps_at_two_attempts() -> None:
+def test_default_provider_retry_schedule_makes_seven_attempts() -> None:
     attempts = 0
     sleeps: list[float] = []
 
@@ -493,14 +493,15 @@ def test_default_provider_retry_schedule_caps_at_two_attempts() -> None:
             random_fn=lambda: 0.5,
         )
 
-    assert attempts == 2
-    assert sleeps == [10.0]
+    assert attempts == 7
+    assert sleeps == [2.0, 4.0, 8.0, 16.0, 32.0, 64.0]
 
 
 def test_retry_event_observer_receives_content_free_live_payload() -> None:
     attempts = 0
     events: list[dict[str, object]] = []
-    clock_values = iter((10.0, 10.25))
+    # Clock reads: call start, the failure (window start), the event's elapsed time.
+    clock_values = iter((10.0, 10.25, 10.25))
 
     def call() -> str:
         nonlocal attempts
@@ -528,6 +529,8 @@ def test_retry_event_observer_receives_content_free_live_payload() -> None:
             "attempt": 2,
             "reason": "provider_unavailable",
             "elapsed_ms": 250,
+            "delay_ms": 2000,
+            "failure_phase": "provider_request",
         }
     ]
 
@@ -838,7 +841,7 @@ def test_openai_compat_retries_429_rate_limit_and_500() -> None:
 
     assert client.chat(messages=[{"role": "user", "content": "hi"}]).content == "ok"
     assert attempts == 3
-    assert sleeps == [10.0, 20.0]
+    assert sleeps == [2.0, 4.0]
 
     server_error_attempts = 0
     server_error_sleeps: list[float] = []
@@ -1011,3 +1014,65 @@ def test_a_used_up_plan_allowance_is_not_retried_but_a_rate_limit_is(
     used_up = attempts_expected == 1
     assert (getattr(error, "provider_error_code", None) == "usage_limit_reached") is used_up
     assert "Your limit will reset at 2026-10-22 23:01:15" in str(error) or not used_up
+
+
+@pytest.mark.parametrize(
+    "error,expected_delay,phase",
+    [
+        (httpx.ConnectTimeout("connect timed out"), 0.2, "connection_setup"),
+        (httpx.ReadTimeout("read timed out"), 2.0, "provider_request"),
+        (httpx.WriteTimeout("write timed out"), 2.0, "provider_request"),
+        (LLMError("LLM error 503: service unavailable"), 2.0, "provider_request"),
+        (LLMError("LLM error 429: rate limit exceeded"), 2.0, "provider_request"),
+    ],
+)
+def test_fast_retry_is_limited_to_typed_connection_setup_failures(error, expected_delay, phase):
+    sleeps, events = [], []
+    calls = 0
+
+    def call():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise error
+        return "ok"
+
+    assert (
+        run_provider_limited_call(
+            call=call,
+            provider_key="deepseek",
+            retry_settings=ProviderRetrySettings(),
+            operation="chat",
+            sleep_fn=sleeps.append,
+            random_fn=lambda: 0.5,
+            on_retry_event=events.append,
+        )
+        == "ok"
+    )
+    assert calls == 2
+    assert sleeps == [expected_delay]
+    assert events[0]["failure_phase"] == phase
+    assert events[0]["delay_ms"] == round(expected_delay * 1000)
+
+
+def test_fast_connect_retry_preserves_server_minimum_and_retry_count():
+    calls, sleeps = 0, []
+    error = httpx.ConnectTimeout("connect timed out")
+    error.provider_retry_after = 3
+
+    def call():
+        nonlocal calls
+        calls += 1
+        raise error
+
+    with pytest.raises(httpx.ConnectTimeout):
+        run_provider_limited_call(
+            call=call,
+            provider_key="deepseek",
+            retry_settings=ProviderRetrySettings(max_retries=1),
+            operation="chat",
+            sleep_fn=sleeps.append,
+            random_fn=lambda: 0.5,
+        )
+    assert calls == 2
+    assert sleeps == [3]

@@ -263,12 +263,61 @@ def test_single_path_form_unchanged(tmp_path: Path) -> None:
     assert not (tmp_path / paths[0]).exists()
 
 
-def test_batch_rejects_path_and_paths_together(tmp_path: Path) -> None:
+def test_path_and_paths_together_name_one_list(tmp_path: Path) -> None:
+    paths = _make_pyc_files(tmp_path, 3)
+    tools = _build_tools(tmp_path)
+
+    result = tools["fs_delete"].run({"path": paths[0], "paths": paths[1:] + [paths[0]]})
+
+    assert result["ok"] is True and result["deleted_count"] == 3
+    assert [entry["path"] for entry in result["results"]] == paths
+    assert not any((tmp_path / path).exists() for path in paths)
+
+
+def test_a_folder_is_named_as_one_and_the_files_beside_it_are_removed(tmp_path: Path) -> None:
+    paths = _make_pyc_files(tmp_path, 2)
+    (tmp_path / "build" / "obj").mkdir(parents=True)
+    (tmp_path / "build" / "obj" / "a.o").write_bytes(b"o")
+    tools = _build_tools(tmp_path)
+
+    with pytest.raises(Exception, match="build is a folder.*one shell command"):
+        tools["fs_delete"].run({"path": "build"})
+    assert (tmp_path / "build" / "obj" / "a.o").exists()
+
+    result = tools["fs_delete"].run({"paths": ["build", *paths, "build/obj"]})
+
+    assert result["ok"] is False
+    assert result["deleted_count"] == 2 and result["requested_count"] == 4
+    by_path = {entry["path"]: entry for entry in result["results"]}
+    assert all(by_path[path]["ok"] for path in paths)
+    assert "is a folder" in by_path["build"]["error"] and not by_path["build"]["ok"]
+    assert "is a folder" in by_path["build/obj"]["error"]
+    assert not any((tmp_path / path).exists() for path in paths)
+    assert (tmp_path / "build" / "obj" / "a.o").exists()  # nothing inside a folder is touched
+
+    only_folders = tools["fs_delete"].run({"paths": ["build"]})
+    assert only_folders["ok"] is False and only_folders["deleted_count"] == 0
+
+
+def test_one_missing_file_does_not_undo_the_rest_of_a_list(tmp_path: Path) -> None:
     paths = _make_pyc_files(tmp_path, 2)
     tools = _build_tools(tmp_path)
 
-    with pytest.raises(Exception, match="either path or paths"):
-        tools["fs_delete"].run({"path": paths[0], "paths": paths})
+    result = tools["fs_delete"].run({"paths": [paths[0], "pkg/gone.pyc", paths[1]]})
+
+    assert result["ok"] is False and result["deleted_count"] == 2
+    by_path = {entry["path"]: entry for entry in result["results"]}
+    assert by_path[paths[0]]["ok"] and by_path[paths[1]]["ok"]
+    assert not by_path["pkg/gone.pyc"]["ok"] and by_path["pkg/gone.pyc"]["error"]
+    assert not any((tmp_path / path).exists() for path in paths)
+
+
+def test_the_line_shown_for_the_call_names_every_file(tmp_path: Path) -> None:
+    from alysis_code.tools.registry import _preview_delete_paths
+
+    shown = _preview_delete_paths({"path": "src/important.py", "paths": ["a.pyc", "b.pyc"]})
+    assert shown == "3 files: src/important.py, a.pyc, b.pyc"
+    assert _preview_delete_paths({"path": "a.pyc", "paths": ["a.pyc"]}) == "a.pyc"
 
 
 def test_schema_offers_paths_and_no_longer_requires_path(tmp_path: Path) -> None:
@@ -277,3 +326,34 @@ def test_schema_offers_paths_and_no_longer_requires_path(tmp_path: Path) -> None
 
     assert "paths" in schema["properties"]
     assert "required" not in schema or "path" not in schema.get("required", [])
+
+
+def test_a_folder_is_refused_with_what_to_do_instead(tmp_path: Path) -> None:
+    """It used to fail with the operating system's "Access is denied"."""
+    _make_pyc_files(tmp_path, 2)
+    surface = _RecordingSurface()
+    tools = _build_tools(tmp_path, surface=surface, yes=False)
+
+    with pytest.raises(Exception, match=r"deletes files, and pkg.__pycache__ is a folder"):
+        tools["fs_delete"].run({"path": "pkg/__pycache__"})
+
+    # Nobody is asked to approve something that cannot happen.
+    assert surface.requests == []
+    assert len(list((tmp_path / "pkg" / "__pycache__").iterdir())) == 2
+
+
+def test_a_folder_among_files_is_not_shown_for_approval(tmp_path: Path) -> None:
+    """The file beside it is approved and removed; the folder is that entry's error."""
+    paths = _make_pyc_files(tmp_path, 2)
+    surface = _RecordingSurface()
+    tools = _build_tools(tmp_path, surface=surface, yes=False)
+
+    result = tools["fs_delete"].run({"paths": [paths[0], "pkg"]})
+
+    (request,) = surface.requests
+    assert list(request.files) == [paths[0]]
+    by_path = {entry["path"]: entry for entry in result["results"]}
+    assert by_path[paths[0]]["ok"] and not (tmp_path / paths[0]).exists()
+    assert not by_path["pkg"]["ok"]
+    assert "deletes files, and pkg is a folder" in by_path["pkg"]["error"]
+    assert (tmp_path / paths[1]).exists()  # not listed, so not touched

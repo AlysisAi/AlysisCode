@@ -5,6 +5,7 @@ from __future__ import annotations
 from ...task_dependencies import infer_ordered_predecessor_dependency
 from .cli_common import *
 from ...command_text import command_text
+from ...git_safe import build_git_process_env
 
 
 def _snapshot_workspace_tree(root: Path) -> dict[str, str]:
@@ -32,6 +33,7 @@ def _git_diff_text(root: Path) -> str | None:
     proc = subprocess.run(
         ["git", "-C", os.fspath(root), "diff"],
         capture_output=True,
+        env=build_git_process_env(),
         **command_text(),
         check=False,
     )

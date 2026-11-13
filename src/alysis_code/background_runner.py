@@ -234,11 +234,27 @@ class DisabledBackgroundRunner:
 
 
 class LazyBackgroundShellRunner:
-    def __init__(self, loader: Callable[[], BackgroundShellRunner]) -> None:
+    def __init__(
+        self,
+        loader: Callable[[], BackgroundShellRunner],
+        *,
+        settings: ShellSandboxSettings | None = None,
+    ) -> None:
         self._loader = loader
+        self._settings = settings
         self._runner: BackgroundShellRunner | None = None
         self._load_error: Exception | None = None
         self._lock = threading.Lock()
+
+    @property
+    def execution_settings(self) -> ShellSandboxSettings | None:
+        """The settings the loader builds from, when the creator captured them."""
+        return self._settings
+
+    @property
+    def resolved_runner(self) -> BackgroundShellRunner | None:
+        """The real runner once a command has loaded it; never loads one."""
+        return self._runner
 
     def _resolve_runner(self) -> BackgroundShellRunner:
         if self._runner is not None:

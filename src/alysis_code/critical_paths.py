@@ -54,15 +54,28 @@ def critical_delete_targets(
     found: list[Path] = []
     for target in _delete_targets(str(command or ""), dialect or host_dialect(), depth=0):
         resolved = _resolve_target(target, cwd=cwd, home=home_path)
-        if resolved is not None and resolved in protected and resolved not in found:
+        if resolved is not None and _is_protected(resolved, protected) and resolved not in found:
             found.append(resolved)
     return found
+
+
+def _is_protected(path: Path, protected: set[Path]) -> bool:
+    if path in protected:
+        return True
+    # Another spelling of the same folder: letter case on a volume that ignores it.
+    for folder in protected:
+        try:
+            if os.path.samefile(path, folder):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _resolved(path: Path) -> Path:
     try:
         return path.resolve(strict=False)
-    except OSError:
+    except (OSError, RuntimeError):  # RuntimeError: a loop of links, before Python 3.13
         return Path(os.path.abspath(path))
 
 

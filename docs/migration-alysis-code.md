@@ -1,12 +1,27 @@
-# Migrating from Sylliptor to Alysis Code
+# Alysis Code engine identity
 
-Sylliptor is now **Alysis Code**. The CLI, the Python package, the VS Code
-extension and every environment variable changed name. This page is the
-complete list, what happens automatically, and what you have to do yourself.
+The engine uses only the Alysis identity. This is a breaking compatibility change;
+update the desktop app before bundling this engine into an installed application.
 
-Nothing here is urgent. Every old name still works for now.
+## Canonical names
 
-## The short version
+| Surface | Identity |
+| --- | --- |
+| Python distribution / import | `alysis-code` / `alysis_code` |
+| Commands | `alysis`, `alysis-code`, `alysis-ide-bridge` |
+| Environment | `ALYSIS_*` |
+| Project data | `.alysis/` |
+| User config and data | Platformdirs app/author `alysis` |
+| Server data | Platformdirs app `alysis-code-server`, author `alysis` |
+| Plugin manifest / compatibility key | `alysis-plugin.toml` / `compatibility.alysis` |
+| VS Code configuration | `alysis.*` |
+| Capability contract | `alysis.capabilities`, version 1 |
+| Forge Host / status protocols | `alysis.forge-host` v2 / `alysis.forge.status` v1 |
+| Verification contract schema | `alysis.forge.verification-contract/v2` |
+| Computer Use workflow metadata | `alysis_workflow` |
+| Release signature domain / key ID | `sylliptor-managed-cli-release-v3`, frozen for schema v3 / `alysis-release-2026-01`; `sylliptor-release-2026-01` is still accepted |
+| MCP OAuth authenticated-data tag / keyring service | `alysis-mcp-oauth-store` / `alysis-code` |
+| Product site / gateway hostname | `https://alysiscode.com` / `api.alysiscode.com` |
 
 | | Before | After |
 |---|---|---|
@@ -19,81 +34,30 @@ Nothing here is urgent. Every old name still works for now.
 | Repository | `AlysisAi/Sylliptor` | `AlysisAi/AlysisCode` |
 | Sandbox image | `ghcr.io/alysisai/sylliptor-sandbox` | `ghcr.io/alysisai/alysis-sandbox` |
 
-## Upgrading
+## Updating existing installations
 
-The package name changed, so this is not a plain `--upgrade`. Installing the
-new package without removing the old one leaves two distributions competing for
-the same `sylliptor` console script.
+Automatic brand aliases, directory copying, project-directory moves, profile
+renaming, setting migration, alternate plugin manifests, OAuth keyring adoption,
+and alternate encryption tags have been removed. The engine does not delete
+existing user directories, credentials, sessions, or token stores.
 
-**pipx**
+Back up existing state before an attended app migration. The app must update its
+capability admission, protocol discriminators, workflow metadata, context markers,
+configuration paths and environment, runtime builder, and release verifier together.
+Stored plan, approval, verification, and admission fingerprints are recomputed under
+the new domains; previous approvals cannot authorize newly named contracts.
+Previously signed runtime releases keep verifying: the release signature domain is frozen
+for schema v3 and the pre-rename key name is still accepted. Existing OAuth
+stores sealed under a different authenticated-data tag require reauthentication;
+renaming the file cannot change its cryptographic domain.
 
-```
-pipx uninstall sylliptor-agent-cli
-pipx install alysis-code
-```
+Run the engine contract tests and the app's admission validator before an app
+runtime pin update. Then validate a packaged app with chat, Forge, and Computer Use.
 
-**pip**
+## Repository audit scope
 
-```
-pip install --upgrade alysis-code
-pip uninstall sylliptor-agent-cli
-```
-
-`alysis update` detects a pre-rename install and prints the right command
-rather than attempting an upgrade that cannot work.
-
-## What migrates by itself
-
-You should not have to do anything for any of these.
-
-- **Config and credentials.** `~/.config/sylliptor` (or the platform
-  equivalent) is copied to the Alysis Code location on first run, including
-  `config.json` and `credentials.json`. The old directory is left in place and
-  marked with `.migrated-to-alysis`, so an older install on the same machine
-  keeps working. Delete it once you're satisfied.
-- **MCP OAuth tokens.** The keyring entry moved from service
-  `sylliptor-agent-cli` to `alysis-code`; the old one is adopted automatically
-  and left intact. Token blobs sealed with the previous authenticated-data tag
-  still decrypt and re-seal on the next write.
-- **Your Pro profile.** A profile named `sylliptor` is renamed to `alysis`,
-  including when it is your active profile, and the stored gateway key follows.
-- **Environment variables.** Every `ALYSIS_*` variable falls back to its
-  `SYLLIPTOR_*` predecessor. The new name wins if both are set. You get one
-  deprecation notice per variable per run.
-- **VS Code settings.** `sylliptor.*` settings are copied to `alysis.*` on
-  first activation, preserving user vs. workspace scope. The old keys are left
-  behind so downgrading still works.
-- **`.sylliptor/` in your repos.** Used in place, not renamed — renaming a
-  tracked directory would show up as an unexplained diff in your working tree.
-  Rename it yourself whenever it's convenient.
-- **Plugins.** Both manifest filenames load, and `compatibility.sylliptor` is
-  still accepted as a spelling of `compatibility.alysis`.
-- **The `sylliptor` command.** Still installed as an alias. It prints a notice
-  to stderr and forwards; stdout is unaffected, so pipelines keep working.
-
-## What you have to do yourself
-
-- **Update CI and Dockerfiles.** Pinned references to `sylliptor-agent-cli` or
-  `ghcr.io/alysisai/sylliptor-sandbox` keep resolving to the retired
-  package and image, which stop receiving releases.
-- **Update hook and custom-tool scripts eventually.** They still receive both
-  `SYLLIPTOR_*` and `ALYSIS_*` variables, so nothing breaks today.
-
-## Removal timeline
-
-The compatibility layer is not permanent. Every fallback listed under "what
-migrates by itself" is scheduled for removal no earlier than the next major
-release, and each will warn for at least one minor release before it goes.
-
-## Things that deliberately did not change
-
-- Gateway keys keep the `slk_` prefix — it is validated server-side.
-- The product site is still `sylliptor.alysisai.com`. It moves to
-  **alysiscode.com**, but not until that host actually serves `/activate`:
-  the CLI sends Pro users there to approve a device-login code, so switching
-  early breaks sign-in with no client-side workaround. Everything user-visible
-  now derives from one constant in `alysis_code/alysis_cloud.py`, and both
-  gateway hostnames stay recognised across the move.
-- `alysisai.com` remains the Alysis AI company site and is unaffected.
-- Past `CHANGELOG.md` entries still say Sylliptor. They describe releases that
-  shipped under that name, and rewriting them would make the record wrong.
+The current tracked engine files and filenames use the canonical identity.
+Git history, the checkout's directory name, local user data, cached bytecode,
+build output, previous release archives, and ignored QA evidence are separate
+from the current source and are retained for recovery. Rebuild distributable
+artifacts from this source; do not ship an older cached runtime.

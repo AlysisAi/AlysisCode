@@ -73,6 +73,42 @@ def _normalizer(repo):
     )
 
 
+def _read_past_a_held_commondir() -> None:
+    """Let this library open a repository while the engine holds its ``commondir`` name.
+
+    While a Git command runs on Windows, the engine keeps the names that
+    decide what a later Git runs from being created
+    (``_windows_git_reservations.HeldNames``). Windows refuses to open such a
+    name. Git takes that as "not there". This library takes it as an error,
+    wherever it opens a repository, and every inspection would fail for as
+    long as a commit runs. Only a Git directory that has its objects is read
+    without the file: the Git directory of a linked worktree cannot do
+    without it.
+    """
+    lookup = Repo.get_named_file
+    if getattr(lookup, "reads_past_a_held_name", False):
+        return
+
+    def get_named_file(self, path, basedir=None):
+        try:
+            return lookup(self, path, basedir)
+        except PermissionError:
+            if (
+                path == "commondir"
+                and basedir is None
+                and os.path.isdir(os.path.join(self.controldir(), "objects"))
+            ):
+                return None
+            raise
+
+    get_named_file.reads_past_a_held_name = True
+    Repo.get_named_file = get_named_file
+
+
+if os.name == "nt":
+    _read_past_a_held_commondir()
+
+
 def _open(root):
     # Discovery remains inside the granted tree. External worktree/object paths
     # are still governed by the OS sandbox, never granted by this reader.

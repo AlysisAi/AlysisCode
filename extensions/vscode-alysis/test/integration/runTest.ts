@@ -3,9 +3,10 @@ import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { copyTestDependencyTree } from "./copyTestDependencyTree";
+
 import { runVsCodeExtensionHostTests } from "./vsCodeExtensionHostInvocation";
 import { assertSuccessfulExtensionHostResult } from "./extensionHostResult";
-import { copyTestDependencyTree } from "./copyTestDependencyTree";
 
 const vscodeDownloadHost = "update.code.visualstudio.com";
 const extensionHostDownloadFailure =

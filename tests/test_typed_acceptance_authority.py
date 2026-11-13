@@ -1,4 +1,5 @@
 import pytest
+from acceptance_declared import declared_contract
 
 from alysis_code.agent.acceptance_contract import (
     AcceptanceCriterionEnforcement,
@@ -8,6 +9,13 @@ from alysis_code.agent.acceptance_contract import (
     invalidate_acceptance_evidence,
     record_acceptance_tool_effect,
 )
+
+
+def _asked(root, command, **options):
+    """The request writes a command and the model declares it as a requirement."""
+    return declared_contract(
+        root=root, instruction=f"Run `{command}`.", roles={}, commands=[command], **options
+    )
 
 
 def _commands(contract):
@@ -61,7 +69,7 @@ def test_file_locations_do_not_become_commands(tmp_path, path):
 
 @pytest.mark.parametrize("command", ["pytest", "python -m pytest -q", "./check.sh"])
 def test_direct_commands_remain_explicit(tmp_path, command):
-    contract = build_acceptance_contract(root=tmp_path, instruction=f"Run `{command}`.")
+    contract = _asked(tmp_path, command)
     assert [item.commands for item in _commands(contract)] == [(command,)]
     assert _commands(contract)[0].required_for_finalization
 
@@ -73,17 +81,35 @@ def test_direct_commands_remain_explicit(tmp_path, command):
         ("`pytest` must succeed.", "pytest"),
         ("Acceptance check: `pytest -q`", "pytest -q"),
         ("Verify using `pytest`.", "pytest"),
+        ("Το `pytest -q` πρέπει να περνάει.", "pytest -q"),
+        ("确保 `pytest -q` 通过", "pytest -q"),
     ],
 )
-def test_explicit_checks_support_prefix_and_postfix_requirements(tmp_path, instruction, command):
-    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+def test_a_declared_command_is_required_however_the_request_phrases_it(
+    tmp_path, instruction, command
+):
+    # The wording alone creates nothing; the model's declaration does.
+    assert not _commands(build_acceptance_contract(root=tmp_path, instruction=instruction))
+    contract = declared_contract(
+        root=tmp_path, instruction=instruction, roles={}, commands=[command]
+    )
     assert [item.commands for item in _commands(contract)] == [(command,)]
     assert _commands(contract)[0].required_for_finalization
 
 
+def test_a_command_the_user_did_not_write_cannot_be_declared(tmp_path):
+    with pytest.raises(ValueError, match="not written in the request"):
+        declared_contract(
+            root=tmp_path, instruction="Run `pytest -q`.", roles={}, commands=["rm -rf build"]
+        )
+
+
 def test_current_instruction_is_acceptance_authority(tmp_path):
-    contract = build_acceptance_contract(
-        root=tmp_path, instruction="Run `pytest -q`. Create result.txt."
+    contract = declared_contract(
+        root=tmp_path,
+        instruction="Run `pytest -q`. Create result.txt.",
+        roles={"result.txt": "required_output"},
+        commands=["pytest -q"],
     )
     assert [item.commands for item in _commands(contract)] == [("pytest -q",)]
     assert contract.allowed_output_paths == {"result.txt"}
@@ -108,20 +134,20 @@ def test_inferred_command_suggestion_is_not_a_required_command(tmp_path):
     ],
 )
 def test_zero_or_nonexecuted_tests_cannot_pass(tmp_path, result):
-    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract = _asked(tmp_path, "pytest -q")
     _record(contract, tmp_path, result=result, evidence_allowed=True)
     assert _commands(contract)[0].status != AcceptanceCriterionStatus.PASSED
     assert contract.evidence[-1].evidence_allowed is False
 
 
 def test_explicit_command_respects_rejected_evidence(tmp_path):
-    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract = _asked(tmp_path, "pytest -q")
     _record(contract, tmp_path, evidence_allowed=False)
     assert _commands(contract)[0].status == AcceptanceCriterionStatus.BLOCKED
 
 
 def test_evidence_records_host_identity_and_observed_metadata(tmp_path):
-    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract = _asked(tmp_path, "pytest -q")
     contract.task_id = "task-one"
     _record(
         contract,
@@ -141,7 +167,7 @@ def test_evidence_records_host_identity_and_observed_metadata(tmp_path):
 
 
 def test_relevant_edit_expires_pass_and_requires_current_evidence(tmp_path):
-    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract = _asked(tmp_path, "pytest -q")
     _record(contract, tmp_path)
     assert _commands(contract)[0].status == AcceptanceCriterionStatus.PASSED
     invalidate_acceptance_evidence(contract, generation=1)
@@ -154,7 +180,7 @@ def test_relevant_edit_expires_pass_and_requires_current_evidence(tmp_path):
 
 
 def test_foreign_task_cannot_advance_generation_or_satisfy_requirement(tmp_path):
-    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract = _asked(tmp_path, "pytest -q")
     contract.task_id = "task-one"
     _record(contract, tmp_path)
     _record(contract, tmp_path, task_id="task-two", generation=8)
@@ -164,7 +190,7 @@ def test_foreign_task_cannot_advance_generation_or_satisfy_requirement(tmp_path)
 
 
 def test_check_from_different_cwd_does_not_satisfy_requirement(tmp_path):
-    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract = _asked(tmp_path, "pytest -q")
     _record(contract, tmp_path, result={"cwd": str(tmp_path.parent)})
     assert _commands(contract)[0].status == AcceptanceCriterionStatus.UNVERIFIED
     assert not contract.evidence[-1].criterion_ids
@@ -215,7 +241,7 @@ def test_multi_command_results_keep_independent_authority_and_outcomes(tmp_path)
 
 def test_unittest_success_counts_real_tests_and_no_edit_stays_valid(tmp_path):
     command = "python -m unittest"
-    contract = build_acceptance_contract(root=tmp_path, instruction=f"Run `{command}`.")
+    contract = _asked(tmp_path, command)
     _record(contract, tmp_path, command, result={"stdout": "Ran 3 tests in 0.01s\n\nOK"})
     assert contract.evidence[-1].executed_test_count == 3
     invalidate_acceptance_evidence(contract, generation=0)
@@ -244,9 +270,7 @@ def test_inferred_artifact_and_threshold_remain_nonblocking(tmp_path):
 
 
 def test_delegated_requirements_keep_their_source(tmp_path):
-    contract = build_acceptance_contract(
-        root=tmp_path, instruction="Run `pytest -q`.", delegated=True
-    )
+    contract = _asked(tmp_path, "pytest -q", delegated=True)
     assert _commands(contract)[0].source.value == "delegated_task"
     assert _commands(contract)[0].required_for_finalization
 
@@ -291,7 +315,7 @@ def test_mutating_batch_does_not_allow_unordered_sibling_evidence(tmp_path):
 
 
 def test_aggregate_pass_without_observed_exit_cannot_verify_explicit_check(tmp_path):
-    contract = build_acceptance_contract(root=tmp_path, instruction="Run `pytest -q`.")
+    contract = _asked(tmp_path, "pytest -q")
     _record(contract, tmp_path, result={"exit_code": None, "all_passed": True})
     assert _commands(contract)[0].status != AcceptanceCriterionStatus.PASSED
 
@@ -314,16 +338,18 @@ def test_negated_command_introductions_do_not_create_execution_obligations(tmp_p
 
 
 def test_command_prohibition_does_not_leak_to_later_positive_command(tmp_path):
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Never execute `./check.sh`, but run `pytest -q`.",
+        roles={},
+        commands=["pytest -q"],
     )
     assert [item.commands for item in _commands(contract)] == [("pytest -q",)]
 
 
 def test_negation_inside_quoted_command_does_not_change_user_authority(tmp_path):
     command = "python -c \"assert 'do not run' != ''\""
-    contract = build_acceptance_contract(root=tmp_path, instruction=f"Run `{command}`.")
+    contract = _asked(tmp_path, command)
     assert [item.commands for item in _commands(contract)] == [(command,)]
 
 
@@ -345,9 +371,9 @@ def _record_host_expansion(
         (tmp_path / "tests" / f"test_{name}.py").write_text(
             "def test_ok():\n    assert True\n", encoding="utf-8"
         )
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction=f"Run `{required}`.",
+    contract = _asked(
+        tmp_path,
+        required,
         authoritative_verification_commands=[required] if authoritative else [],
     )
     record_acceptance_tool_effect(
@@ -420,7 +446,7 @@ def test_explicit_user_glob_coverage_keeps_user_provenance(tmp_path):
 
 def test_shell_result_cannot_supply_additional_host_coverage(tmp_path):
     required = "pytest tests/test_required.py -q"
-    contract = build_acceptance_contract(root=tmp_path, instruction=f"Run `{required}`.")
+    contract = _asked(tmp_path, required)
     _record(
         contract,
         tmp_path,

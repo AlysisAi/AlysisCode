@@ -33,7 +33,9 @@ CONNECTOR_COMPLETION_GUIDANCE = (
     "a working result, inspect its status and actual content with authorized read tools before "
     "claiming completion. Compare that observation with the original request. If verification "
     "fails or is unavailable, report the completed steps and the remaining unverified result. "
-    "Do not repeat a mutation merely because its downstream result is not ready."
+    "Do not repeat a mutation merely because its downstream result is not ready. "
+    "When a connected plugin's tools cover the service a request is about, use those tools "
+    "rather than that service's website; use the browser only for what no connected plugin offers."
 )
 
 

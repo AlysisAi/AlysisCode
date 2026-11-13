@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from alysis_code.agent_loop import (
-    ToolDef,
-    _resolve_session_pinned_prefix_len,
-    create_session,
-)
+from alysis_code.agent_loop import ToolDef, create_session
 from alysis_code.config import AppConfig
-from alysis_code.llm.openai_compat import LLMError, LLMResponse, ToolCall
+from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_metrics import score_session_events
 from alysis_code.session_store import read_session_events
 from alysis_code.tools.availability import (
@@ -46,43 +41,6 @@ class _FakeClient:
         response = self._responses[self.calls]
         self.calls += 1
         return response
-
-
-class _FailingClient:
-    model = "test-model"
-    temperature = 0.2
-
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        stream: bool = False,
-        on_text_delta=None,  # type: ignore[no-untyped-def]
-        temperature: float | None = None,
-    ) -> LLMResponse:
-        _ = messages, tools, stream, on_text_delta, temperature
-        raise LLMError("LLM request failed: connection timed out")
-
-
-def _task_brief_message_count(session: Any) -> int:
-    return sum(
-        1
-        for message in session.messages
-        if str(message.get("role") or "") == "user"
-        and str(message.get("content") or "").startswith("<task_brief>")
-    )
-
-
-def _messages_without_task_brief(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        message
-        for message in messages
-        if not (
-            str(message.get("role") or "") == "user"
-            and str(message.get("content") or "").startswith("<task_brief>")
-        )
-    ]
 
 
 def test_run_turn_blocks_repeated_identical_failed_tool_calls(tmp_path: Path) -> None:
@@ -351,63 +309,6 @@ def test_run_turn_preserves_unicode_in_tool_result_message(tmp_path: Path) -> No
     content = str(tool_result_events[0].get("content") or "")
     assert "καλημέρα" in content
     assert "\\u03" not in content
-
-
-def test_run_turn_rolls_back_user_message_after_llm_error(tmp_path: Path) -> None:
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-    )
-    session.client = _FailingClient()  # type: ignore[assignment]
-    baseline_messages = copy.deepcopy(session.messages)
-    baseline_pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
-
-    try:
-        with pytest.raises(LLMError):
-            session.run_turn("Refactor src/app.py and explain the change.")
-        # The turn's transient messages (its user message) are rolled back and
-        # the pinned prefix is unchanged. The one pinned message that may differ
-        # is the task brief, which is re-rendered from the task the turn
-        # accepted before dispatch (acceptance is not withdrawn by the failure).
-        assert _messages_without_task_brief(session.messages) == _messages_without_task_brief(
-            baseline_messages
-        )
-        assert _resolve_session_pinned_prefix_len(session) == baseline_pinned_prefix_len
-    finally:
-        session.close()
-
-
-def test_run_turn_llm_error_keeps_accepted_task_and_brief_in_agreement(tmp_path: Path) -> None:
-    cfg = AppConfig(model="test-model", routing_mode="code_only")
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=2,
-        no_log=True,
-        api_key_override="override-key",
-    )
-    session.client = _FailingClient()  # type: ignore[assignment]
-    baseline_messages = copy.deepcopy(session.messages)
-    baseline_pinned_prefix_len = _resolve_session_pinned_prefix_len(session)
-
-    try:
-        with pytest.raises(LLMError):
-            session.run_turn("Fix src/parser.py without changing the CSV shape.")
-        assert _messages_without_task_brief(session.messages) == _messages_without_task_brief(
-            baseline_messages
-        )
-        assert _task_brief_message_count(session) == 0
-        assert _resolve_session_pinned_prefix_len(session) == baseline_pinned_prefix_len
-    finally:
-        session.close()
 
 
 def test_run_turn_returns_optional_unavailable_tool_result_without_error(

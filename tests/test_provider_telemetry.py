@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 from alysis_code.cli import app as alysis_app
@@ -868,13 +869,16 @@ def test_stream_retry_fires_stream_restart_hook_after_emitted_tokens() -> None:
     assert restarts == [1]
 
 
-def test_stream_retry_telemetry_records_restart_without_raw_content() -> None:
+@pytest.mark.parametrize("retry_reason", ["provider_stream_truncated", "transport_connection_drop"])
+def test_stream_retry_telemetry_records_restart_without_raw_content(retry_reason: str) -> None:
     reset_provider_telemetry_for_tests()
     attempts = 0
 
     class EofStream(httpx.SyncByteStream):
         def __iter__(self):
             yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            if retry_reason == "transport_connection_drop":
+                raise httpx.RemoteProtocolError("peer closed connection mid-response")
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal attempts
@@ -901,9 +905,9 @@ def test_stream_retry_telemetry_records_restart_without_raw_content() -> None:
 
     summary = last_provider_call_summary()
     assert summary is not None
-    assert summary["retry_reasons"] == ["provider_stream_truncated"]
+    assert summary["retry_reasons"] == [retry_reason]
     assert summary["streaming"]["stream_restart_count"] == 1
-    assert summary["streaming"]["stream_restart_reason"] == "provider_stream_truncated"
+    assert summary["streaming"]["stream_restart_reason"] == retry_reason
     rendered = json.dumps(summary, sort_keys=True)
     assert "partial" not in rendered
 

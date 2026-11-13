@@ -121,7 +121,7 @@ def test_cleanup_never_unlinks_a_replacement_after_its_observation(tmp_path, mod
             assert "cleanup" not in result
             assert list(root.glob(".alysis-stage-*")) == [competitor]
         assert source.read_text() == "saved source data"
-        assert len(surface.approvals) == 1
+        assert [request.kind for request in surface.approvals] == ["shell_run"]
         assert len(client.requests) == 2 and host == []
     finally:
         session.close()

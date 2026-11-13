@@ -40,6 +40,18 @@ class _ScriptedClient:
         return LLMResponse(content="The requested work is complete.", tool_calls=[], raw={})
 
 
+def _run_as_asked(command: str) -> tuple[tuple[str, dict[str, Any]], ...]:
+    """The model declares the command the request writes as wanted, then runs it.
+
+    A request to run something and report is delivered by running it. The host
+    does not read that from the request's wording; the model states it.
+    """
+    return (
+        ("task_artifacts", {"paths": [], "commands": [command]}),
+        ("shell_run", {"cmd": command}),
+    )
+
+
 def _session(
     root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -183,7 +195,7 @@ def test_inferred_checks_follow_current_turn_edits_without_resetting_task_author
         instruction = (
             "Update source.py to set value to 3. Preserve check.py unchanged."
             if later_code_edit
-            else "Create note.txt and inventory.csv. Keep every existing file unchanged."
+            else "Create `note.txt` and `inventory.csv`. Keep every existing file unchanged."
         )
         calls = (
             [
@@ -301,11 +313,25 @@ def test_rewritten_checker_cannot_become_authoritative_on_continuation_or_resume
                 source_session_id=old_session.store.session_id,
             )
             old_session.close()
-        session.client = _ScriptedClient(("shell_run", {"cmd": command}))
+        # The host reads no "preserve" from the wording of a request. The model
+        # declares it, and is asked because the request names a new file.
+        session.client = _ScriptedClient(
+            (
+                "task_artifacts",
+                {
+                    "paths": [
+                        {"name": "check.py", "directory": "", "role": "preservation_target"},
+                        {"name": "outcome.txt", "directory": "", "role": "required_output"},
+                    ]
+                },
+            ),
+            ("shell_run", {"cmd": command}),
+        )
         session.run_turn(
-            f"Run `{command}`. Preserve check.py unchanged."
+            f"Run `{command}` and note the result in `outcome.txt`. Preserve check.py unchanged."
             if relation == "continuation"
-            else f"Run `{command}`. Preserve check.py and the logs directory unchanged.",
+            else f"Run `{command}` and note the result in `outcome.txt`. "
+            "Preserve check.py and the logs directory unchanged.",
         )
         assert session._task_evidence_state.task_id == original_id
         assert session._task_evidence_state.snapshot == original_snapshot
@@ -336,7 +362,7 @@ def test_missing_or_untrusted_resumed_baseline_cannot_verify_current_checker(
     source, command = _session(tmp_path, monkeypatch)
     resumed = None
     try:
-        source.client = _ScriptedClient(("shell_run", {"cmd": command}))
+        source.client = _ScriptedClient(*_run_as_asked(command))
         source.run_turn(f"Run `{command}` and report the result.")
         assert source.last_turn_outcome["verified_success"]
         events = json.loads(json.dumps(source.store.events_snapshot()))
@@ -379,7 +405,7 @@ def test_explicit_clear_resets_verification_baseline(tmp_path, monkeypatch):
         old_task = session._task_evidence_state.task_id
         clear_conversation_evidence(session)
         for _ in range(2):
-            session.client = _ScriptedClient(("shell_run", {"cmd": command}))
+            session.client = _ScriptedClient(*_run_as_asked(command))
             session.run_turn(
                 f"Run `{command}` and report the result. Preserve check.py unchanged.",
             )

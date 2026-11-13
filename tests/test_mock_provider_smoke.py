@@ -3,8 +3,8 @@
 A fast (<2 min total), Windows + Linux, default-runnable regression net that drives a
 real tiny build -- create a file via the agent, applied to the working tree -- through
 the actual CLI (as a subprocess) against the local mock provider. It is the trustworthy
-"did I break a real build" signal an autonomous fix-loop needs: simple ``run``,
-``forge exec``, and ``forge swarm`` must each finish with a
+"did I break a real build" signal an autonomous fix-loop needs: the four modes (simple
+``run``, ``forge exec``, ``forge swarm``) must each finish with a
 coherent terminal status and the deliverable on disk, with no raw error leaking.
 
 The mock provider (scripts/qa/mock_llm.py) is pattern-driven: an instruction containing
@@ -143,6 +143,8 @@ def _env(work_dir: Path) -> dict[str, str]:
             "ALYSIS_SKILLS_ENABLED": "0",
             "ALYSIS_CONTEXT_WINDOW": "200000",
             "ALYSIS_MAX_OUTPUT_TOKENS": "4096",
+            # Keep subprocess smoke portable on Windows Python builds where
+            # multiprocessing child bootstrap can leak raw handle tracebacks.
         }
     )
     return env

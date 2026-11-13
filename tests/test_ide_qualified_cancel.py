@@ -687,12 +687,12 @@ def test_prestart_close_known_failure_at_actual_review_entry(tmp_path, monkeypat
 
     monkeypatch.setattr(threading, "Thread", factory)
     if failure == "start":
-        start_name = (
+        start_primitive = (
             "_start_joinable_thread"
             if hasattr(threading, "_start_joinable_thread")
             else "_start_new_thread"
         )
-        native_start = getattr(threading, start_name)
+        native_start = getattr(threading, start_primitive)
 
         def fail_native(function, *args, **kwargs):
             target = getattr(function, "__self__", None)
@@ -700,7 +700,7 @@ def test_prestart_close_known_failure_at_actual_review_entry(tmp_path, monkeypat
                 raise original_error
             return native_start(function, *args, **kwargs)
 
-        monkeypatch.setattr(threading, start_name, fail_native)
+        monkeypatch.setattr(threading, start_primitive, fail_native)
     start()
     observer = s.close_worker
     if observer is not None:

@@ -9,7 +9,7 @@ import socket
 import ssl
 from collections.abc import Callable, Iterator
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -92,12 +92,22 @@ _TEXT_HEADERS = {
 _TAG_BLOCK_RE = re.compile(r"(?is)<(script|style|noscript)\b.*?>.*?</\1>")
 _HEAD_BLOCK_RE = re.compile(r"(?is)<head\b.*?</head>")
 _TITLE_RE = re.compile(r"(?is)<title[^>]*>(.*?)</title>")
-_TAG_RE = re.compile(r"(?is)<[^>]+>")
+# A tag ends at the first > outside its quoted attribute values (data attributes often
+# hold JSON or markup with > inside).
+_TAG_RE = re.compile(r"""(?is)<(?:[^>"']|"[^"]*"|'[^']*')+>""")
 _BREAK_TAG_RE = re.compile(r"(?is)<br\s*/?>")
 _BLOCK_CLOSE_TAG_RE = re.compile(
     r"(?is)</(p|div|section|article|header|footer|aside|nav|h[1-6]|li|tr|td|th|"
     r"table|blockquote|ul|ol)>"
 )
+# Page furniture around the content: menus, banners, footers, side panels, search forms.
+_LANDMARK_BLOCK_RE = re.compile(r"(?is)<(nav|header|footer|aside|form)\b[^>]*>.*?</\1>")
+_MAIN_REGION_RE = re.compile(r"(?is)<(main|article)\b[^>]*>(.*)</\1>")
+_MAIN_REGION_MIN_CHARS = 200
+_ANCHOR_RE = re.compile(r"""(?is)<a\b((?:[^>"']|"[^"]*"|'[^']*')*)>(.*?)</a>""")
+_HREF_RE = re.compile(r"""(?is)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+_LABEL_ATTR_RE = re.compile(r"""(?is)\b(?:aria-label|title)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_MAX_LINKS = 80
 _HTML_HINT_RE = re.compile(r"(?is)<!doctype\s+html|<html\b|<body\b|<head\b|<title\b")
 _CHARSET_RE = re.compile(r"charset=([^\s;]+)", re.IGNORECASE)
 # Cloudflare interstitial wording. Trusted only on pages Cloudflare served:
@@ -195,12 +205,25 @@ def _looks_like_html(text: str) -> bool:
     return _HTML_HINT_RE.search(text) is not None
 
 
-def _extract_html_title_and_text(html_text: str) -> tuple[str, str]:
+def _extract_html_title_and_text(html_text: str, *, main_content: bool = False) -> tuple[str, str]:
     title = ""
     title_match = _TITLE_RE.search(html_text)
     if title_match is not None:
         raw_title = _TAG_RE.sub(" ", str(title_match.group(1) or ""))
         title = _normalize_whitespace(html.unescape(raw_title))
+
+    if main_content:
+        # The page's own content first: its main/article region when it has a real one,
+        # otherwise the whole page without its menus, banners, footers and side panels.
+        stripped = _TAG_BLOCK_RE.sub(" ", html_text)
+        region = _MAIN_REGION_RE.search(stripped)
+        if region is not None:
+            _, region_text = _extract_html_title_and_text(region.group(2))
+            if len(region_text) >= _MAIN_REGION_MIN_CHARS:
+                return title, region_text
+        _, page_text = _extract_html_title_and_text(_LANDMARK_BLOCK_RE.sub(" ", stripped))
+        if len(page_text) >= _MAIN_REGION_MIN_CHARS:
+            return title, page_text
 
     body = _TAG_BLOCK_RE.sub(" ", html_text)
     body = _HEAD_BLOCK_RE.sub(" ", body)
@@ -214,6 +237,80 @@ def _extract_html_title_and_text(html_text: str) -> tuple[str, str]:
     if not text:
         text = _normalize_whitespace(body)
     return title, text
+
+
+def _extract_links(
+    html_text: str, base_url: str, *, limit: int = _MAX_LINKS
+) -> list[dict[str, str]]:
+    """The page's links as text and absolute http(s) address, first occurrence, in page order.
+
+    A reader without a browser can only follow a link it can see the address of.
+    """
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
+    body = _TAG_BLOCK_RE.sub(" ", _HEAD_BLOCK_RE.sub(" ", html_text))
+    for match in _ANCHOR_RE.finditer(body):
+        attributes, inner = match.group(1), match.group(2)
+        href = _HREF_RE.search(attributes)
+        if href is None:
+            continue
+        raw = html.unescape(next(group for group in href.groups() if group is not None)).strip()
+        if not raw or raw.startswith("#"):
+            continue
+        try:
+            address = urljoin(base_url, raw).split("#", 1)[0]
+        except ValueError:
+            continue
+        if urlsplit(address).scheme.lower() not in ("http", "https") or address in seen:
+            continue
+        text = _normalize_whitespace(html.unescape(_TAG_RE.sub(" ", inner)))
+        if not text:
+            label = _LABEL_ATTR_RE.search(attributes)
+            text = (
+                _normalize_whitespace(html.unescape(next((g for g in label.groups() if g), "")))
+                if label
+                else ""
+            )
+        if not text:
+            continue
+        seen.add(address)
+        links.append({"text": text[:120], "url": address})
+        if len(links) >= limit:
+            break
+    return links
+
+
+_PDF_MAX_PAGES = 60
+
+
+def _pdf_text(body: bytes, *, truncated: bool) -> str:
+    """The text of a PDF's pages, in order, from its first pages."""
+    if truncated:
+        raise WebFetchError(
+            "This PDF is larger than the reading limit, so its text could not be read.",
+            recoverable=True,
+        )
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as e:  # the documents extra is not installed
+        raise WebFetchError("Reading PDFs is not available here.", recoverable=True) from e
+    try:
+        document = pdfium.PdfDocument(body)
+    except Exception as e:  # noqa: BLE001 - any parser failure is this file's problem
+        raise WebFetchError("This PDF could not be opened.", recoverable=True) from e
+    pages: list[str] = []
+    try:
+        for index in range(min(len(document), _PDF_MAX_PAGES)):
+            page = document[index]
+            text_page = page.get_textpage()
+            try:
+                pages.append(text_page.get_text_range())
+            finally:
+                text_page.close()
+                page.close()
+    finally:
+        document.close()
+    return "\n\n".join(text.strip() for text in pages if text.strip())
 
 
 def _is_json_content_type(content_type: str) -> bool:
@@ -480,7 +577,14 @@ def web_fetch(
     url: str,
     max_chars: int = _DEFAULT_MAX_CHARS,
     transport: httpx.BaseTransport | None = None,
+    truncate_oversized: bool = False,
+    main_content: bool = False,
+    include_links: bool = False,
+    max_bytes: int | None = None,
+    read_pdf: bool = False,
 ) -> dict[str, Any]:
+    """``truncate_oversized`` reads a page longer than the byte limit up to that limit
+    (marked truncated) instead of refusing it."""
     # Defense-in-depth runtime guard: even if a web_fetch call reaches this layer
     # through a path that bypassed tool registration (resume/replay, patched tool
     # tables), the master web-tools switch still hard-blocks execution.
@@ -521,12 +625,13 @@ def web_fetch(
                 "GET",
                 current_url,
                 timeout=_DEFAULT_TIMEOUT_SECONDS,
-                max_bytes=_MAX_RESPONSE_BYTES,
+                max_bytes=max_bytes or _MAX_RESPONSE_BYTES,
                 allow_redirects=True,
                 max_redirects=_MAX_REDIRECTS,
                 headers=_TEXT_HEADERS,
                 _transport=transport,  # type: ignore[arg-type]
                 _resolver=resolver,
+                truncate=truncate_oversized,
             )
         )
     except SafeHttpError as e:
@@ -567,7 +672,7 @@ def web_fetch(
     response_encoding = response.encoding
     response_headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
     body = response.content
-    body_truncated = False
+    body_truncated = bool(response.extensions.get("alysis_truncated"))
 
     content_type = _normalize_content_type(raw_content_type)
     decoded = _decode_bytes(
@@ -592,7 +697,10 @@ def web_fetch(
             remote_site_reason=remote_site_reason,
         )
 
-    if content_type and not _is_text_like_content_type(content_type):
+    is_pdf = content_type == "application/pdf" or body[:5] == b"%PDF-"
+    if read_pdf and is_pdf:
+        content_type = "application/pdf"
+    elif content_type and not _is_text_like_content_type(content_type):
         raise WebFetchError(
             f"Unsupported content type for web_fetch: '{content_type}'. Only text-like responses "
             "are supported.",
@@ -605,11 +713,17 @@ def web_fetch(
         )
 
     title = ""
-    if content_type in _HTML_CONTENT_TYPES or (not content_type and _looks_like_html(decoded)):
+    links: list[dict[str, str]] = []
+    if read_pdf and is_pdf:
+        readable_content = _pdf_text(body, truncated=body_truncated)
+        body_truncated = False  # the text is whole; clipping below marks a long one
+    elif content_type in _HTML_CONTENT_TYPES or (not content_type and _looks_like_html(decoded)):
         if not content_type:
             content_type = "text/html"
-        title, extracted = _extract_html_title_and_text(decoded)
+        title, extracted = _extract_html_title_and_text(decoded, main_content=main_content)
         readable_content = extracted
+        if include_links:
+            links = _extract_links(decoded, final_url or requested_url)
     elif _is_json_content_type(content_type):
         try:
             parsed_json = json.loads(decoded)
@@ -634,6 +748,7 @@ def web_fetch(
         "title": title,
         "content": clipped_content,
         "truncated": truncated,
+        **({"links": links} if include_links else {}),
         "backend": "httpx",
         **(
             {"raw_input_url": raw_input_url}

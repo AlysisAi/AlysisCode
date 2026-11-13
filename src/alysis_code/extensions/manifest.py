@@ -393,7 +393,8 @@ class VerifiedConnectorComponent(BaseModel):
     oauth_sign_in_origins: list[Annotated[str, Field(min_length=1, max_length=256)]] = Field(
         default_factory=list, max_length=8
     )
-    oauth_client: Literal["dynamic"]
+    oauth_client: Literal["dynamic", "publisher"]
+    transport: Literal["mcp", "microsoft_graph"] = "mcp"
     oauth_scopes: list[
         Annotated[str, Field(pattern=r"^[\x21\x23-\x26\x28-\x5b\x5d-\x7e]{1,128}$")]
     ] = Field(min_length=1, max_length=32)

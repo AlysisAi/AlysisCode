@@ -169,11 +169,12 @@ def test_branch_name_is_not_a_required_output_file(tmp_path):
     ):
         contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
         assert not contract.allowed_output_paths
-        assert not contract.path_refs
+        assert not [item for item in contract.criteria if item.required and item.path_refs]
     contract = build_acceptance_contract(
         root=tmp_path, instruction="On branch test/one create src/output.py."
     )
-    assert "src/output.py" in contract.allowed_output_paths
+    assert [ref.display_path for ref in contract.path_refs] == ["src/output.py"]
+    assert not contract.allowed_output_paths
 
 
 def test_readonly_policy_refuses_before_launch(repository):

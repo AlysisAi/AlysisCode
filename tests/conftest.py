@@ -24,17 +24,15 @@ from alysis_code.mcp.transport_stdio import live_stdio_transport_diagnostics
 
 
 @pytest.fixture
-def approved_local_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Approve controlled local checks in explicit integration fixtures."""
-    from alysis_code.surface import ApprovalDecision
-    from alysis_code.surface.noop_surface import NoopSurface
+def authorized_hosted_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give picker tests an explicit account catalog without provider requests."""
+    from alysis_code.cli_impl import config_menu
+    from alysis_code.provider_model_catalog import ProviderModelOption
 
-    monkeypatch.setattr(NoopSurface, "host_managed_approvals", True, raising=False)
-    monkeypatch.setattr(
-        NoopSurface,
-        "request_approval",
-        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
+    options = tuple(
+        ProviderModelOption(id=name, label=name) for name in ("gpt-6-luna", "claude-haiku-5-5")
     )
+    monkeypatch.setattr(config_menu, "_provider_models_for_state", lambda *_args: options)
 
 
 @pytest.fixture
@@ -86,15 +84,17 @@ def mac_computer_use_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def authorized_hosted_models(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Give picker tests an explicit account catalog without provider requests."""
-    from alysis_code.cli_impl import config_menu
-    from alysis_code.provider_model_catalog import ProviderModelOption
+def approved_local_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Approve controlled local checks only in explicitly opted-in fixtures."""
+    from alysis_code.surface import ApprovalDecision
+    from alysis_code.surface.noop_surface import NoopSurface
 
-    options = tuple(
-        ProviderModelOption(id=name, label=name) for name in ("gpt-6-luna", "claude-haiku-5-5")
+    monkeypatch.setattr(NoopSurface, "host_managed_approvals", True, raising=False)
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
     )
-    monkeypatch.setattr(config_menu, "_provider_models_for_state", lambda *_args: options)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -122,7 +122,10 @@ class OAuthFixtureServer:
     def __init__(self) -> None:
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _OAuthFixtureHandler)
         self._server.oauth_fixture = self  # type: ignore[attr-defined]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # Avoid the default 500ms shutdown poll for every isolated fixture.
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self._thread.start()
         self.reset()
 

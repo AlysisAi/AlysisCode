@@ -4,6 +4,12 @@ Both bounded SSH effects and opaque commands require a person's decision.
 Dialect controls exercise the lexer; they do not qualify a native Windows shell.
 """
 
+# ASTRA #3 author note above retained verbatim. R3 owner integration:
+# the user now requires person decisions for every unresolved candidate below,
+# including opaque/no-grant cases. This is not repository confinement.
+# The captured launcher gate now selects its own dialect, so both host seams
+# below are injected for these synthetic dialect controls; native tests remain separate.
+# ruff: noqa: E402 - preserve the author's selected-tree helper import setup
 from __future__ import annotations
 
 import io
@@ -12,6 +18,7 @@ import os
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +26,12 @@ from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
+
+import alysis_code
+
+# Reuse only inert approval-client helpers from the explicitly selected source tree.
+ENGINE = Path(alysis_code.__file__).resolve().parents[2]
+sys.path.insert(0, str(ENGINE / "tests"))
 from test_approval_review import _reviewer, _Surface
 
 from alysis_code.agent.errors import AgentRuntimeError, ApprovalDeclinedError
@@ -31,13 +44,15 @@ from alysis_code.surface import ApprovalDecision
 
 
 @pytest.fixture(autouse=True)
-def isolated_home(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
-    return home
+def isolated_profile(tmp_path, monkeypatch):
+    profile = tmp_path / "home"
+    temporary = tmp_path / "tmp"
+    profile.mkdir()
+    temporary.mkdir()
+    monkeypatch.setenv("HOME", str(profile))
+    monkeypatch.setenv("TMPDIR", str(temporary))
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(profile / "config"))
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(profile / "data"))
 
 
 @dataclass(frozen=True)
@@ -411,10 +426,13 @@ def test_literal_data_and_reads_are_not_remote_writes(command, dialect):
         assert github_write_reason(command, dialect=dialect) is None
 
 
-def test_harness_uses_disposable_home(isolated_home, tmp_path):
-    assert Path.home() == isolated_home
-    assert isolated_home.parent == tmp_path
-    assert Path(os.environ["TMPDIR"]) == tmp_path
+def test_harness_uses_disposable_home_and_expected_source(tmp_path, record_property):
+    record_property("source", str(ENGINE))
+    record_property("home", os.environ.get("HOME"))
+    record_property("tmpdir", os.environ.get("TMPDIR"))
+    assert Path(os.environ["HOME"]).is_relative_to(tmp_path)
+    assert Path(os.environ["TMPDIR"]).is_relative_to(tmp_path)
+    assert ENGINE == Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(

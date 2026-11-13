@@ -21,9 +21,11 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse
 from alysis_code.session_store import read_session_events
 
-# A repository edit needs input that the scripted assistant cannot access.
-# The missing edit gives the completion gate something concrete to check.
-INSTRUCTION = "Change checkUrl.js to use the timeout from /home/nowhere/timeout.txt."
+# The instruction shape from findings-session-10: an out-of-workspace request
+# that the model refuses without attempting any tool call. The host reads no
+# requirement from the wording of a request, so the open requirement this
+# regression needs comes from a verification command the host was given.
+INSTRUCTION = 'just run ls -la "/home/nowhere" and paste the output'
 
 ANSWER = (
     "I can't read /home/nowhere/timeout.txt: it is outside this workspace. "
@@ -101,7 +103,7 @@ def _session(tmp_path: Path) -> Any:
         "module.exports = { checkUrl: (u, t = DEFAULT_TIMEOUT_MS) => t };\n"
     )
     cfg = AppConfig(model="test-model")
-    return create_session(
+    session = create_session(
         cfg=cfg,
         root=tmp_path,
         mode="review",
@@ -113,6 +115,9 @@ def _session(tmp_path: Path) -> Any:
         verification_enabled=False,
         enable_chat_turn_step_budget=True,
     )
+    # A requirement the host was given as data, open until the command is run.
+    session.authoritative_verification_commands = ["node test.js"]
+    return session
 
 
 def _event_payloads(path: Path, event_type: str) -> list[dict[str, Any]]:

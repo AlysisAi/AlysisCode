@@ -12,11 +12,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from acceptance_declared import declared_contract
 
 from alysis_code.agent.acceptance_contract import (
     AcceptanceContract,
     build_acceptance_contract,
-    extract_explicit_acceptance_commands,
+    request_command_lines,
 )
 from alysis_code.agent.completion_certificate import (
     CompletionCertificateInput,
@@ -65,9 +66,10 @@ def test_expected_output_literal_is_extracted(tmp_path: Path) -> None:
 
 
 def test_named_locus_required_output_is_extracted(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Count the lines and save the result to out/answer.txt.",
+        roles={"out/answer.txt": "required_output"},
     )
     loci = {e.text for e in contract.expectations if e.kind == ExpectationKind.NAMED_LOCUS}
     assert "out/answer.txt" in loci
@@ -76,9 +78,10 @@ def test_named_locus_required_output_is_extracted(tmp_path: Path) -> None:
 def test_input_reference_is_not_extracted_as_named_locus(tmp_path: Path) -> None:
     # Regression guard: "count the lines in data.txt" names a read-only input, not
     # an edit site. It must NOT become a named_locus (which would demand editing it).
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Count the lines in data.txt and save the result to answer.txt.",
+        roles={"data.txt": "existing_input", "answer.txt": "required_output"},
     )
     loci = {e.text for e in contract.expectations if e.kind == ExpectationKind.NAMED_LOCUS}
     assert "data.txt" not in loci
@@ -102,7 +105,9 @@ def test_path_words_do_not_create_output_requirements(tmp_path: Path, instructio
 
 @pytest.mark.parametrize("path", ["input/output", "before/after", "src/output.py"])
 def test_explicit_output_path_still_requires_an_artifact(tmp_path: Path, path: str) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction=f"Create the file `{path}`.")
+    contract = declared_contract(
+        root=tmp_path, instruction=f"Create the file `{path}`.", roles={path: "required_output"}
+    )
     assert any(
         e.kind == ExpectationKind.NAMED_LOCUS and e.text == path for e in contract.expectations
     )
@@ -118,14 +123,10 @@ def test_backtick_command_is_not_expected_output(tmp_path: Path) -> None:
     assert "git status" not in outputs
 
 
-@pytest.mark.parametrize("separator", [" and ", ", ", ", and "])
-def test_explicit_quoted_command_list_preserves_each_command(separator):
-    instruction = f"Run `pytest -q`{separator}`git status` and `custom-check --strict`."
-    assert extract_explicit_acceptance_commands(instruction) == [
-        "pytest -q",
-        "git status",
-        "custom-check --strict",
-    ]
+@pytest.mark.parametrize("separator", [" and ", ", ", ", and ", " και ", "、"])
+def test_command_lines_are_recognised_by_how_they_are_written(separator):
+    instruction = f"Run `pytest -q`{separator}`git status` and `python -m this`."
+    assert request_command_lines([instruction]) == ["pytest -q", "git status", "python -m this"]
 
 
 @pytest.mark.parametrize(
@@ -135,15 +136,47 @@ def test_explicit_quoted_command_list_preserves_each_command(separator):
         "write `out/result.txt`",
         "inspect `request.path`",
         "print `DONE OK`",
-        "inspect `request.path` and `git status`",
+        "expect `TypeError: value is not defined`",
+        "click `Open file`",
+        "use `git`",
+        'return `"status": "ok"`',
+        "it says `file not found: config.yaml`",
+        "it says `command not found`",
+        "expect `test passed` and `exit code 0`",
+        "`make sure it works`",
+        "keep `at least 3 items`",
     ],
 )
-def test_command_list_does_not_promote_intervening_prose_paths_or_symbols(tail):
-    assert extract_explicit_acceptance_commands(f"Run `pytest -q` and {tail}.") == ["pytest -q"]
+def test_paths_symbols_labels_and_literals_are_not_command_lines(tail):
+    assert request_command_lines([f"Run `pytest -q` and {tail}."]) == ["pytest -q"]
 
 
-def test_negated_quoted_command_list_has_no_execution_authority():
-    assert extract_explicit_acceptance_commands("Do not run `pytest -q` and `git status`.") == []
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Run `pytest -q` and `git status`.",
+        "Do not run `pytest -q` and `git status`.",
+        "Μην τρέξεις `pytest -q` και `git status`.",
+        "Why does `pytest -q` fail after `git status`?",
+        "运行 `pytest -q` 和 `git status`",
+    ],
+)
+def test_no_wording_makes_a_written_command_a_requirement(tmp_path: Path, instruction):
+    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    # The host knows these are command lines. Whether the request asks for
+    # them to be run is the model's reading, in every language.
+    assert contract.request_commands == ["pytest -q", "git status"]
+    assert not [item for item in contract.criteria if item.commands]
+
+
+def test_a_declared_command_is_a_requirement(tmp_path: Path) -> None:
+    contract = declared_contract(
+        root=tmp_path,
+        instruction="Τρέξε `pytest -q` και φρόντισε να περνάει.",
+        roles={},
+        commands=["pytest -q"],
+    )
+    assert [item.commands for item in contract.criteria if item.commands] == [("pytest -q",)]
 
 
 def test_bare_identifier_is_not_expected_output(tmp_path: Path) -> None:
@@ -395,8 +428,10 @@ def test_external_output_uses_exact_host_observation_and_rechecks_alias(
             pytest.skip("Windows account lacks symlink creation privilege")
         raise
     requested, target = alias / "output.custom", external / "output.custom"
-    contract = build_acceptance_contract(
-        root=root, instruction=f'Write the result to "{requested}".'
+    contract = declared_contract(
+        root=root,
+        instruction=f'Write the result to "{requested}".',
+        roles={str(requested): "required_output"},
     )
     state = TurnExecutionState(execution_requested=True, acceptance_contract=contract)
     finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
@@ -439,7 +474,11 @@ def test_failed_or_private_external_output_cannot_satisfy_required_artifact(
     target.write_text("synthetic")
     if private:
         monkeypatch.setenv("ALYSIS_MEMORY_HOME", str(external))
-    contract = build_acceptance_contract(root=root, instruction=f'Write the result to "{target}".')
+    contract = declared_contract(
+        root=root,
+        instruction=f'Write the result to "{target}".',
+        roles={str(target): "required_output"},
+    )
     state = TurnExecutionState(execution_requested=True, acceptance_contract=contract)
     _record_tool_effect(
         root=root,

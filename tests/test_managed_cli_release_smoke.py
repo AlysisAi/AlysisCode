@@ -459,14 +459,13 @@ def test_ci_python_jobs_use_the_frozen_release_toolchain() -> None:
         for step in job["steps"]
         if step.get("uses", "").startswith("astral-sh/setup-uv@")
     ]
-    assert len(setup_steps) == 7
+    assert len(setup_steps) == 6
     assert {job_id for job_id, _ in setup_steps} == {
         "preflight",
         "test",
         "reliability-qualification",
         "macos-smoke",
         "vscode-extension",
-        "uv-project-workflow",
         "package",
     }
     for _, step in setup_steps:

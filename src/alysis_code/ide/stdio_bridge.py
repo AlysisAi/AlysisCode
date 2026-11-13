@@ -1545,7 +1545,9 @@ class StdioBridge:
                         "The output workspace is outside its session.",
                         request_id=request.id,
                     ) from exc
-                paths = declared_changed_output_paths(state, relative_to=output_prefix)
+                paths = declared_changed_output_paths(
+                    state, relative_to=output_prefix, root=session.root
+                )
             return {
                 "session_id": session.session_id,
                 "job_id": job_id,
@@ -2008,6 +2010,7 @@ class StdioBridge:
         if "explicit_plugin_skill" in params:
             plugin_projection.fail()
         mode = _mode_param(params, request_id=request.id)
+        task_output_directory = _task_output_directory_param(params, request_id=request.id)
         computer_use_destination = _computer_use_destination_param(
             params,
             request_id=request.id,
@@ -2393,6 +2396,9 @@ class StdioBridge:
 
             surface.host_managed_user_questions = True
             surface.user_questions = UserQuestionBroker(is_cancelled=_managed_browser_cancelled)
+        if _optional_bool(params, "next_steps", default=False, request_id=request.id):
+            # The desktop shows suggested next steps as one-click replies under the final answer.
+            surface.host_renders_next_steps = True
         agent_session: Any | None = None
         try:
             with task_budget_setup(
@@ -2472,7 +2478,7 @@ class StdioBridge:
                         else {}
                     ),
                     # AgentSession owns the complete startup restriction (hooks, MCP,
-                    # plugins/custom tools, skills, subagents, power/background probes).
+                    # plugins/custom tools, skills, subagents, background probes).
                     # The bridge passes this before the session can inspect artifact paths.
                     **({"sensitive_media": True} if sensitive_media else {}),
                     **(
@@ -2596,6 +2602,8 @@ class StdioBridge:
                     "This protected provider configuration does not support the exact task budget contract.",
                     request_id=request.id,
                 ) from None
+        if task_output_directory is not None:
+            agent_session.host_task_output_directory = task_output_directory
         store = getattr(agent_session, "store", None)
         roots: list[ArtifactRoot] = []
         artifact_root = getattr(store, "session_artifact_root", None)
@@ -6950,7 +6958,7 @@ class StdioBridge:
                             )
                         normalized_result = {"discarded": True}
                     elif pending.phase == "prepare" and session.host_approval_protocol == 1:
-                        if set(raw_result) != {
+                        required_fields = {
                             "preparation_id",
                             "required",
                             "write_effect",
@@ -6958,16 +6966,12 @@ class StdioBridge:
                             "reason",
                             "preview",
                             "target",
-                        } and set(raw_result) != {
-                            "preparation_id",
-                            "required",
-                            "write_effect",
-                            "kind",
-                            "reason",
-                            "preview",
-                            "target",
-                            "context",
-                        }:
+                        }
+                        # Optional: the connector approval context, and the effect of a verified
+                        # plugin's reviewed change ("own_change", checked in _request_host_action).
+                        if not required_fields <= set(raw_result) or not set(
+                            raw_result
+                        ) <= required_fields | {"context", "effect"}:
                             raise HostActionError(
                                 "invalid_host_preparation", "Unexpected host preparation fields."
                             )
@@ -11068,6 +11072,29 @@ class StdioBridge:
                 "This action is unavailable in Read only.",
                 dispatch_state="not_dispatched",
             )
+        # Alysis's approval policy for plugins (like Grok Bot's Auto Review): main may describe a
+        # reviewed change tool of a verified plugin as "own_change": it only changes the person's
+        # own items in their account and can be undone. That change follows the chat's approval
+        # mode, the AI reviewer and saved rules. Every other remote write still asks a person on
+        # every call, also in Full Access. Main enforces the same rule before it sends anything.
+        own_change = False
+        if "effect" in prepared:
+            if not (
+                prepared["effect"] == "own_change"
+                and action == CONNECTOR_MCP_ACTION
+                and prepared["write_effect"]
+                and is_verified_connector(arguments.get("plugin_id"))
+            ):
+                with suppress(HostActionError):
+                    self._exchange_host_action(
+                        session, action, arguments, phase="discard", prepared_token=token
+                    )
+                raise HostActionError(
+                    "invalid_host_preparation",
+                    "Only a verified plugin's reviewed change can follow the approval mode.",
+                    dispatch_state="not_dispatched",
+                )
+            own_change = True
         preview = str(prepared.get("preview", action))[:10000]
         tool_metadata: dict[str, Any] = {}
         if action == CONNECTOR_MCP_ACTION:
@@ -11078,8 +11105,11 @@ class StdioBridge:
                 "mcp_server_id": catalog["server_id"],
                 "mcp_tool_id": connector_tool["name"],
                 **(
-                    {"tool_server_rule": "ask_every_call"} if not connector_tool["readOnly"] else {}
+                    {"tool_server_rule": "ask_every_call"}
+                    if not connector_tool["readOnly"] and not own_change
+                    else {}
                 ),
+                **({"connector_effect": "own_change"} if own_change else {}),
             }
             # Use the existing MCP approval contract so the desktop can display
             # the exact reviewed arguments instead of only the connector label.
@@ -11100,10 +11130,13 @@ class StdioBridge:
                 **tool_metadata,
                 **({"connector_context": context} if context is not None else {}),
                 # The user's rule: remote connector writes always ask a person,
-                # one call at a time, even in Full Access.
+                # one call at a time, even in Full Access, except a verified plugin's
+                # change in the person's own account (own_change, above).
                 **(
                     {"mandatory_explicit_approval": True, "always_ask_person": True}
-                    if prepared["write_effect"] and action in REMOTE_CONNECTOR_WRITE_ACTIONS
+                    if prepared["write_effect"]
+                    and action in REMOTE_CONNECTOR_WRITE_ACTIONS
+                    and not own_change
                     else {}
                 ),
             },
@@ -13352,6 +13385,23 @@ def _mcp_lifecycle_protocol_error(
         str(redact_secrets(str(exc))),
         request_id=request_id,
     )
+
+
+def _task_output_directory_param(params: dict[str, Any], *, request_id: RequestId) -> str | None:
+    """session.create's task_output_directory: the host's default output folder for this session.
+
+    The same value a host may set at launch as ALYSIS_DESKTOP_TASK_OUTPUT_DIRECTORY, given per
+    session so one engine started ahead of time can serve any chat. Checked against the task
+    when used (host_output_directory); a location, never a filesystem grant.
+    """
+    if "task_output_directory" not in params:
+        return None
+    value = params["task_output_directory"]
+    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > 4096:
+        raise ProtocolError(
+            "invalid_params", "task_output_directory must be a folder path.", request_id=request_id
+        )
+    return value
 
 
 def _mode_param(params: dict[str, Any], *, request_id: RequestId) -> str:

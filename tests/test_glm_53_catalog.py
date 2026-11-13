@@ -67,7 +67,9 @@ def test_glm_53_catalog_capacities_and_exact_efforts(preset, model, output):
     metadata = catalog_model_capabilities(model, provider)
     assert metadata["context_window_tokens"] == 1_000_000
     assert metadata["max_output_tokens"] == output
-    assert metadata["supports_vision"] is False
+    # Hosted GLM 5.3 takes images through the disclosed helper; the model itself sees none.
+    assert metadata["supports_vision"] is (provider == "alysis")
+    assert metadata.get("image_input") == ("assisted" if provider == "alysis" else None)
     assert metadata["supports_reasoning"] is True
     contract = reasoning_contract_for(provider, model)
     assert contract.mode == ALWAYS_ON and not contract.toggleable

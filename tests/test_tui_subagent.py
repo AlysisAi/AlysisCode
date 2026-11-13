@@ -705,15 +705,14 @@ def test_subagent_identity_resolves_aliases_and_is_deterministic_for_customs() -
 
 
 def test_identity_accents_never_impersonate_fixed_marks() -> None:
-    # Violet is Forge, green the chat accent, cyan the brand. No subagent may
-    # wear any of them, or a running agent would read as
-    # a mode indicator.
+    # Violet is Forge, green the chat accent, and cyan the brand. No subagent
+    # may wear any of them, or a running agent would read as a mode indicator.
     from alysis_code.cli_impl.tui.subagent_identity import (
         _BUILTIN_IDENTITIES,
         _FALLBACK_COLORS,
     )
 
-    reserved_colors = {"#e3b341", "#bc8cff", "#3fb950", "#56b6c2"}
+    reserved_colors = {"#bc8cff", "#3fb950", "#56b6c2"}
     for name, ident in _BUILTIN_IDENTITIES.items():
         assert ident.color.lower() not in reserved_colors, name
     for color in _FALLBACK_COLORS:

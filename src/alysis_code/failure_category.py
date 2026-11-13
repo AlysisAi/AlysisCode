@@ -226,7 +226,7 @@ def classify_failure_category(error: Any) -> FailureCategory:
     """Map an arbitrary exception onto a :class:`FailureCategory`.
 
     Reuses the existing provider classifiers so the diagnostic vocabulary stays
-    consistent across the chat/run path, Forge workers, and delegated agents.
+    consistent across the chat/run path, Forge workers.
     Ordering reflects specificity: throttling (HTTP 429 / rate-limit markers) and
     infra-unavailability are checked before generic provider-unavailability, and a
     readable-but-non-transient provider status (e.g. 400/401/403/404) is reported as

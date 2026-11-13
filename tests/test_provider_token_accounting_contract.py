@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from alysis_code.alysis_cloud import gateway_base_url
 from alysis_code.config import AppConfig
 from alysis_code.llm.factory import make_llm_client
 from alysis_code.llm.protocols import (
@@ -11,8 +12,8 @@ from alysis_code.llm.protocols import (
     OPENAI_COMPAT_PROTOCOL,
     OPENAI_RESPONSES_PROTOCOL,
 )
-from alysis_code.profile_presets import PROFILE_PRESETS, ProfilePreset
-from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
+from alysis_code.profile_presets import PROFILE_PRESETS, ProfilePreset, make_profile_from_preset
+from alysis_code.profiles import add_profile, set_active_profile
 
 EXPECTED_PROVIDER_KEYS = {
     "alysis": "alysis",
@@ -77,13 +78,11 @@ AUTHORITATIVE_RESPONSE_PRESETS = {
 
 def _client_for_preset(preset_key: str):
     preset = next(item for item in PROFILE_PRESETS if item.key == preset_key)
-    base_url = (
-        gateway_base_url() if preset.key == "alysis" else preset.base_url
-    ) or "https://custom.example/v1"
+    profile = make_profile_from_preset(preset)
+    base_url = profile.base_url or "https://custom.example/v1"
     model = preset.validation_model or next(iter(preset.suggested_models), "local-model")
-    profile = ProfileSpec(
-        name=preset.key,
-        protocol=preset.protocol,
+    profile = replace(
+        profile,
         base_url=base_url,
         api_key_env=preset.api_key_env,
         default_model=model,

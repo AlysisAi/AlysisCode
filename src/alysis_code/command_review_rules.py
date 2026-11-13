@@ -14,7 +14,9 @@ systems or to secrets rather than to files outside the project:
 These get ``needs_confirm`` (``policy.evaluate_shell_command``): the reviewer decides in
 "Approve for me", a person in "Ask for approval" (which asks for every command anyway), and
 Full access normally runs them. The independent ``github_write_reason`` gate below
-takes precedence for remote writes and unresolved effects: those always need a person.
+takes precedence for remote writes and unresolved effects: those always need a person,
+unless the sandbox leaves the command no route to a remote. Then only a remote write
+the command states still does; staging, committing and branching follow the mode.
 
 Matching parses the command (``shell_command_lexer``) instead of searching its text, so
 ``echo "git reset --hard"`` is not a reset and ``cmd /c "git clean -fdx"`` is.
@@ -215,6 +217,8 @@ def _git_reason(arguments: list[str]) -> str | None:
         return "deletes a ref (git update-ref -d)"
     if subcommand == "reflog" and positionals[:1] in (["expire"], ["delete"]):
         return "drops history (git reflog expire)"
+    if subcommand == "prune" or (subcommand == "gc" and "--prune" in flags):
+        return f"deletes unreachable history for good (git {subcommand})"
     return None
 
 
@@ -563,18 +567,35 @@ def _active_posix_expansion_or_escape(text: str) -> bool:
     return False
 
 
+class _HeldWithoutRoute(str):
+    """A reason that losing every route to a remote does not answer.
+
+    The command states a remote write. A person decides that even when this
+    run cannot reach the remote, because the statement is the user's cue.
+    """
+
+
 def github_write_reason(
     command: str,
     *,
     credential_access: bool = False,
     opaque_authentication_inputs: bool = False,
     dialect: ShellDialect | None = None,
+    remote_unreachable: bool = False,
 ) -> str | None:
     """Mandatory person decision for remote writes or unresolved command effects.
 
     Only bounded literal reads/data avoid this card. Unknown programs, aliases,
     configuration and active shell expansion never become an implicit allow,
     even without a new typed credential grant. Authentication remains separate.
+
+    ``remote_unreachable`` is the caller's statement that OS containment gives
+    this POSIX command no network, host socket or credential, and no way to
+    change what a later Git runs (configuration, hooks and the rest of
+    ``macos_git.GIT_PROGRAM_ENTRIES`` stay write-protected). Unresolved effects
+    then cannot be a remote write or stage one, so only a stated remote write
+    keeps the card. It never applies with credentials or to Windows dialects,
+    whose containment is not claimed.
     """
     from .read_only_commands import is_read_only_command
 
@@ -603,6 +624,9 @@ def github_write_reason(
             # without a newly requested credential capability (Auto/yes/Full).
             return "Unresolved shell syntax requires a separate person approval", False
         certain = True
+        # A reason that containment answers does not end the reading: a later
+        # command in the same list can still state a remote write.
+        answerable: str | None = None
         for item in parsed:
             words = list(item.words)
             # Literal environment assignments and common executable wrappers do
@@ -643,8 +667,9 @@ def github_write_reason(
                 # visible payload. Unwrap to find writes, never to prove a read.
                 certain = False
                 reason, readable = inspect(unwrapped[0], unwrapped[1], depth + 1)
-                if reason:
+                if isinstance(reason, _HeldWithoutRoute):
                     return reason, False
+                answerable = answerable or reason
                 certain &= readable
                 continue
             if unwrapped is False:
@@ -681,16 +706,25 @@ def github_write_reason(
                 else words[1:]
             )
             if name in {"git-push", "git-send-pack", "git-http-push"}:
-                return "Git remote writes require a separate person approval", False
+                return _HeldWithoutRoute(
+                    "Git remote writes require a separate person approval"
+                ), False
             if name == "git":
                 if args and args[0] in {"push", "send-pack", "http-push"}:
-                    return "Git remote writes require a separate person approval", False
+                    return _HeldWithoutRoute(
+                        "Git remote writes require a separate person approval"
+                    ), False
                 # Even literal ls-remote consumes effective Git configuration:
                 # local/worktree/includes, helpers, URL rewrites and environment
                 # may select opaque programs. No argv-only credentialed read
                 # exception until the consumer enforces a configuration boundary.
                 # Config may execute code even without a new credential grant.
-                return "Git configuration effects require a separate person approval", False
+                # Contained, it runs inside the sandbox and cannot be changed.
+                answerable = (
+                    answerable or "Git configuration effects require a separate person approval"
+                )
+                certain = False
+                continue
             elif name == "gh":
                 if args and args[0].startswith("-"):
                     return (
@@ -704,7 +738,9 @@ def github_write_reason(
                     readable = _github_api_is_read(args[1:])
                     if not readable:
                         return (
-                            "GitHub API writes or unresolved effects require a separate person approval",
+                            _HeldWithoutRoute(
+                                "GitHub API writes or unresolved effects require a separate person approval"
+                            ),
                             False,
                         )
                 else:
@@ -715,7 +751,9 @@ def github_write_reason(
                         )
                     subcommand = _command_arguments(args[1:], {"-R", "--repo", "--hostname"})
                     if subcommand and subcommand[0] in _GITHUB_MUTATIONS.get(args[0], set()):
-                        return "GitHub mutations require a separate person approval", False
+                        return _HeldWithoutRoute(
+                            "GitHub mutations require a separate person approval"
+                        ), False
                     readable = bool(
                         subcommand
                         and subcommand[0] in _GH_READS.get(args[0], set())
@@ -733,9 +771,12 @@ def github_write_reason(
                     False,
                 )
             certain &= readable and not item.redirects and words[0] == name
-        return None, certain
+        return answerable, certain and answerable is None
 
-    reason, readable = inspect(str(command or ""), dialect or host_dialect(), 0)
+    shell = dialect or host_dialect()
+    reason, readable = inspect(str(command or ""), shell, 0)
+    if remote_unreachable and shell == "posix" and not credential_access:
+        return reason if isinstance(reason, _HeldWithoutRoute) else None
     if reason:
         return reason
     if not readable:

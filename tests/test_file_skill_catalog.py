@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from hatchling.builders.sdist import SdistBuilder
 from hatchling.builders.wheel import WheelBuilder
 
@@ -52,7 +53,8 @@ def test_bundled_skills_and_references_are_selected_for_wheel_and_sdist():
         assert prefix + "alysis_code/file_staging.py" in included
 
 
-def test_crowded_skill_catalog_preserves_distinguishing_words(tmp_path, mac_computer_use_protocol):
+@pytest.mark.usefixtures("mac_computer_use_protocol")
+def test_crowded_skill_catalog_preserves_distinguishing_words(tmp_path):
     for number in range(4):
         folder = tmp_path / ".alysis_skills" / f"custom-{number}"
         folder.mkdir(parents=True)

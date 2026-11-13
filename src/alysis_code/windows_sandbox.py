@@ -291,6 +291,88 @@ def _local_path(path: Path, *, directory: bool = True) -> Path:
     return path.resolve()
 
 
+def powershell_literal(text: str) -> str:
+    """``text`` as the inside of a PowerShell single-quoted string.
+
+    PowerShell ends such a string at any of five quote characters, the
+    typographic ones included, and reads a doubled one as itself. Doubling
+    only the ASCII quote would let a folder or file name close the string
+    and add statements to the command that was judged.
+    """
+    return "".join(char * 2 if char in "'‘’‚‛" else char for char in text)
+
+
+def pointed_git_directories(roots: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Git directories behind the folders' ``.git`` files that a command could write.
+
+    Returns those to write-protect, and those that cannot be protected because
+    they are an approved folder or contain one: a write-protected folder cannot
+    hold a writable one. That includes a Git directory outside the project when
+    a folder inside it (its hooks, say) was approved, and a pointer that names
+    the project folder itself. A directory with no approved folder in or around
+    it is already unwritable and is left out.
+    """
+    from .git_safe import separate_git_directories
+
+    protect: list[Path] = []
+    unprotected: list[Path] = []
+    for workspace in roots:
+        for directory in separate_git_directories(workspace, name_rule=False, enclosing=True):
+            if any(writable.is_relative_to(directory) for writable in roots):
+                target = unprotected
+            elif any(directory.is_relative_to(writable) for writable in roots):
+                target = protect
+            else:
+                continue
+            if directory not in target:
+                target.append(directory)
+    return protect, unprotected
+
+
+def repository_directories(roots: list[Path]) -> list[Path]:
+    """The folders' Git directories that hold a repository.
+
+    ``.git`` where it is a folder, and what a ``.git`` file points to inside
+    the folders. An empty ``.git`` that only reserves the name is not one:
+    nothing but this engine has a reason to write into it.
+    """
+
+    def holds_repository(path: Path) -> bool:
+        try:
+            return (
+                not path.is_symlink() and (path / "HEAD").is_file() and (path / "objects").is_dir()
+            )
+        except OSError:
+            return False
+
+    candidates = [workspace / ".git" for workspace in roots]
+    candidates += pointed_git_directories(roots)[0]
+    return [path for path in dict.fromkeys(candidates) if holds_repository(path)]
+
+
+def git_directory_left_writable(root: Path, settings: ShellSandboxSettings) -> bool:
+    """Whether a ``.git`` file names a Git directory this sandbox cannot write-protect.
+
+    Asked by the command guard with the folders ``build_request`` will grant.
+    Anything that prevents an answer counts as yes.
+    """
+    from .project_folders import allowed_roots
+
+    try:
+        roots = list(
+            dict.fromkeys(
+                [
+                    root.resolve(),
+                    *(Path(p).resolve() for p in settings.additional_workspace_roots),
+                    *(p.resolve() for p in allowed_roots(root)[1:]),
+                ]
+            )
+        )
+        return bool(pointed_git_directories(roots)[1])
+    except (OSError, RuntimeError, ValueError, ConfigError):
+        return True
+
+
 def build_request(
     settings: ShellSandboxSettings,
     *,
@@ -300,7 +382,18 @@ def build_request(
     helper: Path,
     env_overrides: dict[str, str] | None = None,
     include_helper_read: bool = True,
+    validate_trees: bool = True,
+    real_location: bool = False,
 ) -> dict[str, Any]:
+    """The request for one command.
+
+    ``validate_trees`` refuses a folder that holds a hard-linked file or a
+    link anywhere inside. The legacy helper needs that: it grants access by
+    changing permissions, and a hard-linked file has one set of permissions
+    for all its names. ``real_location`` makes the granted folder itself the
+    command's location instead of a drive that stands for it; that needs a
+    sandbox in which PowerShell can see the folders above.
+    """
     if settings.network not in {"off", "on"}:
         raise ConfigError("Native Windows network policy must be explicitly off or on.")
     if settings.filesystem_access not in {"workspace-write", "read-only"}:
@@ -390,8 +483,9 @@ def build_request(
     )
     # Every positive recursive grant can expose another name of a hardlinked
     # file. Read-only tool/helper roots need the same checks as the workspace.
-    for path in reads:
-        _validate_workspace_tree(path)
+    if validate_trees:
+        for path in reads:
+            _validate_workspace_tree(path)
     # PowerShell resolves ancestor metadata even with SeChangeNotifyPrivilege.
     # Grant only object traversal/attributes on private profile ancestors, never
     # directory listing or inherited read access to sibling projects/secrets.
@@ -445,23 +539,37 @@ def build_request(
     # PowerShell's default C: drive tries to enumerate ancestors that an
     # AppContainer cannot read. A process-local drive starts at the granted
     # workspace, preserving relative commands without granting ancestor listing.
-    ps_root = str(cwd_root).replace("'", "''")
+    ps_root = powershell_literal(str(cwd_root))
     relative_cwd = str(cwd.relative_to(cwd_root)).replace("/", "\\")
-    ps_cwd = ("Alysis:\\" + ("" if relative_cwd == "." else relative_cwd)).replace("'", "''")
-    source = (
-        # Unqualified command discovery scans every installed module before
-        # finding these built-ins on a fresh, isolated profile. Import only our
-        # bootstrap dependencies by their trusted installation paths first.
+    ps_cwd = powershell_literal("Alysis:\\" + ("" if relative_cwd == "." else relative_cwd))
+    # Unqualified command discovery scans every installed module before
+    # finding these built-ins on a fresh, isolated profile. Import only our
+    # bootstrap dependencies by their trusted installation paths first.
+    bootstrap = (
         r"Microsoft.PowerShell.Core\Import-Module -Name "
         r'"$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1", '
         r'"$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1", '
         r'"$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" '
         "-ErrorAction Stop; "
-        f"$null = Microsoft.PowerShell.Management\\New-PSDrive -Name Alysis "
+    )
+    # The command starts on a line of its own. PowerShell quotes the line an
+    # error is on: with everything on one line a mistake in the command was
+    # reported with this preparation in front of it and a column counted from
+    # the start of it, which nobody who wrote the command could read.
+    on_the_drive = (
+        "$null = Microsoft.PowerShell.Management\\New-PSDrive -Name Alysis "
         f"-PSProvider FileSystem -Root '{ps_root}' -Scope Global -ErrorAction Stop; "
         f"Microsoft.PowerShell.Management\\Set-Location -LiteralPath '{ps_cwd}' "
-        "-ErrorAction Stop; " + cmd
+        "-ErrorAction Stop;\n"
     )
+    # "$PWD" is then a path every program takes. On the drive it was
+    # "Alysis:\", which .NET refuses ("The given path's format is not
+    # supported"), and the folder above it was the folder itself.
+    in_the_folder = (
+        "Microsoft.PowerShell.Management\\Set-Location -LiteralPath "
+        f"'{powershell_literal(str(cwd))}' -ErrorAction Stop;\n"
+    )
+    source = bootstrap + (in_the_folder if real_location else on_the_drive) + cmd
     argv = [
         str(shell),
         "-NoLogo",
@@ -472,17 +580,51 @@ def build_request(
         "-Command",
         source,
     ]
-    protected_dirs = [workspace / name for workspace in roots for name in _PROTECTED_DIRS]
+    # A folder the command was let write for one operation is not a project:
+    # the agent takes no instructions from it and no Git job runs there. What
+    # exists of these names in it stays read-only; nothing is reserved. With
+    # the reserved entries a copy of such a folder stopped at names that
+    # "already exist", a zip reported a file in use, and robocopy left eleven
+    # empty entries in the person's backup for good.
+    plain = set()
+    for value in settings.windows_plain_write_roots:
+        try:
+            plain.add(_local_path(Path(value)))
+        except ConfigError:
+            continue
+
+    def protect(path: Path) -> bool:
+        return path.exists() or not any(path.is_relative_to(folder) for folder in plain)
+
+    protected_dirs = [
+        workspace / name
+        for workspace in roots
+        for name in _PROTECTED_DIRS
+        if protect(workspace / name)
+    ]
+    # A .git file can keep the repository somewhere else. Only exact paths are
+    # protected here, so that folder is named explicitly. Git run later on the
+    # host takes its configuration and hooks from there.
+    for directory in pointed_git_directories(roots)[0]:
+        if not any(directory.is_relative_to(existing) for existing in protected_dirs):
+            protected_dirs.append(directory)
     for workspace in roots:
         for parts in project_skill_root_relative_paths():
             path = workspace.joinpath(*parts)
-            if not any(path.is_relative_to(existing) for existing in protected_dirs):
+            if protect(path) and not any(
+                path.is_relative_to(existing) for existing in protected_dirs
+            ):
                 protected_dirs.append(path)
     deny_write = [str(path) + (os.sep if not path.exists() else "") for path in protected_dirs]
     # Reserve absent instruction files too: otherwise a command could plant
     # trusted-looking instructions for the host agent's next turn. The helper
     # materializes empty, protected file placeholders before granting writes.
-    protected_files = [workspace / name for workspace in roots for name in _PROTECTED_FILES]
+    protected_files = [
+        workspace / name
+        for workspace in roots
+        for name in _PROTECTED_FILES
+        if protect(workspace / name)
+    ]
     trusted_paths = [
         *protected_dirs,
         *protected_files,
@@ -502,6 +644,21 @@ def build_request(
     for path in [*protected_dirs, *protected_files]:
         if path.exists():
             _local_path(path, directory=False)
+    if not validate_trees:
+        # Without the search for hard links one case still has to be refused:
+        # an instruction file with a second name. The command could change
+        # the file through the name that is not protected.
+        for path in protected_files:
+            try:
+                names = os.stat(path, follow_symlinks=False).st_nlink
+            except OSError:
+                continue
+            if names > 1:
+                raise ConfigError(
+                    f"{path} has another name in the file system (a hard link); "
+                    "a sandboxed command could change it through that name. "
+                    "Replace it with a copy."
+                )
     deny_write += [str(path) for path in tool_roots if path not in roots]
     # Protect the trusted engine and helper even when developing their own repository.
     deny_write += [str(helper_root), str(Path(__file__).parent)]
@@ -516,7 +673,14 @@ def build_request(
         for name in (".ssh", ".aws", ".azure", ".gnupg", ".alysis", ".sylliptor")
         if (Path.home() / name).exists()
     ]
+    if real_location:
+        # For the caller, which learns only later whether PowerShell can stand
+        # in the folder; it must take this entry out before the request is sent.
+        location = {"location": [in_the_folder, on_the_drive]}
+    else:
+        location = {}
     return {
+        **location,
         "protocol": PROTOCOL_VERSION,
         "cwd": str(cwd),
         "argv": argv,

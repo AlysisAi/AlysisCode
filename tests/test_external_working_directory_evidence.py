@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from acceptance_declared import declared_contract
 
 from alysis_code.agent.acceptance_contract import (
     AcceptanceCriterionEnforcement,
@@ -90,8 +91,11 @@ def test_same_command_elsewhere_cannot_clear_a_failure(scopes, failing_scope):
 def test_external_failure_does_not_poison_required_project_command(scopes):
     root, other, state = scopes
     state.expected_verification_commands = {"python -m unittest"}
-    state.acceptance_contract = build_acceptance_contract(
-        root=root, instruction="Run `python -m unittest`."
+    state.acceptance_contract = declared_contract(
+        root=root,
+        instruction="Run `python -m unittest`.",
+        roles={},
+        commands=["python -m unittest"],
     )
     _check(root, state, root)
     criterion = next(c for c in state.acceptance_contract.criteria if c.commands)
@@ -142,8 +146,8 @@ def test_observed_external_output_satisfies_exact_required_path(scopes, quoted_j
     root, other, state = scopes
     target = other / "new  αρχείο.txt"
     literal = json.dumps(str(target), ensure_ascii=False) if quoted_json else f'"{target}"'
-    state.acceptance_contract = build_acceptance_contract(
-        root=root, instruction=f"Create {literal}."
+    state.acceptance_contract = declared_contract(
+        root=root, instruction=f"Create {literal}.", roles={str(target): "required_output"}
     )
     criterion = next(c for c in state.acceptance_contract.criteria if c.required)
     target.write_text("verified fixture", encoding="utf-8")
@@ -212,7 +216,9 @@ def test_ambiguous_external_prose_cannot_invent_required_fragments(scopes, name)
 def test_literal_external_paths_preserve_exact_unicode_and_spacing(scopes, name):
     root, other, _ = scopes
     target = other / name
-    contract = build_acceptance_contract(root=root, instruction=f'Create "{target}".')
+    contract = declared_contract(
+        root=root, instruction=f'Create "{target}".', roles={str(target): "required_output"}
+    )
     required = [
         c for c in contract.criteria if c.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
     ]
@@ -223,8 +229,13 @@ def test_literal_external_paths_preserve_exact_unicode_and_spacing(scopes, name)
 
 def test_unquoted_unicode_relative_path_has_no_extension_whitelist(scopes):
     root, _, _ = scopes
-    contract = build_acceptance_contract(
-        root=root, instruction="Create 資料/τίτλος.unlisted_extension."
+    instruction = "Create 資料/τίτλος.unlisted_extension."
+    detected = build_acceptance_contract(root=root, instruction=instruction)
+    assert [ref.display_path for ref in detected.path_refs] == ["資料/τίτλος.unlisted_extension"]
+    contract = declared_contract(
+        root=root,
+        instruction=instruction,
+        roles={"資料/τίτλος.unlisted_extension": "required_output"},
     )
     assert contract.allowed_output_paths == {"資料/τίτλος.unlisted_extension"}
 
@@ -234,18 +245,25 @@ def test_relative_output_in_external_task_does_not_require_a_project_copy(scopes
     contract = build_acceptance_contract(
         root=root, instruction=f'Inspect "{other}". Create shell-note.txt in that directory.'
     )
-    output = next(
+    # A mention is a hint. Nothing the request wrote makes a project copy required.
+    assert not [
         c for c in contract.criteria if c.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
+    ]
+    assert all(
+        c.enforcement == AcceptanceCriterionEnforcement.ADVISORY
+        for c in contract.criteria
+        if c.path_refs
     )
-    assert output.enforcement == AcceptanceCriterionEnforcement.ADVISORY
     assert not contract.allowed_output_paths
     assert not contract.expectations
 
 
 def test_absolute_project_requirement_remains_exact_in_a_mixed_task(scopes):
     root, other, _ = scopes
-    contract = build_acceptance_contract(
-        root=root, instruction=f'Inspect "{other}". Create "{root / "summary.txt"}".'
+    contract = declared_contract(
+        root=root,
+        instruction=f'Inspect "{other}". Create "{root / "summary.txt"}".',
+        roles={str(root / "summary.txt"): "required_output"},
     )
     output = next(
         c for c in contract.criteria if c.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
@@ -273,9 +291,15 @@ def test_external_prose_does_not_turn_a_command_or_format_into_a_project_check(s
 
 def test_absolute_interpreter_is_not_an_external_task_folder(scopes):
     root, _, _ = scopes
-    contract = build_acceptance_contract(
+    instruction = 'Run `"/opt/toolchain/bin/python" check.py`. Preserve check.py unchanged.'
+    detected = build_acceptance_contract(root=root, instruction=instruction)
+    assert not any(ref.absolute_path.startswith("/opt/") for ref in detected.path_refs)
+    assert detected.request_commands == ['"/opt/toolchain/bin/python" check.py']
+    contract = declared_contract(
         root=root,
-        instruction='Run `"/opt/toolchain/bin/python" check.py`. Preserve check.py unchanged.',
+        instruction=instruction,
+        roles={},
+        commands=['"/opt/toolchain/bin/python" check.py'],
     )
     assert not any(ref.absolute_path.startswith("/opt/") for ref in contract.path_refs)
     commands = [item for item in contract.criteria if item.commands]

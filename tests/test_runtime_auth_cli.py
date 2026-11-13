@@ -444,3 +444,88 @@ def test_auth_logout_does_not_claim_success_when_provider_could_not_run(monkeypa
     assert result.exit_code == 1
     assert "Logout failed" in result.output
     assert "Disconnected" not in result.output
+
+
+def _bridge_answer(method: str, params: dict) -> dict:
+    import io
+
+    from alysis_code.ide.stdio_bridge import StdioBridge
+
+    out = io.StringIO()
+    StdioBridge(stdout=out).process_line(
+        json.dumps({"protocol_version": "1", "id": method, "method": method, "params": params})
+        + "\n"
+    )
+    return json.loads(out.getvalue().splitlines()[0])
+
+
+def test_bridge_provider_auth_select_model_is_the_cli_selection(monkeypatch) -> None:
+    adapter = _DirectAdapter()
+    cfg = _api_active_with_subscription(adapter)
+    saved: list[AppConfig] = []
+    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        cli_mod, "save_config", lambda value: saved.append(value.model_copy(deep=True))
+    )
+    monkeypatch.setattr(auth_mod, "create_provider_auth", lambda _provider_id: adapter)
+
+    answer = _bridge_answer(
+        "provider.auth.selectModel",
+        {
+            "workspace_trusted": True,
+            "provider_id": "openai-codex",
+            "model": "gpt-codex-test",
+            "reasoning_effort": "medium",
+        },
+    )
+
+    assert answer["ok"] is True, answer
+    result = answer["result"]
+    assert {key: result[key] for key in ("id", "profile_name", "model", "reasoning_effort")} == {
+        "id": "openai-codex",
+        "profile_name": "chatgpt-codex",
+        "model": "gpt-codex-test",
+        "reasoning_effort": "medium",
+    }
+    assert result["changed"] is True
+    assert len(saved) == 1
+    persisted = saved[0]
+    assert persisted.extra_fields["active_profile"] == "chatgpt-codex"
+    assert persisted.model == "gpt-codex-test"
+    assert get_active_profile(persisted).reasoning_effort == "medium"
+    assert adapter.access_token not in json.dumps(answer)
+
+
+def test_bridge_provider_auth_select_model_refuses_without_writing(monkeypatch) -> None:
+    adapter = _DirectAdapter()
+    cfg = _api_active_with_subscription(adapter)
+    saved: list[AppConfig] = []
+    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(cli_mod, "save_config", lambda value: saved.append(value))
+    monkeypatch.setattr(auth_mod, "create_provider_auth", lambda _provider_id: adapter)
+
+    answer = _bridge_answer(
+        "provider.auth.selectModel",
+        {"workspace_trusted": True, "provider_id": "openai-codex", "model": "missing-model"},
+    )
+
+    assert answer["ok"] is False
+    assert "not available" in answer["error"]["message"]
+    assert saved == []
+
+
+def test_bridge_provider_auth_reasoning_matches_the_cli(monkeypatch) -> None:
+    adapter = _DirectAdapter()
+    cfg = _api_active_with_subscription(adapter)
+    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(auth_mod, "create_provider_auth", lambda _provider_id: adapter)
+
+    # An API-key profile: the app reads effort choices this way for those (subscriptions list theirs).
+    cli = CliRunner().invoke(app, ["auth", "reasoning", "api-model", "--profile", "openai-api"])
+    assert cli.exit_code == 0, cli.output
+    answer = _bridge_answer(
+        "provider.auth.reasoning", {"model": "api-model", "profile": "openai-api"}
+    )
+
+    assert answer["ok"] is True, answer
+    assert answer["result"]["models"] == json.loads(cli.stdout)

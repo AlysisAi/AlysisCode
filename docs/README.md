@@ -60,3 +60,19 @@ configuration, operation, extension points, and security in more detail.
 - [Selected-account GitHub actions](github-host-actions.md)
 - [Google Workspace plugins](GOOGLE_WORKSPACE_PLUGINS.md)
 - [Open-file inspection](open-panel-inspection.md)
+- [Owls (Bots) development guide](bots.md)
+- [Windows desktop release preparation](windows-desktop-release.md)
+- [ChatGPT plan usage](chatgpt-plan-usage.md)
+
+## Engine contracts and evidence
+
+- [Provider tool-contract recovery](provider-tool-contract-recovery.md)
+- [Connector result references and completion evidence](connector-result-evidence.md)
+- [Durable task budget for editor callers](task-budget-ide.md)
+- [Computer Use approval expiry](computer-use-approval-expiry.md)
+- [Computer Use completion evidence for local output files](computer-use-output-completion.md)
+- [Computer Use selected-file upload evidence](computer-use-upload-objective-evidence.md)
+- [Computer Use verification grammar and failure codes](computer-use-local-verification-diagnostics.md)
+- [Computer Use protected call diagnostics](computer-use-call-diagnostics.md)
+- [Plugin mutation primitives](plugin_mutation_primitives.md)
+- [CLI and TUI platform qualification](tui-platform-qualification.md)

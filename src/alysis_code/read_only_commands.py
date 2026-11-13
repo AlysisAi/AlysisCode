@@ -534,13 +534,13 @@ def _git(arguments: list[str], dialect: ShellDialect) -> bool:
     if subcommand in _GIT_ANY_ARGUMENTS:
         return True
     if subcommand == "branch":
-        if any(o.split("=", 1)[0] in _GIT_BRANCH_CHANGES for o in options):
+        if any(_git_names(o, _GIT_BRANCH_CHANGES) for o in options):
             return False
         return not _positionals(options) or any(
             o.split("=", 1)[0] in _GIT_LIST_FILTERS for o in options
         )
     if subcommand == "tag":
-        if any(o.split("=", 1)[0] in _GIT_TAG_CHANGES for o in options):
+        if any(_git_names(o, _GIT_TAG_CHANGES) for o in options):
             return False
         return not _positionals(options) or any(o in {"-l", "--list"} for o in options)
     if subcommand == "remote":
@@ -552,7 +552,7 @@ def _git(arguments: list[str], dialect: ShellDialect) -> bool:
     if subcommand == "reflog":
         return not options or options[0] == "show" or options[0].startswith("-")
     if subcommand == "config":
-        if any(o.split("=", 1)[0] in _GIT_CONFIG_WRITES for o in options):
+        if any(_git_names(o, _GIT_CONFIG_WRITES) for o in options):
             return False
         if options and options[0] in {"list", "get"}:
             return True
@@ -561,7 +561,30 @@ def _git(arguments: list[str], dialect: ShellDialect) -> bool:
 
 
 def _git_option_writes(option: str) -> bool:
-    return option.startswith(_GIT_WRITING_OPTION_PREFIXES)
+    """Options that make an inspecting Git command write a file or start a program.
+
+    Git accepts any unique abbreviation of a long option and lets short options
+    be combined, so ``--open-files-in-pa=cat`` and ``-lOcat`` name the same
+    things as the full spellings.
+    """
+    name = option.split("=", 1)[0]
+    if name.startswith("--"):
+        return len(name) > 3 and any(
+            name.startswith(full) or full.startswith(name)
+            for full in _GIT_WRITING_OPTION_PREFIXES
+            if full.startswith("--")
+        )
+    return name.startswith("-") and "O" in name
+
+
+def _git_names(option: str, known: frozenset[str]) -> bool:
+    """Whether ``option`` is one of ``known`` or an abbreviation Git accepts for one."""
+    name = option.split("=", 1)[0]
+    return name in known or (
+        name.startswith("--")
+        and len(name) > 3
+        and any(full.startswith(name) for full in known if full.startswith("--"))
+    )
 
 
 _SPECIAL_RULES: dict[str, Callable[[list[str], ShellDialect], bool]] = {

@@ -30,15 +30,14 @@ from alysis_code.llm.types import LLMResponse
 from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.verification_contract import build_verification_command_spec
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 _FAILED = "python3 -m unittest tests.test_required -v"
 _PASSED = "python3 -m unittest tests.test_passing -v"
 _PASS_OUTPUT = "Ran 1 test in 0.001s\n\nOK\n"
 _FAIL_OUTPUT = (
     "AssertionError: required result differs\nRan 1 test in 0.001s\n\nFAILED (failures=1)\n"
 )
-
-
-pytestmark = pytest.mark.usefixtures("approved_local_checks")
 
 
 def _row(command: str, code: int, **extra: Any) -> dict[str, Any]:

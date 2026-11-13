@@ -2,6 +2,7 @@
 
 The engine can exchange messages between existing Code/Work/terminal sessions.
 Each recipient uses its own model, workspace, conversation and execution mode.
+The desktop has no routing or execution implementation for this feature.
 
 ## Enable and authorize
 
@@ -42,6 +43,22 @@ Open engine sessions receive messages automatically. Busy sessions ingest peer
 data between complete tool batches. An idle recipient starts a peer turn. The
 desktop engine bridge schedules that turn through its existing durable job
 queue, retaining its normal progress, cancellation and execution ownership.
+
+The desktop passively refreshes the visible transcript from bounded engine
+log windows. Unchanged logs require only a revision check. These reads never
+select a chat, change permissions, route messages or start an engine job. A new
+human submission or navigation takes precedence over an outstanding read.
+While a desktop turn owns the conversation, passive reads update only peer
+message cards; the turn continues to own ordinary user and assistant messages.
+
+Audited sends and receives appear as separate **Sent to** and **Received from**
+cards with the original text, the peer's local sidebar name (or session ID), a
+copy button and the last reported delivery status. Clicking a known peer opens
+its chat. Engine receipt events update the cards without waking a model or
+creating another message. The text is displayed literally and never enters
+human/assistant history through the UI. Older logs recover original text only
+from a matching successful tool result; when it is unavailable, the card says
+so instead of reconstructing it from a model summary.
 
 The default full-screen CLI displays live sends and receives as separate
 **Sent to** / **Received from** blocks, with literal wrapped text and the stable

@@ -79,10 +79,12 @@ def test_managed_completion_uses_task_requirements_and_keeps_model_context(
     assert context in observed_messages
     events = list(read_session_events(tmp_path / "sessions" / "managed-task.jsonl"))
     contract = next(event["payload"] for event in events if event["type"] == "acceptance_contract")
-    required = {
-        path
+    # The contract reads the task's requirements, not the setup guidance around
+    # them; a mention is a reference, never a requirement by its wording.
+    mentioned = {path for criterion in contract["criteria"] for path in criterion["paths"]}
+    assert mentioned == {"answer.txt"}
+    assert not [
+        criterion
         for criterion in contract["criteria"]
         if criterion["kind"] == "required_artifact_path"
-        for path in criterion["paths"]
-    }
-    assert required == {"answer.txt"}
+    ]

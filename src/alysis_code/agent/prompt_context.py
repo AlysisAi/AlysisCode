@@ -846,13 +846,15 @@ def _sandbox_git_policy_line(cfg: Any) -> str | None:
         return None
     if seatbelt:
         return (
-            "git_policy: macOS runs real Git under Seatbelt. Literal Git commands and lists "
-            "made entirely of Git commands using &&, || or ; receive repository metadata access. "
-            "Use && for dependent operations and check the actual exit code; mixed shell commands, "
-            "redirects and expansions keep ordinary metadata protection unless the exact command receives "
-            "permissions.git_metadata=true. Hooks remain sandboxed. "
-            "Use the tool's cwd argument instead of a leading cd for literal Git commands. "
-            "Folder-write grants do not remove Git metadata protection for mixed scripts. "
+            "git_policy: literal Git commands, and lists of them joined by &&, || or ;, write the "
+            "repository (commit, branch, merge, stash; a plain git init on its own) without approval, "
+            "but never its config, hooks, rebase state or the .git entry. "
+            "Those (git config, remote, clone, rebase, upstream tracking) need "
+            "permissions.git_metadata=true, which a person approves; branch from a remote branch "
+            "with --no-track. Use && for dependent operations and check the exit code; mixed shell "
+            "commands, redirects, globs and expansions keep .git write-protected unless the exact "
+            "command receives permissions.git_metadata=true. Hooks remain sandboxed. "
+            "Use the tool's cwd argument instead of a leading cd. "
             "For private GitHub clone/fetch/pull/push/ls-remote, request operation-only permissions.github_auth=true with networking. The contained command and its children receive the saved GitHub CLI account credential with its full authority; GitHub SSH URLs then use HTTPS. For actual SSH or other authenticated workflows, "
             "request exact permissions.read_files, names in permissions.environment, or permissions.ssh_agent. "
             "These are reviewed for one operation under the current approval mode; never put credential values in tool arguments. "
@@ -886,7 +888,16 @@ def _sandbox_git_policy_line(cfg: Any) -> str | None:
             "git_policy: use separate literal commands for Git. Read-only inspections, "
             "branch creation and switching, staging/commits, merge, rebase, cherry-pick, revert, "
             "stash, reset/restore, tags, worktrees and submodules are available. Inspections use a "
-            "contained reader; writes use pinned native Git with approved-repository metadata access. "
+            "contained reader; writes use pinned native Git. Staging, committing, branching, "
+            "merging, stashing, resetting and tagging write the repository's objects, refs and "
+            "index and follow the session's mode. Git's configuration, hooks, a rebase in "
+            "progress, remotes and the Git directories of submodules and other worktrees are "
+            "not writable for them: a command that needs those (config, remote, rebase, "
+            "upstream tracking or renaming of a branch, submodule or worktree setup) needs "
+            "operation-only permissions.git_metadata=true on that literal Git command, which a "
+            "person approves. Without it git config and git remote can read and not write; "
+            "branch from a remote branch with --no-track. A plain git init needs nothing; "
+            "clone asks a person. "
             "Hooks and filters execute inside the same sandbox. SSH file-key signing is available "
             "for a configured key accessible to the sandbox; private keyrings and signing agents are "
             "not exposed. The bundled SSH provider implements signing only, not verify-commit or "
@@ -1033,11 +1044,67 @@ def _shell_execution_context_line(
     if backend in {"windows-native", "windows-mxc"}:
         if system != "windows":
             return f"shell_run: backend={backend}; unavailable on this platform."
-        return (
+        line = (
             f"shell_run: backend={backend}; shell=Windows PowerShell (powershell.exe, "
             "not pwsh); use Windows PowerShell syntax, not cmd.exe or POSIX shell syntax. "
-            "Backend startup still requires successful helper validation."
         )
+        if backend == "windows-mxc":
+            # What a command meets in this sandbox and cannot find out without a
+            # failed attempt. Each sentence states something measured on the
+            # real sandbox (docs/windows-cli-sandbox.md, "What a command finds
+            # around it"); none of it is advice about the task.
+            from ..skills.discovery import project_skill_root_relative_paths
+            from ..windows_sandbox import _PROTECTED_DIRS, _PROTECTED_FILES
+
+            # A skill folder below a folder that is reserved as a whole needs
+            # no entry of its own. One below an ordinary folder is named in
+            # full: ".github/skills" is reserved, ".github" is the person's.
+            reserved = ", ".join(
+                dict.fromkeys(
+                    (
+                        *_PROTECTED_FILES,
+                        *_PROTECTED_DIRS,
+                        *(
+                            "/".join(parts)
+                            for parts in project_skill_root_relative_paths()
+                            if parts[0] not in _PROTECTED_DIRS
+                        ),
+                    )
+                )
+            )
+            line += (
+                "This is Windows PowerShell 5.1: && and || do not exist, so chain with ; or "
+                "if ($?) { ... }. In a PowerShell error, line 2 is the first line of your "
+                "command. Git Bash, sh and WSL do not start in this sandbox. "
+                "Programs on the user's PATH are available, with what they keep in the "
+                "user's home folder, in APPDATA and in Program Files: those are the user's "
+                "real folders, readable and never writable. Credential folders, the user's "
+                "documents, browser and chat-app profiles and the user's own local "
+                "application data are not readable. A program that is installed but not "
+                "found, or that cannot read its own files, is in a folder the sandbox does "
+                "not grant: request permissions.read_folders for that folder. "
+                "LOCALAPPDATA and TEMP are private scratch that is deleted when the command "
+                "ends. A tool that has to write in the home folder or in APPDATA is refused "
+                "with an access error: a global install, or a package cache there "
+                "(~/.cargo/registry, ~/go/pkg/mod) when a dependency is not downloaded yet. "
+                "Install into the project (a virtual environment, node_modules), or request "
+                "permissions.write_folders for that one folder. cargo cannot resolve host "
+                "names with permissions.network alone: request permissions.local_preview "
+                "with it. "
+                "Not reachable from the sandbox: the clipboard, other programs through COM "
+                "(Word, Excel), Windows services, WMI/CIM, and opening a page in the browser. "
+                "Say so instead of retrying. Get-PSDrive shows no free space there; "
+                "[System.IO.DriveInfo] does. "
+                "Without permissions.local_preview every connection to 127.0.0.1 is refused "
+                "with an access error, also to a server the same command started: request it "
+                "for tests and tools that use a local port. "
+                f"The sandbox reserves these paths in the project folder: {reserved}. Empty "
+                "entries for them, and an empty folder above a nested one, appear while a "
+                "command runs, and for as long as a background command runs. An empty one "
+                "is the sandbox's, not the user's: do not report it as project content, and "
+                "do not edit or delete it. "
+            )
+        return line + "Backend startup still requires successful helper validation."
     if backend in {"bwrap", "docker", "seatbelt"}:
         line = f"shell_run: backend={backend}; shell=sh; use POSIX shell syntax."
         if backend == "seatbelt":

@@ -14,6 +14,10 @@ class LLMError(RuntimeError):
         super().__init__(sanitize_error_text_for_output(message))
 
 
+class LLMEmptyResponseError(LLMError):
+    """The provider finished a response that held neither text nor a tool call."""
+
+
 class LLMStreamNoProgressError(LLMError):
     """A streaming attempt produced no meaningful provider payload in time."""
 

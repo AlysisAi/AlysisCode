@@ -241,6 +241,14 @@ def steer_inbox_for(session: object, *, create: bool = False) -> SteerInbox | No
     return inbox
 
 
+# How the host writes into the conversation what the user's side adds to a turn
+# that is already running. Both continue the request being worked on; neither
+# starts a new one.
+MID_TURN_USER_MESSAGE_PREFIX = "[Mid-turn message from the user] "
+USER_QUESTION_RESPONSE_PREFIX = "[User question response] "
+TURN_CONTINUATION_PREFIXES = (MID_TURN_USER_MESSAGE_PREFIX, USER_QUESTION_RESPONSE_PREFIX)
+
+
 def build_steer_messages(messages: list[str]) -> list[dict[str, str]]:
     """Build durable user-history messages from drained steering text."""
     built: list[dict[str, str]] = []
@@ -251,7 +259,7 @@ def build_steer_messages(messages: list[str]) -> list[dict[str, str]]:
         built.append(
             {
                 "role": "user",
-                "content": f"[Mid-turn message from the user] {text}",
+                "content": f"{MID_TURN_USER_MESSAGE_PREFIX}{text}",
             }
         )
     return built

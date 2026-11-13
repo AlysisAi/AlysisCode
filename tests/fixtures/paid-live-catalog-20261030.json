@@ -1,5 +1,7 @@
 {
+  "checkedAt": "2026-10-30T13:21:54.81875+00:00",
   "source": "public.get_public_plan_catalog",
+  "project": "vzigujbcjjmpntxhmyvr",
   "plans": [
     {
       "plan": "plan_1",

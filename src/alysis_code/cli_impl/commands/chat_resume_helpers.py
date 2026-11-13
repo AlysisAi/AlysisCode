@@ -857,7 +857,10 @@ def _load_chat_resume_messages(
     synthesized_tool_results: list[str] | None = None,
     event_records: Any = None,
 ) -> list[dict[str, Any]]:
+    from ...memory_evidence import EVENT, bounded, history_marker
+
     out: list[dict[str, Any]] = []
+    memory_receipts = []
     pending_tool_calls: list[dict[str, Any]] = []
     pending_tool_index = 0
 
@@ -870,7 +873,15 @@ def _load_chat_resume_messages(
         if role == "user":
             pending_tool_calls = []
             pending_tool_index = 0
-        if out and out[-1].get("role") == role and out[-1].get("content") == raw_content:
+        # Assistant text can be logged by both assistant_message and final.
+        # Separate user submissions (including a retry after an error) remain
+        # separate accepted inputs, even when their text happens to match.
+        if (
+            role == "assistant"
+            and out
+            and out[-1].get("role") == role
+            and out[-1].get("content") == raw_content
+        ):
             return
         out.append({"role": role, "content": raw_content})
 
@@ -955,8 +966,11 @@ def _load_chat_resume_messages(
             # actionable capsule because the subagent coordinator itself is not
             # rehydrated across sessions.
             out = []
+            memory_receipts = []
             pending_tool_calls = []
             pending_tool_index = 0
+        elif event_type == EVENT:
+            memory_receipts = bounded([*memory_receipts, payload])
         elif event_type == "conversation_summary_updated":
             compacted_messages = payload.get("active_conversation_messages")
             if isinstance(compacted_messages, list):
@@ -983,6 +997,8 @@ def _load_chat_resume_messages(
                     ) = _restored_snapshot_pending_tool_state(restored)
         elif event_type == "user_message":
             _append_message("user", _user_message_display_content(payload))
+            if out and out[-1].get("role") == "user":
+                out[-1]["_memory_turn_id"] = event.get("event_id")
         elif event_type == "steer_message_delivered":
             # Messages the user sent during a turn joined history at a step
             # boundary; replay them where they were delivered.
@@ -1036,6 +1052,12 @@ def _load_chat_resume_messages(
     repaired_ids = _reconcile_chat_resume_tool_results(out)
     if repaired_ids and synthesized_tool_results is not None:
         synthesized_tool_results.extend(repaired_ids)
+    if memory_receipts:
+        out.insert(0, history_marker(memory_receipts))
+    memory_turns = {r.get("turn_id") for r in memory_receipts}
+    for message in out:
+        if message.get("_memory_turn_id") not in memory_turns:
+            message.pop("_memory_turn_id", None)
     return out
 
 

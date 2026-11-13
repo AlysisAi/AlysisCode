@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from alysis_code import alysis_cloud
 from alysis_code.provider_url import (
     ALYSIS_GATEWAY_LABEL,
     display_endpoint,
@@ -16,6 +17,8 @@ from alysis_code.provider_url import (
     is_loopback_endpoint,
     known_provider_key_from_base_url,
 )
+
+_ALYSIS_PRESET_URL = alysis_cloud.gateway_base_url()
 
 
 @pytest.mark.parametrize(

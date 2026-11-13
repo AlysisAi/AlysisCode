@@ -267,7 +267,7 @@ export function cliCommandEnvironment(config: AlysisConfig): NodeJS.ProcessEnv {
   if (config.sandboxProfile !== "default") {
     for (const section of ["SHELL", "VERIFY"]) {
       const key = `ALYSIS_${section}_SANDBOX_MODE`;
-      const legacyKey = `SYLLIPTOR_${section}_SANDBOX_MODE`;
+      const legacyKey = `ALYSIS_${section}_SANDBOX_MODE`;
       if (env[key] === undefined && env[legacyKey] === undefined) env[key] = config.sandboxProfile;
     }
   }

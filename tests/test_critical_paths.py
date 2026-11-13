@@ -88,3 +88,28 @@ def test_targets_resolve_against_the_working_folder(layout) -> None:  # type: ig
     src = layout["project"] / "src"
     assert _targets("rm -rf ..", layout, dialect="posix", cwd=src) == [layout["project"]]
     assert _targets("rm -rf .", layout, dialect="posix", cwd=src) == []
+
+
+@pytest.mark.parametrize("dialect", ["posix", "cmd", "powershell"])
+def test_another_spelling_of_the_project_folder_is_the_project_folder(layout, dialect) -> None:  # type: ignore[no-untyped-def]
+    other = Path(str(layout["project"]).upper())
+    if dialect == "cmd" and not other.drive:
+        pytest.skip("cmd absolute paths require a Windows drive")
+    try:
+        same = other.samefile(layout["project"])
+    except OSError:
+        same = False
+    if not same:
+        pytest.skip("this volume tells letter case apart")
+    commands = {
+        "posix": f"rm -rf '{other.as_posix()}'",
+        "cmd": f'rd /s /q "{other}"',
+        "powershell": f"Remove-Item -Recurse -Force '{other}'",
+    }
+    assert _targets(commands[dialect], layout, dialect=dialect) == [other]
+
+
+def test_a_loop_of_links_among_the_targets_does_not_hide_the_project(layout) -> None:  # type: ignore[no-untyped-def]
+    loop = layout["project"] / "loop"
+    loop.symlink_to(loop)
+    assert _targets("rm -rf loop .", layout, dialect="posix") == [layout["project"]]

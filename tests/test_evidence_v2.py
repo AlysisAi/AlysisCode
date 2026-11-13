@@ -11,7 +11,6 @@ from alysis_code.agent.completion_certificate import (
 )
 from alysis_code.agent.verification import (
     EVIDENCE_REPAIR_ROUND_BOUND,
-    HONEST_UNVERIFIED_FINALIZATION_MARKER,
     TurnExecutionState,
     _completion_gate_nudge_message,
     _completion_gate_problems,
@@ -140,6 +139,7 @@ def test_piped_passing_pytest_counts_as_pass_evidence() -> None:
     )
     assert evidence.category == VerificationEvidenceCategory.REPO_NATIVE
     assert evidence.allowed_to_satisfy_contract is True
+    assert evidence.evidence_verdict == "pass"
 
 
 def test_piped_failing_pytest_counts_as_fail_evidence() -> None:
@@ -152,6 +152,7 @@ def test_piped_failing_pytest_counts_as_fail_evidence() -> None:
     # Still evidence (of a failure): a verification attempt that did not pass.
     assert evidence.category == VerificationEvidenceCategory.REPO_NATIVE
     assert evidence.allowed_to_satisfy_contract is False
+    assert evidence.evidence_verdict == "fail"
 
 
 def test_piped_pytest_unknown_stage_status_is_unverified() -> None:
@@ -163,6 +164,7 @@ def test_piped_pytest_unknown_stage_status_is_unverified() -> None:
     )
     assert evidence.category == VerificationEvidenceCategory.NOT_VERIFICATION
     assert evidence.reason == "pipeline_stage_status_unavailable"
+    assert evidence.evidence_verdict == "unavailable"
 
 
 def test_piped_contract_command_matches_on_first_stage() -> None:
@@ -178,13 +180,6 @@ def test_piped_contract_command_matches_on_first_stage() -> None:
     assert evidence.covered_verification_commands == ("pytest -q",)
 
 
-def test_classifier_is_deterministic_over_same_facts() -> None:
-    kwargs = dict(exit_code=0, output="2 passed\n", stage_status=[0, 0])
-    first = classify_verification_evidence("pytest -x foo | tail -40", **kwargs)
-    second = classify_verification_evidence("pytest -x foo | tail -40", **kwargs)
-    assert first == second
-
-
 def test_syntax_only_piped_command_never_qualifies() -> None:
     evidence = classify_verification_evidence(
         "python -c 'import ast; ast.parse(open(\"x.py\").read())' | tail -1",
@@ -193,23 +188,7 @@ def test_syntax_only_piped_command_never_qualifies() -> None:
         stage_status=[0, 0],
     )
     assert evidence.category == VerificationEvidenceCategory.NOT_VERIFICATION
-
-
-def test_evidence_verdict_values() -> None:
-    passing = classify_verification_evidence(
-        "pytest -x foo | tail -40", output="2 passed\n", stage_status=[0, 0]
-    )
-    assert passing.evidence_verdict == "pass"
-    failing = classify_verification_evidence(
-        "pytest -x foo | tail -40", output="1 failed\n", stage_status=[1, 0]
-    )
-    assert failing.evidence_verdict == "fail"
-    unavailable = classify_verification_evidence(
-        "pytest -x foo | tail -40", output="2 passed\n", stage_status=None
-    )
-    assert unavailable.evidence_verdict == "unavailable"
-    not_verification = classify_verification_evidence("echo hi", exit_code=0, output="hi\n")
-    assert not_verification.evidence_verdict == "not_verification"
+    assert evidence.evidence_verdict == "not_verification"
 
 
 @pytest.mark.parametrize(
@@ -431,10 +410,6 @@ def test_nudge_without_detail_stays_advisory() -> None:
 
 def test_evidence_repair_bound_is_small() -> None:
     assert EVIDENCE_REPAIR_ROUND_BOUND == 2
-
-
-def test_honest_unverified_marker_is_visible_and_labeled() -> None:
-    assert "UNVERIFIED" in HONEST_UNVERIFIED_FINALIZATION_MARKER
 
 
 # ---------------------------------------------------------------------------

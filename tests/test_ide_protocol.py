@@ -111,8 +111,6 @@ def test_capabilities_advertise_fenced_host_action_protocol() -> None:
         "workspace_trust_required": True,
         "workspace_fenced": True,
         "capability_fenced": True,
-        "approval_authority": "engine",
-        "approval_protocol": 1,
         "request_event": "host_action_requested",
         "cancellation_event": "host_action_cancelled",
         "session_closed_event": "session_closed",
@@ -120,6 +118,8 @@ def test_capabilities_advertise_fenced_host_action_protocol() -> None:
         "actions": list(HOST_ACTIONS),
         "max_argument_bytes": 8 * 1024,
         "max_result_bytes": 64 * 1024,
+        "approval_protocol": 1,
+        "approval_authority": "engine",
         "late_responses_rejected": True,
         "duplicate_responses_rejected": True,
     }

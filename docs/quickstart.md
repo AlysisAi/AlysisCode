@@ -81,12 +81,16 @@ and `pipx install alysis-code`. Open a new terminal after `ensurepath`.
 If your default Python is older than 3.11, select a newer interpreter:
 
 ```bash
-pipx install --python python3.12 alysis-code
+brew install pipx
+pipx ensurepath
+pipx install alysis-code
 ```
 
 Virtual-environment installs also work. Activate the environment before running:
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 python -m pip install alysis-code
 ```
 
@@ -113,24 +117,43 @@ cd /path/to/project
 alysis
 ```
 
-On a fresh install, setup starts with **Connection Method** and asks:
-**How would you like to connect Alysis Code to AI models?**
+On a fresh install, setup opens **Connect a Provider**, one list that covers
+every way to reach a model:
 
-- **Use an API key** continues through provider, API key, default model,
-  optional router model, workspace, and sandbox setup. Leave the router model
-  unset to inherit the default, or choose a smaller/cheaper model for
-  lightweight request routing.
-- **Use an AI subscription** opens a second screen of supported provider
-  connections, then asks for the workspace and skips API-key setup. The adapter
-  owns provider sign-in; Alysis Code keeps its native agent loop, tools, and TUI.
-  After sign-in, choose the model and reasoning effort in `/config`.
+- **Alysis Code account** signs in through the browser and needs no API key.
+- **AI subscriptions**, such as ChatGPT, sign in through the browser with your
+  plan. The adapter owns provider sign-in; Alysis Code keeps its native agent
+  loop, tools, and TUI. After sign-in, choose the model and reasoning effort in
+  `/config`.
+- **API-key providers** ask for the key, then the default model.
+- **Advanced / local / compatibility providers** cover local endpoints (Ollama,
+  LM Studio, vLLM), custom URLs, and legacy OpenAI-compatible presets.
+
+For **Grok 4.7**, choose **xAI Grok** and supply an xAI API key (or set
+`XAI_API_KEY`). The preset uses `https://api.x.ai/v1` and selects `grok-4.7`
+by default. Existing xAI users can select **Grok 4.7** in
+`/config → Default Model`, keep the supplied base URL, choose `low`, `medium`,
+`high`, `xhigh`, or `auto`, then save. `auto` uses xAI's default of `high`;
+reasoning cannot be disabled. Text, images, streaming, and function calls use
+the existing xAI Chat Completions connection.
+
+The [official Grok 4.7 release notes](https://docs.x.ai/developers/release-notes)
+specify a 500,000-token shared context window. Catalog cost estimates use the
+base prices of $2 input, $0.50 cached input, and $6 output per million tokens;
+xAI doubles those rates above 200,000 prompt tokens, which Alysis's flat-price
+estimates do not yet account for. Grok 4.7 Fast is available only in Cursor and
+Grok Build and is not offered in the public-API picker.
+
+Setup then asks for the workspace folder and checks the sandbox (see
+[Sandbox Setup](#sandbox-setup)). The classic prompt-based setup asks for the
+connection method first (**Use an API key** or **Use an AI subscription**), lists
+the Alysis Code account under **Use an API key**, and also offers an optional
+router model: leave it unset to inherit the default, or choose a smaller model
+for lightweight request routing.
 
 Setup does not ask for main-agent, task, or subagent step budgets. Execution is
 autonomous by default and continues until completion; explicit step or
 wall-clock limits are optional advanced safeguards.
-
-The Alysis Code-hosted account option also remains under **Use an API key** and
-uses its own sign-in instead of requiring a third-party provider key.
 
 Re-run setup anytime:
 
@@ -232,13 +255,25 @@ different workspace mid-session.
 
 ## Sandbox Setup
 
-Alysis Code can run shell and verification commands through Docker or Bubblewrap. For the simplest
-first run on macOS or Windows, install Docker Desktop first, then run:
+Shell and verification commands run inside a sandbox by default, through Bubblewrap or Docker.
+
+On Linux and WSL, install Bubblewrap. Setup offers to run this for you when no sandbox is found:
+
+```bash
+sudo apt update && sudo apt install -y bubblewrap
+```
+
+On macOS, or on Windows without WSL, install Docker Desktop, then prepare the image:
 
 ```bash
 alysis sandbox setup
-alysis sandbox doctor --smoke
 alysis sandbox pull
+```
+
+Check either backend with:
+
+```bash
+alysis sandbox doctor --smoke
 ```
 
 See [Shell sandbox](shell_sandbox.md) for backend selection, production image pinning, and troubleshooting.

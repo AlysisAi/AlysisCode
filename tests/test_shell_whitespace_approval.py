@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 
 import pytest
@@ -134,4 +135,28 @@ def test_other_unresolved_and_windows_spellings_require_person(gate_harness, dia
     assert not dispatched
     assert any(
         x.kind == "shell_run" and x.metadata.get("always_ask_person") for x in surface.requests
+    )
+
+
+def test_runtime_identity(record_property):
+    import platform
+    import sys
+    from pathlib import Path
+
+    import alysis_code
+
+    record_property(
+        "runtime",
+        json.dumps(
+            {
+                "python": sys.version,
+                "executable": sys.executable,
+                "platform": platform.platform(),
+                "pytest": pytest.__version__,
+                "engine": str(Path(alysis_code.__file__).resolve()),
+                "HOME": os.environ["HOME"],
+                "TMPDIR": os.environ.get("TMPDIR"),
+            },
+            sort_keys=True,
+        ),
     )

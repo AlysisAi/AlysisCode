@@ -457,7 +457,8 @@ def initialize_repository(root):
         ("add", "."),
         ("commit", "-m", "Initial"),
     ]:
-        result = git(root, *arguments)
+        # Changing configuration is the one step here that a person approves.
+        result = git(root, *arguments, git_metadata_access=arguments[0] == "config")
         assert result.returncode == 0, result.stderr
 
 
@@ -506,8 +507,14 @@ def test_git_local_push_and_fast_forward_pull(scope):
     initialize_repository(root)
     subprocess.run(["/usr/bin/git", "init", "--bare", str(remote)], check=True, capture_output=True)
     settings = {"additional_workspace_roots": (str(remote),)}
-    assert git(root, "remote", "add", "origin", str(remote)).returncode == 0
-    result = git(root, "push", "-u", "origin", "main", **settings)
+    # Naming a remote and recording the upstream change the configuration,
+    # which only a command a person approved may do.
+    refused = git(root, "remote", "add", "origin", str(remote))
+    assert refused.returncode != 0 and "origin" not in (root / ".git/config").read_text()
+    assert (
+        git(root, "remote", "add", "origin", str(remote), git_metadata_access=True).returncode == 0
+    )
+    result = git(root, "push", "-u", "origin", "main", git_metadata_access=True, **settings)
     assert result.returncode == 0, result.stderr
     for arguments in [
         ["init", "-b", "main"],
@@ -584,6 +591,117 @@ print(json.dumps(result))""",
             **settings,
         )
         == "denied"
+    )
+
+
+def _developer_tools(base, name="Xcode.app"):
+    developer = base / name / "Contents" / "Developer"
+    (developer / "usr" / "lib").mkdir(parents=True)
+    (developer / "usr" / "lib" / "libxcrun.dylib").write_bytes(b"")
+    return developer
+
+
+@pytest.fixture
+def developer_tools(tmp_path, monkeypatch):
+    from alysis_code import macos_sandbox
+
+    base = (tmp_path / "apps").resolve()
+    base.mkdir()
+    monkeypatch.setattr(macos_sandbox, "_XCODE_SELECT_LINK", base / "no-link")
+    monkeypatch.setattr(macos_sandbox, "_DEFAULT_XCODE_DEVELOPER", base / "no-default")
+    monkeypatch.setattr(macos_sandbox, "_XCODE_LICENSE_RECORD", base / "licence.plist")
+    (base / "licence.plist").write_bytes(b"")
+    return macos_sandbox, base
+
+
+def test_xcode_developer_directory_is_readable_from_each_source(developer_tools, monkeypatch):
+    sandbox, base = developer_tools
+    assert sandbox.developer_directories() == ()
+    # The default when xcode-select was never run: an installed Xcode.app.
+    default = _developer_tools(base)
+    monkeypatch.setattr(sandbox, "_DEFAULT_XCODE_DEVELOPER", default)
+    assert sandbox.developer_directories() == (base / "Xcode.app",)
+    # The xcode-select link, here naming a second Xcode.
+    selected = _developer_tools(base, "Xcode-beta.app")
+    (base / "link").symlink_to(selected)
+    monkeypatch.setattr(sandbox, "_XCODE_SELECT_LINK", base / "link")
+    assert sandbox.developer_directories() == (base / "Xcode-beta.app", base / "Xcode.app")
+    # DEVELOPER_DIR, given as the bundle or as its Developer directory.
+    chosen = _developer_tools(base, "Xcode-old.app")
+    for value in (str(base / "Xcode-old.app"), str(chosen)):
+        assert sandbox.developer_directories(value)[0] == base / "Xcode-old.app"
+    # A developer directory outside an application bundle is granted as itself.
+    standalone = base / "toolchain"
+    (standalone / "usr" / "lib").mkdir(parents=True)
+    (standalone / "usr" / "lib" / "libxcrun.dylib").write_bytes(b"")
+    assert sandbox.developer_directories(str(standalone))[0] == standalone
+
+
+def test_only_real_developer_directories_become_read_authority(developer_tools, monkeypatch):
+    sandbox, base = developer_tools
+    developer = _developer_tools(base)
+    assert sandbox.developer_directories("relative/Xcode.app") == ()
+    assert sandbox.developer_directories(str(base / "missing")) == ()
+    # No xcrun library: not a developer directory, whatever it is called.
+    (base / "Fake.app" / "Contents" / "Developer" / "usr" / "lib").mkdir(parents=True)
+    assert sandbox.developer_directories(str(base / "Fake.app")) == ()
+    # A workspace cannot promote itself, or anything it links to, this way.
+    assert sandbox.developer_directories(str(developer), workspace_roots=(base,)) == ()
+    # A directory that contains the user's home is never granted.
+    home = base / "Users" / "someone"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    (base / "usr" / "lib").mkdir(parents=True)
+    (base / "usr" / "lib" / "libxcrun.dylib").write_bytes(b"")
+    assert sandbox.developer_directories(str(base)) == ()
+    # Command Line Tools are already readable through /Library/Developer.
+    monkeypatch.setattr(sandbox, "_COMMAND_LINE_TOOLS_ROOT", base / "Xcode.app")
+    assert sandbox.developer_directories(str(developer)) == ()
+
+
+def test_runtime_paths_add_the_licence_record_only_with_a_developer_directory(
+    developer_tools, monkeypatch
+):
+    sandbox, base = developer_tools
+    licence = base / "licence.plist"
+    assert licence not in sandbox.runtime_read_paths("/usr/bin")
+    developer = _developer_tools(base)
+    paths = sandbox.runtime_read_paths("/usr/bin", developer_dir=str(developer))
+    assert base / "Xcode.app" in paths and licence in paths
+    # The workspace exclusion reaches this entry point as well.
+    assert base / "Xcode.app" not in sandbox.runtime_read_paths(
+        "/usr/bin", developer_dir=str(developer), workspace_roots=(base,)
+    )
+
+
+def _xcode_is_the_active_developer_directory():
+    try:
+        selected = subprocess.run(
+            ["/usr/bin/xcode-select", "-p"], capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return selected.endswith(".app/Contents/Developer")
+
+
+@pytest.mark.skipif(
+    not _xcode_is_the_active_developer_directory(), reason="needs Xcode.app selected"
+)
+def test_system_git_shim_starts_when_xcode_is_the_developer_directory(scope):
+    result = SeatbeltShellRunner().run(
+        root=scope["main"], cwd=scope["main"], cmd="/usr/bin/git --version", timeout_s=60
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout.startswith("git version")
+    # The bundle is readable, never writable.
+    probe = python_command(
+        "import os,sys;sys.exit(0 if not os.access('/Applications/Xcode.app/Contents', os.W_OK) else 1)"
+    )
+    assert (
+        SeatbeltShellRunner()
+        .run(root=scope["main"], cwd=scope["main"], cmd=probe, timeout_s=20)
+        .returncode
+        == 0
     )
 
 
@@ -777,18 +895,15 @@ def test_mac_tool_grant_crosses_review_and_does_not_survive_next_command(scope, 
     )
     assert result["exit_code"] == 0 and result["stdout"].strip() == "synthetic"
     assert [request.kind for request in surface.requests] == ["sandbox_access", "shell_run"]
+    # The same command without the grant asks for nothing, so it has no route to
+    # a remote and runs without a person card. The read grant did not survive.
     assert tools["shell_run"].run({"cmd": command})["exit_code"] != 0
-    assert [request.kind for request in surface.requests] == [
-        "sandbox_access",
-        "shell_run",
-        "shell_run",
-    ]
+    assert [request.kind for request in surface.requests] == ["sandbox_access", "shell_run"]
     # External file tools use the same approval path and contained worker.
     read = tools["fs_read"].run({"path": str(scope["extra"] / "canary.txt")})
     assert "synthetic" in json.dumps(read)
     assert [request.kind for request in surface.requests] == [
         "sandbox_access",
-        "shell_run",
         "shell_run",
         "sandbox_access",
     ]
@@ -822,6 +937,116 @@ for path in {["../sibling/outside.sock", "private-control/private.sock", "owned.
         except PermissionError: results.append('denied')
 print(json.dumps(results))"""
         assert run(root, source, network=network) == ["denied", "denied", "connected", "denied"]
+
+
+def test_inspecting_git_command_cannot_write_repository_metadata(scope):
+    """A literal Git command that only inspects runs with .git write-protected,
+    even when the repository's own configuration makes it run a program."""
+    root = scope["main"]
+    git = ["/usr/bin/git", "-C", str(root)]
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "fixture@example.invalid"],
+        ["config", "user.name", "fixture"],
+        ["add", "canary.txt"],
+        ["commit", "-q", "-m", "first"],
+    ):
+        subprocess.run([*git, *args], check=True, capture_output=True)
+    monitor = root / "monitor.sh"
+    monitor.write_text(
+        "#!/bin/sh\ntouch ran-in-workspace\ntouch .git/planted 2>/dev/null\n"
+        "touch .git/hooks/pre-push 2>/dev/null\nexit 1\n"
+    )
+    monitor.chmod(0o755)
+    subprocess.run([*git, "config", "core.fsmonitor", str(monitor)], check=True)
+    (root / "canary.txt").write_text("changed")
+
+    runner = SeatbeltShellRunner()
+    status = runner.run(root=root, cwd=root, cmd="git status --short", timeout_s=30)
+    assert status.returncode == 0 and "canary.txt" in status.stdout
+    assert (root / "ran-in-workspace").exists()  # the configured program did run
+    assert not (root / ".git" / "planted").exists()
+    assert not (root / ".git" / "hooks" / "pre-push").exists()
+    for command in ("git log --oneline -1", "git diff --stat", "git branch --show-current"):
+        result = runner.run(root=root, cwd=root, cmd=command, timeout_s=30)
+        assert result.returncode == 0 and result.stdout.strip(), (command, result.stderr)
+
+    # A Git command that changes the repository still gets the metadata.
+    commit = runner.run(root=root, cwd=root, cmd="git add canary.txt", timeout_s=30)
+    assert commit.returncode == 0, commit.stderr
+
+
+def test_git_directory_outside_dot_git_is_write_protected(scope):
+    """A .git file can keep the repository in a folder with another name."""
+    root = scope["main"]
+    subprocess.run(
+        [
+            "/usr/bin/git",
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--separate-git-dir",
+            str(root / "meta"),
+            str(root),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    git = ["/usr/bin/git", "-C", str(root)]
+    for args in (["config", "user.email", "fixture@example.invalid"], ["config", "user.name", "f"]):
+        subprocess.run([*git, *args], check=True, capture_output=True)
+    config_before = (root / "meta" / "config").read_text()
+    runner = SeatbeltShellRunner()
+
+    planted = runner.run(
+        root=root,
+        cwd=root,
+        cmd="touch meta/hooks/post-index-change; printf x >> meta/config; touch ok-in-workspace",
+        timeout_s=30,
+    )
+    assert planted.returncode == 0  # the last command, an ordinary workspace write, succeeded
+    assert (root / "ok-in-workspace").exists()
+    assert not (root / "meta" / "hooks" / "post-index-change").exists()
+    assert (root / "meta" / "config").read_text() == config_before
+
+    # Inspecting still works, and a Git command that changes the repository gets the metadata.
+    status = runner.run(root=root, cwd=root, cmd="git status --short", timeout_s=30)
+    assert status.returncode == 0 and "canary.txt" in status.stdout
+    added = runner.run(root=root, cwd=root, cmd="git add canary.txt", timeout_s=30)
+    assert added.returncode == 0, added.stderr
+    assert (root / "meta" / "index").exists()
+
+
+def test_scope_certified_as_unreachable_has_no_ip_route(scope):
+    """The command guard skips its person decision only for this scope."""
+    import socket
+
+    from alysis_code.sandbox_runner import seatbelt_scope_has_no_remote_route
+
+    assert seatbelt_scope_has_no_remote_route(SeatbeltShellRunner())
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        port = server.getsockname()[1]
+        # 192.0.2.1 is reserved for documentation: nothing is contacted even unsandboxed.
+        source = f"""import socket,json
+results=[]
+for family,kind,target in ((socket.AF_INET,socket.SOCK_STREAM,('127.0.0.1',{port})),
+                           (socket.AF_INET,socket.SOCK_STREAM,('192.0.2.1',443)),
+                           (socket.AF_INET,socket.SOCK_DGRAM,('192.0.2.1',53))):
+    with socket.socket(family,kind) as client:
+        client.settimeout(2)
+        try:
+            client.connect(target)
+            if kind == socket.SOCK_DGRAM: client.send(b'x')
+            results.append('open')
+        except PermissionError: results.append('denied')
+        except OSError as exc: results.append(type(exc).__name__)
+try: socket.getaddrinfo('example.com',443); results.append('resolved')
+except OSError: results.append('unresolved')
+print(json.dumps(results))"""
+        assert run(scope["main"], source) == ["denied", "denied", "denied", "unresolved"]
 
 
 def test_loopback_requires_local_preview_and_grant_does_not_allow_external_sockets(scope):
@@ -861,3 +1086,236 @@ print(json.dumps(result))"""
             spawn.popen.kill()
             spawn.popen.wait()
         spawn.cleanup()
+
+
+_PLANT = """#!/bin/sh
+cd "$(git rev-parse --show-toplevel)"
+G=$(git rev-parse --git-dir)
+{
+  git config core.fsmonitor ./evil.sh; echo "git-config:$?"
+  echo x >> "$G/config"; echo "append-config:$?"
+  echo '#!/bin/sh' > "$G/hooks/post-commit"; echo "new-hook:$?"
+  echo ../evil > "$G/commondir"; echo "commondir:$?"
+  echo x > "$G/COMMONDIR"; echo "other-case:$?"
+  mkdir "$G/rebase-merge"; echo "rebase-state:$?"
+  mkdir -p "$G/remotes" && echo 'URL: ssh://elsewhere.invalid/x' > "$G/remotes/origin"; echo "old-remote:$?"
+  mkdir -p "$G/branches" && echo 'ssh://elsewhere.invalid/x' > "$G/branches/origin"; echo "old-branch:$?"
+  echo x > "$G/config.worktree"; echo "worktree-config:$?"
+  mkdir -p "$G/modules/m" && echo x > "$G/modules/m/config"; echo "module-config:$?"
+  ln -s hooks "$G/alias" && echo x > "$G/alias/pre-push"; echo "linked-hooks:$?"
+  mv .git .git-moved; echo "move-entry:$?"
+  echo ok > "$G/info/ordinary"; echo "ordinary:$?"
+} > plant-report.txt 2>&1
+exit 0
+"""
+
+
+def _host_repository(root, *extra):
+    git = ["/usr/bin/git", "-C", str(root)]
+    for args in (
+        ["init", "-q", "-b", "main", *extra],
+        ["config", "user.email", "fixture@example.invalid"],
+        ["config", "user.name", "fixture"],
+        ["add", "canary.txt"],
+        ["commit", "-q", "-m", "first"],
+    ):
+        subprocess.run([*git, *args], check=True, capture_output=True)
+    return git
+
+
+def _plant_report(root):
+    return dict(
+        line.rsplit(":", 1)
+        for line in (root / "plant-report.txt").read_text().splitlines()
+        if ":" in line and line.rsplit(":", 1)[1].isdigit()
+    )
+
+
+@pytest.mark.parametrize("separate", [False, True], ids=["dot-git", "separate-git-dir"])
+def test_git_change_cannot_alter_what_a_later_git_runs(scope, separate):
+    """A commit that no person approved runs the repository's hook. The hook,
+    like the command itself, can write objects, refs and the index, and nothing
+    that decides which programs a later Git runs."""
+    root = scope["main"]
+    _host_repository(root, *(["--separate-git-dir", str(root / "meta")] if separate else []))
+    gitdir = root / ("meta" if separate else ".git")
+    hook = gitdir / "hooks" / "pre-commit"
+    hook.write_text(_PLANT)
+    hook.chmod(0o755)
+    config, pointer = (gitdir / "config").read_bytes(), (root / ".git")
+    pointer_before = pointer.read_bytes() if pointer.is_file() else None
+    (root / "canary.txt").write_text("changed")
+    runner = SeatbeltShellRunner()
+
+    committed = runner.run(root=root, cwd=root, cmd="git commit -am second", timeout_s=30)
+    assert committed.returncode == 0, committed.stderr
+    assert committed.sandbox_policy["git_metadata"].startswith("writable except configuration")
+    assert "guidance" not in committed.sandbox_policy
+    report = _plant_report(root)
+    refused = {k for k, v in report.items() if v != "0"}
+    expected = {
+        "git-config",
+        "append-config",
+        "new-hook",
+        "commondir",
+        "other-case",
+        "rebase-state",
+        "old-remote",
+        "old-branch",
+        "worktree-config",
+        "linked-hooks",
+    }
+    # The pointer file and the folders Git keeps for submodules are refused as
+    # well; in a folder with another name the whole of both is.
+    assert refused >= expected | {"module-config", "move-entry"}, report
+    assert report["ordinary"] == "0"
+    assert (gitdir / "config").read_bytes() == config
+    assert sorted(
+        p.name for p in (gitdir / "hooks").iterdir() if not p.name.endswith(".sample")
+    ) == ["pre-commit"]
+    assert not (gitdir / "commondir").exists() and not (gitdir / "rebase-merge").exists()
+    assert pointer.exists() and not (root / ".git-moved").exists()
+    if pointer_before is not None:
+        assert pointer.read_bytes() == pointer_before
+    log = subprocess.run(
+        ["/usr/bin/git", "-C", str(root), "log", "--format=%s"], capture_output=True, text=True
+    )
+    assert log.stdout.split() == ["second", "first"]
+
+    # Git says what it could not do, and the applied policy says why.
+    setting = runner.run(root=root, cwd=root, cmd="git config user.name Changed", timeout_s=30)
+    assert setting.returncode != 0 and (gitdir / "config").read_bytes() == config
+    assert "permissions.git_metadata=true" in setting.sandbox_policy["guidance"]
+    written = runner.run(
+        root=root, cwd=root, cmd="git log --output=.git/hooks/pre-push -1", timeout_s=30
+    )
+    assert written.returncode != 0 and not (gitdir / "hooks" / "pre-push").exists()
+    # A hook the command names itself is still only a program inside the sandbox.
+    (root / "own-hooks").mkdir()
+    (root / "own-hooks" / "pre-commit").write_text(_PLANT)
+    (root / "own-hooks" / "pre-commit").chmod(0o755)
+    (root / "plant-report.txt").unlink()
+    named = runner.run(
+        root=root,
+        cwd=root,
+        cmd="git -c core.hooksPath=own-hooks commit --allow-empty -m third",
+        timeout_s=30,
+    )
+    assert named.returncode == 0, named.stderr
+    assert {k for k, v in _plant_report(root).items() if v != "0"} >= expected
+    assert (gitdir / "config").read_bytes() == config
+
+    # A person's approval of the exact command is what lifts it.
+    approved = SeatbeltShellRunner(git_metadata_access=True).run(
+        root=root, cwd=root, cmd="git config user.name Changed", timeout_s=30
+    )
+    assert approved.returncode == 0 and b"Changed" in (gitdir / "config").read_bytes()
+    assert not hasattr(approved, "sandbox_policy")
+
+
+def test_everyday_git_changes_run_and_a_refused_rebase_leaves_nothing_behind(scope):
+    root = scope["main"]
+    git = _host_repository(root)
+    runner = SeatbeltShellRunner()
+
+    def command(text):
+        return runner.run(root=root, cwd=root, cmd=text, timeout_s=30)
+
+    (root / "canary.txt").write_text("two")
+    for text in (
+        "git checkout -b feature",
+        "git commit -am two",
+        "git switch -c config",  # a branch may carry the name of a protected entry
+        "git switch main",
+        "git merge --no-ff feature -m merged",
+        "git tag v1",
+        "git reset --soft HEAD~1",
+        "git stash",
+        "git stash apply stash@{0}",
+        "git commit -am again",
+        "git tag -d v1",
+    ):
+        result = command(text)
+        assert result.returncode == 0, (text, result.stderr)
+    (root / "canary.txt").write_text("three")
+    assert command("git commit -am three").returncode == 0
+    # Remote-tracking refs live under refs/remotes, which is not the protected
+    # folder of old remote definitions with the same last name.
+    for args in (
+        ["clone", "-q", "--bare", "--no-hardlinks", ".", "remote.git"],
+        ["remote", "add", "origin", "./remote.git"],
+    ):
+        subprocess.run([*git, *args], check=True, capture_output=True)
+    fetched = command("git fetch origin")
+    assert fetched.returncode == 0, fetched.stderr
+    tracking = subprocess.run([*git, "rev-parse", "origin/main"], capture_output=True, text=True)
+    assert tracking.returncode == 0 and tracking.stdout.strip()
+    head = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    rebased = command("git rebase feature")
+    assert rebased.returncode != 0
+    assert "rebase" in rebased.sandbox_policy["guidance"]
+    assert not (root / ".git" / "rebase-merge").exists()
+    assert (
+        subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout == head
+    )
+    status = subprocess.run([*git, "status", "--porcelain"], capture_output=True, text=True)
+    assert status.stdout == "?? remote.git/\n"  # only the remote this test made
+
+
+def test_plain_init_creates_a_repository_and_a_template_cannot_supply_its_hooks(scope):
+    root = scope["main"]
+    runner = SeatbeltShellRunner()
+    created = runner.run(root=root, cwd=root, cmd="git init -q -b main app", timeout_s=30)
+    assert created.returncode == 0, created.stderr
+    assert (root / "app" / ".git" / "config").is_file()
+    assert not hasattr(created, "sandbox_policy")
+    template = root / "template"
+    (template / "hooks").mkdir(parents=True)
+    (template / "hooks" / "post-checkout").write_text("#!/bin/sh\ntouch ran\n")
+    (template / "config").write_text("[core]\n\tfsmonitor = ./evil.sh\n")
+    for text in (
+        "git init -q --template=template other",
+        "git -c init.templateDir=template init -q other",
+        "git init -q --separate-git-dir=elsewhere other",
+    ):
+        refused = runner.run(root=root, cwd=root, cmd=text, timeout_s=30)
+        assert refused.returncode != 0, text
+        assert (
+            not (root / "other" / ".git").exists() and not (root / "elsewhere" / "config").exists()
+        )
+    # The repository just created is protected like any other.
+    planted = runner.run(
+        root=root, cwd=root / "app", cmd="git config core.fsmonitor ./evil.sh", timeout_s=30
+    )
+    assert planted.returncode != 0
+    assert "fsmonitor" not in (root / "app" / ".git" / "config").read_text()
+
+
+def test_profile_locks_git_only_for_a_change_no_person_decided(scope):
+    from alysis_code.sandbox_runner import seatbelt_command
+
+    root = scope["main"]
+    _host_repository(root)
+
+    def profile(cmd, **settings):
+        return seatbelt_command(
+            cmd, root=root, network="off", protect_repo_meta=True, safe_git_writes=True, **settings
+        )
+
+    entry = r'(regex #"/\.git$")'
+    programs = "config|config\\.worktree|hooks|commondir|rebase-merge|remotes|branches"
+    change = profile("git commit -m x")
+    assert entry in change and programs in change
+    assert r"|\.git)(/|$)" not in change  # the rest of .git is writable
+    for unlocked in (
+        profile("git commit -m x", git_metadata_access=True),
+        profile("git commit -m x", git_programs_protected=False),
+        profile("git init -q"),
+    ):
+        assert entry not in unlocked and programs not in unlocked
+    for whole in (
+        profile("git status"),
+        profile("echo x > .git/config"),
+        profile("git init && true"),
+    ):
+        assert r"|\.git)(/|$)" in whole and entry not in whole

@@ -88,9 +88,18 @@ def _assert_delivered_guidance(
     assert (render_guidance("delegation", profile) in bootstrap) is can_delegate
 
 
+def _profile_representatives() -> list[tuple[str, str]]:
+    # The configuration tests check every model mapping. Real sessions exercise
+    # delivery and event recording once per distinct catalog profile.
+    by_profile: dict[str, str] = {}
+    for model, profile in sorted(get_model_prompt_catalog().items()):
+        by_profile.setdefault(profile, model)
+    return [(model, profile) for profile, model in sorted(by_profile.items())]
+
+
 @pytest.mark.parametrize(
     ("model", "profile"),
-    [*get_model_prompt_catalog().items(), ("unknown-model", "expanded")],
+    [*_profile_representatives(), ("unknown-model", "expanded")],
 )
 def test_real_session_delivers_and_records_applied_profile(
     tmp_path: Path, model: str, profile: str

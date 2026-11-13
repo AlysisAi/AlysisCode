@@ -26,7 +26,7 @@ This module closes exactly that gap and nothing wider:
   provisions nothing.
 * Installation happens only in a **top-level autonomous run**, is attempted
   **once** per process, and is never retried after a failure. Interactive runs
-  and nested sessions (subagents and conflict resolvers) never
+  and nested sessions (subagents, conflict resolvers) never
   install: an interactive run reports the gap and leaves the call to the agent
   or the user, and a nested run inherits whatever its parent already decided.
 
@@ -295,7 +295,7 @@ class ProvisioningDecision:
 def runtime_kind_provisions_autonomously(kind: RuntimeKind | str | None) -> bool:
     """True only for a top-level autonomous execution run.
 
-    Nested kinds (subagent and conflict resolver) are excluded on
+    Nested kinds (subagent, conflict resolver) are excluded on
     purpose: they can be spawned from an interactive chat, and letting them
     install would smuggle into that session exactly the silent environment
     mutation it already declined to make. An unknown kind never installs.

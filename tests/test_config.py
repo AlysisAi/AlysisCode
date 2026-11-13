@@ -828,7 +828,7 @@ def test_app_config_uses_shared_step_budget_defaults() -> None:
     assert cfg.subagent_orchestration.inactivity_signal_after_s == 180.0
     assert cfg.subagent_orchestration.inflight_deadline_grace_s == 10.0
     assert cfg.llm_stream_no_progress_timeout_s == 240.0
-    assert cfg.provider_retry_max_retries == 1
+    assert cfg.provider_retry_max_retries == 6
 
 
 @pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), float("-inf")])

@@ -103,12 +103,9 @@ is_uv_managed() {
 }
 
 check_conflicts() {
-    if "$UV" tool list 2>/dev/null | grep -q '^sylliptor-agent-cli '; then
-        die "the old Sylliptor package is installed with uv. Remove it with 'uv tool uninstall sylliptor-agent-cli' and re-run this installer. Your settings are kept and migrate on first run."
-    fi
     for name in $ENTRY_POINTS; do
         if [ -e "$BIN_DIR/$name" ] || [ -L "$BIN_DIR/$name" ]; then
-            die "$BIN_DIR/$name already exists from another install (usually pipx). Keep that install and upgrade it with 'alysis update', or remove it first (for example 'pipx uninstall $PACKAGE', or 'pipx uninstall sylliptor-agent-cli' for the old package name) and re-run this installer."
+            die "$BIN_DIR/$name already exists from another install (usually pipx). Keep that install and upgrade it with 'alysis update', or remove it first (for example 'pipx uninstall $PACKAGE') and re-run this installer."
         fi
     done
 }

@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 from alysis_code import __version__
 
 from ..atomic_io import atomic_write_json, atomic_write_text
+from ..config import _config_dir
 from ..custom_tools.discovery import global_custom_tools_root, project_custom_tools_root
 from ..custom_tools.trust import (
     ProjectToolTrustKey,
@@ -204,6 +205,9 @@ def install_plugin(
     reviewed_snapshot: Path | None = None,
     snapshot_digest: str | None = None,
 ) -> PluginInstallResult:
+    # Every component must use the same profile as the plugin's MCP configuration.
+    # Skills otherwise fall back to the OS default and escape an override.
+    user_config_dir = user_config_dir if user_config_dir is not None else _config_dir()
     scope: Scope = "project" if project else "user"
     resolved_repo_root = repo_root.expanduser().resolve()
     # Only the reviewed import service supplies a private, immutable materialization.
@@ -383,6 +387,7 @@ def uninstall_plugin(
     project: bool = False,
     user_config_dir: Path | None = None,
 ) -> PluginUninstallResult:
+    user_config_dir = user_config_dir if user_config_dir is not None else _config_dir()
     scope: Scope = "project" if project else "user"
     resolved_repo_root = repo_root.expanduser().resolve()
     state = _load_extension_state(scope=scope, repo_root=resolved_repo_root)

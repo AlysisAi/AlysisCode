@@ -461,8 +461,7 @@ def test_review_mode_fs_write_escape_path_rejected_before_approval(
     )
 
     if scoped:
-        # Policy refusal happens before any native sandbox launches. Exercise
-        # the desktop route on every host without requiring Seatbelt there.
+        # Policy refusal precedes native sandbox launch on every host.
         monkeypatch.setattr(
             "alysis_code.sandbox_runner.select_shell_sandbox_backend",
             lambda _: SimpleNamespace(backend="seatbelt"),

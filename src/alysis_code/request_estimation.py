@@ -11,6 +11,7 @@ from .context.tool_schema_budgeter import (
     tool_schema_token_total,
 )
 from .llm.metadata import strip_provider_metadata_from_message
+from .memory_evidence import strip_memory_metadata
 from .token_budget import estimate_tokens
 
 _MEMORY_MARKER = "<<<ALYSIS_CONVERSATION_MEMORY_JSON>>>"
@@ -121,7 +122,7 @@ def _normalize_message_content_for_estimation(content: Any) -> Any:
 
 def sanitize_messages_for_estimation(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sanitized: list[dict[str, Any]] = []
-    for msg in messages:
+    for msg in strip_memory_metadata(messages):
         if not isinstance(msg, dict):
             continue
         copied = strip_provider_metadata_from_message(msg)
@@ -174,7 +175,7 @@ def request_message_signatures(messages: list[dict[str, Any]]) -> tuple[str, ...
     """Return stable per-message fingerprints for append-only projection checks."""
 
     signatures: list[str] = []
-    for raw_message in messages:
+    for raw_message in strip_memory_metadata(messages):
         if not isinstance(raw_message, dict):
             continue
         message = _normalize_signature_value(strip_provider_metadata_from_message(raw_message))
