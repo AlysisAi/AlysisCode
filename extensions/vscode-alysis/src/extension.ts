@@ -58,6 +58,7 @@ import { registerSessionCommands } from "./commands/sessionCommands";
 import { ForgeDiffContentProvider } from "./forge/ForgeDiffContentProvider";
 import { ForgeController } from "./forge/ForgeController";
 import { AlysisSecretStore } from "./secrets/secretStorage";
+import { probeSecretStorageRoundTrip } from "./secrets/secretStorageProbe";
 import { evaluateProcessExecutionCommand } from "./security/commandGuards";
 import { SlashCommandRouter } from "./slash/SlashCommandRouter";
 import { availableSlashCommands } from "./slash/SlashCommandRegistry";
@@ -974,7 +975,6 @@ function createExtensionApi(
   if (context.extensionMode !== vscode.ExtensionMode.Test) {
     return undefined;
   }
-  const testSecrets = new AlysisSecretStore(context.secrets, "alysis.test.apiKey");
   return {
     test: {
       // Activation no longer blocks on runtime validation or the first health probe; tests that
@@ -1000,14 +1000,7 @@ function createExtensionApi(
       browserScreenshot: (fullPage = false) => browserController.screenshot(fullPage),
       browserDiagnostics: () => browserController.diagnostics(),
       browserClose: () => browserController.close(),
-      secretStorageRoundTrip: async () => {
-        await testSecrets.deleteApiKey();
-        await testSecrets.setApiKey("test-secret-value");
-        const stored = await testSecrets.getApiKey();
-        await testSecrets.deleteApiKey();
-        const cleared = await testSecrets.getApiKey();
-        return { stored: stored === "test-secret-value", cleared: cleared === undefined };
-      },
+      secretStorageRoundTrip: () => probeSecretStorageRoundTrip(context.secrets),
       hostActions: () => hostActionController.snapshot()
     }
   };
