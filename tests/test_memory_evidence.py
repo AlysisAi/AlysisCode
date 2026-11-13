@@ -146,6 +146,23 @@ def test_failed_provider_attempt_does_not_certify_a_historical_response(tmp_path
         agent.close()
 
 
+def test_stream_compatibility_retry_keeps_the_actual_memory_receipt(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALYSIS_MEMORY_HOME", str(tmp_path / "memory"))
+    entry = MemoryStore().change({"action": "save", "content": "Private saved fact"})
+    client = _Client([LLMError("stream is not supported"), _reply("Successful response")])
+    agent = _session(tmp_path, client)
+    try:
+        assert agent.run_turn("What is saved?") == 0
+        assert len(client.requests) == 2
+        actual = receipts(agent)
+        assert len(actual) == 1
+        assert actual[0]["sources"][0]["records"][0]["id"] == entry["id"]
+        assert "Private saved fact" in json.dumps(client.requests[-1])
+        assert all(not any(k.startswith("_memory") for k in m) for m in client.requests[-1])
+    finally:
+        agent.close()
+
+
 def test_receipt_context_is_bounded_and_does_not_certify_unseen_bodies():
     metadata = source("scope", [{"id": str(i), "revision": 1} for i in range(100)])
     saved = [delivery([metadata], str(i)) for i in range(100)]

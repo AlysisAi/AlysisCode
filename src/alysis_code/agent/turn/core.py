@@ -1353,6 +1353,20 @@ def run_turn(
     if resolved_entry is not None and resolved_entry.retired is not None:
         resolved_entry = None
 
+    def _scrub_consumed_provider_request(messages: list[dict[str, Any]]) -> None:
+        scrub_ephemeral_host_images(self, additional_messages=messages)
+        if computer_use_tool_turn or ephemeral_tools_exposed:
+            scrub_consumed_computer_use_provider_state(
+                messages,
+                computer_use_provider_replay_state,
+                tool_metadata_by_name=tool_retention_metadata,
+            )
+        redact_consumed_sensitive_tool_messages(
+            messages,
+            sensitive_result_stubs,
+            tool_metadata_by_name=tool_retention_metadata,
+        )
+
     def _computer_evidence_chat(**kwargs: Any) -> Any:
         from ...memory_artifacts import artifact_source
         from ...memory_evidence import (
@@ -1370,31 +1384,29 @@ def run_turn(
             # Where the conversation ends now: the reply comes right after.
             note_session_receipt(self, receipt)
 
-        request_messages = kwargs["messages"]
         messages, inputs = prepare_request(
-            request_messages, artifact_resolver=lambda value: artifact_source(self, value)
+            kwargs["messages"], artifact_resolver=lambda value: artifact_source(self, value)
         )
-        # Cleanup owns the caller's transient request list. Keep the transport's
-        # filtered objects in that list so its finally block scrubs exactly what
-        # the provider consumed, including any references the adapter retained.
-        # Persistent conversation metadata must remain available to the host.
-        if request_messages is not self.messages:
-            request_messages[:] = messages
-            messages = request_messages
         # A conversation that has never received any memory records needs no
         # historical ledger. Retain subsequent empty snapshots after it has.
         record_inputs = inputs and (any(s["records"] for s in inputs) or session_receipts(self))
         try:
-            response = _computer_evidence_chat_impl(**{**kwargs, "messages": messages})
-        except LLMOutputLimitError as exc:
+            try:
+                response = _computer_evidence_chat_impl(**{**kwargs, "messages": messages})
+            except LLMOutputLimitError as exc:
+                if record_inputs:
+                    persist_local(self, inputs)
+                    _record(exc.response.content)
+                raise
             if record_inputs:
                 persist_local(self, inputs)
-                _record(exc.response.content)
-            raise
-        if record_inputs:
-            persist_local(self, inputs)
-            _record(response.content)
-        return response
+                _record(response.content)
+            return response
+        finally:
+            # Metadata filtering creates transport copies. Scrub those exact
+            # objects without removing the caller's annotations, which a
+            # compatibility retry still needs to certify its memory inputs.
+            _scrub_consumed_provider_request(messages)
 
     @attribution.model_call
     def _computer_evidence_chat_impl(**kwargs: Any) -> Any:
@@ -5601,21 +5613,7 @@ def run_turn(
                 raise
             finally:
                 _close_reasoning_trace_sink(reasoning_sink)
-                scrub_ephemeral_host_images(
-                    self,
-                    additional_messages=request_messages,
-                )
-                if computer_use_tool_turn or ephemeral_tools_exposed:
-                    scrub_consumed_computer_use_provider_state(
-                        request_messages,
-                        computer_use_provider_replay_state,
-                        tool_metadata_by_name=tool_retention_metadata,
-                    )
-                redact_consumed_sensitive_tool_messages(
-                    request_messages,
-                    sensitive_result_stubs,
-                    tool_metadata_by_name=tool_retention_metadata,
-                )
+                _scrub_consumed_provider_request(request_messages)
                 ephemeral_sensitive_result_content.clear()
                 ephemeral_sensitive_arguments_content.clear()
                 sensitive_result_stubs.clear()
