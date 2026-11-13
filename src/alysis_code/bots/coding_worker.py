@@ -24,6 +24,7 @@ import httpx
 
 from ..atomic_io import atomic_write_json
 from ..cancellation import EventCancellationToken
+from ..command_text import command_text
 from ..llm.types import (
     LLMError,
     LLMOutputLimitError,
@@ -272,7 +273,7 @@ def cleanup_scope(scope: str) -> None:
     result = subprocess.run(
         ["docker", "ps", "-a", "--format", "{{.Names}}", "--filter", "name=^/" + prefix],
         capture_output=True,
-        text=True,
+        **command_text(),
         check=True,
         timeout=15,
     )

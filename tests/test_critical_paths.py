@@ -90,7 +90,8 @@ def test_targets_resolve_against_the_working_folder(layout) -> None:  # type: ig
     assert _targets("rm -rf .", layout, dialect="posix", cwd=src) == []
 
 
-def test_another_spelling_of_the_project_folder_is_the_project_folder(layout) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("dialect", ["posix", "cmd", "powershell"])
+def test_another_spelling_of_the_project_folder_is_the_project_folder(layout, dialect) -> None:  # type: ignore[no-untyped-def]
     other = Path(str(layout["project"]).upper())
     try:
         same = other.samefile(layout["project"])
@@ -98,7 +99,12 @@ def test_another_spelling_of_the_project_folder_is_the_project_folder(layout) ->
         same = False
     if not same:
         pytest.skip("this volume tells letter case apart")
-    assert _targets(f"rm -rf {other}", layout, dialect="posix") == [other]
+    commands = {
+        "posix": f"rm -rf '{other.as_posix()}'",
+        "cmd": f'rd /s /q "{other}"',
+        "powershell": f"Remove-Item -Recurse -Force '{other}'",
+    }
+    assert _targets(commands[dialect], layout, dialect=dialect) == [other]
 
 
 def test_a_loop_of_links_among_the_targets_does_not_hide_the_project(layout) -> None:  # type: ignore[no-untyped-def]

@@ -291,11 +291,9 @@ def dispatch(display, event, *, persistent=False):
     validate(event)
     env = {"PATH": "/usr/bin:/bin", "DISPLAY": display, "LANG": "C.UTF-8"}
 
-    def xdo(*args, text=None):
+    def xdo(*args):
         subprocess.run(
             ["/usr/bin/xdotool", *args],
-            input=text,
-            text=True,
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

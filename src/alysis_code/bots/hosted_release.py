@@ -15,6 +15,8 @@ import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from ..command_text import command_text
+
 MANIFEST = "hosted-release.json"
 
 
@@ -89,9 +91,11 @@ def source_manifest(root):
     roots = ["src", "scripts/bots-hosted", "pyproject.toml", "uv.lock"]
     if subprocess.check_output(["git", "status", "--porcelain", "--", *roots], cwd=root):
         raise ValueError("Commit the reviewed hosted source before building a manifest.")
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, **command_text()
+    ).strip()
     names = subprocess.check_output(
-        ["git", "ls-files", "--", *roots], cwd=root, text=True
+        ["git", "ls-files", "--", *roots], cwd=root, **command_text()
     ).splitlines()
     manifest = {
         "format": 1,

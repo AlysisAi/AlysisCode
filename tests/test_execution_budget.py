@@ -299,7 +299,9 @@ def test_execution_instruction_bundle_budget_accounts_for_trusted_system_prompt_
         "model_metadata_overrides": {
             "models": {
                 "budget-model": {
-                    "context_window_tokens": 12000,
+                    # Fit the complete native-platform prefix and task. This
+                    # test compares overrides, not undersized-window rejection.
+                    "context_window_tokens": 18000,
                     "max_output_tokens": 1500,
                     "supports_vision": False,
                 }
@@ -578,11 +580,10 @@ def test_managed_execution_startup_headroom_skips_adjustment_when_request_alread
         "model_metadata_overrides": {
             "models": {
                 "managed-8k": {
-                    # Keep this the already-fitting case after retaining
-                    # parameter contracts; the dense case above has more optional context.
-                    # Raised from 14,800 when the command tools gained step descriptions
-                    # and a timeout: the start-up request then no longer fitted.
-                    "context_window_tokens": 15_400,
+                    # Leave room for native-platform guidance and temporary
+                    # path lengths: this case exercises an already-fitting request.
+                    # The dense case above exercises headroom adjustment.
+                    "context_window_tokens": 20_000,
                     "max_output_tokens": 1024,
                     "supports_vision": False,
                 }

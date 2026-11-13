@@ -364,8 +364,8 @@ def _store(root: Path) -> SessionStore:
 
 
 _SHELL_RUN_DESCRIPTION = (
-    "Run a policy-checked shell command. Give each call a short description for the person. "
-    "It is stopped after timeout_s seconds (60 when omitted, at most 600)."
+    "Run a policy-checked shell command with a short description for the person. "
+    "Stopped after timeout_s seconds (default 60; max 600)."
 )
 
 
