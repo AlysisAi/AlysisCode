@@ -421,7 +421,7 @@ _STYLE = Style.from_dict(
         "tui.footer.forge": "bold #bc8cff",
         # Active-subagent badge base style; the footer overlays each agent's own
         # accent (see tui.subagent_identity), so blue is only the fallback
-        # (distinct from green chat accent, violet forge, and cyan brand).
+        # (distinct from green chat accent, violet forge, cyan brand).
         "tui.footer.subagent": "bold #58a6ff",
         # User's own message: a full-width highlighted band (the "> " in accent).
         "tui.transcript.userband": f"bold bg:{_BAND_BG}",
@@ -438,6 +438,8 @@ _STYLE = Style.from_dict(
         "tui.transcript.error": "#e06c75",
         "tui.transcript.warn": "#d19a66",
         "tui.transcript.selection": "reverse",
+        # A clickable URL anywhere in the transcript or a popup: underlined in
+        # the conventional link blue, so what opens on click is recognisable.
         "tui.transcript.link": "underline #58a6ff",
         # Subagent identity line ("↪ <name> · <mode>") — the shared subagent
         # blue (per-agent accents live in the footer badge).
@@ -2890,46 +2892,12 @@ def run_tui(
                 return 0
             delivered = pending_steers[:delivered_count]
             del pending_steers[:delivered_count]
-            # Keep the display values until the turn settles.  The core can
-            # restore drained steers after a failed model request, and the raw
-            # inbox text alone is not enough to reconstruct paste-token labels.
+            # Keep delivered input tracked until the turn settles so navigation
+            # cannot race its final queue cleanup.
             delivered_steers.extend(delivered)
         for message in delivered:
             transcript.append_user(message.display_text)
         return delivered_count
-
-    def _restore_rolled_back_steers(messages: list[str]) -> None:
-        """Re-track delivered steers that the core returned to its inbox."""
-
-        restored: list[_PendingMessage] = []
-        with pending_messages_lock:
-            for text in messages:
-                match_index = next(
-                    (
-                        index
-                        for index, message in enumerate(delivered_steers)
-                        if message.text == text
-                    ),
-                    None,
-                )
-                if match_index is None:
-                    # No visible-output callback ran before rollback, so this
-                    # message is still represented in ``pending_steers`` and
-                    # has not been echoed yet.
-                    continue
-                message = delivered_steers.pop(match_index)
-                restored.append(
-                    _PendingMessage(
-                        text=message.text,
-                        display_text=message.display_text,
-                        echoed=True,
-                        pastes=message.pastes,
-                    )
-                )
-            # SteerInbox.restore_front() places rolled-back messages ahead of
-            # newer arrivals; mirror that chronology in the display metadata.
-            pending_steers[:0] = restored
-        _safe_invalidate()
 
     def _drain_undelivered_steers() -> list[_PendingMessage]:
         """Drain the steer inbox while preserving each TUI display value."""
@@ -3078,7 +3046,6 @@ def run_tui(
             on_subagent_activities=_set_active_subagents,
             on_subagent_run_started=_register_subagent_run,
             before_visible_output=_sync_delivered_steers,
-            on_steer_messages_restored=_restore_rolled_back_steers,
         )
         session = session_builder(surface)
 
@@ -4089,9 +4056,8 @@ def run_tui(
             if owns_active_turn:
                 if surface is not None:
                     surface.user_questions.reset()
-                # Settle any final drain before discarding the per-turn display
-                # metadata.  A rollback callback has already moved restored
-                # messages back to ``pending_steers`` at this point.
+                # Accepted steering stays in history even after a failed answer.
+                # Echo any final delivery before dropping its display metadata.
                 _sync_delivered_steers()
                 with pending_messages_lock:
                     delivered_steers.clear()
@@ -5484,8 +5450,7 @@ def run_tui(
         # overlay, one set of scroll/close keys, one Float. ``confirm`` (when set)
         # makes Enter run that command instead of merely closing (confirm dialog);
         # ``on_confirm`` is the callback form — Enter runs it (and shows any returned
-        # transcript messages) instead of dispatching a command. Esc/q always
-        # cancel (neither fires).
+        # transcript messages) instead of dispatching a command. Esc/q cancels.
         help_box["on"] = True
         help_box["offset"] = 0
         help_box["title"] = title
@@ -7009,8 +6974,8 @@ def run_tui(
     @kb.add("enter", filter=_help_open, eager=True)
     def _help_confirm(event: Any) -> None:
         # Enter closes the panel; for a confirm panel it also acts. The callback
-        # callback form takes precedence; otherwise the stored command runs
-        # (e.g. the /forge intro).
+        # form (on_confirm) takes
+        # precedence; otherwise the stored command runs (e.g. the /forge intro).
         # Esc/q cancel. on_confirm returns either a list of (role, text) rows to
         # echo, or a dict {"messages"?: [...], "picker"?: {...}} whose ``picker``
         # chains a follow-up selection popup (e.g. the /forge intro → "Use the

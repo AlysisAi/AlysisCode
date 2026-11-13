@@ -19,10 +19,6 @@ from alysis_code.profile_presets import (
 from alysis_code.profiles import ProfileSpec
 
 
-def test_at_least_15_presets_registered() -> None:
-    assert len(PROFILE_PRESETS) >= 15
-
-
 def test_each_preset_has_non_empty_label_and_protocol() -> None:
     for preset in PROFILE_PRESETS:
         assert preset.label

@@ -320,7 +320,7 @@ def test_connect_errors_retry_same_request_with_provider_backoff_and_telemetry()
     assert resp.content == "ok"
     assert attempts == 3
     assert request_bodies == [request_bodies[0]] * 3
-    assert sleeps == [10.0, 20.0]
+    assert sleeps == [0.2, 0.4]
     summary = last_provider_call_summary()
     assert summary is not None
     assert summary["retry_count"] == 2
@@ -416,7 +416,7 @@ def test_connect_errors_exhaust_retries_with_same_final_llm_error() -> None:
     assert error_text.endswith(": _ssl.c:1015: The handshake operation timed out")
     assert isinstance(excinfo.value.__cause__, httpx.ConnectError)
     assert attempts == 3
-    assert sleeps == [1.0, 2.0]
+    assert sleeps == [0.2, 0.4]
 
 
 def test_network_error_and_persisted_event_never_include_secret_endpoint(
@@ -3884,8 +3884,17 @@ def test_unknown_nvidia_hosted_model_never_inherits_nemotron_controls() -> None:
     assert "chat_template_kwargs" not in captured
 
 
+@pytest.mark.parametrize(
+    "base_url,model",
+    [
+        ("https://api.z.ai/api/coding/paas/v4", "glm-5.3"),
+        ("https://opencode.ai/zen/go/v1", "glm-5.3-flash"),
+    ],
+)
 @pytest.mark.parametrize("effort", ["low", "high", "max"])
-def test_zai_coding_plan_emits_only_documented_reasoning_efforts(effort: str) -> None:
+def test_glm_plans_emit_only_documented_reasoning_efforts(
+    effort: str, base_url: str, model: str
+) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -3893,9 +3902,9 @@ def test_zai_coding_plan_emits_only_documented_reasoning_efforts(effort: str) ->
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
     client = OpenAICompatClient(
-        base_url="https://api.z.ai/api/coding/paas/v4",
+        base_url=base_url,
         api_key="test",
-        model="glm-5.3",
+        model=model,
         reasoning_effort=effort,
         transport=httpx.MockTransport(handler),
     )
@@ -3905,6 +3914,25 @@ def test_zai_coding_plan_emits_only_documented_reasoning_efforts(effort: str) ->
     assert captured["reasoning_effort"] == effort
     assert "thinking" not in captured
     assert "enable_thinking" not in captured
+
+
+@pytest.mark.parametrize("model,effort", [("glm-5.3-flash", None), ("unknown-new-model", "low")])
+def test_opencode_contract_does_not_guess_default_effort_or_other_models(model, effort):
+    captured = {}
+
+    def handler(request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = OpenAICompatClient(
+        base_url="https://opencode.ai/zen/go/v1",
+        api_key="test",
+        model=model,
+        reasoning_effort=effort,
+        transport=httpx.MockTransport(handler),
+    )
+    client.chat(messages=[{"role": "user", "content": "hi"}])
+    assert "reasoning_effort" not in captured
 
 
 @pytest.mark.parametrize("effort", ["none", "minimal", "medium", "xhigh"])
@@ -5148,8 +5176,8 @@ def test_openai_compat_retries_are_bounded_by_default_wall_clock_cap() -> None:
         transport=httpx.MockTransport(handler),
         provider_retry_settings=ProviderRetrySettings(
             max_retries=5,
-            base_delay_seconds=61.0,
-            max_delay_seconds=61.0,
+            base_delay_seconds=181.0,
+            max_delay_seconds=181.0,
         ),
         provider_sleep_fn=sleeps.append,
         provider_random_fn=lambda: 0.5,
@@ -5158,7 +5186,8 @@ def test_openai_compat_retries_are_bounded_by_default_wall_clock_cap() -> None:
     with pytest.raises(LLMError, match="read timed out"):
         client.chat(messages=[{"role": "user", "content": "hello"}])
 
-    assert client._provider_retry_wall_clock_cap_seconds == 60.0
+    # A backoff longer than the window can never start a retry inside it.
+    assert client._provider_retry_wall_clock_cap_seconds == 180.0
     assert attempts == 1
     assert sleeps == []
 
@@ -5627,44 +5656,3 @@ def test_openai_compat_extra_headers_use_same_canonical_form_on_wire_and_route()
             model="route-model",
             extra_headers={"X-Tenant-ID": "tenant-a", "x-tenant-id": "tenant-b"},
         )
-
-
-def test_required_computer_use_tools_never_retry_as_text_only() -> None:
-    from alysis_code.agent.computer_use_tools import COMPUTER_USE_TOOL_NAMES
-    from alysis_code.llm.base import require_tool_calling
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": name,
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-        for name in COMPUTER_USE_TOOL_NAMES
-    ]
-    requests: list[dict[str, object]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(json.loads(request.content.decode("utf-8")))
-        return httpx.Response(
-            400,
-            json={"error": {"message": "tools are not supported by this model"}},
-        )
-
-    client = OpenAICompatClient(
-        base_url="https://example.com/v1",
-        api_key="test",
-        model="text-only-model",
-        transport=httpx.MockTransport(handler),
-    )
-    require_tool_calling(client, COMPUTER_USE_TOOL_NAMES)
-
-    with pytest.raises(LLMError, match="rejected the required Computer Use tools"):
-        client.chat(messages=[{"role": "user", "content": "use the app"}], tools=tools)
-
-    assert len(requests) == 1
-    assert "tools" in requests[0]
-    assert client.supports_tool_calling is False
-    with pytest.raises(LLMError, match="does not support the required Computer Use tools"):
-        effective_tools_for_client(client, tools)

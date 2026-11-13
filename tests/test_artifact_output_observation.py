@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from acceptance_declared import declared_contract
 
 from alysis_code.agent.acceptance_contract import (
     AcceptanceCriterionKind,
@@ -19,7 +20,11 @@ def fixture(tmp_path, access=lambda path, initial: True):
     root = tmp_path / "workspace"
     root.mkdir(exist_ok=True)
     output = tmp_path / "saved output.bmp"
-    contract = build_acceptance_contract(root=root, instruction=f'Save the result to "{output}".')
+    contract = declared_contract(
+        root=root,
+        instruction=f'Save the result to "{output}".',
+        roles={str(output): "required_output"},
+    )
     contract.task_id = "fixture-task"
     contract.artifact_output_observer = ArtifactOutputObserver(contract, access)
     state = TurnExecutionState(execution_requested=True, acceptance_contract=contract)
@@ -125,7 +130,9 @@ def test_stopped_observer_never_launches_io_or_requests_access(tmp_path, monkeyp
     import alysis_code.agent.artifact_output_observation as observation
 
     requested = (tmp_path / "output.bmp").as_posix()
-    contract = build_acceptance_contract(root=tmp_path, instruction=f'Create "{requested}".')
+    contract = declared_contract(
+        root=tmp_path, instruction=f'Create "{requested}".', roles={requested: "required_output"}
+    )
     assert [ref.absolute_path for ref in contract.path_refs] == [requested]
     monkeypatch.setattr(
         observation.subprocess, "Popen", lambda *a, **kw: pytest.fail("started stopped I/O")
@@ -145,8 +152,10 @@ def test_stopped_observer_never_launches_io_or_requests_access(tmp_path, monkeyp
 
 
 def test_workspace_directory_requirement_uses_bounded_metadata_without_claiming_contents(tmp_path):
-    contract = build_acceptance_contract(
-        root=tmp_path, instruction='Create directory "outputs/report".'
+    contract = declared_contract(
+        root=tmp_path,
+        instruction='Create directory "outputs/report".',
+        roles={"outputs/report": "required_output"},
     )
     contract.artifact_output_observer = ArtifactOutputObserver(contract, lambda *a: True)
     (tmp_path / "outputs/report").mkdir(parents=True)
@@ -195,7 +204,9 @@ def test_existing_directory_metadata_does_not_prove_changes_to_its_contents(tmp_
 @pytest.mark.skipif(__import__("os").name != "nt", reason="Windows path identity")
 def test_expired_windows_path_alias_cannot_fall_back_to_synchronous_exists(tmp_path, monkeypatch):
     requested = (tmp_path / "output.bmp").as_posix().lower()
-    contract = build_acceptance_contract(root=tmp_path, instruction=f'Create "{requested}".')
+    contract = declared_contract(
+        root=tmp_path, instruction=f'Create "{requested}".', roles={requested: "required_output"}
+    )
     contract.artifact_output_observer = ArtifactOutputObserver(
         contract,
         lambda *a: True,
@@ -254,8 +265,10 @@ def test_input_and_preserved_paths_are_not_enrolled(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
     input_file = tmp_path / "source.bmp"
-    contract = build_acceptance_contract(
-        root=root, instruction=f'Inspect "{input_file}". Do not modify "{input_file}".'
+    contract = declared_contract(
+        root=root,
+        instruction=f'Inspect "{input_file}". Do not modify "{input_file}".',
+        roles={str(input_file): "preservation_target"},
     )
     approvals = []
     observer = ArtifactOutputObserver(
@@ -303,9 +316,10 @@ def test_file_metadata_does_not_pass_content_format_or_expected_literal(tmp_path
     root = tmp_path / "workspace"
     root.mkdir()
     output = tmp_path / "output.json"
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=root,
         instruction=f'Save valid JSON to "{output}" with expected output `synthetic verified result`.',
+        roles={str(output): "required_output"},
     )
     contract.artifact_output_observer = ArtifactOutputObserver(contract, lambda path, initial: True)
     output.write_text("invalid JSON")
@@ -516,6 +530,28 @@ def test_real_agent_loop_verifies_local_save_without_shell_evidence(
         def chat(self, **kwargs):
             self.count += 1
             if self.count == 1:
+                # The named output does not exist yet, so the model is asked
+                # what it is; the host reads no role from the request's words.
+                return LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="declare",
+                            name="task_artifacts",
+                            arguments={
+                                "paths": [
+                                    {
+                                        "name": str(requested),
+                                        "directory": "",
+                                        "role": "required_output",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                    raw={},
+                )
+            if self.count == 2:
                 return LLMResponse(
                     content="",
                     tool_calls=[ToolCall(id="save", name=tool.name, arguments={})],
@@ -577,7 +613,9 @@ def test_metadata_leaf_requires_native_absolute_runtime_interpreter(
         observation.subprocess, "Popen", lambda *a, **kw: pytest.fail("unidentified interpreter")
     )
     requested = (tmp_path / "output.bmp").as_posix()
-    contract = build_acceptance_contract(root=tmp_path, instruction=f'Create "{requested}".')
+    contract = declared_contract(
+        root=tmp_path, instruction=f'Create "{requested}".', roles={requested: "required_output"}
+    )
     assert [ref.absolute_path for ref in contract.path_refs] == [requested]
     observer = ArtifactOutputObserver(contract, lambda *a: True)
     assert observer.loci_by_path == {requested: {"output.bmp"}}
@@ -616,7 +654,9 @@ def test_metadata_worker_is_direct_base_interpreter_without_site_initialization(
     monkeypatch.setattr(observation.sys, "executable", str(tmp_path / "untrusted-launcher"))
     monkeypatch.setattr(observation.subprocess, "Popen", report_identity)
     requested = (tmp_path / "output.bmp").as_posix()
-    contract = build_acceptance_contract(root=tmp_path, instruction=f'Create "{requested}".')
+    contract = declared_contract(
+        root=tmp_path, instruction=f'Create "{requested}".', roles={requested: "required_output"}
+    )
     assert [ref.absolute_path for ref in contract.path_refs] == [requested]
     observer = ArtifactOutputObserver(contract, lambda *a: True)
     assert len(commands) == len(children) == 1
@@ -686,7 +726,9 @@ def test_metadata_leaf_cleanup_keeps_reserve_without_global_inventory(
         lambda child, *, deferred: closures.append((child, deferred)),
     )
     requested = (tmp_path / "output.bmp").as_posix()
-    contract = build_acceptance_contract(root=tmp_path, instruction=f'Create "{requested}".')
+    contract = declared_contract(
+        root=tmp_path, instruction=f'Create "{requested}".', roles={requested: "required_output"}
+    )
     assert [ref.absolute_path for ref in contract.path_refs] == [requested]
     observer = ArtifactOutputObserver(
         contract, lambda *a: True, remaining_seconds=lambda: 0.15 - now[0]

@@ -24,8 +24,7 @@ def acceptance_contract_host_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     monkeypatch.setenv("ALYSIS_VERIFY_SANDBOX_MODE", "off")
-    # The scripted verifier/command handlers below are controlled test ports.
-    # Explicitly answer their approval cards; --yes is not a person decision.
+    # Scripted checks need an explicit approval decision, not just --yes.
     monkeypatch.setattr(
         NoopSurface,
         "request_approval",
@@ -310,6 +309,23 @@ def test_missing_required_output_surfaces_advisory_open_problems(tmp_path: Path)
     )
     session.client = _ScriptedClient(
         [
+            # The request writes a path that does not exist yet, so the model
+            # is asked what it is.
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="declare",
+                        name="task_artifacts",
+                        arguments={
+                            "paths": [
+                                {"name": "result.txt", "directory": "", "role": "required_output"}
+                            ]
+                        },
+                    )
+                ],
+                raw={},
+            ),
             LLMResponse(content="Created result.txt.", tool_calls=[], raw={}),
             LLMResponse(content="Created result.txt.", tool_calls=[], raw={}),
             LLMResponse(content="Created result.txt.", tool_calls=[], raw={}),
@@ -317,7 +333,7 @@ def test_missing_required_output_surfaces_advisory_open_problems(tmp_path: Path)
     )  # type: ignore[assignment]
 
     try:
-        exit_code = session.run_turn("Create result.txt.")
+        exit_code = session.run_turn("Create `result.txt`.")
     finally:
         session.close()
 

@@ -258,6 +258,7 @@ def test_sensitive_pixels_are_not_replayed_in_provider_retry_request(tmp_path):
     try:
         assert session.run_turn("Inspect .ssh/diagram.png as visual evidence.") == 0
         assert client.image_counts == [0, 1, 0]
+        assert client.stream_flags == [True, False, False]
         assert all(message.get("role") for message in client.requests[-1])
         assert not _image_parts(client.requests[1])
         assert not _image_parts(session.messages)

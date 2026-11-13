@@ -36,3 +36,9 @@ cancellation, changed bytes or stale ownership refuse access. No readable file
 selected at submission is reported explicitly. Older engines do not advertise
 these tools. Browser tabs retain their separate embedded-browser tools; external
 editor buffers and unsaved edits are outside this capability.
+
+This feature requires shipping the desktop and updated engine together. The
+existing published runtime pin does not gain the feature from a desktop-only
+rebuild. Source development can use the updated engine checkout; release
+packaging must pin and bundle the reviewed engine commit through the normal
+release process.

@@ -83,7 +83,7 @@ def test_cli_rejects_workspace_rebinding_before_creating_any_file(tmp_path, mode
         )
         assert not list(tmp_path.rglob("copy.txt")) and not list(tmp_path.rglob(".alysis-stage-*"))
         assert source.read_text() == "exact named source"
-        assert len(surface.approvals) == 1 and host == []
+        assert [request.kind for request in surface.approvals] == ["shell_run"] and host == []
     finally:
         session.close()
 
@@ -248,7 +248,7 @@ def test_cli_publication_races_refuse_and_report_unverified_entries(tmp_path, mo
             assert source.read_text() == (
                 "forged saved data" if case == "source_rewrite_after_copy" else "saved source data"
             )
-        assert len(surface.approvals) == 1 and host == []
+        assert [request.kind for request in surface.approvals] == ["shell_run"] and host == []
         assert len(client.requests) == 2, "no retry or alternate access route"
     finally:
         session.close()
@@ -289,6 +289,6 @@ def test_cli_same_execution_workspace_succeeds_with_only_output_and_actual_diges
         assert not list(root.glob(".alysis-stage-*"))
         assert stat.S_IMODE((root / "copy.txt").stat().st_mode) == 0o600
         assert "cleanup" not in result, "a success has no unverified cleanup artifacts"
-        assert len(surface.approvals) == 1 and host == []
+        assert [request.kind for request in surface.approvals] == ["shell_run"] and host == []
     finally:
         session.close()

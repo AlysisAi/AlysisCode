@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import io
 import json
 import os
 import shutil
@@ -22,11 +23,33 @@ from alysis_code.documents.__main__ import _check_execution, _path, _render
 from alysis_code.office import renderer_path
 
 
-def _check_renderable(source: Path) -> None:
+def _check_renderable(source, *, embedded=False) -> None:
+    from .__main__ import _package
+
     with zipfile.ZipFile(source) as archive:
         for name in archive.namelist():
-            if any(part in name.lower() for part in ("/embeddings/", "vbaproject", "/activex/")):
+            if any(part in name.lower() for part in ("vbaproject", "/activex/")):
                 raise ValueError("Embedded programs and macros cannot be rendered by this helper.")
+            if "/embeddings/" in name.lower():
+                # Ordinary PowerPoint/Word charts contain a data workbook. A
+                # blanket embeddings rejection treated that data as a program.
+                # Validate the actual OOXML package; keep OLE/programs, macros,
+                # external content and nested embeddings outside this renderer.
+                if embedded or not name.lower().endswith(".xlsx"):
+                    raise ValueError(
+                        "Embedded programs and macros cannot be rendered by this helper."
+                    )
+                data = archive.read(name)
+                try:
+                    _package(data)
+                    with zipfile.ZipFile(io.BytesIO(data)) as workbook:
+                        if "xl/workbook.xml" not in workbook.namelist():
+                            raise ValueError("Embedded chart data must be an OOXML workbook.")
+                    _check_renderable(io.BytesIO(data), embedded=True)
+                except zipfile.BadZipFile:
+                    raise ValueError(
+                        "Embedded chart data must be a valid OOXML workbook."
+                    ) from None
             if name.endswith(".rels"):
                 for relation in ET.fromstring(archive.read(name)):
                     if relation.attrib.get("TargetMode") == "External" and not relation.attrib.get(
@@ -91,13 +114,15 @@ def _convert(
 
     profile.mkdir()
     (profile / "user").mkdir()
+    # DisableActiveContent also hides ordinary OOXML charts. Reject programs,
+    # macros and external data in _check_renderable; disable macro execution
+    # here without suppressing the validated chart data itself.
     (profile / "user/registrymodifications.xcu").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
         '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
         '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
         '<prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop>'
-        '<prop oor:name="DisableActiveContent" oor:op="fuse"><value>true</value></prop>'
         '<prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop>'
         '</item><item oor:path="/org.openoffice.Office.Calc/Formula/Load">'
         '<prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop>'

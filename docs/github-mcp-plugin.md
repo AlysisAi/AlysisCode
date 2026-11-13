@@ -179,3 +179,14 @@ revoke the host's generation and stop affected operations, including warmed sess
 Engine dispatch rechecks installed content and activation both before calling
 the host and before returning results. Existing local Git tools remain native;
 repository/PR API built-ins cannot become a desktop fallback when MCP is absent.
+
+## Verification fixture
+
+`PYTHONPATH=src python tests/fixtures/github_host/bridge.py` runs production
+StdioBridge and tool assembly with a provider-free session. Install the plugin in
+isolated `ALYSIS_DATA_DIR` / `ALYSIS_CONFIG_DIR` paths, negotiate the catalog, then
+send chat message text such as
+`{"tool":"mcp__github__get_file_contents","arguments":{"path":"README.md"}}`.
+The host can answer with synthetic MCP data. This proves broker integration,
+not model-backed workflow or remote write acceptance. No fixture needs GitHub
+network access.

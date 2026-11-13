@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import signal
-import statistics
 import subprocess
 import sys
 import time
@@ -98,7 +97,6 @@ def run(
     audit_path = Path(env["W5_AUTH_AUDIT"])
     audit_path.unlink(missing_ok=True)
     audit_path.with_suffix(".ready").unlink(missing_ok=True)
-    started = time.perf_counter()
     process = subprocess.Popen(
         command(entry, args, repeat=repeat),
         cwd=ROOT,
@@ -122,14 +120,13 @@ def run(
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.communicate()
-    elapsed = time.perf_counter() - started
     audit = json.loads(audit_path.read_text()) if audit_path.exists() else None
     assert "Error in sitecustomize" not in err, err
-    return process.returncode, out, err, audit, elapsed
+    return process.returncode, out, err, audit
 
 
 def test_status_dispatch_excludes_heavy_import_graph(tmp_path):
-    code, out, err, audit, _ = run(tmp_path)
+    code, out, err, audit = run(tmp_path)
     assert code == 0 and not err
     assert json.loads(out)["authenticated"] is True
     assert heavy_modules(audit) == []
@@ -183,7 +180,7 @@ def test_status_default_and_aliased_entrypoints(tmp_path, entry):
         alias.symlink_to(launcher)
         entry = alias
     full = run(tmp_path, entry=entry, full=True)
-    code, out, err, audit, _ = run(tmp_path, entry=entry)
+    code, out, err, audit = run(tmp_path, entry=entry)
     assert (code, out, err) == full[:3]
     assert audit["events"] == full[3]["events"]
     assert code == 0 and not err
@@ -344,25 +341,3 @@ def test_config_errors_match_full_cli_without_reading_vault(tmp_path, config_tex
     assert thin[:3] == full[:3]
     assert thin[0] == 1 and not thin[1] and "ConfigError:" in thin[2]
     assert thin[3]["events"] == full[3]["events"] == [["config_read"]]
-
-
-def test_whole_command_timing_with_scripted_vault(tmp_path):
-    measured = {"full": [], "dispatch": []}
-    for _ in range(5):
-        full = run(tmp_path, full=True)
-        thin = run(tmp_path)
-        assert thin[:3] == full[:3]
-        assert thin[3]["events"] == full[3]["events"]
-        measured["full"].append(full[4])
-        measured["dispatch"].append(thin[4])
-    print(
-        "W5_AUTH_WHOLE_COMMAND "
-        + json.dumps(
-            {
-                "seconds": measured,
-                "median_seconds": {
-                    key: statistics.median(values) for key, values in measured.items()
-                },
-            }
-        )
-    )

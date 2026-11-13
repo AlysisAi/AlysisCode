@@ -84,7 +84,6 @@ import { createVsCodeDiagnosticsSource } from "./verification/VsCodeDiagnosticsS
 import { HostActionController } from "./hostActions/HostActionController";
 import { VsCodeTasksHostAdapter, createVsCodeTasksApi } from "./hostActions/VsCodeTasksHostAdapter";
 import { VsCodeDebugHostAdapter, createVsCodeDebugApi } from "./hostActions/VsCodeDebugHostAdapter";
-import { migrateLegacySettings } from "./migration/legacySettings";
 
 let activeChatController: ChatController | undefined;
 let activeForgeController: ForgeController | undefined;
@@ -141,20 +140,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     context.extensionMode === vscode.ExtensionMode.Production
   );
   const output = vscode.window.createOutputChannel("Alysis Code");
-
-  // Runs before anything reads configuration, so a user upgrading from the
-  // Sylliptor-named extension keeps their cliPath and model settings.
-  try {
-    const migration = await migrateLegacySettings(context);
-    if (migration.migrated.length > 0) {
-      output.appendLine(
-        `Migrated settings from the previous extension name: ${migration.migrated.join(", ")}`
-      );
-    }
-  } catch (error) {
-    // Never block activation on the migration; the settings UI is still there.
-    output.appendLine(`Could not migrate legacy settings: ${String(error)}`);
-  }
 
   const statusBar = new AlysisStatusBar();
   const runtime = new CockpitRuntimeState();

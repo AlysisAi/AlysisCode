@@ -29,8 +29,8 @@ Hard safety rule, enforced structurally by this module:
 
 The reaping guarantee is scoped to the session that did the spawning: a session
 never signals another session's groups, and an interactive session's own turn
-never kills groups that session started. A nested delegation (subagent or
-worker) still cleans up what *it* started when it ends -- its work is over,
+never kills groups that session started. A nested delegation (subagent,
+candidate) still cleans up what *it* started when it ends -- its work is over,
 and the groups belong to it.
 
 Everything except the signalling helpers is pure and unit-testable without
@@ -154,8 +154,8 @@ def resolve_reap_decision(
     An interactive turn is never auto-killed: a user may have asked for a dev
     server and expects it to outlive the turn. Their still-running groups are
     reported instead, and reaped when the session itself ends. Every autonomous
-    runtime kind (one-shot, forge, swarm worker, subagent, or conflict resolver)
-    declares itself done at turn end, so anything it left
+    runtime kind (one-shot, forge, swarm worker, subagent, conflict resolver,
+    nested worker) declares itself done at turn end, so anything it left
     running is a leak and is terminated.
     """
     if not enabled:

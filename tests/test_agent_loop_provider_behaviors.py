@@ -909,7 +909,7 @@ def test_is_fatal_non_repo_llm_error_classifies_trial_proxy_errors() -> None:
 # Salvages: test_auto_mode_router_auth_error_is_not_masked_as_clarification_fallback
 # and test_auto_mode_non_repo_auth_error_is_not_masked_as_clarification_fallback
 # (one main-model call site on the unified path, so the two collapse into one)
-def test_auth_error_propagates_with_error_event_and_transcript_rollback(
+def test_auth_error_propagates_without_discarding_user_input(
     tmp_path: Path,
 ) -> None:
     session = _session(tmp_path)
@@ -922,10 +922,7 @@ def test_auth_error_propagates_with_error_event_and_transcript_rollback(
             session.run_turn("How are you?")
         assert client.calls == 1
 
-        # The transcript is rolled back to the pre-turn messages. The one pinned
-        # message allowed to differ is the task brief: the turn's instruction
-        # was accepted (and persisted) before the request, and acceptance is
-        # not withdrawn by a provider failure.
+        # Authentication failure does not withdraw accepted conversation input.
         def _without_brief(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [
                 message
@@ -933,8 +930,10 @@ def test_auth_error_propagates_with_error_event_and_transcript_rollback(
                 if not str(message.get("content") or "").startswith("<task_brief>")
             ]
 
-        assert _without_brief(session.messages) == _without_brief(baseline_messages)
-        assert len(session.messages) == len(baseline_messages)
+        assert _without_brief(session.messages) == [
+            *_without_brief(baseline_messages),
+            {"role": "user", "content": "How are you?"},
+        ]
         error_payloads = _event_payloads(session.store.path, "error")
         assert error_payloads
         assert "invalid_api_key" in str(error_payloads[-1].get("error") or "")
@@ -944,7 +943,7 @@ def test_auth_error_propagates_with_error_event_and_transcript_rollback(
 
 # Salvages: test_auto_mode_non_repo_trial_quota_error_is_not_masked_as_clarification_fallback
 # (chat_only is the minimal conversational path where masking would be tempting)
-def test_chat_only_trial_quota_error_propagates_and_rolls_back(tmp_path: Path) -> None:
+def test_chat_only_trial_quota_error_preserves_user_input(tmp_path: Path) -> None:
     session = _session(tmp_path)
     client = _FailingClient(error_factory=_trial_quota_exhausted_error)
     session.client = client  # type: ignore[assignment]
@@ -954,7 +953,10 @@ def test_chat_only_trial_quota_error_propagates_and_rolls_back(tmp_path: Path) -
         with pytest.raises(LLMError, match="quota_exhausted"):
             session.run_turn("How are you?", chat_only=True)
         assert client.calls == 1
-        assert session.messages == baseline_messages
+        assert session.messages == [
+            *baseline_messages,
+            {"role": "user", "content": "How are you?"},
+        ]
         error_payloads = _event_payloads(session.store.path, "error")
         assert error_payloads
         assert "quota_exhausted" in str(error_payloads[-1].get("error") or "")

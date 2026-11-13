@@ -14,6 +14,7 @@ from ..execution_admission import (
 from .cli_common import *
 from .update import _cached_update_notice
 from ...command_text import command_text
+from ...git_safe import build_git_process_env
 from ...provider_usage import session_provider_usage
 
 
@@ -263,6 +264,7 @@ def _current_branch_label(root: Path) -> str:
         ["git", "-C", os.fspath(root), "rev-parse", "--abbrev-ref", "HEAD"],
         check=False,
         capture_output=True,
+        env=build_git_process_env(),
         **command_text(),
     )
     if proc.returncode != 0:
@@ -278,6 +280,7 @@ def _is_git_dirty(root: Path) -> bool:
         ["git", "-C", os.fspath(root), "status", "--porcelain"],
         check=False,
         capture_output=True,
+        env=build_git_process_env(),
         **command_text(),
     )
     if proc.returncode != 0:

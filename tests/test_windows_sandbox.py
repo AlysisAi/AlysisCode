@@ -36,7 +36,7 @@ def request(root: Path, settings: ShellSandboxSettings | None = None, **kwargs):
         settings or ShellSandboxSettings(backend="windows-native"),
         root=root,
         cwd=kwargs.pop("cwd", root),
-        cmd="Write-Output 'hello; & world'",
+        cmd=kwargs.pop("cmd", "Write-Output 'hello; & world'"),
         helper=helper,
         **kwargs,
     )
@@ -64,7 +64,7 @@ def test_workspace_write_keeps_metadata_protected(workspace):
         "CONVENTIONS.md",
     ):
         assert any(Path(path) == workspace / name for path in result["deny_write"])
-    assert result["argv"][-1].endswith("; Write-Output 'hello; & world'")
+    assert result["argv"][-1].endswith(";\nWrite-Output 'hello; & world'")
     assert "-NoProfile" in result["argv"]
 
 
@@ -100,6 +100,145 @@ def test_bootstrap_loads_standard_cmdlets_without_module_discovery(workspace, mo
         "Alysis:\\nested's folder",
         "RemoteSigned",
     ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="request construction needs local NTFS paths")
+def test_repository_kept_in_another_folder_is_protected(workspace):
+    """`git init --separate-git-dir` leaves a .git file; the repository has another name."""
+    repository = workspace / "meta"
+    repository.mkdir()
+    (workspace / ".git").write_text("gitdir: meta\n")
+    denied = [Path(path) for path in request(workspace)["deny_write"]]
+    assert repository in denied and workspace / ".git" in denied
+    assert request(workspace)["write"] == [str(workspace)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="request construction needs local NTFS paths")
+@pytest.mark.parametrize("pointer", ["gitdir: .\n", "gitdir:\n", "gitdir: ..\n", "not a pointer\n"])
+def test_git_pointer_never_protects_the_workspace_or_a_folder_above_it(workspace, pointer):
+    (workspace / ".git").write_text(pointer)
+    result = request(workspace)
+    assert result["write"] == [str(workspace)]
+    denied = [Path(path) for path in result["deny_write"]]
+    assert workspace not in denied and workspace.parent not in denied
+
+
+@pytest.mark.skipif(os.name != "nt", reason="request construction needs local NTFS paths")
+def test_repository_kept_under_a_folder_named_git_is_protected(workspace):
+    """Only exact paths are protected here, so a .git elsewhere in the path covers nothing."""
+    repository = workspace / "store" / ".git"
+    repository.mkdir(parents=True)
+    (workspace / ".git").write_text("gitdir: store/.git\n")
+    denied = [Path(path) for path in request(workspace)["deny_write"]]
+    assert repository in denied
+
+
+@pytest.mark.skipif(os.name != "nt", reason="request construction needs local NTFS paths")
+def test_shared_repository_of_a_worktree_inside_the_project_is_protected(workspace):
+    shared = workspace / "main" / ".git"
+    entry = shared / "worktrees" / "wt"
+    entry.mkdir(parents=True)
+    (entry / "commondir").write_text("../..\n")
+    (workspace / ".git").write_text("gitdir: main/.git/worktrees/wt\n")
+    denied = [Path(path) for path in request(workspace)["deny_write"]]
+    assert shared in denied
+    assert any(entry.is_relative_to(path) for path in denied)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="request construction needs local NTFS paths")
+def test_git_directory_that_is_an_approved_folder_is_reported_not_skipped(workspace):
+    other = workspace.parent / "other"
+    other.mkdir()
+    (workspace / ".git").write_text("gitdir: ../other\n")
+    settings = ShellSandboxSettings(
+        backend="windows-native", additional_workspace_roots=(str(other),)
+    )
+    assert native.pointed_git_directories([workspace, other]) == ([], [other])
+    assert native.git_directory_left_writable(workspace, settings)
+    assert not native.git_directory_left_writable(workspace, ShellSandboxSettings())
+    # The request still builds: the folder was approved for writing by a person.
+    assert str(other) in request(workspace, settings)["write"]
+
+
+def test_powershell_literal_doubles_every_quote_powershell_accepts():
+    assert native.powershell_literal("a'b") == "a''b"
+    assert native.powershell_literal("a‘b’c‚d‛e") == ("a‘‘b’’c‚‚d‛‛e")
+    assert native.powershell_literal('plain "x" `y $z') == 'plain "x" `y $z'
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runs Windows PowerShell on the generated source")
+@pytest.mark.parametrize("quote", ["'", "‘", "’", "‚", "‛"])
+def test_folder_name_cannot_add_statements_to_the_command(workspace, quote):
+    """PowerShell closes a single-quoted string at typographic quotes too."""
+    marker = workspace / "added-statement.txt"
+    folder = (
+        workspace / f"pkg{quote}; Set-Content -LiteralPath added-statement.txt -Value x; {quote}"
+    )
+    folder.mkdir()
+    source = request(workspace, cwd=folder)["argv"][-1]
+    completed = subprocess.run(
+        ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", source],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert "hello; & world" in completed.stdout, completed.stderr
+    assert not marker.exists() and not (folder / "added-statement.txt").exists()
+
+
+def test_the_command_starts_on_a_line_of_its_own(workspace):
+    source = request(workspace, cmd="npm test\nnpm run build")["argv"][-1]
+    preparation, command = source.split("\n", 1)
+    assert command == "npm test\nnpm run build"
+    # The built-in modules are loaded by path first, then the drive is made.
+    assert preparation.startswith("Microsoft.PowerShell.Core\\Import-Module ")
+    assert "New-PSDrive -Name Alysis" in preparation
+    assert preparation.endswith("-ErrorAction Stop;")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runs Windows PowerShell on the generated source")
+def test_a_mistake_in_the_command_is_reported_without_the_preparation(workspace):
+    """PowerShell quotes the line an error is on; that line is the command alone."""
+    mistake = "Write-Output one && Write-Output two"
+    source = request(workspace, cmd=mistake)["argv"][-1]
+    completed = subprocess.run(
+        ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", source],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode != 0 and "one" not in completed.stdout
+    assert "+ " + mistake in completed.stderr
+    assert "New-PSDrive" not in completed.stderr and "Set-Location" not in completed.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runs Windows PowerShell on the generated source")
+def test_expanded_file_name_cannot_add_statements_to_a_verifier_command(tmp_path):
+    from alysis_code.windows_verification_command import quote_windows_verifier_parts
+
+    name = "x’; Set-Content -LiteralPath added-statement.txt -Value x; ‘.py"
+    source = quote_windows_verifier_parts(["cmd.exe", "/c", "echo", name])
+    completed = subprocess.run(
+        ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", source],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not (tmp_path / "added-statement.txt").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="request construction needs local NTFS paths")
+def test_repository_outside_every_approved_folder_adds_no_protection(workspace):
+    # A linked worktree: the repository is elsewhere and already unwritable.
+    outside = workspace.parent / "main-repository"
+    outside.mkdir()
+    (workspace / ".git").write_text(f"gitdir: {outside}\n")
+    denied = [Path(path) for path in request(workspace)["deny_write"]]
+    assert outside not in denied
 
 
 def test_all_discovered_project_skill_roots_are_reserved(workspace):
@@ -151,6 +290,84 @@ def test_existing_hardlink_is_rejected_before_grants(workspace, access):
     with pytest.raises(ConfigError, match="hardlinked files"):
         request(workspace, ShellSandboxSettings(filesystem_access=access))
     assert private.read_text() == "canary"
+
+
+def test_a_sandbox_that_decides_by_path_takes_a_folder_with_links_in_it(workspace):
+    """A uv environment and pnpm's node_modules are full of hard-linked files.
+
+    The legacy helper changes permissions, which a hard-linked file shares
+    among all its names. The MXC sandbox decides by path, and refusing the
+    folder meant that no command could start in such a project.
+    """
+    cache = workspace.parent / "cache.bin"
+    cache.write_text("cached package")
+    (workspace / "package.bin").hardlink_to(cache)
+    (workspace / "a.txt").write_text("x")
+    (workspace / "a-again.txt").hardlink_to(workspace / "a.txt")
+    with pytest.raises(ConfigError, match="hardlinked files"):
+        request(workspace)
+    result = request(workspace, validate_trees=False)
+    assert result["write"] == [str(workspace)]
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", "CLAUDE.md", "CONVENTIONS.md"])
+def test_an_instruction_file_with_a_second_name_is_still_refused(workspace, name):
+    """The command could change the file through the name that is not protected."""
+    (workspace / name).write_text("the person's instructions")
+    (workspace / "notes.md").hardlink_to(workspace / name)
+    with pytest.raises(ConfigError, match="has another name"):
+        request(workspace, validate_trees=False)
+    (workspace / "notes.md").unlink()
+    assert str(workspace / name) in request(workspace, validate_trees=False)["deny_write"]
+
+
+def test_no_names_are_reserved_in_a_folder_that_is_only_let_written(workspace):
+    """What exists of those names there stays read-only; nothing is made up."""
+    reports = workspace.parent / "Reports"
+    attached = workspace.parent / "attached"
+    for folder in (reports, attached):
+        folder.mkdir()
+    (reports / ".git").mkdir()
+    (reports / "AGENTS.md").write_text("the person's own")
+    settings = ShellSandboxSettings(
+        backend="windows-native",
+        additional_workspace_roots=(str(reports), str(attached)),
+        windows_plain_write_roots=(str(reports),),
+    )
+    result = request(workspace, settings, validate_trees=False)
+    assert result["write"] == [str(workspace), str(reports), str(attached)]
+    in_reports = sorted(value for value in result["deny_write"] if Path(value).parent == reports)
+    assert in_reports == [str(reports / ".git"), str(reports / "AGENTS.md")]
+    # The project and the attached folder keep every reserved name.
+    for project in (workspace, attached):
+        listed = {Path(value.rstrip("\\/")).name for value in result["deny_write"]}
+        assert {"CLAUDE.md", ".claude", ".git"} <= listed
+        assert str(project / "CLAUDE.md") in result["deny_write"]
+        assert str(project / ".claude") + os.sep in result["deny_write"]
+
+
+def test_the_commands_location_is_the_folder_itself_where_the_sandbox_allows(workspace):
+    """On the "Alysis:" drive "$PWD" was a path .NET refuses, and the folder above was the folder."""
+    nested = workspace / "it's nested"
+    nested.mkdir()
+    built = request(workspace, cwd=nested, cmd="Get-Location", real_location=True)
+    script = built["argv"][-1]
+    # Both ways are handed to the caller: whether PowerShell can stand in the
+    # folder is known only when the whole request is.
+    in_the_folder, on_the_drive = built["location"]
+    assert script.count(in_the_folder) == 1 and "New-PSDrive -Name Alysis" in on_the_drive
+    assert "location" not in request(workspace, cwd=nested)
+    preparation, command = script.split("\n", 1)
+    assert preparation.startswith("Microsoft.PowerShell.Core\\Import-Module ")
+    assert preparation.endswith(
+        "Set-Location -LiteralPath '" + str(nested).replace("'", "''") + "' -ErrorAction Stop;"
+    )
+    # The caller swaps one for the other when PowerShell cannot stand in the folder.
+    swapped = script.replace(in_the_folder, on_the_drive, 1)
+    assert swapped.endswith("\nGet-Location") and "New-PSDrive -Name Alysis" in swapped
+    assert command == "Get-Location" and "Alysis:" not in script and "New-PSDrive" not in script
+    # The legacy helper cannot see the folders above and keeps the drive.
+    assert "New-PSDrive -Name Alysis" in request(workspace, cwd=nested)["argv"][-1]
 
 
 @pytest.mark.parametrize("source", ["tools", "helper"])
@@ -624,3 +841,118 @@ def test_auto_on_wsl_stays_on_linux(workspace, monkeypatch):
         build_shell_runner_from_settings(ShellSandboxSettings(), workspace),
         runners.BwrapShellRunner,
     )
+
+
+# ---- repositories stay writable for Git while a command runs -----------------
+
+
+def _repository_at(folder: Path) -> Path:
+    (folder / "objects").mkdir(parents=True)
+    (folder / "HEAD").write_text("ref: refs/heads/main\n")
+    return folder
+
+
+def test_a_folder_named_git_that_holds_a_repository_is_one(workspace):
+    repository = _repository_at(workspace / ".git")
+    assert native.repository_directories([workspace]) == [repository]
+
+
+def test_an_empty_git_folder_that_only_reserves_the_name_is_not_a_repository(workspace):
+    (workspace / ".git").mkdir()
+    assert native.repository_directories([workspace]) == []
+
+
+def test_a_repository_behind_a_git_file_is_found_inside_the_project(workspace):
+    repository = _repository_at(workspace / "meta")
+    (workspace / ".git").write_text("gitdir: meta\n")
+    assert native.repository_directories([workspace.resolve()]) == [repository.resolve()]
+
+
+def test_a_repository_outside_every_approved_folder_is_not_the_commands_to_free(workspace):
+    outside = _repository_at(workspace.parent / "store" / "repo")
+    (workspace / ".git").write_text(f"gitdir: {outside.as_posix()}\n")
+    assert native.repository_directories([workspace.resolve()]) == []
+
+
+def _freed(workspace, *, person: bool, held=None):
+    from alysis_code import windows_mxc as mxc
+
+    protected = [str(workspace / name) for name in (".git", ".claude", "AGENTS.md")]
+    request = {"read": [str(workspace)], "write": [str(workspace)], "deny_write": list(protected)}
+    token = mxc._person_command.set(person)
+    held_token = mxc._held_repositories.set(held)
+    try:
+        mxc._free_repositories(request, [str(workspace)])
+    finally:
+        mxc._held_repositories.reset(held_token)
+        mxc._person_command.reset(token)
+    return request
+
+
+def test_a_repository_is_given_to_the_helper_as_a_rule_and_not_to_hold(workspace):
+    """Held, it cannot be written by Git either: every rename into it fails."""
+    _repository_at(workspace / ".git")
+    (workspace / ".claude").mkdir()
+    request = _freed(workspace, person=True)
+    assert request["deny_write"] == [str(workspace / ".claude"), str(workspace / "AGENTS.md")]
+    assert request["read"] == [str(workspace), str(workspace / ".git")]
+    # Still nothing the command may write: the rule for it is read-only.
+    assert request["write"] == [str(workspace)]
+
+
+def test_a_reserved_git_name_without_a_repository_stays_held(workspace):
+    (workspace / ".git").mkdir()
+    request = _freed(workspace, person=True)
+    assert str(workspace / ".git") in request["deny_write"]
+    assert request["read"] == [str(workspace)]
+
+
+def test_the_engines_fixed_workers_decide_about_repositories_themselves(workspace):
+    _repository_at(workspace / ".git")
+    request = _freed(workspace, person=False)
+    assert str(workspace / ".git") in request["deny_write"]
+    assert request["read"] == [str(workspace)]
+
+
+def test_a_background_command_frees_only_the_repositories_the_engine_holds(workspace):
+    """One that appeared since, or could not be opened, stays the helper's to hold."""
+    repository = _repository_at(workspace / ".git")
+    held = _freed(workspace, person=True, held=frozenset({str(repository)}))
+    assert str(repository) in held["read"] and str(repository) not in held["deny_write"]
+    not_held = _freed(workspace, person=True, held=frozenset())
+    assert str(repository) in not_held["deny_write"] and not_held["read"] == [str(workspace)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows file sharing")
+def test_a_directory_that_cannot_be_opened_is_reported_as_not_held(tmp_path):
+    from alysis_code._windows_git_reservations import HeldDirectories
+
+    present = tmp_path / ".git"
+    present.mkdir()
+    held = HeldDirectories([present, tmp_path / "missing" / ".git"])
+    try:
+        assert held.paths == [present]
+    finally:
+        held.close()
+    assert held.paths == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows file sharing")
+def test_a_held_directory_cannot_go_away_and_can_still_be_written(tmp_path):
+    from alysis_code._windows_git_reservations import HeldDirectories
+
+    repository = tmp_path / ".git"
+    repository.mkdir()
+    (repository / "index.lock").write_text("new index")
+    held = HeldDirectories([repository])
+    try:
+        with pytest.raises(PermissionError):
+            repository.rename(tmp_path / "gone")
+        # What Git does to replace its index: a rename into the directory.
+        os.replace(repository / "index.lock", repository / "index")
+        (repository / "COMMIT_EDITMSG").write_text("message")
+        assert (repository / "index").read_text() == "new index"
+    finally:
+        held.close()
+    repository.rename(tmp_path / "moved")
+    assert (tmp_path / "moved" / "index").is_file()

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
+import os
 import re
 import shlex
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -135,6 +136,30 @@ class AcceptanceThreshold:
             "value": self.value,
             "unit": self.unit,
         }
+
+
+@dataclass(frozen=True)
+class DeclaredRequirements:
+    """Checkable requirements the model declared for a request, beyond its paths.
+
+    The host reads none of these from the wording of a request. The model reads
+    the request, in whatever language it was written, and states them through
+    the path declaration; the host then checks them against what happened.
+    """
+
+    # Commands the request asks to be run and to succeed, as the user wrote them.
+    commands: tuple[str, ...] = ()
+    # (path as declared, format) for outputs whose format the request states.
+    formats: tuple[tuple[str, str], ...] = ()
+    # The request allows changing only the declared outputs.
+    only_declared_outputs: bool = False
+    # A process the request requires to still be running after the turn.
+    keep_running: bool = False
+    ports: tuple[int, ...] = ()
+    thresholds: tuple[AcceptanceThreshold, ...] = ()
+
+    def is_empty(self) -> bool:
+        return self == DeclaredRequirements()
 
 
 @dataclass
@@ -269,6 +294,9 @@ class AcceptanceContract:
     # task text (expected-output literals, named loci, named behaviors). Empty is
     # valid; the completion gate demands a disposition per expectation.
     expectations: list[Expectation] = field(default_factory=list)
+    # Command lines the user wrote in backticks. Recognised by how they are
+    # written; whether the request asks for them to be run is not guessed.
+    request_commands: list[str] = field(default_factory=list)
     task_id: str = ""
     generation: int = 0
     acceptance_revision: str = ""
@@ -378,6 +406,7 @@ class AcceptanceContract:
             "allowed_output_paths": sorted(self.allowed_output_paths),
             "path_refs": [path_ref.as_payload() for path_ref in self.path_refs],
             "expectations": [expectation.as_payload() for expectation in self.expectations],
+            "request_commands": list(self.request_commands),
             "status_counts": self.status_counts(),
             "problems": self.problem_names(),
             "failure_summaries": self.failure_summaries()[:10],
@@ -416,73 +445,7 @@ _PATH_RE = re.compile(
     r"(?:\.{1,2}[\\/])?[\w.-]+\.[\w-]+"
     r")(?=$|[`\"'\s,;:!?\]\)}]|[.](?:\s|$))"
 )
-_PORT_RE = re.compile(r"\bport\s+([1-9][0-9]{1,4})\b", re.I)
-_THRESHOLD_RE = re.compile(
-    r"\b(?P<metric>accuracy|score|coverage|latency|runtime|time|duration|size|memory|throughput|performance)\b"
-    r"[^.\n]{0,80}?"
-    r"(?P<op>>=|<=|>|<|at least|at most|under|below|above|over|less than|more than)\s*"
-    r"(?P<value>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>%|ms|s|sec|seconds|mb|kb|fps|x)?",
-    re.I,
-)
 _NUMBER_RE = re.compile(r"[-+]?[0-9]+(?:\.[0-9]+)?")
-_FORMAT_RE = re.compile(r"\b(json|yaml|csv|xml|html|markdown|schema|format)\b", re.I)
-_EXPLICIT_FORMAT_RE = re.compile(
-    r"\b(?:valid|well-formed|as|in|format(?:ted)?\s+as|schema(?:\s+of)?|must\s+be|should\s+be)\s+"
-    r"(json|yaml|csv|xml|html|markdown)\b|"
-    r"\b(json|yaml|csv|xml|html|markdown)\s+(?:format|schema|file|document|output)\b",
-    re.I,
-)
-_SERVICE_RE = re.compile(
-    r"\b(?:keep|remain|stay)\s+(?:the\s+)?(?:server|service|process|daemon)?\s*running\b|"
-    r"\b(?:persistent|background)\s+(?:server|service|process|daemon)\b|"
-    r"\blisten(?:ing)?\s+on\s+port\b",
-    re.I,
-)
-_PRESERVE_RE = re.compile(
-    r"\b(?:do\s+not|don't|dont|without|never|leave|keep)\s+"
-    r"(?:modify|change|touch|overwrite|alter|remove|delete|unchanged)\b[^\n]*",
-    re.I,
-)
-_ONLY_RE = re.compile(r"\b(?:only|just)\s+(?:write|create|modify|change|touch)\b[^.\n]*", re.I)
-_OUTPUT_ROLE_RE = re.compile(
-    r"\b(?:save|write|create|produce|output|generate|emit|export|move\s+to|put\s+in|store)\b",
-    re.I,
-)
-_ATTEMPTED_IO_RE = re.compile(
-    r"\b(?:attempt|try)\s+to\s+(?:read|write|create|open|delete|remove)\b", re.I
-)
-_NEGATED_OUTPUT_RE = re.compile(
-    r"\b(?:do\s+not|don't|dont|never)\s+(?:write|create|produce|generate|emit|export)\b",
-    re.I,
-)
-_INPUT_ROLE_RE = re.compile(
-    r"\b(?:read(?:\s+from)?|input|initial|reference|source|existing|given\s+at|provided\s+at|load\s+from|using)\b",
-    re.I,
-)
-# A source connector can switch from an output to its inputs inside one clause.
-# Bare nouns such as "source" must not override "create source code at ...".
-_INPUT_CONNECTOR_RE = re.compile(r"\b(?:using|from|given\s+at|provided\s+at)\b", re.I)
-_PRESERVATION_ROLE_RE = re.compile(
-    r"\b(?:do\s+not|don't|dont|without|never|leave|keep|preserve)\b"
-    r"[^;\n]{0,80}?"
-    r"\b(?:modif(?:y|ying)|chang(?:e|ing)|touch(?:ing)?|overwrit(?:e|ing)|alter(?:ing)?|"
-    r"remov(?:e|ing)|delet(?:e|ing)|unchanged|intact)\b|"
-    r"\b(?:preserve|keep)\b[^;\n]{0,80}?\b(?:unchanged|intact)\b",
-    re.I,
-)
-_CHECKER_ROLE_RE = re.compile(
-    r"\b(?:test|check|verify|validator|validation|compare|diff|cmp)\b", re.I
-)
-_COMMAND_INTRO_RE = re.compile(
-    r"\b(?:run|execute|test\s+with|verify\s+with|validate\s+with|check\s+with|install\s+with|"
-    r"using\s+command|command|shell|terminal|bash)\b",
-    re.I,
-)
-_PYTHON_SNIPPET_INTRO_RE = re.compile(
-    r"\b(?:python|py)\b.{0,40}\b(?:snippet|code|validation|check|assert|execute|run)\b|"
-    r"\b(?:snippet|code|validation|check|assert|execute|run)\b.{0,40}\b(?:python|py)\b",
-    re.I,
-)
 _COMMAND_HEADS = {
     "bash",
     "cargo",
@@ -519,6 +482,7 @@ def build_acceptance_contract(
     workspace_snapshot: AcceptanceWorkspaceSnapshot | None = None,
     baseline_available: bool = True,
     interpreted_path_refs: list[AcceptancePathRef] | None = None,
+    declared: DeclaredRequirements | None = None,
 ) -> AcceptanceContract:
     snapshot = (
         workspace_snapshot
@@ -537,6 +501,7 @@ def build_acceptance_contract(
         else AcceptanceCriterionSource.USER_INSTRUCTION
     )
     texts = [instruction] if instruction else []
+    declared = declared or DeclaredRequirements()
     criteria: list[AcceptanceCriterion] = []
     allowed_output_paths: set[str] = set()
     path_refs = (
@@ -637,7 +602,7 @@ def build_acceptance_contract(
                 )
             )
 
-    for path_ref, fmt, explicit in _extract_path_scoped_formats(path_refs, texts=texts):
+    for path_ref, fmt, explicit in _output_formats(path_refs, declared):
         confidence = (
             AcceptanceCriterionConfidence.EXPLICIT
             if explicit
@@ -667,7 +632,7 @@ def build_acceptance_contract(
             )
         )
 
-    for command in _extract_explicit_commands(texts):
+    for command in declared.commands:
         criteria.append(
             _criterion(
                 criteria,
@@ -676,9 +641,9 @@ def build_acceptance_contract(
                 description=f"Explicit command must pass: {command}",
                 commands=(command,),
                 confidence=AcceptanceCriterionConfidence.EXPLICIT,
-                # Prose supplies no structured cwd for this command. In a task
-                # spanning folders it cannot become a selected-project check.
-                # Actual runs and failures are still recorded with their cwd.
+                # The declaration supplies no structured cwd for this command.
+                # In a task spanning folders it cannot become a selected-project
+                # check. Actual runs and failures are still recorded with their cwd.
                 enforcement=(
                     AcceptanceCriterionEnforcement.ADVISORY
                     if has_external_context
@@ -687,7 +652,7 @@ def build_acceptance_contract(
             )
         )
 
-    for symbol in _extract_public_symbols(texts):
+    for symbol in _extract_public_symbols(texts, root=root):
         criteria.append(
             _criterion(
                 criteria,
@@ -699,7 +664,7 @@ def build_acceptance_contract(
             )
         )
 
-    for threshold in _extract_thresholds(texts):
+    for threshold in declared.thresholds:
         criteria.append(
             _criterion(
                 criteria,
@@ -715,7 +680,7 @@ def build_acceptance_contract(
             )
         )
 
-    for port in _extract_ports(texts):
+    for port in declared.ports:
         criteria.append(
             _criterion(
                 criteria,
@@ -728,20 +693,20 @@ def build_acceptance_contract(
             )
         )
 
-    if any(_SERVICE_RE.search(text) for text in texts):
+    if declared.keep_running:
         criteria.append(
             _criterion(
                 criteria,
                 kind=AcceptanceCriterionKind.PERSISTENT_SERVICE,
                 source=instruction_source,
                 description="Persistent service must survive finalization",
-                ports=tuple(_extract_ports(texts)),
+                ports=tuple(declared.ports),
                 confidence=AcceptanceCriterionConfidence.EXPLICIT,
                 enforcement=AcceptanceCriterionEnforcement.HARD,
             )
         )
 
-    if any(_ONLY_RE.search(text) for text in texts) and allowed_output_paths:
+    if declared.only_declared_outputs and allowed_output_paths:
         criteria.append(
             _criterion(
                 criteria,
@@ -817,7 +782,8 @@ def build_acceptance_contract(
         baseline_available=baseline_available,
         allowed_output_paths=allowed_output_paths,
         path_refs=path_refs,
-        expectations=extract_task_expectations(texts=texts, path_refs=bound_path_refs),
+        expectations=extract_task_expectations(texts=texts, path_refs=bound_path_refs, root=root),
+        request_commands=request_command_lines(texts, root=root),
     )
 
 
@@ -1399,40 +1365,25 @@ def _dedupe_criteria(criteria: list[AcceptanceCriterion]) -> list[AcceptanceCrit
     return out
 
 
-def _mask_path_tokens(text: str) -> str:
-    # Preserve offsets while ensuring a filename such as input/write.csv cannot
-    # introduce a new action or split a coordinated list of source files.
-    # Use non-whitespace so an "and <path>" list cannot become "and <verb>".
-    def masked(match: re.Match[str]) -> str:
-        token = match.group(0)
-        length = len(token.rstrip(".,;:!?)]}"))
-        return "\x00" * length + token[length:]
+def _iter_clauses(texts: list[str], *, protected_literals: tuple[str, ...] = ()) -> list[str]:
+    """Split request text into passages by line, semicolon and sentence end.
 
-    return _PATH_RE.sub(masked, text)
-
-
-def _iter_clauses(
-    texts: list[str], *, split_actions: bool = True, protected_literals: tuple[str, ...] = ()
-) -> list[str]:
+    Layout only: no word of any language marks a boundary. Quoted paths and the
+    given literals may contain those characters; they are data and never split.
+    """
     clauses: list[str] = []
-    boundary = re.compile(
-        r"\n+|;|,(?=\s*(?:(?:and|then)\s+)?(?:save|write|create|produce|output|generate|emit|move|"
-        r"read|input|initial|reference|source|given|do\s+not|don't|dont|without|never|"
-        r"leave|keep|preserve|run|verify|check)\b)|"
-        r"\b(?:and|then)\s+(?=(?:save|write|create|produce|output|generate|emit|move|read|"
-        r"input|initial|reference|source|given|do\s+not|don't|dont|without|never|"
-        r"leave|keep|preserve|run|verify|check)\b)|"
-        r"(?<=[.!?])\s+(?=[A-Z])",
-        re.I,
-    )
-    if not split_actions:
-        boundary = re.compile(r"\n+|;|(?<=[.!?])\s+(?=[A-Z])", re.I)
+    # Full-width sentence marks are not followed by a space.
+    boundary = re.compile(r"\n+|;|；|(?<=[.!?])\s+|(?<=[。！？])\s*")
     for text in texts:
         raw = str(text or "")
-        # Quoted filenames may contain spaces, semicolons, or words such as
-        # "and save". Those bytes belong to the path, not the task grammar.
-        protected = list(_mask_path_tokens(raw))
+        protected = list(raw)
         for match in _RESOURCE_LOCATOR_RE.finditer(raw):
+            protected[match.start() : match.end()] = "x" * (match.end() - match.start())
+        # A path is data, quoted or not: a quoted name may hold spaces,
+        # semicolons or sentence marks, and none of them ends a passage.
+        for match in _PATH_RE.finditer(raw):
+            protected[match.start() : match.end()] = "x" * (match.end() - match.start())
+        for match in _BACKTICK_COMMAND_RE.finditer(raw):
             protected[match.start() : match.end()] = "x" * (match.end() - match.start())
         for literal in protected_literals:
             if literal:
@@ -1441,82 +1392,12 @@ def _iter_clauses(
         protected_view = "".join(protected)
         start = 0
         for match in boundary.finditer(protected_view):
-            # Attempted operations do not create an unconditional output. Only
-            # unprotected words may supply that predicate; filenames are data.
-            if match.group(0).lower().startswith("and ") and _ATTEMPTED_IO_RE.search(
-                protected_view[start : match.start()]
-            ):
-                continue
             if clause := raw[start : match.start()].strip():
                 clauses.append(clause)
             start = match.end()
         if clause := raw[start:].strip():
             clauses.append(clause)
     return clauses
-
-
-def _prefix_path_role(prefix: str) -> AcceptancePathRole:
-    output = list(_OUTPUT_ROLE_RE.finditer(prefix))
-    source = list(_INPUT_CONNECTOR_RE.finditer(prefix))
-    if output:
-        if source and source[-1].start() > output[-1].start():
-            return AcceptancePathRole.EXISTING_INPUT
-        return AcceptancePathRole.REQUIRED_OUTPUT
-    if source or _INPUT_ROLE_RE.search(prefix):
-        return AcceptancePathRole.EXISTING_INPUT
-    if _CHECKER_ROLE_RE.search(prefix):
-        return AcceptancePathRole.VERIFICATION_CHECKER
-    return AcceptancePathRole.UNKNOWN_REFERENCE
-
-
-def _clause_path_role(clause: str) -> AcceptancePathRole:
-    # Classify the surrounding instruction, not words inside a path candidate.
-    # "input/output example table" and "inspect src/create.py" do not ask us
-    # to create files; an explicit "create input/output" still does.
-    clause = _PATH_RE.sub(lambda match: " " * len(match.group(0)), clause)
-    if _PRESERVATION_ROLE_RE.search(clause):
-        return AcceptancePathRole.PRESERVATION_TARGET
-    if _OUTPUT_ROLE_RE.search(clause):
-        return AcceptancePathRole.REQUIRED_OUTPUT
-    if _INPUT_ROLE_RE.search(clause):
-        return AcceptancePathRole.EXISTING_INPUT
-    if _CHECKER_ROLE_RE.search(clause):
-        return AcceptancePathRole.VERIFICATION_CHECKER
-    return AcceptancePathRole.UNKNOWN_REFERENCE
-
-
-def _path_role(
-    clause: str,
-    path_match: re.Match[str],
-) -> AcceptancePathRole:
-    path_start = path_match.start(1)
-    masked = _mask_path_tokens(clause)
-    prefix = masked[:path_start]
-    if _ATTEMPTED_IO_RE.search(prefix) or _NEGATED_OUTPUT_RE.search(prefix):
-        # An attempt (including an expected denial) does not promise that the
-        # target will exist. Keep the reference without inventing an output
-        # obligation; execution/check evidence must still establish the result.
-        return AcceptancePathRole.UNKNOWN_REFERENCE
-    preservation = None
-    for candidate in _PRESERVATION_ROLE_RE.finditer(masked):
-        if candidate.start() >= path_start:
-            break
-        preservation = candidate
-    if preservation is None:
-        return _prefix_path_role(masked[:path_start])
-    if path_start < preservation.end():
-        return AcceptancePathRole.PRESERVATION_TARGET
-
-    boundary = clause.rfind(",", preservation.end(), path_start)
-    if boundary < 0:
-        return AcceptancePathRole.PRESERVATION_TARGET
-    scope_is_complete = bool(re.search(r"\b(?:unchanged|intact)\s*$", preservation.group(0), re.I))
-    prior_path = _PATH_RE.search(clause, preservation.end(), boundary)
-    # A completed state phrase ends at the comma. An open direct-object phrase
-    # carries across it only after binding a path, which preserves path lists.
-    if not scope_is_complete and prior_path is not None:
-        return AcceptancePathRole.PRESERVATION_TARGET
-    return _prefix_path_role(masked[boundary + 1 : path_start])
 
 
 def _path_source_literal(path: str) -> str:
@@ -1533,44 +1414,126 @@ def _clean_path_token(path: str) -> str:
     return cleaned
 
 
+_PATH_START_RE = re.compile(r"[A-Za-z]:[\\/]|[\\/]{1,2}|\.{1,2}[\\/]|~[\\/]")
+# Developer tools whose command lines are often plain words (`npm run build`,
+# `git status`). Program names, the same in every language.
+_DEVELOPER_TOOLS = frozenset(
+    {
+        *_COMMAND_HEADS,
+        "bun", "bundle", "cmake", "composer", "ctest", "deno", "docker", "dotnet", "eslint",
+        "gh", "git", "gradle", "helm", "java", "jest", "kubectl", "mvn", "mypy", "ninja", "nox",
+        "npx", "php", "pip", "pip3", "pipenv", "poetry", "rake", "ruby", "ruff", "swift",
+        "terraform", "tox", "tsc", "vitest",
+    }
+)  # fmt: skip
+_COMMAND_SYNTAX = frozenset("/\\.=*$|&;<>")
+
+
+def _is_backticked_command_line(span: str, *, root: Path | None = None) -> bool:
+    """Whether a backticked span is written as a command line, not as prose or a path.
+
+    Decided by how the span is written and by what is on this machine, never by
+    the words that introduce it, so it holds in every language:
+
+    * a developer tool followed by up to two plain words (`npm run build`);
+    * any installed program followed by something written as an argument: an
+      option, a path, a file name, an assignment or a shell operator;
+    * a path to a program followed by an option or another path, or a path
+      inside the workspace to an executable file.
+
+    A word ending in a colon or comma is punctuation of a sentence, so a span
+    with one is prose (`file not found: x.yaml`). A span that begins like a
+    path and has no option and no second path is one path whose name has spaces.
+    """
+    words = span.split()
+    while len(words) > 1 and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", words[0]):
+        words = words[1:]  # VAR=value prefixes
+    if len(words) < 2:
+        return False
+    head, rest = words[0], words[1:]
+    if head[:1] in "\"'":
+        # A program path quoted on its own, then arguments. One path whose name
+        # has spaces would not close its quote before the next word.
+        try:
+            parts = shlex.split(span)
+        except ValueError:
+            return False
+        return len(parts) > 1 and ("/" in parts[0] or "\\" in parts[0])
+    if any(word.endswith((":", ",")) for word in words):
+        return False
+    written_as_argument = any(
+        word.startswith("-") or _COMMAND_SYNTAX & set(word.strip("\"'")) for word in rest
+    )
+    if _PATH_START_RE.match(head) or re.match(r"[\w.-]+[\\/]", head):
+        if any(word.startswith("-") or _PATH_START_RE.match(word) for word in rest):
+            return True
+        if root is None or Path(head).is_absolute() or ".." in PurePosixPath(head).parts:
+            return False  # nothing outside the workspace is inspected for this
+        try:
+            candidate = root / head
+            return candidate.is_file() and os.access(candidate, os.X_OK)
+        except (OSError, ValueError):
+            return False
+    if head != head.lower():
+        return False  # programs are written in lower case; a label or a title is not one
+    if head in _DEVELOPER_TOOLS:
+        return written_as_argument or len(words) <= 3
+    return written_as_argument and shutil.which(head) is not None
+
+
+def request_command_lines(texts: list[str], *, root: Path | None = None) -> list[str]:
+    """Command lines the user wrote in backticks, in the order written.
+
+    This recognises that a span is a command line. It does not say the request
+    asks for it to be run: that is the model's reading of the request.
+    """
+    commands: list[str] = []
+    for text in texts:
+        for match in _BACKTICK_COMMAND_RE.finditer(str(text or "")):
+            candidate = _normalize_command(match.group(1))
+            if (
+                candidate
+                and candidate not in commands
+                and _is_backticked_command_line(candidate, root=root)
+            ):
+                commands.append(candidate)
+    return commands[:8]
+
+
 def _extract_path_refs(*, root: Path, texts: list[str]) -> list[AcceptancePathRef]:
     refs: list[AcceptancePathRef] = []
     seen: set[tuple[str, str, str]] = set()
     for clause in _iter_clauses(texts):
         resource_spans = [match.span() for match in _RESOURCE_LOCATOR_RE.finditer(clause)]
-        commands = set(_extract_explicit_commands([clause]))
         command_spans = [
             token.span()
             for token in _BACKTICK_COMMAND_RE.finditer(clause)
-            if _normalize_command(token.group(1)) in commands
+            if _is_backticked_command_line(token.group(1), root=root)
         ]
         for match in _PATH_RE.finditer(clause):
             if any(start <= match.start(1) < end for start, end in resource_spans):
                 continue
-            # An interpreter's absolute installation path is part of a command,
-            # not an instruction to work on files in that installation folder.
+            # A program's installation path or an argument inside a command
+            # line is part of the command, not a file the request is about.
             if any(start <= match.start() < end for start, end in command_spans):
                 continue
-            # A Git ref may contain slashes without naming a filesystem output.
-            # Match the immediate noun, so "on branch x create src/a.py" still
-            # requires the real file while "create branch test/x" does not.
-            before = clause[: match.start(1)].rstrip(" `\"'")
-            if re.search(r"\b(?:branch|tag|ref)(?:\s+(?:named|called))?\s*$", before, re.I):
+            # A plain number or dotted version (3.14, 1.2.3) is not a path.
+            if re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", _clean_path_token(match.group(1))):
                 continue
-            role = _path_role(clause, match)
-            if _context_is_suggestion(clause):
-                role = AcceptancePathRole.UNKNOWN_REFERENCE
+            # Detection recognises how a path is written, which is the same in
+            # every language. It assigns no role: whether a file is to be
+            # created, read, kept unchanged or is not a file at all depends on
+            # what the request means, and only the model's declaration says so.
             path_ref = _resolve_acceptance_path(
                 root=root,
                 raw_text=match.group(1),
-                role=role,
+                role=AcceptancePathRole.UNKNOWN_REFERENCE,
                 clause=clause,
             )
             if path_ref is None:
                 continue
             if (
-                path_ref.role == AcceptancePathRole.UNKNOWN_REFERENCE
-                and not _looks_like_explicit_artifact_path(path_ref.display_path)
+                not _looks_like_explicit_artifact_path(path_ref.display_path)
                 and path_ref.path_kind != AcceptancePathKind.ABSOLUTE_EXTERNAL
             ):
                 continue
@@ -1697,138 +1660,60 @@ def _legacy_paths_from_refs(path_refs: tuple[AcceptancePathRef, ...]) -> tuple[s
     return tuple(dict.fromkeys(paths))
 
 
-def _extract_path_scoped_formats(
+_EXTENSION_FORMATS = {
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".csv": "csv",
+    ".xml": "xml",
+    ".html": "html",
+    ".md": "markdown",
+}
+
+
+def _output_formats(
     path_refs: list[AcceptancePathRef],
-    *,
-    texts: list[str],
+    declared: DeclaredRequirements,
 ) -> list[tuple[AcceptancePathRef, str, bool]]:
+    """(output, format, declared) for each required output with a known format.
+
+    A format the model declared is a requirement. One only implied by the file
+    name's suffix is advisory.
+    """
+    stated = {path.casefold(): fmt for path, fmt in declared.formats}
     out: list[tuple[AcceptancePathRef, str, bool]] = []
     seen: set[tuple[str, str]] = set()
-    output_refs = [
-        path_ref for path_ref in path_refs if path_ref.role == AcceptancePathRole.REQUIRED_OUTPUT
-    ]
-    extension_formats = {
-        ".json": "json",
-        ".yaml": "yaml",
-        ".yml": "yaml",
-        ".csv": "csv",
-        ".xml": "xml",
-        ".html": "html",
-        ".md": "markdown",
-    }
     for path_ref in path_refs:
         if path_ref.role != AcceptancePathRole.REQUIRED_OUTPUT:
             continue
-        explicit_format = _explicit_format_for_clause(path_ref.clause)
-        if explicit_format:
-            key = (path_ref.display_path.casefold(), explicit_format)
-            if key not in seen:
-                seen.add(key)
-                out.append((path_ref, explicit_format, True))
+        fmt = stated.get(path_ref.display_path.casefold()) or stated.get(
+            path_ref.raw_text.casefold()
+        )
+        explicit = bool(fmt)
+        if not fmt:
+            fmt = _EXTENSION_FORMATS.get(PurePosixPath(path_ref.display_path).suffix.casefold())
+        if not fmt:
             continue
-        suffix = PurePosixPath(path_ref.display_path).suffix.casefold()
-        inferred = extension_formats.get(suffix)
-        if inferred:
-            key = (path_ref.display_path.casefold(), inferred)
-            if key not in seen:
-                seen.add(key)
-                out.append((path_ref, inferred, False))
-    if len(output_refs) == 1:
-        for clause in _iter_clauses(texts):
-            if _PATH_RE.search(clause):
-                continue
-            if not re.search(r"\b(?:output|result|artifact|file)\b", clause, re.I):
-                continue
-            explicit_format = _explicit_format_for_clause(clause)
-            if not explicit_format:
-                continue
-            path_ref = output_refs[0]
-            key = (path_ref.display_path.casefold(), explicit_format)
-            if key not in seen:
-                seen.add(key)
-                out.append((path_ref, explicit_format, True))
+        key = (path_ref.display_path.casefold(), fmt)
+        if key not in seen:
+            seen.add(key)
+            out.append((path_ref, fmt, explicit))
     return out
 
 
-def _explicit_format_for_clause(clause: str) -> str:
-    for match in _EXPLICIT_FORMAT_RE.finditer(clause or ""):
-        value = (match.group(1) or match.group(2) or "").casefold()
-        if value:
-            return value
-    return ""
-
-
-def _extract_paths(text: str) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for path_ref in _extract_path_refs(root=Path("."), texts=[text]):
-        path = path_ref.workspace_relative_path or path_ref.display_path
-        if not path or path.startswith("-") or ".." in PurePosixPath(path).parts:
-            continue
-        if not _looks_like_explicit_artifact_path(path):
-            continue
-        if path.casefold() in seen:
-            continue
-        seen.add(path.casefold())
-        out.append(path)
-    return out[:24]
-
-
-def _extract_explicit_commands(texts: list[str]) -> list[str]:
-    commands: list[str] = []
-    seen: set[str] = set()
-    for text in texts:
-        for match in _BACKTICK_COMMAND_RE.finditer(text):
-            candidate = _normalize_command(match.group(1))
-            context = str(text or "")[max(0, match.start() - 80) : match.start()]
-            if _context_is_suggestion(context) or _context_negates_command(context):
-                continue
-            suffix_requires_pass = bool(
-                re.match(
-                    r"\s*(?:must|shall|needs to)\s+(?:pass|succeed|exit\s+with\s+(?:code\s+)?0)\b",
-                    text[match.end() : match.end() + 80],
-                    re.I,
-                )
-            )
-            python_snippet = _python_interpreter_snippet_command(candidate, context=context)
-            if python_snippet:
-                if not re.search(r"\b(?:validate|verify|check|run|execute|test)\b", context, re.I):
-                    continue
-                candidate = python_snippet
-            elif (
-                not candidate
-                or not _looks_like_command(
-                    candidate, context="run " if suffix_requires_pass else context
-                )
-                or not (_has_direct_command_intro(context) or suffix_requires_pass)
-            ):
-                continue
-            key = candidate
-            if key in seen:
-                continue
-            seen.add(key)
-            commands.append(candidate)
-    return commands[:8]
-
-
-def _extract_public_symbols(texts: list[str]) -> list[str]:
+def _extract_public_symbols(texts: list[str], *, root: Path | None = None) -> list[str]:
     symbols: list[str] = []
     for text in texts:
         for match in _BACKTICK_COMMAND_RE.finditer(text):
             candidate = match.group(1).strip()
-            context = text[max(0, match.start() - 80) : match.start()]
             if (
                 _expectation_span_is_symbol_like(candidate)
                 and not _PATH_RE.fullmatch(candidate)
-                and not _looks_like_command(candidate, context=context)
+                and not _is_backticked_command_line(candidate, root=root)
                 and candidate not in symbols
             ):
                 symbols.append(candidate)
     return symbols[:40]
-
-
-def extract_explicit_acceptance_commands(*texts: str) -> list[str]:
-    return _extract_explicit_commands([str(text or "") for text in texts if str(text or "")])
 
 
 # ---------------------------------------------------------------------------
@@ -1883,6 +1768,7 @@ def extract_task_expectations(
     *,
     texts: list[str],
     path_refs: list[AcceptancePathRef],
+    root: Path | None = None,
 ) -> list[Expectation]:
     """Extract concrete, checkable expectations from the task text (contract v2).
 
@@ -1925,8 +1811,7 @@ def extract_task_expectations(
             span = match.group(1).strip()
             if len(span) < MIN_EXPECTED_OUTPUT_LITERAL_LEN:
                 continue
-            context = str(text)[max(0, match.start() - 80) : match.start()]
-            if _looks_like_command(span, context=context):
+            if _is_backticked_command_line(span, root=root):
                 continue
             if _expectation_span_is_path_like(span):
                 continue
@@ -1941,74 +1826,11 @@ def extract_task_expectations(
     return expectations[:MAX_EXPECTATIONS]
 
 
-def _extract_thresholds(texts: list[str]) -> list[AcceptanceThreshold]:
-    thresholds: list[AcceptanceThreshold] = []
-    for text in texts:
-        for match in _THRESHOLD_RE.finditer(text):
-            if _context_is_suggestion(text[: match.start()]):
-                continue
-            operator = match.group("op").casefold()
-            operator = {
-                "at least": ">=",
-                "above": ">",
-                "over": ">",
-                "more than": ">",
-                "at most": "<=",
-                "under": "<",
-                "below": "<",
-                "less than": "<",
-            }.get(operator, operator)
-            thresholds.append(
-                AcceptanceThreshold(
-                    metric=match.group("metric").casefold(),
-                    operator=operator,
-                    value=float(match.group("value")),
-                    unit=str(match.group("unit") or ""),
-                )
-            )
-    return thresholds[:8]
-
-
-def _extract_ports(texts: list[str]) -> list[int]:
-    ports: list[int] = []
-    seen: set[int] = set()
-    for text in texts:
-        for match in _PORT_RE.finditer(text):
-            if _context_is_suggestion(text[: match.start()]):
-                continue
-            port = int(match.group(1))
-            if 0 < port <= 65535 and port not in seen:
-                seen.add(port)
-                ports.append(port)
-    return ports[:8]
-
-
-def _extract_formats(texts: list[str]) -> list[str]:
-    formats: list[str] = []
-    seen: set[str] = set()
-    for text in texts:
-        for match in _FORMAT_RE.finditer(text):
-            value = match.group(1).casefold()
-            if value in seen:
-                continue
-            seen.add(value)
-            formats.append(value)
-    return formats[:8]
-
-
 def _residual_functional_requirement(texts: list[str]) -> str:
     combined = " ".join(" ".join(text.split()) for text in texts if text.strip())
     if not combined:
         return ""
     return combined[:280]
-
-
-def _path_appears_preserved(path: str, texts: list[str]) -> bool:
-    for text in texts:
-        for match in _PRESERVE_RE.finditer(text):
-            if path in _extract_paths(match.group(0)):
-                return True
-    return False
 
 
 def _planning_constraint_criteria(
@@ -2097,92 +1919,6 @@ def _looks_like_explicit_artifact_path(path: str) -> bool:
 def _normalize_command(command: str) -> str:
     # Whitespace inside quoted arguments or inline code is significant.
     return str(command or "").strip()
-
-
-def _python_interpreter_snippet_command(command: str, *, context: str) -> str:
-    if not _PYTHON_SNIPPET_INTRO_RE.search(context or ""):
-        return ""
-    if "\n" in command or "\r" in command:
-        return ""
-    lowered = command.casefold()
-    if not (
-        lowered.startswith(("from ", "import ", "assert "))
-        or "; assert " in lowered
-        or lowered.startswith(("print(", "raise "))
-    ):
-        return ""
-    try:
-        ast.parse(command, mode="exec")
-    except SyntaxError:
-        return ""
-    return "python -c " + shlex.quote(command)
-
-
-def _looks_like_command(command: str, *, context: str = "") -> bool:
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        return False
-    if not parts:
-        return False
-    direct_intro = _has_direct_command_intro(context)
-    # A path or API name in a sentence is data, regardless of an earlier 'run'.
-    if len(parts) == 1:
-        if command.endswith("()"):
-            return False
-        return direct_intro
-    head = Path(parts[0]).name.casefold()
-    if head in _COMMAND_HEADS:
-        return True
-    return direct_intro
-
-
-def _has_direct_command_intro(context: str) -> bool:
-    clause = re.split(r"[.!?](?=\s|$)|[;\n]", context or "")[-1]
-    coordinated = re.fullmatch(
-        r"(?P<prefix>.*)`[^`\r\n]+`\s*(?:,\s*(?:and\s+)?|and\s+)\s*",
-        clause,
-        re.I,
-    )
-    if coordinated:
-        # Only a bare quoted list inherits its introduction. Intervening prose
-        # such as 'inspect' or 'write' ends the command relationship.
-        return _has_direct_command_intro(coordinated.group("prefix"))
-    if _context_negates_command(clause):
-        return False
-    if re.search(r"\b(?:old|previous|formerly|historical|document|describe)\b", clause, re.I):
-        return False
-    return bool(
-        re.search(
-            r"\b(?:run|execute|(?:test|verify|validate|check) (?:with|using)|"
-            r"install with|using command|acceptance check|verification command|command)"
-            r"\s*(?:(?:the|this)\s+)?(?:command\s*)?[:=]?\s*$",
-            clause,
-            re.I,
-        )
-    )
-
-
-def _context_negates_command(context: str) -> bool:
-    # Inspect only the immediate introduction, never the quoted command body
-    # or a previous clause's prohibition of a different command.
-    return bool(
-        re.search(
-            r"\b(?:do\s+not|don['’]t|never|without)\s+(?:ever\s+)?"
-            r"(?:run(?:ning)?|execut(?:e|ing)|(?:test|verify|validate|check)(?:ing)?"
-            r"(?:\s+(?:with|using))?)\s*"
-            r"(?:(?:the|this)\s+)?(?:command\s*)?[:=]?\s*$",
-            context,
-            re.I,
-        )
-    )
-
-
-def _context_is_suggestion(context: str) -> bool:
-    clause = re.split(r"[.!?](?=\s|$)|[;\n]", context or "")[-1]
-    return bool(
-        re.search(r"\b(?:could|might|optionally|consider|suggest|for example)\b", clause, re.I)
-    )
 
 
 def _is_test_or_checker_path(path: str) -> bool:
@@ -2783,6 +2519,19 @@ def _durable_service_satisfies_criterion(
     return True
 
 
+def durable_service_problem(payload: dict[str, Any]) -> str | None:
+    """Why a durable service is not ready now, or None when it is."""
+    if (
+        str(payload.get("ownership") or "") == "DURABLE_SERVICE"
+        and str(payload.get("status") or "").casefold() == "running"
+        and payload.get("alive") is True
+        and isinstance(payload.get("readiness"), dict)
+        and str(payload["readiness"].get("status") or "").casefold() == "ready"
+    ):
+        return None
+    return _durable_service_failure_summary(payload)
+
+
 def _durable_service_failure_summary(payload: dict[str, Any]) -> str:
     service_id = str(payload.get("service_id") or "?")
     status = str(payload.get("status") or "?")
@@ -2799,6 +2548,9 @@ def _durable_service_failure_summary(payload: dict[str, Any]) -> str:
     )
 
 
+_TIME_UNITS = frozenset({"ns", "us", "µs", "ms", "s", "sec", "secs", "seconds", "min"})
+
+
 def _evaluate_thresholds(
     *,
     thresholds: tuple[AcceptanceThreshold, ...],
@@ -2806,19 +2558,26 @@ def _evaluate_thresholds(
     passed: bool | None,
     origin: EvidenceOrigin,
 ) -> tuple[AcceptanceCriterionStatus | None, str]:
+    """Judge a declared numeric target against one command's output.
+
+    Only numbers on a line that names the metric are the measurement; a command
+    that never mentions the metric says nothing about it. A timing, told by its
+    unit, needs more than one sample.
+    """
     if not thresholds:
         return None, ""
-    numbers = [float(match.group(0)) for match in _NUMBER_RE.finditer(output or "")]
-    if not numbers:
-        if passed is False:
-            return AcceptanceCriterionStatus.FAILED, "Threshold command failed"
-        return None, ""
     threshold = thresholds[0]
+    metric = threshold.metric.casefold()
+    numbers = [
+        float(match.group(0))
+        for line in (output or "").splitlines()
+        if metric and metric in line.casefold()
+        for match in _NUMBER_RE.finditer(line.casefold().replace(metric, " "))
+    ]
+    if not numbers:
+        return None, ""
     measured = _median(numbers)
-    if (
-        threshold.metric in {"latency", "runtime", "time", "duration", "performance"}
-        and len(numbers) < 2
-    ):
+    if threshold.unit.casefold() in _TIME_UNITS and len(numbers) < 2:
         return (
             AcceptanceCriterionStatus.BLOCKED,
             "Performance threshold has insufficient repeated samples",
@@ -2926,8 +2685,8 @@ def _finalize_content_format_criterion(
         criterion.status = AcceptanceCriterionStatus.UNVERIFIED
         criterion.failure_summary = "Format output path is missing: " + ", ".join(missing)
         return
-    lowered = criterion.description.casefold()
-    if "json" in lowered:
+    # The description begins with the format; the path after it is data.
+    if criterion.description.casefold().startswith("json "):
         invalid: list[str] = []
         for path in paths:
             candidate = root / path

@@ -42,7 +42,7 @@ def test_sonnet_is_excluded_from_free_picker_but_retains_native_protocol():
     assert meta.context_window_tokens == 1_000_000
     assert meta.max_output_tokens == 128_000
     assert meta.supports_reasoning is True
-    assert meta.supports_vision is False
+    assert meta.supports_vision is True
     assert meta.input_cost_per_token == 0.000002
     assert meta.output_cost_per_token == 0.00001
     assert meta.cache_read_input_cost_per_token == 0.0000002
@@ -54,7 +54,7 @@ def test_sonnet_is_excluded_from_free_picker_but_retains_native_protocol():
 
 
 @pytest.mark.parametrize("effort", [None, "none", "low", "medium", "high", "xhigh", "max"])
-def test_python_tool_catalog_payload_uses_native_messages(effort):
+def test_python_tool_catalog_payload_forms_native_gateway_payload(effort):
     cfg = hosted_config()
     cfg.llm_reasoning_effort = effort
     cfg.web_search_mode = "auto"

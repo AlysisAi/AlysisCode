@@ -189,6 +189,9 @@ def test_gate_repeated_answers_are_visible_once_across_adapters(
         model=model,
         transport=httpx.MockTransport(handler),
     )
+    # The gate rejects on an open requirement the host was given as data; it
+    # reads none from the wording of the request.
+    session.authoritative_verification_commands = ["python check_out.py"]
     try:
         assert session.run_turn("Create out.txt containing hello.") == 0
     finally:

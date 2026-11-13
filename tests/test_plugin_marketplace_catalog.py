@@ -13,7 +13,8 @@ CATEGORIES = {"code", "docs-files", "mail-chat", "calendar", "notes-wiki", "task
 
 def test_every_built_in_plugin_has_display_details():
     result = handle_management_method("ext.search", {}, request_id=1)
-    assert result["count"] == 19
+    # 24 current non-Google plugins, eight hidden Google descriptors and one legacy bundle.
+    assert result["count"] == 33
     for entry in result["extensions"]:
         assert entry["categories"], entry["id"]
         assert set(entry["categories"]) <= CATEGORIES, entry["id"]

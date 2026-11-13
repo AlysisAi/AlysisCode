@@ -267,7 +267,9 @@ def test_external_file_single_admitted_command_mode_matrix(tmp_path, mode):
             assert staged["source_identity"]["inode"] == source.stat().st_ino
             assert (root / "copy.txt").read_text() == source.read_text()
             assert (root / "copy.txt").stat().st_ino != source.stat().st_ino
-        assert len(surface.approvals) == (0 if mode == "readonly" else 1)
+        assert [request.kind for request in surface.approvals] == (
+            [] if mode == "readonly" else ["shell_run"]
+        )
         if surface.approvals:
             assert surface.approvals[0].command == command
     finally:
@@ -530,13 +532,15 @@ def test_office_edit_carries_real_hashes_and_reopens_new_revision(tmp_path):
 @pytest.mark.parametrize(
     "case", ["bad_pdf", "large_pdf", "many_pages", "range", "char_cap", "bad_zip", "renderer"]
 )
-def test_document_failures_report_actual_cli_result_without_cu_retry(tmp_path, case):
+def test_document_failures_report_actual_cli_result_without_cu_retry(tmp_path, monkeypatch, case):
     if case == "bad_zip":
         (tmp_path / "broken.docx").write_bytes(b"not a zip")
         command = cli("office", "inspect", "--source", "broken.docx")
     elif case == "renderer":
         from docx import Document
 
+        # Exercise a missing renderer even on developer hosts with LibreOffice.
+        monkeypatch.setenv("ALYSIS_OFFICE_SOFFICE", str(tmp_path / "missing-renderer"))
         Document().save(tmp_path / "source.docx")
         command = cli("office", "render", "--source", "source.docx", "--preview-dir", "pages")
     else:

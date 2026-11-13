@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Callable
 from typing import Any, NoReturn
 
 import typer
@@ -241,6 +242,61 @@ def profile_use(name: str = typer.Argument(..., help="Profile name.")) -> None:
     console.print(f"Active profile: {name}")
 
 
+def select_api_profile_model(
+    profile_name: str,
+    model_name: str,
+    *,
+    loader: Callable[[], AppConfig] = load_config,
+    saver: Callable[[AppConfig], None] = save_config,
+    api_key_resolver: Callable[..., Any] = resolve_api_key,
+) -> dict[str, Any]:
+    """Atomically activate an API profile and select its model; ConfigError when it cannot.
+
+    The one implementation behind `alysis profile select-model` and the IDE bridge's
+    `profile.selectModel`, which the desktop app asks its running settings engine instead of
+    starting this CLI (a new process per choice), so the two can never disagree.
+    """
+    from ...profiles import get_profile, set_active_profile, update_profile
+
+    profile_name = str(profile_name or "").strip()
+    model_name = str(model_name or "").strip()
+    if not profile_name or not model_name:
+        raise ConfigError("Profile name and model are required.")
+    with config_transaction(loader=loader, saver=saver) as cfg:
+        profile = get_profile(cfg, profile_name)
+        if profile is None:
+            raise ConfigError(f"Profile not found: {profile_name}")
+        if profile.auth_provider:
+            raise ConfigError(
+                "Subscription models must be selected with `alysis auth select-model`."
+            )
+        api_key = api_key_resolver(cfg, profile_name=profile.name)
+        if _profile_requires_api_key(cfg, profile) and not api_key.key:
+            raise ConfigError(
+                f"API key is missing for hosted profile {profile.name!r}. "
+                "Configure its API key before selecting this model."
+            )
+
+        # Provider activation, model selection, and the execution route are
+        # serialized into exactly one persistent write. This prevents the App
+        # from reporting an API selection while execution still delegates to
+        # the previously selected subscription runtime.
+        update_profile(cfg, profile.name, default_model=model_name)
+        set_active_profile(cfg, profile.name)
+        cfg.execution.backend = "native"
+        cfg.execution.runtime = None
+        # Subscription readiness belongs to that connection and must survive an
+        # API-profile switch so returning to an unready subscription still fails
+        # closed. The active API route itself is ready because its credential was
+        # validated above (or it is an explicitly keyless loopback provider).
+        cfg.extra_fields["onboarded"] = True
+    return {
+        "profile_name": profile.name,
+        "model": model_name,
+        "auth_provider": profile.auth_provider,
+    }
+
+
 @profile_app.command("select-model")
 def profile_select_model(
     name: str = typer.Argument(..., help="Profile name."),
@@ -248,8 +304,6 @@ def profile_select_model(
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON object."),
 ) -> None:
     """Atomically activate an API profile and select its model."""
-    from ...profiles import get_profile, set_active_profile, update_profile
-
     profile_name = str(name or "").strip()
     model_name = str(model or "").strip()
     if not profile_name or not model_name:
@@ -259,52 +313,20 @@ def profile_select_model(
         )
 
     try:
-        with config_transaction(
+        payload = select_api_profile_model(
+            profile_name,
+            model_name,
             loader=_patchable("load_config", load_config),
             saver=_patchable("save_config", save_config),
-        ) as cfg:
-            profile = get_profile(cfg, profile_name)
-            if profile is None:
-                raise ConfigError(f"Profile not found: {profile_name}")
-            if profile.auth_provider:
-                raise ConfigError(
-                    "Subscription models must be selected with `alysis auth select-model`."
-                )
-            api_key = _patchable("resolve_api_key", resolve_api_key)(
-                cfg,
-                profile_name=profile.name,
-            )
-            if _profile_requires_api_key(cfg, profile) and not api_key.key:
-                raise ConfigError(
-                    f"API key is missing for hosted profile {profile.name!r}. "
-                    "Configure its API key before selecting this model."
-                )
-
-            # Provider activation, model selection, and the execution route are
-            # serialized into exactly one persistent write. This prevents the App
-            # from reporting an API selection while execution still delegates to
-            # the previously selected subscription runtime.
-            update_profile(cfg, profile.name, default_model=model_name)
-            set_active_profile(cfg, profile.name)
-            cfg.execution.backend = "native"
-            cfg.execution.runtime = None
-            # Subscription readiness belongs to that connection and must survive an
-            # API-profile switch so returning to an unready subscription still fails
-            # closed. The active API route itself is ready because its credential was
-            # validated above (or it is an explicitly keyless loopback provider).
-            cfg.extra_fields["onboarded"] = True
+            api_key_resolver=_patchable("resolve_api_key", resolve_api_key),
+        )
     except ConfigError as exc:
         _profile_selection_error(str(exc), json_output=json_output, cause=exc)
 
-    payload = {
-        "profile_name": profile.name,
-        "model": model_name,
-        "auth_provider": profile.auth_provider,
-    }
     if json_output:
         typer.echo(json.dumps(payload, sort_keys=True))
         return
-    _console().print(f"Active profile: {profile.name} · model: {model_name}")
+    _console().print(f"Active profile: {payload['profile_name']} · model: {model_name}")
 
 
 def _profile_requires_api_key(cfg: AppConfig, profile: Any) -> bool:

@@ -11,11 +11,13 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.factory import make_llm_client
 from alysis_code.llm.openai_compat import attach_provider_metadata_to_assistant_message
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
+from alysis_code.llm.types import LLMError
 from alysis_code.model_registry import ModelRegistry
 from alysis_code.profile_presets import get_preset, make_profile_from_preset
 from alysis_code.profiles import add_profile, set_active_profile
+from alysis_code.tools.registry import iter_builtin_tool_metadata
 
-pytestmark = pytest.mark.usefixtures("configured_hosted_api", "authorized_hosted_models")
+pytestmark = pytest.mark.usefixtures("authorized_hosted_models")
 
 
 def hosted_config():
@@ -46,7 +48,7 @@ def test_luna_authorized_picker_and_metadata():
     flow.choose("medium")
     assert flow.state.commit_to(cfg).saved
     meta = ModelRegistry(cfg=cfg).get("gpt-6-luna")
-    assert meta.supports_vision is False
+    assert meta.supports_vision is True
     assert meta.supports_reasoning is True
     assert meta.context_window_tokens == 1_050_000
     assert meta.max_output_tokens == 128_000
@@ -141,6 +143,9 @@ def test_luna_uses_managed_responses_and_stateless_tool_reasoning_replay(stream)
         assert "reasoning.encrypted_content" in body["include"]
         assert "previous_response_id" not in body
         assert "temperature" not in body
+        assert all(tool["type"] == "function" for tool in body["tools"])
+        assert any(tool["name"] == "web_search" for tool in body["tools"])
+        assert "web_search_call.action.sources" not in body["include"]
         if len(captured) == 1:
             result = {"id": "resp_test", "status": "completed", "output": output}
         else:
@@ -180,7 +185,11 @@ def test_luna_uses_managed_responses_and_stateless_tool_reasoning_replay(stream)
         {
             "type": "function",
             "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}},
-        }
+        },
+        {
+            "type": "function",
+            "function": {"name": "web_search", "parameters": {"type": "object", "properties": {}}},
+        },
     ]
     first = client.chat(messages=history, tools=tools, stream=stream)
     assistant = attach_provider_metadata_to_assistant_message(
@@ -196,3 +205,99 @@ def test_luna_uses_managed_responses_and_stateless_tool_reasoning_replay(stream)
         stream=stream,
     )
     assert second.content == "Done."
+
+
+@pytest.mark.parametrize("mode", ["auto", "external", "off"])
+def test_luna_search_mode_retains_function_search_or_disables_it(mode):
+    captured = []
+
+    def handle(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "resp_search", "output": [], "output_text": "OK"})
+
+    cfg = hosted_config()
+    cfg.web_search_mode = mode
+    client = make_llm_client(
+        cfg=cfg, api_key="slk_test", model=cfg.model, transport=httpx.MockTransport(handle)
+    )
+    client.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "web_search", "parameters": {"type": "object"}},
+            }
+        ],
+        tool_choice="auto"
+        if mode == "off"
+        else {"type": "function", "function": {"name": "web_search"}},
+    )
+    if mode == "off":
+        assert "tools" not in captured[0]
+    else:
+        assert captured[0]["tools"][0]["type"] == "function"
+        assert captured[0]["tools"][0]["name"] == "web_search"
+        assert captured[0]["tool_choice"] == {"type": "function", "name": "web_search"}
+
+
+@pytest.mark.parametrize(
+    "mode, tool",
+    [
+        ("native", {"type": "function", "function": {"name": "web_search"}}),
+        ("auto", {"type": "web_search"}),
+        ("auto", {"type": "web_search_preview"}),
+    ],
+)
+def test_luna_rejects_explicit_builtin_search_before_http(mode, tool):
+    def unexpected_request(request):
+        pytest.fail("Unsupported built-in search must not reach the gateway.")
+
+    cfg = hosted_config()
+    cfg.web_search_mode = mode
+    client = make_llm_client(
+        cfg=cfg,
+        api_key="slk_test",
+        model=cfg.model,
+        transport=httpx.MockTransport(unexpected_request),
+    )
+    with pytest.raises(LLMError, match="does not support built-in web search"):
+        client.chat(messages=[{"role": "user", "content": "hi"}], tools=[tool])
+
+
+@pytest.mark.parametrize(
+    "effort", [None, "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+)
+def test_luna_full_builtin_catalog_forms_gateway_payload(effort):
+    captured = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        expected = {"minimal": "low", "ultra": "max"}.get(effort, effort)
+        assert body.get("reasoning", {}).get("effort") == expected
+        captured.append(body)
+        result = {"id": "resp_catalog", "status": "completed", "output": []}
+        if body.get("stream"):
+            event = {"type": "response.completed", "response": result}
+            return httpx.Response(
+                200, text=f"event: response.completed\ndata: {json.dumps(event)}\n\n"
+            )
+        return httpx.Response(200, json=result)
+
+    cfg = hosted_config()
+    cfg.llm_reasoning_effort = effort
+    client = make_llm_client(
+        cfg=cfg, api_key="slk_test", model=cfg.model, transport=httpx.MockTransport(handle)
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.copied_parameters(),
+            },
+        }
+        for tool in iter_builtin_tool_metadata()
+    ]
+    for stream in (False, True):
+        client.chat(messages=[{"role": "user", "content": "hi"}], tools=tools, stream=stream)

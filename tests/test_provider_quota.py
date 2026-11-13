@@ -18,6 +18,7 @@ from alysis_code.computer_use_diagnostics import (
     protected_provider_diagnostic_marker,
 )
 from alysis_code.ide.stdio_bridge import _redact_bridge_error
+from alysis_code.llm.openai_compat import OpenAICompatClient
 from alysis_code.llm.openai_responses import OpenAIResponsesClient
 from alysis_code.llm.provider_limits import ProviderRetrySettings, run_provider_limited_call
 from alysis_code.llm.rate_limit_metadata import (
@@ -29,10 +30,13 @@ from alysis_code.llm.types import LLMError
 
 
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("client_class", [OpenAIResponsesClient, OpenAICompatClient])
 @pytest.mark.parametrize(
     "code", ["usage_limit_reached", "insufficient_quota", "billing_hard_limit_reached"]
 )
-def test_quota_rejection_makes_one_http_request_and_survives_protected_bridge(stream, code):
+def test_quota_rejection_makes_one_http_request_and_survives_protected_bridge(
+    stream, code, client_class
+):
     requests = []
     sleeps = []
 
@@ -50,7 +54,7 @@ def test_quota_rejection_makes_one_http_request_and_survives_protected_bridge(st
             },
         )
 
-    client = OpenAIResponsesClient(
+    client = client_class(
         base_url="https://api.openai.com/v1",
         api_key="test-key",
         model="test-model",
@@ -77,8 +81,12 @@ def test_quota_rejection_makes_one_http_request_and_survives_protected_bridge(st
 @pytest.mark.parametrize(
     "code", [None, "private-code-canary", ["malformed"], "rate_limit_exceeded"]
 )
-def test_subscription_type_cannot_be_masked_by_unknown_or_generic_code(code):
-    error = OpenAIResponsesClient._llm_error_from_response(
+@pytest.mark.parametrize(
+    "parse",
+    [OpenAIResponsesClient._llm_error_from_response, OpenAICompatClient._error_from_response],
+)
+def test_subscription_type_cannot_be_masked_by_unknown_or_generic_code(code, parse):
+    error = parse(
         httpx.Response(429, json={"error": {"code": code, "type": "usage_limit_reached"}})
     )
     assert error.provider_error_code == "usage_limit_reached"

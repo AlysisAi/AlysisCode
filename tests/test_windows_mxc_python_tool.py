@@ -62,14 +62,16 @@ def test_request_path_does_not_choose_another_granted_python(policy):
     assert r"C:\attacker-python" not in request["read"]
 
 
-def test_python_tool_read_root_still_rejects_hardlinks(policy):
+def test_python_tool_read_root_with_a_hard_linked_file_is_granted_read_only(policy):
+    """This sandbox decides by path; a folder is no longer refused for a hard link in it."""
     base, workspace, runner = policy
     private = workspace.parent / "private.txt"
     private.write_text("unchanged")
     (base / "alias.txt").hardlink_to(private)
-    with pytest.raises(ConfigError, match="hardlinked"):
-        prepared(runner, workspace)
-    assert private.read_text() == "unchanged"
+    request = prepared(runner, workspace)
+    assert str(base) in request["read"] and str(base) in request["deny_write"]
+    assert str(base) not in request["write"]
+    assert "location" not in request
 
 
 def test_python_tool_cannot_be_the_workspace(policy):

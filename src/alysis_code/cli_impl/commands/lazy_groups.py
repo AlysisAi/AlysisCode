@@ -12,6 +12,7 @@ from typer.main import get_group
 # This is the CLI's existing registration table, not an alternate dispatcher.
 # Root options/callbacks and each group's original parsing remain in Typer.
 _GROUPS = {
+    "bots": ("bots", "bots_app"),
     "memory": ("memory", "memory_app"),
     "auth": ("auth", "auth_app"),
     "config": ("config", "config_app"),

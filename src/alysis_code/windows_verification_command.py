@@ -42,4 +42,6 @@ def split_windows_verifier_command(command: str) -> list[str] | None:
 
 
 def quote_windows_verifier_parts(parts: list[str]) -> str:
-    return "& " + " ".join("'" + part.replace("'", "''") + "'" for part in parts)
+    from .windows_sandbox import powershell_literal
+
+    return "& " + " ".join("'" + powershell_literal(part) + "'" for part in parts)

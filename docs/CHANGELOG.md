@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+## 0.17.0 - 2026-11-12
+
+- Add Alysis Owls (`alysis bots`): assistants with their own memory that work on a
+  private computer on this PC or in the cloud, run routines, and stop for approval
+  before anything that reaches other people, pays, posts or deletes.
+- Let Work and owls use connected plugins. Reads run directly; a change inside your
+  own account follows the approval mode; changes that reach other people or can't
+  be undone ask every time. An agent can show a plugin's Connect card and uses a
+  connected plugin before that service's website.
+- Name each command step in the work trace in the agent's own words, in the
+  conversation's language, and mark which step titles the model wrote.
+- Keep long tasks going past the model's input limit: compact the oldest finished
+  steps of the current request, and learn the real limit from a provider's
+  "too long" refusal.
+- Continue a task when a reply is cut off by the model's output limit, instead of
+  failing it.
+- Keep a reply the model already wrote when its next response comes back empty.
+- Let desktop hosts offer two or three suggested next steps under an answer.
+- Size Word table columns to their content.
+- Offer image input on every hosted model, with disclosed assistance where a model
+  cannot see images itself.
+- Restore engine features that the 0.16.3 public baseline left out, while keeping
+  every 0.16.1-0.16.3 fix.
+- Stage, commit and branch without a separate approval in "Approve for me", on macOS
+  and in the Windows sandbox. The operating system keeps a command from changing what
+  a later Git would run (configuration, hooks, a rebase); a push still asks a person.
+- Let commands in the Windows sandbox follow the approval mode, run the programs on
+  your PATH, and use Git in the project they run in.
+- Decide a forced folder delete (`rm -rf`, `Remove-Item -Recurse -Force`) through the
+  approval mode every time instead of refusing it. A delete of a drive, a home folder
+  or a system folder stays refused, and `fs_delete` says when it was given a folder.
+- End a finished task without sending the model back to work when its result was a
+  commit in a new repository, removed files, or no file change at all.
+- Compact chats and runs the same way: whole tool exchanges, oldest first, sized to
+  what must be freed, with the request being worked on and the recent steps kept.
+- Take a task's requirements and file roles from the model's declaration and from
+  facts, in any language, instead of from English phrases in the request.
+- Begin every request of an owl the same way, so a provider can cache the
+  conversation; what belongs to one task follows it.
+- Let the model choose how long a command may run (`timeout_s`, up to 600 seconds).
+
 ## 0.16.3 - 2026-11-08
 
 - Install the required `jsonschema` dependency for ordinary CLI installations,

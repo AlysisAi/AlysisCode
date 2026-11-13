@@ -1,33 +1,51 @@
-"""Device-flow login for Alysis Code Pro (`alysis login`).
+"""Sign in to an Alysis Code account (`alysis login`).
 
-The CLI asks the account backend for a short user code (``ABCD-EFGH``), opens
-the website's /activate page where the signed-in user approves it, and polls
-until approval — then receives the user's long-lived gateway key (``slk_…``),
-stores it locally, and activates the ``alysis`` provider profile pointed at
-the Alysis Code LLM gateway (OpenAI-compatible; credits are metered server-side).
+On a computer with a browser, the CLI starts a session with the account backend,
+opens the website's /connect page and listens on 127.0.0.1. The signed-in person
+presses Continue; the website sends a one-time code to that loopback address,
+and the CLI redeems it, with the PKCE verifier only it holds, for the user's
+long-lived gateway key (``slk_…``). This is the OAuth pattern for native apps:
+a loopback redirect (RFC 8252) with an S256 code challenge (RFC 7636). There is
+no code to compare: a link someone else started gives them nothing, because the
+one-time code only ever reaches the approving person's own computer.
 
-The device_code secret and the gateway key only ever travel in HTTPS request
-and response bodies — never in URLs. The short user_code does appear in the
-opened URL, but it is single-use, expires in minutes, and is worthless without
-the device_code it is paired with.
+Over SSH, inside WSL, on a Linux console, with ``--device``, or while the
+backend does not offer it yet, the CLI uses the device flow instead: it shows a
+short user code (``ABCD-EFGH``), opens the /activate page where the signed-in
+user approves it, and polls until approval. That needs no listener, so it works
+anywhere.
 
-This flow needs no localhost listener, so it works over SSH and inside WSL the
-same as on a desktop.
+Either way the key is stored locally and the ``alysis`` provider profile is
+activated, pointed at the Alysis Code LLM gateway (OpenAI-compatible; credits
+are metered server-side). Secrets (the device_code, the verifier, the one-time
+code's exchange and the gateway key) only ever travel in HTTPS request and
+response bodies; the one-time code travels once in the loopback URL, on this
+computer, and is worthless without the verifier.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import math
+import os
 import platform
+import re
+import secrets
+import sys
+import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from . import alysis_cloud as cloud
 from .config import (
@@ -38,7 +56,7 @@ from .config import (
     save_persisted_profile_key,
 )
 from .device_identity import get_installation_id
-from .host_browser import open_url
+from .host_browser import is_wsl, open_url
 from .profile_presets import canonical_model_alias_for_preset, get_preset, make_profile_from_preset
 from .profiles import ProfileSpec, add_profile, get_profile, set_active_profile
 
@@ -88,6 +106,24 @@ class TrialStatus:
     display_name: str | None = None
     # Credits are monetary ledger units, not model tokens. Preserve the website contract.
     billing: dict[str, Any] | None = None
+    # The photo chosen in the desktop app, served from the account's avatars folder.
+    avatar_url: str | None = None
+
+
+@dataclass(frozen=True)
+class AccountProfile:
+    """The account's name and photo after `update_account_profile`."""
+
+    display_name: str | None
+    avatar_url: str | None
+
+
+class AccountProfileError(RuntimeError):
+    """A profile change that did not happen; ``reason`` is a stable code for callers."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +135,13 @@ def login(
     timeout_s: float = _DEFAULT_TIMEOUT_S,
     browser_opener: Callable[[str], bool] | None = None,
     output_write: Callable[[str], None] | None = None,
+    use_code: bool = False,
 ) -> LoginResult:
-    """Run the device-flow login and persist the resulting gateway key."""
+    """Sign in and persist the resulting gateway key.
+
+    The browser sign-in is used when a browser on this computer can reach it; ``use_code``
+    (``alysis login --device``) asks for the code page instead.
+    """
     writer = output_write or (lambda _msg: None)
 
     # Fail fast on an insecure (non-https) cloud URL before starting, so
@@ -108,20 +149,26 @@ def login(
     try:
         cloud.device_code_url()
         cloud.device_token_url()
+        cloud.desktop_sign_in_url()
         cloud.gateway_base_url()
+        cloud.site_url()
     except cloud.AlysisCloudConfigError as exc:
         raise AlysisLoginError(str(exc)) from exc
 
-    grant = _request_device_code()
-
-    writer(f"Your one-time code: [bold]{grant.user_code}[/bold]")
-    writer(f"Approve it in your browser:\n  {grant.verification_url}")
     opener = browser_opener or _open_browser
-    if not _safe_open(opener, grant.verification_url):
-        writer("Could not open a browser automatically. Open the URL above manually.")
-    writer("Waiting for approval…")
+    key = None
+    if not use_code and _browser_sign_in_possible():
+        key = _browser_sign_in(opener=opener, writer=writer, timeout_s=timeout_s)
+    if key is None:
+        grant = _request_device_code()
 
-    key = _poll_for_key(grant, timeout_s=timeout_s)
+        writer(f"Your one-time code: [bold]{grant.user_code}[/bold]")
+        writer(f"Approve it in your browser:\n  {grant.verification_url}")
+        if not _safe_open(opener, grant.verification_url):
+            writer("Could not open a browser automatically. Open the URL above manually.")
+        writer("Waiting for approval…")
+
+        key = _poll_for_key(grant, timeout_s=timeout_s)
 
     try:
         # Create + activate the profile first (this saves config); only then
@@ -190,6 +237,19 @@ class _AccountNoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _account_text(value: object) -> str | None:
     return value.strip()[:200] if isinstance(value, str) and value.strip() else None
+
+
+_AVATAR_PATH = re.compile(r"[0-9a-f-]{36}/[0-9a-f-]{36}\.(?:webp|png|jpg)")
+
+
+def _account_avatar(value: object) -> str | None:
+    """A photo link into this deployment's avatars bucket; anything else is dropped."""
+    if not isinstance(value, str) or len(value) > 2048:
+        return None
+    prefix = cloud.avatar_url_prefix()
+    if not value.startswith(prefix) or not _AVATAR_PATH.fullmatch(value[len(prefix) :]):
+        return None
+    return value
 
 
 def _account_number(value: object) -> int | float | None:
@@ -462,6 +522,7 @@ def fetch_trial_status(cfg: AppConfig) -> TrialStatus | None:
             tokens_remaining=None,
             display_name=_account_text(payload.get("display_name")),
             billing=billing,
+            avatar_url=_account_avatar(payload.get("avatar_url")),
         )
     except (
         cloud.AlysisCloudConfigError,
@@ -472,6 +533,227 @@ def fetch_trial_status(cfg: AppConfig) -> TrialStatus | None:
         UnicodeDecodeError,
     ):
         return None
+
+
+PROFILE_NAME_MAX = 60
+PROFILE_PHOTO_MAX = 262_144
+_PROFILE_ERRORS = {
+    400: ("invalid", "The name or photo can't be used. Check it and try again."),
+    401: (
+        "invalid_key",
+        "Your Alysis Code sign-in has expired. Sign in again to save your profile.",
+    ),
+    # An account server without this endpoint yet: the caller keeps the change locally.
+    404: ("unsupported", "Saving your profile to your account isn't available yet."),
+    429: ("rate_limited", "Too many changes in a short time. Wait a minute and try again."),
+}
+
+
+def _profile_photo_type(photo: bytes) -> str | None:
+    if len(photo) > 12 and photo[:4] == b"RIFF" and photo[8:12] == b"WEBP":
+        return "image/webp"
+    if len(photo) > 8 and photo[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(photo) > 3 and photo[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    return None
+
+
+def update_account_profile(
+    *,
+    display_name: str | None = None,
+    photo: bytes | None = None,
+    remove_photo: bool = False,
+    timeout_s: float = 20,
+) -> AccountProfile:
+    """Save the name and/or photo of the signed-in Alysis account.
+
+    The saved device key authenticates the change, so it only ever applies to the
+    account this computer is signed in to. ``photo`` is a small WebP, PNG or JPEG;
+    ``remove_photo`` removes the current one. Raises AccountProfileError otherwise.
+    """
+    body: dict[str, Any] = {}
+    if display_name is not None:
+        name = display_name.strip()
+        if (
+            not name
+            or len(name) > PROFILE_NAME_MAX
+            or any(ord(c) < 32 or ord(c) == 127 for c in name)
+        ):
+            raise AccountProfileError(
+                "invalid", f"Use a name of 1 to {PROFILE_NAME_MAX} characters."
+            )
+        body["display_name"] = name
+    if photo is not None and remove_photo:
+        raise AccountProfileError("invalid", "Choose a new photo or remove the photo, not both.")
+    if photo is not None:
+        if not photo or len(photo) > PROFILE_PHOTO_MAX or _profile_photo_type(photo) is None:
+            raise AccountProfileError(
+                "invalid", "Use a WebP, PNG or JPEG picture of at most 256 KB."
+            )
+        body["photo"] = base64.b64encode(photo).decode("ascii")
+    elif remove_photo:
+        body["photo"] = None
+    if not body:
+        raise AccountProfileError(
+            "invalid", "Nothing to change: give a name, a photo or remove the photo."
+        )
+    key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+    if not key:
+        raise AccountProfileError("signed_out", "No Alysis Code account is connected.")
+    try:
+        request = urllib.request.Request(
+            cloud.account_profile_url(),
+            method="POST",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.build_opener(_AccountNoRedirect()).open(
+            request, timeout=timeout_s
+        ) as response:
+            raw = response.read(16_385)
+    except urllib.error.HTTPError as exc:
+        reason, message = _PROFILE_ERRORS.get(
+            exc.code, ("unavailable", "Your profile couldn't be saved right now. Try again later.")
+        )
+        raise AccountProfileError(reason, message) from None
+    except cloud.AlysisCloudConfigError as exc:
+        raise AccountProfileError("unavailable", str(exc)) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise AccountProfileError(
+            "offline",
+            "Couldn't reach your Alysis Code account. Check your connection and try again.",
+        ) from None
+    try:
+        payload = json.loads(raw) if len(raw) <= 16_384 else None
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise AccountProfileError(
+            "unavailable", "Your profile couldn't be saved right now. Try again later."
+        )
+    return AccountProfile(
+        display_name=_account_text(payload.get("display_name")),
+        avatar_url=_account_avatar(payload.get("avatar_url")),
+    )
+
+
+PROJECT_AVATAR_NAME_MAX = 80
+PROJECT_AVATAR_ABOUT_MAX = 500
+PROJECT_AVATAR_RESPONSE_MAX = 65_536
+_OWL_LAYER_SIZE = 32
+_OWL_ROW = re.compile(r"[.kdgw1-4]{32}")
+_OWL_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+_PROJECT_AVATAR_ERRORS = {
+    400: ("invalid", "This project name can't be used for an owl."),
+    401: (
+        "invalid_key",
+        "Your Alysis Code sign-in has expired. Sign in again to get project owls.",
+    ),
+    # An account server without this endpoint yet: the app keeps the plain Alysis owl.
+    404: ("unsupported", "Project owls aren't available from your account yet."),
+    422: ("refused", "An owl couldn't be designed for this project name."),
+    429: ("rate_limited", "Too many project owls in a short time. Try again later."),
+}
+
+
+class ProjectAvatarError(RuntimeError):
+    """A project owl that was not designed; ``reason`` is a stable code for callers."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _project_avatar_text(value: str, limit: int) -> str:
+    text = " ".join(unicodedata.normalize("NFC", value).split())
+    if len(text) > limit or any(ord(c) < 32 or ord(c) == 127 for c in text):
+        raise ProjectAvatarError("invalid", f"Use at most {limit} characters on one line.")
+    return text
+
+
+def _owl_item(value: object) -> dict[str, list[str]] | None:
+    """The accessory layer the desktop app draws over the Alysis owl, or None if it isn't one."""
+    if not isinstance(value, dict) or set(value) != {"colors", "pixels"}:
+        return None
+    colors, pixels = value["colors"], value["pixels"]
+    if (
+        not isinstance(colors, list)
+        or not 1 <= len(colors) <= 4
+        or not all(isinstance(c, str) and _OWL_COLOR.fullmatch(c) for c in colors)
+        or not isinstance(pixels, list)
+        or len(pixels) != _OWL_LAYER_SIZE
+        or not all(isinstance(row, str) and _OWL_ROW.fullmatch(row) for row in pixels)
+    ):
+        return None
+    painted = "".join(pixels).replace(".", "")
+    if not 6 <= len(painted) <= 320 or any(c.isdigit() and int(c) > len(colors) for c in painted):
+        return None
+    return {"colors": [c.lower() for c in colors], "pixels": list(pixels)}
+
+
+def generate_project_avatar(
+    *, name: str, about: str = "", timeout_s: float = 170
+) -> dict[str, list[str]]:
+    """Design the owl of a desktop project from its name and what it is for.
+
+    One request to the account server, authenticated with the saved device key. Every project
+    shows the Alysis owl itself; the server designs the one pixel accessory it gets (a 32 x 32
+    layer of pixel letters and its colours) and keeps nothing. Raises ProjectAvatarError otherwise.
+    """
+    project_name = _project_avatar_text(name, PROJECT_AVATAR_NAME_MAX)
+    if not project_name:
+        raise ProjectAvatarError("invalid", "Give the project a name first.")
+    body: dict[str, Any] = {"name": project_name}
+    about_text = _project_avatar_text(about, PROJECT_AVATAR_ABOUT_MAX)
+    if about_text:
+        body["about"] = about_text
+    key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+    if not key:
+        raise ProjectAvatarError("signed_out", "No Alysis Code account is connected.")
+    unavailable = ProjectAvatarError(
+        "unavailable", "The project owl couldn't be designed right now. Try again later."
+    )
+    try:
+        request = urllib.request.Request(
+            cloud.project_avatar_url(),
+            method="POST",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.build_opener(_AccountNoRedirect()).open(
+            request, timeout=timeout_s
+        ) as response:
+            raw = response.read(PROJECT_AVATAR_RESPONSE_MAX + 1)
+    except urllib.error.HTTPError as exc:
+        reason, message = _PROJECT_AVATAR_ERRORS.get(
+            exc.code, (unavailable.reason, str(unavailable))
+        )
+        raise ProjectAvatarError(reason, message) from None
+    except cloud.AlysisCloudConfigError as exc:
+        raise ProjectAvatarError("unavailable", str(exc)) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise ProjectAvatarError(
+            "offline", "Couldn't reach your Alysis Code account. Check your connection."
+        ) from None
+    try:
+        payload = json.loads(raw) if len(raw) <= PROJECT_AVATAR_RESPONSE_MAX else None
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise unavailable
+    item = _owl_item(payload.get("item"))
+    if item is None:
+        raise unavailable
+    return item
 
 
 def list_trial_models(cfg: AppConfig) -> list[str]:
@@ -757,6 +1039,202 @@ def format_trial_status_line(status: TrialStatus) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Browser sign-in internals (loopback redirect + PKCE)
+# ---------------------------------------------------------------------------
+_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_ONE_TIME_CODE = re.compile(r"[0-9a-f]{64}")
+# The backend keeps a session ten minutes; the browser gets that long to finish.
+_BROWSER_SESSION_S = 600.0
+# How long the browser tab waits on the loopback page while the CLI redeems the code.
+_REDEEM_WAIT_S = 20.0
+
+
+def _browser_sign_in_possible() -> bool:
+    """Whether a browser on this computer can reach 127.0.0.1 here.
+
+    Not over SSH (the browser is on another computer), not inside WSL (its browser runs on
+    Windows, which need not reach WSL's loopback), and on Linux only in a desktop session.
+    """
+    if any(os.environ.get(name) for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
+        return False
+    if is_wsl():
+        return False
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return False
+    return True
+
+
+def _s256(verifier: str) -> str:
+    """BASE64URL(SHA256(verifier)) without padding (RFC 7636 section 4.2)."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+class _LoopbackCallback:
+    """The one page on 127.0.0.1 the website sends the browser to: ``/callback?code=…&state=…``.
+
+    It accepts the first request whose state matches, keeps the browser tab waiting while the
+    CLI redeems the code, then sends the tab to the website's /connect/done page with the
+    outcome. Anything else gets a 404; a request with another state (an old tab) is sent to
+    the outcome page as not finished, and the CLI keeps waiting.
+    """
+
+    def __init__(self, *, state: str, done_url: str) -> None:
+        self._state = state
+        self._done_url = done_url
+        self._received = threading.Event()
+        self._finished = threading.Event()
+        self._responded = threading.Event()
+        self._lock = threading.Lock()
+        self.code: str | None = None
+        self.ok = False
+        outer = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args: object) -> None:  # noqa: A002 - silence stderr
+                return
+
+            def _send(self, status: int, location: str | None = None) -> None:
+                self.send_response(status)
+                if location:
+                    self.send_header("Location", location)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_GET(self) -> None:  # noqa: N802
+                parts = urlsplit(self.path)
+                if parts.path != "/callback":
+                    self._send(404)
+                    return
+                query = parse_qs(parts.query)
+                code = (query.get("code") or [""])[0]
+                state = (query.get("state") or [""])[0]
+                if not (
+                    _ONE_TIME_CODE.fullmatch(code)
+                    and hmac.compare_digest(state.encode(), outer._state.encode())
+                ):
+                    self._send(302, outer._outcome_url(False))
+                    return
+                with outer._lock:
+                    first = outer.code is None
+                    if first:
+                        outer.code = code
+                if not first:
+                    self._send(302, outer._outcome_url(outer.ok))
+                    return
+                outer._received.set()
+                outer._finished.wait(_REDEEM_WAIT_S)
+                try:
+                    self._send(302, outer._outcome_url(outer.ok))
+                finally:
+                    outer._responded.set()
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._server.daemon_threads = True
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True
+        )
+        self._thread.start()
+
+    @property
+    def port(self) -> int:
+        return int(self._server.server_address[1])
+
+    def _outcome_url(self, ok: bool) -> str:
+        return self._done_url if ok else f"{self._done_url}?{urlencode({'status': 'failed'})}"
+
+    def wait(self, timeout: float) -> str | None:
+        return self.code if self._received.wait(max(timeout, 0.0)) else None
+
+    def finish(self, ok: bool) -> None:
+        self.ok = ok
+        self._finished.set()
+
+    def close(self) -> None:
+        self._finished.set()
+        # Let the waiting tab get its outcome page before the CLI exits.
+        if self.code is not None:
+            self._responded.wait(2.0)
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+
+
+def _browser_sign_in(
+    *, opener: Callable[[str], bool], writer: Callable[[str], None], timeout_s: float
+) -> str | None:
+    """Sign in through /connect and return the gateway key.
+
+    Returns None when this computer or the backend cannot offer it (no loopback port, an
+    older backend without the desktop-sign-in function), so the caller uses the code page.
+    Failures the person needs to hear about raise AlysisLoginError.
+    """
+    client_name, installation_id = _client_identity()
+    verifier = secrets.token_urlsafe(48)  # 64 unreserved characters (RFC 7636 section 4.1)
+    state = secrets.token_urlsafe(24)
+    try:
+        callback = _LoopbackCallback(state=state, done_url=f"{cloud.site_url()}/connect/done")
+    except OSError:
+        return None
+    try:
+        try:
+            started = _post_json(
+                cloud.desktop_sign_in_url(),
+                {
+                    "action": "start",
+                    "code_challenge": _s256(verifier),
+                    "redirect_port": callback.port,
+                    "state": state,
+                    "client_name": client_name,
+                    "installation_id": installation_id,
+                },
+            )
+        except AlysisLoginError:
+            return None
+        session_id = str(started.get("session_id") or "")
+        if not _SESSION_ID.fullmatch(session_id):
+            return None
+        # The page is always on the site this client trusts, whatever the response says.
+        url = f"{cloud.site_url()}/connect?{urlencode({'session': session_id})}"
+
+        writer(f"Continue in your browser:\n  {url}")
+        if not _safe_open(opener, url):
+            writer(
+                "Could not open a browser automatically. Open the link above in a browser on this computer."
+            )
+        writer("Waiting for you to continue in the browser…")
+
+        wait_s = max(1.0, min(timeout_s, _BROWSER_SESSION_S))
+        code = callback.wait(wait_s)
+        if code is None:
+            raise AlysisLoginError(
+                f"Timed out after {int(wait_s)}s waiting for the browser. Run `alysis login` again."
+            )
+        try:
+            body = _post_json(
+                cloud.desktop_sign_in_url(),
+                {"action": "token", "code": code, "code_verifier": verifier},
+            )
+        except AlysisLoginError:
+            callback.finish(False)
+            raise
+        status = str(body.get("status") or "").strip().lower()
+        key = str(body.get("key") or "").strip() if status == "approved" else ""
+        callback.finish(bool(key))
+        if status == "approved" and not key:
+            raise AlysisLoginError("Login service did not return a key.")
+        if not key:
+            raise AlysisLoginError("This sign-in expired. Run `alysis login` again.")
+        return key
+    finally:
+        callback.close()
+
+
+# ---------------------------------------------------------------------------
 # Device flow internals
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -847,7 +1325,8 @@ def _approval_url(server_url: str, *, user_code: str) -> str:
     return f"{base}{path}?{query}" if query else f"{base}{path}"
 
 
-def _request_device_code() -> _DeviceGrant:
+def _client_identity() -> tuple[str, str]:
+    """The name the account's Devices page shows, and this installation's persistent ID."""
     client_name = f"alysis-cli @ {platform.node() or 'unknown-host'}"[:80]
     try:
         installation_id = get_installation_id()
@@ -855,6 +1334,11 @@ def _request_device_code() -> _DeviceGrant:
         raise AlysisLoginError(
             "Could not read or save the CLI installation identity. Check your Alysis data directory."
         ) from exc
+    return client_name, installation_id
+
+
+def _request_device_code() -> _DeviceGrant:
+    client_name, installation_id = _client_identity()
     body = _post_json(
         cloud.device_code_url(),
         {"client_name": client_name, "installation_id": installation_id},

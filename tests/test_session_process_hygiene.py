@@ -684,8 +684,8 @@ def test_real_interactive_survivor_is_reported_then_reaped_at_close(tmp_path: Pa
 def test_session_shell_runner_places_commands_in_their_own_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # This checks host process-group isolation; a runner with Docker installed
-    # must not need access to the sandbox image for the assertion.
+    # This test exercises host process-group isolation, not sandbox backend
+    # availability. Opt out only here so it also runs on macOS without Docker.
     monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
     session, _sessions_dir = _make_session(
         tmp_path, runtime_kind=RuntimeKind.ONE_SHOT, session_id="reap-runner"

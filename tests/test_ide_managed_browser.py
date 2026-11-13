@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -12,12 +13,17 @@ import pytest
 from alysis_code.ide import managed_browser as managed_browser_module
 from alysis_code.ide.managed_browser import (
     BrowserCancelledError,
+    BrowserControlError,
     BrowserDependencyError,
+    BrowserError,
     BrowserLaunchError,
     BrowserLaunchSpec,
     BrowserLimitError,
+    BrowserNotFoundError,
     BrowserOwnershipError,
+    BrowserPageUnavailableError,
     BrowserSecurityError,
+    BrowserTimeoutError,
     BrowserValidationError,
     DefaultBrowserProcessLauncher,
     ManagedBrowserConfig,
@@ -91,6 +97,10 @@ class FakeTransport:
         self.navigation_entered: threading.Event | None = None
         self.navigation_release: threading.Event | None = None
 
+    @property
+    def healthy(self) -> bool:
+        return not self.closed
+
     def call(
         self,
         method: str,
@@ -113,10 +123,23 @@ class FakeTransport:
             return {"root": {"nodeId": 1}}
         if method == "DOM.querySelector":
             return {"nodeId": 9}
+        if method == "DOM.describeNode":
+            return {"node": {"backendNodeId": 90}}
         if method == "DOM.getBoxModel":
             return {"model": {"content": [0, 0, 100, 0, 100, 20, 0, 20]}}
+        if method == "DOM.getNodeForLocation":
+            return {"backendNodeId": 90}
         if method == "Runtime.evaluate":
             return {"result": {"value": "page text token=super-secret-value"}}
+        if method == "Accessibility.getPartialAXTree":
+            return {
+                "nodes": [
+                    {
+                        "backendDOMNodeId": 90,
+                        "properties": [{"name": "focused", "value": {"value": True}}],
+                    }
+                ]
+            }
         if method == "Accessibility.getFullAXTree":
             return {"nodes": [{"role": {"value": "button"}}]}
         if method == "DOMSnapshot.captureSnapshot":
@@ -133,6 +156,7 @@ class FakeTransport:
         authorize_url,
         timeout: float,
         cancel=None,
+        root_target_id=None,
     ) -> dict[str, Any]:
         del timeout
         authorize_url(url)
@@ -232,6 +256,7 @@ def make_service(tmp_path: Path, **overrides: Any):
         max_sessions_total=overrides.pop("max_sessions_total", 3),
         max_sessions_per_owner=overrides.pop("max_sessions_per_owner", 2),
         max_snapshot_bytes=overrides.pop("max_snapshot_bytes", 2 * 1024 * 1024),
+        linux_display=overrides.pop("linux_display", None),
     )
     launcher = FakeLauncher(
         active_port=overrides.pop("active_port", "9223\n/devtools/browser/id-1\n")
@@ -514,6 +539,7 @@ def test_start_is_owned_loopback_isolated_and_has_sanitized_environment(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "do-not-leak-this-secret")
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:9999")
+    monkeypatch.setenv("DISPLAY", "remote.invalid:0")
     service, executable, launcher, _terminator, factory = make_service(tmp_path)
 
     status = service.start("workspace:one", executable_path=executable)
@@ -534,12 +560,50 @@ def test_start_is_owned_loopback_isolated_and_has_sanitized_environment(
     assert "HTTPS_PROXY" not in spec.environment
     assert "NO_PROXY" not in spec.environment
     assert "no_proxy" not in spec.environment
-    assert all(call[2] == "cdp-session-1" for call in factory.transport.calls[2:])
+    assert "DISPLAY" not in spec.environment
+    assert "--headless=new" in spec.arguments
+    assert factory.transport.calls[2][:3] == (
+        "Browser.setDownloadBehavior",
+        {"behavior": "deny", "eventsEnabled": False},
+        None,
+    )
+    assert all(call[2] == "cdp-session-1" for call in factory.transport.calls[3:])
     session = service._sessions[status.session_id]
     assert session.egress_proxy.denied_endpoints == [
         ("127.0.0.1", 43123),
         ("127.0.0.1", 9223),
     ]
+
+
+def test_visible_browser_uses_only_explicit_local_display_and_keeps_egress_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISPLAY", "remote.invalid:0")
+    monkeypatch.setenv("API_KEY", "not-in-browser")
+    service, executable, launcher, _terminator, factory = make_service(
+        tmp_path, linux_display=":99"
+    )
+    status = service.start("visible-lab", executable_path=executable)
+    spec = launcher.specs[0]
+    assert spec.environment["DISPLAY"] == ":99"
+    assert "API_KEY" not in spec.environment
+    assert "--headless=new" not in spec.arguments
+    assert "--ozone-platform=x11" in spec.arguments
+    assert "--no-sandbox" not in spec.arguments
+    assert "--proxy-server=http://127.0.0.1:43123" in spec.arguments
+    assert "--proxy-bypass-list=<-loopback>" in spec.arguments
+    assert factory.transport.calls[0][1]["background"] is False
+    with pytest.raises(BrowserSecurityError):
+        service.navigate("visible-lab", status.session_id, "http://127.0.0.1:7070")
+    with pytest.raises(BrowserOwnershipError):
+        service.snapshot("another-bot", status.session_id)
+    service.close_all()
+
+
+@pytest.mark.parametrize("display", [True, 99, "", "localhost:0", "host:99", ":99\n", ":1;echo"])
+def test_visible_browser_rejects_nonlocal_or_malformed_displays(display) -> None:
+    with pytest.raises(BrowserValidationError):
+        ManagedBrowserConfig(linux_display=display)
 
 
 def test_default_launcher_never_uses_a_shell_and_isolates_process_group(
@@ -829,6 +893,226 @@ def test_click_and_type_use_structured_cdp_without_script_interpolation(tmp_path
     )
 
 
+def test_click_measures_viewport_coordinates_after_scrolling(tmp_path: Path) -> None:
+    class ScrollingTransport(FakeTransport):
+        scrolled = False
+
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "DOM.scrollIntoViewIfNeeded":
+                self.scrolled = True
+            if method == "DOM.getBoxModel" and not self.scrolled:
+                return {"model": {"content": [0, 1800, 100, 1800, 100, 1820, 0, 1820]}}
+            return result
+
+    transport = ScrollingTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    status = service.start("owner", executable_path=executable)
+    service.click("owner", status.session_id, "button")
+    clicks = [
+        params for method, params, _ in transport.calls if method == "Input.dispatchMouseEvent"
+    ]
+    assert [event["type"] for event in clicks] == ["mousePressed", "mouseReleased"]
+    assert all((event["x"], event["y"]) == (50, 10) for event in clicks)
+
+
+@pytest.mark.parametrize("cancel_after_scroll", [False, True])
+def test_failed_or_cancelled_scroll_never_dispatches_click(tmp_path: Path, cancel_after_scroll):
+    class FailedScrollTransport(FakeTransport):
+        scrolled = False
+
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "DOM.scrollIntoViewIfNeeded":
+                self.scrolled = True
+                if not cancel_after_scroll:
+                    raise BrowserNotFoundError("Element has no layout box")
+            return result
+
+    transport = FailedScrollTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    status = service.start("owner", executable_path=executable)
+    error = BrowserCancelledError if cancel_after_scroll else BrowserNotFoundError
+    with pytest.raises(error):
+        service.click(
+            "owner",
+            status.session_id,
+            "button",
+            cancel=lambda: cancel_after_scroll and transport.scrolled,
+        )
+    assert not any(method == "Input.dispatchMouseEvent" for method, *_ in transport.calls)
+
+
+@pytest.mark.parametrize("kind", ["click", "type_text"])
+def test_observed_node_identity_prevents_input_to_replacement(tmp_path: Path, kind: str):
+    service, executable, _, _, factory = make_service(tmp_path)
+    status = service.start("owner", executable_path=executable)
+    args = ("value",) if kind == "type_text" else ()
+    with pytest.raises(BrowserNotFoundError, match="fresh snapshot"):
+        getattr(service, kind)(
+            "owner", status.session_id, "input", *args, expected_backend_node_id=89
+        )
+    methods = [method for method, *_ in factory.transport.calls]
+    assert "DOM.describeNode" in methods
+    assert "DOM.focus" not in methods
+    assert "DOM.scrollIntoViewIfNeeded" not in methods
+    assert not any(method.startswith("Input.") for method in methods)
+    getattr(service, kind)("owner", status.session_id, "input", *args, expected_backend_node_id=90)
+    assert any(method.startswith("Input.") for method, *_ in factory.transport.calls)
+
+
+@pytest.mark.parametrize(
+    "hit,nested,allowed", [(91, False, False), (91, True, True), (None, False, False)]
+)
+def test_observed_click_rejects_overlay_but_accepts_nested_label(tmp_path, hit, nested, allowed):
+    from alysis_code.ide.managed_browser import BrowserTargetObscuredError
+
+    class CoveredTransport(FakeTransport):
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "DOM.getNodeForLocation":
+                return {"backendNodeId": hit}
+            if method == "DOM.describeNode" and nested:
+                result["node"]["children"] = [{"backendNodeId": 91}]
+            return result
+
+    transport = CoveredTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    status = service.start("owner", executable_path=executable)
+    if allowed:
+        service.click("owner", status.session_id, "button", expected_backend_node_id=90)
+    else:
+        with pytest.raises(BrowserTargetObscuredError):
+            service.click("owner", status.session_id, "button", expected_backend_node_id=90)
+    clicks = [m for m, *_ in transport.calls if m == "Input.dispatchMouseEvent"]
+    assert len(clicks) == (2 if allowed else 0)
+
+
+@pytest.mark.parametrize(
+    "hit,labels,allowed", [(77, [77, 78], True), (79, [77, 78], False), (77, [], False)]
+)
+def test_a_click_on_the_targets_own_label_counts_as_the_target(tmp_path, hit, labels, allowed):
+    """Styled checkboxes show their label over the real input; a click there activates it."""
+    from alysis_code.ide.managed_browser import BrowserTargetObscuredError
+
+    class LabelTransport(FakeTransport):
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "DOM.getNodeForLocation":
+                return {"backendNodeId": hit}
+            return result
+
+    transport = LabelTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    status = service.start("owner", executable_path=executable)
+    click = lambda: service.click(  # noqa: E731
+        "owner",
+        status.session_id,
+        "input",
+        expected_backend_node_id=90,
+        label_backend_node_ids=labels,
+    )
+    if allowed:
+        click()
+    else:
+        with pytest.raises(BrowserTargetObscuredError):
+            click()
+    clicks = [m for m, *_ in transport.calls if m == "Input.dispatchMouseEvent"]
+    assert len(clicks) == (2 if allowed else 0)
+
+
+@pytest.mark.parametrize("label_hit,allowed", [(78, True), (1, False)])
+def test_a_hidden_input_is_clicked_where_its_own_label_shows(tmp_path, label_hit, allowed):
+    """A visually hidden checkbox sits under its label: click the label's centre instead."""
+    from alysis_code.ide.managed_browser import BrowserTargetObscuredError
+
+    class HiddenInputTransport(FakeTransport):
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            params = params or {}
+            if method == "DOM.describeNode" and params.get("backendNodeId") == 77:
+                return {"node": {"backendNodeId": 77, "nodeName": "LABEL"}}
+            if method == "DOM.describeNode" and params.get("backendNodeId") == 78:
+                return {"node": {"backendNodeId": 78, "nodeName": "SPAN"}}
+            if method == "DOM.getBoxModel" and params.get("backendNodeId") == 77:
+                return {"model": {"content": [200, 100, 300, 100, 300, 120, 200, 120]}}
+            if method == "DOM.getNodeForLocation":
+                # The input's own centre is covered by its container; the label's is the label.
+                return {
+                    "backendNodeId": label_hit if (params["x"], params["y"]) == (250, 110) else 1
+                }
+            return result
+
+    transport = HiddenInputTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    status = service.start("owner", executable_path=executable)
+    click = lambda: service.click(  # noqa: E731
+        "owner",
+        status.session_id,
+        "input",
+        expected_backend_node_id=90,
+        label_backend_node_ids=[78, 77],
+    )
+    if allowed:
+        click()
+    else:
+        with pytest.raises(BrowserTargetObscuredError):
+            click()
+    clicks = [
+        values for method, values, _ in transport.calls if method == "Input.dispatchMouseEvent"
+    ]
+    assert [(c["x"], c["y"]) for c in clicks] == ([(250, 110), (250, 110)] if allowed else [])
+
+
+@pytest.mark.parametrize("labels", [[0], [-3], ["77"], [True], list(range(1, 600)), "77"])
+def test_invalid_label_nodes_are_refused_before_any_click(tmp_path, labels):
+    service, executable, _, _, factory = make_service(tmp_path)
+    status = service.start("owner", executable_path=executable)
+    with pytest.raises(BrowserValidationError, match="label"):
+        service.click(
+            "owner",
+            status.session_id,
+            "input",
+            expected_backend_node_id=90,
+            label_backend_node_ids=labels,
+        )
+    with pytest.raises(BrowserValidationError, match="identity"):
+        service.click("owner", status.session_id, "input", label_backend_node_ids=[77])
+    assert not any(method == "Input.dispatchMouseEvent" for method, *_ in factory.transport.calls)
+
+
+def test_observed_click_on_a_scrolled_page_hit_tests_the_document_position(tmp_path):
+    """Scrolling into view moves the page; the hit test must add that offset."""
+
+    class ScrolledTransport(FakeTransport):
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "Page.getLayoutMetrics":
+                return {"cssVisualViewport": {"pageX": 0, "pageY": 300.4, "scale": 1}}
+            if method == "DOM.getNodeForLocation":
+                # Only the document position (viewport centre + scroll) holds the control.
+                return {"backendNodeId": 90 if (params["x"], params["y"]) == (50, 310) else 1}
+            return result
+
+    transport = ScrolledTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    status = service.start("owner", executable_path=executable)
+    service.click("owner", status.session_id, "a", expected_backend_node_id=90)
+    clicks = [
+        values for method, values, _ in transport.calls if method == "Input.dispatchMouseEvent"
+    ]
+    assert [(c["x"], c["y"]) for c in clicks] == [(50, 10), (50, 10)]  # mouse stays in viewport
+
+
+@pytest.mark.parametrize("identity", [True, 0, -1, "90", 90.0])
+def test_invalid_observed_node_identity_fails_before_dom_lookup(tmp_path: Path, identity):
+    service, executable, _, _, factory = make_service(tmp_path)
+    status = service.start("owner", executable_path=executable)
+    with pytest.raises(BrowserValidationError, match="identity"):
+        service.click("owner", status.session_id, "input", expected_backend_node_id=identity)
+    assert not any(method == "DOM.getDocument" for method, *_ in factory.transport.calls)
+
+
 def test_diagnostics_filters_bounds_and_redacts(tmp_path: Path) -> None:
     transport = FakeTransport()
     typed_text = "my-arbitrary-entered-passphrase-zyx987"
@@ -945,6 +1229,21 @@ def test_unhealthy_egress_proxy_blocks_further_browser_operations(tmp_path: Path
     assert service.status("owner", status.session_id).state == "crashed"
     with pytest.raises(BrowserLaunchError, match="egress proxy"):
         service.snapshot("owner", status.session_id)
+
+
+def test_disconnected_transport_is_not_reported_as_running(tmp_path: Path) -> None:
+    service, executable, launcher, _terminator, factory = make_service(tmp_path)
+    status = service.start("owner", executable_path=executable)
+    assert service.status("owner", status.session_id).state == "running"
+    factory.transport.closed = True
+    assert launcher.processes[0].poll() is None
+    assert service.status("owner", status.session_id).state == "disconnected"
+    assert service.list("owner")[0].state == "disconnected"
+    calls_before = len(factory.transport.calls)
+    with pytest.raises(BrowserLaunchError, match="control connection"):
+        service.type_text("owner", status.session_id, "#field", "must not dispatch")
+    assert len(factory.transport.calls) == calls_before
+    assert service.close("owner", status.session_id)
 
 
 def test_close_cuts_egress_before_transport_and_process(tmp_path: Path) -> None:
@@ -1074,3 +1373,667 @@ def test_cancellation_is_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(BrowserCancelledError):
         service.start("owner", executable_path=executable, cancel=lambda: True)
     assert launcher.specs == []
+
+
+def test_pause_fences_immediately_and_drains_without_cancelling_active_operation(tmp_path: Path):
+    transport = FakeTransport()
+    transport.navigation_entered = threading.Event()
+    transport.navigation_release = threading.Event()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    paused = threading.Event()
+
+    def observe_pause():
+        if service.status("owner", sid).commands_paused:
+            paused.set()
+        return False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        navigation = pool.submit(service.navigate, "owner", sid, "https://example.test/")
+        try:
+            assert transport.navigation_entered.wait(1)
+            draining = pool.submit(service.pause_commands, "owner", sid, cancel=observe_pause)
+            assert paused.wait(1)
+            state = service.status("owner", sid)
+            assert state.commands_paused and state.operation_active
+            assert state.command_generation == 1
+            assert not draining.done()
+            calls = list(transport.calls)
+            with pytest.raises(BrowserControlError, match="paused"):
+                service.click("owner", sid, "#submit")
+            with pytest.raises(BrowserControlError, match="paused"):
+                service.snapshot("owner", sid)
+            assert transport.calls == calls
+        finally:
+            transport.navigation_release.set()
+        assert navigation.result(2)["command_generation"] == 0
+        state = draining.result(2)
+        assert state.commands_paused and not state.operation_active
+        assert state.command_generation == 1
+    fresh = service.resume_commands("owner", sid, expected_generation=1)
+    assert fresh["kind"] == "dom" and fresh["command_generation"] == 2
+    assert transport.calls[-1][0] == "DOMSnapshot.captureSnapshot"
+    assert not service.status("owner", sid).commands_paused
+
+
+@pytest.mark.parametrize("cancel_wait", [False, True])
+def test_interrupted_pause_stays_fenced_and_cannot_resume_active_operation(
+    tmp_path: Path, cancel_wait
+):
+    transport = FakeTransport()
+    transport.navigation_entered = threading.Event()
+    transport.navigation_release = threading.Event()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        navigation = pool.submit(service.navigate, "owner", sid, "https://example.test/")
+        try:
+            assert transport.navigation_entered.wait(1)
+            expected_error = BrowserCancelledError if cancel_wait else BrowserTimeoutError
+            with pytest.raises(expected_error):
+                service.pause_commands(
+                    "owner",
+                    sid,
+                    timeout=0.05,
+                    cancel=lambda: cancel_wait and service.status("owner", sid).commands_paused,
+                )
+            assert service.status("owner", sid).commands_paused
+            with pytest.raises(BrowserLimitError, match="not drained"):
+                service.resume_commands("owner", sid, expected_generation=1)
+            with pytest.raises(BrowserControlError):
+                service.type_text("owner", sid, "#draft", "stale", expected_generation=0)
+        finally:
+            transport.navigation_release.set()
+        assert navigation.result(2)["command_generation"] == 0
+    state = service.pause_commands("owner", sid)
+    assert state.command_generation == 2 and not state.operation_active
+    assert service.resume_commands("owner", sid, expected_generation=2)["command_generation"] == 3
+
+
+@pytest.mark.parametrize("method", ["navigate", "click", "type_text"])
+@pytest.mark.parametrize("generation", [None, 0, 1, True, -1, "2"])
+def test_mutations_require_current_generation_after_resume(tmp_path: Path, method, generation):
+    service, executable, _launcher, _terminator, factory = make_service(tmp_path)
+    sid = service.start("owner", executable_path=executable).session_id
+    service.pause_commands("owner", sid)
+    fresh = service.resume_commands("owner", sid, expected_generation=1)
+    calls = list(factory.transport.calls)
+    args = {
+        "navigate": ("https://example.test/",),
+        "click": ("#submit",),
+        "type_text": ("#draft", "new draft"),
+    }[method]
+    with pytest.raises(BrowserControlError, match="generation"):
+        getattr(service, method)("owner", sid, *args, expected_generation=generation)
+    assert factory.transport.calls == calls
+    result = getattr(service, method)(
+        "owner", sid, *args, expected_generation=fresh["command_generation"]
+    )
+    assert result["command_generation"] == 2
+
+
+class BlockingSnapshotTransport(FakeTransport):
+    def __init__(self):
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def call(self, method, params=None, **kwargs):
+        if method == "DOMSnapshot.captureSnapshot":
+            self.entered.set()
+            assert self.release.wait(2), "Test did not release snapshot"
+        return super().call(method, params, **kwargs)
+
+
+def test_inflight_observation_keeps_original_generation_after_pause(tmp_path: Path):
+    transport = BlockingSnapshotTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        observation = pool.submit(service.snapshot, "owner", sid, kind="dom")
+        try:
+            assert transport.entered.wait(1)
+            with pytest.raises(BrowserTimeoutError):
+                service.pause_commands("owner", sid, timeout=0.05)
+        finally:
+            transport.release.set()
+        assert observation.result(2)["command_generation"] == 0
+    assert service.status("owner", sid).command_generation == 1
+
+
+def test_new_pause_supersedes_resume_while_fresh_snapshot_is_inflight(tmp_path: Path):
+    transport = BlockingSnapshotTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    service.pause_commands("owner", sid)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        resuming = pool.submit(service.resume_commands, "owner", sid, expected_generation=1)
+        try:
+            assert transport.entered.wait(1)
+            with pytest.raises(BrowserTimeoutError):
+                service.pause_commands("owner", sid, timeout=0.05)
+        finally:
+            transport.release.set()
+        with pytest.raises(BrowserControlError, match="generation"):
+            resuming.result(2)
+    status = service.status("owner", sid)
+    assert status.commands_paused and status.command_generation == 2
+    assert not status.operation_active
+    with pytest.raises(BrowserControlError):
+        service.resume_commands("owner", sid, expected_generation=1)
+    assert service.resume_commands("owner", sid, expected_generation=2)["command_generation"] == 3
+
+
+@pytest.mark.parametrize("failure", ["capture", "cancel", "disconnect"])
+def test_resume_failure_does_not_reopen_commands(tmp_path: Path, failure):
+    cancelled = threading.Event()
+
+    class FailingSnapshot(FakeTransport):
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "DOMSnapshot.captureSnapshot":
+                if failure == "capture":
+                    raise BrowserTimeoutError("capture failed")
+                if failure == "cancel":
+                    cancelled.set()
+                if failure == "disconnect":
+                    self.closed = True
+            return result
+
+    transport = FailingSnapshot()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    service.pause_commands("owner", sid)
+    error = {
+        "capture": BrowserTimeoutError,
+        "cancel": BrowserCancelledError,
+        "disconnect": BrowserLaunchError,
+    }[failure]
+    with pytest.raises(error):
+        service.resume_commands("owner", sid, expected_generation=1, cancel=cancelled.is_set)
+    status = service.status("owner", sid)
+    assert status.commands_paused and status.command_generation == 1
+    assert not status.operation_active
+
+
+def test_shutdown_supersedes_inflight_resume(tmp_path: Path):
+    transport = BlockingSnapshotTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    service.pause_commands("owner", sid)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        resuming = pool.submit(service.resume_commands, "owner", sid, expected_generation=1)
+        try:
+            assert transport.entered.wait(1)
+            service.close_all()
+        finally:
+            transport.release.set()
+        with pytest.raises(BrowserControlError, match="closing"):
+            resuming.result(2)
+    assert service.list("owner") == ()
+
+
+def test_pause_checks_owner_and_preflight_before_fencing_and_isolates_sessions(tmp_path: Path):
+    service, executable, *_ = make_service(tmp_path)
+    sid = service.start("owner", executable_path=executable).session_id
+    sibling = service.start("owner", executable_path=executable).session_id
+    with pytest.raises(BrowserOwnershipError):
+        service.pause_commands("other", sid)
+    with pytest.raises(BrowserValidationError):
+        service.pause_commands("owner", sid, timeout=-1)
+    with pytest.raises(BrowserCancelledError):
+        service.pause_commands("owner", sid, cancel=lambda: True)
+    assert service.status("owner", sid).command_generation == 0
+    assert not service.status("owner", sid).commands_paused
+    service.pause_commands("owner", sid)
+    with pytest.raises(BrowserOwnershipError):
+        service.resume_commands("other", sid, expected_generation=1)
+    assert service.snapshot("owner", sibling)["command_generation"] == 0
+    assert service.navigate("owner", sibling, "https://example.test/")["command_generation"] == 0
+    assert service.status("owner", sid).commands_paused
+    assert service.close("owner", sid)
+
+
+def test_viewer_claim_is_owned_exclusive_and_blocks_resume(tmp_path: Path):
+    service, executable, *_ = make_service(tmp_path, linux_display=":99")
+    sid = service.start("owner", executable_path=executable).session_id
+    with pytest.raises(BrowserOwnershipError):
+        service.claim_viewer_control("other", sid)
+    display, claim = service.claim_viewer_control("owner", sid)
+    assert display == ":99"
+    with pytest.raises(BrowserControlError):
+        service.claim_viewer_control("owner", sid)
+    state = service.pause_commands("owner", sid)
+    with pytest.raises(BrowserControlError, match="Revoke the input viewer"):
+        service.close("owner", sid)
+    with pytest.raises(BrowserLaunchError):
+        service.close_all()
+    assert service.status("owner", sid).state == "running"
+    with pytest.raises(BrowserControlError, match="not been revoked"):
+        service.resume_commands("owner", sid, expected_generation=state.command_generation)
+    with pytest.raises(BrowserOwnershipError):
+        service.release_viewer_control("other", sid, claim)
+    with pytest.raises(BrowserControlError):
+        service.release_viewer_control("owner", sid, "not-the-claim")
+    service.release_viewer_control("owner", sid, claim)
+    service.resume_commands("owner", sid, expected_generation=state.command_generation)
+    assert not service.status("owner", sid).commands_paused
+    service.close_all()
+
+
+def test_headless_session_cannot_claim_a_viewer(tmp_path: Path):
+    service, executable, *_ = make_service(tmp_path)
+    sid = service.start("owner", executable_path=executable).session_id
+    with pytest.raises(BrowserControlError, match="no local X11 display"):
+        service.claim_viewer_control("owner", sid)
+    assert not service.status("owner", sid).commands_paused
+    service.close_all()
+
+
+def test_viewer_claim_during_fresh_capture_prevents_resume(tmp_path: Path):
+    transport = BlockingSnapshotTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport, linux_display=":99")
+    sid = service.start("owner", executable_path=executable).session_id
+    service.pause_commands("owner", sid)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        resuming = pool.submit(service.resume_commands, "owner", sid, expected_generation=1)
+        try:
+            assert transport.entered.wait(1)
+            _, claim = service.claim_viewer_control("owner", sid)
+        finally:
+            transport.release.set()
+        with pytest.raises(BrowserControlError, match="not been revoked"):
+            resuming.result(2)
+    assert service.status("owner", sid).commands_paused
+    service.release_viewer_control("owner", sid, claim)
+    service.close_all()
+
+
+def test_visible_display_cannot_be_shared_by_sessions_or_service_instances(tmp_path: Path):
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    service, executable, *_ = make_service(tmp_path, linux_display=":124")
+    other, other_executable, *_ = make_service(other_root, linux_display=":124.0")
+    sid = service.start("owner", executable_path=executable).session_id
+    try:
+        with pytest.raises(BrowserControlError, match="already owns"):
+            service.start("another-owner", executable_path=executable)
+        with pytest.raises(BrowserControlError, match="already owns"):
+            other.start("owner", executable_path=other_executable)
+        service.close("owner", sid)
+        assert other.start("owner", executable_path=other_executable).session_id
+    finally:
+        service.close_all()
+        other.close_all()
+
+
+class ControlsTransport(FakeTransport):
+    reject_selection = False
+
+    def call(self, method, params=None, **kwargs):
+        result = super().call(method, params, **kwargs)
+        if method == "DOM.resolveNode":
+            return {"object": {"objectId": "resolved-control"}}
+        if method == "Runtime.callFunctionOn":
+            return {"result": {"value": {"dispatched": not self.reject_selection}}}
+        if method == "Page.getLayoutMetrics":
+            return {"cssLayoutViewport": {"clientWidth": 1280, "clientHeight": 800}}
+        return result
+
+
+@pytest.mark.parametrize(
+    "method,args,kwargs",
+    [
+        ("select_option", ("select", "option"), {"expected_option_backend_node_id": 90}),
+        ("press_key", ("input", "Enter"), {}),
+        ("scroll", ("section",), {"delta_y": 500}),
+    ],
+)
+def test_controls_enforce_owner_generation_and_node_identity(tmp_path, method, args, kwargs):
+    transport = ControlsTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    service.pause_commands("owner", sid)
+    service.resume_commands("owner", sid, expected_generation=1)
+    for owner, generation, identity in [("other", 2, 90), ("owner", 0, 90), ("owner", 2, 89)]:
+        previous = len(transport.calls)
+        with pytest.raises(BrowserError):
+            getattr(service, method)(
+                owner,
+                sid,
+                *args,
+                expected_generation=generation,
+                expected_backend_node_id=identity,
+                **kwargs,
+            )
+        assert not any(
+            m.startswith("Input.") or m == "Runtime.callFunctionOn"
+            for m, *_ in transport.calls[previous:]
+        )
+    result = getattr(service, method)(
+        "owner", sid, *args, expected_generation=2, expected_backend_node_id=90, **kwargs
+    )
+    assert result["dispatched"] is True
+
+
+def test_select_uses_fixed_script_and_releases_objects_on_rejected_option(tmp_path):
+    transport = ControlsTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    transport.reject_selection = True
+    with pytest.raises(BrowserValidationError):
+        service.select_option(
+            "owner",
+            sid,
+            'select[data-name="\'); evil()"]',
+            "option",
+            expected_option_backend_node_id=90,
+        )
+    script = next(p for m, p, _ in transport.calls if m == "Runtime.callFunctionOn")
+    assert "evil()" not in script["functionDeclaration"]
+    assert script["arguments"] == [{"objectId": "resolved-control"}]
+    assert transport.calls[-1][0] == "Runtime.releaseObjectGroup"
+
+
+def test_key_release_still_runs_when_cancelled_after_key_down(tmp_path):
+    class CancelAfterDown(ControlsTransport):
+        pressed = False
+
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "Input.dispatchKeyEvent" and params["type"] == "keyDown":
+                self.pressed = True
+            return result
+
+    transport = CancelAfterDown()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    with pytest.raises(BrowserCancelledError):
+        service.press_key("owner", sid, "input", "Enter", cancel=lambda: transport.pressed)
+    events = [p for m, p, _ in transport.calls if m == "Input.dispatchKeyEvent"]
+    assert [p["type"] for p in events] == ["keyDown", "keyUp"]
+    assert events[0]["text"] == "\r"
+
+
+@pytest.mark.parametrize(
+    "method,args,kwargs",
+    [
+        ("press_key", ("input", "Ctrl+L"), {}),
+        ("press_key", ("input", "Tab"), {"shift": 1}),
+        ("scroll", ("section",), {"delta_y": 0}),
+        ("scroll", ("section",), {"delta_y": float("inf")}),
+        ("scroll", ("section",), {"delta_y": True}),
+        ("scroll", ("section",), {"delta_y": -2001}),
+    ],
+)
+def test_controls_reject_invalid_input_before_dom_lookup(tmp_path, method, args, kwargs):
+    service, executable, _, _, factory = make_service(tmp_path)
+    sid = service.start("owner", executable_path=executable).session_id
+    with pytest.raises(BrowserValidationError):
+        getattr(service, method)("owner", sid, *args, **kwargs)
+    assert not any(m == "DOM.getDocument" for m, *_ in factory.transport.calls)
+
+
+class VisualTransport(ControlsTransport):
+    def __init__(self):
+        super().__init__()
+        import io
+
+        from PIL import Image
+
+        out = io.BytesIO()
+        Image.new("RGB", (64, 64), "blue").save(out, format="PNG")
+        self.png = out.getvalue()
+        self.url = "https://example.test/"
+        self.cancelled = False
+        self.cancel_on_press = False
+
+    def call(self, method, params=None, **kwargs):
+        result = super().call(method, params, **kwargs)
+        if method == "Page.captureScreenshot":
+            return {"data": base64.b64encode(self.png).decode()}
+        if method == "Page.getLayoutMetrics":
+            return {"cssLayoutViewport": {"clientWidth": 32, "clientHeight": 32}}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"url": self.url}}}
+        if (
+            method == "Input.dispatchMouseEvent"
+            and params["type"] == "mousePressed"
+            and self.cancel_on_press
+        ):
+            self.cancelled = True
+        return result
+
+
+def test_visual_click_uses_owned_current_pixels_and_scales_coordinates(tmp_path):
+    transport = VisualTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    frame = service.capture_visual_frame("owner", sid)
+    assert frame.width == frame.height == 64 and frame.png == transport.png
+    assert "png=" not in repr(frame)
+    result = service.click_visual_frame("owner", sid, frame, 32, 24)
+    events = [p for m, p, _ in transport.calls if m == "Input.dispatchMouseEvent"]
+    assert [p["type"] for p in events] == ["mousePressed", "mouseReleased"]
+    assert all((p["x"], p["y"]) == (16, 12) for p in events)
+    assert result["verification_required"] and frame.consumed
+    with pytest.raises(BrowserError, match="used"):
+        service.click_visual_frame("owner", sid, frame, 32, 24)
+    assert len([m for m, *_ in transport.calls if m == "Input.dispatchMouseEvent"]) == 2
+
+
+@pytest.mark.parametrize("change", ["pixels", "url", "expired", "generation", "owner", "session"])
+def test_stale_or_foreign_frame_never_sends_input(tmp_path, change):
+    transport = VisualTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    frame = service.capture_visual_frame("owner", sid)
+    if change == "pixels":
+        transport.png = transport.png[:-1] + b"z"
+    elif change == "url":
+        transport.url = "https://elsewhere.example/"
+    elif change == "expired":
+        frame.created_at -= 61
+    elif change == "generation":
+        service.pause_commands("owner", sid)
+        service.resume_commands("owner", sid, expected_generation=1)
+    elif change == "owner":
+        frame.owner_id = "other"
+    else:
+        frame.session_id = "other"
+    with pytest.raises(BrowserError):
+        service.click_visual_frame("owner", sid, frame, 32, 24)
+    assert not any(m.startswith("Input.") for m, *_ in transport.calls)
+
+
+@pytest.mark.parametrize("x,y", [(True, 5), (-1, 2), (64, 2), (2, 64), (1.5, 2)])
+def test_visual_coordinates_are_bounded_image_pixels(tmp_path, x, y):
+    transport = VisualTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    frame = service.capture_visual_frame("owner", sid)
+    with pytest.raises(BrowserValidationError):
+        service.click_visual_frame("owner", sid, frame, x, y)
+    assert not any(m.startswith("Input.") for m, *_ in transport.calls)
+
+
+def test_visual_click_releases_mouse_on_mid_dispatch_cancellation(tmp_path):
+    transport = VisualTransport()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    frame = service.capture_visual_frame("owner", sid)
+    transport.cancel_on_press = True
+    with pytest.raises(BrowserCancelledError):
+        service.click_visual_frame("owner", sid, frame, 32, 24, cancel=lambda: transport.cancelled)
+    assert [p["type"] for m, p, _ in transport.calls if m == "Input.dispatchMouseEvent"] == [
+        "mousePressed",
+        "mouseReleased",
+    ]
+
+
+@pytest.mark.parametrize(
+    "method,args", [("type_text", ("input", "do not type")), ("press_key", ("input", "Enter"))]
+)
+def test_redirected_focus_cannot_receive_keyboard_input(tmp_path, method, args):
+    class RedirectedFocus(FakeTransport):
+        def call(self, name, params=None, **kwargs):
+            result = super().call(name, params, **kwargs)
+            if name == "Accessibility.getPartialAXTree":
+                return {
+                    "nodes": [
+                        {
+                            "backendDOMNodeId": 91,
+                            "properties": [{"name": "focused", "value": {"value": True}}],
+                        }
+                    ]
+                }
+            return result
+
+    transport = RedirectedFocus()
+    service, executable, *_ = make_service(tmp_path, transport=transport)
+    sid = service.start("owner", executable_path=executable).session_id
+    with pytest.raises(BrowserControlError, match="Focus moved"):
+        getattr(service, method)("owner", sid, *args)
+    assert not any(m.startswith("Input.") for m, *_ in transport.calls)
+
+
+def test_switch_only_guarded_pages_with_owned_fresh_generation(tmp_path):
+    service, executable, _, _, factory = make_service(tmp_path)
+    transport = factory.transport
+    original = transport.call
+    transport.guarded_page_sessions = lambda **k: {"popup": "popup-session"}
+
+    def call(method, *args, **kwargs):
+        if method == "Target.getTargets":
+            return {
+                "targetInfos": [
+                    dict(
+                        targetId="target-1", type="page", url="https://example.org/", title="root"
+                    ),
+                    dict(
+                        targetId="popup", type="page", url="https://other.example/", title="popup"
+                    ),
+                    dict(
+                        targetId="unattached",
+                        type="page",
+                        url="https://example.org/",
+                        title="other",
+                    ),
+                    dict(
+                        targetId="worker", type="worker", url="https://example.org/", title="worker"
+                    ),
+                ]
+            }
+        return original(method, *args, **kwargs)
+
+    transport.call = call
+    session = service.start("owner", executable_path=executable)
+    try:
+        pages = service.pages("owner", session.session_id)
+        assert {p["page_id"] for p in pages["pages"]} == {"target-1", "popup"}
+        with pytest.raises(BrowserOwnershipError):
+            service.switch_page("other", session.session_id, "popup", expected_generation=0)
+        with pytest.raises(BrowserPageUnavailableError):
+            service.switch_page("owner", session.session_id, "unattached", expected_generation=0)
+        service.switch_page("owner", session.session_id, "popup", expected_generation=0)
+        assert service.status("owner", session.session_id).command_generation == 1
+        assert service.status("owner", session.session_id).active_url == "https://other.example/"
+        with pytest.raises(BrowserControlError):
+            service.switch_page("owner", session.session_id, "target-1", expected_generation=0)
+        service.snapshot("owner", session.session_id, kind="dom")
+        assert transport.calls[-1][2] == "popup-session"
+        service.pause_commands("owner", session.session_id)
+        with pytest.raises(BrowserControlError):
+            service.pages("owner", session.session_id)
+    finally:
+        service.close_all()
+
+
+def test_open_window_is_a_viewer_convenience_that_never_waits_or_navigates(tmp_path):
+    # The owl computer's Browser button (bots/browser_linux.py): a blank window, nothing else.
+    service, executable, _, _, factory = make_service(tmp_path)
+    transport = factory.transport
+    session = service.start("owner", executable_path=executable)
+    sid = session.session_id
+    try:
+        with pytest.raises(BrowserOwnershipError):
+            service.open_window("other", sid)
+        before = len(transport.calls)
+        # Busy with an owl operation: skipped, not queued behind it.
+        with service._operation(service._owned_session("owner", sid), cancel=None):
+            assert service.open_window("owner", sid) is False
+        assert transport.calls[before:] == []
+        assert service.open_window("owner", sid) is True
+        assert transport.calls[before:] == [
+            ("Target.createTarget", {"url": "about:blank", "newWindow": True}, None)
+        ]
+        # The person at the screen can open one while the owl's commands are paused.
+        status = service.pause_commands("owner", sid)
+        assert status.state == "running"
+        assert service.open_window("owner", sid) is True
+    finally:
+        service.close_all()
+
+
+@pytest.mark.parametrize("dialog", [False, True])
+def test_close_page_preserves_dialogs_and_checks_ownership_generation_and_busy(tmp_path, dialog):
+    service, executable, _, _, factory = make_service(tmp_path)
+    transport = factory.transport
+    original = transport.call
+    pages = [
+        dict(targetId=p, type="page", url="https://example.org/") for p in ("target-1", "popup")
+    ]
+    transport.guarded_page_sessions = lambda **k: {"popup": "popup-session"}
+
+    def call(method, *args, **kwargs):
+        if method == "Target.getTargets":
+            return {"targetInfos": list(pages)}
+        if method == "Page.close":
+            if dialog:
+                transport.events = [
+                    {"method": "Page.javascriptDialogOpening", "params": {"type": "beforeunload"}}
+                ]
+            else:
+                pages.pop()
+        return original(method, *args, **kwargs)
+
+    transport.call = call
+    session = service.start("owner", executable_path=executable)
+    sid = session.session_id
+    try:
+        with pytest.raises(BrowserOwnershipError):
+            service.close_page("other", sid, "popup", expected_generation=0)
+        with pytest.raises(BrowserPageUnavailableError):
+            service.close_page("owner", sid, "unattached", expected_generation=0)
+        # The same gate is held for the entire download, so cleanup cannot
+        # interrupt a transfer that is still being collected and verified.
+        with service._operation(service._owned_session("owner", sid), cancel=None):
+            with pytest.raises(BrowserLimitError):
+                service.close_page("owner", sid, "popup", expected_generation=0)
+        with pytest.raises(BrowserCancelledError):
+            service.close_page("owner", sid, "popup", expected_generation=0, cancel=lambda: True)
+        assert not any(m == "Page.close" for m, *_ in transport.calls)
+        result = service.close_page("owner", sid, "popup", expected_generation=0)
+        assert result == {
+            "closed": not dialog,
+            "reason": "dialog_preserved_page" if dialog else "closed",
+        }
+        assert service.status("owner", sid).command_generation == 1
+        with pytest.raises(BrowserControlError):
+            service.close_page("owner", sid, "target-1", expected_generation=0)
+        if dialog:
+            assert transport.calls[-1] == (
+                "Page.handleJavaScriptDialog",
+                {"accept": False},
+                "popup-session",
+            )
+            assert len(service.pages("owner", sid)["pages"]) == 2
+        else:
+            assert service.close_page("owner", sid, "target-1", expected_generation=1) == {
+                "closed": False,
+                "reason": "last_page_retained",
+            }
+        assert sum(m == "Page.close" for m, *_ in transport.calls) == 1
+        assert not any(m == "Target.closeTarget" for m, *_ in transport.calls)
+    finally:
+        service.close_all()

@@ -30,9 +30,13 @@ from urllib.parse import urlsplit
 from .managed_browser import (
     BrowserCancelledError,
     BrowserDependencyError,
+    BrowserDestinationUnresolvedError,
+    BrowserDownloadRequiredError,
     BrowserError,
     BrowserLaunchError,
     BrowserLimitError,
+    BrowserPageUnavailableError,
+    BrowserPageUnreachableError,
     BrowserSecurityError,
     BrowserTimeoutError,
     BrowserValidationError,
@@ -49,6 +53,11 @@ __all__ = [
 ]
 
 _MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+# Chromium Fetch includes the same upload body as escaped text AND base64.
+# Only explicitly registered file-upload sessions can admit that envelope;
+# retained/queued protocol data still has the original 8 MiB ceiling.
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_MAX_UPLOAD_ENVELOPE = 8 * _MAX_UPLOAD_BYTES + _MAX_MESSAGE_BYTES
 _MAX_EVENT_BYTES = 16 * 1024 * 1024
 _MAX_EVENT_COUNT = 512
 _MAX_EVENT_DRAIN = 2_000
@@ -58,8 +67,22 @@ _MAX_RESPONSE_ID = (1 << 53) - 1
 _MAX_PENDING_CALLS = 256
 _READER_POLL_SECONDS = 0.2
 _WAIT_POLL_SECONDS = 0.05
+# A committed page whose load event is late is returned as still loading: after this long
+# past its DOMContentLoaded, or this close to the navigation deadline.
+_LOAD_GRACE_AFTER_READY_SECONDS = 5.0
+_LOAD_WAIT_MARGIN_SECONDS = 0.25
 _DEVTOOLS_PATH_RE = re.compile(r"^/devtools/browser/[A-Za-z0-9._-]{1,160}$")
 _METHOD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{0,255}$")
+
+
+# JSON-RPC "method not found": the target type does not implement that CDP domain.
+_CDP_METHOD_NOT_FOUND = -32601
+# JSON-RPC "invalid params": for Fetch.continue*, the paused request no longer exists.
+_CDP_INVALID_PARAMS = -32602
+
+
+class _RequestRefused(Exception):
+    """A paused request was refused and failed in the page; the browser connection is fine."""
 
 
 class CdpCommandError(BrowserError):
@@ -90,6 +113,7 @@ _Connector: TypeAlias = Callable[..., _WebSocketConnection]
 @dataclass(slots=True)
 class _PendingCall:
     event: threading.Event
+    session_id: str | None = None
     response: Mapping[str, Any] | None = None
     error: BrowserError | None = None
 
@@ -164,11 +188,15 @@ class WebSocketCdpTransportFactory(CdpTransportFactory):
         connector: _Connector | None = None,
         max_event_count: int = _MAX_EVENT_COUNT,
         max_event_bytes: int = _MAX_EVENT_BYTES,
+        max_upload_bytes: int = 0,
     ) -> None:
         if not 1 <= max_event_count <= _MAX_EVENT_COUNT:
             raise BrowserValidationError("Browser CDP event count limit is invalid.")
         if not _MAX_MESSAGE_BYTES <= max_event_bytes <= _MAX_EVENT_BYTES:
             raise BrowserValidationError("Browser CDP event byte limit is invalid.")
+        if type(max_upload_bytes) is not int or not 0 <= max_upload_bytes <= _MAX_UPLOAD_BYTES:
+            raise BrowserValidationError("Browser upload capacity is invalid.")
+        self._max_upload_bytes = max_upload_bytes
         self._connector = connector
         self._max_event_count = max_event_count
         self._max_event_bytes = max_event_bytes
@@ -198,8 +226,8 @@ class WebSocketCdpTransportFactory(CdpTransportFactory):
                     close_timeout=min(call_timeout, 2.0),
                     ping_interval=20.0,
                     ping_timeout=min(call_timeout, 10.0),
-                    max_size=_MAX_MESSAGE_BYTES,
-                    max_queue=(32, 8),
+                    max_size=_MAX_MESSAGE_BYTES + 8 * self._max_upload_bytes,
+                    max_queue=(2, 1),
                     compression=None,
                     proxy=None,
                 )
@@ -254,6 +282,7 @@ class WebSocketCdpTransportFactory(CdpTransportFactory):
             connection,
             max_event_count=self._max_event_count,
             max_event_bytes=self._max_event_bytes,
+            max_upload_bytes=self._max_upload_bytes,
         )
 
 
@@ -266,11 +295,15 @@ class WebSocketCdpTransport(CdpTransport):
         *,
         max_event_count: int = _MAX_EVENT_COUNT,
         max_event_bytes: int = _MAX_EVENT_BYTES,
+        max_upload_bytes: int = 0,
     ) -> None:
         if not 1 <= max_event_count <= _MAX_EVENT_COUNT:
             raise BrowserValidationError("Browser CDP event count limit is invalid.")
         if not _MAX_MESSAGE_BYTES <= max_event_bytes <= _MAX_EVENT_BYTES:
             raise BrowserValidationError("Browser CDP event byte limit is invalid.")
+        if type(max_upload_bytes) is not int or not 0 <= max_upload_bytes <= _MAX_UPLOAD_BYTES:
+            raise BrowserValidationError("Browser upload capacity is invalid.")
+        self._max_upload_bytes = max_upload_bytes
         self._connection = connection
         self._max_event_count = max_event_count
         self._max_event_bytes = max_event_bytes
@@ -282,12 +315,24 @@ class WebSocketCdpTransport(CdpTransport):
         self._interception_events: queue.Queue[_QueuedEvent] = queue.Queue(maxsize=max_event_count)
         self._interception_event_bytes = 0
         self._interception_policies: dict[str, _InterceptionPolicy] = {}
+        # Publish child page handles only after interception is installed. Keep
+        # lineage separate from policies, which are refreshed on navigation.
+        self._guarded_children: dict[str, tuple[str, str, str]] = {}
+        self._page_watch_root: str | None = None
+        self._page_watch_existing: set[str] = set()
+        self._attachment_workers: set[threading.Thread] = set()
+        self._child_pages: set[str] = set()
+        # Teardown is observed by the reader before the interception pump may
+        # process it. Retain a bounded set for commands/events already in flight.
+        self._detached_sessions: deque[str] = deque(maxlen=_MAX_PENDING_CALLS)
+        self._detached_response_ids: deque[int] = deque(maxlen=_MAX_PENDING_CALLS)
         self._events: deque[_QueuedEvent] = deque()
         self._event_bytes = 0
         self._dropped_events = 0
-        self._drop_generation = 0
+        self._navigation_drop_generation = 0
         self._next_id = 1
         self._terminal_error: BrowserError | None = None
+        self._upload_allowances: dict[str, int] = {}
         self._closed = False
         self._reader = threading.Thread(
             target=self._reader_loop,
@@ -307,6 +352,11 @@ class WebSocketCdpTransport(CdpTransport):
         self._reader.start()
         self._writer.start()
         self._interceptor.start()
+
+    @property
+    def healthy(self) -> bool:
+        with self._lock:
+            return not self._closed and self._terminal_error is None
 
     @property
     def dropped_event_count(self) -> int:
@@ -329,10 +379,12 @@ class WebSocketCdpTransport(CdpTransport):
         deadline = time.monotonic() + call_timeout
         with self._lock:
             self._raise_if_unavailable_locked()
+            if normalized_session in self._detached_sessions:
+                raise BrowserPageUnavailableError("The browser page has detached.")
             if len(self._pending) >= _MAX_PENDING_CALLS:
                 raise BrowserLimitError("Browser CDP pending command capacity was exhausted.")
             request_id = self._next_request_id_locked()
-            pending = _PendingCall(event=threading.Event())
+            pending = _PendingCall(event=threading.Event(), session_id=normalized_session)
             self._pending[request_id] = pending
         message: dict[str, Any] = {
             "id": request_id,
@@ -415,6 +467,7 @@ class WebSocketCdpTransport(CdpTransport):
         authorize_url: Callable[[str], str],
         timeout: float,
         cancel: CancelCheck = None,
+        root_target_id: str | None = None,
     ) -> Mapping[str, Any]:
         normalized_session = _validated_session_id(session_id)
         if normalized_session is None:
@@ -472,7 +525,45 @@ class WebSocketCdpTransport(CdpTransport):
                 cancel=cancel,
             )
             with self._lock:
-                drop_generation = self._drop_generation
+                drop_generation = self._navigation_drop_generation
+            if root_target_id is not None and self._page_watch_root is None:
+                # Page-scoped auto-attach covers workers/frames, not new tabs.
+                # This transport belongs to one private browser process. Watch
+                # page creation at the browser endpoint before page code runs.
+                targets = self.call(
+                    "Target.getTargets",
+                    {"filter": [{"type": "page"}, {"exclude": True}]},
+                    timeout=_remaining(deadline),
+                    cancel=cancel,
+                )
+                infos = targets.get("targetInfos")
+                if (
+                    not isinstance(infos, list)
+                    or len(infos) > 8
+                    or any(
+                        not isinstance(info, Mapping) or info.get("url") not in ("", "about:blank")
+                        for info in infos
+                    )
+                ):
+                    raise BrowserSecurityError(
+                        "Browser page guard requires a fresh private browser."
+                    )
+                with self._lock:
+                    self._page_watch_existing = {info["targetId"] for info in infos}
+                    if root_target_id not in self._page_watch_existing:
+                        raise BrowserSecurityError("Browser root target is unavailable.")
+                    self._page_watch_root = normalized_session
+                self.call(
+                    "Target.setAutoAttach",
+                    {
+                        "autoAttach": True,
+                        "waitForDebuggerOnStart": True,
+                        "flatten": True,
+                        "filter": [{"type": "page"}, {"exclude": True}],
+                    },
+                    timeout=_remaining(deadline),
+                    cancel=cancel,
+                )
 
             def navigate() -> None:
                 try:
@@ -495,12 +586,24 @@ class WebSocketCdpTransport(CdpTransport):
             ).start()
             navigation_started = True
             loaded_loader_ids: set[str] = set()
+            ready_at: dict[str, float] = {}
+            committed: dict[str, Any] | None = None
             while True:
+                if committed is not None and (
+                    deadline - time.monotonic() <= _LOAD_WAIT_MARGIN_SECONDS
+                    or time.monotonic() - ready_at.get(committed["loaderId"], math.inf)
+                    >= _LOAD_GRACE_AFTER_READY_SECONDS
+                ):
+                    # The document committed under the guard installed above, and that guard
+                    # stays installed for everything it loads later. Only its load event is
+                    # late (busy pages keep loading ads, trackers or challenges), so hand
+                    # back the page as still loading instead of closing the browser.
+                    return {**committed, "loadEventPending": True}
                 _check_cancel_and_deadline(cancel, deadline, self)
                 with self._lock:
-                    if self._drop_generation != drop_generation:
+                    if self._navigation_drop_generation != drop_generation:
                         error = BrowserSecurityError(
-                            "Browser CDP events overflowed during guarded navigation."
+                            "Browser lifecycle events overflowed during guarded navigation."
                         )
                         self._fail_transport(error)
                         raise error
@@ -512,10 +615,16 @@ class WebSocketCdpTransport(CdpTransport):
                     method = event.get("method")
                     if method == "Page.lifecycleEvent":
                         params = event.get("params")
-                        if isinstance(params, Mapping) and params.get("name") == "load":
+                        if isinstance(params, Mapping) and params.get("name") in (
+                            "load",
+                            "DOMContentLoaded",
+                        ):
                             loader_id = params.get("loaderId")
                             if isinstance(loader_id, str) and loader_id:
-                                loaded_loader_ids.add(loader_id)
+                                if params.get("name") == "load":
+                                    loaded_loader_ids.add(loader_id)
+                                else:
+                                    ready_at.setdefault(loader_id, time.monotonic())
                 if navigation_done.is_set():
                     navigation_error = navigation_outcome.get("error")
                     if navigation_error is not None:
@@ -527,11 +636,15 @@ class WebSocketCdpTransport(CdpTransport):
                         error = BrowserSecurityError("Browser navigation result was invalid.")
                         self._fail_transport(error)
                         raise error
+                    if result.get("isDownload") is True:
+                        raise BrowserDownloadRequiredError(
+                            "This address starts a download, not a page. No file was saved."
+                        )
                     error_text = result.get("errorText")
                     if error_text:
-                        raise BrowserLaunchError(
-                            "Browser navigation did not complete successfully."
-                        )
+                        # Page.navigate finished: Chromium shows its own error page under the
+                        # guard installed above, so nothing about interception is ambiguous.
+                        raise BrowserPageUnreachableError(str(error_text))
                     loader_id = result.get("loaderId")
                     if not isinstance(loader_id, str) or not loader_id:
                         error = BrowserSecurityError(
@@ -541,11 +654,17 @@ class WebSocketCdpTransport(CdpTransport):
                         raise error
                     if loader_id in loaded_loader_ids:
                         return dict(result)
+                    committed = dict(result)
         except BrowserCancelledError as exc:
             self._fail_transport(exc)
             raise
         except BrowserTimeoutError as exc:
             self._fail_transport(exc)
+            raise
+        except (BrowserDownloadRequiredError, BrowserPageUnreachableError):
+            # Page.navigate has completed and interception remains installed.
+            # Keep the originating document so its download control is usable, and keep
+            # the browser after a network error page.
             raise
         except BrowserError as exc:
             # A setup or navigation failure can leave lifecycle/interception
@@ -572,6 +691,15 @@ class WebSocketCdpTransport(CdpTransport):
         normalized_session = _validated_session_id(session_id)
         if normalized_session is None:
             raise BrowserValidationError("Browser CDP session id is required.")
+        return self._drain_events(
+            normalized_session, max_events=max_events, timeout=timeout, cancel=cancel
+        )
+
+    def drain_browser_events(self, *, max_events: int, timeout: float, cancel: CancelCheck = None):
+        """Browser-level events on this executor-owned connection only."""
+        return self._drain_events(None, max_events=max_events, timeout=timeout, cancel=cancel)
+
+    def _drain_events(self, normalized_session, *, max_events, timeout, cancel):
         if (
             isinstance(max_events, bool)
             or not isinstance(max_events, int)
@@ -621,6 +749,12 @@ class WebSocketCdpTransport(CdpTransport):
             self._writer.join(timeout=close_timeout)
         if threading.current_thread() is not self._interceptor:
             self._interceptor.join(timeout=close_timeout)
+        with self._lock:
+            workers = tuple(self._attachment_workers)
+        deadline = time.monotonic() + close_timeout
+        for worker in workers:
+            if worker is not threading.current_thread():
+                worker.join(timeout=max(0, deadline - time.monotonic()))
 
     def _writer_loop(self) -> None:
         while True:
@@ -648,6 +782,21 @@ class WebSocketCdpTransport(CdpTransport):
                 return
             outbound.sent.set()
 
+    def allow_file_upload(self, session_id: str, size: int) -> None:
+        """Trusted executor registration after validating/staging an owned file."""
+        sid = _validated_session_id(session_id)
+        if type(size) is not int or not 0 <= size <= _MAX_UPLOAD_BYTES:
+            raise BrowserValidationError("Browser upload allowance is invalid.")
+        with self._lock:
+            self._raise_if_unavailable_locked()
+            if sid not in self._interception_policies:
+                raise BrowserSecurityError("Upload requires an installed website policy.")
+            if size > self._max_upload_bytes:
+                raise BrowserLimitError(
+                    "Upload exceeds this browser transport’s configured capacity."
+                )
+            self._upload_allowances[sid] = max(size, self._upload_allowances.get(sid, 0))
+
     def _reader_loop(self) -> None:
         while True:
             with self._lock:
@@ -666,7 +815,9 @@ class WebSocketCdpTransport(CdpTransport):
                 _close_connection_async(self._connection)
                 return
             try:
-                payload, size_bytes = _decode_message(raw)
+                with self._lock:
+                    allowances = dict(self._upload_allowances)
+                payload, size_bytes = _decode_message(raw, upload_allowances=allowances)
                 self._route_message(payload, size_bytes=size_bytes)
             except BrowserError as exc:
                 self._fail_transport(exc)
@@ -705,6 +856,12 @@ class WebSocketCdpTransport(CdpTransport):
                 return
             with self._lock:
                 policy = self._interception_policies.get(session_id)
+                detached = session_id in self._detached_sessions
+            if detached and item.payload.get("method") in {
+                "Fetch.requestPaused",
+                "Fetch.authRequired",
+            }:
+                continue
             if policy is None:
                 error = BrowserSecurityError("Browser request interception policy was unavailable.")
                 self._fail_transport(error)
@@ -712,7 +869,7 @@ class WebSocketCdpTransport(CdpTransport):
             try:
                 method = item.payload.get("method")
                 if method == "Target.attachedToTarget":
-                    self._guard_attached_target(
+                    self._start_attachment_guard(
                         item.payload,
                         parent_session_id=session_id,
                         policy=policy,
@@ -735,7 +892,15 @@ class WebSocketCdpTransport(CdpTransport):
                     deadline=time.monotonic() + policy.timeout,
                     cancel=None,
                 )
+            except _RequestRefused:
+                # A request whose destination could not be checked (slow or failing DNS, often
+                # an ad or tracker host) was refused in the page; keep serving the others.
+                continue
             except BrowserError as exc:
+                with self._lock:
+                    detached = session_id in self._detached_sessions
+                if isinstance(exc, (CdpCommandError, BrowserPageUnavailableError)) and detached:
+                    continue
                 self._fail_transport(exc)
                 return
             except BaseException as exc:  # noqa: BLE001 - policy broker fails closed
@@ -744,6 +909,42 @@ class WebSocketCdpTransport(CdpTransport):
                 _close_connection_async(self._connection)
                 _ = exc
                 return
+
+    def _start_attachment_guard(self, event, *, parent_session_id, policy) -> None:
+        # Runtime.runIfWaitingForDebugger can await the first intercepted
+        # document request. The interception pump must remain free to approve
+        # that request while a bounded worker installs and resumes the target.
+        def run():
+            try:
+                self._guard_attached_target(
+                    event, parent_session_id=parent_session_id, policy=policy
+                )
+            except BrowserError as exc:
+                params = event.get("params", {})
+                with self._lock:
+                    detached = (
+                        isinstance(params, Mapping)
+                        and params.get("sessionId") in self._detached_sessions
+                    )
+                if not (
+                    isinstance(exc, (CdpCommandError, BrowserPageUnavailableError)) and detached
+                ):
+                    self._fail_transport(exc)
+            except BaseException:
+                self._fail_transport(
+                    BrowserSecurityError("Browser attachment guard failed closed.")
+                )
+            finally:
+                with self._lock:
+                    self._attachment_workers.discard(threading.current_thread())
+
+        worker = threading.Thread(target=run, name="alysis-cdp-attachment", daemon=True)
+        with self._lock:
+            self._raise_if_unavailable_locked()
+            if len(self._attachment_workers) >= 8:
+                raise BrowserSecurityError("Browser concurrent attachment limit reached.")
+            self._attachment_workers.add(worker)
+            worker.start()
 
     def _guard_attached_target(
         self,
@@ -758,7 +959,20 @@ class WebSocketCdpTransport(CdpTransport):
         if not isinstance(params, Mapping):
             raise BrowserSecurityError("Browser attached-target event was invalid.")
         child_session_id = params.get("sessionId")
+        info = params.get("targetInfo")
+        if not isinstance(info, Mapping):
+            raise BrowserSecurityError("Browser attached-target metadata was invalid.")
+        target_id, target_type = info.get("targetId"), info.get("type")
+        if not isinstance(target_id, str) or not target_id or len(target_id) > 256:
+            raise BrowserSecurityError("Browser attached-target identity was invalid.")
         waiting = params.get("waitingForDebugger")
+        # Initial blank targets were present before any navigation, and the
+        # root already has its manually attached, guarded session. Do not add a
+        # second Fetch interceptor for that same page.
+        if target_id in self._page_watch_existing:
+            if waiting is True:
+                raise BrowserSecurityError("Initial browser page unexpectedly paused.")
+            return
         if (
             not isinstance(child_session_id, str)
             or not child_session_id
@@ -769,6 +983,12 @@ class WebSocketCdpTransport(CdpTransport):
             raise BrowserSecurityError("Browser attached target was not safely paused.")
         with self._lock:
             self._raise_if_unavailable_locked()
+            if len(self._interception_policies) >= 32:
+                raise BrowserSecurityError("Browser attached-target limit reached.")
+            if target_type == "page" and len(self._child_pages) >= 7:
+                raise BrowserSecurityError("Browser page limit reached (8 pages).")
+            if target_type == "page":
+                self._child_pages.add(child_session_id)
             self._interception_policies[child_session_id] = policy
         deadline = time.monotonic() + policy.timeout
         self.call(
@@ -781,24 +1001,60 @@ class WebSocketCdpTransport(CdpTransport):
             session_id=child_session_id,
             timeout=_remaining(deadline),
         )
-        self.call(
-            "Fetch.enable",
-            {
-                "patterns": [
-                    {"urlPattern": "*", "requestStage": "Request"},
-                    {"urlPattern": "*", "requestStage": "Response"},
-                ],
-                "handleAuthRequests": False,
-            },
-            session_id=child_session_id,
-            timeout=_remaining(deadline),
-        )
+        try:
+            self.call(
+                "Fetch.enable",
+                {
+                    "patterns": [
+                        {"urlPattern": "*", "requestStage": "Request"},
+                        {"urlPattern": "*", "requestStage": "Response"},
+                    ],
+                    "handleAuthRequests": False,
+                },
+                session_id=child_session_id,
+                timeout=_remaining(deadline),
+            )
+        except CdpCommandError as exc:
+            # Chromium has no Fetch domain on dedicated worker targets ("method not found"):
+            # a dedicated worker's requests are made for its owning document and pause on
+            # that document's already guarded session. Every other target type, or any other
+            # failure, still fails closed.
+            if not (target_type == "worker" and exc.code == _CDP_METHOD_NOT_FOUND):
+                raise
         self.call(
             "Runtime.runIfWaitingForDebugger",
             {},
             session_id=child_session_id,
             timeout=_remaining(deadline),
         )
+        with self._lock:
+            self._raise_if_unavailable_locked()
+            if (
+                child_session_id in self._interception_policies
+                and child_session_id not in self._detached_sessions
+            ):
+                self._guarded_children[child_session_id] = (
+                    parent_session_id,
+                    target_id,
+                    str(target_type),
+                )
+
+    def guarded_page_sessions(self, *, session_id: str) -> Mapping[str, str]:
+        """Ready page descendants of a caller's root session, never workers."""
+        with self._lock:
+            self._raise_if_unavailable_locked()
+            descendants = {session_id}
+            for _ in range(len(self._guarded_children)):
+                descendants.update(
+                    child
+                    for child, (parent, _, _) in self._guarded_children.items()
+                    if parent in descendants
+                )
+            return {
+                target: child
+                for child, (_, target, kind) in self._guarded_children.items()
+                if child in descendants and kind == "page" and child not in self._detached_sessions
+            }
 
     def _forget_detached_target(self, event: Mapping[str, Any]) -> None:
         params = event.get("params")
@@ -808,7 +1064,12 @@ class WebSocketCdpTransport(CdpTransport):
         if not isinstance(child_session_id, str) or not child_session_id:
             raise BrowserSecurityError("Browser detached-target event was invalid.")
         with self._lock:
-            self._interception_policies.pop(child_session_id, None)
+            # The browser-level page watcher outlives its initial tab. Keep
+            # that policy for future sibling tabs until the transport closes.
+            if child_session_id != self._page_watch_root:
+                self._interception_policies.pop(child_session_id, None)
+            self._guarded_children.pop(child_session_id, None)
+            self._child_pages.discard(child_session_id)
 
     def _route_message(self, payload: Mapping[str, Any], *, size_bytes: int) -> None:
         if "id" in payload:
@@ -824,6 +1085,9 @@ class WebSocketCdpTransport(CdpTransport):
             with self._lock:
                 pending = self._pending.pop(request_id, None)
                 if pending is None:
+                    if request_id in self._detached_response_ids:
+                        self._detached_response_ids.remove(request_id)
+                        return
                     raise BrowserSecurityError("Browser CDP response id was unknown or duplicated.")
                 pending.response = payload
                 pending.event.set()
@@ -851,12 +1115,38 @@ class WebSocketCdpTransport(CdpTransport):
             "Target.detachedFromTarget",
         }:
             with self._lock:
+                if (
+                    session_id is None
+                    and self._page_watch_root
+                    and method in {"Target.attachedToTarget", "Target.detachedFromTarget"}
+                ):
+                    session_id = self._page_watch_root
+                    queued = _QueuedEvent(
+                        payload=payload, size_bytes=size_bytes, session_id=session_id
+                    )
                 guarded = session_id is not None and session_id in self._interception_policies
                 if method == "Target.detachedFromTarget" and isinstance(params, Mapping):
                     detached = params.get("sessionId")
                     guarded = guarded or (
                         isinstance(detached, str) and detached in self._interception_policies
                     )
+                    if (
+                        isinstance(detached, str)
+                        and detached in self._interception_policies
+                        and detached not in self._detached_sessions
+                    ):
+                        self._detached_sessions.append(detached)
+                        # Chromium can drop a command reply when its target
+                        # disappears. Wake only this target's callers now;
+                        # letting them time out would poison healthy siblings.
+                        for request_id, pending in tuple(self._pending.items()):
+                            if pending.session_id == detached:
+                                self._pending.pop(request_id)
+                                self._detached_response_ids.append(request_id)
+                                pending.error = BrowserPageUnavailableError(
+                                    "The browser page detached while a command was pending; input may have been sent."
+                                )
+                                pending.event.set()
             if guarded:
                 with self._lock:
                     if (
@@ -882,10 +1172,15 @@ class WebSocketCdpTransport(CdpTransport):
                 removed = self._events.popleft()
                 self._event_bytes -= removed.size_bytes
                 self._dropped_events += 1
-                self._drop_generation += 1
+                # Routine diagnostic events are deliberately lossy. Request
+                # interception has its own fail-closed queue; navigation only
+                # depends on lifecycle events in this general queue.
+                if removed.payload.get("method") == "Page.lifecycleEvent":
+                    self._navigation_drop_generation += 1
             if size_bytes > self._max_event_bytes:
                 self._dropped_events += 1
-                self._drop_generation += 1
+                if queued.payload.get("method") == "Page.lifecycleEvent":
+                    self._navigation_drop_generation += 1
             else:
                 self._events.append(queued)
                 self._event_bytes += size_bytes
@@ -918,6 +1213,12 @@ class WebSocketCdpTransport(CdpTransport):
         request_id = self._next_id
         self._next_id += 1
         return request_id
+
+    @property
+    def failure(self) -> BrowserError | None:
+        """Why the connection failed, if it did (fixed messages, no page data)."""
+        with self._lock:
+            return self._terminal_error
 
     def _raise_if_unavailable_locked(self) -> None:
         if self._terminal_error is not None:
@@ -995,29 +1296,38 @@ def _continue_paused_request(
             transport._fail_transport(
                 BrowserSecurityError("Browser rejected request could not be failed safely.")
             )
+            failed_safely = False
+        else:
+            failed_safely = True
+        # An unresolved destination is refused quietly only when the request really failed.
+        if failed_safely and isinstance(exc, BrowserDestinationUnresolvedError):
+            raise _RequestRefused() from exc
         if isinstance(exc, BrowserError):
             raise exc
         raise BrowserSecurityError("Browser request URL policy failed closed.") from exc
-    if response_stage:
+    method, continue_params = (
+        ("Fetch.continueResponse", {"requestId": request_id})
+        if response_stage
+        else ("Fetch.continueRequest", {"requestId": request_id})
+    )
+    if not response_stage and authorized != candidate:
+        continue_params["url"] = authorized
+    try:
         transport.call(
-            "Fetch.continueResponse",
-            {"requestId": request_id},
+            method,
+            continue_params,
             session_id=session_id,
             timeout=_remaining(deadline),
             cancel=cancel,
         )
-        return "Response"
-    continue_params: dict[str, Any] = {"requestId": request_id}
-    if authorized != candidate:
-        continue_params["url"] = authorized
-    transport.call(
-        "Fetch.continueRequest",
-        continue_params,
-        session_id=session_id,
-        timeout=_remaining(deadline),
-        cancel=cancel,
-    )
-    return "Request"
+    except CdpCommandError as exc:
+        # "Invalid InterceptionId": the page cancelled this request (an aborted fetch, a
+        # replaced image, a navigation) after it paused. Nothing was let through, so the
+        # browser keeps going; any other refusal still fails closed.
+        if exc.code != _CDP_INVALID_PARAMS:
+            raise
+        return "Gone"
+    return "Response" if response_stage else "Request"
 
 
 def _default_connector() -> _Connector:
@@ -1045,7 +1355,7 @@ def _encode_message(payload: Mapping[str, Any]) -> str:
     return encoded.decode("utf-8")
 
 
-def _decode_message(raw: str | bytes) -> tuple[Mapping[str, Any], int]:
+def _decode_message(raw: str | bytes, *, upload_allowances=None) -> tuple[Mapping[str, Any], int]:
     if isinstance(raw, str):
         try:
             encoded = raw.encode("utf-8")
@@ -1055,8 +1365,10 @@ def _decode_message(raw: str | bytes) -> tuple[Mapping[str, Any], int]:
         encoded = raw
     else:
         raise BrowserSecurityError("Browser CDP frame type was invalid.")
-    if not encoded or len(encoded) > _MAX_MESSAGE_BYTES:
-        raise BrowserSecurityError("Browser CDP frame exceeded the 8 MiB limit.")
+    if not encoded or len(encoded) > (
+        _MAX_UPLOAD_ENVELOPE if upload_allowances else _MAX_MESSAGE_BYTES
+    ):
+        raise BrowserSecurityError("Browser CDP frame exceeded its bounded allowance.")
 
     def reject_constant(value: str) -> None:
         raise ValueError(f"unsupported JSON constant: {value}")
@@ -1079,6 +1391,38 @@ def _decode_message(raw: str | bytes) -> tuple[Mapping[str, Any], int]:
         raise BrowserSecurityError("Browser CDP frame was not valid JSON.") from exc
     if not isinstance(payload, Mapping):
         raise BrowserSecurityError("Browser CDP message was not an object.")
+    allowance = (upload_allowances or {}).get(payload.get("sessionId"), 0)
+    params = payload.get("params")
+    request = params.get("request") if isinstance(params, dict) else None
+    upload_event = payload.get("method") in {
+        "Fetch.requestPaused",
+        "Network.requestWillBeSent",
+    } and isinstance(request, dict)
+    if len(encoded) > _MAX_MESSAGE_BYTES and not (allowance and upload_event):
+        raise BrowserSecurityError("Browser CDP frame exceeded the 8 MiB limit.")
+    if upload_event:
+        # Neither URL authorization nor diagnostics needs file body copies.
+        # Validate their bounds before discarding; do not strip URLs or headers.
+        post = request.pop("postData", None)
+        entries = request.pop("postDataEntries", None)
+        limit = max(allowance, _MAX_MESSAGE_BYTES)
+        if post is not None and (not isinstance(post, str) or len(post) > limit):
+            raise BrowserSecurityError("Browser upload body exceeded its registered allowance.")
+        if entries is not None:
+            if not isinstance(entries, list) or len(entries) > 1000:
+                raise BrowserSecurityError("Browser upload entries are invalid.")
+            total = 0
+            for entry in entries:
+                if (
+                    not isinstance(entry, dict)
+                    or set(entry) - {"bytes"}
+                    or not isinstance(entry.get("bytes", ""), str)
+                ):
+                    raise BrowserSecurityError("Browser upload entry is invalid.")
+                total += len(entry.get("bytes", ""))
+            if total > 4 * ((limit + 2) // 3):
+                raise BrowserSecurityError("Browser upload entries exceeded their allowance.")
+        del post, entries
     try:
         decoded_size = len(
             json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(

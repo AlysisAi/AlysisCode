@@ -2,12 +2,19 @@ name: managed-cli-build-check
 
 on:
   workflow_dispatch:
+    inputs:
+      rebuild_openssl:
+        description: Rebuild and retest OpenSSL without reading or writing its build cache
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
       - .github/workflows/managed-cli-build-check.yml
       - .github/workflows/managed-cli-vsix-release.yml
       - scripts/release/**
+      - tests/test_native_openssl_cache.py
+      - tests/test_windows_arm64_openssl_sbom.py
       - uv.lock
       - pyproject.toml
   pull_request:
@@ -15,6 +22,8 @@ on:
       - .github/workflows/managed-cli-build-check.yml
       - .github/workflows/managed-cli-vsix-release.yml
       - scripts/release/**
+      - tests/test_native_openssl_cache.py
+      - tests/test_windows_arm64_openssl_sbom.py
       - uv.lock
       - pyproject.toml
 
@@ -26,8 +35,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cache-contracts:
+    name: Native dependency cache contracts
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.23"
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen --no-sync pytest -q tests/test_native_openssl_cache.py tests/test_windows_arm64_openssl_sbom.py
+
   build:
     name: Unsigned build and smoke (${{ matrix.target }})
+    needs: cache-contracts
     strategy:
       fail-fast: false
       matrix:
@@ -68,8 +95,34 @@ jobs:
             --target "${{ matrix.target }}" --destination "$RUNNER_TEMP/alysis-python" \
             --github-output "$GITHUB_OUTPUT" \
             --receipt "managed-cli-out/${{ matrix.target }}.python-runtime.json"
+      - name: Identify native OpenSSL build inputs
+        id: openssl-inputs
+        if: matrix.target == 'win32-arm64' || matrix.target == 'darwin-x64'
+        shell: bash
+        run: |
+          python scripts/release/native_openssl_cache.py prepare \
+            --target "${{ matrix.target }}" --github-output "$GITHUB_OUTPUT"
+      # Unsigned CI only: signing workflows continue building OpenSSL from source.
+      # Successful jobs save only the installed prefix, never credentials or app packages.
+      - name: Cache tested native OpenSSL installation
+        id: openssl-cache
+        if: (matrix.target == 'win32-arm64' || matrix.target == 'darwin-x64') && !inputs.rebuild_openssl
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.openssl-inputs.outputs.path }}
+          key: ${{ steps.openssl-inputs.outputs.key }}
+      - name: Verify restored OpenSSL or prepare a clean build
+        id: openssl-reuse
+        if: matrix.target == 'win32-arm64' || matrix.target == 'darwin-x64'
+        shell: bash
+        env:
+          OPENSSL_CACHE_HIT: ${{ steps.openssl-cache.outputs.cache-hit }}
+        run: |
+          python scripts/release/native_openssl_cache.py check \
+            --target "${{ matrix.target }}" --cache-hit "$OPENSSL_CACHE_HIT" \
+            --github-output "$GITHUB_OUTPUT"
       - name: Build pinned native OpenSSL for Windows ARM64
-        if: matrix.target == 'win32-arm64'
+        if: matrix.target == 'win32-arm64' && steps.openssl-reuse.outputs.reuse != 'true'
         shell: pwsh
         run: ./scripts/release/build_windows_arm64_openssl.ps1
       - name: Install frozen Windows ARM64 build dependencies
@@ -86,9 +139,13 @@ jobs:
           UV_PYTHON: ${{ steps.runtime-python.outputs.executable || '3.11' }}
         run: uv sync --frozen --no-editable --extra managed-build
       - name: Build pinned static OpenSSL for Intel macOS
-        if: matrix.target == 'darwin-x64'
+        if: matrix.target == 'darwin-x64' && steps.openssl-reuse.outputs.reuse != 'true'
         shell: bash
         run: bash scripts/release/build_macos_x64_openssl.sh
+      - name: Record tested OpenSSL installation
+        if: (matrix.target == 'win32-arm64' || matrix.target == 'darwin-x64') && steps.openssl-reuse.outputs.reuse != 'true'
+        shell: bash
+        run: python scripts/release/native_openssl_cache.py record --target "${{ matrix.target }}"
       - name: Install frozen Intel macOS dependencies
         if: matrix.target == 'darwin-x64'
         env:

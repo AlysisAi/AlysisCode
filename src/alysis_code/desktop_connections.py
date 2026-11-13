@@ -37,6 +37,22 @@ CONNECTION_TOOLS = (
         {"page": {"type": "integer", "minimum": 1, "maximum": 10000}},
         (),
     ),
+    (
+        # Like Grok Bot's in-chat Connect card (AL, 2026-11-10). The person decides on the card.
+        "connectors.plugins.offer",
+        "offer_plugin_connection",
+        "Show the person a Connect card for a plugin from Alysis's catalog (Notion, Linear, Slack, "
+        "Todoist...) when they ask to add or connect a plugin or app, or when the request needs an "
+        "account that no connected plugin covers. Give the plugin's name and a short reason in the "
+        "person's language. This doesn't install, connect or grant anything: the person decides on "
+        "the card, and the plugin's tools work from their next message. Don't offer a plugin the "
+        "request doesn't need.",
+        {
+            "plugin": {"type": "string", "minLength": 1, "maxLength": 80},
+            "reason": {"type": "string", "maxLength": 300},
+        },
+        ("plugin",),
+    ),
 )
 CONNECTION_TOOL_NAMES = frozenset(spec[1] for spec in CONNECTION_TOOLS)
 
@@ -49,6 +65,12 @@ def connection_arguments(action: str, args: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Unsupported connector.")
     if "page" in args and (type(args["page"]) is not int or not 1 <= args["page"] <= 10000):
         raise ValueError("Invalid repository page.")
+    if action == "connectors.plugins.offer" and (
+        not _text(args["plugin"], 80)
+        or "reason" in args
+        and not (isinstance(args["reason"], str) and len(args["reason"]) <= 300)
+    ):
+        raise ValueError("Invalid plugin offer.")
     return dict(args)
 
 
@@ -59,6 +81,19 @@ def _text(value: Any, limit: int = 254) -> bool:
 
 
 def connection_result(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    if action == "connectors.plugins.offer":
+        if (
+            set(result) != {"plugin", "name", "status", "shown", "next_step"}
+            or result["status"] not in {"connected", "offered", "not_found", "unavailable"}
+            or type(result["shown"]) is not bool
+            or result["shown"] != (result["status"] == "offered")
+            or not all(
+                isinstance(result[key], str) and len(result[key]) <= 300
+                for key in ("plugin", "name", "next_step")
+            )
+        ):
+            raise ValueError("Invalid plugin offer result.")
+        return dict(result)
     if action == "connectors.status":
         required = {
             "connector",

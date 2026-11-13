@@ -108,8 +108,7 @@ class ConfigOverlay:
             style=_BG,
         )
         # Mask the input whenever the active input screen asks for it (its
-        # ``input_password`` flag) — generic across flows, so both ConfigFlow's
-        # api_key stage and PowerConfigFlow's paste-key stage hide the secret.
+        # ``input_password`` flag), including ConfigFlow's API-key stage.
         _is_password = Condition(
             lambda: (
                 self._open["on"]
@@ -332,6 +331,9 @@ class ConfigOverlay:
     # ------------------------------------------------------------- lifecycle
 
     def open(self, flow_factory: Callable[[], Any] | None = None) -> None:
+        # ``flow_factory`` overrides the default for this open only, so the same
+        # overlay chrome (masked input, rendering, key handling) hosts a different
+        # step machine for the configuration overlay.
         if self._open["on"]:
             return
         try:

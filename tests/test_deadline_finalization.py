@@ -196,18 +196,14 @@ def test_noop_compaction_preserves_eligible_finalization_request(
         session.close()
 
 
-@pytest.mark.parametrize("operation", ["summary", "importance"])
 @pytest.mark.parametrize("remaining,provider_elapsed", [(2.0, 0.5), (15.0, 0.5), (15.0, 13.0)])
-def test_turn_guards_actual_compaction_requests(
-    tmp_path, monkeypatch, operation, remaining, provider_elapsed
-):
+def test_turn_guards_actual_compaction_requests(tmp_path, monkeypatch, remaining, provider_elapsed):
     from alysis_code.execution_deadline import DeadlineOperation
 
     clock = _FakeClock(0.0)
     deadline = ExecutionDeadline.from_duration(20.0, clock=clock)
     deadline.observe_duration(DeadlineOperation.MAIN_LLM, 2.0)
     cfg = AppConfig(model="test-model", routing_mode="code_only", stream=False)
-    cfg.extra_fields["compaction"] = {"importance_use_llm": True}
     session = create_session(
         cfg=cfg,
         root=tmp_path,
@@ -241,16 +237,13 @@ def test_turn_guards_actual_compaction_requests(
     def chat(**kwargs):
         observed_timeouts.append(compactor.compactor_client.timeout_s)
         clock.advance(provider_elapsed)
-        return LLMResponse(content='{"scores":[],"goal":"retained"}', tool_calls=[], raw={})
+        return LLMResponse(content='{"goal":"retained"}', tool_calls=[], raw={})
 
     def plan(**kwargs):
         # A planner that requires a request must use the same guarded provider
-        # boundary as the real summary/importance implementation.
+        # boundary as the real summary implementation.
         for _ in range(2 if provider_elapsed == 13.0 else 1):
-            if operation == "summary":
-                compactor._call_compactor(prompt_messages=[{"role": "user", "content": "x"}])
-            else:
-                compactor._apply_llm_importance_overrides([])
+            compactor._call_compactor(prompt_messages=[{"role": "user", "content": "x"}])
         return kwargs["messages"], False
 
     monkeypatch.setattr(compactor.compactor_client, "chat", chat)
@@ -565,18 +558,15 @@ def test_deadline_expiring_in_local_compaction_preflight_still_stops_main_reques
         session.close()
 
 
-@pytest.mark.parametrize("operation", ["summary", "importance"])
 @pytest.mark.parametrize("provider_fails", [False, True])
-def test_compactor_measures_actual_chat_even_on_failure(
-    tmp_path, monkeypatch, operation, provider_fails
-):
+def test_compactor_measures_actual_chat_even_on_failure(tmp_path, monkeypatch, provider_fails):
     from alysis_code.compaction import call_observation
     from alysis_code.llm.openai_compat import LLMError
 
     clock = _FakeClock(0.0)
     monkeypatch.setattr(call_observation, "perf_counter", clock)
     cfg = AppConfig(model="test-model", routing_mode="code_only", stream=False)
-    cfg.extra_fields["compaction"] = {"enabled": True, "importance_use_llm": True}
+    cfg.extra_fields["compaction"] = {"enabled": True}
     session = create_session(
         cfg=cfg,
         root=tmp_path,
@@ -598,7 +588,7 @@ def test_compactor_measures_actual_chat_even_on_failure(
         clock.advance(0.5)
         if provider_fails:
             raise LLMError("synthetic provider failure")
-        return LLMResponse(content='{"scores":[],"goal":"retained"}', tool_calls=[], raw={})
+        return LLMResponse(content='{"goal":"retained"}', tool_calls=[], raw={})
 
     monkeypatch.setattr(compactor.compactor_client, "chat", chat)
     monkeypatch.setattr(compactor, "_record_compactor_usage", lambda **kwargs: clock.advance(3.0))
@@ -606,13 +596,8 @@ def test_compactor_measures_actual_chat_even_on_failure(
     try:
         with call_observation.observe_compactor_llm_durations(durations.append):
             clock.advance(2.0)  # Local preparation must not be counted as model latency.
-            if operation == "summary":
-                result = compactor._call_compactor(
-                    prompt_messages=[{"role": "user", "content": "x"}]
-                )
-                assert (result is None) == provider_fails
-            else:
-                assert compactor._apply_llm_importance_overrides([]) == []
+            result = compactor._call_compactor(prompt_messages=[{"role": "user", "content": "x"}])
+            assert (result is None) == provider_fails
             clock.advance(4.0)
         assert len(calls) == 1
         assert durations == [0.5]

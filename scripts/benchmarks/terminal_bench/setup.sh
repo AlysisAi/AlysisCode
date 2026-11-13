@@ -158,7 +158,7 @@ configure_alysis() {
   alysis config set default_mode fullaccess || true
   alysis config set stream false || true
   python - <<'PY'
-from alysis_code.config import load_config, save_config, set_config_value
+from alysis_code.config import load_config, save_config
 from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
 from alysis_code.sandbox_settings import apply_sandbox_mode_to_config
 import os

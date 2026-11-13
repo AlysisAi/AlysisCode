@@ -160,8 +160,7 @@ test("CliDiscovery redacts credentials from successful version output", async ()
 });
 
 test("sandbox doctor uses the session preference while preserving environment policy", () => {
-  const keys = ["ALYSIS_SHELL_SANDBOX_MODE", "SYLLIPTOR_SHELL_SANDBOX_MODE",
-    "ALYSIS_VERIFY_SANDBOX_MODE", "SYLLIPTOR_VERIFY_SANDBOX_MODE"];
+  const keys = ["ALYSIS_SHELL_SANDBOX_MODE", "ALYSIS_VERIFY_SANDBOX_MODE"];
   const saved = keys.map((key) => process.env[key]);
   try {
     for (const key of keys) delete process.env[key];
@@ -171,11 +170,10 @@ test("sandbox doctor uses the session preference while preserving environment po
     assert.equal(env.ALYSIS_VERIFY_SANDBOX_MODE, "warn");
     assert.equal(process.env.ALYSIS_SHELL_SANDBOX_MODE, undefined);
     process.env.ALYSIS_SHELL_SANDBOX_MODE = "strict";
-    process.env.SYLLIPTOR_VERIFY_SANDBOX_MODE = "strict";
+    process.env.ALYSIS_VERIFY_SANDBOX_MODE = "strict";
     const restricted = cliCommandEnvironment(config);
     assert.equal(restricted.ALYSIS_SHELL_SANDBOX_MODE, "strict");
-    assert.equal(restricted.ALYSIS_VERIFY_SANDBOX_MODE, undefined);
-    assert.equal(restricted.SYLLIPTOR_VERIFY_SANDBOX_MODE, "strict");
+    assert.equal(restricted.ALYSIS_VERIFY_SANDBOX_MODE, "strict");
   } finally {
     keys.forEach((key, index) => {
       if (saved[index] === undefined) delete process.env[key];

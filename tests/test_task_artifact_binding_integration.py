@@ -127,8 +127,8 @@ def test_actual_turn_binding_precedes_work_and_cannot_certify_missing_output(tmp
                     if isinstance(m.get("content"), str) and "Detected mentions: " in m["content"]
                 )
                 mentions = json.loads(guidance.split("Detected mentions: ", 1)[1])
-                assert literal in mentions
-                assert literal.replace("\\", "/") not in mentions
+                # Hints only: tokens written like a file, in the request's spelling.
+                assert mentions == ["bundle.zip", "notes.txt", "Supplies.csv"]
             if any(
                 e["type"] == "task_artifact_interpretation" for e in session.store.events_snapshot()
             ):
@@ -419,7 +419,13 @@ def test_followup_binding_uses_durable_user_text_without_enrolling_external_acce
                 Path(path) for path in contract.artifact_output_observer.baseline
             }
         else:
-            assert results[0]["error"] == "invalid_task_artifacts"
+            # No user message named the outside path and the request's own
+            # mention needs no interpretation, so the declaration is not
+            # offered at all: other text cannot ground a path through it.
+            assert results[0]["error"]
+            contract = session._turn_execution_state.acceptance_contract
+            assert Path(key) not in {Path(ref.absolute_path) for ref in contract.path_refs}
+            assert not any(e["type"] == "task_artifact_interpretation" for e in events)
         assert not (root / "result.txt").exists()
         assert not (tmp_path / "external").exists()
     finally:

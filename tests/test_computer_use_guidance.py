@@ -68,11 +68,14 @@ def test_guidance_delivered_by_bridge_resolves_post_state_conflict(tmp_path, mon
 @pytest.mark.parametrize("v2", [False, True])
 def test_guidance_descriptions_agree_with_binding_and_evidence_requirements(v2):
     tools = build_computer_use_tools(lambda *_: {}, interaction_v2=v2)
-    for name in ("computer_state", "computer_action"):
-        description = tools[name].description
-        assert "sufficient current post-state" in description
-        assert "independent/final verification" in description
-        assert "fresh image" in description
+    # The model receives the complete paired tool set. Shared observation and
+    # evidence guidance need not be repeated in every action description.
+    descriptions = "\n".join(
+        tools[name].description for name in ("computer_state", "computer_action")
+    )
+    assert "sufficient current post-state" in descriptions
+    assert "independent/final verification" in descriptions
+    assert "fresh image" in descriptions
 
 
 def _example(description, name):

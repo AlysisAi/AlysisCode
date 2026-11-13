@@ -91,9 +91,12 @@ def _create_chat_session(
             model="test-model",
             web_search_mode="off",
             subagents_enabled=subagents_enabled,
+            extra_fields={"shell_sandbox": {"mode": "off"}},
         ),
         root=workspace_binding.workspace_context.workspace_root,
-        mode="auto",
+        # Observe inert filesystem ports in this process; native workers have
+        # separate qualification coverage.
+        mode="fullaccess",
         runtime_kind="interactive_chat",
         yes=True,
         max_steps=1,
@@ -131,7 +134,7 @@ def _workdir_subagent_registry() -> dict[str, SubagentDefinition]:
             name="focused-worker",
             description="Inspect the current package focus.",
             system_prompt="Inspect only the requested package and report grounded findings.",
-            mode="auto",
+            mode="fullaccess",
             allow_tools=("fs_read", "search_rg", "shell_run"),
         )
     }

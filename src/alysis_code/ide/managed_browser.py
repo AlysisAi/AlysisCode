@@ -37,6 +37,7 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import tempfile
 import threading
@@ -51,7 +52,65 @@ from urllib.parse import urlsplit, urlunsplit
 from ..branding import canonical_user_data_dir, env_get
 from ..command_text import command_text
 from .browser_egress_proxy import BrowserEgressProxy
+from .browser_observation import redact_form_secrets
+from .browser_profiles import BrowserProfileLease
 from .protocol import redact_secrets
+
+# A visible X server is a whole-desktop input surface, not one Chromium tab.
+# Reserve it across service instances in this process. The trusted coordinator
+# must additionally isolate the X server from other processes/workers.
+_VISIBLE_DISPLAY_LOCK = threading.Lock()
+_VISIBLE_DISPLAY_SESSIONS: dict[str, str] = {}
+
+# Web KeyboardEvent/CDP key names and virtual-key codes, not application actions.
+_PAGE_KEYS = {
+    "Enter": ("Enter", 13),
+    "Tab": ("Tab", 9),
+    "Escape": ("Escape", 27),
+    "Backspace": ("Backspace", 8),
+    "Delete": ("Delete", 46),
+    "ArrowLeft": ("ArrowLeft", 37),
+    "ArrowUp": ("ArrowUp", 38),
+    "ArrowRight": ("ArrowRight", 39),
+    "ArrowDown": ("ArrowDown", 40),
+    "Home": ("Home", 36),
+    "End": ("End", 35),
+    "PageUp": ("PageUp", 33),
+    "PageDown": ("PageDown", 34),
+    "Space": (" ", 32),
+}
+
+# Fixed native-control operation: neither selectors nor page text become code.
+_SELECT_OPTION_FUNCTION = """function(option) {
+    if (!this.isConnected || !option.isConnected || this.tagName !== 'SELECT' ||
+        option.tagName !== 'OPTION' || option.closest('select') !== this ||
+        this.multiple || this.matches(':disabled') || option.matches(':disabled'))
+        return {dispatched: false};
+    this.selectedIndex = Array.from(this.options).indexOf(option);
+    this.dispatchEvent(new Event('input', {bubbles: true}));
+    this.dispatchEvent(new Event('change', {bubbles: true}));
+    return {dispatched: true};
+}"""
+
+
+def _reserve_visible_display(display: str | None, session_id: str) -> None:
+    if display is not None:
+        key = display.split(".", 1)[0]
+        with _VISIBLE_DISPLAY_LOCK:
+            if key in _VISIBLE_DISPLAY_SESSIONS:
+                raise BrowserControlError(
+                    "A visible browser already owns this private X11 display."
+                )
+            _VISIBLE_DISPLAY_SESSIONS[key] = session_id
+
+
+def _release_visible_display(display: str | None, session_id: str) -> None:
+    if display is not None:
+        key = display.split(".", 1)[0]
+        with _VISIBLE_DISPLAY_LOCK:
+            if _VISIBLE_DISPLAY_SESSIONS.get(key) == session_id:
+                _VISIBLE_DISPLAY_SESSIONS.pop(key)
+
 
 __all__ = [
     "BrowserArtifact",
@@ -124,6 +183,26 @@ class BrowserLaunchError(BrowserError):
     pass
 
 
+class BrowserDownloadRequiredError(BrowserError):
+    """Chromium identified a download rather than a navigable document."""
+
+
+class BrowserPageUnreachableError(BrowserError):
+    """The address answered with a network error page; the browser and its guard are intact.
+
+    ``net_error`` is Chromium's own error identifier (for example ``net::ERR_NAME_NOT_RESOLVED``),
+    never page-controlled text.
+    """
+
+    def __init__(self, net_error: str | None = None) -> None:
+        valid = isinstance(net_error, str) and re.fullmatch(r"net::ERR_[A-Z0-9_]{1,64}", net_error)
+        self.net_error = net_error if valid else None
+        super().__init__(
+            "This address could not be reached"
+            + (f" ({self.net_error})." if self.net_error else ".")
+        )
+
+
 class BrowserTimeoutError(BrowserError, TimeoutError):
     pass
 
@@ -138,6 +217,46 @@ class BrowserLimitError(BrowserError):
 
 class BrowserOwnershipError(BrowserError):
     pass
+
+
+class BrowserDestinationUnresolvedError(BrowserError):
+    """A destination could not be checked: its DNS was slow, failing or busy. The request is
+    refused, but unlike a private destination this says nothing about what the page intends."""
+
+
+class BrowserDestinationTimeoutError(BrowserDestinationUnresolvedError, BrowserTimeoutError):
+    pass
+
+
+class BrowserControlError(BrowserError):
+    """Command admission is paused or the caller's generation is stale."""
+
+
+class BrowserStaleFrameError(BrowserControlError):
+    """No input was sent because the observed visual frame is no longer current."""
+
+
+class BrowserTargetObscuredError(BrowserControlError):
+    """No click was sent because hit testing did not reach the observed element."""
+
+
+class BrowserPageUnavailableError(BrowserControlError):
+    """An observed page disappeared; any in-flight input may have been sent."""
+
+
+@dataclass
+class BrowserVisualFrame:
+    owner_id: str
+    session_id: str
+    command_generation: int
+    created_at: float
+    url: str
+    width: int
+    height: int
+    css_width: float
+    css_height: float
+    png: bytes = field(repr=False)
+    consumed: bool = False
 
 
 class ProcessHandle(Protocol):
@@ -175,6 +294,11 @@ class CdpTransport(Protocol):
     tighter output-specific limits after that transport boundary.
     """
 
+    @property
+    def healthy(self) -> bool:
+        """False once control has failed closed or the connection has ended."""
+        ...
+
     def call(
         self,
         method: str,
@@ -193,6 +317,7 @@ class CdpTransport(Protocol):
         authorize_url: Callable[[str], str],
         timeout: float,
         cancel: CancelCheck = None,
+        root_target_id: str | None = None,
     ) -> Mapping[str, Any]: ...
 
     def drain_events(
@@ -203,6 +328,8 @@ class CdpTransport(Protocol):
         timeout: float,
         cancel: CancelCheck = None,
     ) -> Sequence[Mapping[str, Any]]: ...
+
+    def guarded_page_sessions(self, *, session_id: str) -> Mapping[str, str]: ...
 
     def close(self, *, timeout: float) -> None: ...
 
@@ -252,6 +379,9 @@ class BrowserSessionStatus:
     local_destinations_loopback_only: bool
     active_url: str | None
     artifact_count: int
+    commands_paused: bool = False
+    command_generation: int = 0
+    operation_active: bool = False
 
 
 def _default_managed_browser_data_root() -> Path:
@@ -273,8 +403,16 @@ class ManagedBrowserConfig:
     max_snapshot_bytes: int = 2 * 1024 * 1024
     max_screenshot_bytes: int = 10 * 1024 * 1024
     max_diagnostic_events: int = 500
+    # Trusted host option for a visible browser in a dedicated Linux X11 desktop.
+    # Never inherited from model arguments or an arbitrary DISPLAY environment.
+    linux_display: str | None = None
 
     def __post_init__(self) -> None:
+        if self.linux_display is not None and (
+            not isinstance(self.linux_display, str)
+            or not re.fullmatch(r":[0-9]{1,5}(?:\.[0-9]{1,3})?", self.linux_display)
+        ):
+            raise BrowserValidationError("Browser display must be a local Linux X11 display.")
         for value, name, upper in (
             (self.startup_timeout_seconds, "startup timeout", 120.0),
             (self.operation_timeout_seconds, "operation timeout", 300.0),
@@ -306,15 +444,28 @@ class _BrowserSession:
     egress_proxy: BrowserEgressProxy
     transport: CdpTransport
     cdp_session_id: str
+    root_cdp_session_id: str
+    root_target_id: str
+    active_target_id: str
     profile_dir: Path
     artifact_dir: Path
     created_at: float
     allow_local_destinations: bool
     local_destinations_loopback_only: bool
     owned_preview_origin_allowed: OwnedPreviewOriginAllowed
+    profile_lease: BrowserProfileLease | None = field(default=None, repr=False)
+    profile_shutdown_attempted: bool = False
+    profile_shutdown_clean: bool = False
     active_url: str | None = None
     artifact_count: int = 0
+    upload_bytes: int = 0
+    upload_count: int = 0
     operation_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    control_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    commands_paused: bool = False
+    command_generation: int = 0
+    closing: bool = False
+    viewer_lease: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,6 +499,19 @@ class DefaultBrowserProcessLauncher:
             return subprocess.Popen(**kwargs)  # type: ignore[arg-type,return-value]
         except OSError as exc:
             raise BrowserLaunchError("The managed browser process could not be started.") from exc
+
+
+def _profile_process_group_stopped(process: ProcessHandle) -> bool:
+    """Fail closed unless the Linux browser and its owned group have exited."""
+    if os.name != "posix" or process.poll() is None:
+        return False
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 class DefaultProcessTreeTerminator:
@@ -629,9 +793,14 @@ class ManagedBrowserService:
         allow_local_destinations: bool = False,
         local_destinations_loopback_only: bool = False,
         allowed_preview_urls_provider: PreviewUrlProvider | None = None,
+        profile_lease: BrowserProfileLease | None = None,
         cancel: CancelCheck = None,
     ) -> BrowserSessionStatus:
         owner = _validated_owner(owner_id)
+        if profile_lease is not None and (
+            not isinstance(profile_lease, BrowserProfileLease) or profile_lease.owner_id != owner
+        ):
+            raise BrowserOwnershipError("Persistent browser profile is not owned by this caller.")
         if not isinstance(allow_local_destinations, bool):
             raise BrowserValidationError("Browser local-destination policy must be a boolean.")
         if not isinstance(local_destinations_loopback_only, bool):
@@ -658,10 +827,15 @@ class ManagedBrowserService:
         egress_proxy: BrowserEgressProxy | None = None
         transport: CdpTransport | None = None
         try:
+            _reserve_visible_display(self._config.linux_display, session_id)
             owned_preview_origin_allowed = _owned_preview_origin_check(
                 allowed_preview_urls_provider
             )
-            profile_dir = _make_owned_session_dir(self._profiles_root, session_id)
+            profile_dir = (
+                profile_lease.begin(owner)
+                if profile_lease is not None
+                else _make_owned_session_dir(self._profiles_root, session_id)
+            )
             artifact_dir = _make_owned_session_dir(self._artifacts_root, session_id)
             egress_proxy = self._egress_proxy_factory(
                 resolver=self._resolver,
@@ -674,13 +848,29 @@ class ManagedBrowserService:
             egress_proxy.deny_endpoint(proxy_host, proxy_port)
             spec = BrowserLaunchSpec(
                 executable=executable.path,
-                arguments=_browser_arguments(profile_dir, proxy_host, proxy_port),
-                environment=_sanitized_browser_environment(),
+                arguments=_browser_arguments(
+                    profile_dir,
+                    proxy_host,
+                    proxy_port,
+                    visible=self._config.linux_display is not None,
+                ),
+                environment={
+                    **_sanitized_browser_environment(),
+                    **(
+                        {"DISPLAY": self._config.linux_display}
+                        if self._config.linux_display
+                        else {}
+                    ),
+                },
                 profile_dir=profile_dir,
             )
             process = self._launcher.launch(spec)
+            if profile_lease is not None:
+                profile_lease.record_process(process.pid)
             _record_owned_browser_process(
-                (profile_dir, artifact_dir), session_id=session_id, process=process
+                (artifact_dir,) if profile_lease is not None else (profile_dir, artifact_dir),
+                session_id=session_id,
+                process=process,
             )
             websocket_url = self._wait_for_devtools_endpoint(profile_dir, process, cancel=cancel)
             egress_proxy.deny_endpoint("127.0.0.1", _trusted_devtools_endpoint_port(websocket_url))
@@ -691,7 +881,11 @@ class ManagedBrowserService:
             )
             target = transport.call(
                 "Target.createTarget",
-                {"url": "about:blank", "newWindow": False, "background": True},
+                {
+                    "url": "about:blank",
+                    "newWindow": False,
+                    "background": self._config.linux_display is None,
+                },
                 timeout=self._config.operation_timeout_seconds,
                 cancel=cancel,
             )
@@ -703,10 +897,18 @@ class ManagedBrowserService:
                 cancel=cancel,
             )
             cdp_session_id = _required_cdp_string(attached, "sessionId")
+            # Ordinary clicks must not write untracked files. Only the bounded
+            # download operation temporarily admits and collects an owned file.
+            transport.call(
+                "Browser.setDownloadBehavior",
+                {"behavior": "deny", "eventsEnabled": False},
+                timeout=self._config.operation_timeout_seconds,
+                cancel=cancel,
+            )
             for method in ("Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"):
                 transport.call(
                     method,
-                    {},
+                    {"maxPostDataSize": 1} if method == "Network.enable" else {},
                     session_id=cdp_session_id,
                     timeout=self._config.operation_timeout_seconds,
                     cancel=cancel,
@@ -723,12 +925,16 @@ class ManagedBrowserService:
                 egress_proxy=egress_proxy,
                 transport=transport,
                 cdp_session_id=cdp_session_id,
+                root_cdp_session_id=cdp_session_id,
+                root_target_id=target_id,
+                active_target_id=target_id,
                 profile_dir=profile_dir,
                 artifact_dir=artifact_dir,
                 created_at=self._clock(),
                 allow_local_destinations=bool(allow_local_destinations),
                 local_destinations_loopback_only=bool(local_destinations_loopback_only),
                 owned_preview_origin_allowed=owned_preview_origin_allowed,
+                profile_lease=profile_lease,
             )
             with self._lock:
                 self._sessions[session_id] = session
@@ -761,7 +967,7 @@ class ManagedBrowserService:
                         )
                     except Exception:
                         cleanup_failed = True
-                if profile_dir is not None:
+                if profile_dir is not None and profile_lease is None:
                     cleanup_failed = (
                         not _remove_owned_session_dir(self._profiles_root, profile_dir, session_id)
                         or cleanup_failed
@@ -777,6 +983,7 @@ class ManagedBrowserService:
                     raise BrowserLaunchError(
                         "Browser startup failed and owned resource cleanup is incomplete."
                     )
+                _release_visible_display(self._config.linux_display, session_id)
 
     def navigate(
         self,
@@ -786,9 +993,12 @@ class ManagedBrowserService:
         *,
         timeout: float | None = None,
         cancel: CancelCheck = None,
+        expected_generation: int | None = None,
     ) -> dict[str, Any]:
         session = self._owned_session(owner_id, session_id)
-        with self._operation(session, cancel=cancel):
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ) as generation:
             deadline = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
 
             def authorize(candidate: str) -> str:
@@ -808,13 +1018,173 @@ class ManagedBrowserService:
                 authorize_url=authorize,
                 timeout=deadline,
                 cancel=cancel,
+                root_target_id=session.root_target_id,
             )
             session.active_url = normalized
             return {
                 "session_id": session.session_id,
+                "command_generation": generation,
                 "url": normalized,
                 "result": _bounded_payload(result, self._config.max_snapshot_bytes),
             }
+
+    def _pages(self, session: _BrowserSession, timeout: float, cancel: CancelCheck):
+        handles = dict(
+            session.transport.guarded_page_sessions(session_id=session.root_cdp_session_id)
+        )
+        handles[session.root_target_id] = session.root_cdp_session_id
+        result = session.transport.call("Target.getTargets", timeout=timeout, cancel=cancel)
+        targets = result.get("targetInfos")
+        if not isinstance(targets, list) or len(targets) > 64:
+            raise BrowserSecurityError("Browser page inventory exceeded its limit.")
+        pages = []
+        for target in targets:
+            if not isinstance(target, Mapping):
+                raise BrowserSecurityError("Browser page inventory was invalid.")
+            page_id = target.get("targetId")
+            if target.get("type") != "page" or page_id not in handles:
+                continue
+            pages.append(
+                {
+                    "page_id": page_id,
+                    "url": str(target.get("url", ""))[:8192],
+                    "title": str(target.get("title", ""))[:512],
+                    "active": page_id == session.active_target_id,
+                }
+            )
+        if len(pages) > 8:
+            raise BrowserLimitError("Browser page limit reached (8 pages).")
+        return pages, handles
+
+    def pages(self, owner_id: str, session_id: str, *, cancel: CancelCheck = None):
+        session = self._owned_session(owner_id, session_id)
+        with self._operation(session, cancel=cancel) as generation:
+            pages, _ = self._pages(session, self._config.operation_timeout_seconds, cancel)
+            return {"pages": pages, "command_generation": generation}
+
+    def open_window(self, owner_id: str, session_id: str, *, cancel: CancelCheck = None) -> bool:
+        """Open a blank browser window for the person at the computer screen.
+
+        The Browser button on the owl computer's bar uses it (bots/browser_linux.py). It is not a
+        model tool: it opens no website and grants nothing that Ctrl+N in the visible browser does
+        not. Never waits behind an operation; returns whether a window was opened.
+        """
+        session = self._owned_session(owner_id, session_id)
+        _check_cancel(cancel)
+        with session.control_lock:
+            _assert_browser_running(session)
+            if not session.operation_lock.acquire(blocking=False):
+                return False
+        try:
+            session.transport.call(
+                "Target.createTarget",
+                {"url": "about:blank", "newWindow": True},
+                timeout=self._config.operation_timeout_seconds,
+                cancel=cancel,
+            )
+            return True
+        finally:
+            with session.control_lock:
+                session.operation_lock.release()
+
+    def switch_page(
+        self,
+        owner_id: str,
+        session_id: str,
+        page_id: str,
+        *,
+        expected_generation: int,
+        cancel: CancelCheck = None,
+    ) -> None:
+        session = self._owned_session(owner_id, session_id)
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ):
+            timeout = self._config.operation_timeout_seconds
+            pages, handles = self._pages(session, timeout, cancel)
+            page = next((page for page in pages if page["page_id"] == page_id), None)
+            if page is None:
+                raise BrowserPageUnavailableError("Observed browser page is no longer available.")
+            child = handles[page_id]
+            for method in ("Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"):
+                session.transport.call(
+                    method,
+                    {"maxPostDataSize": 1} if method == "Network.enable" else {},
+                    session_id=child,
+                    timeout=timeout,
+                    cancel=cancel,
+                )
+            session.transport.call(
+                "Page.bringToFront", session_id=child, timeout=timeout, cancel=cancel
+            )
+            with session.control_lock:
+                _check_cancel(cancel)
+                _require_generation(session, expected_generation)
+                session.cdp_session_id = child
+                session.active_target_id = page_id
+                session.active_url = page["url"]
+                session.command_generation += 1
+
+    def close_page(
+        self,
+        owner_id: str,
+        session_id: str,
+        page_id: str,
+        *,
+        expected_generation: int,
+        cancel: CancelCheck = None,
+    ) -> dict[str, Any]:
+        """Close one guarded tab without accepting a discard-changes dialog.
+
+        Serialized with downloads and other browser operations. Keep the final
+        page so the session remains usable until its normal task/idle cleanup.
+        A closed active page requires an explicit switch to a remaining page.
+        """
+        session = self._owned_session(owner_id, session_id)
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ):
+            timeout = self._config.operation_timeout_seconds
+            pages, handles = self._pages(session, timeout, cancel)
+            if page_id not in {page["page_id"] for page in pages}:
+                raise BrowserPageUnavailableError("Observed browser page is no longer available.")
+            if len(pages) == 1:
+                return {"closed": False, "reason": "last_page_retained"}
+            child = handles[page_id]
+            session.transport.call("Page.enable", session_id=child, timeout=timeout, cancel=cancel)
+            with session.control_lock:
+                _check_cancel(cancel)
+                _require_generation(session, expected_generation)
+                session.command_generation += 1
+            try:
+                session.transport.call(
+                    "Page.close", session_id=child, timeout=timeout, cancel=cancel
+                )
+            except BrowserPageUnavailableError:
+                # A detach may arrive before the command reply. Verify below;
+                # never repeat an uncertain close or force Target.closeTarget.
+                pass
+            deadline = time.monotonic() + min(timeout, 2.0)
+            while True:
+                _check_cancel(cancel)
+                pages, _ = self._pages(session, timeout, cancel)
+                if page_id not in {page["page_id"] for page in pages}:
+                    return {"closed": True, "reason": "closed"}
+                events = session.transport.drain_events(
+                    session_id=child, max_events=256, timeout=0.05, cancel=cancel
+                )
+                for event in events:
+                    if event.get("method") == "Page.javascriptDialogOpening":
+                        session.transport.call(
+                            "Page.handleJavaScriptDialog",
+                            {"accept": False},
+                            session_id=child,
+                            timeout=timeout,
+                            cancel=cancel,
+                        )
+                        return {"closed": False, "reason": "dialog_preserved_page"}
+                if time.monotonic() >= deadline:
+                    return {"closed": False, "reason": "close_not_confirmed"}
 
     def snapshot(
         self,
@@ -829,55 +1199,65 @@ class ManagedBrowserService:
         normalized_kind = str(kind).strip().lower()
         if normalized_kind not in {"semantic", "accessibility", "dom", "text"}:
             raise BrowserValidationError("Browser snapshot kind is invalid.")
-        with self._operation(session, cancel=cancel):
-            call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
-            if normalized_kind == "text":
-                raw = session.transport.call(
-                    "Runtime.evaluate",
-                    {
-                        "expression": "document.body ? document.body.innerText : ''",
-                        "returnByValue": True,
-                        "awaitPromise": False,
-                    },
-                    session_id=session.cdp_session_id,
-                    timeout=call_timeout,
-                    cancel=cancel,
-                )
-                value = raw.get("result")
-                if isinstance(value, Mapping):
-                    value = value.get("value", "")
-                return {
-                    "session_id": session.session_id,
-                    "kind": "text",
-                    **_bounded_text(str(value or ""), self._config.max_snapshot_bytes),
-                }
-            if normalized_kind == "dom":
-                raw = session.transport.call(
-                    "DOMSnapshot.captureSnapshot",
-                    {
-                        "computedStyles": [],
-                        "includePaintOrder": False,
-                        "includeDOMRects": False,
-                        "includeBlendedBackgroundColors": False,
-                        "includeTextColorOpacities": False,
-                    },
-                    session_id=session.cdp_session_id,
-                    timeout=call_timeout,
-                    cancel=cancel,
-                )
-            else:
-                raw = session.transport.call(
-                    "Accessibility.getFullAXTree",
-                    {"depth": 32},
-                    session_id=session.cdp_session_id,
-                    timeout=call_timeout,
-                    cancel=cancel,
-                )
+        with self._operation(session, cancel=cancel) as generation:
+            result = self._capture_snapshot(session, normalized_kind, timeout, cancel)
+            return {**result, "command_generation": generation}
+
+    def _capture_snapshot(
+        self,
+        session: _BrowserSession,
+        normalized_kind: str,
+        timeout: float | None,
+        cancel: CancelCheck,
+    ) -> dict[str, Any]:
+        call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
+        if normalized_kind == "text":
+            raw = session.transport.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "document.body ? document.body.innerText : ''",
+                    "returnByValue": True,
+                    "awaitPromise": False,
+                },
+                session_id=session.cdp_session_id,
+                timeout=call_timeout,
+                cancel=cancel,
+            )
+            value = raw.get("result")
+            if isinstance(value, Mapping):
+                value = value.get("value", "")
             return {
                 "session_id": session.session_id,
-                "kind": normalized_kind,
-                **_bounded_payload(raw, self._config.max_snapshot_bytes),
+                "kind": "text",
+                **_bounded_text(str(value or ""), self._config.max_snapshot_bytes),
             }
+        if normalized_kind == "dom":
+            raw = session.transport.call(
+                "DOMSnapshot.captureSnapshot",
+                {
+                    "computedStyles": [],
+                    "includePaintOrder": False,
+                    "includeDOMRects": False,
+                    "includeBlendedBackgroundColors": False,
+                    "includeTextColorOpacities": False,
+                },
+                session_id=session.cdp_session_id,
+                timeout=call_timeout,
+                cancel=cancel,
+            )
+        else:
+            raw = session.transport.call(
+                "Accessibility.getFullAXTree",
+                {"depth": 32},
+                session_id=session.cdp_session_id,
+                timeout=call_timeout,
+                cancel=cancel,
+            )
+        return {
+            "session_id": session.session_id,
+            "kind": normalized_kind,
+            **_bounded_payload(raw, self._config.max_snapshot_bytes),
+        }
 
     def screenshot(
         self,
@@ -930,6 +1310,144 @@ class ManagedBrowserService:
                 size_bytes=len(payload),
                 sha256=hashlib.sha256(payload).hexdigest(),
             )
+
+    def _capture_visual_frame(
+        self, session: _BrowserSession, generation: int, *, timeout: float, cancel: CancelCheck
+    ) -> BrowserVisualFrame:
+        options = dict(session_id=session.cdp_session_id, timeout=timeout, cancel=cancel)
+        tree = session.transport.call("Page.getFrameTree", {}, **options)
+        url = tree.get("frameTree", {}).get("frame", {}).get("url")
+        metrics = session.transport.call("Page.getLayoutMetrics", {}, **options)
+        viewport = metrics.get("cssLayoutViewport", {})
+        css_width, css_height = viewport.get("clientWidth"), viewport.get("clientHeight")
+        if not isinstance(url, str) or any(
+            type(v) not in (int, float) or not math.isfinite(v) or not 1 <= v <= 8192
+            for v in (css_width, css_height)
+        ):
+            raise BrowserSecurityError("Invalid browser frame dimensions or location.")
+        raw = session.transport.call(
+            "Page.captureScreenshot",
+            {"format": "png", "fromSurface": True, "captureBeyondViewport": False},
+            **options,
+        )
+        encoded = raw.get("data")
+        # Keep one bounded frame in memory; this path creates no disk artifacts.
+        limit = min(self._config.max_screenshot_bytes, 1024 * 1024)
+        if not isinstance(encoded, str) or len(encoded) > ((limit + 2) // 3) * 4:
+            raise BrowserLimitError("Visual frame exceeds the image allowance.")
+        try:
+            png = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise BrowserSecurityError("Invalid browser frame encoding.") from None
+        if len(png) < 33 or len(png) > limit or png[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
+            raise BrowserSecurityError("Invalid browser PNG frame.")
+        width, height = struct.unpack(">II", png[16:24])
+        if not 1 <= width <= 8192 or not 1 <= height <= 8192:
+            raise BrowserLimitError("Visual frame dimensions exceed the allowance.")
+        after = session.transport.call("Page.getFrameTree", {}, **options)
+        if after.get("frameTree", {}).get("frame", {}).get("url") != url:
+            raise BrowserStaleFrameError("Page changed during capture; take a new screenshot.")
+        return BrowserVisualFrame(
+            session.owner_id,
+            session.session_id,
+            generation,
+            time.monotonic(),
+            url,
+            width,
+            height,
+            css_width,
+            css_height,
+            png,
+        )
+
+    def capture_visual_frame(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        timeout: float | None = None,
+        cancel: CancelCheck = None,
+    ) -> BrowserVisualFrame:
+        session = self._owned_session(owner_id, session_id)
+        with self._operation(session, cancel=cancel) as generation:
+            return self._capture_visual_frame(
+                session,
+                generation,
+                timeout=_bounded_timeout(timeout, self._config.operation_timeout_seconds),
+                cancel=cancel,
+            )
+
+    def click_visual_frame(
+        self,
+        owner_id: str,
+        session_id: str,
+        frame: BrowserVisualFrame,
+        x: int,
+        y: int,
+        *,
+        timeout: float | None = None,
+        cancel: CancelCheck = None,
+    ) -> dict[str, Any]:
+        session = self._owned_session(owner_id, session_id)
+        if frame.owner_id != owner_id or frame.session_id != session_id:
+            raise BrowserOwnershipError("Visual frame belongs to another browser.")
+        if (
+            type(x) is not int
+            or type(y) is not int
+            or not (0 <= x < frame.width and 0 <= y < frame.height)
+        ):
+            raise BrowserValidationError("Coordinates must be inside the observed image.")
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=frame.command_generation
+        ) as generation:
+            if frame.consumed or not 0 <= time.monotonic() - frame.created_at <= 60:
+                raise BrowserStaleFrameError(
+                    "Visual frame expired or was used; take a new screenshot."
+                )
+            # Consume even when the outcome is uncertain. A new frame is needed
+            # for every action; copying model arguments cannot replay this one.
+            frame.consumed = True
+            call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
+            current = self._capture_visual_frame(
+                session, generation, timeout=call_timeout, cancel=cancel
+            )
+            if (
+                current.url != frame.url
+                or (current.css_width, current.css_height) != (frame.css_width, frame.css_height)
+                or current.png != frame.png
+            ):
+                raise BrowserStaleFrameError(
+                    "The visible page changed; no click was sent. Take a new screenshot."
+                )
+            # PNG pixels can differ from CSS pixels on a scaled display.
+            params = {
+                "x": x * frame.css_width / frame.width,
+                "y": y * frame.css_height / frame.height,
+                "button": "left",
+                "clickCount": 1,
+            }
+            try:
+                session.transport.call(
+                    "Input.dispatchMouseEvent",
+                    {**params, "type": "mousePressed"},
+                    session_id=session.cdp_session_id,
+                    timeout=call_timeout,
+                    cancel=cancel,
+                )
+            finally:
+                session.transport.call(
+                    "Input.dispatchMouseEvent",
+                    {**params, "type": "mouseReleased"},
+                    session_id=session.cdp_session_id,
+                    timeout=call_timeout,
+                )
+            _check_cancel(cancel)
+            return {
+                "session_id": session_id,
+                "command_generation": generation,
+                "dispatched": True,
+                "verification_required": True,
+            }
 
     def diagnostics(
         self,
@@ -1048,31 +1566,418 @@ class ManagedBrowserService:
         session_id: str,
         selector: str,
         *,
+        expected_backend_node_id: int | None = None,
         timeout: float | None = None,
         cancel: CancelCheck = None,
+        expected_generation: int | None = None,
+        label_backend_node_ids: Sequence[int] = (),
     ) -> dict[str, Any]:
+        """``label_backend_node_ids``: the target's own label (from a verified DOM snapshot, not
+        page script), where a click activates the target as HTML labels do. Styled checkboxes
+        and radios often show only their label, with the real input underneath."""
         session = self._owned_session(owner_id, session_id)
         selector_value = _validated_selector(selector)
-        with self._operation(session, cancel=cancel):
+        if (
+            not isinstance(label_backend_node_ids, (list, tuple))
+            or len(label_backend_node_ids) > 512
+            or any(type(item) is not int or item <= 0 for item in label_backend_node_ids)
+        ):
+            raise BrowserValidationError("Browser label nodes are invalid.")
+        if label_backend_node_ids and expected_backend_node_id is None:
+            raise BrowserValidationError("Label nodes need the target's identity.")
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ) as generation:
             call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
-            node_id = self._query_node(session, selector_value, call_timeout, cancel)
-            model = session.transport.call(
-                "DOM.getBoxModel",
-                {"nodeId": node_id},
+            self._dispatch_click(
+                session,
+                selector_value,
+                call_timeout,
+                cancel,
+                expected_backend_node_id,
+                tuple(label_backend_node_ids),
+            )
+            return {
+                "session_id": session.session_id,
+                "command_generation": generation,
+                "clicked": True,
+            }
+
+    def _dispatch_click(
+        self,
+        session,
+        selector_value,
+        call_timeout,
+        cancel,
+        expected_backend_node_id,
+        label_nodes: tuple[int, ...] = (),
+    ):
+        node_id = self._query_node(
+            session,
+            selector_value,
+            call_timeout,
+            cancel,
+            expected_backend_node_id=expected_backend_node_id,
+        )
+        # Mouse coordinates are viewport-relative. Scrolling must precede
+        # measuring the box, including when an ancestor is scrollable.
+        session.transport.call(
+            "DOM.scrollIntoViewIfNeeded",
+            {"nodeId": node_id},
+            session_id=session.cdp_session_id,
+            timeout=call_timeout,
+            cancel=cancel,
+        )
+        model = session.transport.call(
+            "DOM.getBoxModel",
+            {"nodeId": node_id},
+            session_id=session.cdp_session_id,
+            timeout=call_timeout,
+            cancel=cancel,
+        )
+        x, y = _box_center(model)
+        if expected_backend_node_id is not None:
+            x, y = round(x), round(y)
+            try:
+                self._assert_click_target(session, node_id, x, y, call_timeout, cancel, label_nodes)
+            except BrowserTargetObscuredError:
+                # A styled checkbox or radio hides its input under its own label: click the label
+                # where it shows, as a person would; the browser passes that click to the input.
+                point = self._label_point(session, label_nodes, call_timeout, cancel)
+                if point is None:
+                    raise
+                x, y = point
+        for event_type, button in (("mousePressed", "left"), ("mouseReleased", "left")):
+            session.transport.call(
+                "Input.dispatchMouseEvent",
+                {"type": event_type, "x": x, "y": y, "button": button, "clickCount": 1},
                 session_id=session.cdp_session_id,
                 timeout=call_timeout,
                 cancel=cancel,
             )
-            x, y = _box_center(model)
-            for event_type, button in (("mousePressed", "left"), ("mouseReleased", "left")):
-                session.transport.call(
-                    "Input.dispatchMouseEvent",
-                    {"type": event_type, "x": x, "y": y, "button": button, "clickCount": 1},
+
+    @staticmethod
+    def _hit(session, x, y, options) -> object:
+        # The box model and mouse events use viewport coordinates, but getNodeForLocation
+        # hit-tests the document. Scrolling the target into view usually moves the page, so
+        # without the page offset the test lands above the control (often on <body>) and every
+        # click on a scrolled page was refused as covered.
+        viewport = session.transport.call("Page.getLayoutMetrics", {}, **options).get(
+            "cssVisualViewport"
+        )
+        return session.transport.call(
+            "DOM.getNodeForLocation",
+            {
+                "x": x + _page_offset(viewport, "pageX"),
+                "y": y + _page_offset(viewport, "pageY"),
+                "includeUserAgentShadowDOM": False,
+                "ignorePointerEventsNone": False,
+            },
+            **options,
+        ).get("backendNodeId")
+
+    @classmethod
+    def _label_point(cls, session, label_nodes, timeout, cancel):
+        """Where a click lands on the target's own label, checked by Chromium's hit test."""
+        options = dict(session_id=session.cdp_session_id, timeout=timeout, cancel=cancel)
+        # Labels come first in their list (then what they contain); a few lookups find them.
+        for backend in label_nodes[:32]:
+            node = session.transport.call(
+                "DOM.describeNode", {"backendNodeId": backend}, **options
+            ).get("node", {})
+            if str(node.get("nodeName", "")).upper() != "LABEL":
+                continue
+            session.transport.call(
+                "DOM.scrollIntoViewIfNeeded", {"backendNodeId": backend}, **options
+            )
+            model = session.transport.call("DOM.getBoxModel", {"backendNodeId": backend}, **options)
+            x, y = (round(value) for value in _box_center(model))
+            hit = cls._hit(session, x, y, options)
+            if type(hit) is int and hit in label_nodes:
+                return x, y
+        return None
+
+    @classmethod
+    def _assert_click_target(cls, session, node_id, x, y, timeout, cancel, label_nodes=()):
+        # A valid node can still sit behind another control. Chromium's hit test
+        # and DOM identities cannot be overridden by page JavaScript. A nested
+        # label/span is legitimate; an unrelated overlay is not. This only
+        # fences the instant before dispatch, not future page event handlers.
+        options = dict(session_id=session.cdp_session_id, timeout=timeout, cancel=cancel)
+        hit = cls._hit(session, x, y, options)
+        tree = session.transport.call(
+            "DOM.describeNode", {"nodeId": node_id, "depth": -1, "pierce": False}, **options
+        ).get("node", {})
+        pending = [tree]
+        while type(hit) is int and hit > 0 and pending:
+            node = pending.pop()
+            if node.get("backendNodeId") == hit:
+                return
+            pending.extend(node.get("children", []))
+        if type(hit) is int and hit in label_nodes:
+            return  # the control's own label: the browser forwards the click to the control
+        raise BrowserTargetObscuredError(
+            "The observed control is covered or no longer receives clicks. No click was sent."
+        )
+
+    def download(
+        self,
+        owner_id: str,
+        session_id: str,
+        selector: str,
+        *,
+        max_bytes: int,
+        collect=None,
+        expected_backend_node_id: int | None = None,
+        expected_generation: int | None = None,
+        cancel: CancelCheck = None,
+    ):
+        """Click once and collect one completed download from this owned page.
+
+        Files use Chromium GUID names inside a fresh trusted directory. Neither a
+        remote filename nor a caller path can select host files. Partial downloads
+        are never returned; failure consumes the action and requires inspection.
+        """
+        if type(max_bytes) is not int or not 1 <= max_bytes <= 50 * 1024 * 1024:
+            raise BrowserValidationError("Download byte limit is invalid.")
+        if collect is None and max_bytes > 2 * 1024 * 1024:
+            raise BrowserValidationError("Large downloads require a streaming collector.")
+        session = self._owned_session(owner_id, session_id)
+        selector_value = _validated_selector(selector)
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ):
+            transport = session.transport
+            if not callable(getattr(transport, "drain_browser_events", None)):
+                raise BrowserValidationError("This browser transport cannot observe downloads.")
+            call_timeout = self._config.operation_timeout_seconds
+            frame_tree = transport.call(
+                "Page.getFrameTree",
+                {},
+                session_id=session.cdp_session_id,
+                timeout=call_timeout,
+                cancel=cancel,
+            )
+            frame_id = frame_tree["frameTree"]["frame"]["id"]
+            transport.drain_browser_events(max_events=2000, timeout=0.05, cancel=cancel)
+            directory = _assert_owned_session_dir(
+                self._artifacts_root, session.artifact_dir, session.session_id
+            )
+            with tempfile.TemporaryDirectory(prefix="download-", dir=directory) as temporary:
+                pending = set()
+                completed = None
+                try:
+                    transport.call(
+                        "Browser.setDownloadBehavior",
+                        {
+                            "behavior": "allowAndName",
+                            "downloadPath": temporary,
+                            "eventsEnabled": True,
+                        },
+                        timeout=call_timeout,
+                        cancel=cancel,
+                    )
+                    self._dispatch_click(
+                        session, selector_value, call_timeout, cancel, expected_backend_node_id
+                    )
+                    deadline = time.monotonic() + max(call_timeout, 120)
+                    while completed is None:
+                        _check_cancel(cancel)
+                        if time.monotonic() >= deadline:
+                            raise BrowserTimeoutError(
+                                "Download did not complete. The click was sent once; inspect before retrying."
+                            )
+                        for event in transport.drain_browser_events(
+                            max_events=200, timeout=0.05, cancel=cancel
+                        ):
+                            params = event.get("params", {})
+                            if event.get("method") == "Alysis.eventsDropped":
+                                raise BrowserLimitError(
+                                    "Download events were lost; completion is unverified."
+                                )
+                            if event.get("method") == "Browser.downloadWillBegin":
+                                guid = params.get("guid")
+                                if (
+                                    not isinstance(guid, str)
+                                    or re.fullmatch(r"[A-Za-z0-9-]{1,100}", guid) is None
+                                ):
+                                    raise BrowserSecurityError("Invalid download identity.")
+                                pending.add(guid)
+                                if params.get("frameId") != frame_id or len(pending) != 1:
+                                    raise BrowserSecurityError(
+                                        "Download did not match one file from the observed page."
+                                    )
+                            elif event.get("method") == "Browser.downloadProgress":
+                                guid = params.get("guid")
+                                if guid not in pending:
+                                    raise BrowserSecurityError(
+                                        "Download progress has no owned request."
+                                    )
+                                if (
+                                    params.get("receivedBytes", 0) > max_bytes
+                                    or params.get("totalBytes", 0) > max_bytes
+                                ):
+                                    raise BrowserLimitError("Download exceeds its byte allowance.")
+                                if params.get("state") == "canceled":
+                                    raise BrowserError(
+                                        "Download was cancelled; no complete file was saved."
+                                    )
+                                if params.get("state") == "completed":
+                                    completed = guid
+                    descriptor = os.open(
+                        Path(temporary) / completed, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                    )
+                    try:
+                        info = os.fstat(descriptor)
+                        if (
+                            not stat.S_ISREG(info.st_mode)
+                            or info.st_nlink != 1
+                            or info.st_size > max_bytes
+                        ):
+                            raise BrowserSecurityError("Download is not a bounded regular file.")
+
+                        def chunks():
+                            received = 0
+                            while data := os.read(descriptor, 256 * 1024):
+                                _check_cancel(cancel)
+                                received += len(data)
+                                if received > max_bytes:
+                                    raise BrowserLimitError(
+                                        "Downloaded file exceeded its allowance."
+                                    )
+                                yield data
+                            _check_cancel(cancel)
+                            after = os.fstat(descriptor)
+                            if received != info.st_size or (info.st_mtime_ns, info.st_ctime_ns) != (
+                                after.st_mtime_ns,
+                                after.st_ctime_ns,
+                            ):
+                                raise BrowserSecurityError(
+                                    "Downloaded bytes changed before collection."
+                                )
+
+                        return collect(chunks(), info.st_size) if collect else b"".join(chunks())
+                    finally:
+                        os.close(descriptor)
+                finally:
+                    for guid in pending:
+                        if guid != completed:
+                            with suppress(BrowserError):
+                                transport.call(
+                                    "Browser.cancelDownload", {"guid": guid}, timeout=call_timeout
+                                )
+                    transport.call(
+                        "Browser.setDownloadBehavior",
+                        {"behavior": "deny", "eventsEnabled": False},
+                        timeout=call_timeout,
+                    )
+
+    def upload_file(
+        self,
+        owner_id,
+        session_id,
+        selector,
+        *,
+        name,
+        size,
+        chunks,
+        expected_sha256,
+        expected_backend_node_id=None,
+        expected_generation=None,
+        cancel=None,
+    ):
+        """Select an owned library file in one currently observed file input.
+
+        Selection itself can trigger website JavaScript, so the caller must
+        authorize sharing these bytes with the current website before dispatch.
+        Retain the owned file until browser cleanup because form upload can be lazy.
+        """
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name) <= 160
+            or name in {".", ".."}
+            or any(c in name for c in "/\\")
+            or any(ord(c) < 32 or ord(c) == 127 for c in name)
+        ):
+            raise BrowserValidationError("Upload requires a simple library file name.")
+        if type(size) is not int or not 0 <= size <= 50 * 1024 * 1024:
+            raise BrowserValidationError("Upload exceeds 50 MiB.")
+        session = self._owned_session(owner_id, session_id)
+        with self._operation(
+            session, mutation=True, expected_generation=expected_generation, cancel=cancel
+        ) as generation:
+            if session.upload_bytes + size > 100 * 1024 * 1024 or session.upload_count >= 100:
+                raise BrowserLimitError("This browser's temporary file allowance is full.")
+            root = _assert_owned_session_dir(
+                self._artifacts_root, session.artifact_dir, session.session_id
+            )
+            staging = Path(tempfile.mkdtemp(prefix="upload-", dir=root))
+            retained = False
+            try:
+                path = staging / name
+                digest, received = hashlib.sha256(), 0
+                with path.open("xb") as output:
+                    for data in chunks:
+                        _check_cancel(cancel)
+                        if not isinstance(data, bytes) or len(data) > 256 * 1024:
+                            raise BrowserValidationError("Invalid bounded upload chunk.")
+                        received += len(data)
+                        if received > size:
+                            raise BrowserLimitError("Upload exceeded its declared size.")
+                        output.write(data)
+                        digest.update(data)
+                if received != size or digest.hexdigest() != expected_sha256:
+                    raise BrowserSecurityError("Upload source bytes did not match their receipt.")
+                timeout = self._config.operation_timeout_seconds
+                node = self._query_node(
+                    session,
+                    _validated_selector(selector),
+                    timeout,
+                    cancel,
+                    expected_backend_node_id=expected_backend_node_id,
+                )
+                description = session.transport.call(
+                    "DOM.describeNode",
+                    {"nodeId": node},
                     session_id=session.cdp_session_id,
-                    timeout=call_timeout,
+                    timeout=timeout,
+                    cancel=cancel,
+                ).get("node", {})
+                attributes = description.get("attributes", [])
+                attrs = dict(zip(attributes[::2], attributes[1::2], strict=True))
+                if (
+                    description.get("nodeName") != "INPUT"
+                    or attrs.get("type", "").lower() != "file"
+                ):
+                    raise BrowserValidationError("The observed target is no longer a file input.")
+                _check_cancel(cancel)
+                register = getattr(session.transport, "allow_file_upload", None)
+                if not callable(register):
+                    raise BrowserValidationError(
+                        "This browser transport cannot safely observe file uploads."
+                    )
+                register(session.cdp_session_id, size)
+                session.transport.call(
+                    "DOM.setFileInputFiles",
+                    {"files": [str(path)], "nodeId": node},
+                    session_id=session.cdp_session_id,
+                    timeout=timeout,
                     cancel=cancel,
                 )
-            return {"session_id": session.session_id, "clicked": True}
+                retained = True
+                session.upload_bytes += size
+                session.upload_count += 1
+                session.artifact_count += 1
+                return {
+                    "command_generation": generation,
+                    "selected": True,
+                    "bytes": size,
+                    "sha256": digest.hexdigest(),
+                    "verification_required": True,
+                }
+            finally:
+                if not retained:
+                    shutil.rmtree(staging)
 
     def type_text(
         self,
@@ -1082,16 +1987,26 @@ class ManagedBrowserService:
         text: str,
         *,
         replace: bool = True,
+        expected_backend_node_id: int | None = None,
         timeout: float | None = None,
         cancel: CancelCheck = None,
+        expected_generation: int | None = None,
     ) -> dict[str, Any]:
         session = self._owned_session(owner_id, session_id)
         selector_value = _validated_selector(selector)
         if not isinstance(text, str) or len(text) > _TYPE_MAX_CHARS:
             raise BrowserValidationError("Browser input text is invalid or too long.")
-        with self._operation(session, cancel=cancel):
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ) as generation:
             call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
-            node_id = self._query_node(session, selector_value, call_timeout, cancel)
+            node_id = self._query_node(
+                session,
+                selector_value,
+                call_timeout,
+                cancel,
+                expected_backend_node_id=expected_backend_node_id,
+            )
             session.transport.call(
                 "DOM.focus",
                 {"nodeId": node_id},
@@ -1099,36 +2014,62 @@ class ManagedBrowserService:
                 timeout=call_timeout,
                 cancel=cancel,
             )
+            self._assert_focused_node(session, node_id, call_timeout, cancel)
             if replace:
                 modifier = 4 if os.sys.platform == "darwin" else 2  # Meta or Control CDP mask.
                 session.transport.call(
                     "Input.dispatchKeyEvent",
-                    {"type": "keyDown", "key": "a", "code": "KeyA", "modifiers": modifier},
+                    {
+                        "type": "keyDown",
+                        "key": "a",
+                        "code": "KeyA",
+                        "modifiers": modifier,
+                        "windowsVirtualKeyCode": 65,
+                        "commands": ["selectAll"],
+                    },
                     session_id=session.cdp_session_id,
                     timeout=call_timeout,
                     cancel=cancel,
                 )
                 session.transport.call(
                     "Input.dispatchKeyEvent",
-                    {"type": "keyUp", "key": "a", "code": "KeyA", "modifiers": modifier},
+                    {
+                        "type": "keyUp",
+                        "key": "a",
+                        "code": "KeyA",
+                        "modifiers": modifier,
+                        "windowsVirtualKeyCode": 65,
+                    },
+                    session_id=session.cdp_session_id,
+                    timeout=call_timeout,
+                    cancel=cancel,
+                )
+                self._assert_focused_node(session, node_id, call_timeout, cancel)
+                session.transport.call(
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "keyDown",
+                        "key": "Backspace",
+                        "code": "Backspace",
+                        "windowsVirtualKeyCode": 8,
+                    },
                     session_id=session.cdp_session_id,
                     timeout=call_timeout,
                     cancel=cancel,
                 )
                 session.transport.call(
                     "Input.dispatchKeyEvent",
-                    {"type": "keyDown", "key": "Backspace", "code": "Backspace"},
+                    {
+                        "type": "keyUp",
+                        "key": "Backspace",
+                        "code": "Backspace",
+                        "windowsVirtualKeyCode": 8,
+                    },
                     session_id=session.cdp_session_id,
                     timeout=call_timeout,
                     cancel=cancel,
                 )
-                session.transport.call(
-                    "Input.dispatchKeyEvent",
-                    {"type": "keyUp", "key": "Backspace", "code": "Backspace"},
-                    session_id=session.cdp_session_id,
-                    timeout=call_timeout,
-                    cancel=cancel,
-                )
+            self._assert_focused_node(session, node_id, call_timeout, cancel)
             session.transport.call(
                 "Input.insertText",
                 {"text": text},
@@ -1138,12 +2079,329 @@ class ManagedBrowserService:
             )
             return {
                 "session_id": session.session_id,
+                "command_generation": generation,
                 "typed": True,
                 "character_count": len(text),
             }
 
+    def select_option(
+        self,
+        owner_id: str,
+        session_id: str,
+        selector: str,
+        option_selector: str,
+        *,
+        expected_backend_node_id: int | None = None,
+        expected_option_backend_node_id: int | None = None,
+        timeout: float | None = None,
+        cancel: CancelCheck = None,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        session = self._owned_session(owner_id, session_id)
+        selectors = (_validated_selector(selector), _validated_selector(option_selector))
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ) as generation:
+            call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
+            options = dict(session_id=session.cdp_session_id, timeout=call_timeout, cancel=cancel)
+            group = "alysis-select-" + secrets.token_hex(8)
+            objects = []
+            try:
+                for selected, identity in zip(
+                    selectors,
+                    (expected_backend_node_id, expected_option_backend_node_id),
+                    strict=True,
+                ):
+                    node_id = self._query_node(
+                        session, selected, call_timeout, cancel, expected_backend_node_id=identity
+                    )
+                    resolved = session.transport.call(
+                        "DOM.resolveNode", {"nodeId": node_id, "objectGroup": group}, **options
+                    )
+                    object_id = resolved.get("object", {}).get("objectId")
+                    if not isinstance(object_id, str) or not object_id:
+                        raise BrowserNotFoundError("Observed control is no longer available.")
+                    objects.append(object_id)
+                result = session.transport.call(
+                    "Runtime.callFunctionOn",
+                    {
+                        "objectId": objects[0],
+                        "functionDeclaration": _SELECT_OPTION_FUNCTION,
+                        "arguments": [{"objectId": objects[1]}],
+                        "returnByValue": True,
+                    },
+                    **options,
+                )
+                if result.get("exceptionDetails") or result.get("result", {}).get("value") != {
+                    "dispatched": True
+                }:
+                    raise BrowserValidationError(
+                        "Selection failed; inspect the current page before retrying."
+                    )
+            finally:
+                # Cancellation must not retain remote handles. A failed release
+                # is bounded by session disposal, and must not mask input status.
+                with suppress(BrowserError):
+                    session.transport.call(
+                        "Runtime.releaseObjectGroup",
+                        {"objectGroup": group},
+                        session_id=session.cdp_session_id,
+                        timeout=call_timeout,
+                    )
+            return {"session_id": session_id, "command_generation": generation, "dispatched": True}
+
+    def press_key(
+        self,
+        owner_id: str,
+        session_id: str,
+        selector: str,
+        key: str,
+        *,
+        shift: bool = False,
+        expected_backend_node_id: int | None = None,
+        timeout: float | None = None,
+        cancel: CancelCheck = None,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        session = self._owned_session(owner_id, session_id)
+        selector = _validated_selector(selector)
+        if key not in _PAGE_KEYS or type(shift) is not bool:
+            raise BrowserValidationError("Unsupported page key or modifier.")
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ) as generation:
+            call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
+            options = dict(session_id=session.cdp_session_id, timeout=call_timeout, cancel=cancel)
+            node_id = self._query_node(
+                session,
+                selector,
+                call_timeout,
+                cancel,
+                expected_backend_node_id=expected_backend_node_id,
+            )
+            session.transport.call("DOM.focus", {"nodeId": node_id}, **options)
+            self._assert_focused_node(session, node_id, call_timeout, cancel)
+            key_value, key_code = _PAGE_KEYS[key]
+            params = {
+                "key": key_value,
+                "code": key,
+                "windowsVirtualKeyCode": key_code,
+                "modifiers": 8 if shift else 0,
+            }
+            try:
+                down = {**params, "type": "keyDown"}
+                if key in {"Enter", "Space"}:
+                    down["text"] = "\r" if key == "Enter" else " "
+                session.transport.call("Input.dispatchKeyEvent", down, **options)
+            finally:
+                # Even when cancellation happens between key events, release
+                # the same key. Do not leave it pressed in a reusable session.
+                session.transport.call(
+                    "Input.dispatchKeyEvent",
+                    {**params, "type": "keyUp"},
+                    session_id=session.cdp_session_id,
+                    timeout=call_timeout,
+                )
+            _check_cancel(cancel)
+            return {"session_id": session_id, "command_generation": generation, "dispatched": True}
+
+    def scroll(
+        self,
+        owner_id: str,
+        session_id: str,
+        selector: str,
+        *,
+        delta_x: int = 0,
+        delta_y: int,
+        expected_backend_node_id: int | None = None,
+        timeout: float | None = None,
+        cancel: CancelCheck = None,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        session = self._owned_session(owner_id, session_id)
+        selector = _validated_selector(selector)
+        if any(type(delta) is not int or abs(delta) > 2000 for delta in (delta_x, delta_y)) or not (
+            delta_x or delta_y
+        ):
+            raise BrowserValidationError("Scroll needs a nonzero bounded pixel delta.")
+        with self._operation(
+            session, cancel=cancel, mutation=True, expected_generation=expected_generation
+        ) as generation:
+            call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
+            options = dict(session_id=session.cdp_session_id, timeout=call_timeout, cancel=cancel)
+            node_id = self._query_node(
+                session,
+                selector,
+                call_timeout,
+                cancel,
+                expected_backend_node_id=expected_backend_node_id,
+            )
+            session.transport.call("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id}, **options)
+            box = session.transport.call("DOM.getBoxModel", {"nodeId": node_id}, **options)
+            x, y = _box_center(box)
+            metrics = session.transport.call("Page.getLayoutMetrics", {}, **options)
+            viewport = metrics.get("cssLayoutViewport", {})
+            width, height = viewport.get("clientWidth"), viewport.get("clientHeight")
+            if any(
+                type(v) not in (int, float) or not math.isfinite(v) or v < 2
+                for v in (width, height)
+            ):
+                raise BrowserSecurityError("Browser viewport response was invalid.")
+            session.transport.call(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": "mouseWheel",
+                    "x": max(1, min(x, width - 1)),
+                    "y": max(1, min(y, height - 1)),
+                    "deltaX": delta_x,
+                    "deltaY": delta_y,
+                },
+                **options,
+            )
+            return {"session_id": session_id, "command_generation": generation, "dispatched": True}
+
+    @staticmethod
+    def _assert_focused_node(
+        session: _BrowserSession, node_id: int, timeout: float, cancel: CancelCheck
+    ) -> None:
+        # DOM.focus can synchronously trigger page handlers which redirect focus.
+        # Inspect Chromium's actual accessibility focus, not page-overridable JS.
+        options = dict(session_id=session.cdp_session_id, timeout=timeout, cancel=cancel)
+        node = session.transport.call("DOM.describeNode", {"nodeId": node_id}, **options)
+        identity = node.get("node", {}).get("backendNodeId")
+        tree = session.transport.call(
+            "Accessibility.getPartialAXTree",
+            {"nodeId": node_id, "fetchRelatives": False},
+            **options,
+        )
+        if type(identity) is not int or not any(
+            item.get("backendDOMNodeId") == identity
+            and any(
+                p.get("name") == "focused" and p.get("value", {}).get("value") is True
+                for p in item.get("properties", [])
+            )
+            for item in tree.get("nodes", [])
+        ):
+            raise BrowserControlError(
+                "Focus moved away from the observed target; keyboard input stopped. Inspect the current result before retrying."
+            )
+
     def status(self, owner_id: str, session_id: str) -> BrowserSessionStatus:
         return self._status(self._owned_session(owner_id, session_id))
+
+    def claim_viewer_control(self, owner_id: str, session_id: str) -> tuple[str, str]:
+        """Reserve one input viewer for this owned visible session.
+
+        This trusted claim is not an input grant: pause/drain must still succeed
+        before launching a viewer. Resume is blocked until the claim is released.
+        """
+        session = self._owned_session(owner_id, session_id)
+        with session.control_lock:
+            _assert_browser_running(session)
+            if self._config.linux_display is None:
+                raise BrowserControlError("Browser session has no local X11 display.")
+            if session.viewer_lease is not None:
+                raise BrowserControlError("Browser session already has an input viewer claim.")
+            session.viewer_lease = secrets.token_urlsafe(24)
+            return self._config.linux_display, session.viewer_lease
+
+    def release_viewer_control(self, owner_id: str, session_id: str, lease: str) -> None:
+        """Trusted coordinator confirms that its viewer and held input are gone."""
+        session = self._owned_session(owner_id, session_id)
+        with session.control_lock:
+            if session.viewer_lease is None or not secrets.compare_digest(
+                session.viewer_lease, lease
+            ):
+                raise BrowserControlError("Browser viewer claim does not match.")
+            session.viewer_lease = None
+
+    def pause_commands(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        timeout: float | None = None,
+        cancel: CancelCheck = None,
+    ) -> BrowserSessionStatus:
+        """Fence new commands, then drain the active operation without cancelling it.
+
+        A timeout or cancellation after fencing leaves admission closed. Each
+        request supersedes earlier pause/resume requests. This only controls this
+        service's commands: it neither disables a viewer nor rolls back input.
+        """
+        session = self._owned_session(owner_id, session_id)
+        deadline = self._monotonic() + _bounded_timeout(
+            timeout, self._config.operation_timeout_seconds
+        )
+        _check_cancel(cancel)
+        with session.control_lock:
+            _assert_browser_running(session)
+            session.commands_paused = True
+            session.command_generation += 1
+            generation = session.command_generation
+        while True:
+            _check_cancel(cancel)
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise BrowserTimeoutError(
+                    "Browser commands are paused; active operation did not drain in time."
+                )
+            if not session.operation_lock.acquire(timeout=min(0.05, remaining)):
+                continue
+            # Admission remains fenced while we release the operation lock and
+            # record the drained status. A newer pause must not be acknowledged.
+            with session.control_lock:
+                try:
+                    _check_cancel(cancel)
+                    _assert_browser_running(session)
+                    _require_generation(session, generation)
+                finally:
+                    session.operation_lock.release()
+                return self._status(session)
+
+    def resume_commands(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        expected_generation: int,
+        timeout: float | None = None,
+        cancel: CancelCheck = None,
+    ) -> dict[str, Any]:
+        """Capture a fresh DOM before reopening admission for a new generation.
+
+        Trusted coordinator primitive, not a model tool. The coordinator must
+        first independently confirm viewer input is disabled. Capture failure,
+        cancellation, shutdown or a newer pause leaves admission closed.
+        """
+        session = self._owned_session(owner_id, session_id)
+        call_timeout = _bounded_timeout(timeout, self._config.operation_timeout_seconds)
+        _check_cancel(cancel)
+        with session.control_lock:
+            _assert_browser_running(session)
+            _require_generation(session, expected_generation)
+            if session.viewer_lease is not None:
+                raise BrowserControlError("Browser input viewer has not been revoked.")
+            if not session.commands_paused:
+                raise BrowserControlError("Browser commands are not paused.")
+            if not session.operation_lock.acquire(blocking=False):
+                raise BrowserLimitError(
+                    "Browser operation has not drained; commands remain paused."
+                )
+        try:
+            result = self._capture_snapshot(session, "dom", call_timeout, cancel)
+            with session.control_lock:
+                _check_cancel(cancel)
+                _assert_browser_running(session)
+                _require_generation(session, expected_generation)
+                if session.viewer_lease is not None:
+                    raise BrowserControlError("Browser input viewer has not been revoked.")
+                session.command_generation += 1
+                session.commands_paused = False
+                return {**result, "command_generation": session.command_generation}
+        finally:
+            with session.control_lock:
+                session.operation_lock.release()
 
     def list(self, owner_id: str) -> tuple[BrowserSessionStatus, ...]:
         owner = _validated_owner(owner_id)
@@ -1164,10 +2422,19 @@ class ManagedBrowserService:
                 return False
             if session.owner_id != owner:
                 raise BrowserOwnershipError("Browser session is not owned by this caller.")
-        if not session.operation_lock.acquire(blocking=False):
-            raise BrowserLimitError("Browser session has an active operation and cannot close yet.")
+        with session.control_lock:
+            if session.viewer_lease is not None:
+                raise BrowserControlError("Revoke the input viewer before closing its browser.")
+            if not session.operation_lock.acquire(blocking=False):
+                raise BrowserLimitError(
+                    "Browser session has an active operation and cannot close yet."
+                )
+            session.closing = True
+            session.commands_paused = True
+            session.command_generation += 1
         try:
             cleanup_failed = False
+            self._shutdown_persistent_profile(session)
             try:
                 session.egress_proxy.close(timeout=self._config.shutdown_grace_seconds)
             except Exception:
@@ -1182,9 +2449,7 @@ class ManagedBrowserService:
                 )
             except Exception:
                 cleanup_failed = True
-            profile_removed = _remove_owned_session_dir(
-                self._profiles_root, session.profile_dir, sid
-            )
+            profile_removed = self._finish_profile(session, cleanup_failed)
             artifacts_removed = (
                 _remove_owned_session_dir(self._artifacts_root, session.artifact_dir, sid)
                 if delete_artifacts
@@ -1197,6 +2462,7 @@ class ManagedBrowserService:
             with self._lock:
                 if self._sessions.get(sid) is session:
                     self._sessions.pop(sid)
+                    _release_visible_display(self._config.linux_display, sid)
             return True
         finally:
             session.operation_lock.release()
@@ -1206,6 +2472,21 @@ class ManagedBrowserService:
             sessions = list(self._sessions.values())
         cleanup_failed = False
         for session in sessions:
+            if session.profile_lease is not None:
+                # Persistent storage cannot be declared clean while a command
+                # still owns the browser. Use the same admission gate as close.
+                try:
+                    self.close(session.owner_id, session.session_id)
+                except Exception:
+                    cleanup_failed = True
+                continue
+            with session.control_lock:
+                if session.viewer_lease is not None:
+                    cleanup_failed = True
+                    continue
+                session.closing = True
+                session.commands_paused = True
+                session.command_generation += 1
             session_failed = False
             try:
                 session.egress_proxy.close(timeout=self._config.shutdown_grace_seconds)
@@ -1233,10 +2514,54 @@ class ManagedBrowserService:
                 with self._lock:
                     if self._sessions.get(session.session_id) is session:
                         self._sessions.pop(session.session_id)
+                        _release_visible_display(self._config.linux_display, session.session_id)
         if cleanup_failed:
             raise BrowserLaunchError(
                 "One or more browser sessions did not close cleanly; retry shutdown cleanup."
             )
+
+    def _shutdown_persistent_profile(self, session: _BrowserSession) -> bool:
+        if session.profile_lease is None:
+            return True
+        if not session.profile_shutdown_attempted:
+            session.profile_shutdown_attempted = True
+            # A previously crashed/exited process is not evidence of our clean
+            # shutdown. Only the live browser can flush its profile via CDP.
+            if session.process.poll() is None:
+                try:
+                    session.transport.call(
+                        "Browser.close", {}, timeout=self._config.shutdown_grace_seconds
+                    )
+                except Exception:
+                    # Chrome may close the socket before replying. Its exit and
+                    # the absence of descendants, not that reply, are decisive.
+                    pass
+                deadline = self._monotonic() + self._config.shutdown_grace_seconds
+                while self._monotonic() < deadline:
+                    if session.process.poll() == 0 and _profile_process_group_stopped(
+                        session.process
+                    ):
+                        session.profile_shutdown_clean = True
+                        break
+                    if session.process.poll() not in (None, 0):
+                        break
+                    self._sleep(0.02)
+        return session.profile_shutdown_clean
+
+    def _finish_profile(self, session: _BrowserSession, cleanup_failed: bool) -> bool:
+        if session.profile_lease is None:
+            return _remove_owned_session_dir(
+                self._profiles_root, session.profile_dir, session.session_id
+            )
+        # Keep data dirty after forced termination, but permit Chromium recovery
+        # only once this owned process group is proved stopped.
+        if cleanup_failed or not _profile_process_group_stopped(session.process):
+            return False
+        if session.profile_shutdown_clean:
+            session.profile_lease.mark_clean()
+        else:
+            session.profile_lease.mark_stopped()
+        return True
 
     def _reserve_start(self, owner: str) -> None:
         with self._lock:
@@ -1286,26 +2611,40 @@ class ManagedBrowserService:
             raise BrowserOwnershipError("Browser session is not owned by this caller.")
         return session
 
-    def _operation(self, session: _BrowserSession, *, cancel: CancelCheck) -> _OperationGuard:
-        return _OperationGuard(session, cancel=cancel)
+    def _operation(
+        self,
+        session: _BrowserSession,
+        *,
+        cancel: CancelCheck,
+        mutation: bool = False,
+        expected_generation: int | None = None,
+    ) -> _OperationGuard:
+        return _OperationGuard(
+            session, cancel=cancel, mutation=mutation, expected_generation=expected_generation
+        )
 
     def _status(self, session: _BrowserSession) -> BrowserSessionStatus:
-        state = (
-            "running"
-            if session.process.poll() is None and session.egress_proxy.healthy
-            else "crashed"
-        )
-        return BrowserSessionStatus(
-            session_id=session.session_id,
-            owner_id=session.owner_id,
-            product=session.executable.product,
-            state=state,
-            created_at=session.created_at,
-            allow_local_destinations=session.allow_local_destinations,
-            local_destinations_loopback_only=session.local_destinations_loopback_only,
-            active_url=session.active_url,
-            artifact_count=session.artifact_count,
-        )
+        if session.process.poll() is not None or not session.egress_proxy.healthy:
+            state = "crashed"
+        elif not session.transport.healthy:
+            state = "disconnected"
+        else:
+            state = "running"
+        with session.control_lock:
+            return BrowserSessionStatus(
+                session_id=session.session_id,
+                owner_id=session.owner_id,
+                product=session.executable.product,
+                state=state,
+                created_at=session.created_at,
+                allow_local_destinations=session.allow_local_destinations,
+                local_destinations_loopback_only=session.local_destinations_loopback_only,
+                active_url=session.active_url,
+                artifact_count=session.artifact_count,
+                commands_paused=session.commands_paused,
+                command_generation=session.command_generation,
+                operation_active=session.operation_lock.locked(),
+            )
 
     def _query_node(
         self,
@@ -1313,7 +2652,13 @@ class ManagedBrowserService:
         selector: str,
         timeout: float,
         cancel: CancelCheck,
+        *,
+        expected_backend_node_id: int | None = None,
     ) -> int:
+        if expected_backend_node_id is not None and (
+            type(expected_backend_node_id) is not int or expected_backend_node_id <= 0
+        ):
+            raise BrowserValidationError("Observed browser node identity is invalid.")
         document = session.transport.call(
             "DOM.getDocument",
             {"depth": 0, "pierce": False},
@@ -1335,32 +2680,91 @@ class ManagedBrowserService:
         node_id = _required_cdp_int(matched, "nodeId")
         if node_id <= 0:
             raise BrowserNotFoundError("Browser element was not found.")
+        if expected_backend_node_id is not None:
+            # Resolve CSS afresh, but do not let a stale selector silently target
+            # a replacement node. The identity must come from this session's
+            # original DOM snapshot. This is opt-in; it does not fence viewer
+            # input or guarantee layout stability after the check.
+            described = session.transport.call(
+                "DOM.describeNode",
+                {"nodeId": node_id, "depth": 0},
+                session_id=session.cdp_session_id,
+                timeout=timeout,
+                cancel=cancel,
+            )
+            node = described.get("node")
+            if not isinstance(node, Mapping):
+                raise BrowserSecurityError("Browser DOM response was invalid.")
+            if _required_cdp_int(node, "backendNodeId") != expected_backend_node_id:
+                raise BrowserNotFoundError(
+                    "Observed browser element changed; take a fresh snapshot."
+                )
         return node_id
 
 
 class _OperationGuard:
-    def __init__(self, session: _BrowserSession, *, cancel: CancelCheck) -> None:
+    def __init__(
+        self,
+        session: _BrowserSession,
+        *,
+        cancel: CancelCheck,
+        mutation: bool,
+        expected_generation: int | None,
+    ) -> None:
         self._session = session
         self._cancel = cancel
+        self._mutation = mutation
+        self._expected_generation = expected_generation
 
-    def __enter__(self) -> None:
+    def __enter__(self) -> int:
         _check_cancel(self._cancel)
-        if self._session.process.poll() is not None:
-            raise BrowserLaunchError("The managed browser process is no longer running.")
-        if not self._session.egress_proxy.healthy:
-            raise BrowserLaunchError("The managed browser egress proxy is no longer running.")
-        if not self._session.operation_lock.acquire(blocking=False):
-            raise BrowserLimitError(
-                "Another browser operation is already running for this session."
-            )
-        try:
+        with self._session.control_lock:
+            _assert_browser_running(self._session)
+            if self._session.commands_paused:
+                raise BrowserControlError("Browser commands are paused.")
+            if self._expected_generation is not None or (
+                self._mutation and self._session.command_generation != 0
+            ):
+                _require_generation(self._session, self._expected_generation)
             _check_cancel(self._cancel)
-        except BaseException:
-            self._session.operation_lock.release()
-            raise
+            if not self._session.operation_lock.acquire(blocking=False):
+                raise BrowserLimitError(
+                    "Another browser operation is already running for this session."
+                )
+            return self._session.command_generation
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self._session.operation_lock.release()
+        with self._session.control_lock:
+            self._session.operation_lock.release()
+
+
+def _require_generation(session: _BrowserSession, expected: int | None) -> None:
+    if type(expected) is not int or expected < 0 or expected != session.command_generation:
+        raise BrowserControlError(
+            "Browser command generation is missing or stale; take a fresh snapshot."
+        )
+
+
+def _assert_browser_running(session: _BrowserSession) -> None:
+    if session.closing:
+        raise BrowserControlError("The managed browser session is closing.")
+    if session.process.poll() is not None:
+        # The exit status tells support how it ended (for example killed for memory, or crashed).
+        raise BrowserLaunchError(
+            f"The managed browser process is no longer running (exit {session.process.returncode})."
+        )
+    if not session.egress_proxy.healthy:
+        raise BrowserLaunchError("The managed browser egress proxy is no longer running.")
+    if not session.transport.healthy:
+        failure = getattr(session.transport, "failure", None)
+        raise BrowserLaunchError(
+            "The managed browser control connection is no longer available"
+            + (
+                f" ({type(failure).__name__}: {failure})."
+                if isinstance(failure, BrowserError)
+                else "."
+            )
+        )
 
 
 def _validated_executable(candidate: Path) -> Path:
@@ -1821,11 +3225,13 @@ def _trusted_devtools_endpoint_port(websocket_url: str) -> int:
     return port
 
 
-def _browser_arguments(profile_dir: Path, proxy_host: str, proxy_port: int) -> tuple[str, ...]:
+def _browser_arguments(
+    profile_dir: Path, proxy_host: str, proxy_port: int, *, visible: bool = False
+) -> tuple[str, ...]:
     if proxy_host != "127.0.0.1" or not 1 <= proxy_port <= 65_535:
         raise BrowserSecurityError("Managed browser egress proxy endpoint is not trusted.")
     return (
-        "--headless=new",
+        *(("--ozone-platform=x11", "--start-maximized") if visible else ("--headless=new",)),
         "--remote-debugging-address=127.0.0.1",
         "--remote-debugging-port=0",
         f"--user-data-dir={profile_dir}",
@@ -1914,8 +3320,12 @@ def _resolve_addresses(
         pass
     else:
         return (host,)
-    if not _DNS_RESOLUTION_SLOTS.acquire(blocking=False):
-        raise BrowserSecurityError("Browser destination resolution capacity was exhausted.")
+    # A page with many sites can have several lookups pending; wait briefly for a slot rather
+    # than refusing the request at once.
+    if not _DNS_RESOLUTION_SLOTS.acquire(timeout=timeout):
+        raise BrowserDestinationUnresolvedError(
+            "Browser destination resolution capacity was exhausted."
+        )
     completed = threading.Event()
     outcome: dict[str, Any] = {}
 
@@ -1942,9 +3352,9 @@ def _resolve_addresses(
 
     threading.Thread(target=resolve, name="alysis-browser-dns", daemon=True).start()
     if not completed.wait(timeout=timeout):
-        raise BrowserTimeoutError("Browser destination resolution timed out.")
+        raise BrowserDestinationTimeoutError("Browser destination resolution timed out.")
     if "error" in outcome:
-        raise BrowserSecurityError(
+        raise BrowserDestinationUnresolvedError(
             "Browser destination could not be resolved safely."
         ) from outcome["error"]
     return tuple(outcome.get("result", ()))
@@ -2073,6 +3483,14 @@ def _required_cdp_int(payload: Mapping[str, Any], key: str) -> int:
     return value
 
 
+def _page_offset(viewport: Any, key: str) -> int:
+    """The visual viewport's scroll position in the page, in whole CSS pixels (0 if unknown)."""
+    value = viewport.get(key) if isinstance(viewport, Mapping) else None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        return 0
+    return round(value)
+
+
 def _box_center(payload: Mapping[str, Any]) -> tuple[float, float]:
     model = payload.get("model")
     if not isinstance(model, Mapping):
@@ -2090,7 +3508,7 @@ def _box_center(payload: Mapping[str, Any]) -> tuple[float, float]:
 
 
 def _bounded_payload(value: Any, max_bytes: int) -> dict[str, Any]:
-    safe = redact_secrets(value)
+    safe = redact_secrets(redact_form_secrets(value))
     try:
         encoded = json.dumps(safe, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     except (TypeError, ValueError) as exc:

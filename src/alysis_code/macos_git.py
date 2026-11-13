@@ -16,6 +16,25 @@ from .config import ConfigError
 
 GIT_EXECUTABLE = "/usr/bin/git"
 
+# The entries of a Git directory that decide which programs a later Git runs
+# or where it sends a push, for whoever runs it and wherever: configuration,
+# hooks, the pointer to a shared directory (whose configuration and hooks are
+# then the ones used), a rebase in progress, whose list of steps can hold
+# commands to execute, and the two folders where Git still reads remote
+# definitions written before remotes were kept in the configuration. A Git
+# command that was not approved by a person never receives write access to
+# them; see ``seatbelt_profile``. Everything else in the directory (objects,
+# refs, the index, logs) is what staging, committing and branching write.
+GIT_PROGRAM_ENTRIES = (
+    "config",
+    "config.worktree",
+    "hooks",
+    "commondir",
+    "rebase-merge",
+    "remotes",
+    "branches",
+)
+
 
 def stage_global_preferences(home: Path) -> None:
     """Project identity/format/signing preferences into the private scratch HOME.
@@ -75,6 +94,56 @@ def literal_git_argv(command: str) -> list[str] | None:
     if commands is None or len(commands) != 1:
         return None
     return commands[0][0]
+
+
+def git_metadata_writes(command: str) -> bool:
+    """Whether a literal Git command is handed writable repository metadata.
+
+    A literal Git command list that only inspects the repository (status, diff,
+    log and the like) runs as any other sandboxed command does, with ``.git``
+    write-protected. Every other literal Git command needs the metadata to do
+    its work and receives it, except ``GIT_PROGRAM_ENTRIES``: whatever its
+    options, aliases, hooks or the repository's own configuration make it run,
+    it cannot leave configuration or hooks behind for a later Git outside the
+    sandbox. Only a person's approval of ``permissions.git_metadata`` lifts that.
+    """
+    from .read_only_commands import is_read_only_command
+
+    return literal_git_process(command) is not None and not is_read_only_command(
+        command, dialect="posix"
+    )
+
+
+def git_creates_repository(command: str) -> bool:
+    """Whether a literal command is a plain ``git init`` and nothing else.
+
+    Creating a repository writes its first configuration and sample hooks, so
+    it cannot run under the protection of ``GIT_PROGRAM_ENTRIES``. Without a
+    template, a configuration option or a separate Git directory, Git chooses
+    every byte of both itself and starts no other program, so nothing in the
+    command decides what a later Git runs.
+    """
+    argv = literal_git_argv(command)
+    if argv is None:
+        return False
+    words = argv[1:]
+    if len(words) >= 2 and words[0] == "-C":
+        words = words[2:]
+    if words[:1] != ["init"]:
+        return False
+    directories = 0
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word in ("-b", "--initial-branch") and index + 1 < len(words):
+            index += 1
+        elif word.startswith("-") and word not in ("-q", "--quiet"):
+            if not word.startswith("--initial-branch="):
+                return False
+        elif not word.startswith("-"):
+            directories += 1
+        index += 1
+    return directories <= 1
 
 
 def literal_git_process(command: str) -> list[str] | None:
@@ -148,6 +217,23 @@ def _literal_git_commands(command: str) -> list[tuple[list[str], str]] | None:
                 return None
             commands.append(([GIT_EXECUTABLE, *argv[1:]], operator))
             argv = []
+        elif character == "~" and started and "".join(word)[-1:] not in ("=", ":"):
+            # A tilde is only rewritten at the start of a word, or after = and :
+            # in an assignment. Inside a word it is Git's own syntax (HEAD~1).
+            word.append(character)
+        elif character == "{" and word:
+            # Braces inside a word that hold one plain item (stash@{0}, @{u},
+            # HEAD@{1.day.ago}) are not a list or a range, so no shell expands them.
+            end = command.find("}", index)
+            inner = command[index:end] if end != -1 else None
+            if (
+                inner is None
+                or ".." in inner
+                or not all(c.isalnum() or c in "._:/+-" for c in inner)
+            ):
+                return None
+            word.extend("{" + inner + "}")
+            index = end + 1
         elif character in "\r<>()$`*?[]{}~#":
             return None
         elif character in " \t":

@@ -62,7 +62,7 @@ The Bubblewrap backend mounts the workspace at `/workspace`, provides isolated t
 Install Bubblewrap with your operating-system package manager, for example:
 
 ```bash
-sudo apt install bubblewrap
+sudo apt update && sudo apt install -y bubblewrap
 ```
 
 Bubblewrap can run inside WSL 2 when its Linux namespace requirements are available.
@@ -137,6 +137,10 @@ edits in approved folders; read-only denies edits in every approved folder.
 Each invocation gets its own temporary directory and HOME, with a sanitized
 environment by default. The directory survives for a background process's lifetime
 and is removed during cleanup. Other system temporary directories are not writable.
+A command in the Windows sandbox gets a scratch folder as well, for its temp folder
+and its local application data. Its home is the person's real profile, where it can
+read what tools keep and write nothing
+([details](windows-cli-sandbox.md#what-a-command-finds-around-it)).
 Private configuration, credentials and Desktop control state remain unreadable;
 runtime files and protected repository metadata remain unwritable even when nested
 inside a project. Ancestors of protected paths cannot be renamed out of their rules.
@@ -483,6 +487,25 @@ policy. It is not a claim of feature identity: secondary repository/history
 selection, native protected Git writes, durable sandbox services and host-loopback
 access are not provided by this candidate. MXC network-on permits outbound traffic;
 inbound and host-loopback restrictions remain in place.
+
+### Commands that need no person decision
+
+A command whose effects cannot be read from its text needs a separate person
+decision unless the sandbox it runs in bounds it. Two sandboxes do, each with
+its own rule:
+
+- macOS Seatbelt was proven to leave a command no route to a remote, no
+  credentials and no way to stage a remote write, so a command with no grant
+  follows the mode (`macos_seatbelt_20261024.md`).
+- The Windows MXC sandbox is the boundary as Codex's sandbox is: a command in
+  it follows the mode, and access it asks for (network, a local preview,
+  folders) is decided by the access review, with no second mandatory card.
+  Credentials, a literal Git command that changes the repository and
+  networking the launcher turned on itself still need a person.
+  [The Windows document](windows-cli-sandbox.md#commands-in-the-sandbox-follow-the-mode)
+  has the conditions, the probe results and the known limits.
+
+Bubblewrap, Docker and the legacy Windows helper are not claimed.
 
 - The shell sandbox isolates shell and verification command execution, not every host-side orchestration step.
 - Sandboxed commands can modify the mounted workspace. The Docker read-only option

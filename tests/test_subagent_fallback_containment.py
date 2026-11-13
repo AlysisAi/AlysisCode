@@ -62,11 +62,11 @@ class _RecordingStore:
         with self._lock:
             self.events.append((event_type, payload))
 
-    def events_since(self, cursor: int):
+    def events_since(self, cursor: int) -> tuple[list[dict[str, Any]], int]:
         with self._lock:
             return [
                 {"type": kind, "payload": payload}
-                for kind, payload in self.events[max(0, cursor) :]
+                for kind, payload in self.events[max(0, int(cursor)) :]
             ], len(self.events)
 
     def configure_web_fetch_trusted_domains(self, domains: Any) -> tuple[str, ...]:

@@ -184,6 +184,7 @@ def test_rebuild_session_tools_preserves_verification_disabled_flag(tmp_path: Pa
         session.store.close()
 
 
+@pytest.mark.usefixtures("approved_local_checks")
 def test_rebuild_session_tools_preserves_effective_verification_commands(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -206,8 +207,7 @@ def test_rebuild_session_tools_preserves_effective_verification_commands(
         tmp_path,
         cfg=cfg,
         effective_verification_commands=["pytest -q"],
-        surface=VerificationSurface(),
-        non_interactive=False,
+        surface=NoopSurface(),
     )
     try:
         cli_mod._rebuild_session_tools_for_mode(session=session, mode="auto")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from acceptance_declared import declared_contract
 
 from alysis_code.agent.acceptance_contract import (
     AcceptanceCriterionConfidence,
@@ -70,8 +71,10 @@ def test_attached_output_exists_only_with_current_folder_and_private_policy(
     if private:
         monkeypatch.setenv("ALYSIS_MEMORY_HOME", str(extra))
     with folder_scope(root, [str(extra)] if attached else []):
-        contract = build_acceptance_contract(
-            root=root, instruction=f'Write the result to "{target}".'
+        contract = declared_contract(
+            root=root,
+            instruction=f'Write the result to "{target}".',
+            roles={str(target): "required_output"},
         )
         criterion = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
         finalize_acceptance_contract(contract=contract, root=root, touched_paths=set())
@@ -89,13 +92,18 @@ def test_attached_output_exists_only_with_current_folder_and_private_policy(
 
 
 def test_acceptance_contract_extracts_core_criteria(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction=(
             "Only create out/result.json, keep README.md unchanged, keep the "
             "service running on port 8080, require accuracy at least 95%, "
             "and run `diff expected.json out/result.json`."
         ),
+        roles={"out/result.json": "required_output", "README.md": "preservation_target"},
+        commands=["diff expected.json out/result.json"],
+        only_declared_outputs=True,
+        keep_running={"port": 8080},
+        thresholds=[{"metric": "accuracy", "operator": ">=", "value": 95, "unit": "%"}],
         authoritative_verification_commands=["python host_check.py"],
         effective_verification_commands=["pytest -q"],
     )
@@ -115,9 +123,10 @@ def test_acceptance_contract_extracts_core_criteria(tmp_path: Path) -> None:
 
 
 def test_absolute_workspace_output_resolves_to_relative_path() -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=Path("/app"),
         instruction="Create /app/regex.txt.",
+        roles={"/app/regex.txt": "required_output"},
     )
 
     criterion = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
@@ -129,9 +138,10 @@ def test_absolute_workspace_output_resolves_to_relative_path() -> None:
 
 
 def test_windows_absolute_workspace_output_is_parsed_cross_platform() -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=Path("C:/workspace/app"),
         instruction=r"Create C:\workspace\app\regex.txt.",
+        roles={r"C:\workspace\app\regex.txt": "required_output"},
     )
 
     criterion = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
@@ -147,9 +157,10 @@ def test_absolute_workspace_output_finalization_uses_workspace_relative_path(
     root = tmp_path / "app"
     root.mkdir()
     (root / "regex.txt").write_text("ok\n", encoding="utf-8")
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=root,
         instruction=f"Create {root}/regex.txt.",
+        roles={f"{root}/regex.txt": "required_output"},
     )
 
     finalize_acceptance_contract(contract=contract, root=root, touched_paths={"regex.txt"})
@@ -161,81 +172,48 @@ def test_absolute_workspace_output_finalization_uses_workspace_relative_path(
 
 
 @pytest.mark.parametrize("separator", ["/", "\\"])
-def test_windows_path_with_directory_spaces_is_one_output(separator: str) -> None:
+def test_windows_path_with_directory_spaces_is_one_mention(separator: str) -> None:
     path = "C:/Users/test/Windows App/project/result.txt".replace("/", separator)
     contract = build_acceptance_contract(
         root=Path("C:/Users/test/Windows App/project"), instruction=f"Create {path}."
     )
-    assert [(ref.display_path, ref.role) for ref in contract.path_refs] == [
-        ("result.txt", AcceptancePathRole.REQUIRED_OUTPUT)
+    assert [(ref.display_path, ref.path_kind) for ref in contract.path_refs] == [
+        ("result.txt", AcceptancePathKind.ABSOLUTE_WITHIN_WORKSPACE)
     ]
-    assert contract.allowed_output_paths == {"result.txt"}
 
 
-def test_boundary_probe_does_not_require_denied_targets(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction=(
-            "Create sandbox_boundary_probe.py inside this project. "
-            "Have it confirm it can write a normal project file, then attempt to read "
-            r"C:\Users\test\Windows App\outside\boundary-marker.txt "
-            r"and create outside\should-not-exist.txt in that same absolute outside folder. "
-            "Each outside operation must fail with PermissionError. "
-            "Then create results.txt containing the observed exception types."
-        ),
-    )
-    roles = {ref.display_path: ref.role for ref in contract.path_refs}
-    assert roles == {
-        "sandbox_boundary_probe.py": AcceptancePathRole.REQUIRED_OUTPUT,
-        "C:/Users/test/Windows App/outside/boundary-marker.txt": AcceptancePathRole.UNKNOWN_REFERENCE,
-        "outside/should-not-exist.txt": AcceptancePathRole.UNKNOWN_REFERENCE,
-        "results.txt": AcceptancePathRole.REQUIRED_OUTPUT,
-    }
-    # Mixed-folder prose does not mechanically bind relative names to the
-    # selected project. The agent still receives every original instruction.
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Create sandbox_probe.py, then attempt to read outside/marker.txt and create results.txt.",
+        "Do not create outside/denied.txt, then create report.txt.",
+        "Never write outside/denied.txt. Try to create report.txt.",
+        "Use the existing probe.py to read outside/input.txt. Then create results.txt.",
+        "Preserve source.py unchanged, update REPORT.md.",
+        "Do not modify README.md, LICENSE.md, and SECURITY.md.",
+        "Read from input/data.csv and write result.txt.",
+        "Μην αλλάξεις το README.md. Γράψε το result.txt από το input/data.csv.",
+        "不要修改 README.md, 把结果写到 result.txt",
+        "dont touch README.md lol, just dump it in result.txt",
+    ],
+)
+def test_the_words_around_a_mention_give_it_no_role(tmp_path: Path, instruction: str) -> None:
+    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+
+    assert contract.path_refs
+    assert {ref.role for ref in contract.path_refs} == {AcceptancePathRole.UNKNOWN_REFERENCE}
     assert not contract.allowed_output_paths
-    required_paths = {
-        path
-        for criterion in contract.required_criteria()
-        if criterion.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
-        for path in criterion.paths
-    }
-    assert not required_paths
-    assert {
-        path
-        for item in contract.criteria
-        if item.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
-        for path in item.paths
-    } == {"sandbox_boundary_probe.py", "results.txt"}
-
-
-@pytest.mark.parametrize("phrase", ["Do not create", "Never write", "Try to create"])
-def test_non_guaranteed_output_does_not_hide_later_required_output(
-    tmp_path: Path, phrase: str
-) -> None:
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction=f"{phrase} outside/denied.txt, then create report.txt.",
+    path_criteria = [item for item in contract.criteria if item.path_refs]
+    assert {item.kind for item in path_criteria} == {AcceptanceCriterionKind.REFERENCE_PATH}
+    assert all(
+        item.enforcement == AcceptanceCriterionEnforcement.ADVISORY and item.required is False
+        for item in path_criteria
     )
-    assert contract.allowed_output_paths == {"report.txt"}
-    roles = {ref.display_path: ref.role for ref in contract.path_refs}
-    assert roles["outside/denied.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
-    assert roles["report.txt"] == AcceptancePathRole.REQUIRED_OUTPUT
-
-
-def test_existing_probe_is_input_to_attempted_operation(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction=(
-            "Use the existing probe.py to attempt to read outside/input.txt "
-            "and create outside/denied.txt. Then create results.txt."
-        ),
-    )
-    roles = {ref.display_path: ref.role for ref in contract.path_refs}
-    assert roles["probe.py"] == AcceptancePathRole.EXISTING_INPUT
-    assert roles["outside/input.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
-    assert roles["outside/denied.txt"] == AcceptancePathRole.UNKNOWN_REFERENCE
-    assert contract.allowed_output_paths == {"results.txt"}
+    # Changing or not creating a mentioned file is no acceptance problem by itself.
+    touched = {ref.workspace_relative_path for ref in contract.path_refs}
+    finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=touched)
+    assert "unexpected_scope_changes" not in contract.problem_names()
+    assert "acceptance_criteria_failed" not in contract.problem_names()
 
 
 def test_relative_and_external_paths_keep_distinct_models(tmp_path: Path) -> None:
@@ -244,27 +222,19 @@ def test_relative_and_external_paths_keep_distinct_models(tmp_path: Path) -> Non
         instruction="Create results/out.txt and create /usr/local/bin/tool.",
     )
 
-    required = [
-        criterion
-        for criterion in contract.criteria
-        if criterion.kind == AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH
-    ]
-
-    assert [criterion.paths for criterion in required] == [
-        ("results/out.txt",),
-        ("/usr/local/bin/tool",),
-    ]
-    assert required[0].path_refs[0].path_kind == AcceptancePathKind.WORKSPACE_RELATIVE
-    assert required[1].path_refs[0].path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL
-    assert required[1].path_refs[0].absolute_path == "/usr/local/bin/tool"
+    inside, outside = contract.path_refs
+    assert inside.display_path == "results/out.txt"
+    assert inside.path_kind == AcceptancePathKind.WORKSPACE_RELATIVE
+    assert outside.path_kind == AcceptancePathKind.ABSOLUTE_EXTERNAL
+    assert outside.absolute_path == "/usr/local/bin/tool"
     assert not contract.allowed_output_paths
-    assert all(item.enforcement == AcceptanceCriterionEnforcement.ADVISORY for item in required)
 
 
 def test_preservation_clause_keeps_dotted_filename_and_does_not_require_output() -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=Path("/app"),
         instruction="Do not modify /app/model_ref.xml.",
+        roles={"/app/model_ref.xml": "preservation_target"},
     )
 
     preserve = _first_criterion(contract, AcceptanceCriterionKind.PRESERVATION_UNCHANGED_PATH)
@@ -314,103 +284,11 @@ def test_preservation_role_does_not_cross_into_coordinated_report_clause(
     assert "unexpected_scope_changes" not in contract.problem_names()
 
 
-def test_preserved_path_does_not_make_later_report_a_preservation_target(
-    tmp_path: Path,
-) -> None:
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction=(
-            "Preserve src/loader.py unchanged, and record findings in SECURITY_REPORT.md."
-        ),
-    )
-
-    roles = {path_ref.display_path: path_ref.role for path_ref in contract.path_refs}
-
-    assert roles == {
-        "src/loader.py": AcceptancePathRole.PRESERVATION_TARGET,
-        "SECURITY_REPORT.md": AcceptancePathRole.UNKNOWN_REFERENCE,
-    }
-
-
-@pytest.mark.parametrize(
-    ("instruction", "expected_roles"),
-    [
-        (
-            "Preserve source.py unchanged, update REPORT.md.",
-            {
-                "source.py": AcceptancePathRole.PRESERVATION_TARGET,
-                "REPORT.md": AcceptancePathRole.UNKNOWN_REFERENCE,
-            },
-        ),
-        (
-            "Preserve source.py unchanged, record REPORT.md.",
-            {
-                "source.py": AcceptancePathRole.PRESERVATION_TARGET,
-                "REPORT.md": AcceptancePathRole.UNKNOWN_REFERENCE,
-            },
-        ),
-        (
-            "Do not modify README.md, as well as LICENSE.md.",
-            {
-                "README.md": AcceptancePathRole.PRESERVATION_TARGET,
-                "LICENSE.md": AcceptancePathRole.PRESERVATION_TARGET,
-            },
-        ),
-        (
-            "Do not modify README.md, the generated LICENSE.md.",
-            {
-                "README.md": AcceptancePathRole.PRESERVATION_TARGET,
-                "LICENSE.md": AcceptancePathRole.PRESERVATION_TARGET,
-            },
-        ),
-    ],
-)
-def test_preservation_role_uses_phrase_scope_across_comma(
-    tmp_path: Path,
-    instruction: str,
-    expected_roles: dict[str, AcceptancePathRole],
-) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
-
-    assert {
-        path_ref.display_path: path_ref.role for path_ref in contract.path_refs
-    } == expected_roles
-
-
-def test_preservation_role_still_covers_coordinated_path_list(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction="Do not modify README.md, LICENSE.md, and SECURITY.md.",
-    )
-
-    assert {
-        path_ref.display_path
-        for path_ref in contract.path_refs
-        if path_ref.role == AcceptancePathRole.PRESERVATION_TARGET
-    } == {"README.md", "LICENSE.md", "SECURITY.md"}
-
-
-def test_coordinated_preservation_and_supported_output_keep_distinct_roles(
-    tmp_path: Path,
-) -> None:
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction="Preserve source.txt unchanged, and write SECURITY_REPORT.md.",
-    )
-
-    roles = {path_ref.display_path: path_ref.role for path_ref in contract.path_refs}
-
-    assert roles == {
-        "source.txt": AcceptancePathRole.PRESERVATION_TARGET,
-        "SECURITY_REPORT.md": AcceptancePathRole.REQUIRED_OUTPUT,
-    }
-    assert contract.allowed_output_paths == {"SECURITY_REPORT.md"}
-
-
 def test_input_paths_are_advisory_references_not_required_outputs(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Read from input/data.csv and write result.txt.",
+        roles={"input/data.csv": "existing_input", "result.txt": "required_output"},
     )
 
     references = [
@@ -468,7 +346,15 @@ def test_input_paths_are_advisory_references_not_required_outputs(tmp_path: Path
 def test_document_inputs_and_outputs_have_path_local_roles(
     tmp_path: Path, instruction: str, inputs: set[str], outputs: set[str]
 ) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    """Every path of the request is found on its own and keeps the role declared for it."""
+    contract = declared_contract(
+        root=tmp_path,
+        instruction=instruction,
+        roles={
+            **{path: "existing_input" for path in inputs},
+            **{path: "required_output" for path in outputs},
+        },
+    )
     assert {
         ref.display_path
         for ref in contract.path_refs
@@ -491,12 +377,21 @@ def test_document_inputs_and_outputs_have_path_local_roles(
         for criterion in contract.criteria
         if set(criterion.paths) & inputs
     )
+    # Without a declaration the wording gives no path a role, in any language.
+    undeclared = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    assert not undeclared.allowed_output_paths
+    assert {ref.display_path for ref in undeclared.path_refs} == inputs | outputs
 
 
-def test_later_preservation_does_not_capture_an_earlier_output(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+def test_three_paths_in_one_sentence_each_keep_the_declared_role(tmp_path: Path) -> None:
+    contract = declared_contract(
         root=tmp_path,
         instruction="Create out/report.md using inputs/data.csv without modifying inputs/template.docx.",
+        roles={
+            "out/report.md": "required_output",
+            "inputs/data.csv": "existing_input",
+            "inputs/template.docx": "preservation_target",
+        },
     )
     assert {ref.display_path: ref.role for ref in contract.path_refs} == {
         "out/report.md": AcceptancePathRole.REQUIRED_OUTPUT,
@@ -521,14 +416,15 @@ def test_document_completion_still_requires_output_and_preserves_named_sources(
 ) -> None:
     (tmp_path / "data.csv").write_text("sales\n31200\n", encoding="utf-8")
     instruction = "Create report.md using data.csv. Do not modify data.csv."
-    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    roles = {"report.md": "required_output", "data.csv": "preservation_target"}
+    contract = declared_contract(root=tmp_path, instruction=instruction, roles=roles)
     finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=set())
     required = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
     assert required.paths == ("report.md",)
     assert required.status == AcceptanceCriterionStatus.UNVERIFIED
     assert "missing" in required.failure_summary
     (tmp_path / "report.md").write_text("Sales: 31,200", encoding="utf-8")
-    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    contract = declared_contract(root=tmp_path, instruction=instruction, roles=roles)
     finalize_acceptance_contract(
         contract=contract, root=tmp_path, touched_paths={"report.md", "data.csv"}
     )
@@ -541,26 +437,32 @@ def test_document_completion_still_requires_output_and_preserves_named_sources(
 def test_quoted_work_revision_paths_keep_the_whole_folder_name(tmp_path: Path, quote: str) -> None:
     original = "Revision 0123/original.docx"
     revised = "Revision 0123/revised.docx"
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction=(
             f"Revise the report using the saved copy at {quote}{original}{quote}. "
             f"Keep {quote}{original}{quote} unchanged. "
             f"Save the new version as {quote}{revised}{quote}."
         ),
+        roles={original: "preservation_target", revised: "required_output"},
     )
     assert contract.allowed_output_paths == {revised}
     assert {(ref.display_path, ref.role) for ref in contract.path_refs} == {
-        (original, AcceptancePathRole.EXISTING_INPUT),
         (original, AcceptancePathRole.PRESERVATION_TARGET),
         (revised, AcceptancePathRole.REQUIRED_OUTPUT),
     }
 
 
 def test_document_paths_without_folder_prefix_are_recognized(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction='Create "Report.docx" using "Template.docx", sales.xlsx and Notes.PDF.',
+        roles={
+            "Report.docx": "required_output",
+            "Template.docx": "existing_input",
+            "sales.xlsx": "existing_input",
+            "Notes.PDF": "existing_input",
+        },
     )
     assert contract.allowed_output_paths == {"Report.docx"}
     assert {
@@ -575,9 +477,10 @@ def test_document_paths_without_folder_prefix_are_recognized(tmp_path: Path) -> 
 
 
 def test_quoted_windows_document_path_is_resolved_cross_platform() -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=Path("C:/My Reports"),
         instruction='Save "C:\\My Reports\\September Report.docx".',
+        roles={"C:\\My Reports\\September Report.docx": "required_output"},
     )
     required = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
     assert required.paths == ("September Report.docx",)
@@ -586,14 +489,18 @@ def test_quoted_windows_document_path_is_resolved_cross_platform() -> None:
 
 @pytest.mark.parametrize("name", ["September  Report.docx", "Bob's Report.docx", "Έκθεση.docx"])
 def test_quoted_document_filename_keeps_significant_characters(tmp_path: Path, name: str) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction=f'Create "{name}".')
+    contract = declared_contract(
+        root=tmp_path, instruction=f'Create "{name}".', roles={name: "required_output"}
+    )
     assert contract.allowed_output_paths == {name}
 
 
 def test_explicit_output_format_is_path_scoped_and_hard(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Create result.txt. Output must be valid JSON.",
+        roles={"result.txt": "required_output"},
+        formats={"result.txt": "json"},
     )
 
     criterion = _first_criterion(contract, AcceptanceCriterionKind.CONTENT_FORMAT_SCHEMA)
@@ -621,7 +528,9 @@ def test_weak_ambiguous_path_reference_is_advisory(tmp_path: Path) -> None:
 
 
 def test_extension_only_output_format_is_advisory(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction="Create result.json.")
+    contract = declared_contract(
+        root=tmp_path, instruction="Create result.json.", roles={"result.json": "required_output"}
+    )
 
     output = _first_criterion(contract, AcceptanceCriterionKind.REQUIRED_ARTIFACT_PATH)
     format_criterion = _first_criterion(contract, AcceptanceCriterionKind.CONTENT_FORMAT_SCHEMA)
@@ -635,9 +544,11 @@ def test_extension_only_output_format_is_advisory(tmp_path: Path) -> None:
 def test_exact_user_black_box_command_satisfies_its_criterion(tmp_path: Path) -> None:
     (tmp_path / "expected.txt").write_text("ok\n", encoding="utf-8")
     (tmp_path / "actual.txt").write_text("ok\n", encoding="utf-8")
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Create actual.txt and run `diff expected.txt actual.txt`.",
+        roles={},
+        commands=["diff expected.txt actual.txt"],
     )
 
     record_acceptance_tool_effect(
@@ -679,9 +590,11 @@ def test_explicit_command_is_blocked_only_by_how_it_ran(
     refusal_reason: str,
     expected: AcceptanceCriterionStatus,
 ) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction=f"Run `{command}` and tell me what it prints.",
+        roles={},
+        commands=[command],
     )
 
     record_acceptance_tool_effect(
@@ -710,9 +623,11 @@ def test_explicit_command_is_blocked_only_by_how_it_ran(
 
 def test_explicit_command_side_effects_still_block_its_criterion(tmp_path: Path) -> None:
     command = "git --version"
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction=f"Run `{command}` and tell me what it prints.",
+        roles={},
+        commands=[command],
     )
 
     record_acceptance_tool_effect(
@@ -733,22 +648,6 @@ def test_explicit_command_side_effects_still_block_its_criterion(tmp_path: Path)
 
     criterion = _first_criterion(contract, AcceptanceCriterionKind.EXPLICIT_COMMAND_IO)
     assert criterion.status == AcceptanceCriterionStatus.BLOCKED
-
-
-def test_inline_python_acceptance_snippet_becomes_python_command(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
-        root=tmp_path,
-        instruction=(
-            "Validate with this Python snippet: `from math import sqrt; assert sqrt(4) == 2`."
-        ),
-    )
-
-    criterion = _first_criterion(contract, AcceptanceCriterionKind.EXPLICIT_COMMAND_IO)
-
-    assert criterion.commands
-    assert criterion.commands[0].startswith("python -c ")
-    assert "from math import sqrt" in criterion.commands[0]
-    assert "/bin/sh" not in criterion.commands[0]
 
 
 def test_backtick_prose_does_not_become_hard_command(tmp_path: Path) -> None:
@@ -840,9 +739,10 @@ def test_authoritative_check_updates_host_criterion_alongside_required_output(
         "text=Path('REVIEW_RESPONSES.md').read_text(); assert 'T1' in text\""
     )
     (tmp_path / "REVIEW_RESPONSES.md").write_text("T1 resolved\n", encoding="utf-8")
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Write REVIEW_RESPONSES.md mapping T1 to its resolution.",
+        roles={"REVIEW_RESPONSES.md": "required_output"},
         authoritative_verification_commands=[command],
     )
 
@@ -888,9 +788,10 @@ def test_allowed_host_evidence_clears_stale_unsafe_failure_with_required_output(
 ) -> None:
     command = "python -c \"from pathlib import Path; assert Path('REVIEW_RESPONSES.md').exists()\""
     (tmp_path / "REVIEW_RESPONSES.md").write_text("T1 resolved\n", encoding="utf-8")
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Write REVIEW_RESPONSES.md mapping T1 to its resolution.",
+        roles={"REVIEW_RESPONSES.md": "required_output"},
         authoritative_verification_commands=[command],
     )
 
@@ -950,9 +851,11 @@ def test_allowed_host_evidence_clears_stale_unsafe_failure_with_required_output(
 def test_threshold_failure_blocks_and_self_authored_pass_does_not_override(
     tmp_path: Path,
 ) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="The solution must report accuracy at least 90%.",
+        roles={},
+        thresholds=[{"metric": "accuracy", "operator": ">=", "value": 90, "unit": "%"}],
         effective_verification_commands=["pytest -q"],
     )
 
@@ -994,9 +897,11 @@ def test_threshold_failure_blocks_and_self_authored_pass_does_not_override(
 
 
 def test_performance_threshold_requires_multiple_samples(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="The latency must stay under 50ms.",
+        roles={},
+        thresholds=[{"metric": "latency", "operator": "<", "value": 50, "unit": "ms"}],
     )
 
     record_acceptance_tool_effect(
@@ -1016,9 +921,11 @@ def test_performance_threshold_requires_multiple_samples(tmp_path: Path) -> None
 
 def test_missing_output_and_preservation_change_block_finalization(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("keep\n", encoding="utf-8")
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Only create result.txt. Do not touch README.md.",
+        roles={"result.txt": "required_output", "README.md": "preservation_target"},
+        only_declared_outputs=True,
     )
 
     finalize_acceptance_contract(
@@ -1035,7 +942,12 @@ def test_missing_output_and_preservation_change_block_finalization(tmp_path: Pat
 
 def test_allowed_output_path_does_not_create_scope_violation(tmp_path: Path) -> None:
     (tmp_path / "result.txt").write_text("ok\n", encoding="utf-8")
-    contract = build_acceptance_contract(root=tmp_path, instruction="Only create result.txt.")
+    contract = declared_contract(
+        root=tmp_path,
+        instruction="Only create result.txt.",
+        roles={"result.txt": "required_output"},
+        only_declared_outputs=True,
+    )
 
     finalize_acceptance_contract(
         contract=contract,
@@ -1063,9 +975,11 @@ def test_path_like_natural_language_categories_are_not_required_artifacts(
 
 
 def test_same_session_service_evidence_does_not_satisfy_persistence(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Keep the service running on port 8080.",
+        roles={},
+        keep_running={"port": 8080},
     )
 
     record_acceptance_tool_effect(
@@ -1089,9 +1003,11 @@ def test_same_session_service_evidence_does_not_satisfy_persistence(tmp_path: Pa
 
 
 def test_shell_background_does_not_satisfy_persistent_service(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Keep the service running on port 8080.",
+        roles={},
+        keep_running={"port": 8080},
     )
 
     record_acceptance_tool_effect(
@@ -1112,9 +1028,11 @@ def test_shell_background_does_not_satisfy_persistent_service(tmp_path: Path) ->
 def test_durable_service_evidence_satisfies_persistent_service_after_recheck(
     tmp_path: Path,
 ) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Keep the service running on port 8080.",
+        roles={},
+        keep_running={"port": 8080},
     )
     ready_payload = {
         "service_id": "svc_ready",
@@ -1155,9 +1073,11 @@ def test_durable_service_evidence_satisfies_persistent_service_after_recheck(
 
 
 def test_durable_service_wrong_port_remains_blocked(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Keep the service running on port 8080.",
+        roles={},
+        keep_running={"port": 8080},
     )
     payload = {
         "service_id": "svc_wrong",
@@ -1189,9 +1109,11 @@ def test_durable_service_wrong_port_remains_blocked(tmp_path: Path) -> None:
 
 
 def test_durable_service_finalization_recheck_must_still_be_ready(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Keep the service running on port 8080.",
+        roles={},
+        keep_running={"port": 8080},
     )
     initial_payload = {
         "service_id": "svc_flaky",

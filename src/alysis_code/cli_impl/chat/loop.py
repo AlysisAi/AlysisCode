@@ -34,9 +34,7 @@ from ...personas import (
 from ...profiles import apply_runtime_base_url_override
 from ...runtime_kind import RuntimeKind
 from ..commands import _materialize_cli_globals
-from ..commands._shared import (
-    Mode,
-)
+from ..commands._shared import Mode
 from ..run import (
     _apply_raw_benchmark_profile as _apply_raw_benchmark_profile,
 )
@@ -1105,6 +1103,7 @@ def _apply_config_menu_changes_to_session_mutating(*, session: Any, cfg: AppConf
         build_provider_route_identity,
         credential_scope_fingerprint,
     )
+    from ...llm.output_limit import catalogued_output_ceiling
     from ...llm.protocols import (
         ANTHROPIC_MESSAGES_PROTOCOL,
         GEMINI_INTERACTIONS_PROTOCOL,
@@ -1355,6 +1354,9 @@ def _apply_config_menu_changes_to_session_mutating(*, session: Any, cfg: AppConf
         model_meta = model_registry.get(model, include_provider_auth=False)
         if protocol == ANTHROPIC_MESSAGES_PROTOCOL:
             client.default_max_tokens = model_meta.max_output_tokens
+        set_output_token_ceiling = getattr(client, "set_output_token_ceiling", None)
+        if callable(set_output_token_ceiling):
+            set_output_token_ceiling(catalogued_output_ceiling(model_meta))
         model_supports_reasoning = model_meta.supports_reasoning
         model_capability_source = model_meta.field_sources.get("supports_reasoning")
         if active_profile.auth_provider and active_profile.reasoning_effort is not None:

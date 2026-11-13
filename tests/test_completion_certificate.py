@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from acceptance_declared import declared_contract
+
 from alysis_code.agent.acceptance_contract import (
     AcceptanceCriterionKind,
     AcceptanceCriterionStatus,
@@ -74,7 +76,9 @@ def test_advisory_unverified_criteria_do_not_block_completion(tmp_path: Path) ->
 
 
 def test_hard_missing_output_blocks_completion(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction="Create result.txt.")
+    contract = declared_contract(
+        root=tmp_path, instruction="Create result.txt.", roles={"result.txt": "required_output"}
+    )
     finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=set())
 
     certificate = _certificate(contract=contract)
@@ -84,9 +88,11 @@ def test_hard_missing_output_blocks_completion(tmp_path: Path) -> None:
 
 
 def test_known_threshold_failure_blocks_completion_despite_green_tests(tmp_path: Path) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="The result must report accuracy at least 90%.",
+        roles={},
+        thresholds=[{"metric": "accuracy", "operator": ">=", "value": 90, "unit": "%"}],
     )
     record_acceptance_tool_effect(
         contract=contract,
@@ -114,7 +120,11 @@ def test_known_threshold_failure_blocks_completion_despite_green_tests(tmp_path:
 
 def test_explicit_preservation_violation_blocks_completion(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("keep\n", encoding="utf-8")
-    contract = build_acceptance_contract(root=tmp_path, instruction="Do not modify README.md.")
+    contract = declared_contract(
+        root=tmp_path,
+        instruction="Do not modify README.md.",
+        roles={"README.md": "preservation_target"},
+    )
     finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths={"README.md"})
 
     certificate = _certificate(contract=contract)
@@ -128,7 +138,9 @@ def test_current_generation_authoritative_verification_plus_hard_coverage_is_suf
     tmp_path: Path,
 ) -> None:
     (tmp_path / "result.txt").write_text("ok\n", encoding="utf-8")
-    contract = build_acceptance_contract(root=tmp_path, instruction="Create result.txt.")
+    contract = declared_contract(
+        root=tmp_path, instruction="Create result.txt.", roles={"result.txt": "required_output"}
+    )
     finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths={"result.txt"})
 
     certificate = _certificate(
@@ -151,9 +163,11 @@ def test_exact_task_native_direct_evidence_covers_mapped_command_criterion(
 ) -> None:
     (tmp_path / "expected.txt").write_text("ok\n", encoding="utf-8")
     (tmp_path / "actual.txt").write_text("ok\n", encoding="utf-8")
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Create actual.txt and run `diff expected.txt actual.txt`.",
+        roles={},
+        commands=["diff expected.txt actual.txt"],
     )
     record_acceptance_tool_effect(
         contract=contract,
@@ -181,7 +195,9 @@ def test_exact_task_native_direct_evidence_covers_mapped_command_criterion(
 def test_self_authored_pytest_alone_cannot_cover_unrelated_hard_output(
     tmp_path: Path,
 ) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction="Create result.txt.")
+    contract = declared_contract(
+        root=tmp_path, instruction="Create result.txt.", roles={"result.txt": "required_output"}
+    )
     finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=set())
 
     certificate = _certificate(
@@ -199,7 +215,9 @@ def test_self_authored_pytest_alone_cannot_cover_unrelated_hard_output(
 
 def test_green_certificate_allows_completion_gate_without_extra_nudge(tmp_path: Path) -> None:
     (tmp_path / "result.txt").write_text("ok\n", encoding="utf-8")
-    contract = build_acceptance_contract(root=tmp_path, instruction="Create result.txt.")
+    contract = declared_contract(
+        root=tmp_path, instruction="Create result.txt.", roles={"result.txt": "required_output"}
+    )
     finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths={"result.txt"})
     state = TurnExecutionState(
         execution_requested=True,

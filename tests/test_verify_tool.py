@@ -725,142 +725,6 @@ def test_interactive_neutral_config_paths_keep_repo_grounded_invalidation(
 @pytest.mark.parametrize(
     ("session_id", "instruction"),
     [
-        ("interactive-mixed-bug-verify", "Fix the bug."),
-        ("interactive-mixed-auth-verify", "Update the auth flow."),
-        ("interactive-mixed-parser-verify", "Refactor the parser."),
-    ],
-)
-def test_interactive_mixed_workspace_vague_prompts_use_repo_grounded_invalidation(
-    tmp_path: Path,
-    session_id: str,
-    instruction: str,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _write_repo_files(
-        repo,
-        {
-            "package.json": '{"name":"demo-web","scripts":{"build":"vite build"}}\n',
-            "pyproject.toml": '[project]\nname = "demo"\nversion = "0.1.0"\n',
-            "src/index.ts": "export const value = 1;\n",
-            "src/demo/app.py": "def handler() -> str:\n    return 'ok'\n",
-        },
-    )
-    sessions_dir = tmp_path / "sessions"
-
-    session = _create_interactive_session(
-        repo,
-        sessions_dir=sessions_dir,
-        session_id=session_id,
-        cfg=AppConfig(model="test-model", verify_commands=["pytest -q"]),
-    )
-    try:
-        agent_loop_mod._refresh_interactive_turn_verification_selection(
-            session,
-            instruction=instruction,
-            route_execution_posture="execute",
-        )
-
-        assert session.effective_verification_commands == []
-        assert session.verification_selection_source == "repo_scan.no_authoritative_commands"
-        assert (
-            session.verification_selection_reason
-            == "repo scan found a mixed workspace without an authoritative verification surface"
-        )
-        assert session.verification_contract_type == "unavailable"
-        assert session.verification_authoritative is False
-
-        result = session.tools["verify_run"].run({})
-    finally:
-        session.close()
-
-    assert result["commands"] == []
-    assert result["summary"] == "verification skipped: no commands"
-    assert result["all_passed"] is False
-    assert result["status"] == "not_run"
-
-    events = list(read_session_events(sessions_dir / f"{session_id}.jsonl"))
-    contract_updates = [
-        event for event in events if event.get("type") == "verification_contract_updated"
-    ]
-    assert contract_updates
-    assert contract_updates[-1]["payload"]["verification_selection_source"] == (
-        "repo_scan.no_authoritative_commands"
-    )
-    assert (
-        contract_updates[-1]["payload"]["verification_selection_reason"]
-        == "repo scan found a mixed workspace without an authoritative verification surface"
-    )
-    assert contract_updates[-1]["payload"]["verification_contract_type"] == "unavailable"
-    assert contract_updates[-1]["payload"]["verification_authoritative"] is False
-
-
-def test_interactive_mixed_workspace_neutral_config_path_keeps_repo_grounded_invalidation(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _write_repo_files(
-        repo,
-        {
-            "package.json": '{"name":"demo-web","scripts":{"build":"vite build"}}\n',
-            "pyproject.toml": '[project]\nname = "demo"\nversion = "0.1.0"\n',
-            ".env.example": "API_URL=\nUPLOAD_DIR=\n",
-            "src/index.ts": "export const value = 1;\n",
-            "src/demo/app.py": "def handler() -> str:\n    return 'ok'\n",
-        },
-    )
-    sessions_dir = tmp_path / "sessions"
-
-    session = _create_interactive_session(
-        repo,
-        sessions_dir=sessions_dir,
-        session_id="interactive-mixed-env-example-verify",
-        cfg=AppConfig(model="test-model", verify_commands=["pytest -q"]),
-    )
-    try:
-        agent_loop_mod._refresh_interactive_turn_verification_selection(
-            session,
-            instruction="Update .env.example defaults.",
-            route_execution_posture="execute",
-        )
-
-        assert session.effective_verification_commands == []
-        assert session.verification_selection_source == "repo_scan.no_authoritative_commands"
-        assert (
-            session.verification_selection_reason
-            == "repo scan found a mixed workspace without an authoritative verification surface"
-        )
-        assert session.verification_contract_type == "unavailable"
-        assert session.verification_authoritative is False
-
-        result = session.tools["verify_run"].run({})
-    finally:
-        session.close()
-
-    assert result["commands"] == []
-    assert result["summary"] == "verification skipped: no commands"
-    assert result["all_passed"] is False
-    assert result["status"] == "not_run"
-
-    events = list(read_session_events(sessions_dir / "interactive-mixed-env-example-verify.jsonl"))
-    contract_updates = [
-        event for event in events if event.get("type") == "verification_contract_updated"
-    ]
-    assert contract_updates
-    assert contract_updates[-1]["payload"]["verification_selection_source"] == (
-        "repo_scan.no_authoritative_commands"
-    )
-    assert (
-        contract_updates[-1]["payload"]["verification_selection_reason"]
-        == "repo scan found a mixed workspace without an authoritative verification surface"
-    )
-    assert contract_updates[-1]["payload"]["instruction_paths"] == [".env.example"]
-
-
-@pytest.mark.parametrize(
-    ("session_id", "instruction"),
-    [
         ("interactive-js-package-json-verify", "Update package.json."),
         ("interactive-js-tsconfig-verify", "Update tsconfig.json."),
     ],
@@ -1248,51 +1112,42 @@ def test_interactive_mixed_workspace_inferred_commands_remain_advisory(
 
 
 @pytest.mark.parametrize(
-    (
-        "session_id",
-        "instruction",
-        "expected_path",
-        "expected_commands",
-        "expected_source",
-        "expected_contract_type",
-        "expected_authoritative",
-        "expected_reason",
-    ),
+    ("session_id", "instruction", "expected_paths"),
     [
         (
             "interactive-mixed-js-target-verify",
             "Update src/index.ts auth handling.",
-            "src/index.ts",
-            ["npm run build"],
-            "repo_scan.likely_test_commands",
-            "selected",
-            False,
-            "repo scan discovered package.json verification scripts",
+            ["src/index.ts"],
         ),
         (
             "interactive-mixed-python-target-verify",
             "Improve upload logging in src/demo/app.py",
-            "src/demo/app.py",
-            [],
-            "task_refinement.no_authoritative_commands",
-            "unavailable",
-            False,
-            "Python task has no discoverable test surface, so generic pytest is not trusted",
+            ["src/demo/app.py"],
         ),
+        ("interactive-mixed-env-example-verify", "Update .env.example defaults.", [".env.example"]),
+        ("interactive-mixed-bug-verify", "Fix the bug.", []),
+        ("interactive-mixed-docs-verify", "Update the docs and the README.", []),
+        ("interactive-mixed-greek-verify", "Διόρθωσε το σφάλμα στη σύνδεση.", []),
+        ("interactive-mixed-chinese-verify", "修复登录错误", []),
     ],
 )
-def test_interactive_mixed_workspace_explicit_targets_keep_task_specific_selection_behavior(
+def test_interactive_mixed_workspace_gets_the_same_answer_whatever_the_request_says(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     session_id: str,
     instruction: str,
-    expected_path: str,
-    expected_commands: list[str],
-    expected_source: str,
-    expected_contract_type: str,
-    expected_authoritative: bool,
-    expected_reason: str,
+    expected_paths: list[str],
 ) -> None:
+    # The answer comes from the project, never from the words of the request
+    # or the paths it happens to mention. A project that is both Python and
+    # Node, with a build script and no tests, has no check of its own.
+    expected_commands: list[str] = []
+    expected_source = "repo_scan.no_authoritative_commands"
+    expected_contract_type = "unavailable"
+    expected_authoritative = False
+    expected_reason = (
+        "repo scan found a mixed workspace without an authoritative verification surface"
+    )
     calls: list[str] = []
 
     def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
@@ -1351,7 +1206,7 @@ def test_interactive_mixed_workspace_explicit_targets_keep_task_specific_selecti
     assert contract_updates
     assert contract_updates[-1]["payload"]["verification_selection_source"] == expected_source
     assert contract_updates[-1]["payload"]["verification_selection_reason"] == expected_reason
-    assert contract_updates[-1]["payload"]["instruction_paths"] == [expected_path]
+    assert contract_updates[-1]["payload"]["instruction_paths"] == expected_paths
 
 
 def test_interactive_repo_native_verification_selection_stays_authoritative(

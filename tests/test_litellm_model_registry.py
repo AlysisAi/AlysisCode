@@ -47,7 +47,7 @@ def _raise(exc: Exception) -> None:
     raise exc
 
 
-@pytest.mark.parametrize("provider,vision", [("openai", True), ("alysis", False)])
+@pytest.mark.parametrize("provider,vision", [("openai", True), ("alysis", True)])
 def test_general_evidence_keeps_route_specific_vision_and_closed_provenance(
     monkeypatch, tmp_path, provider, vision, configured_hosted_api
 ):

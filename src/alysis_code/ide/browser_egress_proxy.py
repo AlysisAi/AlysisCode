@@ -91,7 +91,10 @@ class BrowserEgressProxyLimits:
     max_header_bytes: int = 64 * 1024
     max_header_line_bytes: int = 8 * 1024
     max_header_count: int = 100
-    max_connections: int = 32
+    # One tunnel per origin, and a busy news or search page reaches 60-75 open tunnels
+    # (measured) while idle ones wait out idle_timeout_seconds. A lower cap refuses new
+    # tunnels, and the page or the next navigation then fails with a tunnel error.
+    max_connections: int = 256
     max_resolutions: int = 4
     max_resolved_addresses: int = 16
     dns_timeout_seconds: float = 2.0

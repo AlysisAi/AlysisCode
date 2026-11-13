@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from alysis_code.ide import management_protocol
 from alysis_code.ide.health import SUPPORTED_METHODS, capabilities_payload
 from alysis_code.ide.protocol import ProtocolError
@@ -293,9 +295,8 @@ def test_stdio_bridge_rejects_inline_secret_params_recursively_for_every_method(
         assert "must-not-leak" not in out.getvalue(), method
 
 
-def test_general_evidence_is_optional_and_does_not_change_protocol_version(
-    mac_computer_use_protocol,
-):
+@pytest.mark.usefixtures("mac_computer_use_protocol")
+def test_general_evidence_is_optional_and_does_not_change_protocol_version():
     capabilities = capabilities_payload()
     assert capabilities["features"]["computer_use_evidence"] == {"version": 1}
     assert "computer_use_evidence" in capabilities["events"]

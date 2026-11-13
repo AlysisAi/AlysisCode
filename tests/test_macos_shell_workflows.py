@@ -113,11 +113,16 @@ def test_discovered_library_alias_retains_read_and_write_boundaries(
 def test_git_commit_with_runtime_scope_keeps_ordinary_metadata_writes_blocked(scope):
     project, _ = scope
     (project / "change.txt").write_text("reviewed change\n")
+    # Creating the repository is a command of its own; in a list it would have
+    # to share its access with the commands after it.
+    chained = run(project, "git init && git add change.txt")
+    assert chained["exit_code"] != 0 and not (project / ".git").exists(), chained
+    assert "command of its own" in chained["sandbox_policy"]["guidance"]
+    assert run(project, "git init")["exit_code"] == 0
     result = run(
         project,
-        "git init && git config user.name 'Fixture Author' && "
-        "git config user.email 'fixture@example.invalid' && "
-        "git add change.txt && git commit -m 'fixture commit'",
+        "git add change.txt && git -c user.name='Fixture Author' "
+        "-c user.email=fixture@example.invalid commit -m 'fixture commit'",
     )
     assert result["exit_code"] == 0, result
     status = run(project, "git status --porcelain")
@@ -134,12 +139,12 @@ def test_git_children_and_read_worker_share_private_config_without_metadata_auth
 
     project, _ = scope
     (project / "change.txt").write_text("first\n")
+    identity = "git -c user.name=Fixture -c user.email=fixture@example.invalid commit"
+    assert run(project, "git init")["exit_code"] == 0
     assert (
         run(
             project,
-            "git init && git config user.name Fixture && "
-            "git config user.email fixture@example.invalid && git add change.txt && "
-            "git commit -m first && git commit --allow-empty -m second",
+            f"git add change.txt && {identity} -m first && {identity} --allow-empty -m second",
         )["exit_code"]
         == 0
     )

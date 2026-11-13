@@ -229,7 +229,12 @@ class RepositoryPolicy:
         if value == {"scope": "workspace"}:
             result = self.workspace_repository
         elif set(value) == {"scope", "owner", "repo"} and value["scope"] == "repository":
-            result = repository({k: value[k] for k in ("owner", "repo")})
+            # Explicit GitHub names are case-insensitive, as in the desktop host.
+            # Keep the private policy format strict and reject Unicode aliases
+            # before lowercasing caller-supplied identifiers.
+            if any(type(value[k]) is not str or not value[k].isascii() for k in ("owner", "repo")):
+                fail()
+            result = repository({k: value[k].lower() for k in ("owner", "repo")})
         else:
             fail()
         if result is None or self.mode == "allow_list" and result not in self.repositories:

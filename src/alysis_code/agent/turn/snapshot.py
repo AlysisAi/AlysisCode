@@ -6,8 +6,13 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from ...git_safe import build_git_process_env
 from ...runtime_artifacts import is_runtime_artifact_path
-from ...sandbox_bookkeeping import capture_instruction_creations, command_file_signature
+from ...sandbox_bookkeeping import (
+    capture_instruction_creations,
+    command_file_signature,
+    is_reservation_file,
+)
 from ..prompt_context import _normalize_repo_relative_hint_path
 
 _SHELL_MUTATION_SNAPSHOT_METADATA_PREFIX = "meta"
@@ -28,6 +33,7 @@ def _list_git_workspace_snapshot_paths(root: Path) -> set[str] | None:
             ],
             check=False,
             capture_output=True,
+            env=build_git_process_env(),
         )
     except OSError:
         return None
@@ -174,6 +180,19 @@ def _run_with_command_mutation_detection(
         for rel_path, signature in _snapshot_workspace_for_command_mutation_detection(root).items()
         if not _path_matches_snapshot_ignore(rel_path, ignored_paths=ignored)
     }
+    for rel_path in set(before_snapshot) | set(after_snapshot):
+        # An empty reservation the engine itself took back, or made, while
+        # this ran is not something the command did. Only those exact files
+        # count: one that was written to is another file to this check, and
+        # one the engine made but did not remove itself is not excused.
+        before, after = before_snapshot.get(rel_path), after_snapshot.get(rel_path)
+        if (
+            before != after
+            and (before is None or is_reservation_file(root / rel_path, before, removed=True))
+            and (after is None or is_reservation_file(root / rel_path, after, removed=False))
+        ):
+            before_snapshot.pop(rel_path, None)
+            after_snapshot.pop(rel_path, None)
     return (
         result,
         _detect_command_mutation_paths(

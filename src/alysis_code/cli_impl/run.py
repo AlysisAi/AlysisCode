@@ -33,10 +33,7 @@ from ..runtime_kind import RuntimeKind
 from ..surface.console import safe_plain_error
 from ..workspace_binding import WorkspaceAction, WorkspaceBindingError
 from .commands import _patchable as _cli_patchable
-from .commands._shared import (
-    Mode,
-    _console,
-)
+from .commands._shared import Mode, _console
 from .execution_admission import _apply_temperature_override, _resolve_api_key_override
 
 _RUN_DEPENDENCIES: ContextVar[dict[str, Any] | None] = ContextVar("run_dependencies", default=None)

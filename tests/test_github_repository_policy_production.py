@@ -291,8 +291,11 @@ def test_raw_duplicate_page_never_reaches_host(installed, monkeypatch, protocol,
 
 @pytest.mark.parametrize("protocol", ["responses", "compat"])
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "destination", [dict(scope="workspace"), dict(scope="repository", owner="Acme", repo="Allowed")]
+)
 def test_real_discover_describe_call_normalizes_before_host(
-    installed, monkeypatch, protocol, stream
+    installed, monkeypatch, protocol, stream, destination
 ):
     refs = {}
     catalog = "cat_" + uuid.uuid4().hex
@@ -328,7 +331,7 @@ def test_real_discover_describe_call_normalizes_before_host(
                 dict(
                     catalog_id=refs["catalog"],
                     names=["github_api_read"],
-                    target=dict(scope="workspace"),
+                    target=destination,
                 )
             ),
         ),

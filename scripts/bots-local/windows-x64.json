@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "architecture": "AMD64",
+  "base_url": "https://cloud.debian.org/images/cloud/trixie/20261103-2651/debian-13-generic-amd64-20261103-2651.tar.xz",
+  "base_sha512": "d5ba4f8c531115993a3a10221ef416bbaa8f309d58ec06bebad541aff3245f233ad15b54d4e2c38e6e2e7a83cb33717d8aa03e3a72a39f84ca44685849cd8680",
+  "disk_bytes": 8589934592
+}

@@ -201,6 +201,7 @@ def test_cli_add_dir_is_repeatable_and_invocation_scoped(tmp_path, monkeypatch):
     assert observed[-1] == ()
 
 
+@pytest.mark.usefixtures("approved_local_checks")
 def test_tool_dispatch_accepts_only_captured_secondary_cwd(folders, monkeypatch):
     import subprocess
 

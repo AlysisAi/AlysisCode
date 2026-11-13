@@ -71,3 +71,22 @@ sylliptor_ecs.tar.gz
 # Secrets / env
 .env
 .env.*
+
+# Editor extension build and UI-check output.
+extensions/vscode-alysis/out/
+extensions/vscode-alysis/.qa-ui-out/
+extensions/vscode-alysis/.qa-ui-verify-*/
+extensions/vscode-alysis/.qa-ui-*.log
+extensions/vscode-alysis/.qa-npm-cache/
+extensions/vscode-alysis/*.vsix
+extensions/jetbrains-alysis/build/
+
+# Local agent notes.
+/.agent-notes/
+
+# Public templates contain placeholders, never live credentials.
+!.env.defaults
+!.env.dist
+!.env.example
+!.env.sample
+!.env.template

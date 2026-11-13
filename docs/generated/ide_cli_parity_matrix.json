@@ -624,7 +624,9 @@
       "id": "cli.groups.namespaces",
       "surface": "cli_command_group",
       "names": [
+        "agents",
         "auth",
+        "bots",
         "config",
         "conventions",
         "ext",
@@ -635,6 +637,7 @@
         "mcp",
         "mcp auth",
         "mcp prompts",
+        "memory",
         "profile",
         "report",
         "sandbox",
@@ -642,9 +645,7 @@
         "sessions messaging",
         "skill",
         "tool",
-        "update",
-        "agents",
-        "memory"
+        "update"
       ],
       "status": "not_applicable_to_ide",
       "rationale": "Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision."
@@ -655,20 +656,6 @@
       "name": "server",
       "status": "intentionally_cli_only",
       "rationale": "The server namespace is intentionally CLI-only until lifecycle, authentication, and port exposure policy exists for IDE hosts."
-    },
-    {
-      "id": "cli.commands.session_messaging",
-      "surface": "cli_command",
-      "names": [
-        "sessions messaging close",
-        "sessions messaging link",
-        "sessions messaging list",
-        "sessions messaging serve",
-        "sessions messaging status",
-        "sessions messaging unlink"
-      ],
-      "status": "intentionally_cli_only",
-      "rationale": "The terminal commands manage local chat links and the standalone receiver. The engine bridge handles message delivery to active sessions."
     },
     {
       "id": "cli.commands.extension_workflows",
@@ -819,6 +806,7 @@
       "surface": "cli_command",
       "names": [
         "auth list",
+        "auth reasoning",
         "auth status",
         "config clear-api-key",
         "config menu",
@@ -826,13 +814,26 @@
         "profile check",
         "profile clear-key",
         "profile set-key",
-        "power gate",
         "server start",
         "setup",
         "whoami"
       ],
       "status": "intentionally_cli_only",
       "rationale": "These commands are terminal setup/maintenance, provider-account inspection, legacy asset migration, local sandbox image management, server startup, or secret mutation flows; they must not be terminal-scraped or accept unsafe inline secrets through IDE protocol params."
+    },
+    {
+      "id": "cli.commands.chat_messaging",
+      "surface": "cli_command",
+      "names": [
+        "sessions messaging close",
+        "sessions messaging link",
+        "sessions messaging list",
+        "sessions messaging serve",
+        "sessions messaging status",
+        "sessions messaging unlink"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "Chat-link authorization and revocation, delivery inspection, and the saved-chat receiver lifecycle are engine CLI operations. The extension has no typed controls for linking chats or starting that receiver, so it must not infer authorization or lifecycle from terminal output."
     },
     {
       "id": "cli.chat_slash.implemented",
@@ -1282,8 +1283,19 @@
         "chat.steer.take"
       ],
       "status": "implemented_in_bridge_only",
-      "rationale": "Hosts add a user message to the running turn through the same steering inbox the TUI uses; the turn reads it at its next step and logs steer_message_delivered with the text. chat.steer.take returns messages a finished turn did not read so the host can send them next. Refused without a running turn.",
+      "rationale": "Hosts add a user message to the running turn through the same steering inbox the TUI uses; the turn reads it at its next step and logs steer_message_delivered with the text. chat.steer.take returns messages a finished turn did not read so the host can send them next. Refused without a running turn and on sensitive (Computer Use) sessions.",
       "bridge_only_rationale": "The backend and typed client are complete; the Alysis Code desktop app is the first host to use them. A VS Code steering control belongs to a later frontend wave."
+    },
+    {
+      "id": "ide.methods.feedback_delivery",
+      "surface": "ide_bridge_method",
+      "names": [
+        "feedback.prepare",
+        "feedback.send"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Hosts build the same private report as the TUI's /report \"Send to Alysis\" (feedback_delivery): redacted description, engine version and, only when asked, OS, Python version and the last session messages. feedback.send sends exactly the reviewed bytes, tied to the Alysis account when signed in and anonymous otherwise; the report_id makes retries safe.",
+      "bridge_only_rationale": "The backend and typed client are complete; the Alysis Code desktop app is the first host to use them. A VS Code report control belongs to a later frontend wave."
     },
     {
       "id": "ide.method.forge_cancel",
@@ -1524,37 +1536,6 @@
       "rationale": "The CLI retired /chat in favor of the Ask persona and one-turn /ask. The IDE likewise guides users to ordinary chat or /persona ask."
     },
     {
-      "id": "cli.commands.provider_model_selection",
-      "surface": "cli_command",
-      "names": [
-        "auth models",
-        "auth select-model",
-        "profile select-model",
-        "auth reasoning"
-      ],
-      "status": "intentionally_cli_only",
-      "rationale": "CLI provider model inventory and selection helpers. VS Code retains its existing typed provider/configuration controls rather than invoking these terminal commands."
-    },
-    {
-      "id": "ide.methods.composer_catalog",
-      "surface": "ide_bridge_method",
-      "name": "commands.list",
-      "status": "implemented_in_bridge_only",
-      "rationale": "Read-only CLI slash command metadata for host-native composer menus.",
-      "bridge_only_rationale": "Consumed by the desktop composer. The VS Code typed client supports this query but its command menu has not adopted the shared catalog."
-    },
-    {
-      "id": "ide.methods.feedback_delivery",
-      "surface": "ide_bridge_method",
-      "names": [
-        "feedback.prepare",
-        "feedback.send"
-      ],
-      "status": "implemented_in_bridge_only",
-      "rationale": "Hosts build the same private report as the TUI's /report \"Send to Alysis\" (feedback_delivery): redacted description, engine version and, only when asked, OS, Python version and the last session messages. feedback.send sends exactly the reviewed bytes, tied to the Alysis account when signed in and anonymous otherwise; the report_id makes retries safe.",
-      "bridge_only_rationale": "The backend and typed client are complete; the Alysis Code desktop app is the first host to use them. A VS Code report control belongs to a later frontend wave."
-    },
-    {
       "id": "cli.commands.desktop_engine_contract",
       "surface": "cli_command",
       "names": [
@@ -1568,6 +1549,38 @@
       "rationale": "Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle."
     },
     {
+      "id": "cli.commands.provider_model_selection",
+      "surface": "cli_command",
+      "names": [
+        "auth models",
+        "auth select-model",
+        "profile select-model"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "CLI provider model inventory and selection helpers. VS Code retains its existing typed provider/configuration controls rather than invoking these terminal commands."
+    },
+    {
+      "id": "cli.commands.desktop_bots_service",
+      "surface": "cli_command",
+      "names": [
+        "bots cloud-access",
+        "bots profiles",
+        "bots serve"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "The Alysis Code desktop app starts these for its private local Bots service: the service itself, bootstrapped over a private stdin pipe; the saved model connections, listed without credentials; and account access, whose connection credentials are sealed to the native caller. VS Code has no Bots surface and does not start or query this service."
+    },
+    {
+      "id": "cli.commands.account_profile",
+      "surface": "cli_command",
+      "names": [
+        "account-profile",
+        "project-avatar"
+      ],
+      "status": "intentionally_cli_only",
+      "rationale": "Change the name and photo of the signed-in Alysis Code account, and design the owl of a desktop app project. The saved device key authenticates both, and the desktop app runs them with --json. VS Code has no account sign-in (login and logout stay blocked), no account profile page and no project avatars."
+    },
+    {
       "id": "ide.methods.desktop_host_responses",
       "surface": "ide_bridge_method",
       "names": [
@@ -1577,8 +1590,17 @@
         "task_budget.respond"
       ],
       "status": "implemented_in_bridge_only",
+      "desktop_host_only": true,
       "rationale": "Capability-negotiated responses from the trusted Alysis Code desktop host for browser start, Computer Use, resolved application start and per-turn task budgets.",
       "bridge_only_rationale": "The desktop owns these private media, approval and budget boundaries. VS Code does not negotiate or implement the desktop host capability; these methods are intentionally excluded from its typed client coverage, while bridge dispatch and protocol documentation remain required."
+    },
+    {
+      "id": "ide.methods.composer_catalog",
+      "surface": "ide_bridge_method",
+      "name": "commands.list",
+      "status": "implemented_in_bridge_only",
+      "rationale": "Read-only CLI slash command metadata for host-native composer menus.",
+      "bridge_only_rationale": "Consumed by the desktop composer. The VS Code typed client supports this query but its command menu has not adopted the shared catalog."
     },
     {
       "id": "cli.commands.subagent_models",
@@ -1639,6 +1661,19 @@
       "bridge_only_rationale": "Desktop connection settings consume this optional method. VS Code has typed transport coverage but has not adopted native subscription status in its UI."
     },
     {
+      "id": "ide.methods.desktop_model_selection",
+      "surface": "ide_bridge_method",
+      "names": [
+        "profile.selectModel",
+        "provider.auth.reasoning",
+        "provider.auth.selectModel"
+      ],
+      "status": "implemented_in_bridge_only",
+      "desktop_host_only": true,
+      "rationale": "`alysis profile select-model`, `auth select-model` and `auth reasoning` without a new process, one shared implementation each: the two selections are single locked writes that require Workspace Trust; the effort read saves nothing. No secret crosses the bridge.",
+      "bridge_only_rationale": "The Alysis Code desktop app asks its running settings engine instead of starting a CLI process for every model choice and effort read. VS Code keeps its existing typed provider/configuration controls."
+    },
+    {
       "id": "cli.profile.check",
       "surface": "cli_command",
       "name": "profile check",
@@ -1646,7 +1681,7 @@
       "rationale": "Explicit CLI provider-profile request probe. VS Code retains its typed provider diagnostics instead of executing this terminal command."
     },
     {
-      "id": "cli.commands.local_memory",
+      "id": "cli.commands.memory_management",
       "surface": "cli_command",
       "names": [
         "memory add",
@@ -1659,7 +1694,7 @@
         "memory request"
       ],
       "status": "intentionally_cli_only",
-      "rationale": "Local memory inspection and editing stay in the CLI; VS Code has no corresponding memory-management view."
+      "rationale": "Personal memory management uses the explicit CLI workflow; the VS Code extension has no memory-management route. This classification does not add remote access to the personal memory store."
     },
     {
       "id": "cli.commands.native_sandbox_diagnostics",
@@ -1671,35 +1706,64 @@
         "sandbox recover-native"
       ],
       "status": "intentionally_cli_only",
-      "rationale": "Native Windows sandbox setup, recovery and diagnostics run locally and are not exposed as extension actions."
+      "rationale": "Native sandbox diagnosis and recovery run on the local host through explicit CLI commands. The extension does not expose a recovery action or change host containment policy."
     },
     {
-      "id": "cli.command.upgrade",
+      "id": "cli.commands.upgrade",
       "surface": "cli_command",
-      "name": "upgrade",
+      "names": [
+        "upgrade"
+      ],
       "status": "intentionally_cli_only",
-      "rationale": "This command changes the host CLI installation through its terminal installer flow."
+      "rationale": "CLI installation and upgrade remain explicit local package-management operations; passive IDE update metadata does not authorize installation."
     },
     {
-      "id": "ide.methods.desktop_workbench",
+      "id": "ide.methods.customization_documents",
       "surface": "ide_bridge_method",
       "names": [
-        "ext.custom.save",
-        "hooks.document.read",
-        "hooks.document.save",
-        "session.outputArtifacts",
         "skill.document.read",
         "skill.document.save",
+        "skill.update.preview",
+        "hooks.document.read",
+        "hooks.document.save"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "Backend document operations and their typed client accessors preserve workspace trust, explicit confirmation, revision checks and source-review requirements.",
+      "bridge_only_rationale": "VS Code has typed accessors but no user-facing document-editing route; adding an editor remains separate product work."
+    },
+    {
+      "id": "ide.methods.skill_import_workbench",
+      "surface": "ide_bridge_method",
+      "names": [
         "skill.import.describe",
         "skill.import.discard",
         "skill.import.install",
         "skill.import.package",
-        "skill.import.preview",
-        "skill.update.preview"
+        "skill.import.preview"
       ],
       "status": "implemented_in_bridge_only",
-      "rationale": "Typed client calls support skill import and updates, skill and hook documents, reviewed plugin descriptors, and exact session-output lookup through the existing engine contracts.",
-      "bridge_only_rationale": "The VS Code client exposes typed calls. The corresponding user-facing workflows are in the desktop app."
+      "rationale": "The backend implements staged skill import with reviewed drafts, explicit selected skills, workspace trust and confirmation before installation. Typed client accessors forward the existing contract.",
+      "bridge_only_rationale": "The VS Code client exposes the typed bridge operations without adding an import UI or automatic source fetching."
+    },
+    {
+      "id": "ide.methods.custom_plugin_save",
+      "surface": "ide_bridge_method",
+      "names": [
+        "ext.custom.save"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "The backend saves custom descriptors only through its existing hash-bound trust review. The typed client preserves descriptor bytes and forwards the reviewed trust approval.",
+      "bridge_only_rationale": "The extension has no custom descriptor editor or automatic save route; this is typed bridge coverage only."
+    },
+    {
+      "id": "ide.methods.output_artifact_scope",
+      "surface": "ide_bridge_method",
+      "names": [
+        "session.outputArtifacts"
+      ],
+      "status": "implemented_in_bridge_only",
+      "rationale": "A read-only query identifies declared changed outputs from the exact completed session, job and task. The query neither opens files nor grants filesystem access.",
+      "bridge_only_rationale": "The typed client accessor does not introduce an automatic workspace file-opening route."
     }
   ]
 }

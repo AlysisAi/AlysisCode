@@ -107,7 +107,7 @@ try {
                 -q --tb=short
             if ($LASTEXITCODE -ne 0) { throw 'Installed network qualification failed.' }
         }
-        & $Python -m pytest tests/test_windows_sandbox_installed.py tests/test_windows_sandbox_agent_installed.py tests/test_windows_sandbox_registry_installed.py tests/test_windows_sandbox_nested_helper_installed.py -q --tb=short -rx `
+        & $Python -m pytest tests/test_windows_sandbox_installed.py tests/test_windows_sandbox_agent_installed.py tests/test_windows_sandbox_registry_installed.py tests/test_windows_sandbox_nested_helper_installed.py -v --durations=10 --tb=short -rx `
             --junitxml=native/windows-sandbox/target/installed-release-tests.xml
         if (Test-Path -LiteralPath $pendingJournal -ErrorAction Stop) {
             throw 'Installed tests left a recovery journal. Preserve test workspaces, inspect the report and run recover-native before retrying.'

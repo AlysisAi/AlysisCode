@@ -325,7 +325,7 @@
       resetHistoryBrowsing();
       return;
     } else if (event.key === "Escape" && (taskRunning || forgeRunning) && !taskInput.value.trim()) {
-      // Escape on an empty composer stops the running task, the way it does in Cline and Copilot.
+      // Escape on an empty composer stops the running task.
       event.preventDefault();
       cancelTask?.click();
       return;

@@ -255,101 +255,163 @@ def test_symbol_search_js_ts_exact_and_kind_filters(tmp_path: Path) -> None:
     assert [match["name"] for match in constant_result["matches"]] == ["buildCount"]
 
 
-def test_symbol_search_finds_typed_top_level_const_arrow_function(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "typed.ts",
-        "const buildThing: (name: string) => string = (name) => name;\n",
-    )
+@pytest.mark.parametrize(
+    ("source", "query", "expected"),
+    [
+        pytest.param(
+            "const buildThing: (name: string) => string = (name) => name;\n",
+            "buildThing",
+            {
+                "path": "ui/typed.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "buildThing",
+                "signature": "const buildThing: (name: string) => string = (name) => name;",
+            },
+            id="typed-top-level-const-arrow-function",
+        ),
+        pytest.param(
+            "const buildThing: (name: string) => string =\n  (name) => name;\n",
+            "buildThing",
+            {
+                "path": "ui/typed_multiline.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "buildThing",
+                "signature": "const buildThing: (name: string) => string = (name) => name;",
+            },
+            id="typed-multiline-top-level-const-arrow-function",
+        ),
+        pytest.param(
+            "const buildThing: (name: string) => string = function(name) { return name; };\n",
+            "buildThing",
+            {
+                "path": "ui/typed_function.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "buildThing",
+                "signature": "const buildThing: (name: string) => string = function(name) { return name; };",
+            },
+            id="typed-top-level-const-function-expression",
+        ),
+        pytest.param(
+            "class View {\n  private renderItem: (item: Item) => Item =\n    (item) => item;\n}\n",
+            "renderItem",
+            {
+                "path": "ui/view_typed.tsx",
+                "line": 2,
+                "kind": "method",
+                "name": "View.renderItem",
+                "signature": "private renderItem: (item: Item) => Item = (item) => item;",
+            },
+            id="typed-class-field-arrow-as-method",
+        ),
+        pytest.param(
+            "class View {\n  onClick?: () => void = () => {};\n}\n",
+            "onClick",
+            {
+                "path": "ui/view_optional.tsx",
+                "line": 2,
+                "kind": "method",
+                "name": "View.onClick",
+                "signature": "onClick?: () => void = () => {};",
+            },
+            id="optional-typed-class-field-arrow-as-method",
+        ),
+        pytest.param(
+            "const Table = <T extends Record<string, number>>(rows: T[]) => rows.length;\n",
+            "Table",
+            {
+                "path": "ui/nested_generic.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "Table",
+                "signature": "const Table = <T extends Record<string, number>>(rows: T[]) => rows.length;",
+            },
+            id="generic-arrow-with-nested-constraints",
+        ),
+        pytest.param(
+            "export const Table = <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;\n",
+            "Table",
+            {
+                "path": "ui/nested_export.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "Table",
+                "signature": "export const Table = <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;",
+            },
+            id="exported-generic-arrow-with-nested-constraints",
+        ),
+        pytest.param(
+            "const Table: <T extends Record<string, number>>(rows: T[]) => number = <T extends Record<string, number>>(rows) => rows.length;\n",
+            "Table",
+            {
+                "path": "ui/nested_typed.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "Table",
+                "signature": "const Table: <T extends Record<string, number>>(rows: T[]) => number = <T extends Record<string, number>>(rows) => rows.length;",
+            },
+            id="typed-generic-arrow-with-nested-constraints",
+        ),
+        pytest.param(
+            "const Table =\n  <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;\n",
+            "Table",
+            {
+                "path": "ui/nested_multiline.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "Table",
+                "signature": "const Table = <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;",
+            },
+            id="multiline-generic-arrow-with-nested-constraints",
+        ),
+        pytest.param(
+            "class View {\n  render = <T extends Record<string, number>>(rows: T[]) => rows.length;\n}\n",
+            "render",
+            {
+                "path": "ui/nested_method.tsx",
+                "line": 2,
+                "kind": "method",
+                "name": "View.render",
+                "signature": "render = <T extends Record<string, number>>(rows: T[]) => rows.length;",
+            },
+            id="class-field-generic-arrow-with-nested-constraints",
+        ),
+        pytest.param(
+            "class View {\n  private render: <T extends Foo<Bar<Baz>>>(rows: T[]) => number =\n    <T extends Foo<Bar<Baz>>>(rows) => rows.length;\n}\n",
+            "render",
+            {
+                "path": "ui/nested_typed_method.tsx",
+                "line": 2,
+                "kind": "method",
+                "name": "View.render",
+                "signature": "private render: <T extends Foo<Bar<Baz>>>(rows: T[]) => number = <T extends Foo<Bar<Baz>>>(rows) => rows.length;",
+            },
+            id="typed-class-field-generic-arrow-with-nested-constraints",
+        ),
+        pytest.param(
+            "const buildThing =\n  function(\n    name: string,\n  ) {\n    return name;\n  };\n",
+            "buildThing",
+            {
+                "path": "ui/builders.ts",
+                "line": 1,
+                "kind": "function",
+                "name": "buildThing",
+                "signature": "const buildThing = function( name: string, ) {",
+            },
+            id="multiline-top-level-function-expression-assigned-to-const",
+        ),
+    ],
+)
+def test_symbol_search_finds_typed_and_generic_js_ts_assignments(
+    tmp_path: Path, source: str, query: str, expected: dict
+) -> None:
+    _write(tmp_path / expected["path"], source)
 
-    result = symbol_search(root=tmp_path, query="buildThing", kind="function", exact=True)
+    result = symbol_search(root=tmp_path, query=query, kind=expected["kind"], exact=True)
 
-    assert result["matches"] == [
-        {
-            "path": "ui/typed.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "buildThing",
-            "signature": "const buildThing: (name: string) => string = (name) => name;",
-        }
-    ]
-
-
-def test_symbol_search_finds_typed_multiline_top_level_const_arrow_function(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "typed_multiline.ts",
-        ("const buildThing: (name: string) => string =\n  (name) => name;\n"),
-    )
-
-    result = symbol_search(root=tmp_path, query="buildThing", kind="function", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/typed_multiline.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "buildThing",
-            "signature": "const buildThing: (name: string) => string = (name) => name;",
-        }
-    ]
-
-
-def test_symbol_search_finds_typed_top_level_const_function_expression(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "typed_function.ts",
-        "const buildThing: (name: string) => string = function(name) { return name; };\n",
-    )
-
-    result = symbol_search(root=tmp_path, query="buildThing", kind="function", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/typed_function.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "buildThing",
-            "signature": (
-                "const buildThing: (name: string) => string = function(name) { return name; };"
-            ),
-        }
-    ]
-
-
-def test_symbol_search_finds_typed_class_field_arrow_as_method(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "view_typed.tsx",
-        ("class View {\n  private renderItem: (item: Item) => Item =\n    (item) => item;\n}\n"),
-    )
-
-    result = symbol_search(root=tmp_path, query="renderItem", kind="method", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/view_typed.tsx",
-            "line": 2,
-            "kind": "method",
-            "name": "View.renderItem",
-            "signature": "private renderItem: (item: Item) => Item = (item) => item;",
-        }
-    ]
-
-
-def test_symbol_search_finds_optional_typed_class_field_arrow_as_method(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "view_optional.tsx",
-        ("class View {\n  onClick?: () => void = () => {};\n}\n"),
-    )
-
-    result = symbol_search(root=tmp_path, query="onClick", kind="method", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/view_optional.tsx",
-            "line": 2,
-            "kind": "method",
-            "name": "View.onClick",
-            "signature": "onClick?: () => void = () => {};",
-        }
-    ]
+    assert result["matches"] == [expected]
 
 
 def test_symbol_search_applies_exact_and_kind_filters_to_typed_ts_assignment_patterns(
@@ -373,144 +435,6 @@ def test_symbol_search_applies_exact_and_kind_filters_to_typed_ts_assignment_pat
     assert [match["name"] for match in function_result["matches"]] == ["Table"]
     assert [match["name"] for match in method_result["matches"]] == ["View.onClick"]
     assert constant_result["matches"] == []
-
-
-def test_symbol_search_finds_generic_arrow_with_nested_constraints(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "nested_generic.ts",
-        "const Table = <T extends Record<string, number>>(rows: T[]) => rows.length;\n",
-    )
-
-    result = symbol_search(root=tmp_path, query="Table", kind="function", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/nested_generic.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "Table",
-            "signature": "const Table = <T extends Record<string, number>>(rows: T[]) => rows.length;",
-        }
-    ]
-
-
-def test_symbol_search_finds_exported_generic_arrow_with_nested_constraints(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "nested_export.ts",
-        "export const Table = <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;\n",
-    )
-
-    result = symbol_search(root=tmp_path, query="Table", kind="function", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/nested_export.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "Table",
-            "signature": "export const Table = <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;",
-        }
-    ]
-
-
-def test_symbol_search_finds_typed_generic_arrow_with_nested_constraints(tmp_path: Path) -> None:
-    _write(
-        tmp_path / "ui" / "nested_typed.ts",
-        (
-            "const Table: <T extends Record<string, number>>(rows: T[]) => number = "
-            "<T extends Record<string, number>>(rows) => rows.length;\n"
-        ),
-    )
-
-    result = symbol_search(root=tmp_path, query="Table", kind="function", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/nested_typed.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "Table",
-            "signature": (
-                "const Table: <T extends Record<string, number>>(rows: T[]) => number = "
-                "<T extends Record<string, number>>(rows) => rows.length;"
-            ),
-        }
-    ]
-
-
-def test_symbol_search_finds_multiline_generic_arrow_with_nested_constraints(
-    tmp_path: Path,
-) -> None:
-    _write(
-        tmp_path / "ui" / "nested_multiline.ts",
-        ("const Table =\n  <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;\n"),
-    )
-
-    result = symbol_search(root=tmp_path, query="Table", kind="function", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/nested_multiline.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "Table",
-            "signature": "const Table = <T extends Foo<Bar<Baz>>>(rows: T[]) => rows.length;",
-        }
-    ]
-
-
-def test_symbol_search_finds_class_field_generic_arrow_with_nested_constraints(
-    tmp_path: Path,
-) -> None:
-    _write(
-        tmp_path / "ui" / "nested_method.tsx",
-        (
-            "class View {\n"
-            "  render = <T extends Record<string, number>>(rows: T[]) => rows.length;\n"
-            "}\n"
-        ),
-    )
-
-    result = symbol_search(root=tmp_path, query="render", kind="method", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/nested_method.tsx",
-            "line": 2,
-            "kind": "method",
-            "name": "View.render",
-            "signature": "render = <T extends Record<string, number>>(rows: T[]) => rows.length;",
-        }
-    ]
-
-
-def test_symbol_search_finds_typed_class_field_generic_arrow_with_nested_constraints(
-    tmp_path: Path,
-) -> None:
-    _write(
-        tmp_path / "ui" / "nested_typed_method.tsx",
-        (
-            "class View {\n"
-            "  private render: <T extends Foo<Bar<Baz>>>(rows: T[]) => number =\n"
-            "    <T extends Foo<Bar<Baz>>>(rows) => rows.length;\n"
-            "}\n"
-        ),
-    )
-
-    result = symbol_search(root=tmp_path, query="render", kind="method", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/nested_typed_method.tsx",
-            "line": 2,
-            "kind": "method",
-            "name": "View.render",
-            "signature": (
-                "private render: <T extends Foo<Bar<Baz>>>(rows: T[]) => number = "
-                "<T extends Foo<Bar<Baz>>>(rows) => rows.length;"
-            ),
-        }
-    ]
 
 
 def test_symbol_search_applies_exact_and_kind_filters_to_nested_generic_arrow_patterns(
@@ -552,27 +476,6 @@ def test_symbol_search_finds_multiline_top_level_arrow_function(tmp_path: Path) 
             "kind": "function",
             "name": "App",
             "signature": "export const App = ( props: Props, ) => {",
-        }
-    ]
-
-
-def test_symbol_search_finds_multiline_top_level_function_expression_assigned_to_const(
-    tmp_path: Path,
-) -> None:
-    _write(
-        tmp_path / "ui" / "builders.ts",
-        ("const buildThing =\n  function(\n    name: string,\n  ) {\n    return name;\n  };\n"),
-    )
-
-    result = symbol_search(root=tmp_path, query="buildThing", kind="function", exact=True)
-
-    assert result["matches"] == [
-        {
-            "path": "ui/builders.ts",
-            "line": 1,
-            "kind": "function",
-            "name": "buildThing",
-            "signature": "const buildThing = function( name: string, ) {",
         }
     ]
 

@@ -211,8 +211,8 @@ def _tools(root: Path):
         store=store,
         mode="fullaccess",
         yes=True,
-        # Measure this process's reads; contained worker transport is covered
-        # separately and cannot expose its file handles to the meter.
+        # The meter observes reads in this process; native worker boundaries
+        # have separate qualification tests.
         cfg=AppConfig(model="offline", extra_fields={"shell_sandbox": {"mode": "off"}}),
         subagents_enabled=False,
         read_ledger_sink=ledgers.append,

@@ -36,6 +36,7 @@ def _evidence(command=_COMMAND, *, known=None):
         ("config.verify_commands", "EXPLICIT_USER_COMMAND"),
         ("cli.verify_cmd", "EXPLICIT_USER_COMMAND"),
         ("environment.authoritative_verification_commands", "HOST_AUTHORITATIVE"),
+        ("forge_host.authoritative_verification_commands", "HOST_AUTHORITATIVE"),
         ("repo_scan.likely_test_commands", "INFERRED_HEURISTIC"),
         ("verification_fallback.detected_runner", "INFERRED_HEURISTIC"),
         ("repository.declared_check", "PREEXISTING_REPO_NATIVE"),

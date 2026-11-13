@@ -68,6 +68,8 @@ GITHUB_WRITE_ACTIONS = frozenset(
 # Host actions whose write effect changes an account on a remote service (GitHub,
 # Google). The user's rule: these always ask a person, even in Full Access, with no
 # AI-reviewer or allow-for-session approval. Local fetch/pull are not included.
+# Exception (2026-11-10): a verified plugin's reviewed tool that main describes as
+# "own_change" follows the approval mode like other actions (stdio_bridge).
 REMOTE_CONNECTOR_WRITE_ACTIONS = frozenset(
     {
         "github.pr.create",

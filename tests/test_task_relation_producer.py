@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import threading
-from contextlib import contextmanager
 
 import pytest
 from test_ide_qualified_cancel import harness
@@ -323,15 +322,13 @@ def real_session(tmp_path, monkeypatch, name="real"):
     return session
 
 
-@pytest.mark.parametrize("telemetry", [False, True])
 def test_real_core_selects_current_canonical_instruction_and_retains_evidence(
-    tmp_path, monkeypatch, telemetry
+    tmp_path, monkeypatch
 ):
     (tmp_path / "check.py").write_text("original checker\n")
     session = real_session(tmp_path, monkeypatch)
     seen = []
     installed = []
-    events = []
     build = core.build_acceptance_contract
     install = task_evidence.install_task_evidence
 
@@ -346,18 +343,6 @@ def test_real_core_selects_current_canonical_instruction_and_retains_evidence(
     monkeypatch.setattr(core, "build_acceptance_contract", observe_build)
     monkeypatch.setattr(task_evidence, "install_task_evidence", observe_install)
 
-    class Telemetry:
-        def task(self, text):
-            events.append(("task", text))
-
-        @contextmanager
-        def turn(self):
-            events.append(("enter",))
-            yield
-            events.append(("exit",))
-
-    if telemetry:
-        session.agentbox_telemetry = Telemetry()
     try:
         assert session.run_turn("Inspect old.py without changing it.") == 0
         baseline = session._task_evidence_state
@@ -382,10 +367,7 @@ def test_real_core_selects_current_canonical_instruction_and_retains_evidence(
         assert session._turn_execution_state.acceptance_contract.task_id == identity
         assert session._turn_execution_state.acceptance_contract.snapshot is snapshot
         assert session.client.calls
-        if telemetry:
-            assert len([x for x in events if x[0] == "enter"]) == 2
     finally:
-        session.agentbox_telemetry = None
         session.close()
 
 

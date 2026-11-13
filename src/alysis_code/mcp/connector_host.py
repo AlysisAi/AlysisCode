@@ -43,7 +43,7 @@ from .github_host import normalize_mcp_call_result, verified_bundled_plugin
 from .untrusted_content import build_untrusted_mcp_text_block
 
 CONNECTOR_MCP_ACTION = "mcp.connector.call"
-MAX_CONNECTOR_PLUGINS = 16
+MAX_CONNECTOR_PLUGINS = 32
 #: The verified plugins this engine can bind (``custom_connector_mcp.verified_plugins``).
 VERIFIED_CONNECTOR_PLUGIN_IDS = (
     "alysis.notion",
@@ -56,6 +56,24 @@ VERIFIED_CONNECTOR_PLUGIN_IDS = (
     "alysis.clickup",
     "alysis.todoist",
     "alysis.airtable",
+    "alysis.intercom",
+    "alysis.figma",
+    "alysis.stripe",
+    "alysis.neon",
+    "alysis.miro",
+    "alysis.slack",
+    "alysis.microsoft365",
+    "alysis.outlook_mail",
+    "alysis.outlook_calendar",
+    "alysis.onedrive",
+    "alysis.microsoft_todo",
+    "alysis.outlook_contacts",
+    "alysis.teams",
+    "alysis.canva",
+    "alysis.vercel",
+    "alysis.cloudflare",
+    "alysis.railway",
+    "alysis.asana",
 )
 _PLUGIN_ID = re.compile(r"custom\.[a-z][a-z0-9_]{0,19}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")

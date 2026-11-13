@@ -60,8 +60,14 @@ def make_llm_client(
     transport: httpx.BaseTransport | None = None,
     profile: ProfileSpec | None = None,
     session_id: str | None = None,
+    fixed_reasoning_effort: str | None = None,
 ) -> ChatClient:
-    """Build an LLM client using the resolved provider profile protocol."""
+    """Build an LLM client using the resolved provider profile protocol.
+
+    ``fixed_reasoning_effort`` gives a role its own effort, whatever the chat
+    uses: neither the saved setting nor the chat's per-run choice replaces it.
+    The caller checks that the model offers it.
+    """
     resolved_profile = profile or get_active_profile(cfg)
     protocol = str(resolved_profile.protocol or OPENAI_COMPAT_PROTOCOL).strip()
     base_url = _resolve_base_url(cfg=cfg, profile=resolved_profile)
@@ -101,14 +107,18 @@ def make_llm_client(
                 "Choose the subscription model and reasoning effort in "
                 "/config → Default Model before using this connection."
             )
-    resolved_reasoning_effort, resolved_enable_thinking = client_reasoning_settings(
-        cfg,
-        model=model,
-        profile=resolved_profile,
-        reasoning_effort=reasoning_effort,
-        enable_thinking=enable_thinking,
-        transport=transport,
-    )
+    if fixed_reasoning_effort is not None:
+        resolved_reasoning_effort: str | None = fixed_reasoning_effort
+        resolved_enable_thinking: bool | None = True
+    else:
+        resolved_reasoning_effort, resolved_enable_thinking = client_reasoning_settings(
+            cfg,
+            model=model,
+            profile=resolved_profile,
+            reasoning_effort=reasoning_effort,
+            enable_thinking=enable_thinking,
+            transport=transport,
+        )
     preset = find_preset_for_profile(resolved_profile)
     provider_key = str(preset.provider_key or "").strip() if preset is not None else ""
     if not provider_key:
@@ -345,6 +355,7 @@ def make_llm_client(
             "experimental protocol='gemini_interactions' text-only prototype."
         )
     from . import openai_compat
+    from .output_limit import catalogued_output_ceiling
 
     return _attach_reasoning_trace_capability(
         openai_compat.OpenAICompatClient(
@@ -370,6 +381,7 @@ def make_llm_client(
             inflight_deadline_grace_s=(cfg.subagent_orchestration.inflight_deadline_grace_s),
             route_identity=route_identity,
             stream_assembly=cfg.llm_stream_assembly,
+            output_token_ceiling=catalogued_output_ceiling(model_meta),
         ),
         reasoning_trace_capability,
     )

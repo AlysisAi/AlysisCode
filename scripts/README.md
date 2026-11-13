@@ -14,11 +14,25 @@ They are not imported by Alysis Code during normal use.
 - `release/` contains package validation, dependency auditing, and attestation checks used by
   GitHub Actions.
 
-Run a script with `--help` when available and inspect it before granting network access or release
-credentials. Scripts that produce reports or build artifacts should write only to ignored output
-directories.
+## Installer
 
-User-facing commands belong under `src/alysis_code/`, not in this directory.
+- `install.sh` is the end-user installer behind the one-line install command in
+  the [README](../README.md#get-started). It installs uv when it is missing, then
+  installs `alysis-code` as a uv tool. Users fetch it straight from this path on
+  `main`, so moving or renaming it breaks the documented command. Keep it POSIX
+  `sh`: `curl … | sh` runs it under dash on Ubuntu. CI runs it with shellcheck
+  and in a clean home on Linux and macOS.
 
-See [Contributing](../.github/CONTRIBUTING.md) and the
-[release process](../docs/RELEASING.md).
+## Scope
+
+Scripts may use network access or local tools. Review the script before running
+it, and prefer explicit environment variables over persistent local state.
+
+User-facing CLI behavior should live under `src/alysis_code/`, not in
+this directory. The installer is the exception, because it runs before the
+package exists.
+
+## See Also
+
+- [Contributing](../.github/CONTRIBUTING.md)
+- [Release process](../docs/RELEASING.md)

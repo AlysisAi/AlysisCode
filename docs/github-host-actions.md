@@ -87,6 +87,17 @@ status/diff/history and policy-controlled shell tools remain separate capabiliti
 This contract does not claim that arbitrary shell code is sandboxed from all
 external credential sources.
 
+## Provider-free integration fixture
+
+`PYTHONPATH=src python tests/fixtures/github_host/bridge.py` launches the production
+stdio bridge and tool assembly with a fixture session, without an LLM provider.
+Use ordinary JSONL initialize/session.create/chat.send messages; chat message text
+is JSON such as `{"tool":"github_repo_read","arguments":{}}`. A fake host can
+exercise success, denial, stale account/operation, timeout and cancellation. Any
+write-side test must use a fake host; the fixture itself creates no remote writes.
+Use an explicit source override for desktop acceptance. Keep the app's permanent
+managed-engine pin unchanged until a reviewed engine commit is available.
+
 ## Account questions without a project
 
 A desktop host can advertise `desktop_connections.version = 1` and negotiate
@@ -107,3 +118,9 @@ and cannot clone, commit, push or create PRs. Existing local Git and scoped MCP
 operations retain their separate requirements. The host must revalidate the
 operation, session, selected project and account/plugin revision around each read.
 Cancelled or expired operations must discard late responses.
+
+Tests in `test_desktop_connections.py` cover strict schemas, readonly exposure,
+production bridge fencing, untrusted workspaces and natural-input turns through
+the production agent loop. Model selection and account results are scripted.
+A local Git diff uses a real disposable repository. None of these tests proves
+live provider selection, real account authorization, SSO or installed-app behavior.

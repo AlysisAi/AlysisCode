@@ -142,6 +142,29 @@ def test_workspace_write_keeps_existing_mount_contract(tmp_path):
     assert "--mount" not in args
 
 
+def test_each_protected_metadata_folder_is_mounted_read_only_once(tmp_path):
+    names = [".alysis", ".alysis_images", ".git", "alysis-feedback"]
+    for name in names:
+        (tmp_path / name).mkdir()
+    root = tmp_path.resolve()
+
+    args = docker_args(tmp_path, filesystem_access="workspace-write", cmd="true")
+    read_only = [
+        args[index + 1]
+        for index, arg in enumerate(args)
+        if arg == "-v" and args[index + 1].endswith(":ro")
+    ]
+    assert sorted(read_only) == [f"{root / name}:/workspace/{name}:ro" for name in names]
+
+    args = bwrap_args(tmp_path, filesystem_access="workspace-write", cmd="true")
+    protected = [
+        args[index + 2]
+        for index, arg in enumerate(args)
+        if arg == "--ro-bind" and args[index + 2].startswith("/workspace/")
+    ]
+    assert sorted(protected) == [f"/workspace/{name}" for name in names]
+
+
 @pytest.mark.parametrize(
     "backend,available", [("auto", True), ("seatbelt", True), ("seatbelt", False)]
 )

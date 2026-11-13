@@ -40,7 +40,13 @@ def isolated_offline_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     monkeypatch.setattr(httpx.Client, "send", forbidden)
     monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
     monkeypatch.setattr(openai_codex, "load_provider_token", lambda *_args, **_kwargs: None)
-    for name in ("account_status", "authorization_headers", "list_models", "login"):
+    for name in (
+        "account_status",
+        "authorization_headers",
+        "authorize_request",
+        "list_models",
+        "login",
+    ):
         monkeypatch.setattr(openai_codex.OpenAICodexSubscriptionAuth, name, forbidden)
 
 
@@ -294,18 +300,16 @@ def test_subscription_prepared_request_emits_only_hashed_cache_key_and_keeps_rep
         )
 
     monkeypatch.setattr(httpx.Client, "send", fake_send)
+    scope = "offline-cache-policy-scope"
     monkeypatch.setattr(
-        openai_codex.OpenAICodexSubscriptionAuth,
-        "route_credential_scope",
-        lambda self: "offline-account-scope",
+        openai_codex.OpenAICodexSubscriptionAuth, "route_credential_scope", lambda _self: scope
     )
-    monkeypatch.setattr(
-        openai_codex.OpenAICodexSubscriptionAuth,
-        "authorize_request",
-        lambda self, url, *, expected_credential_scope, **kwargs: ProviderRequestAuthorization(
-            credential_scope=expected_credential_scope, headers={}
-        ),
-    )
+
+    def authorize(_self, _url, *, expected_credential_scope, **_kwargs):
+        assert expected_credential_scope == scope
+        return ProviderRequestAuthorization(credential_scope=scope, headers={})
+
+    monkeypatch.setattr(openai_codex.OpenAICodexSubscriptionAuth, "authorize_request", authorize)
     cfg = _config(_subscription_profile())
     client = make_llm_client(
         cfg=cfg,

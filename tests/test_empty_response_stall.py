@@ -623,7 +623,7 @@ def test_a_slow_endpoint_stalls_on_elapsed_time_before_the_count_threshold(
         def chat(self, **kwargs: Any) -> LLMResponse:
             # One real provider attempt consumes the entire handling budget.
             # This must not rely on compatibility retries replaying the call.
-            clock.advance(601.0)
+            clock.advance(DEFAULT_HANDLING_BUDGET_SECONDS + 1.0)
             return super().chat(**kwargs)
 
     client = _SlowStallingClient(
@@ -1038,6 +1038,7 @@ def test_the_recovery_budget_is_shared_across_turns_in_one_session(tmp_path: Pat
     assert second_salvages[0]["recovery_cycles_used"] == DEFAULT_MAX_RECOVERY_CYCLES
 
 
+@pytest.mark.usefixtures("approved_local_checks")
 def test_normal_responses_are_unaffected(tmp_path: Path) -> None:
     (tmp_path / "data.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     sessions_dir = tmp_path / "sessions"
@@ -1046,6 +1047,7 @@ def test_normal_responses_are_unaffected(tmp_path: Path) -> None:
             model="test-model",
             routing_mode="code_only",
             verify_commands=[_VERIFY_OK_COMMAND],
+            extra_fields={"shell_sandbox": {"mode": "off"}, "verify_sandbox": {"mode": "off"}},
         ),
         root=tmp_path,
         mode="auto",

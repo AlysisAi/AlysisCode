@@ -21,7 +21,6 @@ from alysis_code.cli_impl.commands import welcome as welcome_mod
 from alysis_code.compaction.conversation_compactor import CompactionState
 from alysis_code.config import ApiKeyResolution, AppConfig, ConfigError, load_config, save_config
 from alysis_code.llm.metadata import credential_scope_fingerprint
-from alysis_code.profile_presets import get_preset
 from alysis_code.profiles import ProfileSpec
 
 
@@ -50,6 +49,15 @@ def _subscription_cfg(*, model: str = "gpt-codex-test", effort: str = "high") ->
         "onboarded": True,
     }
     return cfg
+
+
+def _custom_openai_model_choice() -> int:
+    preset = next(p for p in setup_wizard_mod.PROFILE_PRESETS if p.key == "openai-responses")
+    profile = setup_wizard_mod.make_profile_from_preset(preset)
+    rows = setup_wizard_mod._model_picker_rows(
+        setup_wizard_mod._ProfileStepResult(profile=profile, label=preset.key, preset=preset)
+    )
+    return next(index for index, row in enumerate(rows, 1) if row[0] == "__custom_model__")
 
 
 def _patch_setup_wizard_dependencies(monkeypatch) -> None:
@@ -193,12 +201,12 @@ def test_run_rejects_blank_instruction_before_agent_call(
 def test_setup_wizard_saves_config(monkeypatch, tmp_path: Path) -> None:
     _patch_setup_wizard_dependencies(monkeypatch)
     runner = CliRunner()
-    custom_choice = len(get_preset("openai-responses").suggested_models) + 1
     result = runner.invoke(
         alysis_app,
         ["setup"],
-        # Keep exercising custom alias entry as the curated model list grows.
-        input=f"\n1\n1\npersisted-key\n{custom_choice}\ngpt-5-nano\n1\n{tmp_path}\n",
+        # Select custom entry by its current menu position; new curated models
+        # must not silently select a different model in this regression test.
+        input=f"\n1\n1\npersisted-key\n{_custom_openai_model_choice()}\ngpt-5-nano\n1\n{tmp_path}\n",
         env=_env(tmp_path),
     )
     assert result.exit_code == 0
@@ -214,11 +222,12 @@ def test_setup_wizard_saves_config(monkeypatch, tmp_path: Path) -> None:
 def test_setup_wizard_can_persist_api_key(monkeypatch, tmp_path: Path) -> None:
     _patch_setup_wizard_dependencies(monkeypatch)
     runner = CliRunner()
-    custom_choice = len(get_preset("openai-responses").suggested_models) + 1
     result = runner.invoke(
         alysis_app,
         ["setup"],
-        input=f"\n1\n1\npersisted-key\n{custom_choice}\ngpt-5-nano\n1\n{tmp_path}\n",
+        # Select custom entry by its current menu position; new curated models
+        # must not silently select a different model in this regression test.
+        input=f"\n1\n1\npersisted-key\n{_custom_openai_model_choice()}\ngpt-5-nano\n1\n{tmp_path}\n",
         env=_env(tmp_path),
     )
     assert result.exit_code == 0
@@ -231,6 +240,43 @@ def test_setup_wizard_can_persist_api_key(monkeypatch, tmp_path: Path) -> None:
     payload = json.loads(show.output)
     assert payload["api_key_set"] is True
     assert payload["api_key_source"] == "stored:profile=openai-responses"
+    assert payload["credential_id"] == credential_scope_fingerprint("persisted-key")
+    assert "persisted-key" not in show.output
+
+
+def test_config_show_uses_an_empty_credential_id_without_an_api_key(tmp_path: Path) -> None:
+    result = CliRunner().invoke(alysis_app, ["config", "show"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["api_key_set"] is False
+    assert payload["credential_id"] == ""
+
+
+def test_config_show_fingerprints_the_key_from_its_loaded_config_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(model="snapshot-model")
+    secret = "snapshot-key-must-not-leak"
+    resolved_from: list[AppConfig] = []
+    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        cli_mod,
+        "resolve_api_key",
+        lambda value: (
+            resolved_from.append(value) or ApiKeyResolution(key=secret, source="stored:legacy")
+        ),
+    )
+
+    result = CliRunner().invoke(alysis_app, ["config", "show"], env=_env(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert resolved_from == [cfg]
+    assert payload["api_key_source"] == "stored:legacy"
+    assert payload["credential_id"] == credential_scope_fingerprint(secret)
+    assert secret not in result.stdout
 
 
 def test_config_commands_can_set_and_clear_persisted_api_key(tmp_path: Path) -> None:
@@ -244,6 +290,13 @@ def test_config_commands_can_set_and_clear_persisted_api_key(tmp_path: Path) -> 
     assert set_result.exit_code == 0
     credentials_path = tmp_path / "cfg" / "credentials.json"
     assert credentials_path.exists()
+
+    show_result = runner.invoke(alysis_app, ["config", "show"], env=_env(tmp_path))
+    assert show_result.exit_code == 0, show_result.output
+    show_payload = json.loads(show_result.stdout)
+    assert show_payload["api_key_source"] == "stored:legacy"
+    assert show_payload["credential_id"] == credential_scope_fingerprint("persisted-key")
+    assert "persisted-key" not in show_result.stdout
 
     clear_result = runner.invoke(
         alysis_app,
@@ -1214,6 +1267,12 @@ def test_disconnected_subscription_opens_tui_without_creating_session(
     assert captured["unavailable_message"] == ("The selected AI subscription is not connected.")
     assert captured["open_config_on_start"] is False
     assert captured["state"].connection_status == "subscription not connected"
+    report = captured["report_flow_factory"](None, "Cannot connect to my provider")
+    report.choose("save")
+    report.perform_busy()
+    report.apply_busy_outcome()
+    assert report.saved and report.result.zip_path.exists()
+    assert report.result.session_id is None
     login_picker = captured["picker_providers"]["/login"]
     login_spec = login_picker()
     assert [row["value"] for row in login_spec["rows"]] == ["alysis", "openai-codex"]
@@ -2328,11 +2387,10 @@ def test_setup_wizard_can_pick_first_suggested_model(monkeypatch, tmp_path: Path
 def test_setup_wizard_reprompts_invalid_workspace(monkeypatch, tmp_path: Path) -> None:
     _patch_setup_wizard_dependencies(monkeypatch)
     runner = CliRunner()
-    custom_choice = len(get_preset("openai-responses").suggested_models) + 1
     result = runner.invoke(
         alysis_app,
         ["setup"],
-        input=f"\n1\n1\npersisted-key\n{custom_choice}\ngpt-5-nano\n1\n/does/not/exist\n{tmp_path}\n",
+        input=f"\n1\n1\npersisted-key\n{_custom_openai_model_choice()}\ngpt-5-nano\n1\n/does/not/exist\n{tmp_path}\n",
         env=_env(tmp_path),
     )
     assert result.exit_code == 0
@@ -3146,38 +3204,3 @@ def test_chat_interactive_path_skips_model_session_summary_generation(
     assert result.exit_code == 0
     assert run_turn_calls == ["hello"]
     assert captured_flags == [False, False]
-
-
-def test_config_show_uses_an_empty_credential_id_without_an_api_key(tmp_path: Path) -> None:
-    result = CliRunner().invoke(alysis_app, ["config", "show"], env=_env(tmp_path))
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload["api_key_set"] is False
-    assert payload["credential_id"] == ""
-
-
-def test_config_show_fingerprints_the_key_from_its_loaded_config_snapshot(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    cfg = AppConfig(model="snapshot-model")
-    secret = "snapshot-key-must-not-leak"
-    resolved_from: list[AppConfig] = []
-    monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
-    monkeypatch.setattr(
-        cli_mod,
-        "resolve_api_key",
-        lambda value: (
-            resolved_from.append(value) or ApiKeyResolution(key=secret, source="stored:legacy")
-        ),
-    )
-
-    result = CliRunner().invoke(alysis_app, ["config", "show"], env=_env(tmp_path))
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert resolved_from == [cfg]
-    assert payload["api_key_source"] == "stored:legacy"
-    assert payload["credential_id"] == credential_scope_fingerprint(secret)
-    assert secret not in result.stdout

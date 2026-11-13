@@ -363,7 +363,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
 
 ### Security
 
-- `sylliptor.cliPath` is now `machine`-scoped. A workspace could previously nominate an executable
+- `alysis.cliPath` is now `machine`-scoped. A workspace could previously nominate an executable
   that the extension spawned on activation once the folder was trusted, with credential forwarding
   enabled — bypassing the signed managed-runtime chain entirely.
 - The managed browser now refuses loopback, RFC1918, link-local, and cloud metadata addresses on
@@ -383,9 +383,9 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
 ### Changed
 
 - Xiaomi MiMo is now a regular provider preset flowing through the generic catalog. The dedicated
-  `sylliptor.xiaomiApiPlan` setting, the "Xiaomi MiMo (pay as you go)" branch in Configure
+  `alysis.xiaomiApiPlan` setting, the "Xiaomi MiMo (pay as you go)" branch in Configure
   Provider, and the base-URL rewrite that forced `https://api.xiaomimimo.com/v1` whenever the
-  provider was "Xiaomi MiMo" are gone — a configured `sylliptor.baseUrl` is now honored as-is for
+  provider was "Xiaomi MiMo" are gone — a configured `alysis.baseUrl` is now honored as-is for
   every provider, and an empty one defers to the CLI preset's default endpoint. Existing
   connections keep working without migration: the old flow stored `provider`, `defaultModel`, and
   `baseUrl` as ordinary settings (the API key lives in SecretStorage), so those values are read
@@ -458,14 +458,13 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
 - Updated the VSCE packaging toolchain and pinned the patched `brace-expansion` implementation used
   by development-only glob consumers; `npm audit --audit-level=high` now reports zero findings.
 
-> The entries below predate the Sylliptor → Alysis Code rename and keep the product and command
-> names that shipped at the time. Legacy `sylliptor.*` settings migrate automatically on activation,
-> and a `sylliptor` executable on PATH is still found by the development override picker.
+> Historical entries use the current Alysis Code product and command names.
+> The current extension reads `alysis.*` settings and discovers the `alysis` executable.
 
 ## [0.1.1] - 2026-06-10
 
 - Added: the cockpit **Run Swarm** console (SW6) — a capability-gated, Workspace-Trust-gated swarm
-  workflow in the webview. `Sylliptor: Run Swarm` (and the in-cockpit control) dispatch the active
+  workflow in the webview. `Alysis: Run Swarm` (and the in-cockpit control) dispatch the active
   Forge plan across parallel workers, rendering a task grid (status by glyph/weight, never hue), a
   non-modal task-attributed approvals inbox (workers run without `--yes` — dangerous actions pause
   the worker until you Allow/Deny, never auto-denied), a cooperative-cancel control with honest
@@ -473,7 +472,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   only, never commits) or Discards each task, prominently listing any untracked files that were not
   applied. Failed or interrupted tasks offer an editable, pre-filled regenerate-subtree instruction
   (one click sends — never silent). The Run Swarm control is method-gated: dimmed with a structured
-  "needs a newer Sylliptor CLI" reason when the bridge lacks `forge.swarm`, a working control when
+  "needs a newer Alysis CLI" reason when the bridge lacks `forge.swarm`, a working control when
   it is present. Merge stays review-only and broad auto/fullaccess swarm execution remains
   unavailable in the IDE. Strict CSP/nonce, zero-innerHTML, and `isChatPanelMessage` validation hold
   for every new `swarm.*` message.
@@ -535,9 +534,9 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   capability gates, no detached-method `TypeError`, and the forced Forge Plan failure path with one
   canonical error record/no duplicate UI error.
 
-- Fixed: Manage tree domains no longer stay stuck on "needs newer Sylliptor CLI" after a healthy
+- Fixed: Manage tree domains no longer stay stuck on "needs newer Alysis CLI" after a healthy
   bridge check. Runtime bridge health is now the single compatibility source for native trees and
-  the Cockpit, restored webviews re-run the same health path, and `Sylliptor: Manage Refresh`
+  the Cockpit, restored webviews re-run the same health path, and `Alysis: Manage Refresh`
   re-probes bridge health before redrawing the tree.
 
 - Fixed: Forge mode Plan no longer crashes before starting when the bridge advertises async
@@ -564,7 +563,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   before public beta signoff.
 
 - Changed: began the FE-15 cockpit refresh by porting the approved Black/White token ramp into the
-  real webview theme layer, replacing the header wordmark with the square Sylliptor mark + mono `SYLLIPTOR`
+  real webview theme layer, replacing the header wordmark with the square Alysis mark + mono `ALYSIS`
   wordmark + live bridge connection dot, using the same square mark for assistant avatars, and
   upgrading the empty Timeline state to a v5-style brand mark plus 24 suggestion chips. The chips
   route only through existing `submit` / `slash.quickAction` messages, so older-CLI degradation,
@@ -602,9 +601,9 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   `WebviewPanelSerializer` instead of leaving a blank editor group, and the composer placeholder /
   Execute Plan chip wording distinguishes the mutating **Execute Plan** (writes to your working tree,
   never commits) from the non-mutating **/execute preview** (preview only).
-- Added: a first-class **Manage** activity-bar tree (under the Sylliptor container) that browses
+- Added: a first-class **Manage** activity-bar tree (under the Alysis container) that browses
   Tools, Skills, MCP servers, Hooks, Conventions, and Extensions. Each domain group is gated on its
-  capability (an unsupported domain shows a "needs newer Sylliptor CLI" note, never a faked control)
+  capability (an unsupported domain shows a "needs newer Alysis CLI" note, never a faked control)
   and lists its items from the read-only `*.list/.catalog/.status` methods (redacted). Per-item
   context-menu actions — Show Details, Trust/Untrust, Enable/Disable, Remove/Uninstall, MCP
   Login/Logout — route through the gated action pipeline so each runs the capability + Workspace-Trust
@@ -614,7 +613,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   (guarded, non-secret) and `mcp.auth.login.start` (MCP OAuth login) — each capability-gated with
   results rendered in the cockpit. The mutating ones (`config.set`, `mcp.auth.login.start`) require
   Workspace Trust + confirmation and redact values. The `update.check`, `sandbox.doctor/setup/pull`,
-  `doctor.bundle`, and `doctor.providers` actions are exposed through the "Sylliptor: Health and
+  `doctor.bundle`, and `doctor.providers` actions are exposed through the "Alysis: Health and
   Diagnostics" Quick Pick (`update.check` is user-initiated only, never auto-run, apply stays
   CLI-only).
 
@@ -644,8 +643,8 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   renderer) is generic and reused by later management surfaces.
 
 - Changed: bridge recovery now diagnoses the right problem and recovers on its own. A CLI that can't
-  be found or launched (not on `PATH`, a wrong `sylliptor.cliPath`, or a failed transport) is now a
-  distinct **"Can't reach the Sylliptor CLI"** card whose primary action is **Locate Sylliptor CLI** —
+  be found or launched (not on `PATH`, a wrong `alysis.cliPath`, or a failed transport) is now a
+  distinct **"Can't reach the Alysis CLI"** card whose primary action is **Locate Alysis CLI** —
   no longer mislabeled "outdated"/Upgrade. A single detection failure renders exactly one card: the
   implied bridge-process error is folded into it (no duplicate "bridge-unreachable" sibling) and the
   standalone "Bridge health failed" Timeline/Diagnostics item is no longer recorded beside the card
@@ -653,7 +652,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   `● Bridge healthy — <mode> · <model>` line in Diagnostics when connected. On a recoverable failure
   the extension re-checks health automatically with bounded backoff and clears the cards on its own
   (each attempt honors Workspace-Trust / executable-origin gating and never auto-spawns a blocked
-  CLI); a manual Reconnect/Restart Bridge re-reads `sylliptor.cliPath` and re-runs discovery, so a
+  CLI); a manual Reconnect/Restart Bridge re-reads `alysis.cliPath` and re-runs discovery, so a
   path set via Locate CLI applies live without a window reload.
 - Changed: the webview JS (`media/chatPanel.js` + the view-model and DOM helper modules) is now
   type-checked and linted in CI. It was previously invisible to the type-checker (`.js`) and
@@ -693,34 +692,34 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   (not the whole transcript), and the timeline carries `aria-busy` while a response streams.
 - Made the cockpit discoverable and smoothed first run. The status-bar item and a new view-title
   button open the cockpit (bridge health stays reachable from the status-bar tooltip); the Sessions
-  view shows an "Open Sylliptor Cockpit" / "Set up Sylliptor" / "Locate Sylliptor CLI" welcome; and a
-  "Get started with Sylliptor" walkthrough covers install, trust, provider, and opening the cockpit.
-- Added the "Locate Sylliptor CLI" command. It auto-detects the CLI (PATH, the active virtualenv,
+  view shows an "Open Alysis Cockpit" / "Set up Alysis" / "Locate Alysis CLI" welcome; and a
+  "Get started with Alysis" walkthrough covers install, trust, provider, and opening the cockpit.
+- Added the "Locate Alysis CLI" command. It auto-detects the CLI (PATH, the active virtualenv,
   the configured Python interpreter dir, and common install locations), lets you Browse or enter a
   path, validates the binary with `--version` + `ide-bridge health` (output redacted, never spawning
-  an untrusted workspace-local binary), and saves the chosen path to `sylliptor.cliPath` (workspace
+  an untrusted workspace-local binary), and saves the chosen path to `alysis.cliPath` (workspace
   or global) before reconnecting. Surfaced from the welcome view, the walkthrough, and the recovery
   card's "Set CLI Path…" action.
 - Collapsed the cockpit recovery surface so an outdated or misconfigured CLI no longer stacks
   3-6 near-identical "feature disabled" cards. Recovery cards now group by root cause — one card
   per cause, deduplicated by a stable id, capped, and ordered most-severe-first. The version gap,
   missing bridge methods, and every individually disabled capability fold into a single "Your
-  Sylliptor CLI is older than this extension" card that names how many capabilities are affected.
+  Alysis CLI is older than this extension" card that names how many capabilities are affected.
   Cards render only in Diagnostics; the Timeline shows one low-noise pointer ("N issues need
   attention — open Diagnostics") that focuses the Diagnostics tab. Cards offer Install/Upgrade CLI,
-  a new Set CLI Path… action (opens the `sylliptor.cliPath` setting), Open Setup Guide, and Run
+  a new Set CLI Path… action (opens the `alysis.cliPath` setting), Open Setup Guide, and Run
   Doctor (only when the management capability is advertised).
-- Added an optional native VS Code `@sylliptor` Chat Participant. The participant uses the stable
+- Added an optional native VS Code `@alysis` Chat Participant. The participant uses the stable
   VS Code 1.90 chat API, contributes `/help`, `/plan`, `/execute`, and `/doctor`, opens the
-  Sylliptor Cockpit, and routes through existing controllers without proposed APIs or a GitHub
+  Alysis Cockpit, and routes through existing controllers without proposed APIs or a GitHub
   Copilot dependency.
-- Refined the Sylliptor Cockpit into a cleaner chat-first UI. The composer now has one textarea,
+- Refined the Alysis Cockpit into a cleaner chat-first UI. The composer now has one textarea,
   one Send button, primary Plan / Execute Preview / Execute Review actions, and a More menu for
   lower-frequency commands; the header keeps only high-level Mode, Model, CLI Health, Bridge, and
   Sandbox chips; the Forge workspace collapses when inactive and auto-opens for Plan/Preview; and
   recovery cards provide Retry, Restart Bridge, Doctor, setup, and Output actions
   without dumping raw stderr into the visible Timeline.
-- Restyled the Sylliptor Cockpit in a monochrome (black-&-white) theme that reads consistently in
+- Restyled the Alysis Cockpit in a monochrome (black-&-white) theme that reads consistently in
   dark and light VS Code themes, encoding status by glyph, border weight, and fill rather than hue,
   and inverting the primary action button. The header status grid now collapses into a compact
   health pill (mode · model · trust) with a "Details" disclosure that groups the Session, Runtime,
@@ -752,7 +751,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   flow to the webview through the existing runtime compatibility snapshot and light up automatically
   when the CLI advertises the matching method/mode.
 - Added an agent session-mode pill to the cockpit header. It offers readonly / review / auto (writing
-  `sylliptor.defaultMode` through a new `mode.set` webview message routed via the existing `/mode`
+  `alysis.defaultMode` through a new `mode.set` webview message routed via the existing `/mode`
   flow), marks the active mode, and trust-gates non-readonly modes. `fullaccess` appears as a reserved
   option, gated unless the bridge advertises it (`modesFullaccess`) AND the workspace is trusted, with
   a risk note. `/mode` now also accepts `auto`. Forge execution stays review-only regardless of mode.
@@ -761,11 +760,11 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   plan-card "Open as PR" (`forgePr`) and "Run as swarm" (`forgeSwarm`), a diff-card review-gate
   (`forgeReviewGate`), and the diff Keep/Discard buttons tied to `diffApplyDiscard`. Gating is driven
   by a small, unit-tested viewModel helper (`featureGate`/`featureSupported`), which now also owns the
-  Execute Plan gate (`canExecutePlan`). Gated slots dim and show a "needs newer Sylliptor CLI" lock
+  Execute Plan gate (`canExecutePlan`). Gated slots dim and show a "needs newer Alysis CLI" lock
   with the missing methods in the tooltip; when a capability is advertised ahead of the extension
   wiring the slot switches to an inert "pending" state (never an enabled-but-dead control). The
   Reserved tab is reachable from the workspace tab strip.
-- Phase 4 polish & accessibility: welcoming empty/idle states — a framed "Welcome to Sylliptor"
+- Phase 4 polish & accessibility: welcoming empty/idle states — a framed "Welcome to Alysis"
   onboarding card and tone-glyph setup/recovery cards (▲ warn / ■ error) that read in both dark and
   light mono with stronger left-border contrast. The composer Chat | Forge switch is now a proper
   tablist (`role="tablist"`/`role="tab"`/`aria-selected`), approval buttons gained aria-labels, focus
@@ -794,10 +793,10 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   baseline IDE bridge methods, feature-specific missing methods disable only the affected
   chat/Forge/Execute/diff/artifact workflow, setup/recovery cards show install/upgrade commands,
   and SecretStorage API keys are not forwarded to missing, broken, or incompatible CLIs.
-- Added the initial Sylliptor VS Code extension scaffold.
+- Added the initial Alysis VS Code extension scaffold.
 - Added local CLI detection, bridge health validation, SecretStorage helpers, Workspace Trust gates,
   status bar states, placeholder views, and scaffold tests.
-- Added the first live chat/run flow over Sylliptor IDE Protocol v1, including stdio bridge
+- Added the first live chat/run flow over Alysis IDE Protocol v1, including stdio bridge
   request correlation, structured event streaming, approval round-trips, honest cancellation
   handling, bounded event replay, and backend-scoped artifact list/read.
 - Hardened bridge lifecycle and chat UI state handling: startup failures and process errors reject
@@ -816,13 +815,13 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   `@vscode/test-electron`, a real Python stdio bridge smoke in the Node test suite, Marketplace-ready
   package metadata with a PNG icon, SUPPORT and release checklist docs, and CI coverage for
   compile/lint/test/package/integration without automatic Marketplace publishing.
-- Hardened Restricted Mode handling: sensitive Sylliptor settings are declared as restricted
+- Hardened Restricted Mode handling: sensitive Alysis settings are declared as restricted
   configurations, workspace-scoped execution settings are ignored before process launch, workspace
   CLI paths require Workspace Trust, auto-start cannot be enabled by untrusted workspace settings,
   and API keys are not forwarded to untrusted executables.
 - Fixed remaining release blockers: chat transcript event replay now tracks sequence numbers per
   session, untrusted non-readonly starts are blocked before bridge spawn or SecretStorage reads,
-  PATH-resolved `sylliptor` origins are checked before API-key forwarding, the real bridge smoke
+  PATH-resolved `alysis` origins are checked before API-key forwarding, the real bridge smoke
   covers safe `session.create`/`session.list`/`session.cancel`, and `npm audit --audit-level=high`
   passes with dev-only Mocha transitive overrides.
 - Added TypeScript protocol/client support for the backend Forge/diff foundation:
@@ -837,14 +836,14 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   docs match the current Forge Plan UI state, and diff opening uses session/plan-scoped `diff.get`
   requests only.
 - Productionized Forge Plan support: planner-backed `forge.plan` results now render richer task
-  fields and incomplete-plan warnings, while `Sylliptor: List Forge Plans` and `Sylliptor: Open
+  fields and incomplete-plan warnings, while `Alysis: List Forge Plans` and `Alysis: Open
   Forge Plan` reopen persisted plans through durable protocol methods without reading
   SecretStorage. Later entries in this section add the review-mode Execute path.
-- Added `Sylliptor: Forge Execute Preview`, backed by non-mutating `forge.executePreview`. The
+- Added `Alysis: Forge Execute Preview`, backed by non-mutating `forge.executePreview`. The
   preview renders selected tasks, file scope, verification commands, sandbox/trust state, safe
   approval scopes, blockers, and unsupported real-execution status without reading SecretStorage or
   showing fake job progress.
-- Hardened Forge Execute Preview so the no-secret bridge path strips inherited `SYLLIPTOR_API_KEY`,
+- Hardened Forge Execute Preview so the no-secret bridge path strips inherited `ALYSIS_API_KEY`,
   empty task selections stop before bridge startup, and mutating preview modes show unverified
   sandbox availability as a blocker instead of treating a supported profile label as available.
 - Hardened persisted Forge plan/diff safety: reopened plan artifacts and diff records now come only
@@ -867,7 +866,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   `exit_code` are terminal, while active cancellation remains unsupported/fail-closed.
 - Hardened extension ownership for real Forge Execute: chat and Forge route bridge events by owned
   session/job ids, Forge approvals are shown and answered by Forge UI, the chat panel no longer
-  consumes Forge approvals, and `Sylliptor: Cancel Current Run` reports unsupported active Forge
+  consumes Forge approvals, and `Alysis: Cancel Current Run` reports unsupported active Forge
   cancellation honestly.
 - Hardened Forge backend routing consumed by the extension: Forge Execute now advertises and passes
   explicit `no_log` / `max_steps` params while keeping subagents, auto/fullaccess execution, and
@@ -877,7 +876,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
 - Fixed Forge approval edge cases: approval prompts now display the backend action kind through
   `approval_kind`, Forge approvals buffered during async plan startup are answered by the Forge
   controller, and simultaneous chat/Forge active jobs require an explicit cancel target.
-- Labeled the command as `Sylliptor: Forge Execute Review`, kept preview/execute disabled outside
+- Labeled the command as `Alysis: Forge Execute Review`, kept preview/execute disabled outside
   review-mode readiness, and updated release docs to require full Forge exec/swarm/review suites,
   Extension Host coverage, manual VSIX dogfood, and a disposable-repo review-mode Execute smoke.
 - Added local VSIX packaging support for development builds.
@@ -886,7 +885,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   `/doctor`, and `/config` now route through typed extension controllers/commands instead of
   `chat.send`; unknown slash commands fail closed with help. The webview includes slash
   autocomplete, keyboard selection, quick actions, and strict `textContent` rendering.
-- Upgraded the webview into the Sylliptor Cockpit. Runtime status, slash-aware chat, Forge Plan task
+- Upgraded the webview into the Alysis Cockpit. Runtime status, slash-aware chat, Forge Plan task
   cards, task detail, Execute Preview readiness, Execute Review controls, persistent Forge approval
   cards, native diff actions, grouped artifacts, diagnostics, and replay/truncation notices now
   share one secure VS Code-themed surface. Extension Host tests cover cockpit plan/preview,
@@ -895,7 +894,7 @@ All notable changes to the Alysis Code VS Code extension are recorded here. The 
   `/plan` reports validation, executable-origin, bridge, planning, completion, and failure stages,
   `/doctor` records started/completed/failed events with exit code and redacted stdout/stderr
   previews, CLI Origin is distinct from CLI Health, status bar and cockpit Bridge/Protocol/Sandbox
-  chips are synchronized, contributed command titles no longer double-prefix `Sylliptor:`, and
+  chips are synchronized, contributed command titles no longer double-prefix `Alysis:`, and
   slash autocomplete uses Enter for complete commands while Tab/Right Arrow accepts suggestions.
 - Added deterministic Cockpit E2E coverage through the VS Code Extension Host mock bridge. The suite
   now exercises `/help`, `/plan` success and failure, `/doctor` failure, broken health/missing-method

@@ -491,7 +491,7 @@ def test_sandboxed_opaque_commands_require_a_person_before_any_reviewer(workspac
 
 
 def test_the_reviewer_only_stands_in_where_a_person_could_be_asked(workspace: Path) -> None:
-    # Unattended runs (Forge workers and one-shot runs) keep failing closed.
+    # Unattended runs (Forge workers, one-shot runs) keep failing closed.
     reviewer, client, store = _reviewer(workspace, [{"decision": "allow", "reason": "ok"}])
 
     class _Headless(_Surface):
@@ -538,3 +538,162 @@ def test_the_reviewer_sees_why_an_unsandboxed_command_was_flagged(workspace: Pat
     action = json.loads(client.calls[0][1]["content"].split("\n\nAnswer with")[0])["action"]
     assert "git reset --hard" in action["flagged_because"]
     assert "No sandbox" in action["flagged_because"]
+
+
+def test_timeout_cancels_transport_accounts_late_result_once_and_does_not_spawn_more(tmp_path):
+    import time
+
+    release, started = threading.Event(), threading.Event()
+    tokens, usage = [], []
+
+    class Slow:
+        model = "fixture"
+
+        def chat(self, **kwargs):
+            tokens.append(kwargs["cancellation_token"])
+            started.set()
+            release.wait(2)
+            return SimpleNamespace(content='{"decision":"allow"}', usage=None)
+
+    reviewer = ApprovalReviewer(timeout_seconds=0.03)
+    reviewer.bind(
+        SimpleNamespace(
+            client=Slow(), store=_store(tmp_path), _record_llm_usage=lambda **kw: usage.append(kw)
+        )
+    )
+    try:
+        assert reviewer.review(_request(), workspace_root=tmp_path).outcome == "ask_person"
+        assert tokens[0].is_cancelled
+        assert reviewer.review(_request(), workspace_root=tmp_path).outcome == "ask_person"
+        assert len(tokens) == 1
+    finally:
+        release.set()
+    deadline = time.monotonic() + 2
+    while not usage and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(usage) == 1
+    assert usage[0]["operation"] == "approval_review"
+
+
+def test_turn_cancellation_cannot_become_an_allow_or_human_prompt(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from alysis_code.cancellation import CooperativeCancellationError, EventCancellationToken
+
+    stop, entered = threading.Event(), threading.Event()
+
+    class Cancellable:
+        model = "fixture"
+
+        def chat(self, **kwargs):
+            entered.set()
+            kwargs["cancellation_token"].wait(2)
+            return SimpleNamespace(content='{"decision":"allow"}', usage=None)
+
+    reviewer = ApprovalReviewer()
+    reviewer.bind(SimpleNamespace(client=Cancellable(), store=_store(tmp_path)))
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            reviewer.review,
+            _request(),
+            workspace_root=tmp_path,
+            cancellation_token=EventCancellationToken(stop),
+        )
+        assert entered.wait(1)
+        stop.set()
+        with pytest.raises(CooperativeCancellationError):
+            future.result(timeout=2)
+
+
+def test_reviewed_pixels_are_image_input_not_a_truncated_base64_prompt(tmp_path):
+    reviewer, client, _ = _reviewer(
+        tmp_path, [{"decision": "ask_person", "reason": "Confirm this control"}]
+    )
+    request = ApprovalRequest(
+        kind="computer_click",
+        reason="Visual action",
+        preview="",
+        metadata={
+            "review_action": {
+                "tool": "computer_click",
+                "arguments": {"x": 1, "y": 2},
+                "observed_context": {"screenshot": "data:image/png;base64,TEST_IMAGE"},
+            }
+        },
+    )
+    assert reviewer.review(request, workspace_root=tmp_path).outcome == "ask_person"
+    content = client.calls[0][-1]["content"]
+    assert content[1]["image_url"]["url"] == "data:image/png;base64,TEST_IMAGE"
+    assert "TEST_IMAGE" not in content[0]["text"]
+
+
+@pytest.mark.parametrize(
+    "matches",
+    [
+        None,
+        {},
+        {"allow": "match"},
+        {"allow": "match", "ask": "uncertain"},
+        {"allow": "match", "ask": "yes"},
+        {"allow": "match", "ask": "no_match", "extra": "no_match"},
+        {"allow": "match", "ask": "match"},
+    ],
+)
+def test_saved_approval_rules_require_complete_certain_evaluation(matches):
+    rules = [{"id": "allow", "effect": "allow"}, {"id": "ask", "effect": "ask"}]
+    assessment = {
+        "decision": "allow",
+        "risk": "low",
+        "user_authorization": "high",
+        "reason": "Requested work",
+        "rule_matches": matches,
+    }
+    assert parse_verdict(json.dumps(assessment), rules=rules).outcome == "ask_person"
+
+
+@pytest.mark.parametrize("decision", ["allow", "deny", "ask_person"])
+def test_unmatched_ask_rule_preserves_complete_model_decision(decision):
+    rules = [{"id": "allow", "effect": "allow"}, {"id": "ask", "effect": "ask"}]
+    assessment = {
+        "decision": decision,
+        "risk": "low",
+        "user_authorization": "high",
+        "reason": "Fixture assessment",
+        "rule_matches": {"allow": "match", "ask": "no_match"},
+    }
+    assert parse_verdict(json.dumps(assessment), rules=rules).outcome == decision
+
+
+def test_remote_review_never_inspects_service_host(tmp_path):
+    calls = []
+
+    class RemoteClient:
+        model = "fixture"
+
+        def chat(self, **kwargs):
+            from alysis_code.llm.types import LLMResponse, ToolCall
+
+            calls.append(kwargs)
+            assert kwargs["tools"] is None
+            return LLMResponse(
+                "", [ToolCall("read", "review_read_file", {"path": "private.txt"})], {}
+            )
+
+    reviewer = ApprovalReviewer(local_inspection=False)
+    reviewer.bind(SimpleNamespace(client=RemoteClient(), store=_store(tmp_path)))
+    verdict = reviewer.review(_request(), workspace_root=tmp_path)
+    assert verdict.outcome == "ask_person"
+    assert verdict.failure == "evidence_unavailable"
+    assert len(calls) == 1
+
+
+def test_durable_task_intent_and_correction_remain_complete(tmp_path):
+    intent = "α" * 5000 + "KEEP THE ORIGINAL FILE" + "界" * 5000
+    reviewer, client, store = _reviewer(tmp_path, [{"decision": "allow"}], user_message=intent)
+    store.append("user_message", {"content": "Use the corrected date."})
+    reviewer.review(_request("printf safe"), workspace_root=tmp_path)
+    payload = json.loads(client.calls[0][1]["content"])
+    assert [item["text"] for item in payload["user_instructions"]] == [
+        intent,
+        "Use the corrected date.",
+    ]

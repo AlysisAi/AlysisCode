@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import ceil
+
 import pytest
 
 from alysis_code.agent_loop import create_session
@@ -457,8 +459,6 @@ def test_authoritative_verification_context_adds_docs_and_packaging_guidance(tmp
 def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
     tmp_path,
 ) -> None:
-    from math import ceil
-
     cfg = AppConfig(model="managed-8k")
     cfg.extra_fields = {
         "compaction": {
@@ -527,7 +527,7 @@ def test_managed_execution_startup_headroom_reduces_first_request_below_trigger(
     # tool schemas differ by host; the required instructions must still fit.
     reduction = ceil(
         (baseline["startup_target_tokens"] - baseline["initial_request_token_estimate"] + 100)
-        / 0.85
+        / cfg.extra_fields["compaction"]["trigger_ratio"]
     )
     cfg.extra_fields["model_metadata_overrides"]["models"]["managed-8k"][
         "context_window_tokens"
@@ -580,7 +580,9 @@ def test_managed_execution_startup_headroom_skips_adjustment_when_request_alread
                 "managed-8k": {
                     # Keep this the already-fitting case after retaining
                     # parameter contracts; the dense case above has more optional context.
-                    "context_window_tokens": 14_800,
+                    # Raised from 14,800 when the command tools gained step descriptions
+                    # and a timeout: the start-up request then no longer fitted.
+                    "context_window_tokens": 15_400,
                     "max_output_tokens": 1024,
                     "supports_vision": False,
                 }

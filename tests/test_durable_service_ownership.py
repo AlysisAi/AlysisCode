@@ -82,7 +82,13 @@ def manager(tmp_path: Path):
         result.stop(service_id)
 
 
-def test_unrelated_listener_cannot_prove_sleeping_child_ready(manager):
+@pytest.mark.parametrize("listener_visibility", ["native", "missing"])
+def test_unrelated_listener_cannot_prove_sleeping_child_ready(
+    manager, monkeypatch, listener_visibility
+):
+    if listener_visibility == "missing":
+        monkeypatch.setattr(dsm.psutil, "net_connections", lambda **_: [])
+        monkeypatch.setattr(dsm, "_macos_tcp_listeners", lambda _: [])
     with socket.socket() as unrelated:
         unrelated.bind(("127.0.0.1", 0))
         unrelated.listen(16)
@@ -94,7 +100,13 @@ def test_unrelated_listener_cannot_prove_sleeping_child_ready(manager):
         )
         assert started.payload["failure_category"] == "readiness_failed"
         assert started.payload["readiness"]["status"] == "failed"
-        assert "unrelated" in started.payload["readiness"]["detail"]
+        # OS socket enumeration can omit the reachable foreign listener. Both
+        # observations must fail closed; neither proves this child's ownership.
+        assert not started.payload["readiness"].get("endpoint_owned", False)
+        assert started.payload["readiness"]["detail"] in {
+            "endpoint is occupied by an unrelated or unidentifiable listener",
+            "no owned listener was visible for the endpoint",
+        }
         assert not started.payload["alive"]
         with socket.create_connection(("127.0.0.1", port), timeout=0.2):
             pass

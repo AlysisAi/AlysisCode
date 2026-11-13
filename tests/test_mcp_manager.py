@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2745,6 +2746,70 @@ def _echo_tools(count: int, *, prefix: str) -> list[dict[str, object]]:
         }
         for index in range(count)
     ]
+
+
+def test_catalog_startup_is_bounded_parallel_and_keeps_configuration_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _load_multi_server_manager(
+        tmp_path,
+        monkeypatch,
+        servers={name: {"args": []} for name in ("a", "b", "c", "d", "e", "f")},
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+    )
+    barrier = threading.Barrier(4, timeout=5)
+    lock = threading.Lock()
+    active = peak = 0
+    started: list[str] = []
+
+    def collect(server):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            started.append(server.id)
+        if server.id in {"a", "b", "c", "d"}:
+            barrier.wait()
+        with lock:
+            active -= 1
+        return SimpleNamespace(server=server)
+
+    monkeypatch.setattr(manager, "_collect_server_catalog", collect)
+    try:
+        catalogs = manager._collect_server_catalogs()
+        assert peak == 4
+        assert [catalog.server.id for catalog in catalogs] == ["a", "b", "c", "d", "e", "f"]
+        assert set(started) == {"a", "b", "c", "d", "e", "f"}
+        assert not manager.server_startup_errors()
+    finally:
+        manager.close()
+
+
+def test_catalog_startup_interrupt_drains_and_closes_late_successes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _load_multi_server_manager(
+        tmp_path,
+        monkeypatch,
+        servers={name: {"args": []} for name in ("a", "b", "c", "d")},
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+    )
+    barrier = threading.Barrier(4, timeout=5)
+    closed: list[str] = []
+
+    def collect(server):
+        barrier.wait()
+        if server.id == "a":
+            raise KeyboardInterrupt("cancel startup")
+        return SimpleNamespace(client=SimpleNamespace(close=lambda: closed.append(server.id)))
+
+    monkeypatch.setattr(manager, "_collect_server_catalog", collect)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="cancel startup"):
+            manager._collect_server_catalogs()
+        assert sorted(closed) == ["b", "c", "d"]
+    finally:
+        manager.close()
 
 
 def test_mcp_manager_skips_a_server_that_fails_to_start_and_keeps_the_others(

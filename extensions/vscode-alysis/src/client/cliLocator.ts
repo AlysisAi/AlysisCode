@@ -9,13 +9,6 @@ import {
 import { ExecutableResolverOptions, resolveExecutablePath } from "./ExecutableResolver";
 import { BridgeHealthError, parseHealthJson } from "./AlysisProtocol";
 
-/**
- * The command name shipped before the Sylliptor -> Alysis Code rename. The
- * renamed package keeps it as a deprecated console-script alias, so a user who
- * upgrades the extension before the CLI still gets a working bridge.
- */
-export const LEGACY_CLI_NAME = "sylliptor";
-
 export type CliCandidateSource = "setting" | "path" | "virtualenv" | "python-scripts" | "common-dir";
 
 export interface CliCandidate {
@@ -50,7 +43,6 @@ export function discoverCliCandidates(options: DiscoverCliOptions = {}): CliCand
   const home = options.homeDir ?? env.HOME ?? env.USERPROFILE ?? "";
   const pathApi = platform === "win32" ? path.win32 : path.posix;
   const exeName = platform === "win32" ? "alysis.exe" : "alysis";
-  const legacyExeName = platform === "win32" ? `${LEGACY_CLI_NAME}.exe` : LEGACY_CLI_NAME;
   const binSubdir = platform === "win32" ? "Scripts" : "bin";
   const exists = options.fileExists ?? defaultFileExists;
 
@@ -77,17 +69,10 @@ export function discoverCliCandidates(options: DiscoverCliOptions = {}): CliCand
     }
   }
 
-  // 2. PATH resolution of `alysis`, then the pre-rebrand `sylliptor` so an
-  // installed-but-not-yet-upgraded CLI is still found rather than reported
-  // missing. Order matters: the current name always wins.
+  // 2. Resolve the canonical CLI on PATH.
   const onPath = resolveExecutablePath("alysis", options.executableResolver);
   if (onPath.resolvedPath) {
     add(onPath.resolvedPath, "path", "Found on PATH");
-  } else {
-    const legacyOnPath = resolveExecutablePath(LEGACY_CLI_NAME, options.executableResolver);
-    if (legacyOnPath.resolvedPath) {
-      add(legacyOnPath.resolvedPath, "path", "Found on PATH (legacy `sylliptor` command)");
-    }
   }
 
   // 3. The active virtualenv's bin/Scripts dir.
@@ -116,11 +101,6 @@ export function discoverCliCandidates(options: DiscoverCliOptions = {}): CliCand
     if (exists(candidate)) {
       add(candidate, source, label);
       return;
-    }
-    // Same directory, pre-rebrand executable name.
-    const legacyCandidate = pathApi.join(dir, legacyExeName);
-    if (exists(legacyCandidate)) {
-      add(legacyCandidate, source, `${label} (legacy \`${LEGACY_CLI_NAME}\` command)`);
     }
   }
 }

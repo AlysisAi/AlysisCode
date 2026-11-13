@@ -27,7 +27,7 @@ diffs, artifacts, and diagnostics opening as focused details on the right when t
   unverifiable bundle leaves execution and credential forwarding disabled and says so in Runtime
   Details. A non-empty `alysis.cliPath` is a development override in every mode — it is used as-is,
   labelled non-production, and never release-verified. Only Development/Test extension hosts fall
-  back to `alysis` (or the legacy `sylliptor` alias) on PATH. See
+  back to `alysis` (or the legacy `alysis` alias) on PATH. See
   [Managed runtime](#managed-runtime) below.
 - Resolves every executable before process launch so workspace-local binaries cannot receive
   credentials in untrusted workspaces.
@@ -251,7 +251,7 @@ by `.github/workflows/managed-cli-vsix-release.yml`; see
 
 ## CLI compatibility and recovery
 
-The extension requires a local Alysis Code CLI. This build is tested against `alysis-code` `0.16.3`
+The extension requires a local Alysis Code CLI. This build is tested against `alysis-code` `0.17.0`
 (`MIN_RECOMMENDED_ALYSIS_CLI_VERSION`, kept equal to the monorepo `pyproject.toml` version by a unit
 test), with IDE Protocol v1 over stdio. The version is a soft gate; hard availability is decided per
 feature by capability negotiation, so an older CLI that still advertises the required methods works

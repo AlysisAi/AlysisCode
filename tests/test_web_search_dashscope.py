@@ -260,25 +260,55 @@ def test_dashscope_sources_from_urls_preserves_legal_trailing_parenthesis() -> N
     ]
 
 
-def test_dashscope_chat_search_extracts_parenthesized_markdown_link_target_from_plain_answer() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("query", "content", "expected_url"),
+    [
+        pytest.param(
+            "docs markdown link",
+            "See ([docs](https://docs.example.com/spec)) for more.",
+            "https://docs.example.com/spec",
+            id="parenthesized-markdown-link-target",
+        ),
+        pytest.param(
+            "function markdown title",
+            'See [Function](https://docs.example.com/Function_(mathematics) "Function docs") for more.',
+            "https://docs.example.com/Function_(mathematics)",
+            id="markdown-link-title-parenthesized-target",
+        ),
+        pytest.param(
+            "docs bracket query",
+            "See https://docs.example.com/path?foo[bar]=1 for more.",
+            "https://docs.example.com/path?foo[bar]=1",
+            id="bracket-query-url",
+        ),
+        pytest.param(
+            "yahoo docs",
+            "See https://docs.example.com/Yahoo! for more.",
+            "https://docs.example.com/Yahoo!",
+            id="exclamation-url",
+        ),
+        pytest.param(
+            "docs trailing parenthesis",
+            "See https://docs.example.com/path?x=a) for more.",
+            "https://docs.example.com/path?x=a)",
+            id="url-with-legal-trailing-parenthesis",
+        ),
+        pytest.param(
+            "function mathematics docs",
+            "See https://docs.example.com/Function_(mathematics) for more.",
+            "https://docs.example.com/Function_(mathematics)",
+            id="parenthesized-url",
+        ),
+    ],
+)
+def test_dashscope_chat_search_extracts_literal_urls_from_plain_answers(
+    query: str, content: str, expected_url: str
+) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": "See ([docs](https://docs.example.com/spec)) for more."
-                        }
-                    }
-                ]
-            },
-        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
     result = dashscope_chat_search(
-        query="docs markdown link",
+        query=query,
         base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
         api_key="dashscope-key",
         model="qwen3.5-plus",
@@ -286,195 +316,9 @@ def test_dashscope_chat_search_extracts_parenthesized_markdown_link_target_from_
         resolver=_public_resolver,
     )
 
-    assert result["sources"] == [{"url": "https://docs.example.com/spec", "title": ""}]
+    assert result["sources"] == [{"url": expected_url, "title": ""}]
     assert result["citations"] == [
-        {
-            "title": "",
-            "url": "https://docs.example.com/spec",
-            "start_index": None,
-            "end_index": None,
-        }
-    ]
-
-
-def test_dashscope_chat_search_extracts_markdown_link_title_parenthesized_target() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                "See [Function](https://docs.example.com/Function_(mathematics) "
-                                '"Function docs") for more.'
-                            )
-                        }
-                    }
-                ]
-            },
-        )
-
-    result = dashscope_chat_search(
-        query="function markdown title",
-        base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
-        api_key="dashscope-key",
-        model="qwen3.5-plus",
-        transport=httpx.MockTransport(handler),
-        resolver=_public_resolver,
-    )
-
-    assert result["sources"] == [
-        {"url": "https://docs.example.com/Function_(mathematics)", "title": ""}
-    ]
-    assert result["citations"] == [
-        {
-            "title": "",
-            "url": "https://docs.example.com/Function_(mathematics)",
-            "start_index": None,
-            "end_index": None,
-        }
-    ]
-
-
-def test_dashscope_chat_search_extracts_bracket_query_url_from_plain_answer() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": "See https://docs.example.com/path?foo[bar]=1 for more."
-                        }
-                    }
-                ]
-            },
-        )
-
-    result = dashscope_chat_search(
-        query="docs bracket query",
-        base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
-        api_key="dashscope-key",
-        model="qwen3.5-plus",
-        transport=httpx.MockTransport(handler),
-        resolver=_public_resolver,
-    )
-
-    assert result["sources"] == [{"url": "https://docs.example.com/path?foo[bar]=1", "title": ""}]
-    assert result["citations"] == [
-        {
-            "title": "",
-            "url": "https://docs.example.com/path?foo[bar]=1",
-            "start_index": None,
-            "end_index": None,
-        }
-    ]
-
-
-def test_dashscope_chat_search_extracts_exclamation_url_from_plain_answer() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {"message": {"content": "See https://docs.example.com/Yahoo! for more."}}
-                ]
-            },
-        )
-
-    result = dashscope_chat_search(
-        query="yahoo docs",
-        base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
-        api_key="dashscope-key",
-        model="qwen3.5-plus",
-        transport=httpx.MockTransport(handler),
-        resolver=_public_resolver,
-    )
-
-    assert result["sources"] == [{"url": "https://docs.example.com/Yahoo!", "title": ""}]
-    assert result["citations"] == [
-        {
-            "title": "",
-            "url": "https://docs.example.com/Yahoo!",
-            "start_index": None,
-            "end_index": None,
-        }
-    ]
-
-
-def test_dashscope_chat_search_extracts_url_with_legal_trailing_parenthesis_from_plain_answer() -> (
-    None
-):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {"message": {"content": "See https://docs.example.com/path?x=a) for more."}}
-                ]
-            },
-        )
-
-    result = dashscope_chat_search(
-        query="docs trailing parenthesis",
-        base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
-        api_key="dashscope-key",
-        model="qwen3.5-plus",
-        transport=httpx.MockTransport(handler),
-        resolver=_public_resolver,
-    )
-
-    assert result["sources"] == [{"url": "https://docs.example.com/path?x=a)", "title": ""}]
-    assert result["citations"] == [
-        {
-            "title": "",
-            "url": "https://docs.example.com/path?x=a)",
-            "start_index": None,
-            "end_index": None,
-        }
-    ]
-
-
-def test_dashscope_chat_search_extracts_parenthesized_url_from_plain_answer() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                "See https://docs.example.com/Function_(mathematics) for more."
-                            )
-                        }
-                    }
-                ]
-            },
-        )
-
-    result = dashscope_chat_search(
-        query="function mathematics docs",
-        base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
-        api_key="dashscope-key",
-        model="qwen3.5-plus",
-        transport=httpx.MockTransport(handler),
-        resolver=_public_resolver,
-    )
-
-    assert result["sources"] == [
-        {
-            "url": "https://docs.example.com/Function_(mathematics)",
-            "title": "",
-        }
-    ]
-    assert result["citations"] == [
-        {
-            "title": "",
-            "url": "https://docs.example.com/Function_(mathematics)",
-            "start_index": None,
-            "end_index": None,
-        }
+        {"title": "", "url": expected_url, "start_index": None, "end_index": None}
     ]
 
 

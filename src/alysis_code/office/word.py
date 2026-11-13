@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
@@ -16,7 +17,7 @@ from zipfile import BadZipFile, ZipFile
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Inches, Pt, RGBColor, Twips
 from lxml import etree
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -297,6 +298,73 @@ def inspect(source: Path) -> dict:
     return _metadata(_read(source))
 
 
+def _display_width(text: str) -> int:
+    """How much of a line text takes: wide East Asian characters count twice, combining marks not at all."""
+    return sum(
+        0
+        if unicodedata.combining(char)
+        else 2
+        if unicodedata.east_asian_width(char) in ("W", "F")
+        else 1
+        for char in text
+    )
+
+
+def _column_widths(rows: list[list[str]], total: int) -> list[int]:
+    """Column widths (twips) that follow the content, as Word's AutoFit does.
+
+    Each column keeps room for its longest word (up to 20 characters), short columns keep their
+    text on one line, and the longest text takes the rest and wraps. A table whose text fits on one
+    line per cell keeps its columns in proportion to that text. Measured in characters of the
+    10.5 pt body text.
+    """
+    padding = 2.5  # the cell's left and right margins (0.08 inch each), in characters
+    natural: list[float] = []
+    minimum: list[float] = []
+    for index in range(len(rows[0])):
+        lines = [line for row in rows for line in (row[index].splitlines() or [""])]
+        words = [word for line in lines for word in line.split()]
+        natural.append(max([_display_width(line) for line in lines] + [1]) + padding)
+        minimum.append(min(max([_display_width(word) for word in words] + [1]), 20) + padding)
+    # An average character of the 10.5 pt body text is about 0.56 em wide: 117.6 twips.
+    capacity = total / 117.6
+    if sum(natural) <= capacity:
+        weights = natural
+    elif sum(minimum) >= capacity:
+        weights = minimum
+    else:
+        # Short columns (numbers, dates, owners, checkboxes) keep their text on one line, shortest
+        # first, while the columns after them can still have their longest word; the longest text
+        # takes what is left and wraps.
+        weights = list(minimum)
+        spare = capacity - sum(minimum)
+        order = sorted(range(len(natural)), key=lambda column: natural[column])
+        for position, column in enumerate(order):
+            share = spare / (len(order) - position)
+            extra = min(natural[column] - minimum[column], share)
+            weights[column] += extra
+            spare -= extra
+        weights[order[-1]] += spare
+    widths = [int(total * weight / sum(weights)) for weight in weights]
+    widths[-1] += total - sum(widths)
+    return widths
+
+
+def _fit_columns(table, rows: list[list[str]], total: int) -> None:
+    """Fixed column widths from the content, written where Word and other readers both take them."""
+    widths = _column_widths(rows, total)
+    table.autofit = False
+    table_width = table._tbl.tblPr.find(qn("w:tblW"))
+    if table_width is not None:
+        table_width.set(qn("w:w"), str(total))
+        table_width.set(qn("w:type"), "dxa")
+    for column, width in zip(table._tbl.tblGrid.findall(qn("w:gridCol")), widths, strict=True):
+        column.set(qn("w:w"), str(width))
+    for row in table.rows:
+        for cell, width in zip(row.cells, widths, strict=True):
+            cell.width = Twips(width)
+
+
 def create(spec: dict, output: Path, workspace: Path) -> dict:
     """Create an editable, text-led DOCX at a new staged output path."""
     _spec(spec, {"title", "blocks"})
@@ -367,6 +435,11 @@ def create(spec: dict, output: Path, workspace: Path) -> dict:
             rows = block["rows"]
             table = document.add_table(rows=len(rows), cols=len(rows[0]))
             table.style = "Table Grid"
+            _fit_columns(
+                table,
+                rows,
+                int((section.page_width - section.left_margin - section.right_margin) / 635),
+            )
             for row_index, values in enumerate(rows):
                 for cell, value in zip(table.rows[row_index].cells, values, strict=True):
                     cell.text = value

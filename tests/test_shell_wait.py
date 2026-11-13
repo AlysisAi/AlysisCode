@@ -405,8 +405,7 @@ def test_shell_output_existing_callers_remain_immediate(
     )
     try:
         started = session.tools["shell_background"].run({"cmd": "fake"})
-        # Let the fixture's reader publish its output before checking the
-        # immediate snapshot API, which deliberately does not wait for bytes.
+        # The immediate snapshot API does not wait for its reader to publish.
         assert session.terminal_manager is not None
         _, timed_out = session.terminal_manager.wait_for_output(
             started["process_id"], since=0, timeout_s=2.0, until="output_available"

@@ -45,11 +45,20 @@ pytestmark = pytest.mark.usefixtures("approved_local_checks")
 
 @pytest.fixture(autouse=True)
 def _isolated_verification_environment(monkeypatch) -> None:
+    from alysis_code.surface import ApprovalDecision
+    from alysis_code.surface.noop_surface import NoopSurface
+
     # These integration tests execute their own small suites in tmp_path. They
     # exercise bootstrap behavior, not Docker availability or the caller's
     # sandbox preference. The session config explicitly selects host execution.
     monkeypatch.delenv("ALYSIS_VERIFY_SANDBOX_MODE", raising=False)
     monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+    monkeypatch.setattr(NoopSurface, "host_managed_approvals", True, raising=False)
+    monkeypatch.setattr(
+        NoopSurface,
+        "request_approval",
+        lambda self, request: ApprovalDecision(request.kind in {"verify_run", "shell_run"}),
+    )
 
 
 class _ScriptedClient:

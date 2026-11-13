@@ -7,6 +7,7 @@ import math
 import re
 import threading
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -1947,19 +1948,35 @@ class McpManager:
             lease.close()
 
     def _collect_server_catalogs(self) -> tuple[_CollectedServerCatalog, ...]:
-        """Connect to every active server. A server that fails is recorded and skipped."""
+        """Discover independent servers concurrently; admit them in configuration order."""
         catalogs: list[_CollectedServerCatalog] = []
-        try:
-            for server in self._active_servers:
-                try:
-                    catalogs.append(self._collect_server_catalog(server))
-                except Exception as exc:  # noqa: BLE001 - one server must not take down the others
-                    self._server_startup_errors[server.id] = exc
-                    self._discard_failed_server(server.id)
-        except BaseException:
-            for catalog in catalogs:
-                catalog.client.close()
-            raise
+        if not self._active_servers:
+            return ()
+        # This only overlaps connection and catalog I/O. Tool execution and the
+        # deterministic policy/schema budgets in _admit_server_catalogs are unchanged.
+        # Drain workers before cleanup so an interrupted startup cannot leak a
+        # connection that finishes after the manager has already unwound.
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(self._active_servers)), thread_name_prefix="mcp-startup"
+        ) as pool:
+            futures = []
+            try:
+                for server in self._active_servers:
+                    futures.append(pool.submit(self._collect_server_catalog, server))
+                for server, future in zip(self._active_servers, futures, strict=True):
+                    try:
+                        catalogs.append(future.result())
+                    except Exception as exc:  # noqa: BLE001 - isolate a failed server
+                        self._server_startup_errors[server.id] = exc
+                        self._discard_failed_server(server.id)
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                pool.shutdown(wait=True, cancel_futures=True)
+                for future in futures:
+                    if not future.cancelled() and future.exception() is None:
+                        future.result().client.close()
+                raise
         return tuple(catalogs)
 
     def _collect_server_catalog(self, server: ResolvedMcpServer) -> _CollectedServerCatalog:
@@ -2026,7 +2043,7 @@ class McpManager:
                 resources_capability_advertised=client.supports_resources,
                 session_negotiated=client.session_negotiated,
             )
-        except Exception:
+        except BaseException:
             if raw_client is not None:
                 raw_client.close()
             elif existing_lease is None:

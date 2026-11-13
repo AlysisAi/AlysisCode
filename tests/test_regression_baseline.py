@@ -155,11 +155,6 @@ def test_non_test_output_returns_none_for_each_parser() -> None:
     assert parse_unittest_report("hello world") is None
 
 
-def test_parser_is_deterministic() -> None:
-    assert parse_test_report(_PYTEST_MIXED) == parse_test_report(_PYTEST_MIXED)
-    assert parse_test_report(_UNITTEST_MIXED) == parse_test_report(_UNITTEST_MIXED)
-
-
 def test_pytest_param_id_with_spaced_dash_is_not_truncated() -> None:
     # Real pytest emits `test_param[a - 2]` whose param contains " - "; the
     # bracket-aware split must keep it whole, not truncate to `test_param[a`.

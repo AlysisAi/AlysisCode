@@ -73,8 +73,16 @@ from ...host_images import (
 )
 from ...llm.base import effective_tools_for_client
 from ...llm.metadata import assistant_message_from_response
+from ...llm.output_limit import response_cut_off_by_output_limit
 from ...llm.tool_call_markup import ToolCallMarkupFilter, contains_tool_call_markup
-from ...llm.types import AssistantResponsePhase, LLMError, LLMOutputLimitError
+from ...llm.types import (
+    AssistantResponsePhase,
+    LLMEmptyResponseError,
+    LLMError,
+    LLMOutputLimitError,
+    LLMResponse,
+)
+from ...next_steps import DISPLAY_ONLY_TOOL_NAMES
 from ...project_folders import scoped_turn
 from ...project_folders import turn_tools as project_turn_tools
 from ...runtime_kind import RuntimeKind
@@ -91,6 +99,7 @@ from ...surface import NoopSurface, ToolEndEvent, ToolOutputEvent, ToolStartEven
 from ...surface.base import Surface
 from ...task_scope import (
     inspect_workspace_git_diff,
+    list_untracked_entries,
     resolve_workspace_git_base,
 )
 from ...tools.artifacts import SessionArtifactReadError
@@ -128,8 +137,10 @@ from ...verify_gate import VerifyError, required_verify_commands
 from ..acceptance_contract import (
     AcceptanceCriterionKind,
     AcceptanceCriterionStatus,
+    AcceptancePathRole,
     acceptance_contract_problem_payload,
     build_acceptance_contract,
+    durable_service_problem,
     finalize_acceptance_contract,
 )
 from ..artifact_output_observation import ArtifactOutputObserver
@@ -200,14 +211,17 @@ from ..empty_response_stall import (
     response_is_contentless,
 )
 from ..errors import AgentRuntimeError, ApprovalDeclinedError
+from ..finish_facts import FinishFacts, collect_finish_facts
 from ..llm_calls import (
     TOOL_CONTEXT_MESSAGE_KEY,
+    TURN_SETUP_MESSAGE_KEY,
     _classify_zero_activity_disposition,
     _is_stream_unsupported_error,
     _main_agent_chat,
     _registered_tool_schema_list,
     _request_messages_with_volatile_suffix,
     _safe_forced_tool_choice_for_recovery,
+    without_host_message_keys,
 )
 from ..prompt_context import (
     _IMAGE_ATTACHMENT_TURN_SYSTEM_HINT,
@@ -217,10 +231,8 @@ from ..prompt_context import (
     _extract_repo_relative_paths_from_text,
     _recent_visible_non_repo_history,
     _register_ephemeral_host_image_message,
-    _resolve_session_pinned_prefix_len,
     _session_repo_scan,
     _session_verify_command_selection,
-    _set_session_pinned_prefix_len,
     extract_user_visible_instruction,
     request_model_identity,
     scrub_ephemeral_host_images,
@@ -255,6 +267,7 @@ from ..sensitive_output import (
     strip_computer_use_provider_state_for_persistence,
 )
 from ..steering import (
+    USER_QUESTION_RESPONSE_PREFIX,
     build_steer_messages,
     ops_inbox_for,
     steer_inbox_for,
@@ -384,6 +397,23 @@ MAX_IDENTICAL_FAILED_EDIT_ATTEMPTS = 2
 # rewritten and re-run rather than an edit that kept failing.
 _EDIT_DISCIPLINE_TRACKED_TOOLS = frozenset({"fs_write", "fs_edit", "git_apply_patch", "shell_run"})
 MAX_EDIT_NUDGES_PER_TURN = 1
+
+
+def _display_only_reply(response: Any) -> str:
+    """The text of a response whose only calls show something to the person (next steps).
+
+    A model may write its reply beside such a call and then, with nothing more to say, end the
+    following response empty. That reply is the turn's answer. Any other step keeps the empty
+    response an anomaly, so only the shape of the calls decides, never the words.
+    """
+    calls = list(getattr(response, "tool_calls", None) or [])
+    if not calls or any(
+        str(getattr(call, "name", "") or "") not in DISPLAY_ONLY_TOOL_NAMES for call in calls
+    ):
+        return ""
+    return str(getattr(response, "content", "") or "").strip()
+
+
 MAX_EMPTY_RESPONSE_ANOMALY_RECOVERIES = 2
 MAX_COMPUTER_USE_KEY_TARGET_RECOVERIES = 2
 MAX_COMPUTER_USE_PAGE_RECOVERIES = 2
@@ -455,6 +485,21 @@ If a bounded high-value verification check is already known and there is enough 
 _SUBAGENT_REQUIRED_NUDGE_TEMPLATE = """The current user request explicitly asked for subagent or delegation behavior, but this turn has not attempted subagent_run yet.
 Use the next tool-enabled step to call subagent_run with the best registered subagent and a self-contained task brief. If subagent_run is unavailable or fails, report that concrete blocker instead of finalizing as if delegation happened.
 Available subagents: {available_subagents}"""
+
+
+def file_change_evidence_is_owed(
+    turn_intent: str, *, file_tool_called: bool, turn_touched_paths: Collection[str]
+) -> bool:
+    """Whether a turn that ends with no file change has something to answer for.
+
+    Only when it set out to change the workspace's files: it called a file
+    tool, whether or not the call went through, or the host saw it change a
+    path there. Counting every "material" action instead also caught a turn
+    that only started a preview or a service.
+    """
+    return turn_intent == "execute" and bool(file_tool_called or turn_touched_paths)
+
+
 _EMPTY_DIFF_FINALIZATION_CORRECTIVE = (
     "An implementation attempt was observed, but no file changes are present. "
     "Check the attempted operation and its result before claiming a fix. Complete the "
@@ -1215,21 +1260,6 @@ def _approval_declined_final_text(*, tool_name: str, approval_kind: str) -> str:
     )
 
 
-def _metadata_strings(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
-    if not isinstance(value, (list, tuple)):
-        text = str(value).strip()
-        return (text,) if text else ()
-    return tuple(str(item).strip() for item in value if str(item).strip())
-
-
-def _metadata_dict(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
-
-
 def _surface_accepts_reasoning_trace(surface: Any) -> bool:
     """Return whether this surface currently wants provider reasoning text.
 
@@ -1323,8 +1353,43 @@ def run_turn(
     if resolved_entry is not None and resolved_entry.retired is not None:
         resolved_entry = None
 
-    @attribution.model_call
     def _computer_evidence_chat(**kwargs: Any) -> Any:
+        from ...memory_artifacts import artifact_source
+        from ...memory_evidence import (
+            EVENT,
+            delivery,
+            note_session_receipt,
+            prepare_request,
+            session_receipts,
+        )
+        from ...memory_sources import persist_local
+
+        def _record(content: Any) -> None:
+            receipt = delivery(inputs, content, turn_id=user_turn_id)
+            self.store.append(EVENT, receipt)
+            # Where the conversation ends now: the reply comes right after.
+            note_session_receipt(self, receipt)
+
+        messages, inputs = prepare_request(
+            kwargs["messages"], artifact_resolver=lambda value: artifact_source(self, value)
+        )
+        # A conversation that has never received any memory records needs no
+        # historical ledger. Retain subsequent empty snapshots after it has.
+        record_inputs = inputs and (any(s["records"] for s in inputs) or session_receipts(self))
+        try:
+            response = _computer_evidence_chat_impl(**{**kwargs, "messages": messages})
+        except LLMOutputLimitError as exc:
+            if record_inputs:
+                persist_local(self, inputs)
+                _record(exc.response.content)
+            raise
+        if record_inputs:
+            persist_local(self, inputs)
+            _record(response.content)
+        return response
+
+    @attribution.model_call
+    def _computer_evidence_chat_impl(**kwargs: Any) -> Any:
         if resolved_entry is not None:
             with resolved_entry.model_request(self.client, self.stream, self.cfg):
                 return _main_agent_chat(**kwargs)
@@ -1696,7 +1761,10 @@ def run_turn(
         metadata: dict[str, Any] | None = None,
         headline_counted: bool | None = None,
     ) -> None:
-        self.messages.append({"role": "system", "content": message})
+        entry: dict[str, Any] = {"role": "system", "content": message}
+        if intervention_class == "context_setup":
+            entry[TURN_SETUP_MESSAGE_KEY] = True
+        self.messages.append(entry)
         _record_controller_intervention(
             intervention_class,
             detail,
@@ -2132,58 +2200,21 @@ def run_turn(
         self.store.append("error", {"error": message})
         _emit_surface_error(self.surface, "hook_error", message, True)
         return _finish_turn(1, reason="prompt_blocked")
-    # Failed provider requests restore the pre-turn transcript.
-    pre_turn_messages = copy.deepcopy(self.messages)
-    pre_turn_pinned_prefix_len = _resolve_session_pinned_prefix_len(self)
     assistant_message_emitted = False
     last_visible_assistant_text = ""
     main_model_request_started = False
     last_gate_clear_assistant_text = ""
-    # Raw steering text drained into history but not yet answered. If an LLM
-    # error rolls the turn back, these copies are the only way to return the
-    # messages to the inbox instead of silently losing them.
-    steered_pending_restore: list[str] = []
-
-    def _rollback_turn_after_llm_error() -> None:
-        if assistant_message_emitted:
-            return
-        current_messages = getattr(self, "messages", None)
-        current_pinned_prefix_len = _resolve_session_pinned_prefix_len(self)
-        if (
-            current_messages == pre_turn_messages
-            and current_pinned_prefix_len == pre_turn_pinned_prefix_len
-            and not steered_pending_restore
-        ):
-            return
-        current_len = len(current_messages) if isinstance(current_messages, list) else 0
-        rolled_back = max(0, current_len - len(pre_turn_messages))
-        self.messages = copy.deepcopy(pre_turn_messages)
-        _set_session_pinned_prefix_len(self, pre_turn_pinned_prefix_len)
-        if steered_pending_restore:
-            restored_steers = list(steered_pending_restore)
-            rollback_inbox = steer_inbox_for(self)
-            if rollback_inbox is not None:
-                rollback_inbox.restore_front(restored_steers)
-                notify_restored = getattr(self.surface, "on_steer_messages_restored", None)
-                if callable(notify_restored):
-                    try:
-                        notify_restored(restored_steers)
-                    except Exception:
-                        pass
-            steered_pending_restore.clear()
-        self.store.append(
-            "warning",
-            {
-                "warning": "turn_rollback_after_llm_error",
-                "rolled_back_messages": rolled_back,
-            },
-        )
+    # The reply written beside a display-only call in the step before (see _display_only_reply).
+    display_only_reply = ""
 
     def _record_turn_llm_error(err: LLMError) -> None:
+        # Failure belongs to the answer attempt, not to accepted conversation
+        # input. Keep user messages, delivered steering, completed tool results,
+        # and committed compaction state in sync with the durable event log.
+        # Stream deltas are not appended to history until a response is accepted.
         safe_error = str(self.redact_host_screen_value(sanitize_error_text_for_output(err)) or "")
         err.args = (safe_error,)
         self.store.append("error", {"error": safe_error})
-        _rollback_turn_after_llm_error()
 
     ephemeral_turn_system_messages = [
         str(prompt or "").strip() for prompt in (ephemeral_system_messages or [])
@@ -2490,13 +2521,12 @@ def run_turn(
     turn_tools, folder_context = project_turn_tools(self, dict(self.tools))
     if folder_context and not chat_only:
         ephemeral_turn_system_messages.append(folder_context)
+    turn_memory = None
     if not chat_only:
         from ...local_memory import memory_turn
 
-        memory_tools, memory_context = memory_turn(self)
-        turn_tools.update(memory_tools)
-        if memory_context:
-            ephemeral_turn_system_messages.append(memory_context)
+        turn_memory = memory_turn(self)
+        turn_tools.update(turn_memory.tools)
     tool_retention_metadata = {
         name: getattr(tool, "metadata", None) or {} for name, tool in turn_tools.items()
     }
@@ -2835,8 +2865,9 @@ def run_turn(
         )
     display_instruction = log_payload.get("display_content")
     peer_message = getattr(self, "_chat_peer_message", None)
+    user_turn_id = None
     if peer_message is None:
-        self.store.append("user_message", log_payload)
+        user_turn_id = self.store.append("user_message", log_payload)
     connector_link_evidence = ConnectorLinkEvidence()
     connector_link_nudge_sent = False
     connector_verification_tools: dict[str, ToolDef] | None = None
@@ -2871,7 +2902,7 @@ def run_turn(
     _phase_update_key("phase_understanding_request")
 
     if host_screen_image_turn and not turn_tools:
-        request_messages = copy.deepcopy(self.messages)
+        request_messages = without_host_message_keys(copy.deepcopy(self.messages))
         try:
             try:
                 response = _computer_evidence_chat(
@@ -2895,7 +2926,6 @@ def run_turn(
             safe_error = str(self.redact_host_screen_value(err) or type(err).__name__)
             err.args = (safe_error,)
             self.store.append("error", {"error": safe_error})
-            _rollback_turn_after_llm_error()
             raise
 
         _throw_if_cancelled()
@@ -3239,7 +3269,20 @@ def run_turn(
         else instruction
     )
 
-    def _build_turn_acceptance(interpreted_path_refs=None):
+    def _starts_work_before_declaration(tc: Any) -> bool:
+        """Whether a call is work a declaration must come before (anything but a read)."""
+        if acceptance_contract is None or tc.name == ARTIFACT_BINDING_TOOL:
+            return False
+        metadata = getattr(turn_tools.get(tc.name), "metadata", None) or {}
+        return metadata.get("read_only_context") is not True
+
+    def _path_exists(path: Path) -> bool:
+        try:
+            return path.exists()
+        except OSError:
+            return True  # unknown is not a fact
+
+    def _build_turn_acceptance(interpreted_path_refs=None, declared=None):
         return build_acceptance_contract(
             root=self.root,
             instruction=contract_instruction,
@@ -3256,10 +3299,50 @@ def run_turn(
             baseline_available=task_evidence.baseline_available,
             generation=task_evidence.verification_relevant_edit_generation,
             interpreted_path_refs=interpreted_path_refs,
+            declared=declared,
         )
 
+    # Ask the model to declare the request's files only when it has something to
+    # decide; see request_needs_path_interpretation.
+    artifact_binding_offered = True
+    host_read_paths: set[str] = set()
+    written_request_paths: list[str] = []
+    artifact_binding_earlier_instructions: tuple[str, ...] = ()
     if execution_safeguards_enabled:
         acceptance_contract = _build_turn_acceptance()
+        from ..task_artifact_binding import (
+            earlier_path_refs,
+            named_workspace_paths,
+            request_needs_path_interpretation,
+            retained_user_instructions,
+            written_workspace_paths,
+        )
+
+        artifact_binding_earlier_instructions = retained_user_instructions(
+            self.store.events_snapshot()
+        )
+        earlier_refs = earlier_path_refs(self.root, artifact_binding_earlier_instructions)
+        artifact_binding_offered = request_needs_path_interpretation(
+            list(acceptance_contract.path_refs),
+            root=self.root,
+            working_directory=self.active_workdir_relpath or ".",
+            earlier_refs=earlier_refs,
+        )
+        # Every workspace path the user wrote in this chat. A file among them
+        # that this turn changes is an output, without any role being guessed.
+        host_read_paths = named_workspace_paths(
+            [*acceptance_contract.path_refs, *earlier_refs],
+            working_directory=self.active_workdir_relpath or ".",
+        )
+        # Paths the user wrote as paths that were not there when the turn began.
+        # One the turn removes itself, and a name with two possible bases in a
+        # nested project, are not facts about a missing result.
+        if (self.active_workdir_relpath or ".") == ".":
+            written_request_paths = [
+                path
+                for path in written_workspace_paths(list(acceptance_contract.path_refs))
+                if not _path_exists(self.root / path)
+            ]
         install_task_evidence(
             self,
             acceptance_contract,
@@ -3301,23 +3384,21 @@ def run_turn(
             TOOL_NAME as ARTIFACT_BINDING_TOOL,
         )
         from ..task_artifact_binding import (
+            bind_declared_requirements,
             bind_path_interpretation,
             binding_parameters,
             host_output_directory,
             path_binding_identity,
-            retained_user_instructions,
         )
 
         artifact_binding_work_started = False
         artifact_binding_batch_count = 0
+        artifact_binding_batch_starts_work = False
         artifact_binding_applied = False
         artifact_binding_serialization_retries = 0
         artifact_binding_identity = None
         artifact_binding_result = None
         artifact_binding_detected_refs = list(acceptance_contract.path_refs)
-        artifact_binding_earlier_instructions = retained_user_instructions(
-            self.store.events_snapshot()
-        )
         artifact_binding_recovery_prompt = (
             "No call in your previous batch was executed. Submit task_artifacts alone "
             "and wait for its result before submitting actions or verification. "
@@ -3325,7 +3406,11 @@ def run_turn(
         )
         turn_path_base = self.active_workdir_relpath or "."
         turn_output_directory = (
-            host_output_directory(self.root, relative_to=self.focus_relpath or ".")
+            host_output_directory(
+                self.root,
+                relative_to=self.focus_relpath or ".",
+                session_value=self.host_task_output_directory,
+            )
             if self.subagent_depth == 0
             else None
         )
@@ -3333,14 +3418,31 @@ def run_turn(
         def _bind_task_artifacts(arguments):
             nonlocal acceptance_contract, artifact_binding_applied
             nonlocal artifact_binding_identity, artifact_binding_result
+            if not artifact_binding_offered and not request_commands:
+                # Listed so that the tool list is the same in every turn, but
+                # this request leaves the model nothing to declare: a call
+                # records nothing, as when the tool was not there to call.
+                return {
+                    "error": "nothing_to_declare",
+                    "message": "The host did not ask for a declaration in this turn and did not offer one. Nothing was recorded. Continue with the task and do not call task_artifacts again in this turn.",
+                }
             if not artifact_binding_applied and (
                 artifact_binding_batch_count != 1 or artifact_binding_work_started
             ):
-                return {
-                    "error": "requirements_already_in_use",
-                    "message": "Interpret paths once before actions or verification; only host-declared read-only context tools may precede or accompany it.",
-                }
+                if artifact_binding_offered:
+                    message = "Interpret paths once before actions or verification; only host-declared read-only context tools may precede or accompany it."
+                elif artifact_binding_work_started:
+                    # Optional here, and the work has begun: say so once, so
+                    # that the model does not spend more responses on it.
+                    message = "The optional declaration is taken only as the first call of the response that starts the work. Nothing was recorded and it cannot be added now. Continue with the task and do not call task_artifacts again in this turn."
+                else:
+                    message = "task_artifacts appears more than once in this response, so none was recorded. Send it once, as the first call of a response."
+                return {"error": "requirements_already_in_use", "message": message}
+            if isinstance(arguments, dict) and "paths" not in arguments:
+                # A declaration of requirements alone names no path.
+                arguments = {**arguments, "paths": []}
             try:
+                entry_refs: list[Any] = []
                 refs = bind_path_interpretation(
                     root=self.root,
                     instruction=contract_instruction,
@@ -3349,15 +3451,30 @@ def run_turn(
                     earlier_instructions=artifact_binding_earlier_instructions,
                     output_directory=turn_output_directory,
                     working_directory=turn_path_base,
+                    entry_refs=entry_refs,
+                )
+                declared = bind_declared_requirements(
+                    instruction=contract_instruction,
+                    arguments=arguments,
+                    refs=refs,
+                    entry_refs=entry_refs,
                 )
             except ValueError as exc:
+                # Optional, and leading a response whose other calls start the
+                # work: by the time a corrected call could arrive it is closed.
+                retryable = artifact_binding_offered or not artifact_binding_batch_starts_work
                 return {
                     "error": "invalid_task_artifacts",
-                    "message": str(exc),
-                    "retryable": True,
+                    "message": str(exc)
+                    + (
+                        ""
+                        if retryable
+                        else " The other calls in this response start the work, so the declaration cannot be sent again in this turn. Continue with the task."
+                    ),
+                    "retryable": retryable,
                     "expected_schema": binding_parameters(turn_output_directory, turn_path_base),
                 }
-            identity = path_binding_identity(refs)
+            identity = (path_binding_identity(refs), declared)
             if artifact_binding_applied:
                 if identity == artifact_binding_identity:
                     # Harmless syntax/non-path differences cannot re-enroll
@@ -3367,7 +3484,9 @@ def run_turn(
                     "error": "requirements_already_in_use",
                     "message": "The accepted paths, roles and requirements cannot change after declaration.",
                 }
-            replacement = _build_turn_acceptance(refs)
+            # A declaration of requirements alone names no path: the mentions
+            # the host detected stay, as the hints they were.
+            replacement = _build_turn_acceptance(refs if arguments["paths"] else None, declared)
             install_task_evidence(self, replacement, instruction=contract_instruction)
             if self.artifact_output_access is not None:
                 replacement.artifact_output_observer = ArtifactOutputObserver(
@@ -3380,6 +3499,13 @@ def run_turn(
                 )
             acceptance_contract = replacement
             execution_state.acceptance_contract = replacement
+            # A declared path has the role the model gave it. Paths the model
+            # left out, and the default output folder, stay as the host saw them.
+            execution_state.turn_host_read_paths -= {
+                Path(ref.workspace_relative_path).as_posix()
+                for ref in refs
+                if ref.workspace_relative_path
+            }
             artifact_binding_applied = True
             _drop_selection_directive(ephemeral_turn_system_messages, artifact_binding_guidance)
             _drop_selection_directive(
@@ -3394,7 +3520,22 @@ def run_turn(
                     if deadline is not None
                     else None,
                 )
-            self.store.append("task_artifact_interpretation", {"paths": arguments["paths"]})
+            self.store.append(
+                "task_artifact_interpretation",
+                {
+                    "paths": arguments["paths"],
+                    **{
+                        key: arguments[key]
+                        for key in (
+                            "commands",
+                            "only_declared_outputs",
+                            "keep_running",
+                            "thresholds",
+                        )
+                        if key in arguments
+                    },
+                },
+            )
             self.store.append("acceptance_contract", replacement.as_payload())
             artifact_binding_identity = identity
             artifact_binding_result = {
@@ -3405,6 +3546,30 @@ def run_turn(
             }
             return copy.deepcopy(artifact_binding_result)
 
+        artifact_binding_guidance = ""
+        execution_state.turn_host_read_paths = host_read_paths
+        execution_state.turn_host_output_directory = turn_output_directory or ""
+        if not artifact_binding_offered and turn_output_directory:
+            # The declaration tool is where the model otherwise learns this.
+            _append_controller_ephemeral_system_message(
+                ephemeral_turn_system_messages,
+                "The host's default folder for new deliverables in this task is "
+                f"{turn_output_directory!r}, relative to the workspace root. Save a new "
+                "deliverable there unless the request names a location or the file "
+                "belongs to the project.",
+                intervention_class="context_setup",
+                detail="task_output_directory_guidance",
+            )
+    # A command line written in the request may be something the user wants run
+    # successfully. Only the model can tell, so the declaration is then on
+    # offer without being asked for first.
+    request_commands = list(acceptance_contract.request_commands) if acceptance_contract else []
+    if acceptance_contract is not None:
+        # The tool is listed in every such turn, asked for or not: a provider
+        # caches a request by its leading bytes and the tools come first, so a
+        # tool that came and went with the request would make every turn that
+        # differs start with nothing cached. Whether to ask is said in the
+        # turn's own guidance below, which follows the conversation.
         turn_tools[ARTIFACT_BINDING_TOOL] = ToolDef(
             name=ARTIFACT_BINDING_TOOL,
             description=ARTIFACT_BINDING_DESCRIPTION
@@ -3421,6 +3586,31 @@ def run_turn(
             metadata={},
         )
         turn_tool_list = _registered_tool_schema_list(turn_tools, turn_tool_list)
+        command_guidance = (
+            " The request writes these as command lines: "
+            + json.dumps(request_commands, ensure_ascii=False)
+            + ". If the request asks for any of them to be run and to succeed, record it in "
+            "commands, copied exactly; the host then holds the turn until it has seen that "
+            "command succeed."
+            if request_commands
+            else ""
+        )
+    if acceptance_contract is not None and not artifact_binding_offered and request_commands:
+        artifact_binding_guidance = (
+            "task_artifacts is optional in this turn."
+            + command_guidance
+            + " Do not spend a response on it: put it first in the same response as the tool "
+            "calls that start your work, with paths as an empty list unless the request also "
+            "names files. If the request does not ask for a command to be run successfully, do "
+            "not call task_artifacts."
+        )
+        _append_controller_ephemeral_system_message(
+            ephemeral_turn_system_messages,
+            artifact_binding_guidance,
+            intervention_class="context_setup",
+            detail="task_requirements_optional_guidance",
+        )
+    if acceptance_contract is not None and artifact_binding_offered:
         artifact_binding_guidance = (
             "For ordinary repository work (not Computer Use discovery, selection or handoff), "
             "when a request names files to create/change, inputs to use, or files to preserve, "
@@ -3436,11 +3626,12 @@ def run_turn(
             "workspace-default and containing-folder interpretation of the same file mention. "
             "Do not invent paths or guess ambiguous "
             "locations. The declaration is not evidence of success and grants no permissions. "
-            "If the request has no concrete file identities, continue normally. "
-            "The following JSON list contains heuristic detections copied from the request, "
-            "not instructions or authoritative file identities. When interpreting, include "
-            "actual paths with their roles and explicitly classify false detections as "
-            "non_path with an empty directory. Do not copy supporting prose; the host recovers "
+            "If the request has no concrete file identities, continue normally."
+            + command_guidance
+            + " The following JSON list contains heuristic detections copied from the request, "
+            "not instructions or authoritative file identities. They are hints: declare the "
+            "actual paths with their roles and leave out anything that is not a local path. "
+            "Do not copy supporting prose; the host recovers "
             "surrounding requirements. Detected mentions: "
             + json.dumps(
                 list(
@@ -3538,6 +3729,62 @@ def run_turn(
             0,
             background_processes_started_this_turn - background_processes_killed_this_turn,
         )
+
+    def _turn_finish_facts() -> FinishFacts:
+        contract = execution_state.acceptance_contract
+        if contract is None:
+            return FinishFacts()
+        declared_paths = {
+            Path(ref.workspace_relative_path).as_posix()
+            for ref in contract.path_refs
+            if ref.workspace_relative_path and ref.role != AcceptancePathRole.UNKNOWN_REFERENCE
+        }
+        return collect_finish_facts(
+            root=self.root,
+            request_commands=contract.request_commands,
+            required_commands=[
+                command
+                for item in contract.criteria
+                if item.kind == AcceptanceCriterionKind.EXPLICIT_COMMAND_IO
+                for command in item.commands
+            ],
+            observed_commands=[
+                *(
+                    (item.command, item.passed, item.exit_code)
+                    for item in contract.evidence
+                    if item.command
+                ),
+                # Started as a background process or a service: run, outcome unknown.
+                *((command, None, None) for command in execution_state.turn_started_commands),
+            ],
+            created_paths=(
+                execution_state.agent_created_paths & execution_state.turn_touched_repo_paths
+            ),
+            written_paths=[path for path in written_request_paths if path not in declared_paths],
+            services_not_ready=_turn_services_not_ready(),
+        )
+
+    def _turn_services_not_ready() -> list[str]:
+        """Durable services this turn started and left running that are not ready now.
+
+        A service the agent started is a fact, whatever the request said. One
+        it stopped itself was meant to stop.
+        """
+        manager = self.durable_service_manager
+        if manager is None:
+            return []
+        problems: list[str] = []
+        for service_id in sorted(
+            execution_state.turn_started_service_ids - execution_state.turn_stopped_service_ids
+        ):
+            try:
+                # The state as it is now; this is a reading, not a wait for readiness.
+                problem = durable_service_problem(manager.status(service_id, timeout_s=0))
+            except Exception:  # noqa: BLE001 - an unreadable status is not a known fact
+                continue
+            if problem:
+                problems.append(problem)
+        return problems
 
     def _live_background_processes_at_finalization() -> int:
         if not self.one_shot_execution:
@@ -3646,6 +3893,11 @@ def run_turn(
     # Computer Use completes through the trusted host rather than repo mutation.
     completion_gate_enabled = execution_follow_through_enabled and not computer_use_tool_turn
     workspace_git_base = resolve_workspace_git_base(self.root) if completion_gate_enabled else None
+    # What Git does not track, as the turn begins: the end-of-turn check can then
+    # tell that a log, build output or an ignored folder was removed.
+    workspace_untracked_at_start = (
+        list_untracked_entries(self.root) if completion_gate_enabled else ()
+    )
     execution_phase_tracking_enabled = execution_follow_through_enabled
     completion_gate_failed_event = (
         "one_shot_completion_gate_failed"
@@ -3873,6 +4125,7 @@ def run_turn(
     last_continuation_nudge_material_edit_generation = -1
     last_continuation_nudge_verification_attempt_count = -1
     finalization_checklist_sent = False
+    finish_facts_stated = False
     vendored_edit_advisory_sent = False
     adversarial_review_advisory_sent = False
     honest_unverified_finalization = False
@@ -3882,6 +4135,8 @@ def run_turn(
     repro_unconfirmed_finalization = False
     blast_radius_unresolved_finalization = False
     blocking_finalization_correctives_sent = 0
+    empty_diff_correctives_sent = 0
+    empty_diff_forced_logged = False
     execution_evidence_violation_count = 0
     execution_evidence_forced_logged = False
 
@@ -3932,13 +4187,16 @@ def run_turn(
         inspect, apply-as-no-op, or discard isolated work while leaving the
         parent workspace clean. Direct parent mutation attempts still earn the
         no-material safeguard even when the attempted edit itself fails.
+
+        What earns it is this turn's own work on the workspace's files: a file
+        tool it called, or a path the host saw it change. A started server or
+        preview and a command that changed only another folder leave no file
+        change here to look for.
         """
-        return bool(
-            gate_turn_intent == "execute"
-            and (
-                repo_parent_mutation_tool_activity_observed
-                or execution_state.material_edit_count > 0
-            )
+        return file_change_evidence_is_owed(
+            gate_turn_intent,
+            file_tool_called=repo_parent_mutation_tool_activity_observed,
+            turn_touched_paths=execution_state.turn_touched_repo_paths,
         )
 
     def _turn_intent_payload(
@@ -4899,12 +5157,55 @@ def run_turn(
             user_context_messages: tuple[str, ...] = tuple(ephemeral_turn_user_messages),
             suffix_prompts: tuple[str, ...] = tuple(step_ephemeral_suffix_system_messages),
         ) -> list[dict[str, Any]]:
-            return _request_messages_with_volatile_suffix(
+            from ...local_memory import read_source_context
+            from ...memory_evidence import (
+                INPUT_KEY,
+                bind_session_receipts,
+                project_history,
+                session_receipts,
+            )
+            from ...memory_sources import ANNOTATION_KEY
+
+            memory_context = turn_memory.context() if turn_memory is not None else ""
+            supplied = turn_memory.input if turn_memory is not None else {}
+            # Each reply keeps the receipt of the request that produced it, so
+            # where a receipt is shown does not depend on which receipts the
+            # recent window still holds. Replies are looked at on every
+            # request, also in a turn that is given no memory.
+            kept_receipts = bind_session_receipts(self)
+            if supplied:
+                if supplied["records"] or session_receipts(self):
+                    user_message["_memory_turn_id"] = user_turn_id
+                messages = project_history(
+                    messages,
+                    session_receipts(self),
+                    scope=supplied["scope"],
+                    current=supplied,
+                    source_reader=lambda **args: read_source_context(self, **args),
+                    bound=kept_receipts,
+                )
+            request = _request_messages_with_volatile_suffix(
                 messages=messages,
-                turn_system_prompts=(*turn_prompts, request_model_identity(self.client)),
+                turn_system_prompts=(
+                    *turn_prompts,
+                    memory_context,
+                    request_model_identity(self.client),
+                ),
                 turn_user_contexts=user_context_messages,
                 step_system_prompts=suffix_prompts,
             )
+            if supplied:
+                request = [
+                    {
+                        **m,
+                        INPUT_KEY: copy.deepcopy(supplied),
+                        ANNOTATION_KEY: copy.deepcopy(turn_memory.observation),
+                    }
+                    if m.get("role") == "system" and m.get("content") == memory_context
+                    else m
+                    for m in request
+                ]
+            return request
 
         def _provider_request_messages_builder(
             persistent_messages: list[dict[str, Any]],
@@ -5040,7 +5341,6 @@ def run_turn(
                 )
             else:
                 if steered_messages:
-                    steered_pending_restore.extend(steered_texts)
                     self.messages.extend(steered_messages)
                     user_questions = question_broker(self.surface)
                     if user_questions is not None:
@@ -5064,6 +5364,8 @@ def run_turn(
         # have applied so a mid-turn toggle affects this boundary's LLM call.
         stream_used = self.stream
         output_limit_reached = False
+        # A cut-off reply that arrived as an ordinary response (not as LLMOutputLimitError).
+        output_limit_seen_in_reply = False
         request_messages = _request_messages_for_step(self.messages)
         try:
             if self.conversation_compactor is not None:
@@ -5266,18 +5568,26 @@ def run_turn(
                     main_model_request_started = True
                     for _, visual_receipt in ephemeral_sensitive_visual_deliveries:
                         self.store.append("asset_visual_delivered", visual_receipt)
-                    resp = _computer_evidence_chat(
-                        client=self.client,
-                        messages=request_messages,
-                        tools=turn_tool_list,
-                        stream=provider_stream,
-                        on_text_delta=_on_text_delta
-                        if provider_stream and resolved_entry is None
-                        else None,
-                        on_reasoning_delta=reasoning_sink,
-                        cancellation_token=cancellation_token,
-                        tool_choice=request_tool_choice,
-                    )
+                    try:
+                        resp = _computer_evidence_chat(
+                            client=self.client,
+                            messages=request_messages,
+                            tools=turn_tool_list,
+                            stream=provider_stream,
+                            on_text_delta=_on_text_delta
+                            if provider_stream and resolved_entry is None
+                            else None,
+                            on_reasoning_delta=reasoning_sink,
+                            cancellation_token=cancellation_token,
+                            tool_choice=request_tool_choice,
+                        )
+                    except LLMEmptyResponseError:
+                        if not display_only_reply:
+                            raise
+                        # Nothing more after a reply given beside next steps: that reply is
+                        # the answer, as if it had come without the call.
+                        resp = LLMResponse(content=display_only_reply, tool_calls=[], raw={})
+                        self.store.append("display_only_reply_kept", {"step": step})
             except Exception as request_error:
                 redact_sensitive_exception_taints(request_error, sensitive_response_taints)
                 raise
@@ -5539,7 +5849,6 @@ def run_turn(
                         )
                         if salvage_exit is not None:
                             return salvage_exit
-                        _rollback_turn_after_llm_error()
                         raise
 
             if context_overflow_recovered:
@@ -5658,7 +5967,6 @@ def run_turn(
                     )
                     if salvage_exit is not None:
                         return salvage_exit
-                    _rollback_turn_after_llm_error()
                     raise
                 stream_used = False
             else:
@@ -5686,8 +5994,16 @@ def run_turn(
                 )
                 if salvage_exit is not None:
                     return salvage_exit
-                _rollback_turn_after_llm_error()
                 raise
+
+        if not output_limit_reached:
+            # Anthropic Messages and chat-completions replies cut off by the output limit
+            # arrive as ordinary responses; this is the same stop the Responses client reports.
+            cut_off_response = response_cut_off_by_output_limit(resp)
+            if cut_off_response is not None:
+                resp = cut_off_response
+                output_limit_reached = True
+                output_limit_seen_in_reply = True
 
         if computer_use_capture_refusal_step is not None:
             # The terminal host result permits one report, not another tool,
@@ -5945,7 +6261,10 @@ def run_turn(
             # continuation metadata. Preserve text and opaque reasoning state,
             # including when there is no visible text at all.
             partial_message = assistant_message_from_response(resp)
-            self.messages.append(partial_message)
+            if not (output_limit_seen_in_reply and not resp.content.strip()):
+                # Such a reply with no finished text has nothing to replay (its tool calls and
+                # unfinished thinking are dropped), so it adds no empty assistant message.
+                self.messages.append(partial_message)
             if contains_tool_call_markup(resp.content):
                 # Printed tool markup is not a user-visible partial answer.
                 _on_stream_restart()
@@ -6086,6 +6405,13 @@ def run_turn(
         # keeps answering with nothing: past the count or the time threshold the
         # turn recovers once against a compacted context, then salvages.
         response_contentless = response_is_contentless(resp)
+        if response_contentless and display_only_reply:
+            # A provider that returns a finished empty response (rather than an error) after a
+            # reply given beside next steps: that reply is the answer, the same as above.
+            resp = LLMResponse(content=display_only_reply, tool_calls=[], raw={})
+            response_contentless = False
+            self.store.append("display_only_reply_kept", {"step": step})
+        display_only_reply = _display_only_reply(resp)
         if response_contentless:
             # An empty aggregation may still have delivered deltas. Neither
             # targeted recovery nor the stall/salvage path may keep that
@@ -6119,7 +6445,8 @@ def run_turn(
             if answer is not None:
                 answer_message = {
                     "role": "user",
-                    "content": "[User question response] " + json.dumps(answer, ensure_ascii=False),
+                    "content": USER_QUESTION_RESPONSE_PREFIX
+                    + json.dumps(answer, ensure_ascii=False),
                 }
                 self.messages.append(answer_message)
                 self.store.append(
@@ -6267,6 +6594,7 @@ def run_turn(
         if (
             tool_calls
             and acceptance_contract is not None
+            and artifact_binding_offered
             and not artifact_binding_applied
             and not artifact_binding_work_started
             and any(tc.name == ARTIFACT_BINDING_TOOL for tc in tool_calls)
@@ -6284,7 +6612,7 @@ def run_turn(
         ):
             # An interpretation is a prerequisite, not an action that can race
             # another call. Refuse the entire mixed batch before dispatch so the
-            # model can retry without freezing the heuristic requirements.
+            # model can retry before any work starts against undeclared paths.
             artifact_binding_serialization_retries += 1
             if artifact_binding_serialization_retries > 2 or not _step_limit_allows_more(step):
                 raise AgentRuntimeError(
@@ -6310,28 +6638,40 @@ def run_turn(
             continue
         if tool_calls:
             turn_tool_call_count += len(tool_calls)
+            artifact_binding_lock_in_order = False
             if acceptance_contract is not None:
                 artifact_binding_batch_count = sum(
                     tc.name == ARTIFACT_BINDING_TOOL for tc in tool_calls
                 )
-                # Lock before the whole batch: a binding cannot race an action.
+                artifact_binding_batch_starts_work = any(
+                    _starts_work_before_declaration(tc) for tc in tool_calls
+                )
+                # Where the declaration places paths it is a prerequisite: lock
+                # before the whole batch, so a binding cannot race an action.
+                # Where it only records requirements (it was on offer, not asked
+                # for), it may lead the batch that starts the work: calls run in
+                # the order given, and the lock closes at the first action.
                 # Only host-owned capability metadata admits context reads;
                 # tool names, model prose and remote read-only hints do not.
-                artifact_binding_work_started |= any(
-                    tc.name != ARTIFACT_BINDING_TOOL
-                    and (getattr(turn_tools.get(tc.name), "metadata", None) or {}).get(
-                        "read_only_context"
-                    )
-                    is not True
-                    for tc in tool_calls
+                artifact_binding_lock_in_order = (
+                    not artifact_binding_offered and artifact_binding_batch_count == 1
                 )
+                if not artifact_binding_lock_in_order:
+                    artifact_binding_work_started |= any(
+                        _starts_work_before_declaration(tc) for tc in tool_calls
+                    )
             if computer_use_tool_turn or ephemeral_tools_exposed:
                 computer_use_provider_replay_state.update(
                     pending_computer_use_provider_replay_state
                 )
             if any(
                 tc.name.strip().casefold()
-                not in {"report_blocker", "request_user_input", "wait_user_input"}
+                not in {
+                    "report_blocker",
+                    "request_user_input",
+                    "wait_user_input",
+                    "suggest_next_steps",
+                }
                 for tc in tool_calls
             ):
                 repo_tool_activity_observed = True
@@ -6410,6 +6750,7 @@ def run_turn(
                     "report_blocker",
                     "request_user_input",
                     "wait_user_input",
+                    "suggest_next_steps",
                 }:
                     continue
                 if normalized_step_tool_name in _DEADLINE_FINALIZATION_MUTATION_TOOL_NAMES:
@@ -6457,7 +6798,13 @@ def run_turn(
                 return dispatch_arguments
 
             @attribution.tool_call(attribution_owner)
-            def _run_tool_with_turn_cancellation(
+            def _run_tool_with_turn_cancellation(*args, **kwargs):
+                from ..approval_review import approval_review_cancellation_scope
+
+                with approval_review_cancellation_scope(cancellation_token):
+                    return _run_tool_with_turn_cancellation_impl(*args, **kwargs)
+
+            def _run_tool_with_turn_cancellation_impl(
                 tool: ToolDef,
                 *,
                 tool_name: str,
@@ -6867,6 +7214,8 @@ def run_turn(
 
             pending_visual_deliveries: list[tuple[dict[str, Any], dict[str, Any]]] = []
             for tc in tool_calls:
+                if artifact_binding_lock_in_order and _starts_work_before_declaration(tc):
+                    artifact_binding_work_started = True
                 if parallel_subagent_calls and not parallel_subagent_batch_inspected:
                     _drain_parallel_subagent_subset()
                     parallel_subagent_batch_failure = _parallel_subagent_batch_mutation_failure(
@@ -8262,8 +8611,6 @@ def run_turn(
                 if terminal_approval_declined_error is not None:
                     status = "failed"
                 result_dict = result if isinstance(result, dict) else {}
-                if getattr(self, "agentbox_telemetry", None) is not None:
-                    self.agentbox_telemetry.tool(effective_tool_name)
                 tool_unavailable = is_tool_unavailable_result(result)
                 repetition_notice = external_tool_repetition.observe(
                     tool_name=effective_tool_name,
@@ -8488,6 +8835,7 @@ def run_turn(
                         "report_blocker",
                         "request_user_input",
                         "wait_user_input",
+                        "suggest_next_steps",
                     }:
                         pass
                     elif _is_action_progress_tool(
@@ -9144,12 +9492,19 @@ def run_turn(
                 # A host-owned, host-bounded result (the computer_discover inventory) is read
                 # whole to copy exact identifiers; a preview would silently drop entries.
                 offload_metadata = (
-                    getattr(self.tools.get(effective_tool_name), "metadata", None) or {}
+                    getattr(turn_tools.get(effective_tool_name), "metadata", None) or {}
                 )
                 offload_exempt = (
                     offload_metadata.get("host_owned") is True
                     and offload_metadata.get("offload_exempt") is True
                 )
+                bounded_output_limit = offload_metadata.get("bounded_output_max_chars")
+                if (
+                    offload_exempt
+                    and type(bounded_output_limit) is int
+                    and len(content_for_message) > bounded_output_limit
+                ):
+                    offload_exempt = False
                 if (
                     self.tool_output_offloader is not None
                     and effective_tool_name != "session_artifact_read"
@@ -9169,6 +9524,25 @@ def run_turn(
                         # snapshots without losing the pending delivery receipt.
                         same_batch_read_cache.clear()
                     if offload_result.offloaded:
+                        if effective_tool_name == "memory_read" and turn_memory is not None:
+                            from ...memory_artifacts import register_memory_artifact
+
+                            if turn_memory.input.get("scope"):
+                                try:
+                                    register_memory_artifact(
+                                        self,
+                                        model_result,
+                                        offload_result,
+                                        turn_memory.input["scope"],
+                                    )
+                                except (OSError, ValueError, TypeError):
+                                    self.store.append(
+                                        "warning",
+                                        {
+                                            "warning": "memory_artifact_provenance_unavailable",
+                                            "tool_call_id": tc.id,
+                                        },
+                                    )
                         try:
                             offloaded_tool_result = json.loads(content_for_message)
                         except json.JSONDecodeError:
@@ -11416,7 +11790,12 @@ def run_turn(
             # Inspect the final delta only when observed implementation work
             # engages this safeguard, equally in interactive and one-shot turns.
             workspace_diff = (
-                inspect_workspace_git_diff(self.root, base_ref=workspace_git_base)
+                inspect_workspace_git_diff(
+                    self.root,
+                    base_ref=workspace_git_base,
+                    turn_touched_paths=execution_state.turn_touched_repo_paths,
+                    present_before_paths=workspace_untracked_at_start,
+                )
                 if _completion_gate_requires_material_edit_evidence(
                     gate_turn_intent=_completion_gate_repo_turn_execution_intent()
                 )
@@ -11444,8 +11823,13 @@ def run_turn(
                     _step_limit_allows_more(step)
                     and blocking_finalization_correctives_sent
                     < MAX_BLOCKING_FINALIZATION_CORRECTIVES
+                    # A chat turn's answer goes to a person who can reply, so the
+                    # model is shown the missing change once and its answer then
+                    # stands. A one-shot run has no reply and keeps the full number.
+                    and (self.one_shot_execution or empty_diff_correctives_sent < 1)
                 ):
                     blocking_finalization_correctives_sent += 1
+                    empty_diff_correctives_sent += 1
                     if final_text:
                         assistant_message = assistant_message_from_response(
                             resp,
@@ -11474,16 +11858,20 @@ def run_turn(
                     _phase_update_key("phase_completion_gate_repair")
                     continue
 
-                forced_payload = {
-                    **empty_diff_payload,
-                    "reason": (
-                        "step_budget_exhausted"
-                        if not _step_limit_allows_more(step)
-                        else "corrective_cap_exhausted"
-                    ),
-                }
-                self.store.append("empty_diff_forced", forced_payload)
-                _diagnostic_event("empty_diff_forced", forced_payload, durable=True)
+                if not empty_diff_forced_logged:
+                    # Another check can send the turn round once more; the
+                    # finding is the same one and is recorded once.
+                    empty_diff_forced_logged = True
+                    forced_payload = {
+                        **empty_diff_payload,
+                        "reason": (
+                            "step_budget_exhausted"
+                            if not _step_limit_allows_more(step)
+                            else "corrective_cap_exhausted"
+                        ),
+                    }
+                    self.store.append("empty_diff_forced", forced_payload)
+                    _diagnostic_event("empty_diff_forced", forced_payload, durable=True)
 
             finalize_acceptance_contract(
                 contract=execution_state.acceptance_contract,
@@ -11535,7 +11923,11 @@ def run_turn(
                 verification_expected=verification_expected,
                 require_material_edit_evidence=_completion_gate_requires_material_edit_evidence(
                     gate_turn_intent=completion_gate_turn_intent,
-                ),
+                )
+                # Something Git does not track that was there as the turn began
+                # is gone: a result the edit count does not hold when a command
+                # removed it.
+                and not (workspace_diff is not None and workspace_diff.removed_turn_paths),
                 evidence_v2=_evidence_v2_enabled(self.cfg),
                 turn_intent=completion_gate_turn_intent,
                 regression_baseline_enabled=_regression_baseline_enabled(self.cfg),
@@ -11704,12 +12096,60 @@ def run_turn(
                 and not has_current_independent_verification
                 and _adversarial_finalize_enabled(self.cfg)
             )
-            spec_faithfulness_advisory_needed = live_background_processes > 0
+            # Facts the host can state without reading the request's meaning:
+            # a command the user wrote was not run or last failed, a file this
+            # turn created does not parse, a path the user wrote is not there.
+            # Stated once; what they mean for this request is the model's call.
+            # A turn that only read files answered a question; it is not held
+            # to facts about work, in a chat or in a one-shot run.
+            finish_facts = FinishFacts()
+            if (
+                not gate_problems
+                and not finish_facts_stated
+                and not blocked_response_allows_completion
+                and _step_limit_allows_more(step)
+                and completion_gate_turn_intent == "execute"
+            ):
+                finish_facts = _turn_finish_facts()
+                if finish_facts and _observed_repo_tool_intent() == "none":
+                    # Nothing was done in this turn, so the reply is an answer
+                    # or a refusal unless it claims work. Only that claim is put
+                    # next to the facts; the judgment about the reply's text is
+                    # a model call so that it holds in every reply language.
+                    facts_disposition = "answer"
+                    facts_response: Any | None = None
+                    facts_messages: list[dict[str, Any]] = []
+                    if zero_activity_disposition_check_enabled(self.cfg):
+                        (
+                            facts_disposition,
+                            _facts_source,
+                            facts_response,
+                            facts_messages,
+                        ) = _classify_zero_activity_disposition(
+                            client=self.client,
+                            final_text=final_text,
+                        )
+                        if facts_response is not None:
+                            self._record_llm_usage(
+                                client=self.client,
+                                response=facts_response,
+                                messages=facts_messages,
+                                tool_list=None,
+                                operation="zero_activity_disposition",
+                            )
+                    if facts_disposition != "work_claim":
+                        finish_facts = FinishFacts()
+            if finish_facts:
+                # The facts come before an optional second opinion on the work.
+                adversarial_review_applicable = False
+            background_advisory_needed = (
+                live_background_processes > 0 and not finalization_checklist_sent
+            )
+            spec_faithfulness_advisory_needed = background_advisory_needed or bool(finish_facts)
             if (
                 not gate_problems
                 and spec_faithfulness_advisory_needed
                 and not adversarial_review_applicable
-                and not finalization_checklist_sent
                 and not blocked_response_allows_completion
                 and _step_limit_allows_more(step)
                 and (self.one_shot_execution or completion_gate_turn_intent == "execute")
@@ -11738,9 +12178,18 @@ def run_turn(
                         "assistant_message",
                         {"content": final_text, "message": assistant_message},
                     )
-                spec_faithfulness_advisory = _spec_faithfulness_advisory_message(
-                    one_shot_execution=self.one_shot_execution,
-                    live_background_processes=live_background_processes,
+                spec_faithfulness_advisory = "\n".join(
+                    part
+                    for part in (
+                        _spec_faithfulness_advisory_message(
+                            one_shot_execution=self.one_shot_execution,
+                            live_background_processes=live_background_processes,
+                        )
+                        if background_advisory_needed
+                        else "",
+                        finish_facts.message(),
+                    )
+                    if part
                 )
                 _append_controller_system_message(
                     spec_faithfulness_advisory,
@@ -11775,6 +12224,7 @@ def run_turn(
                         "explicit_language_override": turn_language_explicit,
                         "message": spec_faithfulness_advisory,
                         "live_background_processes": live_background_processes,
+                        "finish_facts": finish_facts.as_payload(),
                         "forced_tool_choice": None,
                         "forced_tool_choice_supported": False,
                         **_turn_intent_payload(
@@ -11785,7 +12235,12 @@ def run_turn(
                         **decision_fields,
                     },
                 )
-                finalization_checklist_sent = True
+                # Facts are stated once on their own account. They do not use
+                # up the gate's one repair round, and do not depend on it.
+                finish_facts_stated = finish_facts_stated or bool(finish_facts)
+                finalization_checklist_sent = (
+                    finalization_checklist_sent or background_advisory_needed
+                )
                 _phase_update_key("phase_optional_finalization_review")
                 continue
             if adversarial_review_applicable and not adversarial_review_advisory_sent:
@@ -12758,6 +13213,8 @@ def run_turn(
         workspace_diff = inspect_workspace_git_diff(
             self.root,
             base_ref=workspace_git_base,
+            turn_touched_paths=execution_state.turn_touched_repo_paths,
+            present_before_paths=workspace_untracked_at_start,
         )
         if repo_turn_execution_intent == "execute" and workspace_diff.empty:
             forced_payload = {

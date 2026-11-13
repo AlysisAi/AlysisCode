@@ -982,7 +982,7 @@ def test_zai_coding_plan_drops_stale_effort_and_never_offers_reasoning_off() -> 
         "custom-hosted-model",
     ],
 )
-def test_alysis_model_picker_does_not_infer_access_from_saved_models(
+def test_alysis_model_picker_only_offers_current_free_models_despite_stale_gateway(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     saved_model: str,
@@ -1006,6 +1006,19 @@ def test_alysis_model_picker_does_not_infer_access_from_saved_models(
         ]
 
     monkeypatch.setattr("alysis_code.account_login.list_trial_models", stale_catalog)
+    monkeypatch.setattr(
+        config_menu_mod,
+        "resolve_api_key",
+        lambda _cfg: SimpleNamespace(key="fixture-account-key", source="test"),
+    )
+    monkeypatch.setattr(
+        config_menu_mod,
+        "discover_provider_models",
+        lambda **_kwargs: tuple(
+            config_menu_mod.ProviderModelOption(id=model, label=model)
+            for model in ("glm-5.3-flash", "gpt-6-luna", "claude-haiku-5-5")
+        ),
+    )
     cfg = AppConfig(model=saved_model)
     preset = get_preset("alysis")
     add_profile(cfg, make_profile_from_preset(preset, name="alysis"))
@@ -1015,12 +1028,16 @@ def test_alysis_model_picker_does_not_infer_access_from_saved_models(
     state.fields["model"] = saved_model
 
     rows = config_menu_mod._default_model_rows(state)
-    assert rows == []
+    assert [(value, label) for value, label, _ in rows] == [
+        ("glm-5.3-flash", "GLM 5.3 Flash"),
+        ("gpt-6-luna", "GPT-6 Luna"),
+        ("claude-haiku-5-5", "Claude Haiku 5.5"),
+    ]
     assert calls == []
-    assert config_menu_mod._preset_model_option_rows(preset) == rows
+    assert config_menu_mod._preset_model_option_rows(preset, state=state) == rows
 
 
-def test_hosted_catalog_failure_does_not_offer_unconfirmed_models(
+def test_default_model_rows_do_not_invent_hosted_access_after_discovery_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from alysis_code.profile_presets import get_preset, make_profile_from_preset
@@ -1029,18 +1046,14 @@ def test_hosted_catalog_failure_does_not_offer_unconfirmed_models(
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     monkeypatch.setenv("ALYSIS_DATA_DIR", os.fspath(tmp_path / "data"))
 
-    calls = []
-
-    def _boom(**kwargs):
-        assert kwargs["api_key"] == "test-key"
-        calls.append(True)
+    def _boom(**_kwargs: object) -> list[str]:
         raise config_menu_mod.ProviderModelCatalogError("proxy down")
 
     monkeypatch.setattr(config_menu_mod, "discover_provider_models", _boom)
     monkeypatch.setattr(
         config_menu_mod,
         "resolve_api_key",
-        lambda _: SimpleNamespace(key="test-key", source="fixture"),
+        lambda _cfg: SimpleNamespace(key="fixture-account-key", source="test"),
     )
 
     cfg = AppConfig(model="deepseek-flash")
@@ -1048,13 +1061,12 @@ def test_hosted_catalog_failure_does_not_offer_unconfirmed_models(
     set_active_profile(cfg, "alysis")
     state = ConfigMenuState.from_cfg(cfg)
 
-    # Discovery cannot establish account access when the catalog is unavailable.
+    # A saved model and preset cannot stand in for an available account catalog.
     model_values = [
         value for value, _label, _description in config_menu_mod._default_model_rows(state)
     ]
     assert model_values == []
-    assert calls == [True]
-    assert "unavailable" in state._provider_model_catalog_warning
+    assert "hosted model catalog is unavailable" in state._provider_model_catalog_warning
 
 
 def test_default_model_rows_fallback_to_base_url_provider() -> None:

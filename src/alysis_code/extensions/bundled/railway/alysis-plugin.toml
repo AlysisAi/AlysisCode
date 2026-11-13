@@ -1,0 +1,80 @@
+schema_version = 1
+
+[plugin]
+id = "alysis.railway"
+name = "Railway"
+version = "1.0.0"
+description = "Find Railway projects and services, inspect feature flags, and manage deployments with your approval."
+author = "Alysis AI (integration); Railway (service)"
+license = "MIT"
+homepage = "https://docs.railway.com/ai/mcp-server"
+keywords = ["railway", "code"]
+
+[compatibility]
+alysis = ">=0.14.2"
+
+# Reviewed 2026-11-07 against the official provider tool reference.
+[[components.verified_connector]]
+id = "railway"
+url = "https://mcp.railway.com"
+resource = "https://mcp.railway.com"
+oauth_issuer = "https://backboard.railway.com"
+oauth_sign_in_origins = ["https://backboard.railway.com"]
+oauth_client = "dynamic"
+transport = "mcp"
+oauth_scopes = ["workspace:member", "offline_access"]
+max_argument_bytes = 32768
+host_arguments = []
+
+[[components.verified_connector.tools]]
+name = "whoami"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list-projects"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list-services"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "list-feature-flags"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "get-feature-flag"
+reads_only = true
+
+[[components.verified_connector.tools]]
+name = "create-project"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "redeploy"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "accept-deploy"
+reads_only = false
+
+[[components.verified_connector.tools]]
+name = "set-feature-flag"
+reads_only = false
+
+[[components.plugin_skill]]
+name = "inspect-projects"
+title = "Inspect Railway projects"
+description = "Resolve the right workspace, project and service before reporting its state."
+uses_tools = ["whoami", "list-projects", "list-services", "list-feature-flags", "get-feature-flag"]
+text = "Use whoami only when account identity matters, then list-projects and list-services. Use returned IDs and preserve the environment identity. Inspect only the feature flags the user needs. Do not infer deployment or runtime health from a project listing. The general railway-agent tool is not exposed because it can combine unbounded changes. Never switch to it or another credential path to bypass an unavailable reviewed tool. Use only connected tools and their current schemas. Never invent IDs or report success before a successful provider result. Respect cancellation and rate-limit retry delays; do not loop on permission failures. Never request credentials in chat."
+
+[[components.plugin_skill]]
+name = "manage-deployments"
+title = "Manage Railway deployments"
+description = "Apply a requested deployment or feature-flag change and verify its result."
+uses_tools = ["create-project", "redeploy", "accept-deploy", "set-feature-flag"]
+text = "Resolve the exact project, service, environment and requested effect before approval. Redeploy and accept-deploy can affect live services; a request to inspect a failure is not a request to redeploy. Project creation can incur provider charges. Do not start paid resources during connection tests. Check returned status and report queued work accurately. After a timeout inspect existing state before repeating a write. Do not expose environment variables, secrets or tokens. Use only connected tools and their current schemas. Never invent IDs or report success before a successful provider result. Respect cancellation and rate-limit retry delays; do not loop on permission failures. Never request credentials in chat."
+
+[security]
+contact = "https://docs.railway.com/ai/mcp-server"

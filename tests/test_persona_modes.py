@@ -862,6 +862,7 @@ def test_ide_bridge_rejects_persona_names_as_modes() -> None:
     from alysis_code.ide.health import SUPPORTED_MODES, capabilities_payload
     from alysis_code.ide.stdio_bridge import ProtocolError, _mode_param
 
+    # ``fullaccess`` carries the desktop app's explicit, session-scoped Full access grant.
     assert set(SUPPORTED_MODES) == {"readonly", "review", "auto", "fullaccess"}
     assert not set(PERSONA_NAMES) & set(SUPPORTED_MODES)
     assert set(capabilities_payload()["modes"]) == set(SUPPORTED_MODES)

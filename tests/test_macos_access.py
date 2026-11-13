@@ -5,6 +5,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -272,11 +273,31 @@ def test_public_shell_reports_metadata_policy_and_honors_exact_script_approval(a
     assert "name = QA" in (manager.root / "clone/.git/config").read_text()
     assert run("cd clone && git config user.name Changed")["exit_code"] != 0
     assert "name = QA" in (manager.root / "clone/.git/config").read_text()
-    assert run("git config user.name Changed", cwd="clone")["exit_code"] == 0
+    # A literal Git command writes the repository, never its configuration.
+    literal = run("git config user.name Changed", cwd="clone")
+    assert literal["exit_code"] != 0
+    assert literal["sandbox_policy"]["git_metadata"].startswith("writable except configuration")
+    assert "permissions.git_metadata=true" in literal["sandbox_policy"]["guidance"]
+    assert "name = QA" in (manager.root / "clone/.git/config").read_text()
+    (manager.root / "clone/note.txt").write_text("x")
+    committed = run("git add note.txt && git commit -m note", cwd="clone")
+    assert committed["exit_code"] == 0, committed
+    assert "guidance" not in committed["sandbox_policy"]
+    assert (
+        run("git config user.name Changed", {"git_metadata": True}, cwd="clone")["exit_code"] == 0
+    )
     assert "name = Changed" in (manager.root / "clone/.git/config").read_text()
 
 
-def test_real_ssh_agent_signed_git_commit_without_private_key_files(auth, monkeypatch):
+@pytest.fixture
+def short_agent_socket():
+    with tempfile.TemporaryDirectory(prefix="ax-agent.", dir="/tmp") as directory:
+        yield Path(directory) / "agent.sock"
+
+
+def test_real_ssh_agent_signed_git_commit_without_private_key_files(
+    auth, monkeypatch, short_agent_socket
+):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import (
         Encoding,
@@ -286,9 +307,13 @@ def test_real_ssh_agent_signed_git_commit_without_private_key_files(auth, monkey
     )
 
     manager, requests, _ = auth
-    # Agent chooses a short /tmp socket; a private key exists in memory only.
+    # Pin a short socket path independently of HOME and OpenSSH defaults.
+    # The private key exists in memory only.
     launch = subprocess.run(
-        ["/usr/bin/ssh-agent", "-s"], capture_output=True, text=True, check=True
+        ["/usr/bin/ssh-agent", "-a", str(short_agent_socket), "-s"],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     values = dict(
         line.split(";", 1)[0].split("=", 1)

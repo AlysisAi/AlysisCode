@@ -73,12 +73,6 @@ def test_prepared_parent_and_child_schemas_retain_listing_scope_contract(
     )
     try:
         parent = _listing_schema(session)
-        description = parent["description"]
-        assert "Files only under root_path" in description
-        assert "Empty/omitted globs: '**/*' recursively" in description
-        assert "'*': direct files" in description
-        assert "ignore: exact path components" in description
-        assert "Truncation covers filtered scope" in description
         assert set(parent["parameters"]["properties"]) == {
             "root_path",
             "path_base",

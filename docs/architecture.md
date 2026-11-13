@@ -418,12 +418,16 @@ each has a clear trust model.
   verification, and depth-1 writers can use bounded non-editing helpers in the
   same workspace. The registry also owns steering messages, dependency chains,
   persisted status/view data, and terminal-run resumption.
-- Child schedulers and workspace providers are neutral agent modules. They do
-  not depend on Forge execution or swarm workers, and those
-  runtimes do not receive the top-level background orchestration surface.
-- Every child uses the earlier of the parent run's absolute deadline and its
-  finite configured fallback ceiling, so delegation cannot extend a one-shot
-  run beyond its original time limit and cannot run unbounded without one.
+- One session-owned subagent coordinator holds the child scheduler, registry,
+  and workspace provider across live tool-surface rebuilds. Public tools are
+  adapters to that stable owner; each submitted child snapshots its immutable
+  launch context so later Permissions changes affect only future submissions.
+- The coordinator modules do not depend on Forge execution or swarm workers,
+  and those runtimes do not receive the top-level background
+  orchestration surface.
+- Every child inherits an active parent run deadline exactly. A child-specific
+  fallback is optional operator policy, so delegation cannot extend a bounded
+  one-shot run but has no arbitrary lifetime ceiling by default.
 
 See [MCP](mcp.md), [Skills](skills.md), [Plugins](plugins.md),
 [Custom tools](custom_tools.md), [Lifecycle hooks](hooks.md), and

@@ -20,6 +20,8 @@ from alysis_code.session_store import read_session_events
 from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 _EXECUTED_ARGV = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
 _EXECUTED_COMMAND = (
     subprocess.list2cmdline(_EXECUTED_ARGV) if os.name == "nt" else shlex.join(_EXECUTED_ARGV)

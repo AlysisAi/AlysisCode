@@ -6,6 +6,66 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
+usage() {
+  cat <<'EOF_USAGE'
+Usage: run_harbor_tbench.sh [options]
+
+  --latest-main                 Label this campaign as running latest main. The
+                                adapter then refuses to start unless the wheel
+                                was built from the commit origin/main resolved
+                                to at build time.
+  --provenance-override REASON  Proceed even though the provenance check failed,
+                                recording REASON verbatim in every artifact this
+                                run produces. REASON is required and must not be
+                                blank -- an override that records nothing about
+                                why it was taken reproduces the failure the
+                                check exists to prevent.
+  --no-provenance-guard         Disable the check outright. Prefer
+                                --provenance-override: this leaves no reason
+                                behind.
+  -h, --help                    Show this message.
+EOF_USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --latest-main)
+      export ALYSIS_TBENCH_LATEST_MAIN=1
+      shift
+      ;;
+    --provenance-override)
+      if [[ -z "${2:-}" || -z "${2// /}" ]]; then
+        echo "--provenance-override requires a non-blank REASON." >&2
+        exit 2
+      fi
+      export ALYSIS_PROVENANCE_OVERRIDE="$2"
+      shift 2
+      ;;
+    --provenance-override=*)
+      ALYSIS_PROVENANCE_OVERRIDE="${1#*=}"
+      if [[ -z "${ALYSIS_PROVENANCE_OVERRIDE// /}" ]]; then
+        echo "--provenance-override requires a non-blank REASON." >&2
+        exit 2
+      fi
+      export ALYSIS_PROVENANCE_OVERRIDE
+      shift
+      ;;
+    --no-provenance-guard)
+      export ALYSIS_PROVENANCE_GUARD=0
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
 load_stored_alysis_key() {
   local py_bin
   py_bin="$(command -v python3 || command -v python || true)"
@@ -98,6 +158,9 @@ Concurrency: $TB_N_CONCURRENT
 Max steps: $ALYSIS_MAX_STEPS
 Subagents: $ALYSIS_SUBAGENTS
 Agent timeout seconds: $TB_AGENT_TIMEOUT_SEC
+Latest-main claim: ${ALYSIS_TBENCH_LATEST_MAIN:-0}
+Provenance guard: ${ALYSIS_PROVENANCE_GUARD:-1}
+Provenance override: ${ALYSIS_PROVENANCE_OVERRIDE:-(none)}
 
 ## Live paths
 

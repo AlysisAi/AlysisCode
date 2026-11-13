@@ -19,6 +19,60 @@ from .config import ConfigError
 from .host_file_policy import HostFilePolicy
 from .project_folders import allowed_roots
 
+_XCODE_SELECT_LINK = Path("/private/var/db/xcode_select_link")
+_DEFAULT_XCODE_DEVELOPER = Path("/Applications/Xcode.app/Contents/Developer")
+_COMMAND_LINE_TOOLS_ROOT = Path("/Library/Developer")
+# Records only which licence versions were accepted. xcodebuild runs no tool,
+# including git, until it can read it.
+_XCODE_LICENSE_RECORD = Path("/Library/Preferences/com.apple.dt.Xcode.plist")
+
+
+def developer_directories(
+    developer_dir: str | None = None, *, workspace_roots: tuple[Path, ...] = ()
+) -> tuple[Path, ...]:
+    """Apple developer tooling outside /Library/Developer that /usr/bin shims load.
+
+    /usr/bin/git, clang, make and similar are shims. Each loads libxcrun and the
+    real tool from DEVELOPER_DIR, else the xcode-select link, else an installed
+    Xcode.app. Command Line Tools live under /Library/Developer, which is already
+    readable. A selected or default Xcode.app is not, and without it those tools
+    cannot start. Only a directory holding the xcrun library qualifies. A workspace
+    path, or a directory containing the user's home, never becomes read authority.
+    """
+    workspace_roots = tuple(path.resolve() for path in workspace_roots)
+    home = Path.home().resolve()
+    found: list[Path] = []
+    for candidate in (developer_dir, _XCODE_SELECT_LINK, _DEFAULT_XCODE_DEVELOPER):
+        if not candidate or not Path(candidate).is_absolute():
+            continue
+        try:
+            target = Path(candidate).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        # DEVELOPER_DIR may name the application bundle rather than its tools.
+        bundled = target / "Contents" / "Developer"
+        if bundled.is_dir():
+            target = bundled
+        if not (target / "usr" / "lib" / "libxcrun.dylib").is_file():
+            continue
+        # Inside Xcode.app, xcrun starts xcodebuild, which links frameworks from the
+        # rest of the bundle. The bundle is Apple's signed tooling, not user data.
+        bundle = target.parent.parent
+        if (
+            target.name == "Developer"
+            and target.parent.name == "Contents"
+            and (bundle.suffix == ".app")
+        ):
+            target = bundle
+        if (
+            target.is_relative_to(_COMMAND_LINE_TOOLS_ROOT)
+            or home.is_relative_to(target)
+            or any(target.is_relative_to(root) for root in workspace_roots)
+        ):
+            continue
+        found.append(target)
+    return tuple(dict.fromkeys(found))
+
 
 def _xcode_code_paths(
     developer: Path, *, applications_root: Path = Path("/Applications")
@@ -95,6 +149,7 @@ def runtime_read_paths(
     *,
     workspace_roots: tuple[Path, ...] = (),
     check_preparation: Callable[[], None] = lambda: None,
+    developer_dir: str | None = None,
 ) -> tuple[Path, ...]:
     """Code/SDK directories, not whole installation prefixes or system data.
 
@@ -147,6 +202,12 @@ def runtime_read_paths(
     check_preparation()
     candidates.extend(_selected_xcode_code_paths())
     check_preparation()
+    # Both read grants stay for now: the selected Xcode's code folders as the
+    # published engine names them, and the developer directory a command names
+    # itself (DEVELOPER_DIR) with the licence record xcodebuild reads first.
+    developer = developer_directories(developer_dir, workspace_roots=workspace_roots)
+    if developer:
+        candidates.extend((*developer, _XCODE_LICENSE_RECORD))
     from .posix_runtime_paths import path_runtime_paths
 
     candidates.extend(
@@ -198,6 +259,7 @@ def seatbelt_profile(
     scratch: bool = False,
     protect_repo_meta: bool = True,
     git_metadata_writes: bool = False,
+    git_programs_protected: bool = False,
     network_proxy_port: int | None = None,
     unix_socket_count: int = 0,
     read_file_count: int = 0,
@@ -298,6 +360,22 @@ def seatbelt_profile(
         if not git_metadata_writes:
             names += r"|\.git"
         lines.append(f'(deny file-write* file-link (regex #"/({names})(/|$)"))')
+        if git_metadata_writes and git_programs_protected:
+            from .macos_git import GIT_PROGRAM_ENTRIES
+
+            # Git may write its objects, refs and index, never what decides which
+            # programs a later Git runs. That holds in the repository itself, in
+            # the Git directories it keeps for submodules and linked worktrees,
+            # and for the ``.git`` entry, which could otherwise be replaced by a
+            # pointer to a directory the command filled in. Inside a submodule's
+            # Git directory a ref whose path holds one of these names (a branch
+            # called config, its remote-tracking refs) is refused as well.
+            entries = "|".join(name.replace(".", r"\.") for name in GIT_PROGRAM_ENTRIES)
+            lines.append('(deny file-write* file-link (regex #"/\\.git$"))')
+            lines.append(
+                "(deny file-write* file-link "
+                f'(regex #"/\\.git/((modules|worktrees)/(.*/)?)?({entries})(/|$)"))'
+            )
     for index in range(anchor_count):
         lines.append(f'(allow file-read-data (literal (param "ANCHOR_{index}")))')
     for index in range(private_path_count):

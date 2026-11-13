@@ -149,4 +149,4 @@ def test_paid_route_uses_gateway_context_without_unknown_model_fallback(model, c
         metadata = ModelRegistry(cfg=cfg).get(model)
     assert metadata.context_window_tokens == context
     assert not any("Unknown model" in str(w.message) for w in emitted)
-    assert metadata.supports_vision is False
+    assert metadata.supports_vision is (model != "qwen3.8-2.4t")

@@ -152,5 +152,8 @@ def test_findings_are_ordered_and_deduplicated() -> None:
 
 def test_posix_rules_are_unchanged() -> None:
     assert _fullaccess_denylist_match("rm -rf /")
-    assert not evaluate_shell_command("rm -rf build").allowed
+    assert not evaluate_shell_command("rm -rf /").allowed
+    removal = evaluate_shell_command("rm -rf build")
+    # Decided each time instead of refused outright; see test_policy.
+    assert removal.allowed and removal.needs_confirm and not removal.waivable
     assert evaluate_shell_command("pip install x").needs_confirm

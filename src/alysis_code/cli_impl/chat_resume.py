@@ -766,10 +766,9 @@ def _resume_chat_session(
         except Exception:
             pass
 
-    combined_resume_context = resume_context_message or ""
     resume_context_loaded = _insert_chat_resume_context_message(
         new_session,
-        combined_resume_context,
+        resume_context_message,
     )
 
     if history_messages:
@@ -809,7 +808,7 @@ def _resume_chat_session(
             "synthesized_tool_results": len(synthesized_tool_results),
             "synthesized_tool_result_ids": list(synthesized_tool_results),
             "resume_context_loaded": resume_context_loaded,
-            "resume_context_chars": len(combined_resume_context),
+            "resume_context_chars": len(resume_context_message or ""),
             "compaction_memory_reinjected": compaction_memory_reinjected,
             "historical_model_restored": historical_model_restored,
             "model_restore_reason": model_restore_reason,

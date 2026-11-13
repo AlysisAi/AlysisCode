@@ -9,12 +9,14 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from alysis_code import cli as cli_mod
 from alysis_code import forge as forge_mod
 from alysis_code import workspace_binding as workspace_binding_mod
 from alysis_code.cli import app as alysis_app
+from alysis_code.cli_impl import forge as forge_impl
 from alysis_code.config import AppConfig
 from alysis_code.conflict_auto_resolver import (
     AutoResolveOutcome,
@@ -37,6 +39,19 @@ from alysis_code.run_lock import write_run_mutation_lock_metadata
 from alysis_code.runtime_kind import RuntimeKind
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
 from alysis_code.workspace_context import WORKSPACE_KIND_GIT_REPO, WorkspaceContext
+
+
+@pytest.fixture(scope="module", autouse=True)
+def restore_legacy_forge_bindings():
+    # CLI calls copy their injected dependencies into the legacy module.
+    # Restore those bindings after this module's monkeypatches have unwound.
+    original = dict(vars(forge_impl))
+    yield
+    namespace = vars(forge_impl)
+    for name in namespace.keys() - original.keys():
+        namespace.pop(name)
+    namespace.update(original)
+
 
 _MCP_FIXTURE_SERVER = (
     Path(__file__).resolve().parent / "fixtures" / "mcp_servers" / "minimal_stdio_server.py"

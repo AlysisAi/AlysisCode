@@ -5,6 +5,10 @@ into runner settings, after path validation and the normal action approval autho
 Operation grants expire with their command tree. Explicit turn grants are held
 only in this tool assembly, cleared at the next user message or policy rebuild.
 Session grants and human-approved profiles live in protected host storage.
+
+A file tool's approved read of an outside folder is remembered for the rest of the
+user turn, for file-tool reads only. It is not a turn grant: commands inherit
+nothing from it and it never admits a write.
 """
 
 from __future__ import annotations
@@ -124,10 +128,39 @@ PERMISSIONS_SCHEMA = {
         },
         "git_metadata": {
             "type": "boolean",
-            "description": "macOS: request Git metadata writes for this exact shell command/script when it mixes Git with shell builtins (including cd) or other programs. write_folders does not grant Git metadata access. Prefer cwd with a literal Git command when possible. The whole command is reviewed; other protected app state stays protected. Operation scope only.",
+            "description": "Request writes to the parts of Git metadata that decide what a later Git runs: configuration, hooks, a rebase, remotes and upstream tracking, submodule and worktree setup. Staging, committing and branching need no permission. macOS: for this exact shell command/script, also when it mixes Git with shell builtins (including cd) or other programs. Windows: for one literal Git command. write_folders does not grant Git metadata access. Prefer cwd with a literal Git command when possible. A person approves the whole command; other protected app state stays protected. Operation scope only.",
         },
     },
 }
+
+# permissions.git_metadata as one system's tools describe it. The schema above
+# names both systems; a tool shows only its own, because the text is part of
+# every request and macOS shows it on two tools. The macOS session context
+# already says what a commit needs and what it does not (git_policy).
+_GIT_METADATA_DESCRIPTIONS = {
+    "darwin": (
+        "Request writes to Git config, hooks, a rebase, remotes or upstream tracking for "
+        "this exact shell command/script, also one mixing Git with cd or other programs. "
+        "write_folders does not grant this. Prefer cwd with a literal Git command. A person "
+        "approves the whole command; other protected app state stays protected. Operation "
+        "scope only."
+    ),
+    "win32": (
+        "Request writes to the parts of Git metadata that decide what a later Git runs: "
+        "configuration, hooks, a rebase, remotes and upstream tracking, submodule and "
+        "worktree setup. Staging, committing and branching need no permission. Windows: for "
+        "one literal Git command. write_folders does not grant Git metadata access. Prefer "
+        "cwd with a literal Git command when possible. A person approves the whole command; "
+        "other protected app state stays protected. Operation scope only."
+    ),
+}
+
+
+def git_metadata_description(platform: str) -> str:
+    """What a tool on ``platform`` says about ``permissions.git_metadata``."""
+    return _GIT_METADATA_DESCRIPTIONS.get(
+        platform, PERMISSIONS_SCHEMA["properties"]["git_metadata"]["description"]
+    )
 
 
 @dataclass(frozen=True)
@@ -278,6 +311,8 @@ class ScopedAccess:
         self._turn_grant: AccessGrant | None = None
         self._turn_profile: tuple[str, dict] | None = None
         self._current_profile: tuple[str, dict] | None = None
+        # Outside folders whose file-tool reads were approved in this user turn.
+        self._turn_file_reads: tuple[DirectoryIdentity, ...] = ()
 
     @staticmethod
     def _profile_fingerprint(payload: dict) -> str:
@@ -417,6 +452,21 @@ class ScopedAccess:
                     )
                 )
             ),
+            # A folder that is attached to the session stays a project.
+            windows_plain_write_roots=tuple(
+                dict.fromkeys(
+                    (
+                        *self.settings.windows_plain_write_roots,
+                        *(
+                            item.path
+                            for item in folders["write_folders"]
+                            if item.path not in self.settings.additional_workspace_roots
+                        ),
+                    )
+                )
+            )
+            if backend == "windows-mxc"
+            else self.settings.windows_plain_write_roots,
         )
         return AccessGrant(
             settings, tuple(dict.fromkeys((*folders["read_folders"], *folders["write_folders"])))
@@ -453,6 +503,7 @@ class ScopedAccess:
             self.access_store.save(None)
             self._turn_grant = None
             self._turn_profile = None
+            self._turn_file_reads = ()
             self._generation += 1
             self.record(
                 "sandbox_access_revoked",
@@ -476,6 +527,7 @@ class ScopedAccess:
             if any(event.get("type") == "user_message" for event in events):
                 self._turn_grant = None
                 self._turn_profile = None
+                self._turn_file_reads = ()
                 self._generation += 1
         session_grant = None
         session_profile = None
@@ -508,6 +560,7 @@ class ScopedAccess:
         except (ConfigError, OSError):
             self._turn_grant = None
             self._turn_profile = None
+            self._turn_file_reads = ()
             # Discard stale session authority so a subsequent request can recover.
             # Invalid profiles remain visible for explicit revocation/replacement.
             if self.access_store is not None:
@@ -524,7 +577,11 @@ class ScopedAccess:
         tool: str,
         files: tuple[str, ...] = (),
         cwd: str | None = None,
+        file_reads_for_turn: bool = False,
     ) -> AccessGrant:
+        # file_reads_for_turn is set by external_file_root only, never from model
+        # arguments: the approval then also covers later file-tool reads under the
+        # same folders until the next user message, and says so to whoever decides.
         current = self._current()
         generation = self._generation
         source_profile = self._current_profile
@@ -559,6 +616,12 @@ class ScopedAccess:
             raise ConfigError(
                 "Turn/session grants require an available conversation permission store."
             )
+        if file_reads_for_turn and (
+            scope != "operation"
+            or self.events_since is None
+            or set(proposal) - {"read_folders", "reason"}
+        ):
+            raise ConfigError("Remembered file reads cover read folders for one user turn only.")
         if "profile" in proposal:
             if self.access_store is None or set(proposal) - {"profile", "scope", "reason"}:
                 raise ConfigError("A saved profile cannot be combined with new access fields.")
@@ -664,13 +727,23 @@ class ScopedAccess:
 
             validate_command(command)
         if (
-            domains is not None
-            or private_endpoints
-            or sockets
-            or environment
-            or proposal.get("git_metadata")
+            domains is not None or private_endpoints or sockets or environment
         ) and choice.backend != "seatbelt":
             raise ConfigError("Domain and daemon-socket grants currently require macOS Seatbelt.")
+        if proposal.get("git_metadata") and choice.backend == "windows-mxc":
+            from ..git_native import takes_metadata_permission
+
+            # Under MXC only the Git job receives repository metadata, and it
+            # runs one literal Git command. For anything else the permission
+            # would be approved and then change nothing.
+            if tool != "shell_run" or not takes_metadata_permission(command):
+                raise ConfigError(
+                    "On Windows permissions.git_metadata applies to one literal Git command "
+                    "that changes the repository, run with shell_run on its own, such as "
+                    "`git config user.name ...`, `git remote add ...` or `git rebase main`."
+                )
+        elif proposal.get("git_metadata") and choice.backend != "seatbelt":
+            raise ConfigError("Git metadata grants require Windows MXC or macOS Seatbelt.")
         folders: dict[str, tuple[DirectoryIdentity, ...]] = {}
         missing_reads: list[str] = []
         for key in ("read_folders", "write_folders"):
@@ -734,6 +807,21 @@ class ScopedAccess:
             additional_workspace_roots=tuple(
                 dict.fromkeys((*baseline.additional_workspace_roots, *writes))
             ),
+            # A folder that is attached to the session stays a project.
+            windows_plain_write_roots=tuple(
+                dict.fromkeys(
+                    (
+                        *baseline.windows_plain_write_roots,
+                        *(
+                            path
+                            for path in writes
+                            if path not in baseline.additional_workspace_roots
+                        ),
+                    )
+                )
+            )
+            if choice.backend == "windows-mxc"
+            else baseline.windows_plain_write_roots,
         )
         system_trust = (
             choice.backend == "seatbelt"
@@ -745,7 +833,10 @@ class ScopedAccess:
         details = {
             "tool": tool,
             "cwd": cwd or str(self.root),
-            "scope": "this operation and its child processes only"
+            "scope": "file tools may read under these folders until the next user message; "
+            "commands and writes get no access from this approval"
+            if file_reads_for_turn
+            else "this operation and its child processes only"
             if scope == "operation"
             else (
                 "this user turn and its child processes; expires at the next user message"
@@ -795,11 +886,15 @@ class ScopedAccess:
             )
         summary = [
             "Approve additional sandbox access for "
-            + {
-                "operation": "this operation",
-                "turn": "this user turn",
-                "session": "this chat until revoked",
-            }[scope]
+            + (
+                "file-tool reads until the next user message"
+                if file_reads_for_turn
+                else {
+                    "operation": "this operation",
+                    "turn": "this user turn",
+                    "session": "this chat until revoked",
+                }[scope]
+            )
         ]
         for label, values in (
             ("public destinations", domains or ()),
@@ -999,23 +1094,43 @@ class ScopedAccess:
                 *(current.settings.additional_read_roots if read_only else ()),
             )
         )
-        if not granted:
-            # Include the proposed edit, not only its destination, in the
-            # reviewer's bounded action. Internal dispatch/cancellation objects
-            # are neither model arguments nor part of the requested operation.
-            public_args = {
-                key: value
-                for key, value in args.items()
-                if isinstance(key, str) and not key.startswith("_")
-            }
+        # Include the proposed edit, not only its destination, in the
+        # reviewer's bounded action. Internal dispatch/cancellation objects
+        # are neither model arguments nor part of the requested operation.
+        public_args = {
+            key: value
+            for key, value in args.items()
+            if isinstance(key, str) and not key.startswith("_")
+        }
+        command = f"{name} {json.dumps(public_args, ensure_ascii=False)}"
+        remember = False
+        if not granted and read_only and self._remembered_file_read(candidate):
+            # Another read under a folder approved in this user turn is the same
+            # capability. Explicit ask/deny rules are still rechecked each time.
+            if self.validate_reuse is not None:
+                self.validate_reuse(
+                    SandboxAccessApproval(
+                        kind="sandbox_access",
+                        reason="Use the file-read access approved earlier in this user turn",
+                        command=command,
+                        files=[str(candidate)],
+                        preview=json.dumps({"tool": name, "read_folders": [str(candidate)]}),
+                        metadata={"access": "read"},
+                    )
+                )
+            if self._current() != current or generation != self._generation:
+                raise ConfigError("Sandbox access changed during approval. Request access again.")
+        elif not granted:
+            remember = read_only and self.events_since is not None
             self.prepare(
                 {
                     "read_folders" if read_only else "write_folders": [str(candidate)],
                     "reason": f"Run {name} on the explicitly requested external path",
                 },
-                command=f"{name} {json.dumps(public_args, ensure_ascii=False)}",
+                command=command,
                 tool=name,
                 files=tuple(str(p) for p in paths),
+                file_reads_for_turn=remember,
             )
         if granted:
             self._reuse(
@@ -1031,4 +1146,19 @@ class ScopedAccess:
             raise ConfigError(
                 "The requested path changed during approval. No action ran; request access again."
             )
+        if remember:
+            self._turn_file_reads = tuple(dict.fromkeys((*self._turn_file_reads, identity)))
         return identity
+
+    def _remembered_file_read(self, candidate: Path) -> bool:
+        for item in self._turn_file_reads:
+            if not candidate.is_relative_to(item.path):
+                continue
+            try:
+                item.check()
+            except (ConfigError, OSError):
+                # A replaced folder is a different folder: forget it and review again.
+                self._turn_file_reads = tuple(i for i in self._turn_file_reads if i != item)
+                continue
+            return True
+        return False

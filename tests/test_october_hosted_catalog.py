@@ -80,13 +80,18 @@ def test_catalog_identity_names_and_route_limits(hosted, upstream, label, effort
         assert metadata.context_window_tokens == context
         assert metadata.max_output_tokens == 16_384
         assert metadata.supports_reasoning is True
-        assert metadata.supports_vision is (preset == "together" and hosted != "reflection-beam")
+        # The hosted route takes images for every model it offers, natively or through
+        # the disclosed helper; the direct route says what the model itself can see.
+        assert metadata.supports_vision is (preset == "alysis" or hosted != "reflection-beam")
         assert (
             "canonical_model_catalog" in metadata.field_sources["supports_reasoning"]
             or preset == "alysis"
         )
     assert [row["id"] for row in hosted_model_capabilities(hosted)["reasoning_efforts"]] == list(
         efforts
+    )
+    assert hosted_model_capabilities(hosted)["image_input"] == (
+        "native" if hosted == "minimax-m3.1-flash" else "assisted"
     )
     # A gateway's output caps, modalities and prices must not contaminate custom endpoints.
     metadata = ModelRegistry(

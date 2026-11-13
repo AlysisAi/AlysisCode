@@ -74,9 +74,12 @@ def test_api_picker_saves_sol_with_correct_prices_and_efforts(preset):
 
 
 @pytest.mark.parametrize("catalog", ["paid", "free", "offline"])
-def test_hosted_picker_uses_current_paid_catalog_and_rejects_retired_sol(
-    monkeypatch, catalog, configured_hosted_api
-):
+def test_hosted_picker_checks_account_catalog_and_never_broadens_free_access(monkeypatch, catalog):
+    from alysis_code.alysis_cloud import gateway_base_url
+
+    # Exercise a reviewed paid hosted model; Sol remains covered by the API and
+    # subscription tests, independently of the current hosted model roster.
+    hosted_model = "gpt-6.1-terra"
     cfg = config("alysis")
     monkeypatch.setattr(
         config_menu, "resolve_api_key", lambda cfg: SimpleNamespace(key="slk_test", source="test")
@@ -89,27 +92,26 @@ def test_hosted_picker_uses_current_paid_catalog_and_rejects_retired_sol(
             raise ProviderModelCatalogError("offline")
         models = ["deepseek-flash", "gpt-6-luna", "unreviewed-model"]
         if catalog == "paid":
-            models.extend([MODEL, "gpt-6.1-terra"])
+            models.append(hosted_model)
         return tuple(ProviderModelOption(id=m, label=m) for m in models)
 
     monkeypatch.setattr(config_menu, "discover_provider_models", discover)
     flow = ConfigFlow(cfg=cfg)
-    # A saved or stale catalog entry cannot restore a retired hosted model.
-    flow.state.fields["model"] = MODEL
+    # A saved paid model cannot grant access if the account is now Free/offline.
+    flow.state.fields["model"] = hosted_model
     flow.choose("default")
     ids = [r.value for r in flow.screen().rows]
-    assert MODEL not in ids
-    assert ("gpt-6.1-terra" in ids) is (catalog == "paid")
+    assert (hosted_model in ids) is (catalog == "paid")
     assert "unreviewed-model" not in ids
     assert len(calls) == 1
     assert calls[0]["api_key"] == "slk_test"
     if catalog == "paid":
-        flow.choose("gpt-6.1-terra")
-        assert set(r.value for r in flow.screen().rows) == set(EFFORTS) | {"off"}
+        flow.choose(hosted_model)
+        assert "high" in [r.value for r in flow.screen().rows]
         flow.choose("high")
         assert flow.state.commit_to(cfg).saved
-        assert cfg.model == "gpt-6.1-terra"
-        assert cfg.base_url == f"{configured_hosted_api}/llm/v1"
+        assert cfg.model == hosted_model
+        assert cfg.base_url == gateway_base_url()
 
 
 @pytest.mark.parametrize("preset", ["alysis", "openai", "openai-responses"])

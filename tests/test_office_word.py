@@ -120,6 +120,48 @@ def test_invalid_create_writes_nothing(tmp_path, spec, message):
     assert not list(tmp_path.iterdir())
 
 
+def test_create_sizes_table_columns_to_their_content(tmp_path):
+    output = tmp_path / "checklist.docx"
+    rows = [
+        ["#", "Task", "Owner", "Due day", "Done"],
+        [
+            "1",
+            "Set up the laptop, email and the shared drive before the first morning",
+            "IT",
+            "Day 1",
+            "\u2610",
+        ],
+        [
+            "2",
+            "Meet the team and the mentor",
+            "\u039c\u03b1\u03c1\u03af\u03b1 \u03a0\u03b1\u03c0\u03b1\u03b4\u03bf\u03c0\u03bf\u03cd\u03bb\u03bf\u03c5",
+            "Day 10",
+            "\u2611",
+        ],
+    ]
+    word.create({"blocks": [{"kind": "table", "rows": rows}]}, output, tmp_path)
+    document = Document(output)
+    table, section = document.tables[0], document.sections[0]
+    grid = [int(column.get(qn("w:w"))) for column in table._tbl.tblGrid.findall(qn("w:gridCol"))]
+    # The columns fill the text width (twips) between the margins.
+    assert sum(grid) == int((section.page_width - section.left_margin - section.right_margin) / 635)
+    assert grid[1] == max(grid), "the column holding the most text is the widest"
+    assert grid[0] < grid[2] and grid[4] < grid[2], "short values keep narrow columns"
+    # A short heading stays on one line: "Due day" (7 characters) and the cell margins, about 0.56 em
+    # (117.6 twips) a character at 10.5 pt.
+    assert grid[3] >= (7 + 2.5) * 117.6 - 1
+    assert table._tbl.tblPr.find(qn("w:tblLayout")).get(qn("w:type")) == "fixed"
+    assert [cell.width.twips for cell in table.rows[1].cells] == grid
+    assert table.cell(1, 4).text == "\u2610"
+
+
+def test_column_widths_count_wide_characters_twice():
+    narrow = word._column_widths([["Name", "x"], ["abcdef", "y"]], 9000)
+    wide = word._column_widths([["Name", "x"], ["\u5f20\u4e09\u674e\u56db\u738b\u4e94", "y"]], 9000)
+    assert wide[0] > narrow[0]
+    assert sum(narrow) == sum(wide) == 9000
+
+
 def test_create_rejects_total_cell_limit_before_allocating_document(tmp_path, monkeypatch):
     def should_not_construct():
         raise AssertionError("Input limits must be validated before constructing a document")

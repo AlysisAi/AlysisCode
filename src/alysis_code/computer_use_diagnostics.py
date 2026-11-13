@@ -8,6 +8,7 @@ from types import TracebackType
 from typing import Any, TypeVar
 
 from .failure_category import FailureCategory, classify_failure_category
+from .llm.rate_limit_metadata import RETRY_TIMING_STATUS_CODES
 
 DIAGNOSTIC_ATTRIBUTE = "_alysis_computer_use_provider_diagnostic"
 
@@ -317,8 +318,9 @@ def set_safe_provider_error_fields(
         error.status_code = safe_status  # type: ignore[attr-defined]
     error.provider_error_code = _allowed_text(code, DIAGNOSTIC_CODES)  # type: ignore[attr-defined]
     error.provider_error_parameter = _allowed_text(parameter, DIAGNOSTIC_PARAMETERS)  # type: ignore[attr-defined]
-    if safe_status == 429:
+    if safe_status in RETRY_TIMING_STATUS_CODES:
         error.provider_retry_after = _bounded_timing(retry_after, 2_678_400)  # type: ignore[attr-defined]
+    if safe_status == 429:
         error.provider_reset_at = _bounded_timing(reset_at, 4_102_444_800)  # type: ignore[attr-defined]
     return error
 
@@ -399,7 +401,7 @@ def computer_use_provider_diagnostic(error: BaseException) -> ComputerUseProvide
         parameter,
         site,
         line,
-        retry_after if status == 429 else 0,
+        retry_after if status in RETRY_TIMING_STATUS_CODES else 0,
         reset_at if status == 429 else 0,
     )
 
@@ -428,7 +430,8 @@ def _validated_diagnostic(value: Any) -> ComputerUseProviderDiagnostic | None:
         or not 0 <= value.retry_after <= 2_678_400
         or type(value.reset_at) is not int
         or not 0 <= value.reset_at <= 4_102_444_800
-        or (value.status != 429 and (value.retry_after != 0 or value.reset_at != 0))
+        or (value.status not in RETRY_TIMING_STATUS_CODES and value.retry_after != 0)
+        or (value.status != 429 and value.reset_at != 0)
     ):
         return None
     return value

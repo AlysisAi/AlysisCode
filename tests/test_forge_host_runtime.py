@@ -336,7 +336,7 @@ def test_provider_revalidation_and_pytest_errors_do_not_reflect_private_causes(
     else:  # pragma: no cover
         raise AssertionError("the missing trusted pytest path was accepted")
     assert "PRIVATE_PYTEST_SECRET" not in rendered
-    assert "/private/tmp" not in rendered
+    assert os.fspath(missing) not in rendered
 
 
 def test_trusted_pytest_resolution_prefers_explicit_engine_binding(tmp_path: Path) -> None:
@@ -603,6 +603,7 @@ def test_canonical_runtime_runs_real_planner_approval_agent_pytest_git_and_repla
         generation_id="gen_runtimee2e1",
     )
     assert credential not in repr(runtime.planner._settings)  # noqa: SLF001
+    forge_impl.build_host_task_executor(cli_mod)
     real_run_agent = forge_impl.run_agent
     agent_calls: list[dict[str, object]] = []
 

@@ -20,6 +20,19 @@ The bridge returns no tokens or account label. Each request reads the credential
 there is no cached successful identity. A host can reuse its settings engine for these reads
 and fall back to `auth status <provider_id> --json` when an older engine lacks the method.
 
+`session.create` also takes `task_output_directory` when the engine advertises the
+`session_task_output_directory` feature: the host's default output folder for that session, the
+value a host may otherwise set at launch as `ALYSIS_DESKTOP_TASK_OUTPUT_DIRECTORY` (the session's
+value wins). Given per session, one engine started ahead of time can serve any chat. It is checked
+against the task when used, exactly as the environment value is; a location, never a grant.
+
+`provider.auth.selectModel` (`provider_id`, `model`, optional `reasoning_effort`) and
+`provider.auth.reasoning` (`model`, `profile`) are `auth select-model` and `auth reasoning` without
+a new process, one shared implementation each. The first is a Workspace Trust write: it asks the
+provider for the account and its models outside the settings lock, then activates the subscription
+and its model in one locked write. The second returns the model's effort choices as `models`,
+saving nothing. A host falls back to the CLI commands when an older engine lacks them.
+
 ```bash
 alysis ide-bridge health
 ```
@@ -366,6 +379,31 @@ the next turn (for example a queued `chat.send`) never reads it. `chat.steer.tak
 returns held messages, oldest first, so the host can send them as a turn of their own, as the TUI
 does. A running turn's own messages stay with it. `session.clear` discards held messages.
 
+### feedback.prepare, feedback.send
+
+The private "Send to Alysis" report of the TUI's `/report`, for hosts. `feedback.prepare`
+(`feedback`, optional `session_id`, `workspace`, `include_diagnostics`) builds the report and sends
+nothing: the redacted description (1 to 8,000 characters), the engine version and, only when
+`include_diagnostics` is true, OS, Python version and the last 20 messages of the live session
+(text and tool calls; images, provider state and secrets removed; at most 180 KB). A session that
+is not open in this bridge is read from its retained log, the way `session.resume` rebuilds it, and
+nothing is written to it; that needs `workspace` and, when the host keeps logs elsewhere,
+`session_dir` (as in `session.create`). Without `session_id` it needs `workspace` and includes no
+conversation. The result has `report_id`,
+`report` (the payload as an object for the user to review, after the bridge's redaction; the bytes
+`feedback.send` sends are redacted the same way), `include_diagnostics` and `signed_in`. Sensitive (Computer Use) sessions refuse it.
+Invalid text fails with `feedback_invalid` and the engine's message.
+
+`feedback.send` (`report_id`) sends exactly the reviewed bytes. Signed in to Alysis
+(`alysis login`), the report is tied to the account; otherwise it is sent without credentials and
+the server admits it anonymously, rate-limited. Another provider's key is never sent. The result
+has `report_id`, `created_at` and `anonymous`. A refusal has its own code: `feedback_rate_limited`
+(429), `feedback_sign_in_required` (401 without a sign-in), `feedback_sign_in_expired` (401 with
+one), `feedback_conflict` (409), `feedback_too_large` (413), `feedback_unavailable` (404); anything
+else is `feedback_delivery_failed`. Messages never contain server text. Retrying the same
+`report_id` is safe and never stores the report twice. The bridge keeps the 16 most recent prepared
+reports; an older or unknown ID fails with `feedback_not_prepared`. The call runs on the request
+loop; each network step waits at most 15 seconds. Advertised as `features.feedback_delivery`.
 
 ### checkpoint.list, checkpoint.diff, checkpoint.revert, checkpoint.redo, checkpoint.branch
 
@@ -528,11 +566,13 @@ requirements or visual quality; `visualReview` remains `not_performed` by the ch
 
 ### session.outputArtifacts
 
-Returns `{session_id, job_id, task_id, paths}` for the exact completed file turn. Both
-`session_id` and `job_id` are required. Paths are relative to the requested workspace
-and come from the turn's declared changed outputs. The read-only query does not check
-file contents or prove task success. Sensitive-media sessions, unfinished or failed jobs,
-and mismatched task identities return `output_artifacts_unavailable`.
+Returns `{session_id, job_id, task_id, paths}` for the exact completed file turn.
+Both `session_id` and `job_id` are required; no other parameters are accepted.
+The backend checks the completed job and current task identity before returning
+declared, changed paths relative to the requested workspace. This read-only
+query does not open files or grant access to them. Sensitive-media sessions,
+unfinished or unsuccessful jobs, and stale task identities are refused with
+`output_artifacts_unavailable`.
 
 ### session.modelInfo
 
@@ -871,6 +911,7 @@ Profiles:
 - `profile.add`
 - `profile.remove`
 - `profile.use`
+- `profile.selectModel`
 - `profile.rename`
 - `profile.presets`
 - `profile.preset`
@@ -880,6 +921,11 @@ Profiles:
 but not raw `extra_headers` values. If header values are required, the result is `changed: false`
 with an action like `{"kind":"requires_secret_storage","next_step":"open_configure_provider"}`.
 `profile.preset` applies the same URL-userinfo rejection to custom `base_url` overrides.
+
+`profile.selectModel` takes `name` and `model` and is `alysis profile select-model` without a new
+process (one shared implementation): a single locked write that activates the API profile, keeps
+`model` as its default and routes execution natively. A subscription profile or a hosted profile
+without an API key is refused with `config_error`; nothing is written then.
 
 Retained sessions:
 
@@ -956,7 +1002,10 @@ the exact live `McpManager` owned by that IDE session and workspace. Ownership m
 live manager, an inactive server, or a non-explicit server trust mode fails closed.
 
 `mcp.server.status` is read-only and returns bounded, redacted connection/catalog metadata without
-commands, URLs, headers, environment values, or credentials. `enable`, `disable`, and `restart`
+commands, URLs, headers, environment values, or credentials. A server that did not start when the
+session began reports `connection_state: "failed"` and `startup_failed: true`; enable and restart
+refuse it because its tools are not in the session. `mcp.status` rows carry the redacted reason as
+`startup_error` (null for a server that started), and the other servers load normally. `enable`, `disable`, and `restart`
 require `workspace_trusted: true` and an idle session. Disable closes the owned connection and makes
 all existing model-facing bindings reject calls. Enable/restart validate a replacement connection
 against the session's frozen tool, resource, and prompt catalogs before atomically reconnecting the
@@ -1019,6 +1068,9 @@ Alysis Code extension package management:
 - `ext.uninstall`
 - `ext.enable`
 - `ext.disable`
+
+`ext.search` accepts an optional string `query`. An omitted, empty or whitespace-only
+query lists the full curated registry; non-string values are rejected.
 
 `ext.install`, `ext.uninstall`, `ext.enable`, and `ext.disable` are mutating package operations and
 therefore require Workspace Trust plus explicit confirmation. Search/list/info are structured
@@ -1222,8 +1274,12 @@ allowances only in memory on the `BridgeSession`, and session close or bridge re
 Supported boundaries are:
 
 - shell approvals (`shell_run`, `shell_background`): exact command hash
-- custom and MCP-like approvals (`custom_tool_run:<name>`, `mcp_*`, `mcp_tool_run:<name>`): exact
-  backend-provided action string hash
+- custom and MCP-like approvals (`custom_tool_run:<name>`, `mcp_*`): exact backend-provided
+  action string hash
+- MCP tool approvals (`mcp_tool_run:<server_id>/<tool_name>`): exact hash of the tool alias, so the
+  allowance covers that one tool for any arguments. The approval's `action.tool_identity` carries
+  `mcp_server_id` and `mcp_tool_id`. Tools the server marks destructive never get a session
+  allowance
 - file approvals (`fs_write`, `fs_edit`, `fs_move`, `fs_copy`, `fs_delete`, `fs_mkdir`,
   `git_apply_patch`): exact sorted file path set; later file approvals may auto-allow only when
   their file set is a subset of the approved set for the same operation kind
@@ -1717,6 +1773,16 @@ fragment data and omit typed text; results expose only bounded owner-scoped publ
 payload. `browser.diagnostics` returns only allowlisted console and network event families, with a
 bounded `max_events` (maximum 500 at the protocol boundary), per-event payload limits, and
 `truncated` metadata. `timeout_seconds`, where accepted, must be between 0.05 and 300 seconds.
+
+`browser.status` and `browser.list` report `running` only while the owned process,
+egress proxy and CDP control connection remain available. `disconnected` means
+the process is still alive but control has failed closed (for example, cancellation
+or timeout during an in-flight CDP request); `crashed` means the process or egress
+proxy is unavailable. Close the owned session and start a new one to recover from
+disconnection. Cancellation before dispatch keeps a healthy session usable.
+Cancellation is not rollback: a multi-command input action may already have
+changed the page before its next checkpoint. Re-observe a healthy session before
+deciding another action; do not infer successful human takeover from cancellation.
 
 `browser.screenshot` validates the CDP response as a bounded PNG, stores it in the owning browser's
 private artifact directory, and returns only `artifact_id`, media type, size, and SHA-256 metadata.
@@ -2348,6 +2414,22 @@ catalog. `mode: "forge"` additionally includes Forge commands. Hosts must expose
 only entries they can execute or map to a native UI action; this endpoint does
 not execute terminal commands.
 
+`agents.list` is a read-only management method for subagent model settings. With
+`workspace` or `path`, it includes the project's `.alysis_agents/`; without, only
+the built-ins and the user's `agents/` folder. It returns `subagents_enabled`,
+`user_agents_dir`, `agents: [{name, builtin, description, mode,
+allow_workspace_writes, model_role, model, profile, enabled, available, unavailable,
+effective_model, effective_profile, problem, user_file, settable,
+not_settable_reason}]`, `roles: [{role, description, model, effective_model,
+forge, forge_model, forge_effective_model}]` and `profiles: [{name, active, usable,
+reason}]`: whether a subagent can run on each saved provider profile (another
+profile needs its own base URL and key or account). `effective_model` and
+`effective_profile` are what a run would use now, resolved as a run resolves them;
+`problem` says why it could not start. Changing a model is `alysis agents set NAME
+--model M --profile P` (or `--clear`): it rewrites only the `model` and `profile`
+lines of the subagent's file in the user's `agents/` folder, and a built-in without
+a file gets a metadata-only override that keeps its prompt and permissions.
+
 `skill.list` and `skill.info` include `available` for each skill: lifecycle-enabled,
 allowed by the effective plugin activation and existing workspace trust, and enabled
 in configuration. Reading the catalog never grants trust. `enabled` continues to
@@ -2412,33 +2494,6 @@ action. It accepts exactly `session_id`, `host_action_id`, `workspace_fence`, an
 to the current live job, be in its execution phase and be within its deadline.
 Stale, duplicate or incorrectly fenced receipts are rejected. This receipt records
 dispatch only; the result still arrives through `host.action.respond`.
-
-
-### feedback.prepare, feedback.send
-
-The private "Send to Alysis" report of the TUI's `/report`, for hosts. `feedback.prepare`
-(`feedback`, optional `session_id`, `workspace`, `include_diagnostics`) builds the report and sends
-nothing: the redacted description (1 to 8,000 characters), the engine version and, only when
-`include_diagnostics` is true, OS, Python version and the last 20 messages of the live session
-(text and tool calls; images, provider state and secrets removed; at most 180 KB). A session that
-is not open in this bridge is read from its retained log, the way `session.resume` rebuilds it, and
-nothing is written to it; that needs `workspace` and, when the host keeps logs elsewhere,
-`session_dir` (as in `session.create`). Without `session_id` it needs `workspace` and includes no
-conversation. The result has `report_id`,
-`report` (the payload as an object for the user to review, after the bridge's redaction; the bytes
-`feedback.send` sends are redacted the same way), `include_diagnostics` and `signed_in`. Sensitive (Computer Use) sessions refuse it.
-Invalid text fails with `feedback_invalid` and the engine's message.
-
-`feedback.send` (`report_id`) sends exactly the reviewed bytes. Signed in to Alysis
-(`alysis login`), the report is tied to the account; otherwise it is sent without credentials and
-the server admits it anonymously, rate-limited. Another provider's key is never sent. The result
-has `report_id`, `created_at` and `anonymous`. A refusal has its own code: `feedback_rate_limited`
-(429), `feedback_sign_in_required` (401 without a sign-in), `feedback_sign_in_expired` (401 with
-one), `feedback_conflict` (409), `feedback_too_large` (413), `feedback_unavailable` (404); anything
-else is `feedback_delivery_failed`. Messages never contain server text. Retrying the same
-`report_id` is safe and never stores the report twice. The bridge keeps the 16 most recent prepared
-reports; an older or unknown ID fails with `feedback_not_prepared`. The call runs on the request
-loop; each network step waits at most 15 seconds. Advertised as `features.feedback_delivery`.
 
 
 ### Desktop customization workbench

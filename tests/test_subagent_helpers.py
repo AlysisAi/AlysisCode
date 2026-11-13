@@ -721,8 +721,14 @@ def test_helper_calls_are_serialized_per_child(
         store.close()
 
 
-def test_forge_workers_do_not_enable_child_helpers(tmp_path: Path) -> None:
-    runtime_kind = RuntimeKind.FORGE_EXEC
+@pytest.mark.parametrize(
+    "runtime_kind",
+    [RuntimeKind.FORGE_EXEC],
+)
+def test_forge_workers_do_not_enable_child_helpers(
+    tmp_path: Path,
+    runtime_kind: RuntimeKind,
+) -> None:
     store = SessionStore(
         enabled=False,
         sessions_dir=tmp_path / "runtime-sessions",

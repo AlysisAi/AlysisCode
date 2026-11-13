@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "architecture": "arm64",
+  "base_url": "https://cloud.debian.org/images/cloud/trixie/20261103-2651/debian-13-generic-arm64-20261103-2651.tar.xz",
+  "base_sha512": "5b713fb491e326ddb8eb10e67114011e7c1ffcbe24248dfc141507f5c81004c8e5cd342931f1803489970262e7f25fb337f49bd2b17278f7526391dc2d469c8d",
+  "helper_url": "https://github.com/crc-org/vfkit/releases/download/v0.6.4/vfkit",
+  "helper_sha256": "0ed83fc8ca7aa708598835480dba1362406aa7cd1dab3b27464eb76327d9652d",
+  "helper_license_url": "https://raw.githubusercontent.com/crc-org/vfkit/v0.6.4/LICENSE",
+  "helper_version": "0.6.4",
+  "disk_bytes": 8589934592
+}

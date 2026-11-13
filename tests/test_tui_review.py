@@ -384,7 +384,7 @@ def test_review_compact_render_and_keyboard(tmp_path, columns, rows):
                     "".join(screen.data_buffer[y][x].char for x in range(columns)).rstrip()
                     for y in range(rows)
                 )
-                folder = tmp_path / "review-captures"
+                folder = tmp_path / "review-evidence"
                 folder.mkdir(parents=True, exist_ok=True)
                 (folder / f"{name}-{columns}x{rows}.txt").write_text(text, encoding="utf-8")
                 assert "Window too small" not in text

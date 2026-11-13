@@ -12,8 +12,6 @@ from pathlib import Path
 
 installed = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(installed))
-from alysis_code.agent.task_state import SessionTaskState  # noqa: E402
-
 import alysis_code  # noqa: E402 -- deliberately import only after choosing the wheel
 from alysis_code.agent.acceptance_contract import (  # noqa: E402
     AcceptanceCriterionKind,
@@ -38,13 +36,8 @@ assert any(c.kind == AcceptanceCriterionKind.PUBLIC_SYMBOL_INTERFACE for c in ty
     encoding="utf-8",
 )
 command = '"' + sys.executable.replace("\\", "/") + '" check_output.py'
-task = SessionTaskState(
-    task_id="wheel:task:1",
-    session_id="wheel",
-    sequence=1,
-    objective=f"Create output.txt. Run `{command}`.",
-)
-contract = build_acceptance_contract(root=root, instruction="continue", task_state=task)
+contract = build_acceptance_contract(root=root, instruction=f"Create output.txt. Run `{command}`.")
+contract.task_id = "wheel:evidence:1"
 state = TurnExecutionState(
     execution_requested=True,
     expected_verification_commands={command},
@@ -107,14 +100,14 @@ _record_tool_effect(
 assert check() == 0
 assert criterion.status == AcceptanceCriterionStatus.PASSED
 assert contract.evidence[-1].generation == 2
-assert contract.evidence[-1].task_id == task.task_id
+assert contract.evidence[-1].task_id == contract.task_id
 assert contract.evidence[-1].result_id
 print(
     json.dumps(
         {
             "passed": True,
             "module": alysis_code.__file__,
-            "task_id": task.task_id,
+            "task_id": contract.task_id,
             "generation": contract.generation,
             "cwd": str(root),
         },

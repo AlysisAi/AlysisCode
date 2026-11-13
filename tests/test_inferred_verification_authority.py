@@ -34,6 +34,8 @@ from alysis_code.verification_contract import (
     build_verification_command_spec,
 )
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 _INFERRED = "python -m unittest discover"
 _SELECTED_ARGV = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
 _SELECTED = (

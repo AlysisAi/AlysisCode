@@ -27,8 +27,9 @@ from ..verify_gate import (
     extract_actionable_failure_snippet,
     extract_verification_failure_snippet,
     is_authoritative_verify_command_selection,
+    is_generic_fallback_verify_command_selection,
     is_toolchain_unavailable_verification_output,
-    resolve_task_aware_verify_command_selection,
+    resolve_project_verify_command_selection,
     resolve_verify_sandbox_mode,
     verification_selection_payload,
 )
@@ -37,7 +38,6 @@ from .acceptance_contract import (
     AcceptanceContract,
     AcceptanceCriterionKind,
     acceptance_contract_problem_payload,
-    extract_explicit_acceptance_commands,
     invalidate_acceptance_evidence,
     record_acceptance_tool_effect,
     record_consumer_profile_observation,
@@ -477,6 +477,16 @@ class TurnExecutionState:
     # restore this set: earlier edits cannot enroll this reply's attachments or
     # make inferred repository verification apply to unrelated current effects.
     turn_touched_repo_paths: set[str] = field(default_factory=set, repr=False)
+    # Workspace paths the user wrote in this chat, as the host detected them,
+    # without a role. A path the model declares leaves this set.
+    turn_host_read_paths: set[str] = field(default_factory=set, repr=False)
+    # The host's default folder for this task's new deliverables.
+    turn_host_output_directory: str = field(default="", repr=False)
+    # Durable services this turn started, and those it stopped or replaced itself.
+    turn_started_service_ids: set[str] = field(default_factory=set, repr=False)
+    turn_stopped_service_ids: set[str] = field(default_factory=set, repr=False)
+    # Command lines this turn started as background processes or services.
+    turn_started_commands: list[str] = field(default_factory=list, repr=False)
     # Exact scoped file-tool effects can confirm a named external output, but
     # must not masquerade as project files or broaden repo test/diff scopes.
     touched_external_paths: set[str] = field(default_factory=set)
@@ -1424,9 +1434,19 @@ def _extract_touched_repo_paths(
     raw_paths: list[str] = []
 
     if normalized_tool in {"fs_write", "fs_edit", "fs_delete", "fs_mkdir"}:
-        raw_path = result.get("path", arguments.get("path"))
-        if isinstance(raw_path, str):
-            raw_paths.append(raw_path)
+        entries = result.get("results") if normalized_tool == "fs_delete" else None
+        if isinstance(entries, list):
+            # fs_delete with several paths reports each file on its own; a path
+            # it did not remove was not touched. Entries from another folder
+            # are relative to that folder, not to this project.
+            for entry in () if result.get("scoped_workspace") else entries:
+                if isinstance(entry, dict) and entry.get("ok") is True:
+                    if isinstance(entry.get("path"), str):
+                        raw_paths.append(entry["path"])
+        else:
+            raw_path = result.get("path", arguments.get("path"))
+            if isinstance(raw_path, str):
+                raw_paths.append(raw_path)
     elif normalized_tool == "document_operation" and result.get("status") in {
         "created",
         "edited",
@@ -2767,6 +2787,20 @@ def _record_tool_effect(
             )
         )
     normalized_tool = tool_name.strip().lower()
+    if normalized_tool == "shell_service_stop":
+        stopped = str(arguments.get("service_id") or result.get("service_id") or "").strip()
+        if stopped:
+            state.turn_stopped_service_ids.add(stopped)
+    elif normalized_tool in {"shell_service_start", "shell_background", "workspace_preview_start"}:
+        started = str(result.get("service_id") or "").strip()
+        if started and str(result.get("ownership") or "") == "DURABLE_SERVICE":
+            state.turn_started_service_ids.add(started)
+        replaced = str(arguments.get("replace_service_id") or "").strip()
+        if replaced:
+            state.turn_stopped_service_ids.add(replaced)
+        started_command = arguments.get("cmd") or arguments.get("command")
+        if isinstance(started_command, str) and started_command.strip():
+            state.turn_started_commands.append(started_command.strip())
     external_edits: dict[str, str] = {}
     external_command_paths: set[str] = set()
     if normalized_tool == "shell_run":
@@ -3719,21 +3753,21 @@ def _build_interactive_turn_verify_task(
     session: Any,
     instruction: str,
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    task_texts = [instruction] if instruction else []
+    """The paths a request mentions, for the selection record only.
+
+    Neither they nor any word of the request chooses the turn's check; see
+    `_refresh_execute_turn_verification_selection`.
+    """
     task_paths: list[str] = []
-    for text in task_texts:
-        for path in _extract_workspace_relation_paths_from_text(root=session.root, text=text):
+    if instruction:
+        for path in _extract_workspace_relation_paths_from_text(
+            root=session.root, text=instruction
+        ):
             if path not in task_paths:
                 task_paths.append(path)
-    if not task_paths and not task_texts:
+    if not task_paths:
         return None, []
-    task: dict[str, Any] = {}
-    if task_paths:
-        task["estimated_files"] = list(task_paths)
-        task["write_scope"] = list(task_paths)
-    if task_texts:
-        task["acceptance_criteria"] = list(task_texts)
-    return task, task_texts
+    return {"estimated_files": list(task_paths)}, []
 
 
 def _refresh_execute_turn_verification_selection(
@@ -3754,40 +3788,30 @@ def _refresh_execute_turn_verification_selection(
         return
 
     repo_scan = _session_repo_scan(session)
-    task, plan_requirements = _build_interactive_turn_verify_task(
+    task, _ = _build_interactive_turn_verify_task(
         session=session,
         instruction=instruction,
     )
     current = _session_verify_command_selection(session)
-    # Task-derived selections are projections of the accepted requirements.
-    # Recompute them when those requirements change (including a new task),
-    # instead of inheriting a previous task's command as permanent authority.
-    selection = (
-        None if current is not None and current.source.startswith("task_refinement.") else current
+    # A turn's check comes from configuration or from what the project itself
+    # contains. The request chooses nothing here: its words ("docs",
+    # "frontend", a pytest line it happens to quote) say what it is about only
+    # in one language and only by guess. Whether the check applies to this
+    # turn is decided afterwards, from the files the turn changed.
+    # Only a default nobody backed is replaced (once: the result is then kept).
+    # Every other selection stands as the session resolved it, so a file the
+    # agent writes later cannot make itself the project's check.
+    unbacked_default = current is None or (
+        is_generic_fallback_verify_command_selection(current)
+        or current.source.startswith("task_refinement.")
     )
-    resolved = resolve_task_aware_verify_command_selection(
-        cfg=session.cfg,
-        verify_cmd=None,
-        task=task,
-        root=session.root,
-        repo_scan=repo_scan,
-        plan_requirements=plan_requirements,
-        selection=selection,
-    )
-    explicit_commands = extract_explicit_acceptance_commands(
-        *[str(item) for item in plan_requirements],
-    )
-    if (
-        explicit_commands
-        and not is_authoritative_verify_command_selection(current)
-        and resolved.contract_type in {"generic_fallback", "unavailable", ""}
-    ):
-        resolved = ResolvedVerifyCommands(
-            commands=tuple(explicit_commands),
-            source="task_refinement.explicit_user_command",
-            reason="explicit user command is the task-native verification contract",
-            contract_type="task_acceptance",
+    resolved = (
+        resolve_project_verify_command_selection(
+            cfg=session.cfg, root=session.root, repo_scan=repo_scan
         )
+        if unbacked_default
+        else current
+    )
     if (
         greenfield_verification_bootstrap_enabled(getattr(session, "cfg", None))
         and str(getattr(session, "verification_selection_source", "")).startswith(

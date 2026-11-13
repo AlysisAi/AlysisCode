@@ -143,7 +143,10 @@ def test_the_lint_refuses(text: str, reason: str):
     assert any(reason in problem for problem in problems), problems
 
 
-@pytest.mark.parametrize("tool", ["shell_run", "mcp__github__x", "has space", "", "a" * 65])
+@pytest.mark.parametrize(
+    "tool",
+    ["shell_run", "mcp__github__x", "mcp__other-tool", "fs_read-file", "has space", "", "a" * 65],
+)
 def test_uses_tools_must_be_the_plugins_own_names(tool: str):
     assert _lint("Fine text.", uses_tools=[tool])
 
@@ -164,7 +167,7 @@ _GITHUB = github_host.bundled_manifest(github_host.find_by_id(load_registry(), "
 
 
 def _github_with(*tables: str) -> bytes:
-    return _GITHUB + "".join(tables).encode("utf-8")
+    return _GITHUB.split(b"\n[[components.plugin_skill]]", 1)[0] + "".join(tables).encode("utf-8")
 
 
 def _manifest(content: bytes) -> PluginManifest:

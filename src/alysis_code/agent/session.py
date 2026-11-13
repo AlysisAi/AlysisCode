@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 
 from .. import __version__
 from ..agent import _patchable
-from ..agentbox_integration import AgentBoxTelemetry
 from ..atomic_io import atomic_write_json
 from ..background_runner import (
     DisabledBackgroundRunner,
@@ -40,6 +39,7 @@ from ..cancellation import (
     InteractiveCancellationToken,
 )
 from ..chat_messaging_runtime import attach_chat_messaging, serialized_chat_turn
+from ..cloud_connections import BoundConnections
 from ..command_text import command_text
 from ..compaction.call_policy import compaction_provider_call
 from ..compaction.conversation_compactor import ConversationCompactor
@@ -94,6 +94,7 @@ from ..extensions.activation import (
 )
 from ..extensions.plugin_skills import PluginSkill, active_plugin_skills
 from ..failure_category import FailureCategory, classify_failure_category
+from ..git_safe import build_git_process_env
 from ..hooks import (
     HOOK_AUDIT_ARTIFACT_PARTS,
     HookDispatcher,
@@ -132,6 +133,7 @@ from ..llm.types import LLMUsage, UsageConfidence, UsageSource
 from ..mcp import github_repository_policy as github_policy
 from ..mcp.config import load_resolved_mcp_config
 from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager, create_mcp_manager
+from ..memory_evidence import strip_memory_metadata
 from ..model_metadata_policy import ActiveModelRef, evaluate_active_model_metadata_policy
 from ..model_registry import ModelRegistry, resolve_model_provider_key
 from ..model_router import ROLE_CODING, ROLE_COMPACTOR, resolve_model_for_role
@@ -248,7 +250,11 @@ from .computer_use_upload_objectives import UploadObjectiveBinding, capture_uplo
 from .computer_use_uploads import COMPUTER_USE_UPLOAD_TOOL_NAMES
 from .empty_response_stall import EmptyResponseStallTracker
 from .errors import AgentRuntimeError, SessionWorkdirError
-from .llm_calls import _main_agent_chat, _rewrite_final_summary_for_language
+from .llm_calls import (
+    TOOL_CONTEXT_MESSAGE_KEY,
+    _main_agent_chat,
+    _rewrite_final_summary_for_language,
+)
 from .prompt_context import (
     _build_plugin_activation_index,
     _component_plugin_allowed,
@@ -418,6 +424,7 @@ def _git_branch(root: Path) -> str:
             ["git", "-C", os.fspath(root), "rev-parse", "--abbrev-ref", "HEAD"],
             check=False,
             capture_output=True,
+            env=build_git_process_env(),
             **command_text(),
         )
     except OSError:
@@ -434,6 +441,7 @@ def _git_is_dirty(root: Path) -> bool:
             ["git", "-C", os.fspath(root), "status", "--porcelain"],
             check=False,
             capture_output=True,
+            env=build_git_process_env(),
             **command_text(),
         )
     except OSError:
@@ -1073,6 +1081,7 @@ class AgentSession:
     prompt_guidance_profile: str | None = None
     project_folders: list[str] = field(default_factory=list, init=False, repr=False)
     memory_scope: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    memory_managed_externally: bool = field(default=False, init=False, repr=False)
     runtime_kind: RuntimeKind = RuntimeKind.INTERACTIVE_CHAT
     prompt_cache_stream_key: str | None = None
     mcp_manager: McpManager | ForgeTaskScopedMcpManager | None = None
@@ -1146,6 +1155,9 @@ class AgentSession:
     subagents_enabled: bool = False
     enforce_explicit_subagent_requests: bool = True
     subagent_depth: int = 0
+    # The host's default task output folder for this session (session.create's
+    # task_output_directory). None leaves it to ALYSIS_DESKTOP_TASK_OUTPUT_DIRECTORY.
+    host_task_output_directory: str | None = None
     subagent_registry: dict[str, SubagentDefinition] | None = None
     subagent_coordinator: SubagentCoordinator | None = None
     # Compatibility alias for callers that still use the scheduler name.
@@ -1190,7 +1202,6 @@ class AgentSession:
     cache_keepalive: ParentCacheKeepalive | None = None
     crash_diagnostics: CrashDiagnosticLogger | None = None
     crash_diagnostic_log_path: str | None = None
-    agentbox_telemetry: AgentBoxTelemetry | None = None
     process_group_registry: ProcessGroupRegistry | None = None
     host_screen_redactor: HostScreenRedactor | None = None
     host_screen_client_cache_state: tuple[Any, dict[str, Any]] | None = None
@@ -1328,6 +1339,10 @@ class AgentSession:
                 "reason": str(payload.get("reason") or "provider_retry"),
                 "elapsed_ms": max(0, int(payload.get("elapsed_ms") or 0)),
             }
+            if "delay_ms" in payload:
+                safe_payload["delay_ms"] = max(0, int(payload["delay_ms"] or 0))
+            if payload.get("failure_phase") in {"connection_setup", "provider_request"}:
+                safe_payload["failure_phase"] = str(payload["failure_phase"])
             self.store.append("llm_call_retry", safe_payload)
             set_activity = getattr(self.surface, "set_model_retry_activity", None)
             if callable(set_activity):
@@ -1447,6 +1462,19 @@ class AgentSession:
         self._reap_tracked_process_groups(event=ReapEvent.SESSION_CLOSE)
         if self.cache_keepalive is not None:
             self.cache_keepalive.close()
+        provider_clients = [self.client]
+        if self.conversation_compactor is not None:
+            provider_clients.append(getattr(self.conversation_compactor, "compactor_client", None))
+        for provider_client in provider_clients:
+            close_connections = getattr(provider_client, "close_http_connections", None)
+            if callable(close_connections):
+                try:
+                    close_connections()
+                except Exception:  # noqa: BLE001 - session teardown must continue
+                    self._hook_warning(
+                        "Provider connection cleanup failed.",
+                        code="provider_connection_cleanup_failed",
+                    )
         coordinator = self.subagent_coordinator or self.child_scheduler
         defer_store_close = isinstance(coordinator, SubagentCoordinator)
         if coordinator is not None:
@@ -1556,8 +1584,6 @@ class AgentSession:
             if self.mcp_manager is not None:
                 self.mcp_manager.close()
         finally:
-            if self.agentbox_telemetry is not None:
-                self.agentbox_telemetry.close(error=reason not in {"session_close", "completed"})
             if defer_store_close and isinstance(coordinator, SubagentCoordinator):
                 # A nonblocking coordinator shutdown may still be unwinding a
                 # provider stream or isolated workspace. Keep the durable store
@@ -1632,7 +1658,12 @@ class AgentSession:
                 text = str(self.redact_host_screen_value(raw_message) or "").strip()
                 if not text:
                     continue
-                self.messages.append({"role": role, "content": text})
+                message: dict[str, Any] = {"role": role, "content": text}
+                if role == "user":
+                    # A hook's line, not the user's words: it is neither the
+                    # request being worked on nor something the user said.
+                    message[TOOL_CONTEXT_MESSAGE_KEY] = True
+                self.messages.append(message)
                 appended_count += 1
                 self.store.append(
                     "hook_message_added",
@@ -1961,8 +1992,6 @@ class AgentSession:
             if provider_reading is not None:
                 payload["provider_context"] = provider_reading
             self.store.append("llm_usage", payload)
-            if self.agentbox_telemetry is not None:
-                self.agentbox_telemetry.record_usage(usage_record)
             return usage_record
         except Exception as exc:  # noqa: BLE001 -- accounting cannot break the agent turn
             self.store.append(
@@ -2465,7 +2494,9 @@ class AgentSession:
         # Internal artifacts (a previous turn's locally generated stop report) are
         # excluded here by marker, so a summary can never be built by re-narrating
         # one. Marker-based, never a scan of the text.
-        request_messages = summary_input_messages(self.messages)
+        # This request does not pass through the memory layer's last boundary, so
+        # the fields that layer keeps on messages for the host are taken off here.
+        request_messages = strip_memory_metadata(summary_input_messages(self.messages))
         latest_assistant_text = str(latest_assistant_text or "").strip()
         if latest_assistant_text:
             request_messages.append({"role": "assistant", "content": latest_assistant_text})
@@ -2764,33 +2795,18 @@ class AgentSession:
         def _execute_turn() -> int:
             interrupted = False
             try:
-                if self.agentbox_telemetry is None:
-                    return _run_turn(
-                        self,
-                        instruction,
-                        image_paths=image_paths,
-                        routing_mode_override=routing_mode_override,
-                        ephemeral_system_messages=ephemeral_system_messages,
-                        ephemeral_user_messages=ephemeral_user_messages,
-                        cancellation_token=cancellation_token,
-                        record_cancellation_request=record_cancellation_request,
-                        chat_only=chat_only,
-                        **({"task_relation": task_relation} if task_relation is not None else {}),
-                    )
-                self.agentbox_telemetry.task(instruction)
-                with self.agentbox_telemetry.turn():
-                    return _run_turn(
-                        self,
-                        instruction,
-                        image_paths=image_paths,
-                        routing_mode_override=routing_mode_override,
-                        ephemeral_system_messages=ephemeral_system_messages,
-                        ephemeral_user_messages=ephemeral_user_messages,
-                        cancellation_token=cancellation_token,
-                        record_cancellation_request=record_cancellation_request,
-                        chat_only=chat_only,
-                        **({"task_relation": task_relation} if task_relation is not None else {}),
-                    )
+                return _run_turn(
+                    self,
+                    instruction,
+                    image_paths=image_paths,
+                    routing_mode_override=routing_mode_override,
+                    ephemeral_system_messages=ephemeral_system_messages,
+                    ephemeral_user_messages=ephemeral_user_messages,
+                    cancellation_token=cancellation_token,
+                    record_cancellation_request=record_cancellation_request,
+                    chat_only=chat_only,
+                    **({"task_relation": task_relation} if task_relation is not None else {}),
+                )
             except KeyboardInterrupt:
                 _terminal_evidence("cancel", "cancelled")
                 interrupted = True
@@ -3269,6 +3285,11 @@ def create_session(
     chat_messaging_owner_handle: Any | None = None,
     chat_messaging_defer_start: bool = False,
     api_key_override: str | None = None,
+    client_override: ChatClient | None = None,
+    compactor_client_override: ChatClient | None = None,
+    shell_runner_override: Any | None = None,
+    tools_override: dict[str, ToolDef] | None = None,
+    hooks_enabled: bool = True,
     console: Any | None = None,
     deny_write_prefixes: list[str] | None = None,
     allow_write_globs: list[str] | None = None,
@@ -3337,6 +3358,7 @@ def create_session(
     computer_use_upload_objective: UploadObjectiveBinding | dict[str, Any] | None = None,
     managed_session_persistence: Any | None = None,
     approval_reviewer: ApprovalReviewer | None = None,
+    cloud_connections: BoundConnections | None = None,
 ) -> AgentSession:
     if not mac_w7_computer_use_available() and (
         computer_start_resolved_host is not None
@@ -3363,6 +3385,21 @@ def create_session(
         or computer_use_upload_objective is not None
     ):
         raise ConfigError(UNAVAILABLE_MESSAGE)
+    # Trusted embedding hosts may supply an exclusive capability surface. This
+    # never supplements it with repository, shell, plugin or discovery tools.
+    if tools_override is not None:
+        if (
+            sensitive_media
+            or cloud_connections is not None
+            or browser_start_host_request is not None
+            or host_mcp
+            or google_mcp
+            or subagents_enabled
+            or helper_subagents_enabled
+        ):
+            raise ConfigError("An exclusive host tool surface cannot mix execution authorities")
+        if any(name != tool.name for name, tool in tools_override.items()):
+            raise ConfigError("Host tool names must match their registration")
     # Copy the trusted original scope before any workspace/provider callback.
     computer_use_upload_objective = capture_upload_objective(computer_use_upload_objective)
     if computer_use_upload_objective is not None and not (
@@ -3478,7 +3515,11 @@ def create_session(
         raise SessionWorkdirError(f"Path is not a directory: {initial_active_workdir}")
 
     active_profile = get_active_profile(session_cfg)
-    if api_key_override is None:
+    if client_override is not None:
+        if api_key_override is not None:
+            raise ConfigError("Use either a host client or a provider key, not both.")
+        api_key, api_key_source = "", "host-client"
+    elif api_key_override is None:
         if active_profile.auth_provider:
             api_key = ""
             api_key_source = f"provider-auth:{active_profile.auth_provider}"
@@ -3621,10 +3662,14 @@ def create_session(
     conversation_summarization_enabled = runtime_context_features.conversation_summarization_enabled
     compactor_model_name: str | None = None
     if conversation_summarization_enabled:
-        compactor_model_name = resolve_model_for_role(
-            cfg=session_cfg,
-            role=ROLE_COMPACTOR,
-            plan=None,
+        compactor_model_name = (
+            compactor_client_override.model
+            if compactor_client_override
+            else resolve_model_for_role(
+                cfg=session_cfg,
+                role=ROLE_COMPACTOR,
+                plan=None,
+            )
         )
     active_model_refs = [ActiveModelRef(role=ROLE_CODING, model_name=session_cfg.model)]
     if compactor_model_name:
@@ -3638,7 +3683,7 @@ def create_session(
         registry=registry,
         active_models=active_model_refs,
     )
-    client = measured(
+    client = client_override or measured(
         "client_construction",
         _make_session_llm_client,
         cfg=session_cfg,
@@ -4149,6 +4194,13 @@ def create_session(
                 else "Background shell tools are disabled in readonly mode."
             )
         )
+    elif shell_runner_override is not None:
+        # A trusted host owns both execution and cancellation; do not silently
+        # create an unscoped background runner beside its foreground backend.
+        runner = with_closed_stdin(shell_runner_override)
+        bg_runner = DisabledBackgroundRunner(
+            reason="Background commands are unavailable in this host workspace."
+        )
     else:
         runner = LazyShellRunner(
             _load_shell_runner_from_resolved_settings, settings=resolved_sandbox_settings
@@ -4161,14 +4213,15 @@ def create_session(
                 resolved_sandbox_settings,
                 root,
                 warning_callback=_sandbox_warning_callback,
-            )
+            ),
+            settings=resolved_sandbox_settings,
         )
 
     # Warmup: close a declared-but-missing test-runner gap before the model
     # discovers it by failing a test run. Placed here because it must go through
     # the session's own shell runner -- the environment the agent's commands
     # resolve, and the one the operator's sandbox policy governs.
-    if not sensitive_media:
+    if not sensitive_media and tools_override is None:
         _pre_provision_declared_test_runner(
             store=store,
             root=workspace_context.workspace_root,
@@ -4307,6 +4360,11 @@ def create_session(
         def _capture_artifact_output_access(access: Callable[[str, bool], bool]) -> None:
             artifact_output_access_holder["access"] = access
 
+        def build_session_tools(**kwargs):
+            if tools_override is not None:
+                return dict(tools_override)
+            return build_tools(**kwargs)
+
         tools = (
             (
                 measured(
@@ -4330,7 +4388,7 @@ def create_session(
                 else {}
             )
             if sensitive_media
-            else build_tools(
+            else build_session_tools(
                 root=root,
                 console=console,
                 surface=surface,
@@ -4405,6 +4463,11 @@ def create_session(
                 approval_reviewer=session_approval_reviewer,
             )
         )
+        if cloud_connections is not None and not sensitive_media:
+            connected_tools = cloud_connections.tools()
+            if set(connected_tools) & set(tools):
+                raise ConfigError("Cloud and host connection tools cannot share the same names.")
+            tools.update(connected_tools)
         if browser_start_host_request is not None:
             tools["browser_start"] = build_browser_start_tool(browser_start_host_request)
             if computer_discovery is not None:
@@ -4417,7 +4480,7 @@ def create_session(
             store.append("mcp_catalog_snapshot", mcp_manager.catalog_snapshot_metadata())
         from .tool_discovery import install_tool_discovery, model_visible
 
-        if not sensitive_media:
+        if not sensitive_media and tools_override is None:
             install_tool_discovery(
                 tools,
                 defer_builtin_schemas=(
@@ -4532,7 +4595,7 @@ def create_session(
                 loaded_paths=(),
                 untrusted_project_paths=(),
             )
-            if sensitive_media
+            if sensitive_media or not hooks_enabled
             else load_resolved_hooks_config(workspace_context.workspace_root)
         )
         hooks_config, hook_dropped_counts = _filter_hooks_config_for_plugins(
@@ -4657,7 +4720,7 @@ def create_session(
 
         conversation_compactor: ConversationCompactor | None = None
         if conversation_summarization_enabled and compactor_model_name:
-            compactor_client = measured(
+            compactor_client = compactor_client_override or measured(
                 "client_construction",
                 _make_session_llm_client,
                 cfg=session_cfg,
@@ -4840,16 +4903,20 @@ def create_session(
             execution_deadline=execution_deadline,
             crash_diagnostics=crash_diagnostics,
             crash_diagnostic_log_path=resolved_crash_diagnostic_log_path,
-            agentbox_telemetry=AgentBoxTelemetry.from_env(
-                root=root,
-                runtime_version=f"alysis-{__version__}",
-            ),
             process_group_registry=process_group_registry,
             sensitive_media=bool(sensitive_media),
             approval_reviewer=session_approval_reviewer,
         )
         # A subagent's reviewer is already bound to the parent conversation; bind() keeps it.
         session_approval_reviewer.bind(session)
+        if conversation_compactor is not None:
+            from ..local_memory import read_source_context
+
+            # Resolve scope at each read, including manual compaction after a
+            # resume or settings change. Externally managed workers stay gated.
+            conversation_compactor.memory_source_reader = lambda **args: read_source_context(
+                session, **args
+            )
         if subagent_depth == 0 and store.enabled and not sensitive_media:
             # Persist the process's provider/web-search telemetry to the run's artifact
             # dir so retry/throttle/latency history survives exit. Only the top-level

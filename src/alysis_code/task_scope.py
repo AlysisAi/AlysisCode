@@ -14,6 +14,7 @@ from .bounded_capture import run_capture
 from .file_classification import BROAD_SOURCE_EXTENSIONS, INFERRED_FILE_EXTENSIONS, classify_path
 from .git_safe import build_git_process_env
 from .runtime_artifacts import ROOT_RUNTIME_ARTIFACT_DIR_NAMES, is_runtime_artifact_path
+from .sandbox_bookkeeping import command_file_signature, is_reservation_file
 
 _AGENT_INTERNAL_SCOPE_PREFIXES = tuple(sorted(ROOT_RUNTIME_ARTIFACT_DIR_NAMES | {".forge"}))
 _IGNORED_INTERNAL_PREFIXES = _AGENT_INTERNAL_SCOPE_PREFIXES
@@ -320,10 +321,25 @@ class WorkspaceGitDiffState:
     available: bool
     tracked_diff_paths: tuple[str, ...] = ()
     untracked_source_paths: tuple[str, ...] = ()
+    # Files the current turn wrote that Git does not track. A new document or
+    # data file is a change although it is not source code and may be ignored.
+    untracked_turn_paths: tuple[str, ...] = ()
+    # Untracked files and ignored entries that were there as the turn began and
+    # are gone now. Git shows a removal only for a file it tracks.
+    removed_turn_paths: tuple[str, ...] = ()
 
     @property
     def changed_paths(self) -> tuple[str, ...]:
-        return tuple(sorted({*self.tracked_diff_paths, *self.untracked_source_paths}))
+        return tuple(
+            sorted(
+                {
+                    *self.tracked_diff_paths,
+                    *self.untracked_source_paths,
+                    *self.untracked_turn_paths,
+                    *self.removed_turn_paths,
+                }
+            )
+        )
 
     @property
     def empty(self) -> bool:
@@ -335,6 +351,8 @@ class WorkspaceGitDiffState:
             "empty": self.empty,
             "tracked_diff_paths": list(self.tracked_diff_paths),
             "untracked_source_paths": list(self.untracked_source_paths),
+            "untracked_turn_paths": list(self.untracked_turn_paths),
+            "removed_turn_paths": list(self.removed_turn_paths),
             "changed_paths": list(self.changed_paths),
         }
 
@@ -1909,8 +1927,22 @@ def list_changed_files_including_untracked(root: Path) -> list[str]:
     return changed
 
 
+# Git's name for a tree with nothing in it, in each object format. Git answers
+# for it in every repository, whether or not the object was ever written.
+_EMPTY_TREE = {
+    "sha1": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "sha256": "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+}
+
+
 def resolve_workspace_git_base(root: Path) -> str | None:
-    """Return the current commit for use as a stable turn-local diff base."""
+    """Return what the workspace's history holds now, as a stable turn-local diff base.
+
+    That is the current commit. Where there is none yet (a folder that is not
+    a repository, or a repository without a commit) it is the empty tree, so
+    that whatever the turn goes on to commit is a change against it. Without a
+    base, work the turn committed into a new repository leaves an empty diff.
+    """
 
     if shutil.which("git") is None:
         return None
@@ -1919,21 +1951,88 @@ def resolve_workspace_git_base(root: Path) -> str | None:
         ["rev-parse", "--verify", "HEAD^{commit}"],
         text=True,
     )
-    if head is None or head.returncode != 0:
+    if head is None:
         return None
-    value = head.stdout.strip()
-    return value or None
+    if head.returncode == 0:
+        return head.stdout.strip() or None
+    inside = _run_git_capture(root, ["rev-parse", "--is-inside-work-tree"], text=True)
+    if inside is None:
+        return None
+    if inside.returncode == 0 and inside.stdout.strip().casefold() == "true":
+        # A repository: only one whose branch has no commit yet has nothing
+        # behind it. A HEAD that cannot be read is not that, and has no base.
+        branch = _run_git_capture(root, ["symbolic-ref", "-q", "HEAD"], text=True)
+        if branch is None or branch.returncode != 0 or not branch.stdout.strip():
+            return None
+        born = _run_git_capture(
+            root, ["rev-parse", "--verify", "-q", branch.stdout.strip() + "^{commit}"], text=True
+        )
+        if born is None or born.returncode == 0:
+            return None
+    kind = _run_git_capture(root, ["rev-parse", "--show-object-format"], text=True)
+    name = kind.stdout.strip() if kind is not None and kind.returncode == 0 else "sha1"
+    return _EMPTY_TREE.get(name, _EMPTY_TREE["sha1"])
+
+
+def list_untracked_entries(root: Path, *, limit: int = 5000) -> tuple[str, ...]:
+    """What is in the workspace that Git does not track, as a turn begins.
+
+    Untracked files one by one, and what Git ignores as Git itself groups it:
+    a folder that is ignored whole is one entry. Kept so that the end of the
+    turn can tell that one of them is gone, which no diff shows. Empty where
+    Git cannot say (no Git, not a repository, a call that failed).
+
+    An empty entry this engine made itself to reserve a protected name (the
+    Windows sandbox, while a background command runs) is left out: the engine
+    takes it back later, and that is not something a turn did.
+    """
+    if shutil.which("git") is None:
+        return ()
+    found: list[str] = []
+    for arguments in (
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+    ):
+        listed = _run_git_capture(root, arguments)
+        if listed is None or listed.returncode != 0:
+            return ()
+        raw = listed.stdout
+        text = raw.decode("utf-8", errors="surrogateescape") if isinstance(raw, bytes) else raw
+        found.extend(item for item in (text or "").split("\0") if item)
+    entries = tuple(dict.fromkeys(_normalize_path(item).rstrip("/") for item in found))[:limit]
+    return tuple(entry for entry in entries if not _is_engine_reservation(root / entry))
+
+
+def _is_engine_reservation(path: Path) -> bool:
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return is_reservation_file(path, command_file_signature(info), removed=False)
 
 
 def inspect_workspace_git_diff(
     root: Path,
     *,
     base_ref: str | None = None,
+    turn_touched_paths: Collection[str] = (),
+    present_before_paths: Collection[str] = (),
 ) -> WorkspaceGitDiffState:
     """Inspect tracked diff paths plus non-scratch untracked files.
 
     ``available=False`` distinguishes an unavailable/non-git workspace from a
     successfully inspected clean worktree.
+
+    ``turn_touched_paths`` are the repository-relative files the host saw the
+    current turn write. One that Git does not track and that still exists is a
+    change whatever its kind, so a requested document or data file is not
+    reported as "no file changes". Other untracked files keep the source-only
+    rule, and scratch and runtime output never count.
+
+    ``present_before_paths`` are files and folders that were there as the turn
+    began and that Git does not track (``list_untracked_entries``). One that is
+    gone now is a change whatever its kind: clearing out logs or build output
+    is the work when that is what was asked, and no diff shows it.
     """
 
     if shutil.which("git") is None:
@@ -2018,10 +2117,47 @@ def inspect_workspace_git_diff(
     untracked_source_paths = sorted(
         {path for path in _nul_paths(untracked_proc) if is_untracked_source_path(path, root=root)}
     )
+    candidates = sorted(
+        {
+            normalized
+            for path in turn_touched_paths
+            if (normalized := _normalize_path(str(path)).rstrip("/"))
+            and not normalized.startswith(("/", "../"))
+            and normalized not in untracked_source_paths
+            and not is_non_material_untracked_path(normalized)
+            and not is_runtime_artifact_path(normalized, root=root)
+        }
+    )[:200]
+    untracked_turn_paths: list[str] = []
+    if candidates:
+        # Ask Git which of them it tracks; an ignored output is still a change.
+        tracked_proc = _run_git_capture(
+            root, ["--literal-pathspecs", "ls-files", "--cached", "-z", "--", *candidates]
+        )
+        if tracked_proc is not None and tracked_proc.returncode == 0:
+            tracked = set(_nul_paths(tracked_proc))
+            untracked_turn_paths = [
+                path
+                for path in candidates
+                if path not in tracked
+                and (root / path).is_file()
+                and not (root / path).is_symlink()
+            ]
+    removed_turn_paths = sorted(
+        {
+            normalized
+            for path in present_before_paths
+            if (normalized := _normalize_path(str(path)).rstrip("/"))
+            and not normalized.startswith(("/", "../"))
+            and not os.path.lexists(root / normalized)
+        }
+    )[:200]
     return WorkspaceGitDiffState(
         available=True,
         tracked_diff_paths=tuple(tracked_paths),
         untracked_source_paths=tuple(untracked_source_paths),
+        untracked_turn_paths=tuple(untracked_turn_paths),
+        removed_turn_paths=tuple(removed_turn_paths),
     )
 
 

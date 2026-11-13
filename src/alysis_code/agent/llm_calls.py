@@ -28,7 +28,28 @@ from .turn_path import (
 if TYPE_CHECKING:
     from .tools_assembly import ToolDef
 
+# Set on a user-role message the host wrote itself (a picture or view a tool
+# returned, a hook's line). Such a message is context for the model, not
+# something the user's side said. Removed before a request.
 TOOL_CONTEXT_MESSAGE_KEY = "alysis_tool_context"
+# Set on a note the host writes when a turn begins (the language to answer in,
+# for one). It belongs to that turn's request for as long as the request is
+# being worked on. Removed before a request.
+TURN_SETUP_MESSAGE_KEY = "alysis_turn_setup"
+HOST_MESSAGE_KEYS = (TOOL_CONTEXT_MESSAGE_KEY, TURN_SETUP_MESSAGE_KEY)
+
+
+def without_host_message_keys(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copies of the messages without the marks the host keeps for itself.
+
+    A provider is never sent them: some reject a field they do not know.
+    """
+    return [
+        {key: value for key, value in message.items() if key not in HOST_MESSAGE_KEYS}
+        if isinstance(message, dict)
+        else message
+        for message in messages
+    ]
 
 
 def _llm_error_status_code(err: LLMError) -> int | None:
@@ -317,11 +338,7 @@ def _request_messages_with_volatile_suffix(
     cleaned_turn_system = [str(prompt or "").strip() for prompt in (turn_system_prompts or [])]
     cleaned_turn_user = [str(content or "").strip() for content in (turn_user_contexts or [])]
     cleaned_step_system = [str(prompt or "").strip() for prompt in (step_system_prompts or [])]
-    history: list[dict[str, Any]] = []
-    for message in provider_history_messages(messages):
-        projected = dict(message)
-        projected.pop(TOOL_CONTEXT_MESSAGE_KEY, None)
-        history.append(projected)
+    history = without_host_message_keys(provider_history_messages(messages))
     history = _with_tool_results_after_tool_calls(history)
     return [
         *history,

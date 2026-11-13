@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -13,6 +14,7 @@ HARD_QUOTA_CODES = frozenset(
 )
 MAX_RETRY_SECONDS = 31 * 24 * 60 * 60
 MAX_RESET_AT = 4_102_444_800  # 2100-01-01
+RETRY_TIMING_STATUS_CODES = frozenset({408, 429, *range(500, 600)})
 
 
 def bounded_seconds(value: Any) -> int:
@@ -29,18 +31,31 @@ def bounded_reset_at(value: Any) -> int:
 
 
 def retry_metadata(response: Any, detail: dict, *, now: float | None = None) -> tuple[int, int]:
-    """Read standard Retry-After and subscription error reset fields for HTTP 429."""
-    if response.status_code != 429:
+    return retry_timing(response.status_code, detail, headers=response.headers, now=now)
+
+
+def retry_timing(
+    status_code: int | None,
+    detail: Mapping[str, Any],
+    *,
+    headers: Mapping[str, str] | None = None,
+    now: float | None = None,
+) -> tuple[int, int]:
+    """Retain server minimum waits; subscription reset fields apply only to 429.
+
+    HTTP errors and errors inside an HTTP-200 stream use the same bounded
+    metadata. Keeping timing does not grant retry authority or extend a budget.
+    """
+    if status_code not in RETRY_TIMING_STATUS_CODES:
         return 0, 0
     instant = time.time() if now is None else now
-    reset_at = bounded_reset_at(detail.get("resets_at"))
-    waits = [
-        bounded_seconds(detail.get("resets_in_seconds")),
-        bounded_seconds(detail.get("retry_after_seconds")),
-    ]
+    reset_at = bounded_reset_at(detail.get("resets_at")) if status_code == 429 else 0
+    waits = [bounded_seconds(detail.get("retry_after_seconds"))]
+    if status_code == 429:
+        waits.append(bounded_seconds(detail.get("resets_in_seconds")))
     if reset_at:
         waits.append(bounded_seconds(max(0, reset_at - instant)))
-    header = response.headers.get("retry-after", "")
+    header = (headers or {}).get("retry-after", "")
     if len(header) <= 80:
         try:
             waits.append(bounded_seconds(float(header)))
@@ -53,4 +68,9 @@ def retry_metadata(response: Any, detail: dict, *, now: float | None = None) -> 
             except (ValueError, TypeError, OverflowError):
                 pass
     wait = max(waits)
-    return wait, max(reset_at, bounded_reset_at(math.ceil(instant + wait)) if wait else 0)
+    reset_at = (
+        max(reset_at, bounded_reset_at(math.ceil(instant + wait)) if wait else 0)
+        if status_code == 429
+        else 0
+    )
+    return wait, reset_at

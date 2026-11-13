@@ -70,17 +70,20 @@ def test_main_tool_consumers_share_u1r_error_identity():
 
 
 def test_expired_external_observation_never_falls_back_to_attached_metadata(tmp_path, monkeypatch):
+    from acceptance_declared import declared_contract
+
     from alysis_code.agent.acceptance_contract import (
         AcceptanceCriterionKind,
         _missing_required_output_paths,
-        build_acceptance_contract,
     )
     from alysis_code.agent.artifact_output_observation import ArtifactOutputObserver
 
     root = tmp_path / "root"  # noqa: F811 -- separate from imported pytest fixture
     root.mkdir()
     output = tmp_path / "external.bmp"
-    contract = build_acceptance_contract(root=root, instruction=f'Create "{output}".')
+    contract = declared_contract(
+        root=root, instruction=f'Create "{output}".', roles={str(output): "required_output"}
+    )
     observer = ArtifactOutputObserver(contract, lambda *a: True, remaining_seconds=lambda: 0)
     observer.refresh(contract)
     criterion = next(
@@ -151,10 +154,11 @@ def test_push_corpus_current_labels_and_explicit_source_mutation_remain_distinct
 
 
 def test_external_observed_directory_does_not_become_file_output(tmp_path):
+    from acceptance_declared import declared_contract
+
     from alysis_code.agent.acceptance_contract import (
         AcceptanceCriterionKind,
         _missing_required_output_paths,
-        build_acceptance_contract,
     )
     from alysis_code.agent.artifact_output_observation import ArtifactOutputObserver
 
@@ -162,7 +166,9 @@ def test_external_observed_directory_does_not_become_file_output(tmp_path):
     root.mkdir()
     output = tmp_path / "external.bmp"
     output.mkdir()
-    contract = build_acceptance_contract(root=root, instruction=f'Create "{output}".')
+    contract = declared_contract(
+        root=root, instruction=f'Create "{output}".', roles={str(output): "required_output"}
+    )
     observer = ArtifactOutputObserver(contract, lambda *a: True)
     observer.refresh(contract)
     criterion = next(

@@ -120,7 +120,9 @@ def test_ordinary_auto_retains_repository_setup_and_tool(tmp_path, monkeypatch):
     assert len(observed["begin"]) == 2
     assert len(observed["acceptance"]) == len(observed["refresh"]) == 1
     assert observed["contract"] is not None
-    assert any(
-        tool.get("function", {}).get("name") == "task_artifacts" for tool in observed["tools"][0]
-    )
+    names = {tool.get("function", {}).get("name") for tool in observed["tools"][0]}
+    assert "fs_read" in names
+    # Listed in every ordinary turn, so the tool list does not change with the
+    # request; this request names no file, so the model is not asked for it.
+    assert "task_artifacts" in names
     assert observed["unknown"] == observed["bind"] == []

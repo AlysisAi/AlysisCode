@@ -325,6 +325,20 @@ class _CheckClient:
     def chat(self, **_: Any) -> LLMResponse:
         self.calls += 1
         if self.calls == 1:
+            # The request writes the command; the model declares that it is to
+            # be run successfully. The host does not read that from the wording.
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="declare",
+                        name="task_artifacts",
+                        arguments={"paths": [], "commands": [self.command]},
+                    ),
+                ],
+                raw={},
+            )
+        if self.calls == 2:
             return LLMResponse(
                 content="",
                 tool_calls=[

@@ -126,7 +126,7 @@ local and render help instead of reaching `chat.send`.
 
 VS Code 1.90 includes the stable Chat Participant API used by the optional `@alysis`
 integration. The Alysis Code sidebar remains the primary conversation. Native chat is a narrow entry
-point for users who expect Copilot-style participant commands:
+point for users who prefer native chat participant commands:
 
 | Native command | Behavior |
 | --- | --- |

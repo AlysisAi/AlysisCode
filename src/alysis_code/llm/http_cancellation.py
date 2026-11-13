@@ -1,6 +1,6 @@
 """Cancellation boundary for one owned synchronous HTTP request.
 
-Native provider clients create a short-lived ``httpx.Client`` per call. Merely
+Native provider calls exclusively own or lease an ``httpx.Client``. Merely
 closing an ``httpx.Response`` from another thread is not enough to interrupt a
 blocked SSL read on every supported OS. This module therefore arms the owned
 client's network backend before the request starts and shuts down its live
@@ -74,6 +74,7 @@ class _InterruptibleNetworkStream:
         self._close_requested = False
         self._active_io = 0
         self._tls_socket: socket.socket | None = None
+        self._read_deadline: float | None = None
 
     def _begin_io(self) -> Any:
         with self._state_lock:
@@ -90,6 +91,13 @@ class _InterruptibleNetworkStream:
             self.close()
 
     def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        with self._state_lock:
+            deadline = self._read_deadline
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise httpcore.ReadTimeout("HTTP response cleanup deadline elapsed")
+            timeout = remaining if timeout is None else min(timeout, remaining)
         stream = self._begin_io()
         try:
             raw = stream.get_extra_info("socket")
@@ -98,6 +106,16 @@ class _InterruptibleNetworkStream:
             return stream.read(max_bytes, timeout=timeout)
         finally:
             self._end_io()
+
+    @contextmanager
+    def bounded_read(self, seconds: float) -> Iterator[None]:
+        with self._state_lock:
+            self._read_deadline = time.monotonic() + seconds
+        try:
+            yield
+        finally:
+            with self._state_lock:
+                self._read_deadline = None
 
     def write(self, buffer: bytes, timeout: float | None = None) -> None:
         stream = self._begin_io()
@@ -506,6 +524,36 @@ def raise_if_cancelled(cancellation_token: Any | None) -> None:
     # Minimal external tokens may expose only ``is_cancelled``. Interactive
     # provider cancellation retains the established host control-flow type.
     raise KeyboardInterrupt("cancelled_by_user")
+
+
+def complete_http1_response(
+    response: httpx.Response,
+    remaining_bytes: Iterator[bytes],
+    cancellation_token: Any | None,
+) -> None:
+    """Finish HTTP framing after a valid SSE DONE, with a strict small budget.
+
+    HTTP/1.1 only becomes reusable after EndOfMessage. The semantic answer is
+    already complete, so failed cleanup retires the response without retrying
+    that answer. Unknown/custom streams are not drained: their reads cannot be
+    bounded here. HTTP/2 can close its individual response stream directly.
+    """
+    network = response.extensions.get("network_stream")
+    if response.http_version != "HTTP/1.1" or not isinstance(network, _InterruptibleNetworkStream):
+        return
+    until = time.monotonic() + 0.1
+    size = 0
+    try:
+        with network.bounded_read(0.1):
+            for chunk in remaining_bytes:
+                raise_if_cancelled(cancellation_token)
+                size += len(chunk)
+                if size > 64 * 1024 or time.monotonic() >= until:
+                    response.close()
+                    return
+    except (httpx.HTTPError, OSError):
+        raise_if_cancelled(cancellation_token)
+        response.close()
 
 
 @contextmanager

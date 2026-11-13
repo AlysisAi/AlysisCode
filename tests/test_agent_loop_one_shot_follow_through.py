@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acceptance_declared import declared_contract
 
 import alysis_code.agent_loop as agent_loop_mod
 from alysis_code.agent.acceptance_contract import (
     AcceptanceCriterionKind,
     AcceptanceCriterionStatus,
-    build_acceptance_contract,
     finalize_acceptance_contract,
 )
 from alysis_code.agent.turn.exploration import (
@@ -46,6 +46,8 @@ from alysis_code.tools.availability import WEB_UNAVAILABLE_OBSERVATION
 from alysis_code.tools.web import WebFetchError
 from alysis_code.tools.web_search import WebSearchError
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
+
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
 
 
 class _ScriptedClient:
@@ -1120,9 +1122,11 @@ def test_rejected_passing_verify_command_does_not_grant_coverage(
 def test_shell_service_start_counts_as_material_work_and_durable_acceptance(
     tmp_path: Path,
 ) -> None:
-    contract = build_acceptance_contract(
+    contract = declared_contract(
         root=tmp_path,
         instruction="Keep the service running on port 8080.",
+        roles={},
+        keep_running={"port": 8080},
     )
     state = TurnExecutionState(
         execution_requested=True,
@@ -1182,7 +1186,9 @@ def test_shell_service_start_counts_as_material_work_and_durable_acceptance(
 def test_completion_gate_problems_include_missing_acceptance_artifact(
     tmp_path: Path,
 ) -> None:
-    contract = build_acceptance_contract(root=tmp_path, instruction="Create result.txt.")
+    contract = declared_contract(
+        root=tmp_path, instruction="Create result.txt.", roles={"result.txt": "required_output"}
+    )
     finalize_acceptance_contract(contract=contract, root=tmp_path, touched_paths=set())
     state = TurnExecutionState(
         execution_requested=True,
@@ -1356,6 +1362,10 @@ def _verify_run_with_repo_mutations(
 
 @pytest.fixture(autouse=True)
 def _fake_one_shot_verify_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This module qualifies completion flow with scripted tools and verifier
+    # doubles. Native sandbox execution has its own qualification suites.
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+
     def fake_run_task_verification(
         *,
         root: Path,
@@ -1896,7 +1906,7 @@ def test_one_shot_plan_only_then_final_records_single_continuation_intervention(
     assert finalized[-1]["controller_interventions"]["by_class"] == {
         # Request artifact interpretation and reproduction guidance are context
         # setup; only the actual continuation counts as a corrective intervention.
-        "context_setup": 2,
+        "context_setup": 1,
         "continuation": 1,
     }
 
@@ -2167,7 +2177,7 @@ def test_one_shot_final_completion_response_finishes_normally(tmp_path: Path) ->
     assert finalized[-1]["controller_interventions"]["by_class"] == {
         # Request artifact interpretation and reproduction guidance are context
         # setup, not corrective interventions.
-        "context_setup": 2,
+        "context_setup": 1,
     }
 
 
@@ -2539,6 +2549,24 @@ def test_one_shot_question_uses_normal_evidence_gate_for_explicit_artifact(
     )
     session.client = _ScriptedClient(
         [
+            # The request writes a path that does not exist yet, so the model
+            # is asked what it is.
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="tc0",
+                        name="task_artifacts",
+                        arguments={
+                            "paths": [
+                                {"name": "data.txt", "directory": "", "role": "existing_input"},
+                                {"name": "answer.txt", "directory": "", "role": "required_output"},
+                            ]
+                        },
+                    )
+                ],
+                raw={},
+            ),
             LLMResponse(content="What file should I write?", tool_calls=[], raw={}),
             LLMResponse(
                 content="",
@@ -2567,7 +2595,7 @@ def test_one_shot_question_uses_normal_evidence_gate_for_explicit_artifact(
     )  # type: ignore[assignment]
 
     try:
-        exit_code = session.run_turn("Count the lines in data.txt and save it to answer.txt.")
+        exit_code = session.run_turn("Count the lines in data.txt and save it to `answer.txt`.")
     finally:
         session.close()
 

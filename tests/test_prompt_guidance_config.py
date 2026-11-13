@@ -52,8 +52,11 @@ def test_child_profile_cannot_be_selected_as_a_parent_configuration() -> None:
 
 def test_default_configuration_uses_the_exact_catalog_and_expanded_fallback() -> None:
     guidance = PromptGuidanceConfig()
+    catalog = get_model_prompt_catalog()
     assert guidance.default == "expanded"
-    assert guidance.model_profiles == get_model_prompt_catalog()
+    assert guidance.model_profiles == catalog
+    for model, profile in catalog.items():
+        assert resolve_prompt_guidance_profile(AppConfig(model=model)) == profile, model
 
 
 @pytest.mark.parametrize(

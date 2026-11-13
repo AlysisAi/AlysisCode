@@ -251,7 +251,6 @@ def test_production_runner_selects_powershell_without_injecting_dialect(
 @pytest.mark.parametrize("backend", ["windows-mxc", "windows-native"])
 def test_host_shell_dialect_is_independent_of_scoped_file_backend(harness, monkeypatch, backend):
     build, dispatched, client, _ = harness
-    monkeypatch.setattr("alysis_code.shell_command_lexer.host_dialect", lambda: "cmd")
     monkeypatch.setattr(
         "alysis_code.sandbox_runner.select_shell_sandbox_backend",
         lambda _: SimpleNamespace(backend=backend),

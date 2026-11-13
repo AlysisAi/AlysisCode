@@ -20,6 +20,8 @@ from alysis_code.session_store import read_session_events
 from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 _INFERRED_COMMAND = "python -m unittest discover"
 _SELECTED_COMMAND = "python3 -m unittest discover -s tests -v"
 _DECLARED_COMMAND = "python3 -m unittest discover"

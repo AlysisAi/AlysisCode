@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from acceptance_declared import declared_contract
 from test_batching_guidance_delivery import (
     _isolated_offline_environment as _isolated_offline_environment,
 )
@@ -89,7 +90,13 @@ def test_exact_quoted_acceptance_remains_hard_even_when_recommendation_is_adviso
     instruction = "Run `" + command + "`"
     selection = _selection(instruction)
     assert required_verify_commands(selection) == ()
-    contract = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    # The request writes the command line; declared by the model it is required.
+    detected = build_acceptance_contract(root=tmp_path, instruction=instruction)
+    assert detected.request_commands == [command]
+    assert not [c for c in detected.criteria if c.commands]
+    contract = declared_contract(
+        root=tmp_path, instruction=instruction, roles={}, commands=[command]
+    )
     matching = [
         c for c in contract.criteria if c.kind == AcceptanceCriterionKind.EXPLICIT_COMMAND_IO
     ]

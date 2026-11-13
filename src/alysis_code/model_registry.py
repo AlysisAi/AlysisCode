@@ -1920,7 +1920,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6-luna"] = (
 _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6-luna"] = {
     "context_window_tokens": 1_050_000,
     "max_output_tokens": 128_000,
-    "supports_vision": False,
+    "supports_vision": True,
     "supports_reasoning": True,
     "input_cost_per_token": 0.0000001,
     "cache_read_input_cost_per_token": 0.00000001,
@@ -1928,7 +1928,7 @@ _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6-luna"] = {
     "output_cost_per_token": 0.0000005,
 }
 
-# Hosted Terra follows the deployed text/tool gateway and the verified API model.
+# Hosted Terra uses provider-native image counting and actual-usage settlement.
 # https://developers.openai.com/api/docs/models/gpt-6.1-terra (2026-10-30).
 _PROVIDER_CANONICAL_MODEL_IDS["alysis"]["gpt-6.1-terra"] = "gpt-6.1-terra"
 _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6.1-terra"] = (
@@ -1937,7 +1937,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6.1-terra"] = (
 _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6.1-terra"] = {
     "context_window_tokens": 1_050_000,
     "max_output_tokens": 128_000,
-    "supports_vision": False,
+    "supports_vision": True,
     "supports_reasoning": True,
     "input_cost_per_token": 0.000001,
     "cache_read_input_cost_per_token": 0.00000005,
@@ -1945,15 +1945,14 @@ _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6.1-terra"] = {
     "output_cost_per_token": 0.000005,
 }
 
-# Paid hosted Sol shares API pricing, with the hosted modality restriction.
+# Paid hosted Sol shares API pricing and native image input.
 _PROVIDER_CANONICAL_MODEL_IDS["alysis"]["gpt-6.1-sol"] = "gpt-6.1-sol"
 _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["gpt-6.1-sol"] = _OFFICIAL_PROVIDER_MODEL_SOURCES[
     "openai"
 ]["gpt-6.1-sol"]
 _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["gpt-6.1-sol"] = {
     **_OFFICIAL_PROVIDER_MODEL_METADATA["openai"]["gpt-6.1-sol"],
-    # Hosted Responses meters text and function tools, like the Luna route.
-    "supports_vision": False,
+    "supports_vision": True,
 }
 
 # Anthropic's launch specifications and standard five-minute cache pricing.
@@ -1964,8 +1963,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES["alysis"]["claude-sonnet-5-5"] = (
 _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]["claude-sonnet-5-5"] = {
     "context_window_tokens": 1_000_000,
     "max_output_tokens": 128_000,
-    # The hosted route initially meters text/tools; image accounting is separate.
-    "supports_vision": False,
+    "supports_vision": True,
     "supports_reasoning": True,
     "input_cost_per_token": 0.000002,
     "cache_read_input_cost_per_token": 0.0000002,
@@ -1985,13 +1983,37 @@ for _haiku_provider in ("anthropic", "alysis"):
     _OFFICIAL_PROVIDER_MODEL_METADATA.setdefault(_haiku_provider, {})["claude-haiku-5-5"] = {
         "context_window_tokens": 1_000_000,
         "max_output_tokens": 128_000,
-        "supports_vision": _haiku_provider == "anthropic",
+        "supports_vision": True,
         "supports_reasoning": True,
         "input_cost_per_token": 0.0000001,
         "cache_read_input_cost_per_token": 0.00000001,
         "cache_creation_input_cost_per_token": 0.000000125,
         "output_cost_per_token": 0.0000005,
     }
+
+_HOSTED_NATIVE_IMAGE_MODELS = frozenset(
+    {
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "deepseek-flash",
+        "deepseek-v4.1-flash",
+        "glm-5.3-flash",
+        "minimax-m3.1-flash",
+        "kimi-k3",
+        "mistral-large-4",
+    }
+)
+_HOSTED_ASSISTED_IMAGE_MODELS = frozenset(
+    {"reflection-beam", "glm-5.3", "deepseek-v4-pro", "nemotron-3.5-super-vl"}
+)
+# This is hosted input support, not a claim about a text-only model's native vision.
+# The gateway describes assisted images with Luna before the selected model answers.
+for _image_model in _HOSTED_NATIVE_IMAGE_MODELS | _HOSTED_ASSISTED_IMAGE_MODELS:
+    if _image_model in _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"]:
+        _OFFICIAL_PROVIDER_MODEL_METADATA["alysis"][_image_model]["supports_vision"] = True
 
 _BUILT_IN_MODEL_METADATA: dict[str, dict[str, Any]] = {
     "deepseek-chat": {
@@ -2250,6 +2272,13 @@ def catalog_model_capabilities(model: str, provider_key: str | None) -> dict[str
         "supports_vision": vision,
         "supports_reasoning": parse_bool(metadata.get("supports_reasoning")),
         "input_modalities": ["text", "image"] if vision else ["text"],
+        **(
+            {"image_input": "assisted", "image_helper": "gpt-6-luna"}
+            if provider == "alysis" and model_id in _HOSTED_ASSISTED_IMAGE_MODELS
+            else {"image_input": "native"}
+            if provider == "alysis" and model_id in _HOSTED_NATIVE_IMAGE_MODELS
+            else {}
+        ),
     }
 
 

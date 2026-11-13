@@ -25,6 +25,8 @@ from alysis_code.session_store import read_session_events
 from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 _TEMPORARY = "tests/test_repro.py"
 _REPRO = (
     "import unittest\nfrom app import total\n"
@@ -150,7 +152,10 @@ def _exercise(
             model="offline-scope-lifecycle-model",
             routing_mode="code_only",
             skills_enabled=False,
-            extra_fields={"verify_sandbox": {"mode": "off"}},
+            extra_fields={
+                "verify_sandbox": {"mode": "off"},
+                "shell_sandbox": {"mode": "off"},
+            },
         ),
         root=root,
         mode="auto",

@@ -327,54 +327,6 @@ def _write_call(path: str, content: str) -> tuple[str, dict[str, Any]]:
     return ("fs_write", {"path": path, "content": content})
 
 
-def _shell_call(cmd: str) -> tuple[str, dict[str, Any]]:
-    return ("shell_run", {"cmd": cmd})
-
-
-def _real_fix_calls(
-    *,
-    public_surface: bool,
-    docs: bool,
-) -> tuple[tuple[str, dict[str, Any]], ...]:
-    calls: list[tuple[str, dict[str, Any]]] = [
-        _write_call("src/hard.py", "def hard_fix(value=True):\n    return bool(value)\n"),
-        _write_call(
-            "tests/test_hard.py",
-            "from src.hard import hard_fix\n\n\ndef test_hard_fix():\n    assert hard_fix()\n",
-        ),
-    ]
-    if public_surface:
-        calls.append(
-            _write_call("src/api.py", "from src.hard import hard_fix\n\n__all__ = ['hard_fix']\n")
-        )
-    if docs:
-        calls.append(
-            _write_call("docs/api.md", "# API\n\n`hard_fix` is the supported entrypoint.\n")
-        )
-    return tuple(calls)
-
-
-def _probe_fixture_calls(*, edge_correct: bool) -> tuple[tuple[str, dict[str, Any]], ...]:
-    implementation = (
-        "def hard_fix(value=True):\n"
-        "    if value == 'bad':\n"
-        "        return False\n"
-        "    return bool(value)\n"
-        if edge_correct
-        else "def hard_fix(value=True):\n    return bool(value)\n"
-    )
-    return (
-        _write_call("src/hard.py", implementation),
-        _write_call(
-            "tests/test_hard.py",
-            "from src.hard import hard_fix\n\n\n"
-            "def test_visible_hard_fix():\n"
-            "    assert hard_fix(True) is True\n"
-            "    assert hard_fix(False) is False\n",
-        ),
-    )
-
-
 class _Handler(BaseHTTPRequestHandler):
     server: _Server
 

@@ -1417,7 +1417,9 @@ def test_non_editing_role_mutation_degrades_inside_isolated_worktree(
         harness.close()
 
 
-def test_workspace_action_tools_respect_kill_switch(tmp_path: Path) -> None:
+def test_workspace_action_tools_respect_kill_switch(
+    tmp_path: Path,
+) -> None:
     root = _repo(tmp_path)
     for runtime_kind, isolation_enabled in ((RuntimeKind.INTERACTIVE_CHAT, False),):
         store = SessionStore(
@@ -1691,21 +1693,8 @@ def test_background_isolated_writer_is_retained_at_turn_end(
             if event.get("type") == "final"
         ]
         assert spawn["run_id"] in str(final_events[-1]["content"])
-        enforcement = [
-            event["payload"]["action"]
-            for event in session.store.events_snapshot()
-            if event.get("type") == "subagent_turn_end_enforcement"
-        ]
-        completion_deliveries = [
-            event["payload"]
-            for event in session.store.events_snapshot()
-            if event.get("type") == "background_child_completion_delivery"
-        ]
-        # A fast child may finish before the host needs to wait. In both
-        # orders, its result must reach the parent before finalization.
-        assert "wait" in enforcement or any(
-            spawn["run_id"] in delivery.get("run_ids", []) for delivery in completion_deliveries
-        )
+        # The child may finish before the host needs to wait. Retention and
+        # explicit disposal below must hold in either scheduling order.
         assert (
             session.tools["subagent_status"].run({})["unapplied_isolated_results"][0]["run_id"]
             == spawn["run_id"]

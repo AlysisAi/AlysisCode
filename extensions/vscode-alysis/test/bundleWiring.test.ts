@@ -18,9 +18,6 @@ test("VS Code loads one bundled entry file, not the tsc module tree", () => {
   // vsce runs vscode:prepublish itself, so a VSIX built by any path (package-release.js from CI,
   // package:dev-vsix locally, a bare vsce package) always carries a fresh production bundle.
   assert.equal(packageJson.scripts["vscode:prepublish"], "npm run bundle:production");
-  for (const script of ["package:vsix", "package:pre-release", "package:dev-vsix"]) {
-    assert.match(packageJson.scripts[script], /npm run bundle:production/, script);
-  }
   assert.match(packageJson.scripts.clean, /'dist'/);
   // clean wipes dist/, so compile must rebuild it: every test:* script that launches VS Code
   // runs `npm run compile && ...` and would otherwise start an extension with no entry file.

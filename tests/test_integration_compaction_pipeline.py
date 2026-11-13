@@ -144,9 +144,6 @@ def _build_cfg() -> AppConfig:
             "target_ratio": 0.30,
             "max_chunk_messages": 60,
             "safety_margin_tokens": 256,
-            "importance_enabled": True,
-            "importance_strategy": "lowest_density",
-            "pin_score_threshold": 6.0,
             "max_pins": 20,
             "pin_snippet_chars": 200,
         },
@@ -423,8 +420,6 @@ def test_main_provider_context_overflow_compacts_exact_request_and_retries_once(
             "recent_user_turns_to_keep": 8,
             "trigger_ratio": 0.95,
             "target_ratio": 0.70,
-            "importance_enabled": False,
-            "importance_strategy": "oldest",
         }
     )
     session = create_session(

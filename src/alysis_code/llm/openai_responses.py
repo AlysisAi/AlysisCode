@@ -21,7 +21,6 @@ from ..computer_use_call_diagnostics import (
     _provider_serialization_ordinal,
     note_computer_use_provider_evidence,
 )
-from ..computer_use_diagnostics import DIAGNOSTIC_CODES, set_safe_provider_error_fields
 from ..error_text import sanitize_error_text_for_output
 from ..execution_deadline import DeadlineExhausted
 from ..mcp.github_policy_json import arguments as github_policy_arguments
@@ -43,6 +42,7 @@ from .base import (
 )
 from .cache_policy import merge_cache_policy_metadata
 from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
+from .error_metadata import apply_provider_error_metadata, provider_error_code
 from .focused_input_diagnostic import record_stream_diagnostic
 from .http_cancellation import (
     cancellable_httpx_request,
@@ -73,7 +73,7 @@ from .provider_limits import (
     mark_provider_call_non_retryable,
     run_provider_limited_call,
 )
-from .rate_limit_metadata import HARD_QUOTA_CODES, retry_metadata
+from .rate_limit_metadata import HARD_QUOTA_CODES
 from .request_plan import LLMRequestPlan, RequestCachePlan, WireRequestDiagnostics
 from .request_shape import build_request_shape_report
 from .streaming import (
@@ -86,6 +86,7 @@ from .temperature_compat import documented_temperature_omit_reason
 from .types import (
     AssistantResponsePhase,
     InputTokenCount,
+    LLMEmptyResponseError,
     LLMError,
     LLMOutputLimitError,
     LLMResponse,
@@ -1481,12 +1482,7 @@ def _responses_stream_error(data: dict[str, Any], event_type: str) -> LLMError:
     container = response if isinstance(response, dict) else data
     detail = container.get("error")
     detail = detail if isinstance(detail, dict) else container
-    codes = [
-        value
-        for value in (detail.get("code"), detail.get("type"))
-        if type(value) is str and value in DIAGNOSTIC_CODES
-    ]
-    code = next((value for value in codes if value in HARD_QUOTA_CODES), next(iter(codes), None))
+    code = provider_error_code(detail)
     status = next(
         (
             value
@@ -1505,15 +1501,14 @@ def _responses_stream_error(data: dict[str, Any], event_type: str) -> LLMError:
             "internal_error": 500,
             "overloaded_error": 503,
         }.get(code)
-    error = set_safe_provider_error_fields(
+    error = apply_provider_error_metadata(
         LLMError(
             sanitize_error_text_for_output(
                 f"OpenAI Responses stream {event_type}: {_stream_error_message(data)}"
             )
         ),
         status=status,
-        code=code,
-        parameter=detail.get("param"),
+        detail=detail,
     )
     error.provider_error_origin = "responses_stream"
     if code in HARD_QUOTA_CODES:
@@ -2331,14 +2326,13 @@ class OpenAIResponsesClient:
             body = response.text
             if len(body) > 1000:
                 body = body[:1000] + "...(truncated)"
-            retry_after, reset_at = retry_metadata(response, {})
-            return set_safe_provider_error_fields(
+            return apply_provider_error_metadata(
                 LLMError(
                     sanitize_error_text_for_output(f"LLM error {response.status_code}: {body}")
                 ),
                 status=response.status_code,
-                retry_after=retry_after,
-                reset_at=reset_at,
+                detail={},
+                headers=response.headers,
             )
         error_message = _extract_error_message(data)
         raw_error = data.get("error") if isinstance(data, dict) else None
@@ -2351,24 +2345,11 @@ class OpenAIResponsesClient:
         )
         detail = data.get("error") if isinstance(data, dict) else None
         detail = detail if isinstance(detail, dict) else {}
-        # Subscription limits identify the reason in error.type, whereas the
-        # public API normally uses error.code. Both pass through the closed set.
-        codes = [
-            value
-            for value in (detail.get("code"), detail.get("type"))
-            if type(value) is str and value in DIAGNOSTIC_CODES
-        ]
-        code = next(
-            (value for value in codes if value in HARD_QUOTA_CODES), next(iter(codes), None)
-        )
-        retry_after, reset_at = retry_metadata(response, detail)
-        set_safe_provider_error_fields(
+        apply_provider_error_metadata(
             error,
             status=response.status_code,
-            code=code,
-            parameter=detail.get("param"),
-            retry_after=retry_after,
-            reset_at=reset_at,
+            detail=detail,
+            headers=response.headers,
         )
         if error.provider_error_code in HARD_QUOTA_CODES:
             mark_provider_call_non_retryable(error)
@@ -3207,7 +3188,7 @@ class OpenAIResponsesClient:
                 # raises its recoverable error with usage and continuation state.
                 if status.casefold() != "completed" and not output_limit_reached:
                     suffix = f" (status={status})" if status else ""
-                    raise LLMError(
+                    raise LLMEmptyResponseError(
                         f"OpenAI Responses returned no assistant text or tool calls{suffix}"
                     )
 

@@ -36,11 +36,7 @@ from ._entry import _cli_module, _enforce_clean_build
 from ._shared import (
     JSON_OPTION_HELP as _JSON_OPTION_HELP,
 )
-from ._shared import (
-    Mode,
-    _console,
-    _Table,
-)
+from ._shared import Mode, _console, _Table
 from .lazy_groups import LazyCommandGroup, group_export
 
 if TYPE_CHECKING:
@@ -1128,7 +1124,13 @@ def tools() -> None:
 
 
 @app.command()
-def login() -> None:
+def login(
+    device: bool = typer.Option(
+        False,
+        "--device",
+        help="Sign in with a code to approve on any device, for SSH or a computer without a browser.",
+    ),
+) -> None:
     """Connect your Alysis Code account."""
     from ... import account_login
 
@@ -1136,7 +1138,9 @@ def login() -> None:
     cfg = _patchable("load_config", load_config)()
     try:
         result = account_login.login(
-            cfg, output_write=lambda message: console.print(message, highlight=False)
+            cfg,
+            output_write=lambda message: console.print(message, highlight=False),
+            use_code=device,
         )
     except (account_login.AlysisLoginError, ConfigError) as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1201,6 +1205,7 @@ def _whoami_payload(cfg: AppConfig) -> dict[str, Any]:
         profile_active=bool(status.active),
         plan=(trial.plan if trial is not None else None),
         display_name=(trial.display_name if trial is not None else None),
+        avatar_url=(trial.avatar_url if trial is not None else None),
         billing=(
             account_login.billing_with_model_availability(cfg, trial.billing)
             if trial is not None
@@ -1254,6 +1259,88 @@ def whoami(
             console.print(detail_line, markup=False, highlight=False)
     else:
         console.print("[dim](Live account usage is unavailable. Check your account website.)[/dim]")
+
+
+@app.command("account-profile")
+def account_profile(
+    name: str | None = typer.Option(
+        None, "--name", help="Your name, as shown in Alysis Code and on the website."
+    ),
+    photo: Path | None = typer.Option(
+        None, "--photo", help="A WebP, PNG or JPEG picture of at most 256 KB to use as your photo."
+    ),
+    remove_photo: bool = typer.Option(False, "--remove-photo", help="Remove your photo."),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
+) -> None:
+    """Change the name and photo of your Alysis Code account."""
+    from ... import account_login
+
+    def fail(reason: str, message: str) -> None:
+        if json_output is True:
+            typer.echo(
+                json.dumps({"ok": False, "error": reason, "detail": message}, sort_keys=True)
+            )
+        else:
+            _console().print(f"[red]{message}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+
+    picture: bytes | None = None
+    if photo is not None:
+        try:
+            if photo.stat().st_size > account_login.PROFILE_PHOTO_MAX:
+                fail("invalid", "Use a WebP, PNG or JPEG picture of at most 256 KB.")
+            picture = photo.read_bytes()
+        except OSError:
+            fail("invalid", f"Couldn't read the photo at {photo}.")
+    try:
+        profile = account_login.update_account_profile(
+            display_name=name, photo=picture, remove_photo=remove_photo is True
+        )
+    except account_login.AccountProfileError as exc:
+        fail(exc.reason, str(exc))
+        return
+    if json_output is True:
+        typer.echo(
+            json.dumps(
+                {
+                    "ok": True,
+                    "display_name": profile.display_name,
+                    "avatar_url": profile.avatar_url,
+                },
+                sort_keys=True,
+            )
+        )
+        return
+    _console().print("[green]Your profile was saved to your Alysis Code account.[/green]")
+
+
+@app.command("project-avatar")
+def project_avatar(
+    name: str = typer.Option(..., "--name", help="The project's name."),
+    about: str = typer.Option("", "--about", help="What the project is for (optional)."),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
+) -> None:
+    """Design the owl of a desktop app project with your Alysis Code account."""
+    from ... import account_login
+
+    def fail(reason: str, message: str) -> None:
+        if json_output is True:
+            typer.echo(
+                json.dumps({"ok": False, "error": reason, "detail": message}, sort_keys=True)
+            )
+        else:
+            _console().print(f"[red]{message}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+
+    try:
+        item = account_login.generate_project_avatar(name=name, about=about)
+    except account_login.ProjectAvatarError as exc:
+        fail(exc.reason, str(exc))
+        return
+    if json_output is True:
+        typer.echo(json.dumps({"ok": True, "item": item}, sort_keys=True))
+        return
+    _console().print("\n".join(item["pixels"]), markup=False, highlight=False)
 
 
 @app.command()

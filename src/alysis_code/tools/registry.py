@@ -12,6 +12,7 @@ from ..chat_messaging_protocol import CHAT_TOOL_SPECS
 from ..desktop_connections import CONNECTION_TOOLS
 from ..desktop_terminal import TERMINAL_TOOLS
 from ..embedded_browser import BROWSER_TOOLS, BROWSER_WRITE_ACTIONS
+from ..next_steps import NEXT_STEPS_DESCRIPTION, NEXT_STEPS_PARAMETERS
 from ..open_panels import PANEL_TOOLS
 from ..user_questions import QUESTION_PARAMETERS, WAIT_PARAMETERS
 from .availability import is_tool_unavailable_result
@@ -42,6 +43,19 @@ def _cwd_base_property() -> dict[str, Any]:
             "workspace_root."
         )
     )
+
+
+def _step_description_property() -> dict[str, Any]:
+    # The person following the work sees this as the step's name; the command itself stays in
+    # the step's details and in any approval card.
+    return {
+        "type": "string",
+        "description": (
+            "Optional. A short phrase for the person following along, in the language of the "
+            "conversation, naming what this command does or produces. Plain words, no command "
+            "syntax. Shown as this step's name."
+        ),
+    }
 
 
 def _service_readiness_property() -> dict[str, Any]:
@@ -210,7 +224,11 @@ def _preview_single_path(args: dict[str, Any]) -> str:
 def _preview_delete_paths(args: dict[str, Any]) -> str:
     paths = args.get("paths")
     if isinstance(paths, list) and paths:
+        # ``path`` given together with ``paths`` is one more file of the same list.
+        single = str(args.get("path") or "").strip()
         cleaned = [str(path).strip() for path in paths if str(path).strip()]
+        if single and single not in cleaned:
+            cleaned.insert(0, single)
         if len(cleaned) == 1:
             return _truncate_inline(cleaned[0], max_chars=120) or "-"
         joined = ", ".join(cleaned[:3])
@@ -816,6 +834,20 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
         ),
         optional=True,
         optional_unavailable_reason="questions require a top-level interactive TUI session",
+    ),
+    BuiltinToolMetadata(
+        name="suggest_next_steps",
+        description=NEXT_STEPS_DESCRIPTION,
+        parameters=NEXT_STEPS_PARAMETERS,
+        categories=("session",),
+        rich=RichToolMetadata(
+            display_name="Suggest Next Steps",
+            reasoning_hint="The result is ready and a follow-up is likely.",
+            action_hint="Show one-click next steps under the final reply.",
+            fallback_hint="Skip suggestions when no follow-up is likely.",
+        ),
+        optional=True,
+        optional_unavailable_reason="next steps require a desktop host that shows them",
     ),
     BuiltinToolMetadata(
         name="report_blocker",
@@ -2538,6 +2570,15 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
                 "cmd": {"type": "string"},
                 "cwd": {"type": "string"},
                 "cwd_base": _cwd_base_property(),
+                "description": _step_description_property(),
+                "timeout_s": {
+                    "type": "number",
+                    "description": (
+                        "Seconds before the command is stopped: 60 when omitted, at most 600. "
+                        "Set it for a slow build, install or test run. Start anything that "
+                        "may run longer with shell_background and wait with shell_wait."
+                    ),
+                },
             },
             "required": ["cmd"],
         },
@@ -2566,6 +2607,7 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
                 "cmd": {"type": "string"},
                 "cwd": {"type": "string"},
                 "cwd_base": _cwd_base_property(),
+                "description": _step_description_property(),
                 "persist": {
                     "type": "boolean",
                     "default": False,

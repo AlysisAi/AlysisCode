@@ -55,6 +55,7 @@ READ_ONLY_COMMANDS = [
 TURN_MUTATING_COMMANDS = [
     "/clear",
     "/resume",
+    "/resume abc123",
     "/compact",
     "/ask what is this",
     "/subagent explorer find x",
@@ -201,13 +202,6 @@ def test_bare_only_commands_split_on_arguments() -> None:
 def test_classification_is_case_and_whitespace_insensitive() -> None:
     assert classify_mid_turn("  /HELP  ") is MidTurnAction.ALLOW
     assert classify_mid_turn("  /MoDeL gpt-5 ") is MidTurnAction.DEFER
-
-
-@pytest.mark.parametrize(
-    "command", ["/resume", "/resume abc123", "/login", "/logout", "/clear", "/compact"]
-)
-def test_session_replacing_commands_stay_blocked(command: str) -> None:
-    assert classify_mid_turn(command) is MidTurnAction.BLOCK
 
 
 @pytest.mark.parametrize("command", [*TURN_MUTATING_COMMANDS, "/unknown", "exit"])
@@ -677,16 +671,17 @@ def test_two_pending_steers_render_and_deliver_in_fifo_order(
     )
 
 
-def test_rolled_back_visible_steer_runs_once_without_duplicate_user_echo(
+def test_failed_answer_keeps_delivered_steer_visible_without_automatic_resubmission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app_module, captured = _capture_tui_application(monkeypatch)
     first_started = threading.Event()
-    restore_now = threading.Event()
-    queued_started = threading.Event()
+    fail_now = threading.Event()
+    failed = threading.Event()
+    followup_started = threading.Event()
     calls: list[str] = []
 
-    class RollbackSession:
+    class FailingSession:
         def __init__(self, surface: Any) -> None:
             self.surface = surface
 
@@ -694,19 +689,18 @@ def test_rolled_back_visible_steer_runs_once_without_duplicate_user_echo(
             _ = cancellation_token
             calls.append(text)
             if text != "work":
-                queued_started.set()
+                followup_started.set()
                 return 0
             first_started.set()
-            assert restore_now.wait(timeout=3)
+            assert fail_now.wait(timeout=3)
             inbox = steer_inbox_for(self)
             assert inbox is not None
             drained = inbox.drain()
             assert drained == ["keep this steer"]
-            # A retry notice makes the delivered steer visible before the
-            # provider ultimately fails and the core restores it.
+            # A retry notice makes the accepted steer visible. A failed answer
+            # leaves it in conversation history rather than resubmitting it.
             self.surface.on_progress_update("retrying model request")
-            inbox.restore_front(drained)
-            self.surface.on_steer_messages_restored(drained)
+            failed.set()
             raise RuntimeError("provider failed after retry")
 
     def feed(pipe: Any) -> None:
@@ -716,15 +710,18 @@ def test_rolled_back_visible_steer_runs_once_without_duplicate_user_echo(
         assert _wait_until(
             lambda: "  > keep this steer" in _pending_messages_area_text(captured["application"])
         )
-        restore_now.set()
-        assert queued_started.wait(timeout=2)
+        fail_now.set()
+        assert failed.wait(timeout=2)
+        assert not followup_started.wait(timeout=0.1)
+        pipe.send_text("Please continue.\r")
+        assert followup_started.wait(timeout=2)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
-    result, transcript = _run_live_tui(session_builder=RollbackSession, feed=feed)
+    result, transcript = _run_live_tui(session_builder=FailingSession, feed=feed)
 
     assert result == "/exit"
-    assert calls == ["work", "keep this steer"]
+    assert calls == ["work", "Please continue."]
     assert transcript.count(("user", "keep this steer")) == 1
 
 
@@ -1220,7 +1217,7 @@ def test_deferred_command_cannot_start_a_turn() -> None:
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
         stripped = text.strip()
-        if stripped == "/persona ask":
+        if stripped == "/model draft thing":
             deferred_seen.set()
             return "run", "", "must-not-start", {}
         if stripped == "/exit":
@@ -1230,7 +1227,7 @@ def test_deferred_command_cannot_start_a_turn() -> None:
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
         assert first_started.wait(timeout=2)
-        pipe.send_text("/persona ask\r")
+        pipe.send_text("/model draft thing\r")
         time.sleep(0.05)
         release_first.set()
         assert deferred_seen.wait(timeout=2)

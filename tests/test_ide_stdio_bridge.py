@@ -4099,7 +4099,6 @@ def test_run_start_idempotency_key_rejects_changed_initial_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _isolate_alysis_state(tmp_path, monkeypatch)
     out, bridge, _session_id = _create_review_session(
         tmp_path,
         monkeypatch,
@@ -4144,7 +4143,6 @@ def test_run_start_idempotency_key_rejects_changed_initial_payload(
     assert changed["ok"] is False
     assert changed["error"]["code"] == "prompt_queue_error"
     assert "different payload" not in repr(changed)
-    bridge.close()
 
 
 def test_stdio_bridge_live_session_setters_refresh_underlying_runtime(
@@ -12291,3 +12289,114 @@ def test_stdio_bridge_structured_tasks_and_questions_are_durable_and_fenced(
     assert answered["result"]["answers"] == [{"question_id": "strategy", "option_id": "safe"}]
     serialized = json.dumps(_json_lines(out))
     assert "lease_token" not in serialized
+
+
+def test_stdio_bridge_config_get_names_the_key_route_scope_like_config_show(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config.get carries `config show`'s credential_id (as route_scope) and the saved-keys
+    file, so the desktop app needs no CLI process to read the account; never the key."""
+    from alysis_code.config import credentials_path, load_config, resolve_api_key
+    from alysis_code.llm.metadata import credential_scope_fingerprint
+
+    _isolate_alysis_state(tmp_path, monkeypatch)
+    key = "route-scope-fixture-value-0123456789"
+    monkeypatch.setenv("ROUTE_SCOPE_FIXTURE_KEY", key)
+    out = io.StringIO()
+    bridge = StdioBridge(stdout=out)
+
+    bridge.process_line(_request("config.get", request_id="before") + "\n")
+    bridge.process_line(
+        _request(
+            "profile.add",
+            {
+                "workspace_trusted": True,
+                "name": "demo",
+                "base_url": "https://provider.example/v1",
+                "api_key_env": "ROUTE_SCOPE_FIXTURE_KEY",
+            },
+            request_id="add",
+        )
+        + "\n"
+    )
+    bridge.process_line(
+        _request("profile.use", {"workspace_trusted": True, "name": "demo"}, request_id="use")
+        + "\n"
+    )
+    bridge.process_line(_request("config.get", request_id="after") + "\n")
+
+    payloads = _json_lines(out)
+    assert [payload["ok"] for payload in payloads] == [True, True, True, True]
+    before, after = payloads[0]["result"], payloads[3]["result"]
+    if before["api_key"]["present"] is False:
+        assert before["route_scope"] == ""
+    # The same fingerprint `config show` prints as credential_id for these settings.
+    expected = credential_scope_fingerprint(resolve_api_key(load_config()).key)
+    assert expected
+    assert after["api_key"]["present"] is True
+    assert after["route_scope"] == expected
+    assert after["saved_keys_path"] == str(credentials_path())
+    assert key not in out.getvalue()
+
+
+def test_stdio_bridge_profile_select_model_is_the_cli_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """profile.selectModel makes `alysis profile select-model`'s one locked write, with no
+    new process; a refused selection writes nothing."""
+    from alysis_code.config import config_path, load_config
+    from alysis_code.profiles import get_profile
+
+    _isolate_alysis_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("SELECT_MODEL_FIXTURE_KEY", "select-model-fixture-value-0123456789")
+    out = io.StringIO()
+    bridge = StdioBridge(stdout=out)
+    for name in ("alpha", "beta"):
+        bridge.process_line(
+            _request(
+                "profile.add",
+                {
+                    "workspace_trusted": True,
+                    "name": name,
+                    "base_url": "https://provider.example/v1",
+                    "api_key_env": "SELECT_MODEL_FIXTURE_KEY",
+                },
+                request_id=f"add-{name}",
+            )
+            + "\n"
+        )
+    bridge.process_line(
+        _request(
+            "profile.selectModel",
+            {"workspace_trusted": True, "name": "beta", "model": "beta-model-2"},
+            request_id="select",
+        )
+        + "\n"
+    )
+    saved = config_path().read_text(encoding="utf-8")
+    bridge.process_line(
+        _request(
+            "profile.selectModel",
+            {"workspace_trusted": True, "name": "missing", "model": "other"},
+            request_id="unknown",
+        )
+        + "\n"
+    )
+
+    payloads = _json_lines(out)
+    assert [payload["ok"] for payload in payloads] == [True, True, True, False]
+    selected = payloads[2]["result"]
+    assert selected["profile_name"] == "beta"
+    assert selected["model"] == "beta-model-2"
+    assert selected["changed"] is True
+    assert selected["secret_values_included"] is False
+    cfg = load_config()
+    assert cfg.extra_fields["active_profile"] == "beta"
+    assert get_profile(cfg, "beta").default_model == "beta-model-2"
+    assert cfg.model == "beta-model-2"
+    assert cfg.execution.backend == "native"
+    assert payloads[3]["error"]["code"] == "config_error"
+    assert config_path().read_text(encoding="utf-8") == saved, "a refused selection writes nothing"
+    assert "select-model-fixture-value" not in out.getvalue()

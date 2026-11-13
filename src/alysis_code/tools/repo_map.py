@@ -9,6 +9,7 @@ from typing import Any
 
 from ..command_text import command_text
 from ..file_classification import BROAD_SOURCE_EXTENSIONS, CODE_SCAN_SKIP_DIR_NAMES
+from ..git_safe import build_git_process_env
 from ..repo_scan import scan_workspace
 from ..workspace_context import resolve_workspace_context
 from .symbols import SymbolSearchError, symbol_search
@@ -230,6 +231,7 @@ def _git_changed_paths(root: Path) -> list[str]:
             ["git", "diff", "--name-only", "HEAD", "--"],
             cwd=root,
             capture_output=True,
+            env=build_git_process_env(),
             **command_text(),
             timeout=_GIT_TIMEOUT_S,
             check=False,

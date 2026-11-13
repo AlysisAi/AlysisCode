@@ -19,6 +19,8 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 
 def _check(command: str, *, passed: bool = True, launched: bool = True) -> dict[str, Any]:
     return {
@@ -437,7 +439,12 @@ def test_finalization_does_not_hide_failed_or_ambiguous_execution(
     )
     queued_payloads = deepcopy(payloads)
     session = create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only", verify_commands=[required]),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            verify_commands=[required],
+            extra_fields={"shell_sandbox": {"mode": "off"}},
+        ),
         root=tmp_path,
         mode="fullaccess",
         yes=True,

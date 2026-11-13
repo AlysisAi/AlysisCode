@@ -39,7 +39,7 @@ from .project_folders import allowed_roots, containing_root
 from .sandbox_settings import ShellSandboxSettings, resolve_shell_sandbox_settings
 from .service_persistence import apply_non_interactive_defaults
 
-_SENSITIVE_ENV_KEYS = {"ALYSIS_API_KEY", "OPENAI_API_KEY"}
+_SENSITIVE_ENV_KEYS = {"ALYSIS_API_KEY", "OPENAI_API_KEY", "ALYSIS_BOTS_TOKEN"}
 _LOGGER = logging.getLogger("alysis_code.sandbox_runner")
 _DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 _BWRAP_UNSHARE_CGROUP_SUPPORTED: bool | None = None
@@ -1134,6 +1134,8 @@ class DockerShellRunner:
     warning_callback: Callable[[str], None] | None = None
     close_stdin: bool = False
     filesystem_access: str = "workspace-write"
+    # Trusted host identity permits orphan cleanup without touching other sessions.
+    container_scope: str | None = None
 
     def run(
         self,
@@ -1145,7 +1147,12 @@ class DockerShellRunner:
         cancel_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         root_abs = root.resolve()
-        container_name = f"alysis-sbx-{uuid.uuid4().hex[:12]}"
+        if self.container_scope is not None and not re.fullmatch(
+            r"[a-f0-9]{32}", self.container_scope
+        ):
+            raise ValueError("Invalid Docker container scope")
+        prefix = f"alysis-sbx-{self.container_scope}-" if self.container_scope else "alysis-sbx-"
+        container_name = prefix + uuid.uuid4().hex[:12]
         allow_repo_meta_writes = bool(
             self.protect_repo_meta
             and self.safe_git_writes
@@ -1307,13 +1314,29 @@ def select_shell_sandbox_backend(
                 "Exact read-file permissions require strict Windows MXC or macOS Seatbelt; "
                 "no host fallback is allowed."
             )
+    if settings.git_metadata_access:
+        current = (system if system is not None else platform.system()).lower()
+        # Seatbelt gives it to the command; under MXC the Git job does, for
+        # one literal Git command (git_native.run).
+        supported = (current == "windows" and settings.backend in {"auto", "windows-mxc"}) or (
+            current == "darwin" and settings.backend in {"auto", "seatbelt"}
+        )
+        if (
+            settings.mode != "strict"
+            or not supported
+            or not settings.clear_env
+            or not settings.protect_repo_meta
+        ):
+            raise ConfigError(
+                "Git metadata permissions require strict Windows MXC or macOS Seatbelt; "
+                "no host fallback is allowed."
+            )
     if (
         settings.network_domains is not None
         or settings.private_network_endpoints
         or settings.unix_sockets
         or settings.forward_env
         or settings.ssh_agent_socket
-        or settings.git_metadata_access
     ):
         current = (system if system is not None else platform.system()).lower()
         if (
@@ -1453,11 +1476,22 @@ def seatbelt_command(
     unix_sockets: tuple[str, ...] = (),
     additional_read_files: tuple[str, ...] = (),
     git_metadata_access: bool = False,
+    git_programs_protected: bool = True,
     runtime_paths: tuple[Path, ...] | None = None,
     check_preparation: Callable[[], None] = lambda: None,
 ) -> str:
-    """``cmd`` wrapped in sandbox-exec, as one string for ``/bin/sh``."""
-    from .macos_git import literal_git_process
+    """``cmd`` wrapped in sandbox-exec, as one string for ``/bin/sh``.
+
+    ``git_programs_protected`` is lifted only by a caller whose command a person
+    decided on; see ``SeatbeltShellRunner.run``.
+    """
+    from .git_safe import separate_git_directories
+    from .macos_git import (
+        GIT_PROGRAM_ENTRIES,
+        git_creates_repository,
+        git_metadata_writes,
+        literal_git_process,
+    )
     from .macos_sandbox import policy_paths, runtime_read_paths
     from .macos_sandbox_owner import ownership_names
 
@@ -1469,7 +1503,18 @@ def seatbelt_command(
     )
     protected: list[Path] = []
     git_argv = literal_git_process(cmd) if safe_git_writes else None
-    metadata_writes = git_argv is not None or git_metadata_access
+    # A literal Git command that only inspects keeps the metadata protected.
+    metadata_writes = (git_argv is not None and git_metadata_writes(cmd)) or git_metadata_access
+    # A literal Git command writes the repository's objects, refs and index.
+    # What a later Git would run (configuration, hooks and the rest of
+    # GIT_PROGRAM_ENTRIES) it changes only when a person decided on the
+    # command, or when it creates a repository whose contents Git chooses.
+    programs_protected = (
+        metadata_writes
+        and git_programs_protected
+        and not git_metadata_access
+        and not git_creates_repository(cmd)
+    )
     if protect_repo_meta:
         for folder in all_roots:
             protected.extend(
@@ -1482,9 +1527,27 @@ def seatbelt_command(
                 for path, rel in _protected_repo_paths(folder)
                 if rel != ".git" or not metadata_writes
             )
+            # A .git file can keep the repository in a folder with another
+            # name, which the name rules do not cover.
+            separate = [
+                path
+                for path in separate_git_directories(folder)
+                if any(path.is_relative_to(writable) for writable in all_roots)
+            ]
+            if not metadata_writes:
+                protected.extend(separate)
+            elif programs_protected:
+                protected.extend(
+                    path / name
+                    for path in separate
+                    for name in (*GIT_PROGRAM_ENTRIES, "modules", "worktrees")
+                )
     if runtime_paths is None:
         runtime_paths = runtime_read_paths(
-            os.environ.get("PATH"), workspace_roots=all_roots, check_preparation=check_preparation
+            os.environ.get("PATH"),
+            workspace_roots=all_roots,
+            check_preparation=check_preparation,
+            developer_dir=os.environ.get("DEVELOPER_DIR"),
         )
     roots, policy, anchors = policy_paths(
         root_abs,
@@ -1527,6 +1590,7 @@ def seatbelt_command(
         scratch=temp_dir is not None,
         protect_repo_meta=protect_repo_meta,
         git_metadata_writes=metadata_writes,
+        git_programs_protected=programs_protected,
         read_file_count=len(additional_read_files),
         network_proxy_port=network_proxy_port,
         unix_socket_count=len(unix_sockets),
@@ -1557,6 +1621,7 @@ def seatbelt_execution(
     forward_env: tuple[str, ...] = (),
     ssh_agent_socket: str | None = None,
     git_metadata_access: bool = False,
+    git_programs_protected: bool = True,
     check_preparation: Callable[[], None] | None = None,
 ):
     from .macos_git import stage_global_preferences
@@ -1598,6 +1663,8 @@ def seatbelt_execution(
             env.get("PATH"),
             workspace_roots=(*allowed_roots(root), *(Path(p) for p in additional_workspace_roots)),
             check_preparation=check_preparation,
+            # Match the directory the command's own xcrun will choose.
+            developer_dir=env.get("DEVELOPER_DIR"),
         )
         env.update(
             HOME=str(scratch / "home"), TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch)
@@ -1667,6 +1734,7 @@ def seatbelt_execution(
             unix_sockets=unix_sockets,
             additional_read_files=additional_read_files,
             git_metadata_access=git_metadata_access,
+            git_programs_protected=git_programs_protected,
             runtime_paths=runtime_paths,
             check_preparation=check_preparation,
         )
@@ -1742,6 +1810,10 @@ class SeatbeltShellRunner:
                 )
             validate_command(cmd)
         deadline = time.monotonic() + timeout_s
+        # The guard lets a command skip the person exactly when this scope has
+        # no route to a remote, so that is when a Git command must not be able
+        # to change what a later Git runs. With a route, a person decided.
+        programs_protected = seatbelt_scope_has_no_remote_route(self)
 
         def check_preparation() -> None:
             if cancel_check is not None and cancel_check():
@@ -1770,6 +1842,7 @@ class SeatbeltShellRunner:
             forward_env=self.forward_env,
             ssh_agent_socket=self.ssh_agent_socket,
             git_metadata_access=self.git_metadata_access,
+            git_programs_protected=programs_protected,
             check_preparation=check_preparation,
         ) as (wrapped, env, owner):
             if self.github_auth:
@@ -1811,12 +1884,33 @@ class SeatbeltShellRunner:
             if credential is not None:
                 completed.stdout = credential.redact(completed.stdout)
                 completed.stderr = credential.redact(completed.stderr)
-            if completed.returncode and self.protect_repo_meta and not self.git_metadata_access:
-                from .macos_git import literal_git_process
+            if self.protect_repo_meta and not self.git_metadata_access:
+                from .macos_git import git_creates_repository, git_metadata_writes
 
-                if not self.safe_git_writes or literal_git_process(cmd) is None:
-                    # Report the policy actually applied, without guessing the cause
-                    # from localized stderr or automatically rerunning side effects.
+                # Report the policy actually applied, without guessing the cause
+                # from localized stderr or automatically rerunning side effects.
+                if self.safe_git_writes and git_metadata_writes(cmd):
+                    if not programs_protected or git_creates_repository(cmd):
+                        return completed
+                    # Git reports a refused configuration write and can still
+                    # exit 0, so the applied policy accompanies every outcome.
+                    completed.sandbox_policy = {
+                        "backend": "seatbelt",
+                        "filesystem_access": self.filesystem_access,
+                        "git_metadata": "writable except configuration, hooks and rebase state",
+                    }
+                    if completed.returncode:
+                        completed.sandbox_policy["guidance"] = (
+                            "Policy context, not a diagnosis of this exit code: this Git command "
+                            "could write the repository's objects, refs and index, but not its "
+                            "configuration, hooks, a rebase in progress or the .git entry itself. "
+                            "A command that needs those (config, remote, clone, rebase, upstream "
+                            "tracking, renaming a branch, submodule or worktree setup) needs "
+                            "operation-only permissions.git_metadata=true, which a person approves. "
+                            "A plain git init creates a repository only as a command of its own. "
+                            "Inspect partial effects before retrying."
+                        )
+                elif completed.returncode:
                     completed.sandbox_policy = {
                         "backend": "seatbelt",
                         "filesystem_access": self.filesystem_access,
@@ -1837,6 +1931,71 @@ def _emit_warning(message: str, *, warning_callback: Callable[[str], None] | Non
         warning_callback(message)
         return
     print(f"[alysis] {message}", file=sys.stderr)
+
+
+def seatbelt_scope_has_no_remote_route(scope: object) -> bool:
+    """Whether Seatbelt leaves a command run under ``scope`` no route to a remote.
+
+    ``scope`` is launcher settings or the Seatbelt runner that executes the
+    command. True only with networking off and nothing that reopens a route or
+    lets the command stage one for later: no domain proxy, private endpoint,
+    loopback preview, host socket, exact read file, forwarded variable, SSH
+    agent, GitHub authentication or writable Git metadata, and a cleared
+    environment. The profile then denies every IP connection, loopback
+    included, and every socket outside the project and the command's scratch
+    folder. A literal Git command still writes objects, refs and the index,
+    never configuration, hooks or the other ``GIT_PROGRAM_ENTRIES``, so it
+    cannot stage a program for a later Git either. Other backends, the host
+    and unknown objects are never certified.
+    """
+    if isinstance(scope, ShellSandboxSettings):
+        try:
+            choice = select_shell_sandbox_backend(scope)
+        except ConfigError:
+            return False
+        if (
+            scope.mode != "strict"
+            or getattr(choice, "backend", None) != "seatbelt"
+            or getattr(choice, "requires_command_approval", False)
+        ):
+            return False
+    elif not isinstance(scope, SeatbeltShellRunner):
+        return False
+    return (
+        scope.network == "off"
+        and scope.network_domains is None
+        and not scope.private_network_endpoints
+        and not scope.unix_sockets
+        and not scope.additional_read_files
+        and not scope.forward_env
+        and scope.ssh_agent_socket is None
+        and not scope.github_auth
+        and not scope.git_metadata_access
+        and scope.preview_access == "auto"
+        and scope.clear_env
+        and scope.protect_repo_meta
+    )
+
+
+def contained_backend(scope: object, *, reviewed_access: bool = False) -> str | None:
+    """The sandbox that bounds a command run under ``scope``, if a proven one does.
+
+    One question for every platform, answered per backend from what that
+    backend was measured to enforce. Seatbelt on macOS: nothing in ``scope``
+    reopens a route to a remote. MXC on Windows: nothing in ``scope`` hands
+    the command credentials, and its network is off unless ``reviewed_access``
+    says a grant that went through the access review opened it. Returns the backend's
+    name so the caller can ask that platform's question about Git metadata.
+    Bubblewrap, Docker, the legacy Windows helper, the host and unknown objects
+    return None.
+    """
+    if not reviewed_access and seatbelt_scope_has_no_remote_route(scope):
+        return "seatbelt"
+    from .windows_mxc import mxc_scope_bounds_command
+
+    if mxc_scope_bounds_command(scope, reviewed_access=reviewed_access):
+        return "windows-mxc"
+    return None
 
 
 def with_closed_stdin(runner: ShellRunner) -> ShellRunner:

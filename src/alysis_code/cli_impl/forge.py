@@ -3101,14 +3101,6 @@ def _authorized_custom_tool_runtime_side_effects(
     return authorized
 
 
-def _path_matches_authorized_runtime_prefix(path: str, prefixes: set[str]) -> bool:
-    normalized = _normalize_changed_file_path(path)
-    return any(
-        normalized == prefix or normalized.startswith(prefix.rstrip("/") + "/")
-        for prefix in prefixes
-    )
-
-
 def _drop_parent_directory_placeholders(paths: list[str]) -> list[str]:
     concrete_paths = [path for path in paths if path and not path.endswith("/")]
     filtered: list[str] = []
@@ -3143,16 +3135,36 @@ def _task_is_analysis_only(task: dict[str, Any]) -> bool:
     )
 
 
-def _task_string_list(task: dict[str, Any], key: str) -> list[str]:
-    raw = task.get(key)
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        return [raw.strip()] if raw.strip() else []
-    if not isinstance(raw, (list, tuple)):
-        text = str(raw).strip()
-        return [text] if text else []
-    return [str(item).strip() for item in raw if str(item).strip()]
+def _host_authored_task_instruction(task: dict[str, Any]) -> str:
+    """Render only admitted task prose for the agent's semantic user turn.
+
+    The full execution Context Pack contains trusted runner metadata (including
+    backtick-delimited budgets) that must remain visible to the model, but that
+    metadata is not authored task intent and therefore must not feed the turn's
+    acceptance/expectation extractor.  Host Phase 0 supplies the full pack as a
+    separate user-role context message and uses this narrow text as the actual
+    turn instruction.
+    """
+
+    title = str(task.get("title") or "").strip()
+    description = str(task.get("description") or "").strip()
+    raw_acceptance = task.get("acceptance_criteria")
+    acceptance = (
+        [str(item or "").strip() for item in raw_acceptance]
+        if isinstance(raw_acceptance, list)
+        else []
+    )
+    acceptance = [item for item in acceptance if item]
+
+    lines = ["Implement the admitted Forge task described below."]
+    if title:
+        lines.extend(["", "Title:", title])
+    if description:
+        lines.extend(["", "Description:", description])
+    if acceptance:
+        lines.extend(["", "Acceptance criteria:"])
+        lines.extend(f"- {item}" for item in acceptance)
+    return "\n".join(lines).strip()
 
 
 def _empty_forge_exec_task_asset_mirror(
@@ -4354,6 +4366,8 @@ def execute_forge_task(
     scope_warnings.extend(task_mcp_scope_warnings)
     instruction = ""
     task_image_paths: list[str] | None = None
+    # Assigned inside the execution try below; pre-bound so the verification
+    # repair loop can reuse it even if setup failed before it was built.
     budget_artifact_path = paths.execution_budgets_dir / f"{runtime_session_id}.json"
     runtime_sessions_dir = _execution_private_sessions_dir(
         cfg=run_cfg,
@@ -7514,35 +7528,3 @@ def forge_exec_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
 def forge_run_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
     _sync_cli_globals(cli_mod)
     return forge_run(*args, **kwargs)
-
-
-def _host_authored_task_instruction(task: dict[str, Any]) -> str:
-    """Render only admitted task prose for the agent's semantic user turn.
-
-    The full execution Context Pack contains trusted runner metadata (including
-    backtick-delimited budgets) that must remain visible to the model, but that
-    metadata is not authored task intent and therefore must not feed the turn's
-    acceptance/expectation extractor.  Host Phase 0 supplies the full pack as a
-    separate user-role context message and uses this narrow text as the actual
-    turn instruction.
-    """
-
-    title = str(task.get("title") or "").strip()
-    description = str(task.get("description") or "").strip()
-    raw_acceptance = task.get("acceptance_criteria")
-    acceptance = (
-        [str(item or "").strip() for item in raw_acceptance]
-        if isinstance(raw_acceptance, list)
-        else []
-    )
-    acceptance = [item for item in acceptance if item]
-
-    lines = ["Implement the admitted Forge task described below."]
-    if title:
-        lines.extend(["", "Title:", title])
-    if description:
-        lines.extend(["", "Description:", description])
-    if acceptance:
-        lines.extend(["", "Acceptance criteria:"])
-        lines.extend(f"- {item}" for item in acceptance)
-    return "\n".join(lines).strip()

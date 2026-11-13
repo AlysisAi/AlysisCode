@@ -190,8 +190,21 @@ the HTTP acknowledgement of `notifications/initialized`. Each uses the configure
 timeout; `call_timeout_s` governs subsequent requests. Stdio servers retain a short
 post-notification observation window.
 
-An MCP startup failure is reported as an MCP error. Chat exits cleanly instead of
-retrying the same failing connection through the classic chat fallback.
+If one server fails to start, that server is left out of the session and the other
+servers load. A server fails to start when it cannot be launched, `initialize` or
+`tools/list` fails, its tool schemas or allow/deny policy are rejected, or adding it
+would take the session past the MCP tool, schema or resource limits. Limits are applied
+in configuration order, so earlier servers keep their tools. `alysis mcp status` shows
+the server as `failed` with the reason (`startup_error` in `--json` rows), and the TUI
+`/mcp` inspector shows it as failed. A failed server cannot be restarted into a running
+session, because the session's tool list is fixed when it starts: fix it, then start a
+new session.
+
+On Windows, when a bare `command` such as `npx` or `uvx` cannot be started directly, it
+is looked up on the server's `PATH` with `PATHEXT` (for example `npx.cmd`). Arguments
+passed to a `.cmd` or `.bat` launcher are quoted for `cmd.exe`; arguments containing
+`"`, `%` or a line break are refused, so point `command` at the program itself (for
+example `node.exe`) if you need them.
 
 ## Tool Policy
 
@@ -397,7 +410,8 @@ For a live IDE session, use the capability-negotiated `mcp.server.status`,
 `mcp.server.enable`, `mcp.server.disable`, and `mcp.server.restart` protocol methods. These methods
 are session- and server-bound and operate on the agent session's existing manager; they never create
 a temporary manager. Status does not materialize a connection and reports a dead owned stdio
-process as disconnected. One stable client lease per
+process as disconnected, and a server that did not start with the session as `failed`
+(`startup_failed: true`). One stable client lease per
 server is shared by frozen tool, resource, and prompt bindings. Lifecycle mutations require
 Workspace Trust and an idle session. Reconnect is atomic: the old connection remains usable if the
 replacement fails, differs from any frozen catalog, or reports a list-change notification while the
@@ -421,5 +435,8 @@ Targeted prompt commands only load the requested server. Unfiltered prompt listi
 - Keep MCP servers narrow with `enabled_in`, `allowed_tools`, and `denied_tools`.
 - Put connection details and secrets in user config, not project config.
 - Treat MCP tool results, resources, and prompts as untrusted external text.
+- Tool annotations are hints from the server: a server can mark any tool read-only or leave
+  out `destructiveHint`. Approval prompts rely on them, so connect only servers you trust
+  and narrow the others with `allowed_tools` and `denied_tools`.
 - Prefer readonly sessions for inspection when MCP access is not needed.
 - Review project MCP overrides before trusting a workspace.

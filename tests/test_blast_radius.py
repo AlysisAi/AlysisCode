@@ -73,6 +73,8 @@ from alysis_code.session_store import read_session_events
 from alysis_code.surface import ApprovalDecision
 from alysis_code.surface.noop_surface import NoopSurface
 
+pytestmark = pytest.mark.usefixtures("approved_local_checks")
+
 # ---------------------------------------------------------------------------
 # Synthetic repo + drivers
 # ---------------------------------------------------------------------------
@@ -1276,7 +1278,12 @@ def _scripted_session(root: Path, session_id: str) -> Any:
             return ApprovalDecision(request.kind == "shell_run")
 
     session = create_session(
-        cfg=AppConfig(model="test-model", routing_mode="code_only", verify_commands=["pytest -q"]),
+        cfg=AppConfig(
+            model="test-model",
+            routing_mode="code_only",
+            verify_commands=["pytest -q"],
+            extra_fields={"shell_sandbox": {"mode": "off"}},
+        ),
         root=root,
         mode="auto",
         yes=True,
