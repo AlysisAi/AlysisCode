@@ -227,3 +227,20 @@ def test_tag_publication_requires_successful_exact_source_platform_qualification
         for job_id in {publisher, *ancestors(publisher)}:
             assert "if" not in jobs[job_id]
             assert not jobs[job_id].get("continue-on-error", False)
+
+
+def test_release_full_suite_has_the_same_native_prerequisites_as_ci():
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["test"]
+    release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]["build"]
+    ci_setup = next(step for step in ci["steps"] if "bwrap --unshare-all" in step.get("run", ""))
+    release_setup = next(
+        (step for step in release["steps"] if "bwrap --unshare-all" in step.get("run", "")), None
+    )
+    assert release_setup is not None, "Release qualification needs the tested Linux sandbox setup"
+    assert release_setup["run"] == ci_setup["run"]
+    assert not release_setup.get("continue-on-error", False)
+    ci_test = next(step for step in ci["steps"] if step.get("name") == "Test")
+    release_test = next(step for step in release["steps"] if step.get("name") == "Test")
+    assert release["steps"].index(release_setup) < release["steps"].index(release_test)
+    for name, value in ci_test["env"].items():
+        assert release_test.get("env", {}).get(name) == value

@@ -190,7 +190,22 @@ jobs:
       - name: Format check
         run: uv run --frozen --no-sync ruff format --check .
 
+      - name: Install native sandbox for release qualification
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap apparmor-profiles libreoffice-writer libreoffice-calc libreoffice-impress
+          # Older distro images ship this inactive extra profile. Load it only
+          # where supplied; newer images may already have their packaged policy.
+          # Keep host-wide restrictions and require the real bwrap probe below.
+          if [ -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict ] && command -v apparmor_parser >/dev/null && sudo aa-status --enabled; then
+            sudo apparmor_parser --replace /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          fi
+          bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev true
+
       - name: Test
+        env:
+          ALYSIS_TEST_OFFICE_SOFFICE: /usr/bin/soffice
+          ALYSIS_RUN_BWRAP_RUNTIME_TESTS: "1"
         # Recovery already verified all four full suites at this exact source.
         if: github.event_name != 'workflow_dispatch'
         run: uv run --frozen --no-sync pytest -q
