@@ -6,8 +6,8 @@
 !src/
 !src/**
 !schemas/
-!schemas/forge-host-v2/
-!schemas/forge-host-v2/**
+!schemas/alysis-host-v2/
+!schemas/alysis-host-v2/**
 !scripts/
 !scripts/cloud-dev/
 !scripts/cloud-dev/entrypoint.sh

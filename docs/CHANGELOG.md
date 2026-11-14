@@ -4,6 +4,8 @@
 
 ## 0.17.0 - 2026-11-12
 
+- Use Alysis naming for host-protocol documentation and link its packaged schema
+  and conformance fixtures; retain legacy wire identifiers for compatibility.
 - Add Alysis Owls (`alysis bots`): assistants with their own memory that work on a
   private computer on this PC or in the cloud, run routines, and stop for approval
   before anything that reaches other people, pays, posts or deletes.

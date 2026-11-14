@@ -12,7 +12,7 @@ tests. A breaking transport change needs an explicit protocol/version agreement
 with the app. Do not reuse an existing feature name for incompatible behavior.
 
 The desktop validates `alysis capabilities`. The engine must report the expected
-contract version and required features, version 2 of the Forge host and execution
+contract version and required features, version 2 of the Alysis host and execution
 contracts, and runtime status v1. The IDE bridge negotiates the sensitive-host and Computer Use handshakes and implements
 `computer.respond`, `browser_start.respond` and `task_budget.respond`.
 
@@ -38,7 +38,7 @@ existing approvals and file/sandbox restrictions enforced. See the
 [checkpoint regression tests](../tests/test_ide_checkpoint_setup.py). Preserve
 this contract when changing desktop dispatch or recovery.
 
-The Forge host protocol advertises `forge.host-authoritative-verification-v1`.
+The Alysis host protocol advertises `forge.host-authoritative-verification-v1`.
 Commands selected explicitly by the host use `HOST_AUTHORITATIVE` provenance.
 [`alysis-code.schema.json`](../src/alysis_code/forge_host_protocol/alysis-code.schema.json)
 and the Python validator accept that value alongside `PREEXISTING_REPO_NATIVE`.
