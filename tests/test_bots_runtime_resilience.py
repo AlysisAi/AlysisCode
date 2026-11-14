@@ -268,6 +268,48 @@ def test_cancellation_is_never_retried(tmp_path):
     assert "provider_retry" not in kinds(store.task("alice", task["id"]))
 
 
+@pytest.mark.parametrize("failure", [http_error(503), TimeoutError("connection closed")])
+def test_stop_before_the_retry_decision_records_cancellation(tmp_path, monkeypatch, failure):
+    cancel = threading.Event()
+    retry_wait = runtime_module.provider_retry_wait
+
+    def stop_before_deciding(exc, attempts, token):
+        cancel.set()
+        return retry_wait(exc, attempts, token)
+
+    monkeypatch.setattr(runtime_module, "provider_retry_wait", stop_before_deciding)
+    store = Store(tmp_path / "bots.sqlite3")
+    _, chat = setup_chat(store)
+    store.enqueue("alice", chat["id"], TaskInput(message="Hi", request_id="request_1"))
+    task = store.claim("alice")
+    client = ScriptedClient([failure, response("Never")])
+    BotRuntime(store, "alice", lambda _: client).run(task, EventCancellationToken(cancel))
+    saved = store.task("alice", task["id"])
+    assert len(client.requests) == 1
+    assert saved["status"] == "cancelled"
+    assert "provider_retry" not in kinds(saved)
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt(), SystemExit(9)])
+def test_stop_does_not_replace_fatal_provider_control_flow(tmp_path, monkeypatch, failure):
+    cancel = threading.Event()
+    retry_wait = runtime_module.provider_retry_wait
+
+    def stop_before_deciding(exc, attempts, token):
+        cancel.set()
+        return retry_wait(exc, attempts, token)
+
+    monkeypatch.setattr(runtime_module, "provider_retry_wait", stop_before_deciding)
+    store = Store(tmp_path / "bots.sqlite3")
+    _, chat = setup_chat(store)
+    store.enqueue("alice", chat["id"], TaskInput(message="Hi", request_id="request_1"))
+    task = store.claim("alice")
+    client = ScriptedClient([failure, response("Never")])
+    with pytest.raises(type(failure)):
+        BotRuntime(store, "alice", lambda _: client).run(task, EventCancellationToken(cancel))
+    assert len(client.requests) == 1
+
+
 def test_stop_during_the_retry_pause_cancels_without_a_second_call(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_module, "PROVIDER_RETRY_DELAY_SECONDS", 10.0)
     cancel = threading.Event()

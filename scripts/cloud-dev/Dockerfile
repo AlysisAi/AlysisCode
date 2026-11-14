@@ -23,7 +23,6 @@ COPY --from=ghcr.io/astral-sh/uv@sha256:2381d6aa60c326b71fd40023f921a0a3b8f91b14
 WORKDIR /opt/alysis
 COPY pyproject.toml uv.lock README.md hatch_build.py ./
 COPY src ./src
-COPY schemas/forge-host-v2 ./schemas/forge-host-v2
 RUN uv sync --locked --no-dev --no-editable --extra server --extra documents && uv cache clean
 COPY scripts/cloud-dev/entrypoint.sh scripts/cloud-dev/check.py /opt/cloud-dev/
 

@@ -2550,6 +2550,10 @@ class BotRuntime:
                     # reserved call after a cancellable pause that grows with each try.
                     wait = provider_retry_wait(exc, provider_retries, token)
                     if wait is None:
+                        # Stop can be why the retry was declined. Preserve its
+                        # terminal state without replacing fatal control flow.
+                        if isinstance(exc, Exception):
+                            token.throw_if_cancelled()
                         raise
                     provider_retries += 1
                     self.store.event(

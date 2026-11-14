@@ -4,6 +4,8 @@
 
 ## 0.17.0 - 2026-11-12
 
+- Consolidate Alysis engine-interface documentation under `docs/` and link its
+  packaged message schema and conformance fixtures; retain compatibility identifiers.
 - Add Alysis Owls (`alysis bots`): assistants with their own memory that work on a
   private computer on this PC or in the cloud, run routines, and stop for approval
   before anything that reaches other people, pays, posts or deletes.
