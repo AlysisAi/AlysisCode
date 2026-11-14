@@ -5,9 +5,6 @@
 !hatch_build.py
 !src/
 !src/**
-!schemas/
-!schemas/alysis-host-v2/
-!schemas/alysis-host-v2/**
 !scripts/
 !scripts/cloud-dev/
 !scripts/cloud-dev/entrypoint.sh
