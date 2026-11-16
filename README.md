@@ -5,6 +5,15 @@
 <p align="center">Build software with Alysis Code, create documents with Alysis Work, and delegate ongoing tasks to Alysis Owls — all in one desktop app.</p>
 
 <p align="center">
+  <a href="https://pypi.org/project/alysis-code/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/alysis-code?style=flat-square"></a>
+  <a href="https://pypi.org/project/alysis-code/"><img alt="CLI downloads per month" src="https://img.shields.io/pypi/dm/alysis-code?style=flat-square&amp;label=CLI%20downloads%2Fmonth"></a>
+  <a href="https://github.com/AlysisAi/AlysisCode/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/AlysisAi/AlysisCode/ci.yml?style=flat-square&amp;label=ci"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/pypi/l/alysis-code?style=flat-square"></a>
+  <a href="https://github.com/AlysisAi/AlysisCode"><img alt="GitHub stars" src="https://img.shields.io/github/stars/AlysisAi/AlysisCode?style=flat-square"></a>
+  <a href="https://discord.gg/psEVWZgzFS"><img alt="Discord members" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FpsEVWZgzFS%3Fwith_counts%3Dtrue&amp;query=%24.approximate_member_count&amp;label=discord&amp;suffix=%20members&amp;style=flat-square&amp;logo=discord&amp;logoColor=white&amp;color=5865F2"></a>
+</p>
+
+<p align="center">
   <strong><a href="https://alysiscode.com/#desktop-download">Download for macOS &amp; Windows</a></strong> ·
   <a href="https://alysiscode.com/docs">Documentation</a> ·
   <a href="https://discord.gg/psEVWZgzFS">Community</a>
@@ -46,6 +55,10 @@ Owls ask for approval before actions that reach other people, make payments, pub
 ## Also available in your terminal
 
 The open-source Alysis engine and CLI live in this repository. The CLI supports macOS, Linux, and Windows.
+
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Alysis Code CLI welcome screen followed by a short conversation" width="900">
+</p>
 
 <details>
 <summary>Install the CLI</summary>
