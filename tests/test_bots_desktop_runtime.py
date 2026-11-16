@@ -147,7 +147,7 @@ def test_approved_route_delivers_real_tool_shape_without_text_only_pixels(study,
             if part["type"] == "image_url"
         )
         assert image["image_url"]["url"].startswith("data:image/png;base64,")
-        assert receipt["frame"]["surface"] == "offline_desktop"
+        assert receipt["frame"]["surface"] == "desktop"
         assert "png" not in receipt
     else:
         assert receipt["exit_code"] == 0
