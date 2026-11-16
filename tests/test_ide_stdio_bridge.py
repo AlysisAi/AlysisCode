@@ -112,6 +112,7 @@ def test_chat_completion_exposes_host_verification_verdict(tmp_path, monkeypatch
         ),
     )
     assert activity["payload"]["status"] == ("succeeded" if verified else "completed_unverified")
+    _wait_for_job_workers(bridge)
     status = _send_bridge_request(bridge, out, "session.status", {"session_id": session_id})
     result = status["result"]["last_job"]["result"]
     assert result["verified_success"] is verified
@@ -170,6 +171,7 @@ def test_chat_error_outcome_retains_current_failure_but_never_prior_success(
         bridge, out, "chat.send", {"session_id": session_id, "message": "Run the current task."}
     )
     _wait_for_line(out, lambda line: "job_cancelled" in str(line) or "job_failed" in str(line))
+    _wait_for_job_workers(bridge)
     status = _send_bridge_request(bridge, out, "session.status", {"session_id": session_id})
     result = status["result"]["last_job"]["result"]
     assert result["verified_success"] is False
@@ -219,7 +221,9 @@ def _send_bridge_request(
     )
 
 
-def _wait_for_line(out: io.StringIO, predicate: Any, *, timeout: float = 2.0) -> dict[str, Any]:
+def _wait_for_line(out: io.StringIO, predicate: Any, *, timeout: float = 30.0) -> dict[str, Any]:
+    # Returns as soon as the line appears; the bound only limits a failure, and
+    # bridge workers can take seconds to get there on a busy machine.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for line in _json_lines(out):
@@ -227,6 +231,21 @@ def _wait_for_line(out: io.StringIO, predicate: Any, *, timeout: float = 2.0) ->
                 return line
         time.sleep(0.01)
     raise AssertionError("timed out waiting for protocol line")
+
+
+def _wait_for_job_workers(bridge: StdioBridge, *, timeout: float = 30.0) -> None:
+    """Wait until every started job worker has retired.
+
+    A job's final status and terminal events come before its worker's final
+    ownership handoff, which is when the session moves it from ``active_job`` to
+    ``last_job`` (docs/ide_protocol.md). Read session or job state after this.
+    """
+    deadline = time.monotonic() + timeout
+    for job in list(bridge._jobs.values()):
+        thread = job.thread
+        if thread is not None:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            assert not thread.is_alive(), f"job worker {job.job_id} did not retire"
 
 
 def _isolate_alysis_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -348,6 +367,7 @@ def test_optional_browser_private_root_does_not_block_unrelated_chat(tmp_path, m
                 and line.get("payload", {}).get("status") == "completed_unverified"
             ),
         )
+        _wait_for_job_workers(bridge)
         status = _send_bridge_request(bridge, out, "session.status", {"session_id": session_id})
         assert status["result"]["last_job"]["status"] == "completed"
         assert not (data / "ide-browser").exists()
@@ -3861,6 +3881,7 @@ def test_stdio_bridge_session_image_basket_uses_safe_paths_and_clears_after_succ
     )
     assert turns == [[os.fspath(image.resolve())]]
 
+    _wait_for_job_workers(bridge)
     listed = _send_bridge_request(bridge, out, "session.images.list", {"session_id": session_id})
     assert listed["result"]["count"] == 0
     status = _send_bridge_request(bridge, out, "session.status", {"session_id": session_id})
@@ -5467,7 +5488,7 @@ def test_stdio_bridge_job_status_session_list_and_event_replay(
     # remains the active job until its final ownership handoff finishes.
     worker = bridge._jobs[job_id].thread
     assert worker is not None
-    worker.join(timeout=2.0)
+    worker.join(timeout=30.0)
     assert not worker.is_alive()
 
     bridge.process_line(_request("job.status", {"job_id": job_id}, request_id="job") + "\n")
@@ -5578,6 +5599,7 @@ def test_stdio_bridge_chat_send_does_not_block_cancellation(
         for line in lines
     )
 
+    _wait_for_job_workers(bridge)
     bridge.process_line(_request("job.status", {"job_id": job_id}, request_id="job") + "\n")
     bridge.process_line(
         _request("session.status", {"session_id": session_id}, request_id="status") + "\n"
@@ -6005,13 +6027,20 @@ def test_stdio_bridge_reusing_closed_session_id_resets_volatile_state(
             and f"job_completed {old_job_id}" in str(line.get("payload", {}).get("message", ""))
         ),
     )
-    _send_bridge_request(
+    # job_completed is history, not proof that the original worker has retired;
+    # until it has, closing the session is refused as session_busy. Wait for it.
+    worker = bridge._jobs[old_job_id].thread
+    assert worker is not None
+    worker.join(timeout=30.0)
+    assert not worker.is_alive()
+    closed = _send_bridge_request(
         bridge,
         out,
         "session.cancel",
         {"session_id": "reused-session"},
         request_id="close-old",
     )
+    assert closed["ok"] is True, closed
 
     recreated = _send_bridge_request(
         bridge,
@@ -6983,7 +7012,7 @@ def test_stdio_bridge_sync_forge_plan_regenerate_releases_state_lock_during_plan
         )
     finally:
         planner_release.set()
-        regen_thread.join(timeout=5.0)
+        regen_thread.join(timeout=30.0)
 
     assert not regen_thread.is_alive()
     probe_response = _response_by_id(out, "probe-during-regen")
@@ -7729,6 +7758,7 @@ def test_stdio_bridge_forge_plan_start_reports_redacted_failure(
         ),
     )
 
+    _wait_for_job_workers(bridge)
     bridge.process_line(_request("job.status", {"job_id": job_id}, request_id="job") + "\n")
     job_response = [line for line in _json_lines(out) if line.get("id") == "job"][0]
     assert job_response["ok"] is True
@@ -8580,6 +8610,7 @@ def test_stdio_bridge_forge_execute_review_job_uses_scoped_approvals_and_diffs(
     )
     assert terminal_event["sequence"] > review_event["sequence"]
 
+    _wait_for_job_workers(bridge)
     bridge.process_line(_request("job.status", {"job_id": job_id}, request_id="job") + "\n")
     job_response = [line for line in _json_lines(out) if line.get("id") == "job"][0]
     assert job_response["ok"] is True
@@ -8798,6 +8829,7 @@ def test_stdio_bridge_forge_execute_active_job_can_be_cancelled(
         ),
     )
 
+    _wait_for_job_workers(bridge)
     bridge.process_line(_request("job.status", {"job_id": job_id}, request_id="job") + "\n")
     bridge.process_line(_request("session.list", request_id="sessions-after-cancel") + "\n")
     lines = _json_lines(out)
@@ -8922,6 +8954,7 @@ def test_stdio_bridge_forge_execute_verification_failure_blocks_task(
             )
         ),
     )
+    _wait_for_job_workers(bridge)
     bridge.process_line(_request("job.status", {"job_id": job_id}, request_id="job") + "\n")
     job_response = [line for line in _json_lines(out) if line.get("id") == "job"][0]
     assert job_response["ok"] is True
@@ -10955,7 +10988,7 @@ def test_stdio_bridge_forge_swarm_terminal_failure_does_not_rerecord_usage(
     job_id = start["result"]["job_id"]
     thread = bridge._jobs[job_id].thread
     assert thread is not None
-    thread.join(timeout=5.0)
+    thread.join(timeout=30.0)
     assert thread.is_alive() is False
 
     listed = _send_bridge_request(
@@ -11039,7 +11072,7 @@ def test_stdio_bridge_forge_swarm_usage_is_isolated_between_jobs_for_one_plan(
         job_ids.append(job_id)
         thread = bridge._jobs[job_id].thread
         assert thread is not None
-        thread.join(timeout=5.0)
+        thread.join(timeout=30.0)
         assert thread.is_alive() is False
 
     listed = _send_bridge_request(
@@ -11131,7 +11164,7 @@ def test_stdio_bridge_forge_swarm_durable_list_resume_and_restart_result(
     job_id = start["result"]["job_id"]
     first_thread = bridge._jobs[job_id].thread
     assert first_thread is not None
-    first_thread.join(timeout=5.0)
+    first_thread.join(timeout=30.0)
     assert first_thread.is_alive() is False
 
     listed = _send_bridge_request(

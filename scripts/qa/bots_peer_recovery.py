@@ -43,11 +43,26 @@ while True:
 """
 
 
-def until(predicate, seconds=10):
+def until(predicate, seconds=60, *, process=None, stderr_path=None):
+    """Wait for ``predicate``; the deadline only bounds a failure.
+
+    A passing check returns as soon as its state appears. The bound is generous
+    because the fixture's child process imports the engine before it starts,
+    which can take many seconds on a busy machine. If ``process`` exits first,
+    the wait ends at once with its exit code and the end of its error output.
+    """
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if predicate():
             return
+        if process is not None and process.poll() is not None:
+            detail = ""
+            if stderr_path is not None and stderr_path.exists():
+                detail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+            raise AssertionError(
+                f"Peer crash fixture process exited early with code {process.returncode}"
+                + (f":\n{detail}" if detail else "")
+            )
         time.sleep(0.02)
     raise AssertionError("Peer crash fixture did not reach the expected state")
 
@@ -80,16 +95,19 @@ def verify(root: Path) -> dict:
         8,
     )
     marker = root / "peer-entered"
-    child = subprocess.Popen(
-        [sys.executable, "-c", CHILD, str(store.path), str(marker)],
-        env={
-            "PATH": os.defpath,
-            "PYTHONPATH": os.pathsep.join(sys.path),
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-    )
+    child_stderr = root / "peer-child-stderr.txt"
+    with child_stderr.open("wb") as stderr:
+        child = subprocess.Popen(
+            [sys.executable, "-c", CHILD, str(store.path), str(marker)],
+            env={
+                "PATH": os.defpath,
+                "PYTHONPATH": os.pathsep.join(sys.path),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            stderr=stderr,
+        )
     try:
-        until(marker.exists)
+        until(marker.exists, process=child, stderr_path=child_stderr)
         assert child.poll() is None
         assert peers.for_task(task["id"])["status"] == "running"
         assert store.task("owner", task["id"])["usage"][0]["status"] == "started"

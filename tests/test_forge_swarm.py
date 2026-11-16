@@ -550,6 +550,9 @@ def test_run_swarm_queues_concurrent_same_workspace_writer_and_revalidates_plan(
         thread=second_thread,
         result=second_result,
     )
+    # The event is set in the thread's ``finally``; the thread still has to unwind
+    # before it stops, so wait for it rather than sampling it at that instant.
+    second_thread.join(timeout=10)
     assert not second_thread.is_alive(), _thread_diagnostics(
         thread=second_thread,
         result=second_result,

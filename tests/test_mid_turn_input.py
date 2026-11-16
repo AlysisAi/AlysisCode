@@ -31,6 +31,11 @@ from alysis_code.cli_impl.chat.mid_turn_policy import (
     is_command,
 )
 
+# Every wait below returns as soon as its state appears; the bound only limits a
+# failure. Keep it generous: the live TUI parses synthetic key streams on its own
+# thread, and that slows sharply on a busy machine (parallel CI workers).
+STATE_TIMEOUT = 30.0
+
 READ_ONLY_COMMANDS = [
     "/help",
     "/status",
@@ -508,7 +513,7 @@ def _run_live_tui(
                 raise feed_errors[0] from None
             raise
         finally:
-            feeder.join(timeout=2)
+            feeder.join(timeout=STATE_TIMEOUT)
 
     assert not feeder.is_alive()
     assert feed_errors == []
@@ -543,7 +548,7 @@ def _pending_messages_area_text(application: Any) -> str:
     return ""
 
 
-def _wait_until(predicate: Any, *, timeout: float = 3.0) -> bool:
+def _wait_until(predicate: Any, *, timeout: float = STATE_TIMEOUT) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -575,7 +580,7 @@ def test_pending_steer_moves_from_area_to_transcript_only_when_delivered(
         def run_turn(self, _text: str, *, cancellation_token: Any = None) -> int:
             _ = cancellation_token
             started.set()
-            assert drain_at_boundary.wait(timeout=3)
+            assert drain_at_boundary.wait(timeout=STATE_TIMEOUT)
             inbox = steer_inbox_for(self)
             assert inbox is not None
             assert inbox.drain() == ["use the runtime path"]
@@ -585,7 +590,7 @@ def test_pending_steer_moves_from_area_to_transcript_only_when_delivered(
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("use the runtime path\r")
         assert _wait_until(
             lambda: (
@@ -599,7 +604,7 @@ def test_pending_steer_moves_from_area_to_transcript_only_when_delivered(
             "ctrl+c interrupts and sends it immediately"
         ) in pending_text
         drain_at_boundary.set()
-        assert delivered.wait(timeout=2)
+        assert delivered.wait(timeout=STATE_TIMEOUT)
         assert _wait_until(lambda: appended_users == ["work", "use the runtime path"])
         assert _wait_until(lambda: not _pending_messages_area_text(captured["application"]))
         pipe.send_text("/exit\r")
@@ -626,7 +631,7 @@ def test_two_pending_steers_render_and_deliver_in_fifo_order(
         def run_turn(self, _text: str, *, cancellation_token: Any = None) -> int:
             _ = cancellation_token
             started.set()
-            assert drain_at_boundary.wait(timeout=3)
+            assert drain_at_boundary.wait(timeout=STATE_TIMEOUT)
             inbox = steer_inbox_for(self)
             assert inbox is not None
             assert inbox.drain() == ["first correction", "second correction"]
@@ -635,7 +640,7 @@ def test_two_pending_steers_render_and_deliver_in_fifo_order(
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("first correction\r")
         pipe.send_text("second correction\r")
         assert _wait_until(
@@ -685,7 +690,7 @@ def test_failed_answer_keeps_delivered_steer_visible_without_automatic_resubmiss
                 followup_started.set()
                 return 0
             first_started.set()
-            assert fail_now.wait(timeout=3)
+            assert fail_now.wait(timeout=STATE_TIMEOUT)
             inbox = steer_inbox_for(self)
             assert inbox is not None
             drained = inbox.drain()
@@ -698,16 +703,16 @@ def test_failed_answer_keeps_delivered_steer_visible_without_automatic_resubmiss
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("keep this steer\r")
         assert _wait_until(
             lambda: "  > keep this steer" in _pending_messages_area_text(captured["application"])
         )
         fail_now.set()
-        assert failed.wait(timeout=2)
+        assert failed.wait(timeout=STATE_TIMEOUT)
         assert not followup_started.wait(timeout=0.1)
         pipe.send_text("Please continue.\r")
-        assert followup_started.wait(timeout=2)
+        assert followup_started.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
@@ -742,14 +747,14 @@ def test_ctrl_q_message_stays_in_pending_area_until_queued_turn_starts(
             _ = cancellation_token
             if text == "work":
                 first_started.set()
-                assert release_first.wait(timeout=3)
+                assert release_first.wait(timeout=STATE_TIMEOUT)
             elif text == "queued follow-up":
                 queued_started.set()
             return 0
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("queued follow-up\x11")
         assert _wait_until(
             lambda: (
@@ -759,7 +764,7 @@ def test_ctrl_q_message_stays_in_pending_area_until_queued_turn_starts(
         assert "  > queued follow-up" in _pending_messages_area_text(captured["application"])
         assert appended_users == ["work"]
         release_first.set()
-        assert queued_started.wait(timeout=2)
+        assert queued_started.wait(timeout=STATE_TIMEOUT)
         assert _wait_until(lambda: appended_users == ["work", "queued follow-up"])
         assert _wait_until(lambda: not _pending_messages_area_text(captured["application"]))
         time.sleep(0.05)
@@ -789,14 +794,14 @@ def test_shift_left_recalls_and_requeues_latest_queued_message(
             calls.append(text)
             if text == "work":
                 first_started.set()
-                assert release_first.wait(timeout=3)
+                assert release_first.wait(timeout=STATE_TIMEOUT)
             elif text == "queued follow-up edited":
                 edited_started.set()
             return 0
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("queued follow-up\x11")
         assert _wait_until(
             lambda: "  > queued follow-up" in _pending_messages_area_text(captured["application"])
@@ -819,7 +824,7 @@ def test_shift_left_recalls_and_requeues_latest_queued_message(
             )
         )
         release_first.set()
-        assert edited_started.wait(timeout=2)
+        assert edited_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/exit\r")
 
     result, _transcript = _run_live_tui(session_builder=QueuedSession, feed=feed)
@@ -859,12 +864,12 @@ def test_shift_left_recalls_latest_queue_without_retracting_newer_steer(
             calls.append(text)
             if text == "work":
                 first_started.set()
-                assert release_first.wait(timeout=3)
+                assert release_first.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("older queued message\x11")
         pipe.send_text("steer now\r")
         assert _wait_until(
@@ -893,7 +898,6 @@ def test_shift_left_recalls_latest_queue_without_retracting_newer_steer(
         release_first.set()
         assert _wait_until(
             lambda: calls == ["work", "older queued message edited", "steer now"],
-            timeout=2,
         )
         pipe.send_text("/exit\r")
 
@@ -919,17 +923,17 @@ def test_shift_left_does_not_recall_a_pending_steer(
         def run_turn(self, _text: str, *, cancellation_token: Any = None) -> int:
             _ = cancellation_token
             first_started.set()
-            assert drain_now.wait(timeout=3)
+            assert drain_now.wait(timeout=STATE_TIMEOUT)
             inbox = steer_inbox_for(self)
             assert inbox is not None
             assert inbox.drain() == ["already delivered"]
             drained.set()
-            assert release_first.wait(timeout=3)
+            assert release_first.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("already delivered\r")
         assert _wait_until(
             lambda: "  > already delivered" in _pending_messages_area_text(captured["application"])
@@ -939,7 +943,7 @@ def test_shift_left_does_not_recall_a_pending_steer(
         assert captured["application"].layout.current_buffer.text == ""
         assert "already delivered" in _pending_messages_area_text(captured["application"])
         drain_now.set()
-        assert drained.wait(timeout=2)
+        assert drained.wait(timeout=STATE_TIMEOUT)
         release_first.set()
         time.sleep(0.05)
         pipe.send_text("/exit\r")
@@ -982,7 +986,7 @@ def test_read_only_command_runs_while_turn_is_active() -> None:
             _ = cancellation_token
             calls.append(text)
             started.set()
-            assert release.wait(timeout=3)
+            assert release.wait(timeout=STATE_TIMEOUT)
             finished.set()
             return 0
 
@@ -996,11 +1000,11 @@ def test_read_only_command_runs_while_turn_is_active() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/status\r")
-        assert status_seen.wait(timeout=2)
+        assert status_seen.wait(timeout=STATE_TIMEOUT)
         release.set()
-        assert finished.wait(timeout=2)
+        assert finished.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
@@ -1031,7 +1035,7 @@ def test_status_panel_lists_both_pending_operation_tiers_in_application_order() 
         def run_turn(self, _text: str, *, cancellation_token: Any = None) -> int:
             _ = cancellation_token
             started.set()
-            assert release.wait(timeout=3)
+            assert release.wait(timeout=STATE_TIMEOUT)
             finished.set()
             return 0
 
@@ -1055,14 +1059,14 @@ def test_status_panel_lists_both_pending_operation_tiers_in_application_order() 
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/permissions fast\r")
         pipe.send_text("/model next-model\r")
         pipe.send_text("/status\r")
-        assert status_seen.wait(timeout=2)
+        assert status_seen.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("q")
         release.set()
-        assert finished.wait(timeout=2)
+        assert finished.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.1)
         pipe.send_text("/exit\r")
 
@@ -1095,7 +1099,7 @@ def test_allowed_command_cannot_start_a_second_concurrent_turn() -> None:
             _ = cancellation_token
             calls.append(text)
             started.set()
-            assert release.wait(timeout=3)
+            assert release.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1108,9 +1112,9 @@ def test_allowed_command_cannot_start_a_second_concurrent_turn() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/status\r")
-        assert command_seen.wait(timeout=2)
+        assert command_seen.wait(timeout=STATE_TIMEOUT)
         release.set()
         time.sleep(0.1)
         pipe.send_text("/exit\r")
@@ -1140,7 +1144,7 @@ def test_deferred_commands_apply_in_submission_order_before_queued_turn() -> Non
             events.append(f"turn:{text}")
             if text == "work":
                 first_started.set()
-                assert release_first.wait(timeout=3)
+                assert release_first.wait(timeout=STATE_TIMEOUT)
             elif text == "queued follow-up":
                 queued_started.set()
             return 0
@@ -1156,14 +1160,14 @@ def test_deferred_commands_apply_in_submission_order_before_queued_turn() -> Non
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/persona architect\r")
         pipe.send_text("/model gpt-5\r")
         pipe.send_text("/cd src\r")
         pipe.send_text("queued follow-up\x11")
         time.sleep(0.1)
         release_first.set()
-        assert queued_started.wait(timeout=2)
+        assert queued_started.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.1)
         pipe.send_text("/exit\r")
 
@@ -1199,7 +1203,7 @@ def test_deferred_command_cannot_start_a_turn() -> None:
             _ = cancellation_token
             calls.append(text)
             first_started.set()
-            assert release_first.wait(timeout=3)
+            assert release_first.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1213,11 +1217,11 @@ def test_deferred_command_cannot_start_a_turn() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/model draft thing\r")
         time.sleep(0.05)
         release_first.set()
-        assert deferred_seen.wait(timeout=2)
+        assert deferred_seen.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.1)
         pipe.send_text("/exit\r")
 
@@ -1264,7 +1268,7 @@ def test_next_message_commands_apply_at_idle_before_the_next_turn(
             events.append(f"turn:{text}")
             if text == "work":
                 first_started.set()
-                assert release_first.wait(timeout=3)
+                assert release_first.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1279,12 +1283,12 @@ def test_next_message_commands_apply_at_idle_before_the_next_turn(
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text(command + "\r")
-        assert staged.wait(timeout=2)
+        assert staged.wait(timeout=STATE_TIMEOUT)
         assert not applied.is_set()
         release_first.set()
-        assert applied.wait(timeout=2)
+        assert applied.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/exit\r")
 
     result, transcript = _run_live_tui(
@@ -1311,7 +1315,7 @@ def test_staged_persona_mid_turn_echoes_exact_compact_label() -> None:
             _ = cancellation_token
             if text == "work":
                 first_started.set()
-                assert release_first.wait(timeout=3)
+                assert release_first.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1325,11 +1329,11 @@ def test_staged_persona_mid_turn_echoes_exact_compact_label() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/persona ask\r")
         time.sleep(0.05)
         release_first.set()
-        assert applied.wait(timeout=2)
+        assert applied.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
@@ -1356,7 +1360,7 @@ def test_deferred_exit_stops_before_a_queued_turn_starts() -> None:
             _ = cancellation_token
             calls.append(text)
             first_started.set()
-            assert release_first.wait(timeout=3)
+            assert release_first.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1367,7 +1371,7 @@ def test_deferred_exit_stops_before_a_queued_turn_starts() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/config set base_url https://new.example/v1\r")
         pipe.send_text("must not start\x11")
         time.sleep(0.05)
@@ -1402,7 +1406,7 @@ def test_enter_steers_the_running_turn() -> None:
             _ = cancellation_token
             calls.append(text)
             started.set()
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + STATE_TIMEOUT
             while time.monotonic() < deadline:
                 inbox = steer_inbox_for(self)
                 if inbox is not None and inbox.pending_count():
@@ -1414,9 +1418,9 @@ def test_enter_steers_the_running_turn() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("use the parser instead\r")
-        assert received.wait(timeout=2)
+        assert received.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
@@ -1443,7 +1447,7 @@ def test_tui_echoes_the_truncated_text_that_was_actually_steered() -> None:
         def run_turn(self, text: str, *, cancellation_token: Any = None) -> int:
             _ = text, cancellation_token
             started.set()
-            deadline = time.monotonic() + 12
+            deadline = time.monotonic() + STATE_TIMEOUT
             while time.monotonic() < deadline:
                 inbox = steer_inbox_for(self)
                 if inbox is not None and inbox.pending_count():
@@ -1457,11 +1461,11 @@ def test_tui_echoes_the_truncated_text_that_was_actually_steered() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         # Large synthetic key streams take longer on Windows terminals. Keep
         # the truncation assertions independent of input parsing throughput.
         pipe.send_text(oversized + "\r")
-        assert received.wait(timeout=10)
+        assert received.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
@@ -1489,19 +1493,19 @@ def test_ctrl_q_queues_follow_up_in_order() -> None:
             calls.append(text)
             if len(calls) == 1:
                 first_started.set()
-                assert release_first.wait(timeout=3)
+                assert release_first.wait(timeout=STATE_TIMEOUT)
             elif len(calls) == 3:
                 third_started.set()
             return 0
 
     def feed(pipe: Any) -> None:
         pipe.send_text("first\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("second\x11")
         pipe.send_text("third\x11")
         time.sleep(0.05)
         release_first.set()
-        assert third_started.wait(timeout=2)
+        assert third_started.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.1)
         pipe.send_text("/exit\r")
 
@@ -1527,7 +1531,7 @@ def test_ctrl_q_queue_warns_when_full(monkeypatch: pytest.MonkeyPatch) -> None:
         def run_turn(self, text: str, *, cancellation_token: Any = None) -> int:
             calls.append(text)
             started.set()
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + STATE_TIMEOUT
             while time.monotonic() < deadline:
                 if cancellation_token is not None and cancellation_token.is_cancelled:
                     return 0
@@ -1536,7 +1540,7 @@ def test_ctrl_q_queue_warns_when_full(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         for index in range(MAX_PENDING_STEER_MESSAGES + 1):
             pipe.send_text(f"queued {index}\x11")
         time.sleep(0.2)
@@ -1565,7 +1569,7 @@ def test_undelivered_steering_is_rescued_as_follow_up() -> None:
             calls.append(text)
             if len(calls) == 1:
                 first_started.set()
-                deadline = time.monotonic() + 3
+                deadline = time.monotonic() + STATE_TIMEOUT
                 while time.monotonic() < deadline:
                     inbox = steer_inbox_for(self)
                     if inbox is not None and inbox.pending_count():
@@ -1578,10 +1582,10 @@ def test_undelivered_steering_is_rescued_as_follow_up() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("first\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("queued before late steer\x11")
         pipe.send_text("late correction\r")
-        assert third_started.wait(timeout=2)
+        assert third_started.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.1)
         pipe.send_text("/exit\r")
 
@@ -1606,7 +1610,7 @@ def test_escape_rescues_pending_steers_as_ordered_next_turn_prompts() -> None:
             calls.append(text)
             if text == "work":
                 first_started.set()
-                deadline = time.monotonic() + 3
+                deadline = time.monotonic() + STATE_TIMEOUT
                 while time.monotonic() < deadline:
                     if cancellation_token is not None and cancellation_token.is_cancelled:
                         first_cancelled.set()
@@ -1619,13 +1623,13 @@ def test_escape_rescues_pending_steers_as_ordered_next_turn_prompts() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("first pending\r")
         pipe.send_text("second pending\r")
         time.sleep(0.05)
         pipe.send_text("\x1b")
-        assert first_cancelled.wait(timeout=2)
-        assert third_started.wait(timeout=2)
+        assert first_cancelled.wait(timeout=STATE_TIMEOUT)
+        assert third_started.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
@@ -1652,7 +1656,7 @@ def test_escape_without_pending_messages_keeps_plain_interrupt_voice() -> None:
         def run_turn(self, text: str, *, cancellation_token: Any = None) -> int:
             calls.append(text)
             started.set()
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + STATE_TIMEOUT
             while time.monotonic() < deadline:
                 if cancellation_token is not None and cancellation_token.is_cancelled:
                     cancelled.set()
@@ -1662,9 +1666,9 @@ def test_escape_without_pending_messages_keeps_plain_interrupt_voice() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("\x1b")
-        assert cancelled.wait(timeout=2)
+        assert cancelled.wait(timeout=STATE_TIMEOUT)
         time.sleep(0.05)
         pipe.send_text("/exit\r")
 
@@ -1709,7 +1713,7 @@ def test_interrupt_queues_work_until_retiring_worker_fully_unwinds(
                         )
                     )
                     first_cancelled.set()
-                    assert release_first.wait(timeout=3)
+                    assert release_first.wait(timeout=STATE_TIMEOUT)
                 elif text == "second":
                     second_started.set()
                 return 0
@@ -1728,10 +1732,10 @@ def test_interrupt_queues_work_until_retiring_worker_fully_unwinds(
 
     def feed(pipe: Any) -> None:
         pipe.send_text("first\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         # Exercise worker retirement without waiting for Escape prefix resolution.
         pipe.send_text("\x03")
-        assert first_cancelled.wait(timeout=2)
+        assert first_cancelled.wait(timeout=STATE_TIMEOUT)
 
         # Session-replacing commands and ordinary prompts remain accepted by
         # the composer, but neither may touch the session while the cancelled
@@ -1746,8 +1750,8 @@ def test_interrupt_queues_work_until_retiring_worker_fully_unwinds(
         assert not second_started.is_set()
 
         release_first.set()
-        assert model_applied.wait(timeout=2)
-        assert second_started.wait(timeout=2)
+        assert model_applied.wait(timeout=STATE_TIMEOUT)
+        assert second_started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/exit\r")
 
     result, _transcript = _run_live_tui(
@@ -1783,7 +1787,7 @@ def test_tui_teardown_waits_for_worker_before_restoring_turn_permissions(
             )
             cancellation_seen.set()
             assert authority["value"] == "narrow"
-            assert release_worker.wait(timeout=3)
+            assert release_worker.wait(timeout=STATE_TIMEOUT)
             assert authority["value"] == "narrow"
             return 0
 
@@ -1798,10 +1802,10 @@ def test_tui_teardown_waits_for_worker_before_restoring_turn_permissions(
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert first_started.wait(timeout=2)
+        assert first_started.wait(timeout=STATE_TIMEOUT)
         app = captured["application"]
         app.loop.call_soon_threadsafe(lambda: app.exit(result="forced-exit"))
-        assert cancellation_seen.wait(timeout=2)
+        assert cancellation_seen.wait(timeout=STATE_TIMEOUT)
         assert not cleanup_called.is_set()
         assert authority["value"] == "narrow"
         release_worker.set()
@@ -1835,7 +1839,7 @@ def test_interrupt_rescues_messages_and_applies_both_operation_tiers() -> None:
                     rescued_finished.set()
                 return 0
             started.set()
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + STATE_TIMEOUT
             while time.monotonic() < deadline:
                 if cancellation_token is not None and cancellation_token.is_cancelled:
                     cancelled.set()
@@ -1845,7 +1849,7 @@ def test_interrupt_rescues_messages_and_applies_both_operation_tiers() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("steer me\r")
         time.sleep(0.05)
         pipe.send_text("queue me\x11")
@@ -1854,8 +1858,8 @@ def test_interrupt_rescues_messages_and_applies_both_operation_tiers() -> None:
         pipe.send_text("/model next-model\r")
         time.sleep(0.05)
         pipe.send_text("\x03")
-        assert cancelled.wait(timeout=2)
-        assert rescued_finished.wait(timeout=2)
+        assert cancelled.wait(timeout=STATE_TIMEOUT)
+        assert rescued_finished.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/exit\r")
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1908,7 +1912,7 @@ def test_full_step_inbox_falls_back_to_turn_end_without_dropping_command() -> No
         def run_turn(self, text: str, *, cancellation_token: Any = None) -> int:
             _ = text, cancellation_token
             started.set()
-            assert release.wait(timeout=10)
+            assert release.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1933,13 +1937,13 @@ def test_full_step_inbox_falls_back_to_turn_end_without_dropping_command() -> No
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         for index in range(MAX_PENDING_OPS + 1):
             pipe.send_text(f"/step {index}\r")
         # Keep the turn running until the UI has received the overflowing command.
         # A fixed sleep lets a loaded runner finish the turn with a partial inbox.
         try:
-            assert all_commands_resolved.wait(timeout=5)
+            assert all_commands_resolved.wait(timeout=STATE_TIMEOUT)
         finally:
             release.set()
         assert _wait_until(lambda: bool(fallback_commands))
@@ -1972,7 +1976,7 @@ def test_failing_idle_step_operation_is_dropped_and_tui_stays_alive() -> None:
         def run_turn(self, text: str, *, cancellation_token: Any = None) -> int:
             _ = text, cancellation_token
             started.set()
-            assert release.wait(timeout=3)
+            assert release.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def command_runner(_session: Any, text: str, _width: int) -> tuple[Any, ...]:
@@ -1990,7 +1994,7 @@ def test_failing_idle_step_operation_is_dropped_and_tui_stays_alive() -> None:
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("/step fail\r")
         time.sleep(0.05)
         release.set()
@@ -2037,7 +2041,7 @@ def test_tab_stages_and_advances_persona_mid_turn_while_shift_tab_stays_live() -
         def run_turn(self, text: str, *, cancellation_token: Any = None) -> int:
             _ = text, cancellation_token
             started.set()
-            assert release.wait(timeout=3)
+            assert release.wait(timeout=STATE_TIMEOUT)
             return 0
 
     def persona_cycle() -> list[tuple[str, str]]:
@@ -2063,7 +2067,7 @@ def test_tab_stages_and_advances_persona_mid_turn_while_shift_tab_stays_live() -
 
     def feed(pipe: Any) -> None:
         pipe.send_text("work\r")
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=STATE_TIMEOUT)
         pipe.send_text("\t")
         time.sleep(0.05)
         pipe.send_text("\t")
@@ -2071,7 +2075,7 @@ def test_tab_stages_and_advances_persona_mid_turn_while_shift_tab_stays_live() -
         pipe.send_text("\x1b[Z")
         time.sleep(0.05)
         release.set()
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + STATE_TIMEOUT
         while time.monotonic() < deadline and not applied_personas:
             time.sleep(0.01)
         pipe.send_text("/exit\r")
@@ -2098,7 +2102,7 @@ def test_tab_stages_and_advances_persona_mid_turn_while_shift_tab_stays_live() -
             mode_cycle=mode_cycle,
             background_turns=True,
         )
-        feeder.join(timeout=2)
+        feeder.join(timeout=STATE_TIMEOUT)
 
     assert result == "/exit"
     assert not feeder.is_alive()
