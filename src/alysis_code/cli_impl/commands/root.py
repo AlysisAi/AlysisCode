@@ -1343,17 +1343,105 @@ def project_avatar(
     _console().print("\n".join(item["pixels"]), markup=False, highlight=False)
 
 
+@app.command("limit-reset")
+def limit_reset(
+    use: str | None = typer.Option(
+        None, "--use", help="Use this reset now (its id from the list). This can't be undone."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Use the reset without asking first."),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
+) -> None:
+    """List the weekly resets your account was given, or use one now.
+
+    A weekly reset refills your weekly and 5-hour limits at once. Your credits and your
+    plan's regular schedule don't change.
+    """
+    from ... import account_login
+
+    def fail(reason: str, message: str) -> None:
+        if json_output is True:
+            typer.echo(
+                json.dumps({"ok": False, "error": reason, "detail": message}, sort_keys=True)
+            )
+        else:
+            _console().print(f"[red]{message}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+
+    def listed(resets: tuple[account_login.LimitReset, ...]) -> list[dict[str, Any]]:
+        return [
+            {"id": r.id, "kind": r.kind, "label": r.label, "expires_at": r.expires_at}
+            for r in resets
+        ]
+
+    refills = "Your weekly and 5-hour limits go back to full now."
+
+    try:
+        if use is None:
+            resets = account_login.list_limit_resets()
+            if json_output is True:
+                typer.echo(json.dumps({"ok": True, "resets": listed(resets)}, sort_keys=True))
+                return
+            console = _console()
+            if not resets:
+                console.print("You have no limit resets right now.")
+                return
+            for r in resets:
+                label = f" · {r.label}" if r.label else ""
+                console.print(
+                    f"Weekly reset · use by {r.expires_at}{label}\n  {r.id}",
+                    markup=False,
+                    highlight=False,
+                )
+            console.print("Use one with: alysis limit-reset --use <id>", markup=False)
+            return
+        if json_output is not True and yes is not True:
+            chosen = next(
+                (r for r in account_login.list_limit_resets() if r.id == use.strip().lower()), None
+            )
+            if chosen is None:
+                fail("unavailable", "This reset isn't available for your account.")
+                return
+            if not typer.confirm(
+                f"{refills} Your credits don't change and this can't be undone. Use it?",
+                default=False,
+            ):
+                raise typer.Exit(code=1)
+        result = account_login.use_limit_reset(use)
+    except account_login.LimitResetError as exc:
+        fail(exc.reason, str(exc))
+        return
+    if json_output is True:
+        typer.echo(
+            json.dumps(
+                {
+                    "ok": True,
+                    "kind": result.kind,
+                    "used_at": result.used_at,
+                    "resets": listed(result.resets),
+                },
+                sort_keys=True,
+            )
+        )
+        return
+    _console().print(f"[green]{refills}[/green]", highlight=False)
+
+
 @app.command()
 def upgrade(
-    plan: str = typer.Argument("plan_5", help="Plan to move to (plan_5 or plan_1)."),
+    plan: str = typer.Argument(
+        "plan_5", help="Plan to review: beta (plan_1), alpha (plan_5), or pro (plan_15)."
+    ),
 ) -> None:
     """Open your Alysis account page to subscribe or change plan."""
     import webbrowser
 
     from ... import account_login
 
-    if plan not in ("plan_1", "plan_5"):
-        raise typer.BadParameter("Choose plan_1 or plan_5.")
+    plan = {"beta": "plan_1", "alpha": "plan_5", "pro": "plan_15"}.get(
+        plan.strip().lower(), plan.strip().lower()
+    )
+    if plan not in ("plan_1", "plan_5", "plan_15"):
+        raise typer.BadParameter("Choose beta (plan_1), alpha (plan_5), or pro (plan_15).")
     url = f"{account_login.cloud.account_url()}?upgrade={plan}"
     console = _console()
     opened = False

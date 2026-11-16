@@ -1,0 +1,366 @@
+{
+  "plan": "plan_15",
+  "cloud": {
+    "max_bots": null,
+    "charging_status": "pending",
+    "included_credits": 200,
+    "separate_balance": true
+  },
+  "models": [
+    {
+      "model": "glm-5.3-flash",
+      "available": true,
+      "multiplier": 1.2,
+      "price_tier": "economy",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 3.3333333333333335,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 180000,
+        "output": 600000,
+        "cache_write": 0,
+        "cached_input": 36000
+      },
+      "usage_allowance_microusd": 50000000,
+      "credit_conversion_multiplier": 1.2
+    },
+    {
+      "model": "gpt-6-luna",
+      "available": true,
+      "multiplier": 1.5,
+      "price_tier": "economy",
+      "long_context": {
+        "input_factor": 2,
+        "output_factor": 1.5,
+        "above_input_tokens": 272000
+      },
+      "max_input_tokens": 272000,
+      "shared_allowance": true,
+      "value_multiplier": 2.6666666666666665,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 150000,
+        "output": 750000,
+        "cache_write": 187500,
+        "cached_input": 15000
+      },
+      "usage_allowance_microusd": 40000000,
+      "credit_conversion_multiplier": 1.5
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "available": true,
+      "multiplier": 1.5,
+      "price_tier": "economy",
+      "long_context": {
+        "input_factor": 5,
+        "output_factor": 5,
+        "above_input_tokens": 100000
+      },
+      "max_input_tokens": 100000,
+      "shared_allowance": true,
+      "value_multiplier": 2.6666666666666665,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 150000,
+        "output": 750000,
+        "cache_write": 187500,
+        "cached_input": 15000
+      },
+      "usage_allowance_microusd": 40000000,
+      "credit_conversion_multiplier": 1.5
+    },
+    {
+      "model": "deepseek-v4.1-flash",
+      "available": true,
+      "multiplier": 1.2,
+      "price_tier": "economy",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 3.3333333333333335,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 360000,
+        "output": 1440000,
+        "cache_write": 0,
+        "cached_input": 7200
+      },
+      "usage_allowance_microusd": 50000000,
+      "credit_conversion_multiplier": 1.2
+    },
+    {
+      "model": "minimax-m3.1-flash",
+      "available": true,
+      "multiplier": 1.2,
+      "price_tier": "economy",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 3.3333333333333335,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 180000,
+        "output": 720000,
+        "cache_write": 0,
+        "cached_input": 18000
+      },
+      "usage_allowance_microusd": 50000000,
+      "credit_conversion_multiplier": 1.2
+    },
+    {
+      "model": "gpt-6.1-terra",
+      "available": true,
+      "multiplier": 2,
+      "price_tier": "standard",
+      "long_context": {
+        "input_factor": 2,
+        "output_factor": 1.5,
+        "above_input_tokens": 272000
+      },
+      "max_input_tokens": 272000,
+      "shared_allowance": true,
+      "value_multiplier": 2,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 2000000,
+        "output": 10000000,
+        "cache_write": 2500000,
+        "cached_input": 100000
+      },
+      "usage_allowance_microusd": 30000000,
+      "credit_conversion_multiplier": 2
+    },
+    {
+      "model": "kimi-k3",
+      "available": true,
+      "multiplier": 2,
+      "price_tier": "standard",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 2,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 6000000,
+        "output": 30000000,
+        "cache_write": 0,
+        "cached_input": 600000
+      },
+      "usage_allowance_microusd": 30000000,
+      "credit_conversion_multiplier": 2
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "available": true,
+      "multiplier": 2,
+      "price_tier": "standard",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 2,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 2640000,
+        "output": 7920000,
+        "cache_write": 0,
+        "cached_input": 260000
+      },
+      "usage_allowance_microusd": 30000000,
+      "credit_conversion_multiplier": 2
+    },
+    {
+      "model": "mistral-large-4",
+      "available": true,
+      "multiplier": 2,
+      "price_tier": "standard",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 2,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 1400000,
+        "output": 4200000,
+        "cache_write": 0,
+        "cached_input": 140000
+      },
+      "usage_allowance_microusd": 30000000,
+      "credit_conversion_multiplier": 2
+    },
+    {
+      "model": "glm-5.3",
+      "available": true,
+      "multiplier": 2,
+      "price_tier": "standard",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 2,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 2800000,
+        "output": 8800000,
+        "cache_write": 0,
+        "cached_input": 520000
+      },
+      "usage_allowance_microusd": 30000000,
+      "credit_conversion_multiplier": 2
+    },
+    {
+      "model": "gemini-4-carbon",
+      "available": false,
+      "multiplier": 2.4,
+      "price_tier": "premium",
+      "long_context": null,
+      "max_input_tokens": 1000000,
+      "shared_allowance": true,
+      "value_multiplier": 1.6666666666666667,
+      "availability_reason": "Hosted access is not available yet.",
+      "availability_status": "pending",
+      "microusd_per_million": {
+        "input": 4800000,
+        "output": 24000000,
+        "cache_write": 0,
+        "cached_input": 240000
+      },
+      "usage_allowance_microusd": 25000000,
+      "credit_conversion_multiplier": 2.4
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "available": true,
+      "multiplier": 2.4,
+      "price_tier": "premium",
+      "long_context": {
+        "input_factor": 2,
+        "output_factor": 1.5,
+        "above_input_tokens": 272000
+      },
+      "max_input_tokens": 272000,
+      "shared_allowance": true,
+      "value_multiplier": 1.6666666666666667,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 4800000,
+        "output": 24000000,
+        "cache_write": 6000000,
+        "cached_input": 240000
+      },
+      "usage_allowance_microusd": 25000000,
+      "credit_conversion_multiplier": 2.4
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "available": true,
+      "multiplier": 2.4,
+      "price_tier": "premium",
+      "long_context": null,
+      "max_input_tokens": 999999,
+      "shared_allowance": true,
+      "value_multiplier": 1.6666666666666667,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 4800000,
+        "output": 24000000,
+        "cache_write": 6000000,
+        "cached_input": 240000
+      },
+      "usage_allowance_microusd": 25000000,
+      "credit_conversion_multiplier": 2.4
+    },
+    {
+      "model": "kimi-k3.1-pro",
+      "available": false,
+      "multiplier": 2,
+      "price_tier": "standard",
+      "long_context": null,
+      "max_input_tokens": 1000000,
+      "shared_allowance": true,
+      "value_multiplier": 2,
+      "availability_reason": "Hosted access is not available yet.",
+      "availability_status": "pending",
+      "microusd_per_million": {
+        "input": 4000000,
+        "output": 20000000,
+        "cache_write": 0,
+        "cached_input": 400000
+      },
+      "usage_allowance_microusd": 30000000,
+      "credit_conversion_multiplier": 2
+    },
+    {
+      "model": "reflection-beam",
+      "available": true,
+      "multiplier": 1.5,
+      "price_tier": "economy",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 2.6666666666666665,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 600000,
+        "output": 1800000,
+        "cache_write": 0,
+        "cached_input": 60000
+      },
+      "usage_allowance_microusd": 40000000,
+      "credit_conversion_multiplier": 1.5
+    },
+    {
+      "model": "nemotron-3.5-super-vl",
+      "available": true,
+      "multiplier": 1.5,
+      "price_tier": "economy",
+      "long_context": null,
+      "max_input_tokens": null,
+      "shared_allowance": true,
+      "value_multiplier": 2.6666666666666665,
+      "availability_reason": null,
+      "availability_status": "available",
+      "microusd_per_million": {
+        "input": 225000,
+        "output": 750000,
+        "cache_write": 0,
+        "cached_input": 30000
+      },
+      "usage_allowance_microusd": 40000000,
+      "credit_conversion_multiplier": 1.5
+    }
+  ],
+  "plan_name": "Pro",
+  "upgrade_to": null,
+  "limits_version": "rolling-20-40-v1",
+  "cap_5h_microusd": 12000000,
+  "cap_7d_microusd": 24000000,
+  "price_eur_cents": 1500,
+  "price_usd_cents": 1500,
+  "pricing_version": "value_v1",
+  "burn_7d_microusd": 0,
+  "cap_day_microusd": null,
+  "max_output_tokens": 32000,
+  "credit_period_days": 30,
+  "credit_unit_version": "paid-base-display-v1",
+  "max_usage_value_microusd": 50000000,
+  "monthly_credits_microusd": 60000000,
+  "premium_day_limit_microusd": null,
+  "premium_month_limit_microusd": null,
+  "base_monthly_credits_microusd": 15000000,
+  "ledger_microusd_per_base_credit": 40000
+}

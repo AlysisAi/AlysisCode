@@ -411,6 +411,18 @@ def test_only_validated_release_workflow_can_publish_python_distribution() -> No
 
     assert 'tags:\n      - "v*"' in release
     assert "Validate tag matches package version" in release
+    jobs = yaml.safe_load(release)["jobs"]
+    validation = jobs["validate-release-source"]
+    completed_ci = next(step for step in validation["steps"] if step.get("id") == "completed-ci")
+    assert "if" not in completed_ci  # Tags and manual recovery both require completed CI.
+    assert "--github-output" in completed_ci["run"]
+    assert validation["outputs"]["ci_run_id"] == "${{ steps.completed-ci.outputs.run_id }}"
+    assert "validate-release-source" in jobs["build"]["needs"]
+    assert "reliability-qualification" in jobs["build"]["needs"]
+    assert (
+        jobs["build"]["env"]["CI_RUN_ID"]
+        == "${{ needs.validate-release-source.outputs.ci_run_id }}"
+    )
     assert "EXPECTED_REPOSITORY: AlysisAi/AlysisCode" in release
     assert 'test "$REPOSITORY_PRIVATE" = "false"' in release
     assert 'test "$REPOSITORY_VISIBILITY" = "public"' in release

@@ -86,12 +86,20 @@ def test_fat12_refuses_oversized_seeds():
         disk_formats.fat12_volume({"user-data": b"x" * 2_000_000})
 
 
-def test_linux_root_reads_the_gpt():
+@pytest.mark.parametrize(
+    "partition_type",
+    [
+        "0fc63daf-8483-4772-8e79-3d69d8477de4",  # generic Linux filesystem
+        "4f68bce3-e8cd-4db1-96e7-fbcaf984b709",  # Windows recipe's x64 root
+        "b921b045-1df0-41c3-af44-4c6f280d3fae",  # Mac recipe's ARM64 root
+    ],
+)
+def test_linux_root_reads_the_gpt(partition_type):
     disk = bytearray(64 * 512)
     struct.pack_into("<8s", disk, 512, b"EFI PART")
     struct.pack_into("<QII", disk, 512 + 72, 2, 4, 128)
     esp = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
-    linux = uuid.UUID("0fc63daf-8483-4772-8e79-3d69d8477de4")
+    linux = uuid.UUID(partition_type)
     unique = uuid.uuid4()
     disk[1024 : 1024 + 16] = esp.bytes_le
     struct.pack_into("<QQ", disk, 1024 + 32, 34, 40)

@@ -883,7 +883,7 @@ class ManagedBrowserService:
                 "Target.createTarget",
                 {
                     "url": "about:blank",
-                    "newWindow": False,
+                    "newWindow": self._config.linux_display is not None,
                     "background": self._config.linux_display is None,
                 },
                 timeout=self._config.operation_timeout_seconds,
@@ -916,6 +916,30 @@ class ManagedBrowserService:
             if not egress_proxy.healthy:
                 raise BrowserLaunchError(
                     "The managed browser egress proxy stopped during session startup."
+                )
+            if self._config.linux_display is not None:
+                # A person can navigate or open windows before the first model
+                # operation. Install page tracking and interception before the
+                # visible browser is handed to the desktop.
+                def authorize_initial_page(candidate: str) -> str:
+                    if candidate == "about:blank":
+                        return candidate
+                    return validate_browser_url(
+                        candidate,
+                        allow_local_destinations=bool(allow_local_destinations),
+                        local_destinations_loopback_only=bool(local_destinations_loopback_only),
+                        resolver=self._resolver,
+                        resolution_timeout=self._config.dns_timeout_seconds,
+                        owned_preview_origin_allowed=owned_preview_origin_allowed,
+                    )
+
+                transport.guarded_navigate(
+                    "about:blank",
+                    session_id=cdp_session_id,
+                    authorize_url=authorize_initial_page,
+                    timeout=self._config.operation_timeout_seconds,
+                    cancel=cancel,
+                    root_target_id=target_id,
                 )
             session = _BrowserSession(
                 session_id=session_id,
@@ -3250,7 +3274,9 @@ def _browser_arguments(
         "--metrics-recording-only",
         "--password-store=basic",
         "--disable-features=Translate,MediaRouter,OptimizationHints",
-        "about:blank",
+        # The owned target is created over CDP. Do not leave an extra visible
+        # startup tab outside the managed page inventory.
+        "--no-startup-window" if visible else "about:blank",
     )
 
 

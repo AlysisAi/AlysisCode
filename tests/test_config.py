@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 
 import pytest
@@ -1011,56 +1012,73 @@ def test_set_inflight_deadline_grace_accepts_zero_and_rejects_invalid_values() -
             set_config_value(AppConfig(), key, value)
 
 
-def test_stream_defaults_on() -> None:
-    assert AppConfig().stream is True
+class TestScalarConfigSettings(unittest.TestCase):
+    def test_defaults_updates_and_invalid_values(self) -> None:
+        defaults = {
+            "stream": True,
+            "subagents_enabled": True,
+            "skills_enabled": True,
+            "skills_auto_invoke": True,
+            "bundled_skills_enabled": True,
+            "custom_tools_enabled": True,
+            "integration_verify_mode": "warn",
+        }
+        cfg = AppConfig()
+        for key, expected in defaults.items():
+            with self.subTest(setting=key, phase="default"):
+                actual = getattr(cfg, key)
+                self.assertEqual(actual, expected)
+                self.assertIs(type(actual), type(expected))
 
-
-def test_set_stream_value_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "stream", "true")
-    assert cfg.stream is True
-    cfg = set_config_value(cfg, "stream", "false")
-    assert cfg.stream is False
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "stream", "maybe")
-
-
-def test_set_default_mode_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "default_mode", "review")
-    assert cfg.default_mode == "review"
-    cfg = set_config_value(cfg, "default_mode", "auto")
-    assert cfg.default_mode == "auto"
-    cfg = set_config_value(cfg, "default_mode", "readonly")
-    assert cfg.default_mode == "readonly"
-    cfg = set_config_value(cfg, "default_mode", "fullaccess")
-    assert cfg.default_mode == "fullaccess"
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "default_mode", "safe")
-
-
-def test_set_routing_mode_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "routing_mode", "auto")
-    assert cfg.routing_mode == "auto"
-    cfg = set_config_value(cfg, "routing_mode", "code_only")
-    assert cfg.routing_mode == "code_only"
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "routing_mode", "maybe")
-
-
-def test_set_step_budget_policy_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "step_budget_policy", "fixed")
-    assert cfg.step_budget_policy == "limited"
-    cfg = set_config_value(cfg, "step_budget_policy", "adaptive")
-    assert cfg.step_budget_policy == "autonomous"
-    cfg = set_config_value(cfg, "step_budget_policy", "limited")
-    assert cfg.step_budget_policy == "limited"
-    cfg = set_config_value(cfg, "step_budget_policy", "autonomous")
-    assert cfg.step_budget_policy == "autonomous"
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "step_budget_policy", "maybe")
+        cases = (
+            ("stream", (("true", True), ("false", False)), ("maybe",)),
+            (
+                "default_mode",
+                (
+                    ("review", "review"),
+                    ("auto", "auto"),
+                    ("readonly", "readonly"),
+                    ("fullaccess", "fullaccess"),
+                ),
+                ("safe",),
+            ),
+            ("routing_mode", (("auto", "auto"), ("code_only", "code_only")), ("maybe",)),
+            (
+                "step_budget_policy",
+                (
+                    ("fixed", "limited"),
+                    ("adaptive", "autonomous"),
+                    ("limited", "limited"),
+                    ("autonomous", "autonomous"),
+                ),
+                ("maybe",),
+            ),
+            ("subagents_enabled", (("true", True), ("off", False)), ("maybe",)),
+            ("skills_enabled", (("false", False),), ("maybe",)),
+            ("skills_auto_invoke", (("on", True),), ("maybe",)),
+            ("bundled_skills_enabled", (("off", False),), ("maybe",)),
+            ("custom_tools_enabled", (("false", False), ("on", True)), ("maybe",)),
+            ("integration_verify_mode", (("strict", "strict"), ("off", "off")), ("maybe",)),
+            ("llm_timeout_s", (("12.5", 12.5),), ("0", "not-a-number")),
+            ("llm_enable_thinking", (("false", False), ("true", True), ("auto", None)), ("maybe",)),
+            (
+                "llm_reasoning_effort",
+                (("minimal", "minimal"), ("xhigh", "xhigh"), ("auto", None)),
+                ("extreme",),
+            ),
+            ("model_metadata_policy", (("strict", "strict"), ("warn", "warn")), ("maybe",)),
+        )
+        for key, updates, invalid_values in cases:
+            cfg = AppConfig()
+            for raw, expected in updates:
+                with self.subTest(setting=key, value=raw):
+                    cfg = set_config_value(cfg, key, raw)
+                    actual = getattr(cfg, key)
+                    self.assertEqual(actual, expected)
+                    self.assertIs(type(actual), type(expected))
+            for raw in invalid_values:
+                with self.subTest(setting=key, invalid=raw), self.assertRaises(ConfigError):
+                    set_config_value(cfg, key, raw)
 
 
 def test_set_task_and_subagent_max_steps_validation() -> None:
@@ -1073,40 +1091,6 @@ def test_set_task_and_subagent_max_steps_validation() -> None:
         set_config_value(cfg, "task_max_steps", "0")
     with pytest.raises(ConfigError):
         set_config_value(cfg, "subagent_max_steps", "-1")
-
-
-def test_set_subagents_enabled_validation() -> None:
-    cfg = AppConfig()
-    assert cfg.subagents_enabled is True
-
-    cfg = set_config_value(cfg, "subagents_enabled", "true")
-    assert cfg.subagents_enabled is True
-    cfg = set_config_value(cfg, "subagents_enabled", "off")
-    assert cfg.subagents_enabled is False
-
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "subagents_enabled", "maybe")
-
-
-def test_set_skills_flags_validation() -> None:
-    cfg = AppConfig()
-    assert cfg.skills_enabled is True
-    assert cfg.skills_auto_invoke is True
-    assert cfg.bundled_skills_enabled is True
-
-    cfg = set_config_value(cfg, "skills_enabled", "false")
-    assert cfg.skills_enabled is False
-    cfg = set_config_value(cfg, "skills_auto_invoke", "on")
-    assert cfg.skills_auto_invoke is True
-    cfg = set_config_value(cfg, "bundled_skills_enabled", "off")
-    assert cfg.bundled_skills_enabled is False
-
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "skills_enabled", "maybe")
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "skills_auto_invoke", "maybe")
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "bundled_skills_enabled", "maybe")
 
 
 def test_load_config_defaults_missing_skills_auto_invoke_to_true_and_preserves_false(
@@ -1125,19 +1109,6 @@ def test_load_config_defaults_missing_skills_auto_invoke_to_true_and_preserves_f
         encoding="utf-8",
     )
     assert load_config().skills_auto_invoke is False
-
-
-def test_set_custom_tools_enabled_validation() -> None:
-    cfg = AppConfig()
-    assert cfg.custom_tools_enabled is True
-
-    cfg = set_config_value(cfg, "custom_tools_enabled", "false")
-    assert cfg.custom_tools_enabled is False
-    cfg = set_config_value(cfg, "custom_tools_enabled", "on")
-    assert cfg.custom_tools_enabled is True
-
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "custom_tools_enabled", "maybe")
 
 
 def test_set_assets_config_validation() -> None:
@@ -1574,54 +1545,6 @@ def test_generic_configured_verify_preset_classifier_is_conservative() -> None:
     assert is_generic_configured_verify_preset(["go test ./..."]) is False
 
 
-def test_default_integration_verify_mode_is_warn() -> None:
-    assert AppConfig().integration_verify_mode == "warn"
-
-
-def test_set_integration_verify_mode_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "integration_verify_mode", "strict")
-    assert cfg.integration_verify_mode == "strict"
-    cfg = set_config_value(cfg, "integration_verify_mode", "off")
-    assert cfg.integration_verify_mode == "off"
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "integration_verify_mode", "maybe")
-
-
-def test_set_llm_timeout_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "llm_timeout_s", "12.5")
-    assert cfg.llm_timeout_s == 12.5
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "llm_timeout_s", "0")
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "llm_timeout_s", "not-a-number")
-
-
-def test_set_llm_enable_thinking_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "llm_enable_thinking", "false")
-    assert cfg.llm_enable_thinking is False
-    cfg = set_config_value(cfg, "llm_enable_thinking", "true")
-    assert cfg.llm_enable_thinking is True
-    cfg = set_config_value(cfg, "llm_enable_thinking", "auto")
-    assert cfg.llm_enable_thinking is None
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "llm_enable_thinking", "maybe")
-
-
-def test_set_llm_reasoning_effort_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "llm_reasoning_effort", "minimal")
-    assert cfg.llm_reasoning_effort == "minimal"
-    cfg = set_config_value(cfg, "llm_reasoning_effort", "xhigh")
-    assert cfg.llm_reasoning_effort == "xhigh"
-    cfg = set_config_value(cfg, "llm_reasoning_effort", "auto")
-    assert cfg.llm_reasoning_effort is None
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "llm_reasoning_effort", "extreme")
-
-
 def test_set_feedback_github_settings_validation() -> None:
     cfg = AppConfig()
     cfg = set_config_value(cfg, "feedback_github_enabled", "false")
@@ -1719,16 +1642,6 @@ def test_resolve_llm_reasoning_effort_prefers_env_config_then_legacy_hint(
     monkeypatch.setenv("ALYSIS_LLM_REASONING_EFFORT", "extreme")
     with pytest.raises(ConfigError):
         resolve_llm_reasoning_effort(cfg)
-
-
-def test_set_model_metadata_policy_validation() -> None:
-    cfg = AppConfig()
-    cfg = set_config_value(cfg, "model_metadata_policy", "strict")
-    assert cfg.model_metadata_policy == "strict"
-    cfg = set_config_value(cfg, "model_metadata_policy", "warn")
-    assert cfg.model_metadata_policy == "warn"
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "model_metadata_policy", "maybe")
 
 
 def test_set_toolbar_items_validation() -> None:
@@ -1881,19 +1794,10 @@ def test_load_config_maps_legacy_web_search_mode_on_to_auto(
     assert saved["web_search_mode"] == "auto"
 
 
-def test_resolve_llm_timeout_defaults_to_sixty_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_llm_timeout_defaults_and_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ALYSIS_LLM_TIMEOUT_S", raising=False)
     assert resolve_llm_timeout_s(AppConfig()) == 60.0
-
-
-def test_resolve_llm_timeout_prefers_config_when_env_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ALYSIS_LLM_TIMEOUT_S", raising=False)
     assert resolve_llm_timeout_s(AppConfig(llm_timeout_s=17.5)) == 17.5
-
-
-def test_resolve_llm_timeout_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALYSIS_LLM_TIMEOUT_S", "42.0")
     assert resolve_llm_timeout_s(AppConfig(llm_timeout_s=17.5)) == 42.0
 
@@ -1994,30 +1898,15 @@ def test_resolve_feedback_github_settings_use_config_and_env(
     assert resolve_feedback_open_browser(cfg) is True
 
 
-def test_resolve_model_metadata_policy_defaults_to_warn(
+def test_resolve_model_metadata_policy_defaults_precedence_and_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ALYSIS_MODEL_METADATA_POLICY", raising=False)
     assert resolve_model_metadata_policy(AppConfig()) == "warn"
-
-
-def test_resolve_model_metadata_policy_prefers_config_when_env_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ALYSIS_MODEL_METADATA_POLICY", raising=False)
     assert resolve_model_metadata_policy(AppConfig(model_metadata_policy="strict")) == "strict"
-
-
-def test_resolve_model_metadata_policy_env_override_wins(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     monkeypatch.setenv("ALYSIS_MODEL_METADATA_POLICY", "strict")
     assert resolve_model_metadata_policy(AppConfig(model_metadata_policy="warn")) == "strict"
 
-
-def test_resolve_model_metadata_policy_rejects_invalid_values(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     monkeypatch.delenv("ALYSIS_MODEL_METADATA_POLICY", raising=False)
     with pytest.raises(ConfigError):
         resolve_model_metadata_policy(AppConfig(model_metadata_policy="maybe"))

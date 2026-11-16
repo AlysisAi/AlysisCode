@@ -32,7 +32,7 @@ def test_sandbox_mode_from_config_defaults_to_strict() -> None:
     assert sandbox_mode_from_config(AppConfig(model="m")) == "strict"
 
 
-def test_apply_sandbox_mode_writes_both_sections() -> None:
+def test_apply_sandbox_mode_updates_both_sections_and_runtime_resolution() -> None:
     cfg = AppConfig(model="m")
     apply_sandbox_mode_to_config(cfg, "off")
     # Both gates must be written together; the verify gate resolves its mode
@@ -40,6 +40,8 @@ def test_apply_sandbox_mode_writes_both_sections() -> None:
     assert cfg.extra_fields["shell_sandbox"]["mode"] == "off"
     assert cfg.extra_fields["verify_sandbox"]["mode"] == "off"
     assert sandbox_mode_from_config(cfg) == "off"
+    assert resolve_shell_sandbox_settings(cfg).mode == "off"
+    assert resolve_verify_sandbox_mode(cfg) == "off"
 
 
 def test_apply_sandbox_mode_preserves_other_shell_sandbox_keys() -> None:
@@ -49,13 +51,6 @@ def test_apply_sandbox_mode_preserves_other_shell_sandbox_keys() -> None:
     assert cfg.extra_fields["shell_sandbox"]["backend"] == "docker"
     assert cfg.extra_fields["shell_sandbox"]["mode"] == "warn"
     assert cfg.extra_fields["verify_sandbox"]["mode"] == "warn"
-
-
-def test_apply_sandbox_mode_drives_runtime_resolution() -> None:
-    cfg = AppConfig(model="m")
-    apply_sandbox_mode_to_config(cfg, "off")
-    assert resolve_shell_sandbox_settings(cfg).mode == "off"
-    assert resolve_verify_sandbox_mode(cfg) == "off"
 
 
 def test_apply_sandbox_mode_normalizes_invalid_input() -> None:

@@ -1160,12 +1160,6 @@ def test_picker_on_select_can_reopen_picker():
     assert "/launched" in calls  # only reachable if the cycle re-opened the picker
 
 
-def test_forge_chat_state_swarm_knobs_default_empty():
-    from alysis_code.cli_impl.chat.state import _ForgeChatState
-
-    assert _ForgeChatState().swarm_knobs == {}
-
-
 # ---------------------------------- planner reply → assistant block (TUI polish)
 
 

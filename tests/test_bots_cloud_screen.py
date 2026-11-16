@@ -82,3 +82,39 @@ def test_rebinding_the_same_bound_capture_preserves_only_that_screen(screen_root
     finally:
         release.set()
         server.close()
+
+
+def test_live_display_uses_independent_read_only_channel_and_revokes(screen_root):
+    session = uuid4().hex
+    server = worker.ScreenServer(session)
+    entered, finish = threading.Event(), threading.Event()
+
+    class Display:
+        def rfb(self, args):
+            assert args == {"fixture": True}
+            entered.set()
+            assert finish.wait(2)
+            return {"data": "live bytes"}
+
+    display = Display()
+    request = {
+        "id": uuid4().hex,
+        "session": session,
+        "operation": "rfb",
+        "arguments": {"fixture": True},
+    }
+    server.bind_live(display.rfb)
+    try:
+        # No control.sock exists. A stream must use the independent read channel.
+        with ThreadPoolExecutor() as pool:
+            pending = pool.submit(worker.exchange, session, request)
+            assert entered.wait(1)
+            server.bind_live(display.rfb)
+            finish.set()
+            assert pending.result(2)["result"] == {"data": "live bytes"}
+        server.bind_live(None)
+        assert "error" in worker.exchange(session, request)
+        assert "error" in worker.exchange(session, {**request, "session": uuid4().hex})
+    finally:
+        finish.set()
+        server.close()

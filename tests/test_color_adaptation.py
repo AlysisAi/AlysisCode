@@ -89,7 +89,7 @@ def test_detect_terminal_theme_respects_alysis_theme_override(monkeypatch) -> No
     assert detect_terminal_theme(stream=_Pipe()) == "light"
 
 
-def test_detect_terminal_theme_fallback_is_neutral(monkeypatch) -> None:
+def test_unknown_terminal_theme_uses_neutral_fallback_without_guessing(monkeypatch) -> None:
     for env_name in (
         "ALYSIS_THEME",
         "OWL_THEME",
@@ -106,23 +106,6 @@ def test_detect_terminal_theme_fallback_is_neutral(monkeypatch) -> None:
     monkeypatch.setattr(theme_mod, "_windows_terminal_settings_paths", lambda: [])
 
     assert detect_terminal_theme(stream=_Pipe()) == "neutral"
-
-
-def test_detect_terminal_theme_if_available_does_not_guess(monkeypatch) -> None:
-    for env_name in (
-        "ALYSIS_THEME",
-        "OWL_THEME",
-        "COLORFGBG",
-        "WT_SESSION",
-        "TERM_PROGRAM",
-        "ALYSIS_WINDOWS_TERMINAL_SETTINGS",
-        "ALYSIS_FALLBACK_THEME",
-        "OWL_FALLBACK_THEME",
-    ):
-        monkeypatch.delenv(env_name, raising=False)
-    monkeypatch.setattr(theme_mod, "_theme_from_osc11", lambda _stream: None)
-    monkeypatch.setattr(theme_mod, "_windows_terminal_settings_paths", lambda: [])
-
     assert detect_terminal_theme_if_available(stream=_Pipe()) is None
 
 

@@ -937,6 +937,7 @@ def test_linux_close_retries_browser_cleanup_and_attempts_all_owned_processes():
 
     # Constructor process launch is outside this provider-free lifecycle unit.
     computer = object.__new__(LinuxBrowserComputer)
+    computer._shared_display = False
     computer._closed = False
     computer._cleaned = False
     computer.browser = Browser()
@@ -960,8 +961,12 @@ def test_browser_bar_button_opens_a_window_of_the_managed_browser_only(tmp_path)
     class Browser:
         def __init__(self):
             self.opened = []
+            self.calls = 0
 
         def open_window(self, owner, session_id):
+            self.calls += 1
+            if self.calls == 1:
+                return False  # Another admitted operation holds the browser lock.
             self.opened.append((owner, session_id))
             return True
 
@@ -974,6 +979,7 @@ def test_browser_bar_button_opens_a_window_of_the_managed_browser_only(tmp_path)
             return 1  # the bar crashed; the computer is still alive
 
     computer = object.__new__(LinuxBrowserComputer)
+    computer._shared_display = False
     computer.owner, computer.session_id = "bot-a", "session-1"
     computer.browser = Browser()
     computer._closed = computer._cleaned = False
@@ -988,6 +994,7 @@ def test_browser_bar_button_opens_a_window_of_the_managed_browser_only(tmp_path)
     while not computer.browser.opened and time.monotonic() < deadline:
         time.sleep(0.05)
     assert computer.browser.opened == [("bot-a", "session-1")]
+    assert computer.browser.calls == 2
     assert not computer._open_request.exists()
     computer.browser.close_all = lambda: None
     computer.close()

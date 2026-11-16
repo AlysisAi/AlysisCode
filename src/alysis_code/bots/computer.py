@@ -69,6 +69,8 @@ class _View:
     checkpoint: Callable[[str], None] | None = None
     input_ready: Callable[[], bool] | None = None
     prepare_input: Callable[[], None] | None = None
+    surfaces: tuple[str, ...] = ()
+    rfb: Callable[[dict], dict] | None = None
 
 
 class ComputerControlPause(Exception):
@@ -184,6 +186,8 @@ class ComputerViews:
         checkpoint: Callable[[str], None] | None = None,
         input_ready: Callable[[], bool] | None = None,
         prepare_input: Callable[[], None] | None = None,
+        surfaces: tuple[str, ...] = (),
+        rfb: Callable[[dict], dict] | None = None,
     ) -> str:
         view = _View(
             capture,
@@ -193,6 +197,8 @@ class ComputerViews:
             checkpoint=checkpoint,
             input_ready=input_ready,
             prepare_input=prepare_input,
+            surfaces=surfaces,
+            rfb=rfb,
         )
         with self._lock:
             if surface not in {"computer", "browser", "desktop"}:
@@ -247,6 +253,27 @@ class ComputerViews:
                             if other[:2] == (owner, bot_id):
                                 self._active[owner, bot_id] = other[2]
 
+    def live_display(self, owner, bot_id, session, args):
+        from .desktop_rfb import validate
+
+        validate(args)
+        view, _, _ = self.current(owner, bot_id)
+        if not view or not view.rfb or view.generation != session or not view.alive():
+            raise ValueError("Desktop stream unavailable.")
+        result = view.rfb(args)
+        current, _, _ = self.current(owner, bot_id)
+        if current is not view or not view.alive():
+            raise ValueError("Desktop stream revoked.")
+        return result
+
+    def status(self, owner, bot_id):
+        view, _, _ = self.current(owner, bot_id)
+        if not view:
+            return {"state": "not_running"}
+        if not view.alive():
+            return {"state": "disconnected"}
+        return {"state": "live", "session_id": view.generation, "live_display": bool(view.rfb)}
+
     def frame(self, owner: str, bot_id: str) -> dict:
         with self._lock:
             surface = self._active.get((owner, bot_id), "computer")
@@ -287,9 +314,11 @@ class ComputerViews:
                 "state": "live",
                 "session_id": view.generation,
                 "captured_at": captured_at,
+                "live_display": bool(view.rfb),
                 "width": width,
                 "height": height,
                 "image": "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode(),
+                **({"surfaces": list(view.surfaces)} if view.surfaces else {}),
             }
         except BlockingIOError:
             return {"state": "connecting"}

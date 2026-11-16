@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+from _prompt_profile_cases import DISTINCT_PARENT_PROFILES, PROFILE_ALIASES
 
 from alysis_code import profile_presets
+from alysis_code.agent.prompt_context import SYSTEM_PROMPT, _compose_session_system_prompt
 from alysis_code.agent.prompt_families import FAMILY_EXPANSIONS, FAMILY_WORKFLOWS
 from alysis_code.agent.prompt_guidance import render_guidance
 from alysis_code.chatgpt_codex_static_provider import load_chatgpt_codex_static_models
@@ -117,6 +119,38 @@ def test_family_templates_cover_the_complete_registered_family_set() -> None:
     assert {profile_family(profile) for profile in get_model_prompt_catalog().values()} == set(
         PROMPT_FAMILIES
     )
+    assert set(GUIDANCE_PROFILES) == set(DISTINCT_PARENT_PROFILES) | {
+        alias for alias, _ in PROFILE_ALIASES
+    }
+
+
+@pytest.mark.parametrize(("alias", "canonical"), PROFILE_ALIASES)
+@pytest.mark.parametrize("one_shot", [False, True], ids=["chat", "one-shot"])
+def test_legacy_profile_alias_preserves_complete_composed_prompt(
+    alias: str, canonical: str, one_shot: bool
+) -> None:
+    # Alias selection/configuration still tests every saved name. Delivery and
+    # size-budget matrices can use the canonical profile only if the complete
+    # composed bytes are equal, including question and delegation guidance.
+    assert canonical in DISTINCT_PARENT_PROFILES
+    for section in ("workflow", "delegation"):
+        assert render_guidance(section, alias) == render_guidance(section, canonical)
+
+    def compose(profile: str) -> str:
+        return _compose_session_system_prompt(
+            base_prompt=SYSTEM_PROMPT,
+            trusted_prompt_append="Retain this supplied role boundary.",
+            guidance_profile=profile,
+            include_write_guidance=True,
+            include_skill_discovery_guidance=True,
+            include_skill_lifecycle_guidance=True,
+            include_subagent_guidance=True,
+            include_one_shot_guidance=one_shot,
+            include_persona_guidance=True,
+            include_question_guidance=True,
+        )
+
+    assert compose(alias) == compose(canonical)
 
 
 @pytest.mark.parametrize("family", PROMPT_FAMILIES)

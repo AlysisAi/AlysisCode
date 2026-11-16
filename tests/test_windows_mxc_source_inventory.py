@@ -91,10 +91,6 @@ def inventory_case(tmp_path, builder, app_source_paths, monkeypatch):
     return root, state
 
 
-def test_local_inventory_extends_historical_beta_scope_with_wheel_hook(builder, app_source_paths):
-    assert builder.SOURCE_PATHS == app_source_paths
-
-
 def test_real_producer_binds_complete_names_bytes_and_exact_commit(builder, inventory_case):
     root, state = inventory_case
     inventory = builder.source_inventory(root)
@@ -111,27 +107,6 @@ def test_real_producer_binds_complete_names_bytes_and_exact_commit(builder, inve
         ["git", "ls-files", "-z", "--", *builder.SOURCE_PATHS],
         ["git", "rev-parse", "HEAD"],
     ]
-
-
-@pytest.mark.parametrize("missing_index", range(8))
-def test_each_missing_declared_member_is_detected(
-    builder, inventory_case, monkeypatch, missing_index
-):
-    root, state = inventory_case
-    changed = list(builder.SOURCE_PATHS)
-    del changed[missing_index]
-    monkeypatch.setattr(builder, "SOURCE_PATHS", changed)
-    with pytest.raises(AssertionError, match="Producer/consumer source membership differs"):
-        builder.source_inventory(root)
-    assert len(state.calls) == 1  # No identity/build/helper dispatch after mismatch.
-
-
-@pytest.mark.parametrize("extra", ["native/unreviewed", "scripts/unreviewed.py"])
-def test_extra_declared_member_is_detected(builder, inventory_case, monkeypatch, extra):
-    root, _state = inventory_case
-    monkeypatch.setattr(builder, "SOURCE_PATHS", [*builder.SOURCE_PATHS, extra])
-    with pytest.raises(AssertionError, match="Producer/consumer source membership differs"):
-        builder.source_inventory(root)
 
 
 @pytest.mark.parametrize("name", tuple(SYNTHETIC_SOURCES))

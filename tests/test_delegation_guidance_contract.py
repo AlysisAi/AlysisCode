@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _prompt_profile_cases import DISTINCT_PARENT_PROFILES
 
 from alysis_code import agent_loop
 from alysis_code.agent import session as session_mod
@@ -17,7 +18,6 @@ from alysis_code.agent.prompt_guidance import render_guidance
 from alysis_code.agent.session import create_session
 from alysis_code.config import AppConfig, resolve_prompt_guidance_profile
 from alysis_code.prompt_guidance_catalog import (
-    GUIDANCE_PROFILES,
     PROMPT_FAMILIES,
     PromptGuidanceProfile,
     profile_variant,
@@ -45,12 +45,15 @@ def _assert_delivered_evidence_contract(system: str, profile: PromptGuidanceProf
     )
 
 
-# Batching delivery covers every profile in both modes at the model boundary.
+# Batching delivery covers every distinct profile in both modes at the model boundary.
 # Repeat these catalog/tool contracts in one-shot for each rendering category.
 @pytest.mark.parametrize(
     ("profile", "one_shot"),
     [
-        *[pytest.param(profile, False, id=f"chat-{profile}") for profile in GUIDANCE_PROFILES],
+        *[
+            pytest.param(profile, False, id=f"chat-{profile}")
+            for profile in DISTINCT_PARENT_PROFILES
+        ],
         *[
             pytest.param(profile, True, id=f"one-shot-{profile}")
             for profile in ("compact", "balanced", "expanded", "gpt-normal", "gpt-expanded")

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _prompt_profile_cases import DISTINCT_PARENT_PROFILES
 
 from alysis_code.agent import tools_assembly
 from alysis_code.agent.llm_calls import _request_messages_with_volatile_suffix
@@ -15,7 +16,7 @@ from alysis_code.agent.prompt_context import (
 from alysis_code.agent.prompt_guidance import render_guidance
 from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig
-from alysis_code.prompt_guidance_catalog import GUIDANCE_PROFILES, PromptGuidanceProfile
+from alysis_code.prompt_guidance_catalog import PromptGuidanceProfile
 from alysis_code.session_store import read_session_events
 from alysis_code.skills import SkillBundle, build_explicit_skill_context_message
 from alysis_code.skills.prompting import EXPLICIT_SKILL_CONTEXT_TOTAL_MAX_CHARS
@@ -439,38 +440,21 @@ _BOOTSTRAP_PROFILE_LIMITS = [
     pytest.param("expanded", 15_850, id="expanded"),
     *[
         pytest.param(profile, 14_500, id=profile)
-        for profile in ("gpt-astra", "gpt-sol", "gpt-terra")
-    ],
-    *[
-        pytest.param(profile, 15_350, id=profile)
-        for profile in (
-            "gpt-luna",
-            "gpt-5.5",
-            "claude-fable",
-            "claude-opus",
-            "claude-sonnet",
-            "gemini",
-            "qwen",
-            "glm",
-        )
-    ],
-    *[
-        pytest.param(profile, 14_500, id=profile)
-        for profile in GUIDANCE_PROFILES
+        for profile in DISTINCT_PARENT_PROFILES
         if profile.endswith("-normal")
     ],
     *[
         pytest.param(profile, 15_350, id=profile)
-        for profile in GUIDANCE_PROFILES
+        for profile in DISTINCT_PARENT_PROFILES
         if profile.endswith("-expanded")
     ],
 ]
 
 
-def test_bootstrap_budget_contract_covers_every_supported_profile() -> None:
+def test_bootstrap_budget_contract_covers_every_distinct_profile() -> None:
     profiles = [case.values[0] for case in _BOOTSTRAP_PROFILE_LIMITS]
     assert len(profiles) == len(set(profiles))
-    assert set(profiles) == {None, *GUIDANCE_PROFILES}
+    assert set(profiles) == {None, *DISTINCT_PARENT_PROFILES}
 
 
 @pytest.mark.parametrize(("profile", "token_limit"), _BOOTSTRAP_PROFILE_LIMITS)

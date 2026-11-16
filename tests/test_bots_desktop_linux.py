@@ -222,6 +222,7 @@ def test_stop_interrupts_in_flight_operation_and_viewer_never_queues(pipe_comput
 @pytest.fixture
 def worker():
     worker = Computer.__new__(Computer)
+    worker.shared_display = False
     worker.frame = ("frame", time.monotonic(), b"pixels")
     worker.capture = lambda: b"pixels"
     worker.calls = []
@@ -422,6 +423,7 @@ def test_truncated_output_preserves_receipt_if_child_already_exited(monkeypatch)
     monkeypatch.setattr(module.os, "killpg", exited)
     computer = Computer.__new__(Computer)
     computer.env = {}
+    computer.shared_display = False
     result = computer.run({"command": "synthetic bounded output"})
     assert result["exit_code"] == 0 and result["output_truncated"]
     assert len(result["output"]) == module.MAX_OUTPUT

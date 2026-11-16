@@ -1225,8 +1225,10 @@ class BrowserComputers:
                             alive=executor.alive,
                             surface="browser",
                             human_input=getattr(executor, "human_input", None),
+                            rfb=getattr(executor, "rfb", None),
                             input_ready=getattr(executor, "input_ready", None),
                             prepare_input=getattr(executor, "prepare_input", None),
+                            surfaces=getattr(executor, "surfaces", ()),
                             checkpoint=getattr(executor, "checkpoint", None),
                             invalidate=lambda: self._invalidate(computer),
                         )

@@ -14,37 +14,6 @@ from alysis_code.agent_loop import (
 )
 
 
-def test_one_shot_prompt_forbids_standalone_text_only_plan() -> None:
-    assert "Do not emit a standalone text-only plan and wait for the user." in (
-        _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    )
-    assert "Planning may be internal" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-
-
-def test_one_shot_requested_plan_can_be_the_final_deliverable() -> None:
-    assert "A requested plan or analysis can itself be the final result." in (
-        _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    )
-    assert "not permission or a request to change files" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-
-
-def test_one_shot_requires_task_appropriate_completion_without_manufactured_work() -> None:
-    assert "A progress update is not a final answer." in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    assert "For implementation requests, proceed from investigation to changes" in (
-        _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    )
-    assert "For inspection requests, gather sufficient evidence" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    assert "without manufacturing edits or test runs" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-
-
-def test_one_shot_prompt_rejects_generic_clarification_bailouts() -> None:
-    assert "Do not ask a generic clarification question" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    assert "safe best effort" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    assert "destructive alternatives require the user's choice" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    assert "proceed safely or call report_blocker" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-    assert "never ask a question and wait" in _SYSTEM_PROMPT_ONE_SHOT_SECTION
-
-
 def test_requirement_review_and_root_fixing_are_shared_with_chat() -> None:
     # These are task-quality requirements, not a consequence of process lifetime.
     prompt = SYSTEM_PROMPT.casefold()
@@ -91,6 +60,7 @@ def test_editing_guidance_survives_parent_child_and_density_composition(
 def test_no_material_edits_nudge_is_implementation_first() -> None:
     message = _completion_gate_nudge_message(["no_material_edits", "verification_not_attempted"])
 
+    assert message.startswith("Finalization check - one pass before you finish:")
     assert "No file changes are recorded yet" in message
     assert "Expected verification has not been completed" in message
     assert message.index("No file changes are recorded yet") < message.index(
@@ -105,6 +75,7 @@ def test_verification_not_attempted_nudge_is_verification_first() -> None:
     assert "Expected verification has not been completed" in message
     assert "No file changes are recorded yet" not in message
     assert "this checklist is advisory" in message
+    assert "A written explanation cannot clear this" not in message
 
 
 def test_semantic_outcomes_drive_execution_posture() -> None:

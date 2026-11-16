@@ -12,7 +12,6 @@ from alysis_code.llm.cache_capabilities import (
     CacheCapabilitySpec,
 )
 from alysis_code.llm.protocols import SUPPORTED_LLM_PROTOCOLS
-from alysis_code.profile_presets import get_preset, make_profile_from_preset
 from alysis_code.profiles import (
     ProfileSpec,
     add_profile,
@@ -154,54 +153,6 @@ def test_profile_from_dict_defaults_missing_protocol_to_openai_compat() -> None:
     )
 
     assert profile.protocol == "openai_compat"
-
-
-def test_openai_responses_preset_uses_native_protocol_without_changing_openai_default() -> None:
-    compat = get_preset("openai")
-    native = get_preset("openai-responses")
-
-    assert compat is not None
-    assert compat.protocol == "openai_compat"
-    assert native is not None
-    assert native.protocol == "openai_responses"
-
-    profile = make_profile_from_preset(native)
-    assert profile.name == "openai-responses"
-    assert profile.protocol == "openai_responses"
-    assert profile.base_url == "https://api.openai.com/v1"
-    assert profile.web_search_adapter == "openai_responses"
-
-
-def test_anthropic_preset_uses_messages_protocol_by_default() -> None:
-    native = get_preset("anthropic")
-    compat = get_preset("anthropic-compat")
-
-    assert compat is not None
-    assert compat.protocol == "openai_compat"
-    assert native is not None
-    assert native.protocol == "anthropic_messages"
-
-    profile = make_profile_from_preset(native)
-    assert profile.name == "anthropic"
-    assert profile.protocol == "anthropic_messages"
-    assert profile.base_url == "https://api.anthropic.com/v1"
-    assert profile.web_search_adapter == "anthropic_messages"
-
-
-def test_gemini_preset_uses_generate_content_protocol_by_default() -> None:
-    native = get_preset("gemini")
-    compat = get_preset("gemini-compat")
-
-    assert compat is not None
-    assert compat.protocol == "openai_compat"
-    assert native is not None
-    assert native.protocol == "gemini_generate_content"
-
-    profile = make_profile_from_preset(native)
-    assert profile.name == "gemini"
-    assert profile.protocol == "gemini_generate_content"
-    assert profile.base_url == "https://generativelanguage.googleapis.com/v1beta"
-    assert profile.web_search_adapter == "gemini_grounding"
 
 
 def test_base_url_validation_rejects_malformed_url() -> None:

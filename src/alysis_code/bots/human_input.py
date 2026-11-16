@@ -1,8 +1,8 @@
 """Atomic human gestures on an executor-owned X11 display.
 
 Standalone for the offline namespace. Text travels over stdin, never argv, files,
-logs or tool history. No shell, display discovery or listener. Every gesture
-releases pressed input. Clipboard ownership lasts only within the human handoff.
+logs or tool history. No shell, display discovery or listener. Atomic gestures release pressed input. Continuous pointer state is released
+when the authenticated human lease disconnects or expires. Clipboard ownership lasts only within the human handoff.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ def validate(event):
     fields = {
         "release": {"kind"},
         "click": {"kind", "x", "y", "button"},
+        "pointer": {"kind", "x", "y", "buttons"},
         "drag": {"kind", "x", "y", "to_x", "to_y", "button"},
         "scroll": {"kind", "x", "y", "ticks"},
         "text": {"kind", "text"},
@@ -42,6 +43,8 @@ def validate(event):
     for key in ("x", "y", "to_x", "to_y"):
         if key in event:
             integer(event[key], 0, 2559 if key.endswith("x") else 1599)
+    if "buttons" in event:
+        integer(event["buttons"], 0, 7)
     if "button" in event:
         integer(event["button"], 1, 3)
     if "ticks" in event:
@@ -113,6 +116,50 @@ def release(display_name):
         x11.XSync(display, 0)
         if any(pressed()):
             raise ValueError("Input release is unconfirmed.")
+    finally:
+        x11.XCloseDisplay(display)
+
+
+def pointer(display_name, event):
+    """Continuous pointer state, released by lease expiry/disconnect or failure."""
+    x11, xtst = ctypes.CDLL("libX11.so.6"), ctypes.CDLL("libXtst.so.6")
+    ptr, ulong = ctypes.c_void_p, ctypes.c_ulong
+    x11.XOpenDisplay.argtypes, x11.XOpenDisplay.restype = [ctypes.c_char_p], ptr
+    x11.XDefaultRootWindow.argtypes, x11.XDefaultRootWindow.restype = [ptr], ulong
+    x11.XQueryPointer.argtypes = [ptr, ulong] + [ptr] * 7
+    x11.XSync.argtypes, x11.XCloseDisplay.argtypes = [ptr, ctypes.c_int], [ptr]
+    xtst.XTestFakeMotionEvent.argtypes = [ptr, ctypes.c_int, ctypes.c_int, ctypes.c_int, ulong]
+    xtst.XTestFakeButtonEvent.argtypes = [ptr, ctypes.c_uint, ctypes.c_int, ulong]
+    display = x11.XOpenDisplay(display_name.encode())
+    if not display:
+        raise ValueError("Private display unavailable.")
+    try:
+        root, child, mask = ulong(), ulong(), ctypes.c_uint()
+        x, y, wx, wy = (ctypes.c_int() for _ in range(4))
+        if not x11.XQueryPointer(
+            display,
+            x11.XDefaultRootWindow(display),
+            ctypes.byref(root),
+            ctypes.byref(child),
+            ctypes.byref(x),
+            ctypes.byref(y),
+            ctypes.byref(wx),
+            ctypes.byref(wy),
+            ctypes.byref(mask),
+        ):
+            raise ValueError("Pointer state unavailable.")
+        if not xtst.XTestFakeMotionEvent(display, -1, event["x"], event["y"], 0):
+            raise ValueError("Pointer move unconfirmed.")
+        # DOM buttons: left=1, right=2, middle=4. X11 core buttons: 1, 3, 2.
+        for button, bit in ((1, 1), (2, 4), (3, 2)):
+            down = bool(event["buttons"] & bit)
+            if down != bool(mask.value & (1 << (7 + button))):
+                if not xtst.XTestFakeButtonEvent(display, button, int(down), 0):
+                    raise ValueError("Pointer state unconfirmed.")
+        x11.XSync(display, 0)
+    except BaseException:
+        release(display_name)
+        raise
     finally:
         x11.XCloseDisplay(display)
 
@@ -302,6 +349,9 @@ def dispatch(display, event, *, persistent=False):
         )
 
     kind = event["kind"]
+    if kind == "pointer":
+        pointer(display, event)
+        return
     try:
         if kind in {"click", "drag", "scroll"}:
             xdo("mousemove", str(event["x"]), str(event["y"]), "getmouselocation", "--shell")

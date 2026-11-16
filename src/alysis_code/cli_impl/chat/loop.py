@@ -57,7 +57,6 @@ from ..run import run as _one_shot_run
 from .forge_visibility import forge_session_active
 from .state import _ChatExecutionRequest, _ForgeChatState
 
-_PROTECTED_GLOBAL_NAMES: set[str] = set()
 _PATCHABLE_DEPENDENCY_GLOBAL_NAMES: set[str] = {
     "create_session",
     "load_config",
@@ -79,10 +78,6 @@ _CHAT_PERMISSION_MODES = frozenset(mode.value for mode in Mode)
 def _sync_cli_globals(cli_mod: Any) -> None:
     _materialize_cli_globals(cli_mod)
     module_globals = globals()
-    if not _PROTECTED_GLOBAL_NAMES:
-        for local_name, local_value in module_globals.items():
-            if callable(local_value):
-                _PROTECTED_GLOBAL_NAMES.add(local_name)
     for name, value in cli_mod.__dict__.items():
         if name.startswith("__"):
             continue
@@ -4217,3 +4212,9 @@ def run(*args: Any, **kwargs: Any) -> Any:
 def run_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
     _sync_cli_globals(cli_mod)
     return run(*args, **kwargs)
+
+
+# Snapshot declarations before the IDE or another facade injects dependencies.
+# Taking this snapshot on the first CLI call incorrectly made already-injected
+# helpers permanent, so their overrides depended on which entrypoint ran first.
+_PROTECTED_GLOBAL_NAMES = frozenset(name for name, value in globals().items() if callable(value))

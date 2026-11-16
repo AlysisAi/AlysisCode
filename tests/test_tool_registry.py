@@ -83,6 +83,16 @@ def test_builtin_tool_registry_metadata_is_complete_and_unique() -> None:
         assert spec.rich.action_hint.strip()
         assert spec.rich.fallback_hint.strip()
 
+    metadata_by_name = {spec.name: spec for spec in metadata}
+    expected_required = {
+        "shell_background": ["cmd"],
+        "shell_output": ["process_id"],
+        "shell_kill": ["process_id"],
+        "shell_list": [],
+    }
+    for name, required in expected_required.items():
+        assert metadata_by_name[name].parameters.get("required") == required, name
+
 
 def test_report_blocker_registry_contract_is_free_form_and_hidden_from_subagents() -> None:
     metadata = get_builtin_tool_metadata("report_blocker")
@@ -158,24 +168,6 @@ def test_report_blocker_is_exposed_only_to_eligible_top_level_runtimes(
         assert ("report_blocker" in tools) is expected
 
 
-def test_shell_background_family_metadata_present() -> None:
-    metadata_by_name = {spec.name: spec for spec in iter_builtin_tool_metadata()}
-    expected_required = {
-        "shell_background": ["cmd"],
-        "shell_output": ["process_id"],
-        "shell_kill": ["process_id"],
-        "shell_list": [],
-    }
-
-    for tool_name, required in expected_required.items():
-        metadata = metadata_by_name[tool_name]
-        assert metadata.description.strip()
-        assert metadata.parameters["type"] == "object"
-        assert metadata.parameters.get("required") == required
-        assert isinstance(metadata.parameters.get("properties"), dict)
-        assert metadata.rich.display_name.strip()
-
-
 def test_background_subagent_tool_metadata_and_spawn_schema() -> None:
     metadata_by_name = {spec.name: spec for spec in iter_builtin_tool_metadata()}
     background_names = {
@@ -220,16 +212,31 @@ def test_background_subagent_tool_metadata_and_spawn_schema() -> None:
     )
 
 
-def test_shell_background_family_in_shell_category() -> None:
-    shell_tools = set(builtin_tool_names_with_category("shell"))
-
-    assert {
-        "shell_run",
-        "shell_background",
-        "shell_output",
-        "shell_kill",
-        "shell_list",
-    } <= shell_tools
+def test_builtin_tool_category_contracts() -> None:
+    cases = (
+        ("shell_run", {"shell"}, set()),
+        ("shell_background", {"shell"}, set()),
+        ("shell_output", {"shell"}, set()),
+        ("shell_kill", {"shell"}, set()),
+        ("shell_list", {"shell"}, set()),
+        ("history_search", {"read"}, {"write"}),
+        ("web_fetch", {"read", "web"}, {"write"}),
+        ("web_search", {"read", "web", "search"}, {"write"}),
+        ("fs_mkdir", {"write", "fs"}, {"read"}),
+    )
+    names = {spec.name for spec in iter_builtin_tool_metadata()}
+    category_names = {
+        category for _, required, forbidden in cases for category in required | forbidden
+    }
+    categories = {
+        category: set(builtin_tool_names_with_category(category)) for category in category_names
+    }
+    for name, required, forbidden in cases:
+        assert name in names, name
+        for category in required:
+            assert name in categories[category], (name, category)
+        for category in forbidden:
+            assert name not in categories[category], (name, category)
 
 
 def test_process_lifetime_is_visible_in_model_and_registry_descriptions() -> None:
@@ -374,14 +381,6 @@ def test_generic_unavailable_reason_rejects_placeholder() -> None:
 
     with pytest.raises(ValueError, match="concrete and non-empty"):
         mark_unavailable("fake_optional_tool", "unavailable")
-
-
-def test_availability_policy_module_has_no_knowledge_capture_literal() -> None:
-    source = (
-        Path(__file__).parents[1] / "src" / "alysis_code" / "tools" / "availability.py"
-    ).read_text(encoding="utf-8")
-
-    assert "knowledge_capture_json" not in source
 
 
 def test_unavailable_tool_summary_renders_concrete_reason() -> None:
@@ -537,28 +536,6 @@ def test_build_tools_omits_skill_read_when_skills_are_disabled(tmp_path: Path) -
     assert "skill_read" not in tools
 
 
-def test_history_search_is_classified_as_read_tool() -> None:
-    assert "history_search" in builtin_tool_names_with_category("read")
-    assert "history_search" not in builtin_tool_names_with_category("write")
-
-
-def test_web_fetch_is_catalogued_as_read_web_tool() -> None:
-    names = {spec.name for spec in iter_builtin_tool_metadata()}
-    assert "web_fetch" in names
-    assert "web_fetch" in builtin_tool_names_with_category("read")
-    assert "web_fetch" in builtin_tool_names_with_category("web")
-    assert "web_fetch" not in builtin_tool_names_with_category("write")
-
-
-def test_web_search_is_catalogued_as_read_web_search_tool() -> None:
-    names = {spec.name for spec in iter_builtin_tool_metadata()}
-    assert "web_search" in names
-    assert "web_search" in builtin_tool_names_with_category("read")
-    assert "web_search" in builtin_tool_names_with_category("web")
-    assert "web_search" in builtin_tool_names_with_category("search")
-    assert "web_search" not in builtin_tool_names_with_category("write")
-
-
 def test_web_tool_metadata_discourages_invented_urls() -> None:
     web_fetch_spec = next(spec for spec in iter_builtin_tool_metadata() if spec.name == "web_fetch")
     web_search_spec = next(
@@ -570,14 +547,6 @@ def test_web_tool_metadata_discourages_invented_urls() -> None:
     assert "configured trusted domain" in web_fetch_spec.description
     assert "user provided, one web_search returned" in web_search_spec.description
     assert "user-provided direct public URL" in web_search_spec.rich.fallback_hint
-
-
-def test_fs_mkdir_is_catalogued_as_write_fs_tool() -> None:
-    names = {spec.name for spec in iter_builtin_tool_metadata()}
-    assert "fs_mkdir" in names
-    assert "fs_mkdir" in builtin_tool_names_with_category("write")
-    assert "fs_mkdir" in builtin_tool_names_with_category("fs")
-    assert "fs_mkdir" not in builtin_tool_names_with_category("read")
 
 
 def test_built_in_subagent_exposure_matches_catalog_policy() -> None:
@@ -657,19 +626,12 @@ def test_image_generate_tool_is_opt_in(
         )
 
 
-def test_web_fetch_schema_sets_max_chars_bounds() -> None:
-    web_fetch_spec = next(spec for spec in iter_builtin_tool_metadata() if spec.name == "web_fetch")
-    max_chars = web_fetch_spec.parameters["properties"]["max_chars"]
-
+def test_builtin_read_tool_schema_bounds() -> None:
+    metadata = {spec.name: spec for spec in iter_builtin_tool_metadata()}
+    max_chars = metadata["web_fetch"].parameters["properties"]["max_chars"]
     assert max_chars["minimum"] == 1
     assert max_chars["maximum"] == 50000
-
-
-def test_fs_read_schema_sets_bounded_default_max_bytes() -> None:
-    fs_read_spec = next(spec for spec in iter_builtin_tool_metadata() if spec.name == "fs_read")
-    max_bytes = fs_read_spec.parameters["properties"]["max_bytes"]
-
-    assert max_bytes["default"] == 12000
+    assert metadata["fs_read"].parameters["properties"]["max_bytes"]["default"] == 12000
 
 
 def test_fs_edit_schema_requires_operation_specific_fields() -> None:
@@ -722,13 +684,6 @@ def test_chat_path_tools_default_to_active_workdir_with_workspace_root_escape_ha
     assert "default" not in fs_list_spec.parameters["properties"]["root_path"]
     assert "default" not in search_rg_spec.parameters["properties"]["root_path"]
     assert "default" not in symbol_search_spec.parameters["properties"]["root_path"]
-
-
-def test_session_set_workdir_metadata_mentions_natural_language_navigation_examples() -> None:
-    spec = next(spec for spec in iter_builtin_tool_metadata() if spec.name == "session_set_workdir")
-
-    assert "go to packages/app" in spec.description
-    assert "work in apps/web" in spec.rich.action_hint
 
 
 def test_build_tools_web_fetch_preserves_explicit_max_chars_value(

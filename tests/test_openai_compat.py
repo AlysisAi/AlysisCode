@@ -8,6 +8,7 @@ import threading
 import httpx
 import pytest
 
+from alysis_code.alysis_cloud import DEFAULT_CLOUD_API_URL
 from alysis_code.cancellation import InteractiveCancellationToken
 from alysis_code.execution_deadline import DeadlineExhausted
 from alysis_code.llm import openai_compat as openai_compat_mod
@@ -2259,7 +2260,16 @@ def test_provider_metadata_is_stripped_for_non_deepseek_transports() -> None:
     assert resp.content == "ok"
 
 
-def test_gemini_tool_call_extra_content_round_trips_for_tool_calls() -> None:
+@pytest.mark.parametrize(
+    "base_url,model",
+    [
+        ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.1-pro-preview"),
+        (f"{DEFAULT_CLOUD_API_URL}/llm/v1", "gemini-4-carbon"),
+    ],
+)
+def test_gemini_tool_call_extra_content_round_trips_for_tool_calls(
+    base_url: str, model: str
+) -> None:
     calls: list[dict[str, object]] = []
     extra_content = {"google": {"thought_signature": "sig-1"}}
 
@@ -2297,9 +2307,9 @@ def test_gemini_tool_call_extra_content_round_trips_for_tool_calls() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
     client = OpenAICompatClient(
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        base_url=base_url,
         api_key="test",
-        model="gemini-3.1-pro-preview",
+        model=model,
         transport=httpx.MockTransport(handler),
     )
 

@@ -271,10 +271,10 @@ def _largest_text(char: str) -> int:
         payload = {"content": [{"type": "text", "text": char * count}]}
         return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
 
-    count = 1
-    while size(count + 1) <= 64 * 1024:
-        count += 1
-    return count
+    # Repeating text grows JSON by its serialized byte width, including escaping.
+    # Compute the exact boundary without serializing every shorter payload first.
+    overhead = size(0)
+    return (64 * 1024 - overhead) // (size(1) - overhead)
 
 
 @pytest.mark.parametrize("char", ["日", "é", "😀", "a"])

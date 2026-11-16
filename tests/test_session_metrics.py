@@ -385,70 +385,23 @@ def test_score_session_events_counts_file_ops_as_writes() -> None:
     assert score["tool_counts"]["fs_delete"] == 1
 
 
-def test_score_session_events_counts_git_history_as_read() -> None:
-    events = [
-        {
-            "type": "tool_call",
-            "payload": {
-                "name": "git_history",
-                "step": 1,
-                "arguments": {"mode": "log", "path": "src/app.py", "limit": 5},
+def test_score_session_events_classifies_read_tools_before_a_write() -> None:
+    cases = (
+        ("git_history", {"mode": "log", "path": "src/app.py", "limit": 5}, "src/app.py"),
+        ("symbol_search", {"query": "build_tools", "kind": "function"}, "x.py"),
+        ("history_search", {"pattern": "verify", "include_history": True}, "x.py"),
+    )
+    for name, arguments, path in cases:
+        events = [
+            {"type": "tool_call", "payload": {"name": name, "step": 1, "arguments": arguments}},
+            {
+                "type": "tool_call",
+                "payload": {"name": "fs_write", "step": 2, "arguments": {"path": path}},
             },
-        },
-        {
-            "type": "tool_call",
-            "payload": {"name": "fs_write", "step": 2, "arguments": {"path": "src/app.py"}},
-        },
-    ]
-
-    score = score_session_events(events)
-
-    assert score["tool_counts"]["git_history"] == 1
-    assert score["read_before_first_write"] is True
-
-
-def test_score_session_events_counts_symbol_search_as_read() -> None:
-    events = [
-        {
-            "type": "tool_call",
-            "payload": {
-                "name": "symbol_search",
-                "step": 1,
-                "arguments": {"query": "build_tools", "kind": "function"},
-            },
-        },
-        {
-            "type": "tool_call",
-            "payload": {"name": "fs_write", "step": 2, "arguments": {"path": "x.py"}},
-        },
-    ]
-
-    score = score_session_events(events)
-
-    assert score["tool_counts"]["symbol_search"] == 1
-    assert score["read_before_first_write"] is True
-
-
-def test_score_session_events_counts_history_search_as_read() -> None:
-    events = [
-        {
-            "type": "tool_call",
-            "payload": {
-                "name": "history_search",
-                "step": 1,
-                "arguments": {"pattern": "verify", "include_history": True},
-            },
-        },
-        {
-            "type": "tool_call",
-            "payload": {"name": "fs_write", "step": 2, "arguments": {"path": "x.py"}},
-        },
-    ]
-
-    score = score_session_events(events)
-
-    assert score["tool_counts"]["history_search"] == 1
-    assert score["read_before_first_write"] is True
+        ]
+        score = score_session_events(events)
+        assert score["tool_counts"][name] == 1, name
+        assert score["read_before_first_write"] is True, name
 
 
 def test_score_session_events_classifies_custom_tool_capabilities() -> None:

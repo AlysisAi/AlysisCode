@@ -1,9 +1,7 @@
 """Controller/transport qualification. Actual RAM preservation needs live Azure."""
 
 import base64
-import hashlib
 import json
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -25,18 +23,13 @@ class MemoryProvider(Provider):
 
     def __init__(self):
         super().__init__()
-        self.source = b""
         self.sources = {}
         self.starts = 0
         self.resumes = 0
         self.deleted = []
 
     def upload(self, ref, path, chunks, *, size, cancel):
-        assert Path(path).name in {"cloud_desktop_worker.py", "screen_channel.py"}
-        self.source = b"".join(chunks)
-        self.sources[Path(path).name] = self.source
-        self.last_source = Path(path).name
-        assert len(self.source) == size and not cancel()
+        pytest.fail("Qualified image modules must not be overwritten by the controller")
 
     def start(self, ref):
         self.resumes += 1
@@ -51,20 +44,16 @@ class MemoryProvider(Provider):
 
     def run(self, ref, argv, *, timeout):
         self.actions.append(argv)
-        if len(argv) == 4:
-            digest = (
-                "wrong"
-                if self.mode == self.last_source
-                else hashlib.sha256(self.source).hexdigest()
-            )
-            return CommandReceipt(0, digest, "")
         if argv[-2] == "start_memory":
             self.starts += 1
-            return CommandReceipt(
-                0,
-                json.dumps({"ready": True, "session": argv[-1], "uid": 1000, "memory_sleep": True}),
-                "",
-            )
+            ready = {"ready": True, "session": argv[-1], "uid": 1000, "memory_sleep": True}
+            if self.mode == "wrong-uid":
+                ready["uid"] = 0
+            elif self.mode == "wrong-session":
+                ready["session"] = "another-session"
+            elif self.mode == "missing-memory":
+                ready.pop("memory_sleep")
+            return CommandReceipt(0, json.dumps(ready), "")
         request = json.loads(base64.b64decode(argv[-1]))
         result = {"ready": True, "uid": 1000, "memory_sleep": self.mode != "lost-memory"}
         if request["operation"] == "resume_memory":
@@ -89,7 +78,7 @@ def test_idle_memory_retains_owned_resource_and_reattaches_after_controller_rest
     provider = MemoryProvider()
     first_factory = factory(tmp_path, provider)
     first = first_factory("bot", tmp_path, cancel=lambda: False)
-    assert set(provider.sources) == {"cloud_desktop_worker.py", "screen_channel.py"}
+    assert provider.sources == {}
     original = first.ref
     first.suspend(uuid4().hex)
     assert first._released
@@ -130,6 +119,24 @@ def test_uncertain_resume_never_erases_or_replaces_the_sleeping_computer(tmp_pat
     second.close()
 
 
+def test_legacy_sleeping_computer_keeps_its_separate_controls(tmp_path):
+    provider = MemoryProvider()
+    computers = factory(tmp_path, provider)
+    first = computers("bot", tmp_path, cancel=lambda: False)
+    first.suspend(uuid4().hex)
+    record = json.loads(first._record.read_text())
+    record.pop("unified_desktop")  # Allocation written before shared displays existed.
+    first._record.write_text(json.dumps(record))
+    computers = factory(tmp_path, provider)
+    computers.browser_enabled = True
+    resumed = computers("bot", tmp_path, cancel=lambda: False)
+    assert resumed.ref == first.ref
+    assert resumed.surfaces == ("desktop", "browser")
+    assert not resumed._browser_started
+    assert json.loads(resumed._record.read_text())["unified_desktop"] is False
+    resumed.close()
+
+
 def test_failed_memory_stop_remains_owned_and_cleanup_retries_sleep_not_deletion(tmp_path):
     provider = MemoryProvider()
     computers = factory(tmp_path, provider)
@@ -145,13 +152,13 @@ def test_failed_memory_stop_remains_owned_and_cleanup_retries_sleep_not_deletion
     assert not provider.deleted
 
 
-@pytest.mark.parametrize("source", ["cloud_desktop_worker.py", "screen_channel.py"])
-def test_unverified_bridge_source_cannot_start_memory_computer(tmp_path, source):
+@pytest.mark.parametrize("mode", ["wrong-uid", "wrong-session", "missing-memory"])
+def test_invalid_image_readiness_cannot_start_memory_computer(tmp_path, mode):
     provider = MemoryProvider()
-    provider.mode = source
-    with pytest.raises(DesktopError, match="installation"):
+    provider.mode = mode
+    with pytest.raises(DesktopError, match="readiness receipt"):
         factory(tmp_path, provider)("bot", tmp_path, cancel=lambda: False)
-    assert provider.starts == 0
+    assert provider.starts == 1
     assert all(state == "missing" for _, state in provider.allocations.values())
 
 

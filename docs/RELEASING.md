@@ -49,7 +49,8 @@ repository before any push.
 
    The generated `src/alysis_code/_build_info.py` is a build input, not a source change
    to commit. Restore its original contents after building; CI does this automatically.
-6. Create and push the version tag:
+6. Wait for the `ci.yml` push run on the exact release commit to complete successfully,
+   then create and push the version tag:
 
    ```bash
    VERSION=0.14.0
@@ -57,10 +58,19 @@ repository before any push.
    git push origin "v${VERSION}"
    ```
 
-The tag-triggered `release` workflow validates that the tag, package version, source commit, and
-default branch agree. It then tests and builds the source distribution and wheel, creates an SBOM
-and provenance attestations, publishes through PyPI trusted publishing, and creates the GitHub
-release.
+The public tag-triggered `release` workflow validates that the tag, package version,
+source commit, and default branch agree. Before building, it finds the newest `ci.yml`
+push run for that exact commit on the default branch and requires a successful run
+and all required jobs, including all four Python suites. Missing, running or failed
+CI stops publication; it never falls back to an older successful run. Wait for CI
+before tagging. Manual publication recovery supplies an explicit CI run ID, subject
+to the same exact-source and job checks.
+
+The release reuses that full-suite result instead of running the suite again. It
+still performs three-platform reliability qualification, builds and validates the
+actual source distribution and wheel, creates an SBOM and provenance attestations,
+and publishes through PyPI trusted publishing. The release receipt records the
+verified CI run ID. Internal workflows remain manual-only.
 
 After publication:
 
@@ -84,12 +94,20 @@ supported platforms. Windows ARM64 and Intel macOS can reuse a tested static Ope
 installation in this unsigned workflow. Signing workflows continue building OpenSSL
 from source and do not consume this cache.
 
-The cache key binds the platform, hosted runner image version, installation path,
+The cache key binds the platform, runner environment and image version, installation path,
 build script and cache validator. Changes to the source pin, configure flags or test
 recipe therefore invalidate it. An exact hit must also match a receipt containing
 the identity and SHA-256 of every installed file. This receipt detects stale or
 damaged contents; it is not signed provenance. Cache access follows
 [GitHub's branch and PR scope rules](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+
+On team-owned runners, set `RUNNER_ENVIRONMENT=self-hosted`, the matching
+`RUNNER_OS`/`RUNNER_ARCH`, `RUNNER_TEMP`, and `ALYSIS_RUNNER_IMAGE_ID` in the runner
+environment before using the cache helper. The image ID must identify the actual
+OS, compiler and SDK build; change it whenever any of those change. An unversioned
+self-hosted runner cannot reuse this cache. Hosted and self-hosted identities never
+share an entry. This support does not change workflow runner labels or enable
+automatic internal runs.
 
 On a miss, partial match or invalid receipt, the installation is cleared and the full
 source build and upstream tests run. Only a successful job saves a new cache. Every

@@ -362,25 +362,9 @@ def test_shell_run_cwd_escape_carries_cwd_recovery_payload(tmp_path: Path) -> No
     }
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "arguments"),
-    [
-        ("fs_mkdir", {"path": "new-dir"}),
-        ("fs_move", {"source_path": "old.txt", "destination_path": "new.txt"}),
-        ("fs_copy", {"source_path": "old.txt", "destination_path": "new.txt"}),
-        ("fs_delete", {"path": "old.txt"}),
-    ],
-)
-def test_file_ops_block_in_readonly_mode(
-    tmp_path: Path,
-    tool_name: str,
-    arguments: dict[str, str],
-) -> None:
+def test_readonly_mode_omits_file_mutation_tools(tmp_path: Path) -> None:
     tools = _build_tools(tmp_path, mode="readonly")
-
-    _ = arguments
-
-    assert tool_name not in tools
+    assert not {"fs_mkdir", "fs_move", "fs_copy", "fs_delete"}.intersection(tools)
 
 
 @pytest.fixture(autouse=True)

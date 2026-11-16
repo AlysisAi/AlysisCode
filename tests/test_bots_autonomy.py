@@ -44,8 +44,12 @@ def test_main_runs_past_old_call_limits_and_keeps_durable_accounting(tmp_path):
         reopened.reserve_call("alice", next_task["id"], "fixture", 100)
 
 
-@pytest.mark.parametrize("stop", [False, True])
-def test_code_loop_passes_old_limits_and_remains_cancellable(study, monkeypatch, stop):
+@pytest.mark.parametrize(
+    ("tool_calls", "stop"),
+    [(105, False), (3, True)],
+    ids=["past-old-limit", "cancel-active-loop"],
+)
+def test_code_loop_passes_old_limits_and_remains_cancellable(study, monkeypatch, tool_calls, stop):
     import alysis_code.bots.execution as execution
 
     store, task, manager, instances = study
@@ -70,7 +74,7 @@ def test_code_loop_passes_old_limits_and_remains_cancellable(study, monkeypatch,
         def chat(self, **kwargs):
             nonlocal count
             count += 1
-            if count == 106:
+            if count == tool_calls + 1:
                 if stop:
                     runtime.cancel(task["id"])
                 return response("Inspected the requested files.")
@@ -82,8 +86,8 @@ def test_code_loop_passes_old_limits_and_remains_cancellable(study, monkeypatch,
     runtime.run(claimed, runtime.task_token(task["id"]), background=True)
     result = store.task("owner", task["id"])
     assert result["status"] == ("cancelled" if stop else "completed"), result
-    assert result["calls"] == 106
-    assert len(instances[0].calls) == 105
+    assert result["calls"] == tool_calls + 1
+    assert len(instances[0].calls) == tool_calls
     assert instances[0].closed
     assert len(sessions) == 1
 

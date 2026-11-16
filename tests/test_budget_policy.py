@@ -493,7 +493,7 @@ class TestProgressCheckpoint(unittest.TestCase):
     def test_non_numeric_elapsed_fraction_is_ignored(self) -> None:
         checkpoint = self._checkpoint()
         for elapsed in ("later", object()):
-            with self.subTest(elapsed=elapsed):
+            with self.subTest(elapsed=repr(elapsed)):
                 self.assertFalse(
                     checkpoint.check(
                         elapsed_fraction=elapsed,

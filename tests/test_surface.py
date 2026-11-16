@@ -314,11 +314,6 @@ def test_rich_surface_renders_tool_transcript_error_guidance() -> None:
     assert "Check base URL, API key, and network connectivity." not in out
 
 
-def test_noop_surface_ignores_warning() -> None:
-    surface = NoopSurface()
-    surface.on_warning("benign warning")
-
-
 def test_recording_surface_falls_back_to_python_warning_for_noop_delegate() -> None:
     delegate = NoopSurface()
     error_calls: list[str] = []

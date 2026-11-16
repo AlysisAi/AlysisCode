@@ -78,6 +78,7 @@ from ..provider_model_catalog import (
 )
 from ..provider_url import display_endpoint
 from ..reasoning_contracts import (
+    OFF_BETWEEN_TOOLS,
     UNKNOWN_CONTRACT,
     model_reasoning_contract,
     reasoning_contract_for,
@@ -1442,7 +1443,12 @@ def _default_model_summary_text(state: ConfigMenuState) -> str:
     model = state.fields.get("model", "").strip()
     if not model:
         return _MISSING_REQUIRED
-    return f"{model_display_name(model)} · thinking {state.thinking_label}"
+    preset = _active_preset(state)
+    contract = reasoning_contract_for(getattr(preset, "provider_key", None), model)
+    label = state.thinking_label
+    if label == "off" and contract.off == OFF_BETWEEN_TOOLS:
+        label = "Between tools"
+    return f"{model_display_name(model)} · thinking {label}"
 
 
 def _cache_summary_text(state: ConfigMenuState) -> str:
@@ -3008,6 +3014,10 @@ def _run_default_section(state: ConfigMenuState, console: Console) -> None:
             console,
             state.thinking_label,
             labels=_thinking_labels_for_state(state, model=model),
+            between_tools=reasoning_contract_for(
+                getattr(_active_preset(state), "provider_key", None), model
+            ).off
+            == OFF_BETWEEN_TOOLS,
         )
     except (Abort, EOFError, KeyboardInterrupt):
         console.print("")
@@ -3652,14 +3662,17 @@ def _prompt_thinking_label(
     current: str,
     *,
     labels: tuple[str, ...] | None = None,
+    between_tools: bool = False,
 ) -> str:
     resolved_labels = labels or THINKING_LABELS
     current_value = current if current in resolved_labels else "auto"
     rows = [
         (
             label,
-            label,
-            {
+            "Between tools" if label == "off" and between_tools else label,
+            "No up-front thinking; thinking between tools stays active at High effort."
+            if label == "off" and between_tools
+            else {
                 "off": "no extra reasoning tokens",
                 "minimal": "minimal reasoning budget",
                 "low": "small reasoning budget",

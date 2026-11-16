@@ -1,4 +1,4 @@
-"""Small, dependency-free readers and writers for the Windows image recipe.
+"""Small, dependency-free readers and writers for the local computer image recipes.
 
 - ``vhd_footer``: turn a raw disk into a fixed VHD (raw bytes + one 512-byte footer).
 - ``fat12_volume``: a tiny FAT12 volume with long file names (the cloud-init "CIDATA" seed).
@@ -20,6 +20,8 @@ import uuid
 LINUX_PARTITION_TYPES = {
     uuid.UUID("0fc63daf-8483-4772-8e79-3d69d8477de4"),  # Linux filesystem data
     uuid.UUID("4f68bce3-e8cd-4db1-96e7-fbcaf984b709"),  # Linux root (x86-64)
+    # UAPI Discoverable Partitions Specification: the Mac recipe's Debian ARM64 root.
+    uuid.UUID("b921b045-1df0-41c3-af44-4c6f280d3fae"),  # Linux root (ARM64)
 }
 
 

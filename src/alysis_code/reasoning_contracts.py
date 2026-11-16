@@ -443,6 +443,17 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     ),
     "gemini": (
         (
+            "gemini-4-carbon",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_THINKING_LEVEL,
+                values=("low", "medium", "high"),
+                default="high",
+                off=OFF_IMPOSSIBLE,
+                notes="Carbon requires Google thought signatures on tool continuations",
+            ),
+        ),
+        (
             "gemini-3.8-flash",
             _C(
                 mode=ALWAYS_ON,
@@ -505,6 +516,17 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     ),
     # Hosted models retain their upstream reasoning and replay contracts.
     "alysis": (
+        (
+            "gemini-4-carbon",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "medium", "high"),
+                default="high",
+                off=OFF_IMPOSSIBLE,
+                emits_flat_reasoning_effort=True,
+            ),
+        ),
         ("mistral-large-4", _MISTRAL_LARGE_4_REASONING),
         ("minimax-m3.1-flash", _HOSTED_MINIMAX_M31_FLASH_REASONING),
         (

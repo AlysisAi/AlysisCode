@@ -667,3 +667,27 @@ def test_repeated_browser_staleness_parks_task_without_granting_input(study, mon
     assert not instances[0].closed
     assert runtime.background.claim() is None
     assert len(client.requests) == 2
+
+
+@pytest.mark.parametrize("reason", ["disconnect", "expiry"])
+def test_live_pointer_is_released_when_its_lease_ends(study, monkeypatch, reason):
+    runtime, request, _, _ = setup(study, monkeypatch)
+    _, task, manager, _ = study
+    now = [100.0]
+    runtime.computer_controls.clock = lambda: now[0]
+    request("take")
+    runtime.computer_controls.park(task, [])
+    view, _, _ = manager.views.current("owner", task["bot_id"])
+    events = []
+    view.human_input = events.append
+    event = {"kind": "pointer", "x": 100, "y": 120, "buttons": 1}
+    assert request("input", sequence=1, event=event)["sequence"] == 1
+    if reason == "disconnect":
+        request("disconnect")
+    else:
+        now[0] += 16
+        assert runtime.computer_controls.status(task["bot_id"])["state"] == "paused"
+    assert events == [event, {"kind": "release"}]
+    with pytest.raises(Conflict):
+        request("input", sequence=2, event={**event, "x": 200})
+    assert events == [event, {"kind": "release"}]

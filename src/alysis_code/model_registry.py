@@ -1846,6 +1846,26 @@ for _hosted_id, _sources, _meta in (
         },
     ),
     (
+        "kimi-k3.1-pro",
+        ("https://docs.together.ai/docs/serverless/models",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            "input_cost_per_token": 0.000002,
+            "cache_read_input_cost_per_token": 0.0000002,
+            "output_cost_per_token": 0.00001,
+        },
+    ),
+    (
+        "gemini-4-carbon",
+        ("https://aistudio.google.com/docs/models/gemini-4-carbon",),
+        {
+            "context_window_tokens": 1000000,
+            "max_output_tokens": 16384,
+            # Time-dependent provider rates come from the hosted billing policy.
+        },
+    ),
+    (
         "muse-spark-open",
         ("https://docs.together.ai/docs/serverless/models",),
         {

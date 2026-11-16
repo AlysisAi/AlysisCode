@@ -152,22 +152,23 @@ def workspace_file(operation, args):
         os.close(directory)
 
 
-# The owl desktops people see (AL, 2026-11-07; a bar like Grok Bot's, 2026-11-13): a soft
-# wallpaper and a bar along the bottom with app launchers, the open windows and the computer's
-# clock. The owl's online browser is its own screen with the same look (browser_linux.py).
-# Everything here works offline, like the rest of this desktop. Cosmetic only: a missing tool
-# never stops the desktop.
-WALLPAPER = ("#eef0f3", "#c6cad1")
+# One quiet desktop with a compact dock for launchers and open windows. Cloud
+# Chrome shares this display; standalone local desktops remain offline.
+WALLPAPER = ("#11191c", "#304548")
 DOCK = Path("/tmp/alysis-dock")
 DOCK_APPS = (
-    ("files", "Files", "system-file-manager", ["/usr/bin/pcmanfm", "/workspace"]),
+    ("files", "Files", "folder", ["/usr/bin/pcmanfm", "/workspace"]),
     ("libreoffice", "LibreOffice", "libreoffice-startcenter", ["/usr/bin/libreoffice", "--nologo"]),
     (
         "terminal",
         "Terminal",
-        "utilities-terminal",
+        "/usr/share/pixmaps/xterm-color_48x48.xpm",
         [
             "/usr/bin/xterm",
+            # The viewer owns the clipboard and sends Ctrl+V. Configure our
+            # terminal to consume it just like the desktop's other GUI apps.
+            "-xrm",
+            "XTerm*VT100.translations: #override Ctrl <Key>v: insert-selection(CLIPBOARD)",
             "-fa",
             "DejaVu Sans Mono",
             "-fs",
@@ -181,9 +182,9 @@ DOCK_APPS = (
 )
 TINT2_SETTINGS = """# Alysis owl computer bar
 # 1: the bar
-rounded = 0
+rounded = 12
 border_width = 0
-background_color = #1f2328 94
+background_color = #151c20 100
 border_color = #000000 0
 # 2: the window that has focus, and any button under the pointer
 rounded = 6
@@ -192,9 +193,10 @@ background_color = #ffffff 16
 border_color = #000000 0
 
 panel_items = LTC
-panel_size = 100% 40
-panel_margin = 0 0
-panel_padding = 10 4 8
+panel_size = 100% 48
+panel_shrink = 1
+panel_margin = 0 12
+panel_padding = 12 6 8
 panel_background_id = 1
 panel_position = bottom center horizontal
 panel_layer = top
@@ -207,7 +209,7 @@ mouse_hover_icon_asb = 100 0 12
 launcher_padding = 2 0 8
 launcher_background_id = 0
 launcher_icon_background_id = 0
-launcher_icon_size = 26
+launcher_icon_size = 32
 launcher_icon_theme = Adwaita
 startup_notifications = 0
 launcher_tooltip = 1
@@ -223,11 +225,11 @@ taskbar_padding = 6 0 6
 taskbar_background_id = 0
 taskbar_active_background_id = 0
 taskbar_name = 0
-task_text = 1
+task_text = 0
 task_icon = 1
 task_centered = 0
 task_tooltip = 1
-task_maximum_size = 220 30
+task_maximum_size = 36 36
 task_padding = 6 3 6
 task_font = DejaVu Sans 9
 task_font_color = #ffffff 80
@@ -247,7 +249,7 @@ mouse_scroll_down = none
 
 # Digits only, in any language; the zone name says whose time it is (the computer's, not the
 # person's).
-time1_format = %Y-%m-%d  %H:%M %Z
+time1_format = %H:%M %Z
 time1_font = DejaVu Sans 9
 clock_font_color = #ffffff 85
 clock_padding = 8 0
@@ -256,21 +258,27 @@ clock_background_id = 0
 
 
 def desktop_exec(argv):
-    """Quote argv for a .desktop Exec line (spaces and quotes; % is reserved)."""
+    """Quote the dock argv, including colours that tint2 passes through a shell."""
     quoted = []
     for argument in argv:
         argument = argument.replace("%", "%%")
-        if any(character in argument for character in ' "\\'):
+        if any(character in argument for character in ' #"\\'):
             argument = '"' + argument.replace("\\", "\\\\").replace('"', '\\"') + '"'
         quoted.append(argument)
     return " ".join(quoted)
 
 
-def write_dock(directory=DOCK, available=os.path.exists):
+def write_dock(directory=DOCK, available=os.path.exists, *, browser_request=None):
     """Write the dock's launchers (only for installed apps) and tint2 settings; return the settings."""
     directory.mkdir(parents=True, exist_ok=True)
     launchers = []
-    for name, title, icon, argv in DOCK_APPS:
+    apps = DOCK_APPS
+    if browser_request is not None:
+        apps = (
+            ("chrome", "Google Chrome", "google-chrome", ["/usr/bin/touch", str(browser_request)]),
+            *apps,
+        )
+    for name, title, icon, argv in apps:
         if not available(argv[0]):
             continue
         launcher = directory / f"{name}.desktop"
@@ -312,7 +320,8 @@ def application_argv(argv):
 
 
 class Computer:
-    def __init__(self):
+    def __init__(self, shared_display=None):
+        self.shared_display = shared_display
         self.processes = []
         self.jobs = {}
         self.frame = None
@@ -323,51 +332,59 @@ class Computer:
             "HOME": "/tmp/home",
             "LANG": "C.UTF-8",
         }
-        read_fd, write_fd = os.pipe()
-        try:
-            display = subprocess.Popen(
-                [
-                    "/usr/bin/Xvfb",
-                    "-displayfd",
-                    str(write_fd),
-                    "-screen",
-                    "0",
-                    f"{WIDTH}x{HEIGHT}x24",
-                    "-nolisten",
-                    "tcp",
-                ],
-                env=self.env,
-                pass_fds=(write_fd,),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self.processes.append(display)
-            os.close(write_fd)
-            write_fd = -1
-            # Xvfb may write the number and its newline separately. Closing
-            # the pipe after the first read can give it EPIPE and kill a
-            # display that appeared ready. Keep the read end until the full
-            # bounded startup record arrives (also on a single-core VM).
-            deadline = time.monotonic() + 8
-            data = b""
-            while b"\n" not in data:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or not select.select([read_fd], [], [], remaining)[0]:
-                    raise Rejected("Private display startup timed out.")
-                part = os.read(read_fd, 32)
-                if not part or len(data) + len(part) > 32:
-                    raise Rejected("Private display did not start.")
-                data += part
-            number = data.strip().decode("ascii")
-            if not number.isdigit() or len(number) > 5:
-                raise Rejected("Private display did not start.")
-            self.display = ":" + number
-            self.env["DISPLAY"] = self.display
-        finally:
-            os.close(read_fd)
-            if write_fd >= 0:
+        if shared_display is not None:
+            import re
+
+            if not re.fullmatch(r":[0-9]{1,5}", shared_display):
+                raise Rejected("Invalid owned display.")
+            self.display = shared_display
+            self.env["DISPLAY"] = shared_display
+        else:
+            read_fd, write_fd = os.pipe()
+            try:
+                display = subprocess.Popen(
+                    [
+                        "/usr/bin/Xvfb",
+                        "-displayfd",
+                        str(write_fd),
+                        "-screen",
+                        "0",
+                        f"{WIDTH}x{HEIGHT}x24",
+                        "-nolisten",
+                        "tcp",
+                    ],
+                    env=self.env,
+                    pass_fds=(write_fd,),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self.processes.append(display)
                 os.close(write_fd)
+                write_fd = -1
+                # Xvfb may write the number and its newline separately. Closing
+                # the pipe after the first read can give it EPIPE and kill a
+                # display that appeared ready. Keep the read end until the full
+                # bounded startup record arrives (also on a single-core VM).
+                deadline = time.monotonic() + 8
+                data = b""
+                while b"\n" not in data:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not select.select([read_fd], [], [], remaining)[0]:
+                        raise Rejected("Private display startup timed out.")
+                    part = os.read(read_fd, 32)
+                    if not part or len(data) + len(part) > 32:
+                        raise Rejected("Private display did not start.")
+                    data += part
+                number = data.strip().decode("ascii")
+                if not number.isdigit() or len(number) > 5:
+                    raise Rejected("Private display did not start.")
+                self.display = ":" + number
+                self.env["DISPLAY"] = self.display
+            finally:
+                os.close(read_fd)
+                if write_fd >= 0:
+                    os.close(write_fd)
         self.processes.append(
             subprocess.Popen(
                 application_argv(["/usr/bin/openbox", "--sm-disable"]),
@@ -427,7 +444,11 @@ class Computer:
             return
         try:
             Path(self.env["HOME"]).mkdir(parents=True, exist_ok=True)
-            settings = write_dock()
+            settings = write_dock(
+                browser_request=Path("/run/alysis-launchers/open-browser")
+                if self.shared_display
+                else None
+            )
             self.decorations.append(
                 subprocess.Popen(application_argv(["/usr/bin/tint2", "-c", str(settings)]), **quiet)
             )
@@ -464,7 +485,7 @@ class Computer:
             "width": WIDTH,
             "height": HEIGHT,
             "png": base64.b64encode(png).decode(),
-            "network": "offline",
+            "network": "browser-mediated" if self.shared_display else "offline",
             "untrusted_computer_data": True,
         }
 
@@ -557,7 +578,7 @@ class Computer:
                 "started": True,
                 "exit_code": process.poll(),
                 "verification_required": True,
-                "network": "offline",
+                "network": "browser-mediated" if self.shared_display else "offline",
             }
         output = bytearray()
         deadline = time.monotonic() + timeout
@@ -595,7 +616,7 @@ class Computer:
             "timed_out": timed_out,
             "output_truncated": truncated,
             "untrusted_computer_data": True,
-            "network": "offline",
+            "network": "browser-mediated" if self.shared_display else "offline",
         }
 
     def dispatch(self, operation, args):
@@ -733,15 +754,19 @@ def main():
 
     # Only these standalone, read-only modules exist at this fixed jail path.
     sys.path.insert(0, "/opt")
+    from desktop_rfb import RfbSessions
     from screen_channel import ScreenServer
 
-    computer = Computer()
+    computer = Computer(shared_display=sys.argv[2] if len(sys.argv) == 3 else None)
     screen = ScreenServer(Path("/run/alysis-screen"), sys.argv[1])
     screen.bind(computer.capture)
+    live = RfbSessions(computer.env["DISPLAY"], computer.env)
+    screen.bind_live(live.exchange)
     try:
         serve(computer)
     finally:
         screen.close()
+        live.close()
 
 
 def serve(computer):

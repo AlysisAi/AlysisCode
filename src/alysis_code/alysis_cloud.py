@@ -175,6 +175,11 @@ def account_profile_url() -> str:
     return _function_url("account-profile")
 
 
+def limit_reset_url() -> str:
+    """List or use the account's usage-limit resets with the saved Alysis device key."""
+    return _function_url("limit-reset")
+
+
 def project_avatar_url() -> str:
     """Draw a project's owl icon for the desktop sidebar with the saved Alysis device key."""
     return _function_url("project-avatar")

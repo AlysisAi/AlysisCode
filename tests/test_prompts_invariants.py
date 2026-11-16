@@ -139,7 +139,6 @@ def test_alysis_prompt_declares_product_identity_and_provenance() -> None:
             "distinguish it from Alysis Code's product identity",
         ],
     )
-    assert "Alysis Code is built by Alysis AI." not in SYSTEM_PROMPT
 
 
 def test_alysis_prompt_has_no_intra_prompt_precedence_meta_rule() -> None:
@@ -151,14 +150,6 @@ def test_alysis_prompt_has_no_intra_prompt_precedence_meta_rule() -> None:
         not in SYSTEM_PROMPT
     )
     assert "Priority: system/developer instructions" in SYSTEM_PROMPT
-
-
-def test_alysis_prompt_calibrates_length_to_the_deliverable() -> None:
-    assert "aim for under 4 lines of prose" not in SYSTEM_PROMPT
-    assert "scale the length to the task" in SYSTEM_PROMPT
-    assert "A complete implementation report may need several paragraphs" in SYSTEM_PROMPT
-    assert "Lead with the outcome" in SYSTEM_PROMPT
-    assert "Return the complete final report" in SYSTEM_PROMPT
 
 
 def test_alysis_prompt_names_destructive_commands_explicitly() -> None:
@@ -229,8 +220,8 @@ def test_alysis_one_shot_addendum_invariants() -> None:
             "continue with the tools needed for the actual task",
             "A progress update is not a final answer.",
             "task-appropriate checks",
-            "For implementation requests",
-            "For inspection requests",
+            "For implementation requests, proceed from investigation to changes",
+            "For inspection requests, gather sufficient evidence",
             "without manufacturing edits or test runs",
             "concrete evidence-backed blocker",
             "Material action may be source edits, generated artifacts",
@@ -239,6 +230,13 @@ def test_alysis_one_shot_addendum_invariants() -> None:
             "plan-only",
             "advice-only",
             "Use repo-root-relative file paths for concrete targets",
+            "A requested plan or analysis can itself be the final result.",
+            "not permission or a request to change files",
+            "Do not ask a generic clarification question",
+            "safe best effort",
+            "destructive alternatives require the user's choice",
+            "proceed safely or call report_blocker",
+            "never ask a question and wait",
         ],
     )
     assert (

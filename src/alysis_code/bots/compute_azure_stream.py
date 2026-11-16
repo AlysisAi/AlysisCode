@@ -32,7 +32,7 @@ class AzureComputerStream:
     def request(self, request, *, timeout):
         if self.closed:
             raise ComputeUncertain("Azure computer stream is disconnected.")
-        channel = self._screen if request.get("operation") == "screen" else self._inputs
+        channel = self._screen if request.get("operation") in {"screen", "rfb"} else self._inputs
         try:
             return channel.request(request, timeout=timeout)
         except Exception:
@@ -122,7 +122,7 @@ class AzureExecStream:
             set(request) != {"id", "session", "operation", "arguments"}
             or request["session"] != self.session
             or UUID(request["id"]).hex != request["id"]
-            or request["operation"] not in {"screen", "human_input"}
+            or request["operation"] not in {"screen", "human_input", "rfb"}
             or not isinstance(request["arguments"], dict)
             or (request["operation"] == "screen" and request["arguments"])
             or len(wire.encode()) > 48000

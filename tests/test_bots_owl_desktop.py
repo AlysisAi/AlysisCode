@@ -4,7 +4,7 @@ apps, the open windows and the clock, quoted safely, on the desktop and on the b
 from pathlib import PurePosixPath
 
 from alysis_code.bots.browser_linux import write_browser_bar
-from alysis_code.bots.desktop_worker import DOCK_APPS, write_dock
+from alysis_code.bots.desktop_worker import DOCK_APPS, desktop_exec, write_dock
 
 
 def settings_of(text):
@@ -17,7 +17,8 @@ def test_dock_lists_installed_apps_in_order(tmp_path):
     values = settings_of(text)
     assert values["panel_position"] == "bottom center horizontal"
     assert values["panel_items"] == "LTC"  # launchers, open windows, clock
-    assert values["panel_size"] == "100% 40"
+    assert values["panel_size"] == "100% 48"
+    assert values["panel_shrink"] == "1"
     assert values["strut_policy"] == "follow_size"  # maximised windows end above the bar
     launchers = [
         line.split(" = ")[1] for line in text.splitlines() if line.startswith("launcher_item_app")
@@ -30,7 +31,9 @@ def test_dock_lists_installed_apps_in_order(tmp_path):
     files = (tmp_path / "files.desktop").read_text()
     assert "Exec=/usr/bin/pcmanfm /workspace" in files and "Name=Files" in files
     terminal = (tmp_path / "terminal.desktop").read_text()
-    assert 'Exec=/usr/bin/xterm -fa "DejaVu Sans Mono" -fs 11' in terminal
+    assert '-fa "DejaVu Sans Mono" -fs 11' in terminal
+    assert "insert-selection(CLIPBOARD)" in terminal
+    assert "Ctrl <Key>v" in terminal
 
 
 def test_the_bar_never_hides_or_closes_a_window_and_shows_a_clock_in_digits(tmp_path):
@@ -67,3 +70,20 @@ def test_browser_bar_button_asks_the_controller_and_starts_no_browser(tmp_path):
     assert "chrom" not in exec_line.lower()
     fallback = write_browser_bar(tmp_path / "other", request, available=lambda path: False)
     assert "Icon=web-browser" in (fallback.parent / "browser.desktop").read_text()
+
+
+def test_terminal_launcher_survives_tint2_shell_parsing():
+    import shlex
+
+    argv = next(argv for name, _, _, argv in DOCK_APPS if name == "terminal")
+    assert shlex.split(desktop_exec(argv), comments=True) == argv
+
+
+def test_shared_cloud_dock_opens_managed_chrome_via_request(tmp_path):
+    request = PurePosixPath("/run/alysis-launchers/open-browser")
+    settings = write_dock(tmp_path, available=lambda path: True, browser_request=request)
+    launcher = (tmp_path / "chrome.desktop").read_text()
+    assert "Name=Google Chrome" in launcher
+    assert "Icon=google-chrome" in launcher
+    assert f"Exec=/usr/bin/touch {request}" in launcher
+    assert settings.read_text().count("launcher_item_app") == 4

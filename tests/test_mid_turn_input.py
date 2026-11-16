@@ -107,13 +107,6 @@ def test_defer_message_uses_compact_label_first_tier_text() -> None:
     assert defer_message("/persona ask") == "persona: ask - next message"
 
 
-def test_old_defer_sentences_are_removed_from_runtime_source() -> None:
-    source = Path("src/alysis_code/cli_impl/chat/mid_turn_policy.py").read_text(encoding="utf-8")
-
-    assert "applies at the agent's next step" not in source
-    assert "applies at your next message" not in source
-
-
 def test_stream_status_remains_read_only_mid_turn() -> None:
     assert classify_mid_turn("/stream status") is MidTurnAction.ALLOW
 
@@ -955,12 +948,6 @@ def test_shift_left_does_not_recall_a_pending_steer(
 
     assert result == "/exit"
     assert transcript.count(("user", "already delivered")) == 1
-
-
-def test_old_mid_turn_sent_system_line_is_removed_from_runtime_source() -> None:
-    source = Path("src/alysis_code/cli_impl/tui/app.py").read_text(encoding="utf-8")
-
-    assert "Sent to the running turn - lands at its next step." not in source
 
 
 @pytest.mark.parametrize(

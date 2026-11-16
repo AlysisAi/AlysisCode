@@ -177,7 +177,14 @@ class CloudDesktopFactory:
             ledger.save(bot_id, {**record, "state": "deleted"})
 
     def __call__(self, bot_id, _workspace, *, cancel):
-        return self._acquire(bot_id, "desktop", cancel)
+        surface = self._acquire(bot_id, "desktop", cancel)
+        try:
+            if self.browser_enabled and surface._unified_desktop:
+                surface.start_browser(self.preview_urls, cancel)
+            return surface
+        except BaseException:
+            surface.close()
+            raise
 
     def _acquire(self, bot_id, surface, cancel):
         # Only this Bot's surface attachment/startup is serialized. Reserve a
@@ -369,15 +376,55 @@ class CloudSurface:
             raise DesktopError("Cloud surface was revoked.")
         return pixels
 
+    def rfb(self, args):
+        if not self.alive():
+            raise DesktopError("Computer surface revoked.")
+        result = self._computer.rfb(args)
+        if not self.alive():
+            raise DesktopError("Computer surface revoked.")
+        return result
+
+    @property
+    def network(self):
+        return (
+            "browser-mediated"
+            if self._unified_desktop and self._factory.browser_enabled
+            else "offline"
+        )
+
+    @property
+    def surfaces(self):
+        if self._unified_desktop:
+            return ()  # Browser and applications share one display.
+        return ("desktop", "browser") if self._factory.browser_enabled else ()
+
     def human_input(self, event):
         if self._released:
             raise DesktopError("Cloud surface has been released.")
-        surface = (
-            self._computer._resume_surface
-            if self.surface == "desktop" and self._computer.memory_reopened
-            else None
-        )
-        return self._computer.human_input(event, surface=surface or self.surface)
+        computer = self._computer
+        # The viewer captures the shared computer's active display. Human input
+        # must follow that display even when its manager was bound to the other
+        # surface. Agent operations select their own display in _request.
+        with computer._lock:
+            if isinstance(event, dict) and event.get("kind") == "surface":
+                if self._unified_desktop:
+                    raise DesktopError("This computer has one desktop. Open apps from its dock.")
+                if set(event) != {"kind", "surface"} or event["surface"] not in self.surfaces:
+                    raise DesktopError("Computer surface is unavailable.")
+                target = event["surface"]
+                computer.human_input(
+                    {"kind": "release"}, surface=computer._resume_surface or self.surface
+                )
+                if target == "browser":
+                    computer.start_browser(self._factory.preview_urls, lambda: False)
+                else:
+                    computer._request("observe", {}, cancel=lambda: False)
+                # Selecting an existing browser must also bind its screen. A
+                # release gesture changes no document and clears held input.
+                result = computer.human_input({"kind": "release"}, surface=target)
+                computer._resume_surface = target
+                return result
+            return computer.human_input(event, surface=computer._resume_surface or self.surface)
 
     def finish(self, *, cancel=lambda: False):
         self._release(completed=True, cancel=cancel)
@@ -427,6 +474,7 @@ class CloudDesktop:
         self._task_id = None
         self._browser_states = factory.browser_states
         self._browser_started = False
+        self._unified_desktop = True
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._keepalive_thread = None
@@ -532,33 +580,8 @@ class CloudDesktop:
             wait_for(self.provider, self.ref, "running", timeout=60)
             if cancel():
                 raise CooperativeCancellationError("Computer allocation cancelled.")
-            if self.spec.suspend_mode == "Memory":
-                # The qualified image supplies the OS/dependencies. Deliver this
-                # release's credential-free bridge before its first start, so
-                # the image's old idle-exit behavior cannot erase sleeping apps.
-                for name in ("cloud_desktop_worker.py", "screen_channel.py"):
-                    source = Path(__file__).with_name(name).read_bytes()
-                    target = "/opt/alysis/src/alysis_code/bots/" + name
-                    self.provider.upload(
-                        self.ref, target, [source], size=len(source), cancel=cancel
-                    )
-                    checked = self.provider.run(
-                        self.ref,
-                        [
-                            PYTHON,
-                            "-I",
-                            "-c",
-                            "import hashlib,pathlib;print(hashlib.sha256(pathlib.Path("
-                            + repr(target)
-                            + ").read_bytes()).hexdigest())",
-                        ],
-                        timeout=15,
-                    )
-                    if (
-                        checked.exit_code != 0
-                        or checked.stdout.strip() != hashlib.sha256(source).hexdigest()
-                    ):
-                        raise DesktopError("Computer bridge installation was not verified.")
+            # Run the qualified image as a coherent package. Mixing bridge files
+            # from another release with installed modules invalidates qualification.
             receipt = self.provider.run(
                 self.ref,
                 worker_argv(
@@ -618,6 +641,7 @@ class CloudDesktop:
             raise DesktopError("This connection cannot resume the saved computer memory.")
         self.identity = ComputerIdentity(factory.owner, self.owner, previous["allocation_id"])
         self._browser_started = previous.get("browser_started", False)
+        self._unified_desktop = previous.get("unified_desktop", False) is True
         self._task_id = previous.get("task_id")
         self.ref = ComputerRef(
             previous["provider"], previous["scope"], previous["resource_id"], self.identity
@@ -774,6 +798,7 @@ class CloudDesktop:
                 resume_kind="memory",
                 image=self.spec.image,
                 browser_started=self._browser_started,
+                unified_desktop=self._unified_desktop,
                 task_id=self._task_id,
             )
         if self.ref is not None:
@@ -1295,6 +1320,26 @@ class CloudDesktop:
         }:
             raise ValueError("Unsupported remote computer action.")
         return self._request(operation, arguments, cancel=cancel)
+
+    def rfb(self, args):
+        from .desktop_rfb import validate
+
+        validate(args)
+        if not self.alive():
+            raise DesktopError("Computer is closed.")
+        self._ensure_stream(background=True)
+        identity, session = uuid4().hex, self.identity.allocation_id
+        if self._stream is not None and not self._stream.closed:
+            reply = self._stream.request(
+                {"id": identity, "session": session, "operation": "rfb", "arguments": args},
+                timeout=4,
+            )
+            result = self._stream_reply(reply, identity, session)
+        else:
+            result = self._request("rfb", args, cancel=lambda: False)
+        if not self.alive():
+            raise DesktopError("Computer stream revoked.")
+        return result
 
     def capture(self):
         if not self._view_lock.acquire(blocking=False):

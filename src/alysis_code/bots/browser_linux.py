@@ -58,8 +58,15 @@ class LinuxBrowserComputer:
         profile_store: BrowserProfileStore | None = None,
         account_id: str | None = None,
         system_trust: bool = False,
+        shared_display: str | None = None,
+        open_request: Path | None = None,
+        executable_path: str | None = None,
     ):
         self.owner = bot_id
+        self._shared_display = shared_display is not None
+        self._browser_lock = threading.Lock()
+        self._profile_store, self._account_id = profile_store, account_id
+        self._executable_path = executable_path
         self.preview_urls = preview_urls
         self._directory = tempfile.TemporaryDirectory(prefix="alysis-bot-computer-")
         self._processes = []
@@ -94,55 +101,63 @@ class LinuxBrowserComputer:
                         else ""
                     )
                 )
-            # Xvfb chooses an unused display atomically; no global DISPLAY lookup.
-            xserver = subprocess.Popen(
-                [
-                    "/usr/bin/Xvfb",
-                    "-displayfd",
-                    str(write_fd),
-                    "-screen",
-                    "0",
-                    "1280x800x24",
-                    "-nolisten",
-                    "tcp",
-                ],
-                pass_fds=(write_fd,),
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._processes.append(xserver)
-            os.close(write_fd)
-            write_fd = -1
-            deadline = time.monotonic() + 10
-            data = b""
-            while b"\n" not in data:
-                if cancel():
-                    raise BrowserCancelledError("Computer startup cancelled.")
-                if time.monotonic() >= deadline or xserver.poll() is not None:
-                    raise ValueError("Private Linux display could not start.")
-                if select.select([read_fd], [], [], 0.05)[0]:
-                    part = os.read(read_fd, 32)
-                    if not part:
-                        raise ValueError("Private Linux display closed during startup.")
-                    data += part
-            number = data.strip().decode("ascii")
-            if not number.isdigit() or len(number) > 5:
-                raise ValueError("Invalid private Linux display.")
-            self.display = ":" + number
-            self._processes.append(
-                subprocess.Popen(
-                    ["/usr/bin/openbox", "--sm-disable"],
-                    env={**env, "DISPLAY": self.display},
+            if shared_display is not None:
+                import re
+
+                if not re.fullmatch(r":[0-9]{1,5}", shared_display) or open_request is None:
+                    raise ValueError("An owned shared desktop is required.")
+                self.display = shared_display
+                self._open_request = open_request
+            else:
+                # Xvfb chooses an unused display atomically; no global DISPLAY lookup.
+                xserver = subprocess.Popen(
+                    [
+                        "/usr/bin/Xvfb",
+                        "-displayfd",
+                        str(write_fd),
+                        "-screen",
+                        "0",
+                        "1280x800x24",
+                        "-nolisten",
+                        "tcp",
+                    ],
+                    pass_fds=(write_fd,),
+                    env=env,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-            )
-            self._open_request = root / "bar" / "open-browser"
-            # Before the browser starts, so its maximised window ends above the bar.
-            self._decorate({**env, "DISPLAY": self.display}, root / "bar")
+                self._processes.append(xserver)
+                os.close(write_fd)
+                write_fd = -1
+                deadline = time.monotonic() + 10
+                data = b""
+                while b"\n" not in data:
+                    if cancel():
+                        raise BrowserCancelledError("Computer startup cancelled.")
+                    if time.monotonic() >= deadline or xserver.poll() is not None:
+                        raise ValueError("Private Linux display could not start.")
+                    if select.select([read_fd], [], [], 0.05)[0]:
+                        part = os.read(read_fd, 32)
+                        if not part:
+                            raise ValueError("Private Linux display closed during startup.")
+                        data += part
+                number = data.strip().decode("ascii")
+                if not number.isdigit() or len(number) > 5:
+                    raise ValueError("Invalid private Linux display.")
+                self.display = ":" + number
+                self._processes.append(
+                    subprocess.Popen(
+                        ["/usr/bin/openbox", "--sm-disable"],
+                        env={**env, "DISPLAY": self.display},
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                )
+                self._open_request = root / "bar" / "open-browser"
+                # Before the browser starts, so its maximised window ends above the bar.
+                self._decorate({**env, "DISPLAY": self.display}, root / "bar")
             self.browser = ManagedBrowserService(
                 launcher=PrivateBrowserLauncher(root),
                 config=ManagedBrowserConfig(
@@ -159,6 +174,7 @@ class LinuxBrowserComputer:
             session = self.browser.start(
                 bot_id,
                 allowed_preview_urls_provider=preview_urls,
+                executable_path=executable_path,
                 profile_lease=self._profile_lease,
                 cancel=cancel,
             )
@@ -223,24 +239,54 @@ class LinuxBrowserComputer:
         except OSError:
             pass
 
+    def ensure_browser(self):
+        """Reopen Chrome after its last window closes, without replacing the desktop."""
+        if not self._shared_display:
+            return False
+        with self._browser_lock:
+            if self._closed:
+                raise RuntimeError("Computer is closed.")
+            if self.browser.status(self.owner, self.session_id).state == "running":
+                return False
+            self.browser.close_all()
+            if self._profile_lease is not None:
+                self._profile_lease.release()
+                self._profile_lease = self._profile_store.acquire(self._account_id, self.owner)
+            session = self.browser.start(
+                self.owner,
+                allowed_preview_urls_provider=self.preview_urls,
+                executable_path=self._executable_path,
+                profile_lease=self._profile_lease,
+            )
+            self.session_id = session.session_id
+            return True
+
     def _watch_open_requests(self) -> None:
-        """Open a browser window each time the bar's Browser button is pressed."""
+        """Open the managed browser; retain a request refused before dispatch as busy."""
+        pending = False
         while not self._stop_watching.wait(0.25):
             try:
                 self._open_request.unlink()
+                pending = True
             except OSError:
+                pass
+            if not pending:
                 continue
             try:
-                self.browser.open_window(self.owner, self.session_id)
+                reopened = self.ensure_browser()
+                pending = not (reopened or self.browser.open_window(self.owner, self.session_id))
             except Exception:
-                # A stopped browser makes the computer not alive; it is replaced as usual.
-                pass
+                # An uncertain dispatched action is never replayed automatically.
+                pending = False
 
     def alive(self) -> bool:
         return (
             not self._closed
             and all(p.poll() is None for p in self._processes)
-            and self.browser.status(self.owner, self.session_id).state == "running"
+            and (
+                self._shared_display
+                or self.browser.status(self.owner, self.session_id).state == "running"
+            )
         )
 
     def close(self) -> None:

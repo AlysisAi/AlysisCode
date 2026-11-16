@@ -558,8 +558,9 @@ def test_float_bodies_build_rows_at_their_own_content_width(monkeypatch):
         ("class:tui.picker", "_render_picker_rows", 2, tui_app._picker_content_width_for),
         ("class:tui.help", "_help_rows_for_sections", 1, tui_app._help_content_width_for),
     ]
-    for style, builder_name, width_arg, expected_width in cases:
-        for cols in (60, 80, 90, 91, 95, 100, 160):
+    for cols in (60, 80, 90, 91, 95, 100, 160):
+        app = _captured_app(cols)
+        for style, builder_name, width_arg, expected_width in cases:
             seen: list[int] = []
             real = getattr(tui_app, builder_name)
 
@@ -567,12 +568,11 @@ def test_float_bodies_build_rows_at_their_own_content_width(monkeypatch):
                 _seen.append(a[_i])
                 return _real(*a, **k)
 
-            monkeypatch.setattr(tui_app, builder_name, spy)
-            app = _captured_app(cols)
-            control = _float_body_control(app, style)
-            with _set_app(app):
-                control.text()  # the float's real body function
-            monkeypatch.undo()
+            with monkeypatch.context() as patch:
+                patch.setattr(tui_app, builder_name, spy)
+                control = _float_body_control(app, style)
+                with _set_app(app):
+                    control.text()  # the float's real body function
 
             assert seen, f"{style} body never built rows"
             assert seen[-1] == expected_width(cols), (

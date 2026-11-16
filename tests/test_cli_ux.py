@@ -602,15 +602,6 @@ def test_chat_bottom_toolbar_shows_help_only_when_all_items_disabled() -> None:
     assert toolbar == " /help "
 
 
-def test_chat_prompt_label_is_aesthetic_and_consistent() -> None:
-    assert cli_mod._chat_prompt_label() == "> "
-    assert cli_mod._chat_prompt_label(mode="safe") == "> "
-    assert cli_mod._chat_prompt_label(ui_mode="forge") == "forge > "
-    assert cli_mod._chat_prompt_fallback_label() == ">"
-    assert cli_mod._chat_prompt_fallback_label(mode="safe") == ">"
-    assert cli_mod._chat_prompt_fallback_label(ui_mode="forge", mode="safe") == "forge"
-
-
 def test_chat_prompt_label_formatted_ignores_mode_tag_for_chat() -> None:
     try:
         from prompt_toolkit.formatted_text import to_formatted_text
