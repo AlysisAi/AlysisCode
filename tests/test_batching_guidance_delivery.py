@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
+from _prompt_profile_cases import DISTINCT_PARENT_PROFILES
 
 from alysis_code import agent_loop
 from alysis_code.agent import session as session_mod
@@ -20,7 +21,6 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.types import LLMResponse
 from alysis_code.prompt_guidance_catalog import (
     ALL_GUIDANCE_PROFILES,
-    GUIDANCE_PROFILES,
     PROMPT_FAMILIES,
     subagent_profile,
 )
@@ -137,7 +137,7 @@ def _assert_workflow_delivered(request: dict[str, Any], profile: str) -> str:
     return system
 
 
-@pytest.mark.parametrize("profile", GUIDANCE_PROFILES)
+@pytest.mark.parametrize("profile", DISTINCT_PARENT_PROFILES)
 @pytest.mark.parametrize("one_shot", [False, True], ids=["chat", "one-shot"])
 def test_parent_turn_delivers_workflow_without_rewriting_role_or_history(
     tmp_path: Path,

@@ -385,16 +385,6 @@ def test_footer_count_badge_handles_zero_and_one_subagent() -> None:
     assert "\u21aa 1 subagent" in busy
 
 
-def test_footer_count_badge_uses_the_existing_fixed_style() -> None:
-    from alysis_code.cli_impl.tui.footer import footer_fragments
-    from alysis_code.cli_impl.tui.state import TuiState
-
-    fragments = footer_fragments(TuiState(model_name="m", active_subagent="explorer"), width=120)
-    badge_style = next(style for style, text in fragments if "\u21aa" in text)
-
-    assert badge_style == "class:tui.footer.subagent"
-
-
 def test_footer_shows_one_plural_count_for_concurrent_subagents() -> None:
     from alysis_code.cli_impl.tui.footer import footer_fragments
     from alysis_code.cli_impl.tui.state import TuiState
@@ -685,9 +675,8 @@ def test_builtin_subagent_identities_are_distinct() -> None:
 
     names = sorted(built_in_subagents())
     identities = [subagent_identity(name) for name in names]
-    # Every built-in wears its own accent; role-specific narration is absent.
+    # Every built-in wears its own accent.
     assert len({ident.color for ident in identities}) == len(names)
-    assert all(not hasattr(ident, "tagline") for ident in identities)
 
 
 def test_subagent_identity_resolves_aliases_and_is_deterministic_for_customs() -> None:

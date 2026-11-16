@@ -51,6 +51,21 @@ def test_hosted_bootstrap_rejects_oversized_request():
         bootstrap(io.BytesIO(b"x" * 16385))
 
 
+def test_worker_image_override_preserves_other_bootstrap_settings(monkeypatch):
+    from uuid import uuid4
+
+    payload = json.dumps(values()).encode()
+    original_settings, original_hosted = bootstrap(io.BytesIO(payload))
+    image = str(uuid4())
+    monkeypatch.setenv("ALYSIS_BOTS_WORKER_IMAGE", image)
+    settings, hosted = bootstrap(io.BytesIO(payload))
+    assert asdict(settings) == asdict(original_settings)
+    assert asdict(hosted) == {**asdict(original_hosted), "worker_image": image}
+    monkeypatch.setenv("ALYSIS_BOTS_WORKER_IMAGE", "not-an-image-id")
+    with pytest.raises(ValueError):
+        bootstrap(io.BytesIO(payload))
+
+
 def test_stream_origin_can_be_configured_without_copying_bootstrap_secrets(monkeypatch):
     endpoint = "wss://controller.example/internal/computer-stream"
     monkeypatch.setenv("ALYSIS_BOTS_COMPUTER_STREAM_URL", endpoint)

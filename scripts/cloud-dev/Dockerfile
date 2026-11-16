@@ -12,8 +12,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bubblewrap ca-certificates chromium chromium-sandbox dbus-x11 libnss3-tools \
     fonts-dejavu-core fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
-    git libreoffice-calc libreoffice-impress libreoffice-writer novnc openbox procps ripgrep \
-    websockify x11-utils x11vnc xclip xdotool xvfb \
+    git hsetroot libreoffice-calc libreoffice-impress libreoffice-writer novnc openbox pcmanfm procps ripgrep \
+    tint2 websockify x11-utils x11-xserver-utils x11vnc xclip xdotool xterm xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 alysis \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash alysis \

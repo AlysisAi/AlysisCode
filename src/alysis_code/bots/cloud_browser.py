@@ -96,6 +96,13 @@ class CloudBrowser:
     def bind_task(self, task_id):
         self._surface.bind_task(task_id)
 
+    @property
+    def surfaces(self):
+        return self._surface.surfaces
+
+    def rfb(self, args):
+        return self._surface.rfb(args)
+
     def human_input(self, event):
         return self._surface.human_input(event)
 

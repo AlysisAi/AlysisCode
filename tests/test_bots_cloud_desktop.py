@@ -665,3 +665,25 @@ def test_selective_stop_uses_the_same_owned_cloud_protocol(setup, tmp_path):
         assert request["arguments"] == {"process_id": "owned"}
     finally:
         computer.close()
+
+
+def test_shared_computer_starts_managed_browser_and_uses_one_view(setup, tmp_path, monkeypatch):
+    provider, factory = setup
+    factory.browser_enabled = True
+    surface = factory("bot", tmp_path, cancel=lambda: False)
+    computer = surface._computer
+    assert computer._browser_started
+    assert surface.surfaces == ()
+    assert surface.network == "browser-mediated"
+    actions = []
+    monkeypatch.setattr(
+        computer, "human_input", lambda event, *, surface: actions.append((surface, event))
+    )
+    # Either executor's binding controls the same display, without a screen switch.
+    for binding in ("browser", "desktop"):
+        computer._resume_surface = binding
+        surface.human_input({"kind": "click", "x": 25, "y": 780, "button": 1})
+        assert actions[-1][0] == binding
+    with pytest.raises(DesktopError, match="one desktop"):
+        surface.human_input({"kind": "surface", "surface": "browser"})
+    surface.close()

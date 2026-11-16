@@ -66,23 +66,7 @@ def test_session_store_writes_jsonl(tmp_path: Path) -> None:
     assert [e["type"] for e in events] == ["user_message", "final"]
     assert all("cwd" in event for event in events)
     assert all("repo_root" in event for event in events)
-
-
-def test_session_store_assigns_monotonic_event_ids(tmp_path: Path) -> None:
-    store = SessionStore(
-        enabled=True,
-        sessions_dir=tmp_path,
-        session_id="event-id-test",
-        cwd=".",
-        repo_root=".",
-    )
-    store.append("user_message", {"content": "hi"})
-    store.append("final", {"content": "bye"})
-    store.close()
-
-    events = list(read_session_events(tmp_path / "event-id-test.jsonl"))
-
-    assert [event["event_id"] for event in events] == ["event-id-test:1", "event-id-test:2"]
+    assert [event["event_id"] for event in events] == [f"{sid}:1", f"{sid}:2"]
 
 
 def test_session_store_events_since_returns_only_new_events_and_advances_cursor(

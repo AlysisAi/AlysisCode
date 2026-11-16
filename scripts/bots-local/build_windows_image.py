@@ -121,6 +121,14 @@ def setup_script(wheel_name: str) -> str:
     return (
         """set -eu
 systemctl disable --now ssh.service ssh.socket || true
+bash /usr/local/sbin/alysis-install-chrome
+# Google ships its third-party notices inside the browser, not in Debian's
+# copyright-file location. Preserve the installed build's actual credits.
+install -d /usr/share/doc/google-chrome-stable
+timeout 45 runuser -u alysis -- /usr/bin/google-chrome-stable --headless --disable-gpu --no-first-run --user-data-dir=/tmp/alysis-chrome-notices --dump-dom chrome://credits > /usr/share/doc/google-chrome-stable/copyright
+test -s /usr/share/doc/google-chrome-stable/copyright
+printf '\\nGoogle Chrome terms: https://www.google.com/chrome/terms/\\n' >> /usr/share/doc/google-chrome-stable/copyright
+rm -rf /tmp/alysis-chrome-notices
 install -d /opt/alysis /var/lib/alysis
 install -d -m 0700 -o 1000 -g 1000 """
         + PAYLOAD
@@ -209,6 +217,7 @@ def cloud_config(agent: str, service: str, setup: str, inventory: dict) -> dict:
             "hsetroot",
             "pcmanfm",
             "xterm",
+            "x11vnc",
             "adwaita-icon-theme",
             "libreoffice-writer",
             "libreoffice-calc",
@@ -227,6 +236,18 @@ def cloud_config(agent: str, service: str, setup: str, inventory: dict) -> dict:
             "xauth",
         ],
         "write_files": [
+            {
+                "path": "/var/lib/alysis/vendor-sources.json",
+                "permissions": "0644",
+                "content": json.dumps({"google-chrome-stable": "https://www.google.com/chrome/"}),
+            },
+            {
+                "path": "/usr/local/sbin/alysis-install-chrome",
+                "permissions": "0700",
+                "content": (
+                    Path(__file__).parent.parent / "bots-cloud" / "install-chrome.sh"
+                ).read_text(),
+            },
             {"path": "/usr/local/lib/alysis-vm-guest.py", "permissions": "0600", "content": agent},
             {
                 "path": "/etc/systemd/system/alysis-vm-guest.service",

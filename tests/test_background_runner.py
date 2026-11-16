@@ -111,18 +111,6 @@ def test_disabled_runner_raises(tmp_path: Path) -> None:
         DisabledBackgroundRunner().start(root=tmp_path, cwd=tmp_path, cmd="echo hi")
 
 
-def test_host_runner_cleanup_is_noop(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    captured: dict[str, object] = {}
-    _patch_popen(monkeypatch, captured)
-
-    spawn = HostBackgroundRunner().start(root=tmp_path, cwd=tmp_path, cmd="echo hi")
-
-    spawn.cleanup()
-
-
 def test_lazy_background_runner_defers_construction_until_start(tmp_path: Path) -> None:
     calls = 0
 

@@ -51,6 +51,7 @@ def receive(connection):
 
 
 def exchange(session, request, *, timeout=45, screen=False):
+    screen = screen or request.get("operation") == "rfb"
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(timeout)
         connection.connect(str(root_for(session) / ("screen.sock" if screen else "control.sock")))
@@ -172,6 +173,27 @@ def serve(session, *, memory_sleep=False):
     checkpoints.mkdir(mode=0o700)
     checkpoint_transfers = Transfers(root, checkpoints)
     desktop = None
+    display = None
+    launchers = root / "launchers"
+    launchers.mkdir(mode=0o700)
+
+    def ensure_desktop(*, shared=False):
+        nonlocal desktop, display
+        if desktop is None:
+            if shared:
+                from .linux_display import PrivateLinuxDisplay
+
+                display = PrivateLinuxDisplay()
+                desktop = OfflineLinuxDesktop(
+                    session, workspace, shared_display=display.name, launchers=launchers
+                )
+            else:
+                desktop = OfflineLinuxDesktop(session, workspace)
+        if shared and display is None:
+            raise DesktopError("Open a new computer to use the shared Cloud desktop.")
+        screen.bind_live(desktop.rfb)
+        return desktop
+
     browser = None
     active_surface = None
     browser_restore = None
@@ -261,12 +283,15 @@ def serve(session, *, memory_sleep=False):
                         elif operation == "browser_start":
                             if browser is not None:
                                 raise ValueError("Browser already started.")
+                            ensure_desktop(shared=True)
                             browser = BrowserBridge(
                                 session,
                                 root,
                                 args["preview_urls"],
                                 persistent=args.get("persistent", False),
                                 restore=browser_restore,
+                                shared_display=display.name,
+                                open_request=launchers / "open-browser",
                             )
                             if browser_restore is not None:
                                 browser_restore.unlink()
@@ -296,8 +321,7 @@ def serve(session, *, memory_sleep=False):
                             screen.bind(None)
                             result = browser.snapshot()
                         elif operation == "capture":
-                            if desktop is None:
-                                desktop = OfflineLinuxDesktop(session, workspace)
+                            ensure_desktop()
                             screen.bind(desktop.capture)
                             active_surface = "desktop"
                             result = {"png": base64.b64encode(desktop.capture()).decode()}
@@ -334,8 +358,7 @@ def serve(session, *, memory_sleep=False):
                             target = root / ("export-" + uuid4().hex)
                             result = {**pack_workspace(workspace, target), "path": str(target)}
                         else:
-                            if desktop is None:
-                                desktop = OfflineLinuxDesktop(session, workspace)
+                            ensure_desktop()
                             screen.bind(desktop.capture)
                             active_surface = "desktop"
                             result = desktop.call(session, operation, args)
@@ -378,6 +401,8 @@ def serve(session, *, memory_sleep=False):
             browser.close()
         if desktop is not None:
             desktop.close()
+        if display is not None:
+            display.close()
 
 
 def main():

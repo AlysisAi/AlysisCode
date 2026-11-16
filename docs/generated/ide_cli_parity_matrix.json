@@ -1575,10 +1575,11 @@
       "surface": "cli_command",
       "names": [
         "account-profile",
+        "limit-reset",
         "project-avatar"
       ],
       "status": "intentionally_cli_only",
-      "rationale": "Change the name and photo of the signed-in Alysis Code account, and design the owl of a desktop app project. The saved device key authenticates both, and the desktop app runs them with --json. VS Code has no account sign-in (login and logout stay blocked), no account profile page and no project avatars."
+      "rationale": "Change the name and photo of the signed-in Alysis Code account, list or use the usage-limit resets the account was given, and design the owl of a desktop app project. The saved device key authenticates each, and the desktop app runs them with --json. VS Code has no account sign-in (login and logout stay blocked), no account profile or billing page and no project avatars."
     },
     {
       "id": "ide.methods.desktop_host_responses",

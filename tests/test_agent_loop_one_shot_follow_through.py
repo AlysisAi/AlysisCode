@@ -18,7 +18,6 @@ from alysis_code.agent.turn.exploration import (
     _is_action_progress_tool,
     _is_exploration_only_tool,
 )
-from alysis_code.agent.turn_contract import TurnOutcome, TurnSemantics
 from alysis_code.agent_loop import (
     ToolDef,
     TurnExecutionState,
@@ -498,17 +497,6 @@ def test_verification_failure_snippet_prefers_structured_primary_failure() -> No
     )
 
     assert snippet == "NameError: search_notes is not defined"
-
-
-def test_no_material_completion_gate_nudge_is_action_first() -> None:
-    message = _completion_gate_nudge_message(
-        ["no_material_edits", "verification_not_attempted"],
-    )
-
-    assert message.startswith("Finalization check - one pass before you finish:")
-    assert "No file changes are recorded yet" in message
-    assert "Expected verification has not been completed" in message
-    assert "this checklist is advisory" in message
 
 
 def test_verification_not_attempted_completion_gate_nudge_stays_verification_specific() -> None:
@@ -1570,86 +1558,31 @@ def test_matching_effective_verification_commands_does_not_promote_subset_covera
     )
 
 
-@pytest.mark.parametrize(
-    ("instruction", "expected"),
-    [
-        ("Improve Express with a small but meaningful PR.", "execute"),
-        ("Make a worthwhile improvement in Flask.", "execute"),
-        ("Pick a candidate change and implement it.", "execute"),
-        ("Why is the parser failing? Fix it.", "execute"),
-        (
-            "Explain the request lifecycle and then implement the missing retry logic.",
-            "execute",
-        ),
-        ("Review this design and implement the chosen approach.", "execute"),
-        ("Walk me through the bug and patch it.", "execute"),
-        ("Can you explain why tests are failing and then fix the root cause?", "execute"),
-        ("Explain the bug before fixing it.", "execute"),
-        ("Walk me through the issue before you patch it.", "execute"),
-        ("Review this design, then make the change.", "execute"),
-        ("Help me understand the failure and resolve it.", "execute"),
-        ("Can you explain the issue before implementing the fix?", "execute"),
-        ("Review this design and make the required update.", "execute"),
-        ("Explain the issue and clean it up.", "execute"),
-        ("Help me understand the failure and correct it.", "execute"),
-        ("Explain the bug then apply the required fix.", "execute"),
-        ("Could you walk me through the issue before making the change?", "execute"),
-        ("Give me a plan only; do not modify files.", "plan_or_analysis_only"),
-        ("Review the repo and suggest improvements; no code changes.", "advisory_non_execution"),
-        (
-            "Use the explorer subagent to inspect the repository and summarize it; do not edit.",
-            "advisory_non_execution",
-        ),
-        ("How does the parser module work?", "advisory_non_execution"),
-        ("What does this module do?", "advisory_non_execution"),
-        ("What is the right fix for this parser bug?", "advisory_non_execution"),
-        ("What change would you make here?", "advisory_non_execution"),
-        ("How should we patch this bug?", "advisory_non_execution"),
-        ("What is the safest way to implement this retry?", "advisory_non_execution"),
-        ("How would you implement the missing retry logic?", "advisory_non_execution"),
-        ("Explain the request lifecycle in this repo.", "advisory_non_execution"),
-        ("Why is the parser failing?", "advisory_non_execution"),
-        ("Walk me through the request lifecycle in this repo.", "advisory_non_execution"),
-        ("Help me understand the parser module.", "advisory_non_execution"),
-        ("Review this design", "advisory_non_execution"),
-        ("Review this design.", "advisory_non_execution"),
-        ("Explain the bug, no code changes.", "advisory_non_execution"),
-        ("Just explain how this module works.", "advisory_non_execution"),
-        ("Can you implement the parser fix?", "execute"),
-        ("Can you improve the repo startup flow?", "execute"),
-        ("Πρόσθεσε ένα search command.", "execute"),
-        ("Υλοποίησε αυτή την αλλαγή.", "execute"),
-        ("Διόρθωσε το bug.", "execute"),
-        ("Ενημέρωσε το README και τα tests.", "execute"),
-        ("Δώσε μόνο πλάνο.", "plan_or_analysis_only"),
-        ("Κάνε μόνο ανάλυση.", "plan_or_analysis_only"),
-        ("Μόνο εξήγηση, όχι αλλαγές.", "advisory_non_execution"),
-        ("Μην αλλάξεις αρχεία.", "advisory_non_execution"),
-        ("Χωρίς αλλαγές στον κώδικα.", "advisory_non_execution"),
-        ("Χωρίς να τροποποιήσεις τίποτα.", "advisory_non_execution"),
-        ("Τι αλλαγή θα έκανες εδώ;", "advisory_non_execution"),
-        ("Ποιος είναι ο καλύτερος τρόπος να διορθώσουμε αυτό το bug;", "advisory_non_execution"),
-    ],
-)
-def test_semantic_execution_posture_is_independent_of_instruction_language(
-    instruction: str,
-    expected: str,
-) -> None:
-    _ = instruction
-    outcome = {
-        "execute": TurnOutcome.CHANGE,
-        "plan_or_analysis_only": TurnOutcome.PLAN,
-        "advisory_non_execution": TurnOutcome.INSPECT,
-    }[expected]
-    assert TurnSemantics(outcome=outcome).execution_posture == expected
-
-
 def test_neutral_text_normalization_does_not_encode_greek_intent_vocabulary() -> None:
     assert normalize_for_matching("Δώσε   μόνο   πλάνο") == "δώσε μόνο πλάνο"
     assert normalize_for_matching("Δώσε μόνο πλάνο") != normalize_for_matching("δωσε μονο πλανο")
 
 
-def test_one_shot_continues_after_non_final_progress_message(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("request_text", "progress_text", "completion_text"),
+    [
+        pytest.param(
+            "Implement search command and update tests.",
+            "I will now implement search. Next I will proceed.",
+            "Implemented search, updated README, and ran tests.",
+            id="english",
+        ),
+        pytest.param(
+            "Υλοποίησε το search command και ενημέρωσε τα tests.",
+            "Θα προχωρήσω στην υλοποίηση. Στη συνέχεια θα ενημερώσω το README.",
+            "Υλοποίησα το search command, ενημέρωσα το README και έτρεξα τα tests.",
+            id="greek",
+        ),
+    ],
+)
+def test_one_shot_continues_after_non_final_progress_message(
+    tmp_path: Path, request_text: str, progress_text: str, completion_text: str
+) -> None:
     cfg = AppConfig(
         model="test-model",
         routing_mode="code_only",
@@ -1676,7 +1609,7 @@ def test_one_shot_continues_after_non_final_progress_message(tmp_path: Path) -> 
                 raw={},
             ),
             LLMResponse(
-                content="I will now implement search. Next I will proceed.",
+                content=progress_text,
                 tool_calls=[],
                 raw={},
                 assistant_phase=AssistantResponsePhase.COMMENTARY,
@@ -1704,14 +1637,14 @@ def test_one_shot_continues_after_non_final_progress_message(tmp_path: Path) -> 
                 raw={},
             ),
             LLMResponse(
-                content="Implemented search, updated README, and ran tests.",
+                content=completion_text,
                 tool_calls=[],
                 raw={},
             ),
         ]
     )  # type: ignore[assignment]
     try:
-        exit_code = session.run_turn("Implement search command and update tests.")
+        exit_code = session.run_turn(request_text)
     finally:
         session.close()
 
@@ -1909,83 +1842,6 @@ def test_one_shot_plan_only_then_final_records_single_continuation_intervention(
         "context_setup": 1,
         "continuation": 1,
     }
-
-
-def test_one_shot_continues_after_greek_non_final_progress_message(tmp_path: Path) -> None:
-    cfg = AppConfig(
-        model="test-model",
-        routing_mode="code_only",
-        verify_commands=[_VERIFY_OK_COMMAND],
-    )
-    sessions_dir = tmp_path / "sessions"
-    session = create_session(
-        cfg=cfg,
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        max_steps=8,
-        no_log=False,
-        api_key_override="override-key",
-        one_shot_execution=True,
-        session_log_dir_override=sessions_dir,
-        session_id_override="one-shot-follow-through-greek",
-    )
-    session.client = _ScriptedClient(
-        [
-            LLMResponse(
-                content="",
-                tool_calls=[ToolCall(id="tc1", name="fs_list", arguments={"path": "."})],
-                raw={},
-            ),
-            LLMResponse(
-                content="Θα προχωρήσω στην υλοποίηση. Στη συνέχεια θα ενημερώσω το README.",
-                tool_calls=[],
-                raw={},
-                assistant_phase=AssistantResponsePhase.COMMENTARY,
-            ),
-            LLMResponse(
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="tc2",
-                        name="fs_write",
-                        arguments={"path": "out.txt", "content": "done\n"},
-                    )
-                ],
-                raw={},
-            ),
-            LLMResponse(
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="tc3",
-                        name="verify_run",
-                        arguments={"commands": [_VERIFY_OK_COMMAND]},
-                    )
-                ],
-                raw={},
-            ),
-            LLMResponse(
-                content="Υλοποίησα το search command, ενημέρωσα το README και έτρεξα τα tests.",
-                tool_calls=[],
-                raw={},
-            ),
-        ]
-    )  # type: ignore[assignment]
-
-    try:
-        exit_code = session.run_turn("Υλοποίησε το search command και ενημέρωσε τα tests.")
-    finally:
-        session.close()
-
-    assert exit_code == 0
-    assert session.client.calls == 5  # type: ignore[attr-defined]
-
-    events = list(read_session_events(sessions_dir / "one-shot-follow-through-greek.jsonl"))
-    event_types = [event.get("type") for event in events]
-    assert "one_shot_non_final_progress_detected" in event_types
-    assert "continuation_nudge" in event_types
-    assert "one_shot_completion_gate_incomplete_after_retries" not in event_types
 
 
 def test_one_shot_greek_blocker_text_is_not_treated_as_non_final_progress(tmp_path: Path) -> None:

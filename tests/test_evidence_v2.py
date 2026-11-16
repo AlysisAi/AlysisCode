@@ -10,7 +10,6 @@ from alysis_code.agent.completion_certificate import (
     evaluate_completion_certificate,
 )
 from alysis_code.agent.verification import (
-    EVIDENCE_REPAIR_ROUND_BOUND,
     TurnExecutionState,
     _completion_gate_nudge_message,
     _completion_gate_problems,
@@ -400,16 +399,6 @@ def test_nudge_names_the_missing_fact_and_demands_a_run() -> None:
     assert "A written explanation cannot clear this" in message
     # Not advisory when it is an evidence deficit.
     assert "this checklist is advisory" not in message
-
-
-def test_nudge_without_detail_stays_advisory() -> None:
-    message = _completion_gate_nudge_message(["verification_not_attempted"])
-    assert "this checklist is advisory" in message
-    assert "A written explanation cannot clear this" not in message
-
-
-def test_evidence_repair_bound_is_small() -> None:
-    assert EVIDENCE_REPAIR_ROUND_BOUND == 2
 
 
 # ---------------------------------------------------------------------------

@@ -287,6 +287,21 @@ def _account_paid(value: object) -> dict[str, Any] | None:
     from .profile_presets import model_display_name
 
     result: dict[str, Any] = {"plan": plan, "plan_name": name}
+    cloud_credits = value.get("cloud")
+    if (
+        isinstance(cloud_credits, dict)
+        and type(cloud_credits.get("included_credits")) is int
+        and 0 <= cloud_credits["included_credits"] <= 2**53 - 1
+        and cloud_credits.get("separate_balance") is True
+        and cloud_credits.get("charging_status") == "pending"
+        and cloud_credits.get("max_bots") is None
+    ):
+        result["cloud"] = {
+            "included_credits": cloud_credits["included_credits"],
+            "separate_balance": True,
+            "charging_status": "pending",
+            "max_bots": None,
+        }
     base = _account_int(value.get("base_monthly_credits_microusd"), allow_none=True)
     unit = _account_int(value.get("ledger_microusd_per_base_credit"), allow_none=True)
     monthly = _account_int(value.get("monthly_credits_microusd"))
@@ -642,6 +657,162 @@ def update_account_profile(
     )
 
 
+# One kind today (AL, 2026-11-16): the weekly reset refills the weekly and the 5-hour limits.
+LIMIT_RESET_KINDS = ("weekly",)
+_LIMIT_RESET_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_LIMIT_RESET_RESPONSE_MAX = 65_536
+
+
+@dataclass(frozen=True)
+class LimitReset:
+    """A usage-limit reset the account was given: ``kind`` is "weekly"."""
+
+    id: str
+    kind: str
+    label: str | None
+    expires_at: str
+
+
+@dataclass(frozen=True)
+class LimitResetUse:
+    """A reset that was just used, and the resets still left."""
+
+    kind: str
+    used_at: str
+    resets: tuple[LimitReset, ...]
+
+
+class LimitResetError(RuntimeError):
+    """A reset that could not be listed or used; ``reason`` is a stable code for callers."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+# The server's own refusals (error codes from functions/limit-reset); any other 404 means the
+# account server has no reset endpoint yet.
+_LIMIT_RESET_REFUSALS = {
+    "reset_unavailable": ("unavailable", "This reset isn't available for your account."),
+    "reset_already_used": ("already_used", "This reset was already used."),
+    "reset_expired": ("expired", "This reset has expired."),
+}
+_LIMIT_RESET_ERRORS = {
+    400: ("invalid", "This reset can't be used."),
+    401: ("invalid_key", "Your Alysis Code sign-in has expired. Sign in again to use your resets."),
+    404: ("unsupported", "Limit resets aren't available from your account yet."),
+    429: ("rate_limited", "Too many tries in a short time. Wait a minute and try again."),
+}
+
+
+def _limit_reset(value: object) -> LimitReset | None:
+    if not isinstance(value, dict):
+        return None
+    reset_id, kind, expires = value.get("id"), value.get("kind"), value.get("expires_at")
+    label = value.get("label")
+    if (
+        not isinstance(reset_id, str)
+        or not _LIMIT_RESET_ID.fullmatch(reset_id)
+        or kind not in LIMIT_RESET_KINDS
+        or not isinstance(expires, str)
+        or len(expires) > 64
+        or (label is not None and not isinstance(label, str))
+    ):
+        return None
+    try:
+        datetime.fromisoformat(expires)
+    except ValueError:
+        return None
+    return LimitReset(id=reset_id, kind=kind, label=_account_text(label), expires_at=expires)
+
+
+def _limit_resets(value: object) -> tuple[LimitReset, ...] | None:
+    if not isinstance(value, list) or len(value) > 100:
+        return None
+    # A kind this engine doesn't know yet is left out rather than misnamed; anything else
+    # malformed makes the whole answer unreadable.
+    known = [
+        item
+        for item in value
+        if not (isinstance(item, dict) and isinstance(item.get("kind"), str))
+        or item["kind"] in LIMIT_RESET_KINDS
+    ]
+    resets = tuple(_limit_reset(item) for item in known)
+    return None if any(reset is None for reset in resets) else resets  # type: ignore[return-value]
+
+
+def _limit_reset_call(body: dict[str, Any] | None, timeout_s: float) -> dict[str, Any]:
+    key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+    if not key:
+        raise LimitResetError("signed_out", "No Alysis Code account is connected.")
+    unavailable = "Your resets couldn't be read right now. Try again later."
+    try:
+        request = urllib.request.Request(
+            cloud.limit_reset_url(),
+            method="POST" if body is not None else "GET",
+            data=json.dumps(body).encode("utf-8") if body is not None else None,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+                **({"Content-Type": "application/json"} if body is not None else {}),
+            },
+        )
+        with urllib.request.build_opener(_AccountNoRedirect()).open(
+            request, timeout=timeout_s
+        ) as response:
+            raw = response.read(_LIMIT_RESET_RESPONSE_MAX + 1)
+    except urllib.error.HTTPError as exc:
+        try:
+            code = json.loads(exc.read(4096)).get("error")
+        except (ValueError, UnicodeDecodeError, AttributeError, OSError):
+            code = None
+        refusal = _LIMIT_RESET_REFUSALS.get(code) if isinstance(code, str) else None
+        reason, message = refusal or _LIMIT_RESET_ERRORS.get(exc.code, ("unavailable", unavailable))
+        raise LimitResetError(reason, message) from None
+    except cloud.AlysisCloudConfigError as exc:
+        raise LimitResetError("unavailable", str(exc)) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise LimitResetError(
+            "offline",
+            "Couldn't reach your Alysis Code account. Check your connection and try again.",
+        ) from None
+    try:
+        payload = json.loads(raw) if len(raw) <= _LIMIT_RESET_RESPONSE_MAX else None
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise LimitResetError("unavailable", unavailable)
+    return payload
+
+
+def list_limit_resets(*, timeout_s: float = 15) -> tuple[LimitReset, ...]:
+    """The usage-limit resets the signed-in account can use now, soonest expiry first."""
+    resets = _limit_resets(_limit_reset_call(None, timeout_s).get("resets"))
+    if resets is None:
+        raise LimitResetError(
+            "unavailable", "Your resets couldn't be read right now. Try again later."
+        )
+    return resets
+
+
+def use_limit_reset(reset_id: str, *, timeout_s: float = 20) -> LimitResetUse:
+    """Use one reset now: the weekly and the 5-hour limits go back to full. It cannot be undone.
+
+    Credits and the plan's regular schedule do not change.
+    """
+    chosen = reset_id.strip().lower() if isinstance(reset_id, str) else ""
+    if not _LIMIT_RESET_ID.fullmatch(chosen):
+        raise LimitResetError("invalid", "This reset can't be used.")
+    payload = _limit_reset_call({"reset_id": chosen}, timeout_s)
+    kind, used_at = payload.get("kind"), payload.get("used_at")
+    resets = _limit_resets(payload.get("resets"))
+    if kind not in LIMIT_RESET_KINDS or not isinstance(used_at, str) or resets is None:
+        raise LimitResetError(
+            "unavailable", "The reset may not have been used. Check your usage before trying again."
+        )
+    return LimitResetUse(kind=kind, used_at=used_at, resets=resets)
+
+
 PROJECT_AVATAR_NAME_MAX = 80
 PROJECT_AVATAR_ABOUT_MAX = 500
 PROJECT_AVATAR_RESPONSE_MAX = 65_536
@@ -893,6 +1064,12 @@ def format_paid_plan_details(status: TrialStatus, *, detailed: bool = False) -> 
                 "",
             ]
         )
+        if paid.get("cloud", {}).get("included_credits"):
+            lines.insert(
+                -1,
+                f"{paid['cloud']['included_credits']:,} cloud credits included in a separate balance. "
+                "Cloud charging and bot limits are pending.",
+            )
         names = [row.get("label") or model_display_name(row["model"]) for row in models]
         width = max([5, *(len(name) for name in names)])
         lines.append(f"  {'Model':<{width}}  {'Usage credits':>15}  Status")

@@ -105,7 +105,7 @@ async def relay(session, config):
                     or set(request) != {"id", "session", "operation", "arguments"}
                     or request["session"] != session
                     or UUID(request["id"]).hex != request["id"]
-                    or request["operation"] not in {"screen", "human_input"}
+                    or request["operation"] not in {"screen", "human_input", "rfb"}
                     or not isinstance(request["arguments"], dict)
                     or (request["operation"] == "screen" and request["arguments"])
                     or request["operation"] in pending
@@ -202,7 +202,7 @@ def stdio(session):
             or set(request) != {"id", "session", "operation", "arguments"}
             or request["session"] != session
             or UUID(request["id"]).hex != request["id"]
-            or request["operation"] not in {"screen", "human_input"}
+            or request["operation"] not in {"screen", "human_input", "rfb"}
             or not isinstance(request["arguments"], dict)
             or (request["operation"] == "screen" and request["arguments"])
         ):

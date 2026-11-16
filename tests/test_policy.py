@@ -16,6 +16,8 @@ from alysis_code.policy import evaluate_shell_command
         "rm -rf -- /",
         "rm -rf --no-preserve-root build",
         "sudo rm -rf /",
+        "command rm -rf /",
+        "busybox rm -rf /",
         "rm -rf ~",
         "rm -rf ~/",
         "rm -rf $HOME",
@@ -141,20 +143,6 @@ def test_policy_allows_safe_rm_without_recursive_force_combo() -> None:
     d = evaluate_shell_command("rm -f file.txt")
     assert d.allowed is True
     assert d.needs_confirm is False
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    [
-        "command rm -rf /",
-        "busybox rm -rf /",
-        "sudo rm -rf /",
-        "rm -rf $HOME",
-    ],
-)
-def test_policy_blocks_rm_indirection_and_expansion_variants(cmd: str) -> None:
-    d = evaluate_shell_command(cmd)
-    assert d.allowed is False
 
 
 @pytest.mark.parametrize(

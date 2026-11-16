@@ -31,23 +31,34 @@ def configuration(
     target: str, environment: Mapping[str, str], scripts: Path = SCRIPTS
 ) -> tuple[Path, dict]:
     runner_os, runner_arch, directory, builder = TARGETS[target]
-    required = ("RUNNER_TEMP", "ImageOS", "ImageVersion")
+    runner_environment = environment.get("RUNNER_ENVIRONMENT")
+    if runner_environment == "github-hosted":
+        image_os = environment.get("ImageOS")
+        image_version = environment.get("ImageVersion")
+    elif runner_environment == "self-hosted":
+        image_os = runner_os
+        # Owner-maintained immutable OS/compiler/SDK identity; fail closed without it.
+        image_version = environment.get("ALYSIS_RUNNER_IMAGE_ID")
+    else:
+        image_os = image_version = None
     if (
-        environment.get("RUNNER_ENVIRONMENT") != "github-hosted"
-        or environment.get("RUNNER_OS") != runner_os
+        environment.get("RUNNER_OS") != runner_os
         or environment.get("RUNNER_ARCH") != runner_arch
-        or any(not environment.get(name) for name in required)
+        or not environment.get("RUNNER_TEMP")
+        or not image_os
+        or not image_version
     ):
-        raise ValueError("OpenSSL caching requires the matching hosted runner and image identity")
+        raise ValueError("OpenSSL caching requires the matching runner and explicit image identity")
     # Resolve the parent, never a restored prefix that could itself be a symlink.
     prefix = Path(environment["RUNNER_TEMP"]).resolve() / directory
     identity = {
-        "schema": 1,
+        "schema": 2,
         "target": target,
         "runner_os": runner_os,
         "runner_arch": runner_arch,
-        "image_os": environment["ImageOS"],
-        "image_version": environment["ImageVersion"],
+        "runner_environment": runner_environment,
+        "image_os": image_os,
+        "image_version": image_version,
         "prefix": prefix.as_posix(),
         # Builder bytes bind the source checksum, version, flags and upstream tests.
         "inputs": {

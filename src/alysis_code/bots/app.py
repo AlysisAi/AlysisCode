@@ -540,9 +540,9 @@ def create_app(
         ]
 
     @app.get("/v1/bots/{bot_id}/computer")
-    def bot_computer(bot_id: str):
+    def bot_computer(bot_id: str, status_only: bool = False):
         store.bot(settings.owner, bot_id)
-        frame = computers.frame(settings.owner, bot_id)
+        frame = (computers.status if status_only else computers.frame)(settings.owner, bot_id)
         phase = computers.lifecycle(settings.owner, bot_id)
         if phase is not None:
             frame["lifecycle"] = phase
@@ -556,6 +556,25 @@ def create_app(
             frame["resume_kind"] = "memory"
             frame["recovery_available"] = factory.recovery_available(bot_id)
         return frame
+
+    @app.get("/v1/bots/{bot_id}/computer/status")
+    def bot_computer_status(bot_id: str):
+        return bot_computer(bot_id, status_only=True)
+
+    @app.post("/v1/bots/{bot_id}/computer/live")
+    async def bot_live_display(bot_id: str, request: Request):
+        await asyncio.to_thread(store.bot, settings.owner, bot_id)
+        try:
+            value = await request.json()
+            if not isinstance(value, dict) or set(value) != {"session_id", "stream"}:
+                raise ValueError
+            return await asyncio.to_thread(
+                computers.live_display, settings.owner, bot_id, value["session_id"], value["stream"]
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=409, detail="Desktop stream unavailable. Reconnect the viewer."
+            ) from None
 
     @app.post("/v1/bots/{bot_id}/computer/open", status_code=202)
     def open_bot_computer(bot_id: str):

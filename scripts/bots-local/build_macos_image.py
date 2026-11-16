@@ -8,6 +8,7 @@ Only the image-building VM has a read-only package share. Task VMs have none.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import platform
@@ -44,6 +45,55 @@ def download(url, destination, expected, algorithm):
         temporary.unlink()
         raise ValueError("Downloaded image component failed verification.")
     temporary.replace(destination)
+
+
+def compressed_download(image):
+    """Compress the disk for download (AL, 2026-11-16).
+
+    The app downloads the .gz file, checks both its checksum and the checksum of
+    the disk it expands to, and writes runs of zeros back as holes, so the disk
+    stays sparse on the Mac.
+    """
+    compressed = image.with_name(image.name + ".gz")
+    with image.open("rb") as source, gzip.open(compressed, "wb", compresslevel=6) as target:
+        shutil.copyfileobj(source, target, 4 * 1024 * 1024)
+    return {
+        "name": compressed.name,
+        "sha256": digest(compressed),
+        "encoding": "gzip",
+        "size": compressed.stat().st_size,
+    }
+
+
+def helper_notice(recipe, license_text):
+    """vfkit's credit for THIRD-PARTY-NOTICES.txt, with its whole license.
+
+    The app downloads vfkit from the update server, where the notices are published next to
+    it, so the license text travels in the notices rather than in a separate file.
+    """
+    return (
+        "vfkit v"
+        + recipe["helper_version"]
+        + " (the Mac hypervisor helper): Apache License 2.0\n\n"
+        + license_text.decode("utf-8").strip()
+        + "\n\n"
+    )
+
+
+def image_manifest(recipe, helper, image, licenses, inventory):
+    """What the engine verifies and the app downloads on first use."""
+    return {
+        "schema": 1,
+        "platform": "macos",
+        "architecture": "arm64",
+        "qualification": "private-test",
+        "hypervisor_version": recipe["helper_version"],
+        "helper": {"name": helper.name, "sha256": digest(helper)},
+        "image": {"name": image.name, "sha256": digest(image)},
+        "downloads": {image.name: compressed_download(image)},
+        "license_pack": licenses,
+        **inventory,
+    }
 
 
 def read_exact(connection, count):
@@ -107,13 +157,16 @@ def main():
     helper = directory / "vfkit"
     download(recipe["base_url"], base, recipe["base_sha512"], "sha512")
     download(recipe["helper_url"], helper, recipe["helper_sha256"], "sha256")
+    download(
+        recipe["chrome_url"],
+        payload / "google-chrome-stable.deb",
+        recipe["chrome_sha256"],
+        "sha256",
+    )
     helper.chmod(0o755)
     license_text = urllib.request.urlopen(recipe["helper_license_url"], timeout=30).read()
     (directory / "VFKIT-LICENSE").write_bytes(license_text)
-    helper_notice = (
-        "vfkit v" + recipe["helper_version"] + " (the Mac hypervisor helper): Apache License 2.0; "
-        "see VFKIT-LICENSE.\n\n"
-    )
+    notice = helper_notice(recipe, license_text)
     with tarfile.open(base, "r:xz") as archive:
         member = archive.getmember("disk.raw")
         archive.extract(member, directory, filter="data")
@@ -142,6 +195,16 @@ WantedBy=multi-user.target
 systemctl disable --now ssh.service ssh.socket || true
 install -d /mnt/payload /opt/alysis /var/lib/alysis
 mount -t virtiofs -o ro alysis-payload /mnt/payload
+# Install the same browser that the shared desktop worker launches. The Mac's
+# Linux guest is ARM64; use the versioned, checksum-verified native Google package.
+apt-get install -y --no-install-recommends /mnt/payload/google-chrome-stable.deb
+# Google ships its third-party notices inside the browser, not in Debian's
+# copyright-file location. Preserve the installed build's actual credits.
+install -d /usr/share/doc/google-chrome-stable
+timeout 45 runuser -u alysis -- /usr/bin/google-chrome-stable --headless --disable-gpu --no-first-run --user-data-dir=/tmp/alysis-chrome-notices --dump-dom chrome://credits > /usr/share/doc/google-chrome-stable/copyright
+test -s /usr/share/doc/google-chrome-stable/copyright
+printf '\\nGoogle Chrome terms: https://www.google.com/chrome/terms/\\n' >> /usr/share/doc/google-chrome-stable/copyright
+rm -rf /tmp/alysis-chrome-notices
 python3 -m venv /opt/alysis/.venv
 /opt/alysis/.venv/bin/python -m pip --isolated install --no-cache-dir --require-hashes -r /mnt/payload/requirements.txt
 /opt/alysis/.venv/bin/python -m pip --isolated install --no-cache-dir --no-deps /mnt/payload/"""
@@ -205,6 +268,7 @@ sync
             "hsetroot",
             "pcmanfm",
             "xterm",
+            "x11vnc",
             "adwaita-icon-theme",
             "libreoffice-writer",
             "libreoffice-calc",
@@ -215,14 +279,17 @@ sync
             "fonts-noto-core",
             "fonts-noto-cjk",
             "fonts-noto-color-emoji",
-            "chromium",
-            "chromium-sandbox",
             "dbus-x11",
             "libnss3-tools",
             "ca-certificates",
             "xauth",
         ],
         "write_files": [
+            {
+                "path": "/var/lib/alysis/vendor-sources.json",
+                "permissions": "0644",
+                "content": json.dumps({"google-chrome-stable": "https://www.google.com/chrome/"}),
+            },
             {"path": "/usr/local/lib/alysis-vm-guest.py", "permissions": "0600", "content": agent},
             {
                 "path": "/etc/systemd/system/alysis-vm-guest.service",
@@ -323,6 +390,17 @@ sync
                 raise RuntimeError(
                     "The private Linux display and namespace did not pass their real startup check."
                 )
+            browser = rpc(
+                endpoint,
+                {
+                    "operation": "run",
+                    "argv": ["/usr/bin/google-chrome-stable", "--version"],
+                    "timeout": 10,
+                },
+                timeout=15,
+            )
+            if browser["exit_code"] != 0 or not browser["stdout"].startswith("Google Chrome "):
+                raise RuntimeError("The bundled Google Chrome executable did not start.")
             rpc(endpoint, {"operation": "run", "argv": ["/usr/bin/sync"], "timeout": 10})
             try:
                 rpc(endpoint, {"operation": "shutdown"})
@@ -339,17 +417,8 @@ sync
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=8)
-    licenses = license_pack.copy_from_disk(directory / "disk.raw", directory, prefix=helper_notice)
-    manifest = {
-        "schema": 1,
-        "architecture": "arm64",
-        "qualification": "private-test",
-        "hypervisor_version": recipe["helper_version"],
-        "helper": {"name": "vfkit", "sha256": digest(helper)},
-        "image": {"name": "disk.raw", "sha256": digest(directory / "disk.raw")},
-        "license_pack": licenses,
-        **inventory,
-    }
+    licenses = license_pack.copy_from_disk(directory / "disk.raw", directory, prefix=notice)
+    manifest = image_manifest(recipe, helper, directory / "disk.raw", licenses, inventory)
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         json.dumps(

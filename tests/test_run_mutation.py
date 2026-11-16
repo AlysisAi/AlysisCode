@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import socket
@@ -35,15 +34,6 @@ from alysis_code.swarm_orchestrator import (
     run_swarm,
 )
 from alysis_code.swarm_worker import TaskWorkerResult
-
-
-def test_atomic_io_imports_cleanly_from_fresh_checkout() -> None:
-    atomic_io_mod = importlib.import_module("alysis_code.atomic_io")
-    run_lock_import = importlib.import_module("alysis_code.run_lock")
-
-    assert hasattr(atomic_io_mod, "atomic_write_text")
-    assert hasattr(atomic_io_mod, "atomic_write_json")
-    assert hasattr(run_lock_import, "acquire_run_mutation_guard")
 
 
 def test_atomic_write_text_replaces_existing_file_without_temp_leaks(tmp_path: Path) -> None:

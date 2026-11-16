@@ -1,5 +1,12 @@
 **
+!pyproject.toml
+!uv.lock
+!README.md
+!hatch_build.py
 !src
 !src/**
+!scripts
+!scripts/bots-cloud
+!scripts/bots-cloud/check_image.py
 **/__pycache__
 **/*.pyc

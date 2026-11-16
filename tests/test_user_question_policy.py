@@ -8,32 +8,14 @@ from alysis_code.agent.prompt_context import (
     SYSTEM_PROMPT,
     _compose_session_system_prompt,
 )
-from alysis_code.prompt_guidance_catalog import ALL_GUIDANCE_PROFILES
 
 
-@pytest.mark.parametrize("profile", ALL_GUIDANCE_PROFILES)
-def test_question_policy_is_shared_across_model_families_and_densities(profile):
-    prompt = _compose_session_system_prompt(
-        base_prompt=SYSTEM_PROMPT,
-        trusted_prompt_append=None,
-        guidance_profile=profile,
-        include_write_guidance=True,
-        include_skill_discovery_guidance=False,
-        include_skill_lifecycle_guidance=False,
-        include_subagent_guidance=False,
-        include_one_shot_guidance=False,
-        include_question_guidance=True,
-    )
-    assert prompt.count(_SYSTEM_PROMPT_QUESTION_SECTION.strip()) == 1
-    assert prompt.count(_BASE_CLARIFICATION_RULE) == 1
-    assert "ask one concise clarifying question before starting" not in prompt
-    assert "Clear tasks need no questions" in prompt
-    assert "new consequential uncertainty" in prompt
-    assert "permissions, secrets, or essential inputs" in prompt
-    assert "name the missing input and hold dependent actions" in prompt
-
-
-def test_one_shot_composition_never_suggests_waiting_for_question_ui():
+@pytest.mark.parametrize("one_shot", [False, True], ids=["chat", "one-shot"])
+@pytest.mark.parametrize("question_ui", [False, True], ids=["without-question-ui", "question-ui"])
+def test_question_policy_follows_runtime_and_ui_availability(one_shot, question_ui):
+    # This section is selected by these two flags, independently of the model
+    # profile. Family rendering/delivery and alias equivalence have their own
+    # exhaustive matrices; repeating them here does not exercise another branch.
     prompt = _compose_session_system_prompt(
         base_prompt=SYSTEM_PROMPT,
         trusted_prompt_append=None,
@@ -41,9 +23,18 @@ def test_one_shot_composition_never_suggests_waiting_for_question_ui():
         include_skill_discovery_guidance=False,
         include_skill_lifecycle_guidance=False,
         include_subagent_guidance=False,
-        include_one_shot_guidance=True,
-        include_question_guidance=True,
+        include_one_shot_guidance=one_shot,
+        include_question_guidance=question_ui,
     )
-    assert _SYSTEM_PROMPT_QUESTION_SECTION.strip() not in prompt
-    assert _BASE_CLARIFICATION_RULE not in prompt
-    assert "never ask a question and wait" in prompt
+    assert prompt.count(_BASE_CLARIFICATION_RULE) == (0 if one_shot else 1)
+    if one_shot:
+        assert "never ask a question and wait" in prompt
+    if question_ui and not one_shot:
+        assert prompt.count(_SYSTEM_PROMPT_QUESTION_SECTION.strip()) == 1
+        assert "ask one concise clarifying question before starting" not in prompt
+        assert "Clear tasks need no questions" in prompt
+        assert "new consequential uncertainty" in prompt
+        assert "permissions, secrets, or essential inputs" in prompt
+        assert "name the missing input and hold dependent actions" in prompt
+    else:
+        assert _SYSTEM_PROMPT_QUESTION_SECTION.strip() not in prompt

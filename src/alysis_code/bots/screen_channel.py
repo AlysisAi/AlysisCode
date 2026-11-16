@@ -43,6 +43,23 @@ def capture(directory, session, *, timeout=3):
     return pixels
 
 
+def live(directory, session, args, *, timeout=4):
+    identity = uuid4().hex
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(timeout)
+        connection.connect(str(directory / "screen.sock"))
+        connection.sendall(
+            json.dumps(
+                {"id": identity, "session": session, "operation": "rfb", "arguments": args}
+            ).encode()
+            + b"\n"
+        )
+        reply = receive(connection)
+    if reply.get("id") != identity or reply.get("session") != session:
+        raise ValueError("No current desktop stream receipt.")
+    return reply["result"]
+
+
 class ScreenServer:
     """Private read-only channel, independent of serialized agent operations.
 
@@ -53,6 +70,7 @@ class ScreenServer:
     def __init__(self, directory, session):
         self.session = session
         self.capture = None
+        self.live = None
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.listener = socket.socket(socket.AF_UNIX)
@@ -77,6 +95,18 @@ class ScreenServer:
                 return
             self.capture = capture
 
+    def bind_live(self, live):
+        with self.lock:
+            current = self.live
+            if live is current or (
+                isinstance(live, MethodType)
+                and isinstance(current, MethodType)
+                and live.__self__ is current.__self__
+                and live.__func__ is current.__func__
+            ):
+                return
+            self.live = live
+
     def _serve(self):
         while not self.stop.is_set():
             try:
@@ -88,29 +118,38 @@ class ScreenServer:
             with connection:
                 connection.settimeout(4)
                 try:
-                    request = receive(connection, limit=512)
+                    request = receive(connection, limit=48000)
+                    is_live = request.get("operation") == "rfb"
                     identity = request.get("id")
                     if (
-                        set(request) != {"id", "session"}
+                        set(request)
+                        != (
+                            {"id", "session", "operation", "arguments"}
+                            if is_live
+                            else {"id", "session"}
+                        )
                         or request["session"] != self.session
                         or not isinstance(identity, str)
                         or UUID(identity).hex != identity
                     ):
                         raise ValueError("Invalid screen request.")
                     with self.lock:
-                        capture = self.capture
+                        capture = self.live if is_live else self.capture
                     if capture is None:
                         raise ValueError("No screen bound.")
-                    pixels = capture()
+                    result = capture(request["arguments"]) if is_live else capture()
                     with self.lock:
-                        if capture is not self.capture or self.stop.is_set():
+                        if (
+                            capture is not (self.live if is_live else self.capture)
+                            or self.stop.is_set()
+                        ):
                             raise ValueError("Screen revoked.")
-                    if len(pixels) > 2_000_000:
+                    if not is_live and len(result) > 2_000_000:
                         raise ValueError("Screen exceeds allowance.")
                     reply = {
                         "id": identity,
                         "session": self.session,
-                        "result": {"png": base64.b64encode(pixels).decode()},
+                        "result": result if is_live else {"png": base64.b64encode(result).decode()},
                     }
                     connection.sendall(json.dumps(reply).encode() + b"\n")
                 except Exception:
@@ -122,6 +161,7 @@ class ScreenServer:
 
     def close(self):
         self.bind(None)
+        self.bind_live(None)
         self.stop.set()
         self.listener.close()
         self.thread.join(timeout=5)

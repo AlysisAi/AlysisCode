@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.17.1 - 2026-11-16
+
+- Add the Pro plan to `alysis login`, the terminal interface and the hosted model
+  catalog, with Pro's hosted models.
+- Show "Between tools" as a model's thinking setting when up-front thinking is off but
+  the model still thinks between tool calls.
+- Add `alysis limit-reset`: list the weekly resets the account was given, or use one
+  (`--use <id>`, asks first unless `--yes`). A weekly reset refills the weekly and the
+  5-hour limits at once; credits don't change. The desktop app runs it with `--json`.
+- Give a Cloud owl one desktop for Google Chrome and its applications, usable from the
+  live view.
+- Give owl desktops a compact dock with readable icons, and stream the live view over a
+  private, read-only channel.
+- Keep track of browser windows a person opened before an owl's first navigation.
+- Keep a computer's controls when it resumes from an older owl computer image.
+- Build Mac owl computer images that the desktop app downloads on first use, and record
+  Google Chrome's notices in Windows images the same way as in Mac images.
+- Apply CLI dependency overrides the same way whatever order they are initialized in.
 
 ## 0.17.0 - 2026-11-12
 

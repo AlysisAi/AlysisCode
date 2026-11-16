@@ -139,7 +139,7 @@ class TestSignatureMatching(unittest.TestCase):
             RuntimeError("LLM error 401: invalid api key"),
             TimeoutError("read operation timed out"),
         ):
-            with self.subTest(error=error):
+            with self.subTest(error=repr(error)):
                 self.assertFalse(tr.is_connection_drop_error(error))
 
     def test_a_cyclic_cause_chain_terminates(self) -> None:
@@ -265,7 +265,7 @@ class TestFailureLabelling(unittest.TestCase):
             ValueError("bad value"),
             RuntimeError("LLM error 401: invalid api key"),
         ):
-            with self.subTest(error=error):
+            with self.subTest(error=repr(error)):
                 self.assertIsNone(tr.transport_connection_failure_reason(error))
 
     def test_tagging_never_raises_on_an_unassignable_exception(self) -> None:

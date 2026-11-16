@@ -118,8 +118,10 @@ def test_cloud_input_is_encrypted_before_operator_command_and_released_surface_i
     private_text = "🔒" * 8000  # Largest admitted text, including four-byte Unicode.
     try:
         assert selected.human_input({"kind": "text", "text": private_text}) == {"dispatched": True}
+        # One Cloud desktop: Chrome runs on the shared display, and a person's
+        # input follows the active display whichever handle sends it.
         assert provider.received == [
-            {"surface": surface, "event": {"kind": "text", "text": private_text}}
+            {"surface": "browser", "event": {"kind": "text", "text": private_text}}
         ]
         assert private_text not in json.dumps(provider.actions, ensure_ascii=False)
         wire = json.loads(base64.b64decode(provider.actions[-1][-1]))

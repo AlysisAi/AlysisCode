@@ -229,18 +229,28 @@ def test_tag_publication_requires_successful_exact_source_platform_qualification
             assert not jobs[job_id].get("continue-on-error", False)
 
 
-def test_release_full_suite_has_the_same_native_prerequisites_as_ci():
+def test_release_reuses_complete_ci_with_native_prerequisites():
+    from scripts.release.validate_completed_ci import REQUIRED_JOBS
+
     ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["test"]
-    release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]["build"]
+    release_jobs = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]
     ci_setup = next(step for step in ci["steps"] if "bwrap --unshare-all" in step.get("run", ""))
-    release_setup = next(
-        (step for step in release["steps"] if "bwrap --unshare-all" in step.get("run", "")), None
-    )
-    assert release_setup is not None, "Release qualification needs the tested Linux sandbox setup"
-    assert release_setup["run"] == ci_setup["run"]
-    assert not release_setup.get("continue-on-error", False)
     ci_test = next(step for step in ci["steps"] if step.get("name") == "Test")
-    release_test = next(step for step in release["steps"] if step.get("name") == "Test")
-    assert release["steps"].index(release_setup) < release["steps"].index(release_test)
-    for name, value in ci_test["env"].items():
-        assert release_test.get("env", {}).get(name) == value
+    assert ci["steps"].index(ci_setup) < ci["steps"].index(ci_test)
+    assert ci_test["env"]["ALYSIS_RUN_BWRAP_RUNTIME_TESTS"] == "1"
+    assert ci_test["env"]["ALYSIS_TEST_OFFICE_SOFFICE"] == "/usr/bin/soffice"
+    for step in (ci_setup, ci_test):
+        assert "if" not in step
+        assert not step.get("continue-on-error", False)
+    for entry in ci["strategy"]["matrix"]["include"]:
+        name = ci["name"].replace("${{ matrix.python-version }}", entry["python-version"])
+        assert name in REQUIRED_JOBS
+    verification = next(
+        step
+        for step in release_jobs["validate-release-source"]["steps"]
+        if "scripts/release/validate_completed_ci.py" in step.get("run", "")
+    )
+    assert "if" not in verification
+    assert not verification.get("continue-on-error", False)
+    assert "validate-release-source" in release_jobs["build"]["needs"]
+    assert not any(step.get("name") == "Test" for step in release_jobs["build"]["steps"])

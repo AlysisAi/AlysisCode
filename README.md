@@ -43,6 +43,7 @@ Owls ask for approval before actions that reach other people, make payments, pub
 - **Search the web.** Built-in web search works with any model, without a separate search API key.
 - **Work across apps.** Built-in computer use lets Alysis operate the apps you allow.
 - **Stay in control.** Choose permissions for each task, with shell commands sandboxed by default. [How permissions work](https://alysiscode.com/docs/safety/approval-prompts).
+  Verification commands also default to strict sandboxing. Strict mode refuses execution when no backend is available. [Shell sandbox](docs/shell_sandbox.md)
 
 ## Get started
 

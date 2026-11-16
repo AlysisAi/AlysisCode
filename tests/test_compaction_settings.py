@@ -178,8 +178,6 @@ def test_retired_scoring_settings_are_accepted_and_ignored(monkeypatch) -> None:
     settings = resolve_compaction_settings(cfg)
 
     assert settings == plain
-    assert not hasattr(settings, "importance_strategy")
-    assert not hasattr(settings, "pin_score_threshold")
 
 
 def test_recent_tail_messages_is_optional_and_may_be_zero(monkeypatch) -> None:

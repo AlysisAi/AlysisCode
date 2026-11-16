@@ -210,6 +210,9 @@ def bootstrap(stream):
         raise ValueError("Hosted bootstrap exceeds its allowance")
     values = json.loads(raw)
     hosted_values = dict(values["hosted"])
+    # Image selection is deployment metadata, independent of credential rotation.
+    if worker_image := os.environ.get("ALYSIS_BOTS_WORKER_IMAGE"):
+        hosted_values["worker_image"] = str(UUID(worker_image))
     # The public controller origin is not a credential. Operators may configure
     # it in the host unit without rotating or copying the private bootstrap.
     if stream_url := os.environ.get("ALYSIS_BOTS_COMPUTER_STREAM_URL"):

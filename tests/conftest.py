@@ -112,10 +112,30 @@ def isolate_terminal_ownership_records(tmp_path_factory: pytest.TempPathFactory)
             os.environ[key] = previous
 
 
+_LOCAL_MEMORY_DIRECTORY = pytest.StashKey[tempfile.TemporaryDirectory]()
+
+
 @pytest.fixture(autouse=True)
-def isolate_local_memory(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+def isolate_local_memory(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     """Ordinary agent turns must never read or update the developer's real memory."""
-    monkeypatch.setenv("ALYSIS_MEMORY_HOME", str(tmp_path_factory.mktemp("local-memory")))
+    # Keep memory outside test workspaces, but release it after each test rather
+    # than accumulating thousands of databases until the whole suite finishes.
+    directory = tempfile.TemporaryDirectory(prefix="alysis-test-memory-")
+    request.node.stash[_LOCAL_MEMORY_DIRECTORY] = directory
+    monkeypatch.setenv("ALYSIS_MEMORY_HOME", directory.name)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
+    try:
+        return (yield)
+    finally:
+        # Fault-injection tests patch filesystem calls. Wait until ALL fixture
+        # finalizers (including monkeypatch.undo) finish before removing memory.
+        if _LOCAL_MEMORY_DIRECTORY in item.stash:
+            directory = item.stash[_LOCAL_MEMORY_DIRECTORY]
+            del item.stash[_LOCAL_MEMORY_DIRECTORY]
+            directory.cleanup()
 
 
 class OAuthFixtureServer:

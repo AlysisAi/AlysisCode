@@ -647,16 +647,21 @@ def _small_window_session(tmp_path: Path, **compaction: Any) -> AgentSession:
     return session
 
 
-def _steps_between_compactions(session: AgentSession, *, steps: int = 90) -> list[int]:
-    """One long turn: after every step the host checks, as before each model call."""
+def _steps_between_compactions(
+    session: AgentSession, *, compactions: int, max_steps: int = 90
+) -> list[int]:
+    """Check every step until enough cuts demonstrate recurrence, with a failure bound."""
     between, since = [], 0
-    for index in range(steps):
+    for index in range(max_steps):
         session.messages.extend(_step(index, size=4000))
         since += 1
         session.messages, changed = _compact(session, "auto")
         if changed:
             between.append(since)
             since = 0
+            if len(between) == compactions:
+                break
+    assert len(between) == compactions, f"Only {len(between)} compactions in {max_steps} steps"
     return between
 
 
@@ -686,7 +691,8 @@ def test_a_compaction_buys_room_for_many_steps_wherever_it_starts(tmp_path: Path
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
             ]
         session.messages.append(request)
-        between = _steps_between_compactions(session)
+        # The first cut plus two later cuts demonstrate that room is replenished.
+        between = _steps_between_compactions(session, compactions=3)
         checks = [c for c in _events(session, "compaction_check") if c.get("budget_tokens")]
     finally:
         session.close()
@@ -724,7 +730,7 @@ def test_the_cut_is_never_below_half_the_target(tmp_path: Path) -> None:
                 ],
             }
         )
-        assert _steps_between_compactions(session, steps=40)
+        _steps_between_compactions(session, compactions=2, max_steps=40)
         checks = [c for c in _events(session, "compaction_check") if c.get("budget_tokens")]
     finally:
         session.close()

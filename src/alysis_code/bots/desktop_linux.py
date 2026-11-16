@@ -2,8 +2,9 @@
 
 The parent owns credentials and authorization. This executor receives neither.
 It is a process/mount/network boundary inside the disposable lab, not a claim of
-production tenant isolation. No host display, arbitrary runtime root or network
-enable switch is accepted. Runtime tool admission is deliberately separate.
+production tenant isolation. A trusted Cloud bridge may supply its owned display
+and a launcher request directory; it never mounts a host home or service socket.
+Standalone local desktops stay offline. Runtime tool admission is separate.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import select
 import signal
 import subprocess
@@ -92,11 +94,30 @@ class DesktopStartupCleanupError(DesktopError):
 class OfflineLinuxDesktop:
     """One owned ephemeral computer; any uncertain transport failure retires it."""
 
-    def __init__(self, owner: str, workspace: Path, *, cancel=lambda: False):
+    def __init__(
+        self,
+        owner: str,
+        workspace: Path,
+        *,
+        cancel=lambda: False,
+        shared_display=None,
+        launchers=None,
+    ):
         if platform.system() != "Linux":
             raise DesktopError("The private desktop executor requires Linux.")
         if not owner or not workspace.is_dir() or workspace.is_symlink():
             raise ValueError("An owner and explicit workspace directory are required.")
+        if shared_display is not None:
+            if not isinstance(shared_display, str) or not re.fullmatch(
+                r":[0-9]{1,5}", shared_display
+            ):
+                raise ValueError("An owned Cloud display is required.")
+            display_socket = Path("/tmp/.X11-unix") / ("X" + shared_display[1:])
+            if not display_socket.is_socket() or display_socket.stat().st_uid != os.getuid():
+                raise ValueError("Cloud display socket ownership was not confirmed.")
+            if launchers is None or not launchers.is_dir() or launchers.is_symlink():
+                raise ValueError("A private Cloud launcher directory is required.")
+        self.shared_display, self.launchers = shared_display, launchers
         self.owner = owner
         self.session_id = uuid4().hex
         self.workspace = workspace.resolve(strict=True)
@@ -132,6 +153,16 @@ class OfflineLinuxDesktop:
             except Exception:
                 raise DesktopStartupCleanupError(self) from None
             raise
+
+    def rfb(self, args):
+        from .screen_channel import live
+
+        if not self.alive():
+            raise DesktopError("Computer stream is closed.")
+        result = live(Path(self._directory.name) / "screen", self.session_id, args)
+        if not self.alive():
+            raise DesktopError("Computer stream revoked.")
+        return result
 
     def human_input(self, event):
         return self._request("human_input", event, cancel=lambda: False, timeout=12)
@@ -170,6 +201,9 @@ class OfflineLinuxDesktop:
                 "--ro-bind",
                 str(Path(__file__).with_name("human_input.py")),
                 "/opt/human_input.py",
+                "--ro-bind",
+                str(Path(__file__).with_name("desktop_rfb.py")),
+                "/opt/desktop_rfb.py",
                 "--bind",
                 str(root / "screen"),
                 "/run/alysis-screen",
@@ -205,6 +239,20 @@ class OfflineLinuxDesktop:
                 "C.UTF-8",
             ]
         )
+        if self.shared_display is not None:
+            # Only this computer's X socket and launcher requests cross the jail.
+            # The guest still cannot see the bridge, credentials or another VM.
+            socket_path = "/tmp/.X11-unix/X" + self.shared_display[1:]
+            args.extend(
+                [
+                    "--ro-bind",
+                    socket_path,
+                    socket_path,
+                    "--bind",
+                    str(self.launchers),
+                    "/run/alysis-launchers",
+                ]
+            )
         paths = runtime_paths()
         # A bundled interpreter can itself live under /tmp. Mount it after the
         # private /tmp and seal its virtual ancestors, without exposing siblings.
@@ -222,6 +270,8 @@ class OfflineLinuxDesktop:
         args.extend(
             ["--remount-ro", "/", "--", PYTHON, "-I", "/opt/desktop_worker.py", self.session_id]
         )
+        if self.shared_display is not None:
+            args.append(self.shared_display)
         return args
 
     def alive(self) -> bool:

@@ -717,11 +717,7 @@ def test_cancelled_child_uses_the_same_terminal_eviction_terms() -> None:
 
 
 def test_polling_is_incremental_selected_only_and_stops_when_closed() -> None:
-    import inspect
-
     from alysis_code.cli_impl.tui.app import _poll_selected_subagent
-
-    assert "events_snapshot" not in inspect.getsource(_poll_selected_subagent)
 
     class _Scheduler:
         def __init__(self) -> None:

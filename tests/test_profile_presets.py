@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unittest
 
 from alysis_code.llm.cache_capabilities import resolve_effective_cache_capability
 from alysis_code.profile_presets import (
@@ -31,52 +32,57 @@ def test_each_preset_has_non_empty_label_and_protocol() -> None:
         }
 
 
-def test_openai_responses_preset_is_explicit_native_opt_in() -> None:
-    preset = get_preset("openai-responses")
-
-    assert preset is not None
-    assert preset.label == "OpenAI Responses"
-    assert preset.protocol == "openai_responses"
-    assert preset.base_url == "https://api.openai.com/v1"
-    assert preset.web_search_adapter == "openai_responses"
-
-
-def test_anthropic_preset_is_native_by_default() -> None:
-    preset = get_preset("anthropic")
-
-    assert preset is not None
-    assert preset.label == "Anthropic Claude"
-    assert preset.protocol == "anthropic_messages"
-    assert preset.base_url == "https://api.anthropic.com/v1"
-    assert preset.web_search_adapter == "anthropic_messages"
-
-
-def test_gemini_preset_is_native_by_default() -> None:
-    preset = get_preset("gemini")
-
-    assert preset is not None
-    assert preset.label == "Google Gemini"
-    assert preset.protocol == "gemini_generate_content"
-    assert preset.base_url == "https://generativelanguage.googleapis.com/v1beta"
-    assert preset.web_search_adapter == "gemini_grounding"
+class TestBuiltinProviderProfiles(unittest.TestCase):
+    def test_native_and_compatibility_presets_build_matching_profiles(self) -> None:
+        cases = (
+            ("openai", "openai_compat", "https://api.openai.com/v1", "openai_responses"),
+            (
+                "openai-responses",
+                "openai_responses",
+                "https://api.openai.com/v1",
+                "openai_responses",
+            ),
+            (
+                "anthropic",
+                "anthropic_messages",
+                "https://api.anthropic.com/v1",
+                "anthropic_messages",
+            ),
+            (
+                "anthropic-compat",
+                "openai_compat",
+                "https://api.anthropic.com/v1/",
+                "anthropic_messages",
+            ),
+            (
+                "gemini",
+                "gemini_generate_content",
+                "https://generativelanguage.googleapis.com/v1beta",
+                "gemini_grounding",
+            ),
+            (
+                "gemini-compat",
+                "openai_compat",
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
+                "gemini_grounding",
+            ),
+        )
+        for key, protocol, base_url, search_adapter in cases:
+            with self.subTest(preset=key):
+                preset = get_preset(key)
+                self.assertIsNotNone(preset)
+                self.assertEqual(preset.protocol, protocol)
+                self.assertEqual(preset.base_url, base_url)
+                self.assertEqual(preset.web_search_adapter, search_adapter)
+                profile = make_profile_from_preset(preset)
+                self.assertEqual(profile.name, key)
+                self.assertEqual(profile.protocol, protocol)
+                self.assertEqual(profile.base_url, base_url)
+                self.assertEqual(profile.web_search_adapter, search_adapter)
 
 
 def test_gemini_interactions_is_not_a_normal_provider_preset() -> None:
     assert all(preset.protocol != "gemini_interactions" for preset in PROFILE_PRESETS)
-
-
-def test_first_party_compatibility_presets_are_explicit_legacy_fallbacks() -> None:
-    anthropic = get_preset("anthropic-compat")
-    gemini = get_preset("gemini-compat")
-
-    assert anthropic is not None
-    assert anthropic.protocol == "openai_compat"
-    assert anthropic.base_url == "https://api.anthropic.com/v1/"
-    assert anthropic.web_search_adapter == "anthropic_messages"
-    assert gemini is not None
-    assert gemini.protocol == "openai_compat"
-    assert gemini.base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
-    assert gemini.web_search_adapter == "gemini_grounding"
 
 
 def test_provider_presets_select_documented_hosted_search_adapters() -> None:
@@ -891,20 +897,6 @@ def test_find_preset_for_base_url_matches_known_provider() -> None:
 
     assert preset is not None
     assert preset.key == "anthropic-compat"
-
-
-def test_custom_preset_has_empty_base_url() -> None:
-    preset = get_preset("custom")
-
-    assert preset is not None
-    assert preset.base_url == ""
-
-
-def test_make_profile_from_preset_uses_preset_key_as_name_default() -> None:
-    preset = get_preset("openai")
-
-    assert preset is not None
-    assert make_profile_from_preset(preset).name == "openai"
 
 
 def test_xiaomi_mimo_is_a_plain_byok_preset() -> None:

@@ -48,6 +48,7 @@ from ...provider_diagnostics import provider_diagnostic_warning_lines
 from ...provider_url import display_endpoint, display_host
 from ...reasoning_contracts import (
     ALWAYS_ON,
+    OFF_BETWEEN_TOOLS,
     OFF_SWAPS_MODEL,
     UNKNOWN_CONTRACT,
     ReasoningContract,
@@ -1280,6 +1281,12 @@ class ConfigFlow:
         rows = []
         for label in labels:
             description = _THINKING_DESCRIPTIONS.get(label, "provider-specific reasoning budget")
+            display_label = label
+            if label == "off" and contract.off == OFF_BETWEEN_TOOLS:
+                display_label = "Between tools"
+                description = (
+                    "No up-front thinking; thinking between tools stays active at High effort."
+                )
             tone = ""
             if label.casefold() == "off" and contract.off == OFF_SWAPS_MODEL:
                 # kimi-code: "off" is not a speed knob — a different model answers.
@@ -1287,7 +1294,7 @@ class ConfigFlow:
                 tone = "warn"
             rows.append(
                 Row(
-                    label=label,
+                    label=display_label,
                     description=description,
                     value=label,
                     current=label == current,

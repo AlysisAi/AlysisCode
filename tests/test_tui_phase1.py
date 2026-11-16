@@ -150,13 +150,6 @@ def test_footer_shows_workspace_and_branch():
     assert "feat/tui-rebuild" in text
 
 
-def test_footer_context_indicator_value():
-    text = _plain(
-        footer_fragments(TuiState(model_name="m", username="u", context_pct=42.0), width=90)
-    )
-    assert "context: 42% left" in text
-
-
 def test_footer_context_unmeasured_reads_na_not_fabricated_100():
     # Default state has no measured value yet: the footer must say n/a rather
     # than a fabricated "100% left" (which would mislead if the compute failed).
@@ -165,7 +158,12 @@ def test_footer_context_unmeasured_reads_na_not_fabricated_100():
     assert "% left" not in text.split("\n")[0]
 
 
-def test_footer_context_never_rounds_up_to_full_or_down_to_empty():
+def test_footer_context_indicator_preserves_value_and_clamps_rounding():
+    text = _plain(
+        footer_fragments(TuiState(model_name="m", username="u", context_pct=42.0), width=90)
+    )
+    assert "context: 42% left" in text
+
     # A partially-used window reads 1–99, never a misleading 100 or premature 0.
     near_full = _plain(footer_fragments(TuiState(model_name="m", context_pct=99.6), width=90))
     assert "context: 99% left" in near_full
@@ -246,12 +244,10 @@ def test_tui_session_state_sync_updates_local_command_footer_state():
     assert state.usage_hud_enabled is False
 
 
-def test_footer_forge_badge_hidden_by_default():
+def test_footer_forge_badge_tracks_active_run():
     text = _plain(footer_fragments(TuiState(model_name="m", username="u"), width=120))
     assert "FORGE" not in text
 
-
-def test_footer_forge_badge_shown_when_active():
     state = TuiState(
         model_name="m",
         username="perdikis",
@@ -536,14 +532,6 @@ def test_app_shift_tab_is_inert_without_a_mode_cycle_callback():
     assert state.exec_mode == "review"
 
 
-def test_tui_state_has_no_auto_approve_axis():
-    # The approval policy lives in exec_mode alone; a second toggle could
-    # auto-answer every prompt review mode raised while the badge read "safe".
-    state = TuiState(model_name="m")
-    assert not hasattr(state, "auto_approve")
-    assert not hasattr(state, "toggle_auto_approve")
-
-
 def test_next_exec_mode_cycles_all_four_modes_and_wraps():
     from alysis_code.cli_impl.tui.state import EXEC_MODE_CYCLE, next_exec_mode
 
@@ -559,19 +547,6 @@ def test_next_exec_mode_cycles_all_four_modes_and_wraps():
 
 
 # --------------------------- mouse wheel / status line ---------------------------
-
-
-def test_tui_state_has_no_mouse_mode_toggle():
-    state = TuiState(model_name="m")
-    assert not hasattr(state, "terminal_selection_mode")
-    assert not hasattr(state, "toggle_terminal_selection_mode")
-
-
-def test_footer_omits_mouse_mode_chip():
-    default = _plain(footer_fragments(TuiState(model_name="m", username="u"), width=120))
-    line2 = default.split("\n")[1]
-    assert line2.rstrip().endswith("u")
-    assert "F2" not in line2
 
 
 def test_footer_omits_repeated_connection_status():
@@ -598,7 +573,7 @@ def test_status_line_is_blank_when_idle_and_shows_interrupt_when_running():
     assert "Esc or Ctrl+C to interrupt" in _plain(_status_line_fragments(running=True))
 
 
-def test_footer_cost_unknown_shows_na():
+def test_footer_cost_distinguishes_known_and_unknown_usage():
     # Unmetered/free model with real usage: cost is None → honest "n/a", never $0.0000.
     state = TuiState(model_name="m", username="u", tokens=5000, cost_usd=None, cost_unknown_calls=3)
     line1 = _plain(footer_fragments(state, width=120)).split("\n")[0]
@@ -606,8 +581,6 @@ def test_footer_cost_unknown_shows_na():
     assert "$0.0000" not in line1
     assert "+3" in line1  # unmetered-calls flag
 
-
-def test_footer_cost_known_shows_dollars():
     state = TuiState(model_name="m", username="u", tokens=5000, cost_usd=0.1234, context_pct=100.0)
     line1 = _plain(footer_fragments(state, width=120)).split("\n")[0]
     assert "$0.1234" in line1

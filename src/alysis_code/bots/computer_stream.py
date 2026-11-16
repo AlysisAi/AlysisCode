@@ -71,7 +71,7 @@ class ComputerStream:
             request.get("session") != self.session
             or not isinstance(identity, str)
             or UUID(identity).hex != identity
-            or request.get("operation") not in {"screen", "human_input"}
+            or request.get("operation") not in {"screen", "human_input", "rfb"}
             or len(wire.encode()) > 48000
         ):
             raise StreamUnavailable("Invalid computer stream request.")
@@ -79,7 +79,7 @@ class ComputerStream:
         with self.lock:
             if self.closed or not self.ready.is_set() or identity in self.pending:
                 raise StreamUnavailable("Computer stream is disconnected.")
-            if len(self.pending) >= 2:
+            if len(self.pending) >= 3:
                 raise StreamUnavailable("Computer stream is busy.")
             self.pending[identity] = future
             loop = self.loop
@@ -193,7 +193,7 @@ class ComputerStreams:
                 if link.closed:
                     return
                 link.loop = asyncio.get_running_loop()
-                link.queue = asyncio.Queue(maxsize=2)
+                link.queue = asyncio.Queue(maxsize=3)
                 link.websocket = websocket
                 link.ready.set()
 

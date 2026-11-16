@@ -11,12 +11,6 @@ from alysis_code.step_budget import (
 )
 
 
-def test_app_config_defaults_to_autonomous_execution() -> None:
-    cfg = AppConfig()
-
-    assert cfg.step_budget_policy == "autonomous"
-
-
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

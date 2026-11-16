@@ -18,7 +18,17 @@ from .models import FileInput
 
 
 class BrowserBridge:
-    def __init__(self, session, root, preview_urls, *, persistent=False, restore=None):
+    def __init__(
+        self,
+        session,
+        root,
+        preview_urls,
+        *,
+        persistent=False,
+        restore=None,
+        shared_display=None,
+        open_request=None,
+    ):
         self.session, self.root = session, root
         uploads = root / "browser-uploads"
         uploads.mkdir(mode=0o700)
@@ -41,6 +51,9 @@ class BrowserBridge:
             lambda: False,
             preview_urls=lambda: tuple(preview_urls),
             system_trust=True,
+            shared_display=shared_display,
+            executable_path="/usr/bin/google-chrome-stable",
+            open_request=open_request,
             profile_store=self.profiles,
             account_id="private-browser" if persistent else None,
         )
@@ -67,6 +80,7 @@ class BrowserBridge:
             lease.release()
 
     def call(self, args):
+        self.computer.ensure_browser()
         method = args["method"]
         browser, owner, sid = self.computer.browser, self.session, self.computer.session_id
         if method in METHODS:

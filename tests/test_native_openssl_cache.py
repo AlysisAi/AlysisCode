@@ -127,8 +127,26 @@ def test_build_recipe_or_validation_changes_invalidate_key(installation, changed
 def test_unknown_or_wrong_runner_cannot_use_a_cache(installation, field):
     _, identity, environment, scripts = installation
     environment[field] = "" if field == "ImageVersion" else "wrong"
-    with pytest.raises(ValueError, match="matching hosted runner"):
+    with pytest.raises(ValueError, match="matching runner"):
         configuration(identity["target"], environment, scripts)
+
+
+def test_self_hosted_requires_explicit_image_and_invalidates_on_toolchain_change(installation):
+    prefix, hosted_identity, environment, scripts = installation
+    environment["RUNNER_ENVIRONMENT"] = "self-hosted"
+    # Hosted image variables alone must never admit an unidentified private runner.
+    with pytest.raises(ValueError, match="explicit image identity"):
+        configuration(hosted_identity["target"], environment, scripts)
+    environment["ALYSIS_RUNNER_IMAGE_ID"] = "team-image-v1"
+    _, identity = configuration(hosted_identity["target"], environment, scripts)
+    assert cache_key(identity) != cache_key(hosted_identity)
+    record(prefix, identity)
+    assert reuse_or_clear(prefix, identity, exact_hit=True)
+    environment["ALYSIS_RUNNER_IMAGE_ID"] = "team-image-v2"
+    _, changed = configuration(hosted_identity["target"], environment, scripts)
+    assert cache_key(changed) != cache_key(identity)
+    with pytest.raises(ValueError, match="identity"):
+        verify(prefix, changed)
 
 
 def test_incomplete_build_cannot_get_a_receipt(installation):

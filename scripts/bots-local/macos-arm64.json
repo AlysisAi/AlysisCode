@@ -7,5 +7,7 @@
   "helper_sha256": "0ed83fc8ca7aa708598835480dba1362406aa7cd1dab3b27464eb76327d9652d",
   "helper_license_url": "https://raw.githubusercontent.com/crc-org/vfkit/v0.6.4/LICENSE",
   "helper_version": "0.6.4",
+  "chrome_url": "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_157.0.8103.78-1_arm64.deb",
+  "chrome_sha256": "6be08fb629687039ac7ce966f27c2c5a2dfd1dc1707b549b352de335b3e86dd2",
   "disk_bytes": 8589934592
 }

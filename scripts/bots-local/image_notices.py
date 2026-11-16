@@ -108,7 +108,9 @@ def build(
     doc_root: Path,
     common_root: Path,
     python: list[dict],
+    vendor_sources: dict[str, str] | None = None,
 ) -> tuple[str, dict]:
+    vendor_sources = vendor_sources or {}
     missing = [p["name"] for p in packages if copyright_file(doc_root, p["name"]) is None]
     if missing:
         raise SystemExit(
@@ -137,10 +139,10 @@ def build(
         "Third-party software in the Alysis owl computer image",
         "=" * 54,
         "",
-        f"Debian packages: {len(packages)}. Python packages: {len(python)}.",
+        f"System packages: {len(packages)}. Python packages: {len(python)}.",
         "Where to get the corresponding source of each package: sources.json.",
         "",
-        "Debian packages",
+        "System packages",
         "---------------",
     ]
     for group in sorted(groups.values(), key=lambda g: g["packages"][0]["name"]):
@@ -178,7 +180,18 @@ def build(
                 ),
                 "url": f"https://snapshot.debian.org/package/{quote(source, safe='')}/{quote(version, safe='')}/",
             }
-            for source, version in sorted({(p["source"], p["source_version"]) for p in packages})
+            for source, version in sorted(
+                {
+                    (p["source"], p["source_version"])
+                    for p in packages
+                    if p["name"] not in vendor_sources
+                }
+            )
+        ],
+        "vendors": [
+            {"name": p["name"], "version": p["version"], "url": vendor_sources[p["name"]]}
+            for p in packages
+            if p["name"] in vendor_sources
         ],
         "python": [
             {
@@ -195,11 +208,14 @@ def build(
 def main() -> None:
     output = Path(sys.argv[1] if len(sys.argv) > 1 else "/usr/share/alysis")
     rows = subprocess.check_output(["dpkg-query", "-W", "-f=" + DPKG_FORMAT], text=True)
+    vendor_manifest = Path("/var/lib/alysis/vendor-sources.json")
+    vendor_sources = json.loads(vendor_manifest.read_text()) if vendor_manifest.is_file() else {}
     notices, sources = build(
         debian_packages(rows.splitlines()),
         Path("/usr/share/doc"),
         Path("/usr/share/common-licenses"),
         python_distributions(FIRST_PARTY),
+        vendor_sources,
     )
     output.mkdir(parents=True, exist_ok=True)
     (output / "THIRD-PARTY-NOTICES.txt").write_text(notices, encoding="utf-8")

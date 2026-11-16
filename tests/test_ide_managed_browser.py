@@ -590,9 +590,12 @@ def test_visible_browser_uses_only_explicit_local_display_and_keeps_egress_guard
     assert "--headless=new" not in spec.arguments
     assert "--ozone-platform=x11" in spec.arguments
     assert "--no-sandbox" not in spec.arguments
+    assert "--no-startup-window" in spec.arguments
+    assert "about:blank" not in spec.arguments
     assert "--proxy-server=http://127.0.0.1:43123" in spec.arguments
     assert "--proxy-bypass-list=<-loopback>" in spec.arguments
     assert factory.transport.calls[0][1]["background"] is False
+    assert ("guarded_navigate", {"url": "about:blank"}, "cdp-session-1") in factory.transport.calls
     with pytest.raises(BrowserSecurityError):
         service.navigate("visible-lab", status.session_id, "http://127.0.0.1:7070")
     with pytest.raises(BrowserOwnershipError):

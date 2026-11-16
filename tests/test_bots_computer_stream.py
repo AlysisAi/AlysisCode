@@ -171,11 +171,13 @@ def test_timeout_consumes_link_and_bounds_unacknowledged_work(channel):
         link.wait(1)
         first = pool.submit(link.request, message(link), timeout=0.2)
         second = pool.submit(link.request, message(link, "human_input"), timeout=0.2)
+        third = pool.submit(link.request, message(link, "rfb"), timeout=0.2)
+        ws.receive_json()
         ws.receive_json()
         ws.receive_json()
         with pytest.raises(StreamUnavailable, match="busy"):
             link.request(message(link), timeout=1)
-        for future in (first, second):
+        for future in (first, second, third):
             with pytest.raises(StreamUnavailable):
                 future.result(1)
         assert link.closed

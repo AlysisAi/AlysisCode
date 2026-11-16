@@ -549,6 +549,8 @@ def _transport_provider_key(
         "reflection-beam",
         "qwen3.8-2.4t",
         "kimi-k3",
+        "kimi-k3.1-pro",
+        "gemini-4-carbon",
         "glm-5.3-flash",
         "minimax-m3.1-flash",
         "muse-spark-open",
@@ -561,7 +563,7 @@ def _transport_provider_key(
             is_alysis_gateway_url(str(base_url or ""))
             or _normalize_provider_key(provider_key) == "alysis"
         ):
-            return "alysis"
+            return "gemini" if str(model or "").casefold() == "gemini-4-carbon" else "alysis"
     if from_url:
         return from_url
     normalized_provider = _normalize_provider_key(provider_key)

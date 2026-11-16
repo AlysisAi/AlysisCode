@@ -261,7 +261,7 @@ def _signed_candidate_vsix(
     return candidate, trusted_key
 
 
-def test_default_cli_command_prefers_repo_venv_python_when_available(
+def test_repo_venv_is_the_default_cli_but_explicit_command_takes_precedence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -276,18 +276,6 @@ def test_default_cli_command_prefers_repo_venv_python_when_available(
         "-m",
         "alysis_code.cli",
     ]
-
-
-def test_parse_cli_command_explicit_override_does_not_use_repo_venv(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    project = tmp_path / "repo"
-    python = project / ".venv" / ("Scripts/python.exe" if dogfood.os.name == "nt" else "bin/python")
-    python.parent.mkdir(parents=True)
-    python.write_text("", encoding="utf-8")
-    monkeypatch.setattr(dogfood, "PROJECT_ROOT", project)
-
     assert dogfood.parse_cli_command("custom-alysis --flag") == ["custom-alysis", "--flag"]
 
 
