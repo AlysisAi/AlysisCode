@@ -41,11 +41,20 @@ while True:
 """
 
 
-def until(predicate, timeout=5):
+def until(predicate, timeout=60, *, process=None):
+    """Wait for ``predicate``; the deadline only bounds a failure.
+
+    A passing check returns as soon as its state appears. The bound is generous
+    because the worker child imports the engine before it starts, which can take
+    many seconds on a busy machine. If ``process`` exits first, the wait ends at
+    once with its exit code.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
+        if process is not None and process.poll() is not None:
+            raise AssertionError(f"The worker exited early with code {process.returncode}")
         time.sleep(0.02)
     raise AssertionError("The worker did not reach the expected state")
 
@@ -79,12 +88,15 @@ def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, 
     child = subprocess.Popen([sys.executable, "-c", CHILD, str(store.path)])
     try:
         if scheduled:
-            until(lambda: bool(store.schedule_runs("owner", bot["id"], schedule["id"])["runs"]))
+            until(
+                lambda: bool(store.schedule_runs("owner", bot["id"], schedule["id"])["runs"]),
+                process=child,
+            )
             task = store.task(
                 "owner",
                 store.schedule_runs("owner", bot["id"], schedule["id"])["runs"][0]["task_id"],
             )
-        until(lambda: store.task("owner", task["id"])["calls"] == 2)
+        until(lambda: store.task("owner", task["id"])["calls"] == 2, process=child)
         assert len(store.list_files("owner", bot["id"])) == 1
         # This process was created solely for fault injection. No user process
         # or existing service is terminated by this test.

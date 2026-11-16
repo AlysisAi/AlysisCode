@@ -43,11 +43,22 @@ while True:
 """
 
 
-def until(predicate, seconds=10):
+def until(predicate, seconds=60, *, process=None):
+    """Wait for ``predicate``; the deadline only bounds a failure.
+
+    A passing check returns as soon as its state appears. The bound is generous
+    because the fixture's child process imports the engine before it starts,
+    which can take many seconds on a busy machine. If ``process`` exits first,
+    the wait ends at once with its exit code.
+    """
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if predicate():
             return
+        if process is not None and process.poll() is not None:
+            raise AssertionError(
+                f"Peer crash fixture process exited early with code {process.returncode}"
+            )
         time.sleep(0.02)
     raise AssertionError("Peer crash fixture did not reach the expected state")
 
@@ -89,7 +100,7 @@ def verify(root: Path) -> dict:
         },
     )
     try:
-        until(marker.exists)
+        until(marker.exists, process=child)
         assert child.poll() is None
         assert peers.for_task(task["id"])["status"] == "running"
         assert store.task("owner", task["id"])["usage"][0]["status"] == "started"

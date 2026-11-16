@@ -104,6 +104,21 @@ class Out(io.StringIO):
         return [json.loads(x) for x in self.getvalue().splitlines() if x.strip()]
 
 
+def _wait_for_retired_job(job, seconds=60):
+    """Wait until ``job`` is final and its worker has retired.
+
+    The bridge records a final status before the worker writes its last events
+    (the browser handoff notice included) and releases the session. Reading those
+    events, or sending the next turn, must therefore wait for the worker as well.
+    Both waits return as soon as their state holds; the bound only limits a failure.
+    """
+    deadline = time.monotonic() + seconds
+    while job.status not in stdio_bridge.FINAL_JOB_STATUSES and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if job.thread is not None:
+        job.thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+
 def run(tmp_path, monkeypatch, protocol, stream, outputs, decide, *, on_request=None, desc=None):
     """outputs: raw bodies per model request; decide(event, n) -> response params tail or None."""
     monkeypatch.setattr(token_budget, "_token_encoder", lambda: None)
@@ -239,9 +254,7 @@ def run(tmp_path, monkeypatch, protocol, stream, outputs, decide, *, on_request=
     sent = next(x for x in out.lines() if x.get("id") == "send")
     receipt["sendOk"] = sent.get("ok")
     job = bridge._jobs[sent["result"]["job_id"]]
-    deadline = time.monotonic() + 40
-    while job.status not in stdio_bridge.FINAL_JOB_STATUSES and time.monotonic() < deadline:
-        time.sleep(0.01)
+    _wait_for_retired_job(job)
     stop.set()
     thread.join(2)
     handoffs = [
@@ -649,13 +662,8 @@ def test_e2e_second_turn_same_session(tmp_path, monkeypatch, capfd):
         )
         sent = next(x for x in out.lines() if x.get("id") == "send2")
         job = bridge._jobs[sent["result"]["job_id"]] if sent.get("ok") else None
-        deadline = time.monotonic() + 20
-        while (
-            job is not None
-            and job.status not in stdio_bridge.FINAL_JOB_STATUSES
-            and time.monotonic() < deadline
-        ):
-            time.sleep(0.01)
+        if job is not None:
+            _wait_for_retired_job(job)
         tail = [
             {k: x.get(k) for k in ("type", "payload", "error") if k in x}
             for x in out.lines()
@@ -756,9 +764,7 @@ def test_e2e_second_turn_plain_session_control(tmp_path, monkeypatch, capfd):
             )
             sent = next(x for x in out.lines() if x.get("id") == f"send{n}")
             job = bridge._jobs[sent["result"]["job_id"]]
-            deadline = time.monotonic() + 20
-            while job.status not in stdio_bridge.FINAL_JOB_STATUSES and time.monotonic() < deadline:
-                time.sleep(0.01)
+            _wait_for_retired_job(job)
             statuses.append(job.status)
         print(
             "E2E plain-control "
