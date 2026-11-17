@@ -358,7 +358,7 @@ jobs:
       - name: Audit production extension dependencies
         if: runner.os == 'Linux'
         working-directory: extensions/vscode-alysis
-        run: npm audit --audit-level=high
+        run: npm run test:picomatch-security && npm audit --audit-level=high
 
       - name: Retain packaged extension test evidence
         if: always()

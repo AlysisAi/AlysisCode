@@ -26,7 +26,7 @@ attestations as described in the sandbox guide.
 - Node, Go, and rustup downloads are version-pinned and SHA-256 verified for
   both `linux/amd64` and `linux/arm64`. Rust's manifest and minimal components are
   hash-pinned and installed from a local mirror with networking disabled.
-- npm is a [complete locked rebuild](npm-rebuild/README.md), `11.20.0-alysis.2`,
+- npm is a [complete locked rebuild](npm-rebuild/README.md), `11.20.0-alysis.3`,
   with four reviewed dependency fixes. Node's original bundled npm is removed in
   the installation layer. The bootstrap npm and retained input cache stay in the
   separate builder. Final `npm`/`npx`, offline operations and complete dependency

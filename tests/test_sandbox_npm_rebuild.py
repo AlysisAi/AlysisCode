@@ -60,7 +60,23 @@ def test_lock_retains_only_integrity_bound_registry_packages() -> None:
         if not name:
             continue
         assert name.startswith("node_modules/")
-        assert package["resolved"].startswith("https://registry.npmjs.org/")
+        if package["resolved"] == BUILDER.SECURITY_FIXES["picomatch"]:
+            assert package["version"] == "4.0.8-alysis.1"
+            assert (
+                BUILDER.sha256(SCRIPT.parent / "vendor" / BUILDER.VENDOR_ARCHIVE)
+                == BUILDER.VENDOR_SHA256
+            )
+        else:
+            assert package["resolved"].startswith("https://registry.npmjs.org/")
         assert package["integrity"].startswith("sha512-")
         assert not package.get("link")
         assert not package.get("dev")
+
+
+def test_security_regressions_are_available_inside_the_restricted_image_context() -> None:
+    sandbox = SCRIPT.parent.parent
+    rules = (sandbox / "Dockerfile.dockerignore").read_text().splitlines()
+    assert "!scripts/security/" in rules
+    assert "!scripts/security/test-picomatch.cjs" in rules
+    assert "!scripts/security/**" not in rules
+    assert "COPY scripts/security/test-picomatch.cjs" in (sandbox / "Dockerfile").read_text()

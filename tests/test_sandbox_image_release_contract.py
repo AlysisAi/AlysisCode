@@ -186,8 +186,8 @@ def test_docker_toolchains_and_external_images_are_immutable_inputs() -> None:
     assert "python /opt/npm-rebuild-source/build.py" in dockerfile
     npm_install = dockerfile.split("FROM dev-tools AS dev", 1)[1].split("FROM dev AS server", 1)[0]
     assert npm_install.index('e["archive_sha256"]') < npm_install.index("tar -xzf")
-    assert 'test "$(npm --version)" = "11.20.0-alysis.2"' in npm_install
-    assert 'test "$(npx --version)" = "11.20.0-alysis.2"' in npm_install
+    assert 'test "$(npm --version)" = "11.20.0-alysis.3"' in npm_install
+    assert 'test "$(npx --version)" = "11.20.0-alysis.3"' in npm_install
     assert re.search(r"ARG GO_LINUX_AMD64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG GO_LINUX_ARM64_SHA256=[0-9a-f]{64}", dockerfile)
     assert re.search(r"ARG RUSTUP_LINUX_AMD64_SHA256=[0-9a-f]{64}", dockerfile)

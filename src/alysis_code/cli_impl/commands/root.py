@@ -457,7 +457,10 @@ def run(
         # begin a model-backed run.
         _require_active_subscription_ready(model=model, base_url=base_url)
 
+        from ...product_measurement import record_cli_activity
         from ..chat import run_impl
+
+        record_cli_activity()
 
         return run_impl(
             _cli_module(),

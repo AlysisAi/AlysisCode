@@ -58,7 +58,8 @@
     "prepublish:check": "npm run compile && npm run lint && npm test && npm audit --audit-level=high && npm run package:vsix",
     "publish:dry-run": "npm run prepublish:check && vsce ls --tree --no-dependencies",
     "package:dev-vsix": "npm run compile && npm run bundle:production && vsce package --no-dependencies --baseImagesUrl https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/extensions/vscode-alysis",
-    "sync:ui": "node scripts/sync-shared-ui.js"
+    "sync:ui": "node scripts/sync-shared-ui.js",
+    "test:picomatch-security": "node --test ../../scripts/security/test-picomatch.cjs"
   },
   "contributes": {
     "chatParticipants": [
@@ -678,11 +679,13 @@
     "jsdom": "^29.1.1",
     "mocha": "^11.7.6",
     "typescript": "^5.4.5",
-    "typescript-eslint": "^8.10.0"
+    "typescript-eslint": "^8.10.0",
+    "picomatch": "file:../../scripts/sandbox/npm-rebuild/vendor/picomatch-4.0.8-alysis.1.tgz"
   },
   "overrides": {
     "@azure/msal-node": "7.1.2",
     "brace-expansion": "5.0.12",
+    "picomatch": "file:../../scripts/sandbox/npm-rebuild/vendor/picomatch-4.0.8-alysis.1.tgz",
     "mocha": {
       "diff": "8.0.4",
       "serialize-javascript": "7.1.3"

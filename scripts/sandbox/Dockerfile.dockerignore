@@ -2,6 +2,8 @@
 
 !scripts/sandbox/
 !scripts/sandbox/**
+!scripts/security/
+!scripts/security/test-picomatch.cjs
 !src/
 !src/**
 !hatch_build.py

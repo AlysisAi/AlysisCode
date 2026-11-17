@@ -21,7 +21,11 @@ SECURITY_FIXES = {
     "undici": "6.29.1",
     "http-cache-semantics": "4.3.0",
     "ip-address": "10.7.3",
+    "picomatch": "file:vendor/picomatch-4.0.8-alysis.1.tgz",
 }
+VENDOR_ARCHIVE = "picomatch-4.0.8-alysis.1.tgz"
+VENDOR_SHA256 = "8c61f1661413ac40be9e4cdff256dd836f8af1fe31aa66c3822d17d46262d0c8"
+PATCHED_PARSER_SHA256 = "ccbcc9bb1333c4e03324fef8c729ea20979ef4f7b99d8f75c941abfec04b1cfd"
 
 
 def sha256(path: Path) -> str:
@@ -66,7 +70,16 @@ def verify_runtime(root: Path, lock: dict) -> list[dict[str, str]]:
         package = read_json(path)
         if package["version"] != entry["version"]:
             raise ValueError(f"Installed version differs from frozen lock: {key}")
-        if not entry.get("resolved", "").startswith("https://registry.npmjs.org/"):
+        origin = entry.get("resolved", "")
+        if origin == SECURITY_FIXES["picomatch"]:
+            if sha256(HERE / "vendor" / VENDOR_ARCHIVE) != VENDOR_SHA256:
+                raise ValueError("Vendored security rebuild digest mismatch")
+            if (
+                package["name"] != "picomatch"
+                or sha256(root / key / "lib" / "parse.js") != PATCHED_PARSER_SHA256
+            ):
+                raise ValueError("Installed security parser fingerprint mismatch")
+        elif not origin.startswith("https://registry.npmjs.org/"):
             raise ValueError(f"Unapproved package origin: {key}")
         if not entry.get("integrity", "").startswith("sha512-"):
             raise ValueError(f"Missing package integrity: {key}")
@@ -91,6 +104,8 @@ def verify_runtime(root: Path, lock: dict) -> list[dict[str, str]]:
     if observed != set(expected):
         raise ValueError("Installed package set differs from frozen lock")
     for name, version in SECURITY_FIXES.items():
+        if name == "picomatch":
+            version = "4.0.8-alysis.1"
         if {p["version"] for p in inventory if p["name"] == name} != {version}:
             raise ValueError(f"Security replacement is missing or duplicated: {name}")
     return inventory
@@ -114,6 +129,11 @@ def main() -> None:
     extract_distribution(archive, work / "bootstrap", dependencies=True)
     extract_distribution(archive, work / "runtime", dependencies=False)
     runtime = work / "runtime" / "package"
+    vendor = HERE / "vendor" / VENDOR_ARCHIVE
+    if sha256(vendor) != VENDOR_SHA256:
+        raise ValueError("Vendored security rebuild digest mismatch")
+    (runtime / "vendor").mkdir()
+    shutil.copyfile(vendor, runtime / "vendor" / VENDOR_ARCHIVE)
     bootstrap = work / "bootstrap" / "package" / "bin" / "npm-cli.js"
     for name in ("package.json", "package-lock.json"):
         shutil.copyfile(HERE / name, runtime / name)
@@ -167,6 +187,16 @@ def main() -> None:
     (output / "npm-audit.json").write_text(audit.stdout, encoding="utf-8")
     if audit.returncode != 0:
         raise ValueError("npm dependency audit failed; inspect npm-audit.json")
+    security_test = HERE / "test-picomatch.cjs"
+    if not security_test.is_file():
+        security_test = HERE.parents[1] / "security" / "test-picomatch.cjs"
+    subprocess.run(
+        ["node", "--test", str(security_test)],
+        cwd=runtime,
+        env={**env, "PICOMATCH_UNDER_TEST": str(runtime / "node_modules" / "picomatch")},
+        check=True,
+        timeout=30,
+    )
     # Re-bundle every dependency after rebuilding the complete node_modules tree.
     # Upstream generated docs and licenses are retained; no lifecycle scripts run.
     manifest["bundleDependencies"] = sorted(manifest["dependencies"])

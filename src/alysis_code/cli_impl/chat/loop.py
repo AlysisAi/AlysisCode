@@ -4035,6 +4035,10 @@ def chat(
                 if isinstance(command_result, _ChatExecutionRequest)
                 else None
             )
+            if execution_instruction.strip():
+                from ...product_measurement import record_cli_activity
+
+                record_cli_activity()
             ephemeral_system_messages = (
                 list(command_result.ephemeral_system_messages)
                 if isinstance(command_result, _ChatExecutionRequest)
