@@ -71,3 +71,12 @@ def test_lock_retains_only_integrity_bound_registry_packages() -> None:
         assert package["integrity"].startswith("sha512-")
         assert not package.get("link")
         assert not package.get("dev")
+
+
+def test_security_regressions_are_available_inside_the_restricted_image_context() -> None:
+    sandbox = SCRIPT.parent.parent
+    rules = (sandbox / "Dockerfile.dockerignore").read_text().splitlines()
+    assert "!scripts/security/" in rules
+    assert "!scripts/security/test-picomatch.cjs" in rules
+    assert "!scripts/security/**" not in rules
+    assert "COPY scripts/security/test-picomatch.cjs" in (sandbox / "Dockerfile").read_text()
