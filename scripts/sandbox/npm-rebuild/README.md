@@ -1,14 +1,15 @@
 # Sandbox npm runtime rebuild
 
 This is a sandbox-only rebuild of npm `11.20.0` as
-`11.20.0-alysis.2`, used by the sandbox Dockerfile. It is not published to the
+`11.20.0-alysis.3`, used by the sandbox Dockerfile. It is not published to the
 npm registry. Image promotion requires the public workflow's scans,
 qualification and signatures.
 
-The rebuild updates four runtime dependencies:
+The rebuild updates five runtime dependencies:
 
 | Runtime dependency | Upstream bundle | Rebuild | Findings addressed |
 | --- | --- | --- | --- |
+| picomatch | 4.0.4 | 4.0.8-alysis.1 | GHSA-fc5q-39xc-vjpf; [reviewed local parser rebuild](vendor/README.md) |
 | brace-expansion | 5.0.9 | 5.0.12 | CVE-2026-102276, CVE-2026-102278, GHSA-q2hr-2g5m-vwhr |
 | undici | 6.28.0 | 6.29.1 | CVE-2026-19534; GHSA-xjj6-f33q-929c, GHSA-2m5v-pch6-74hx, GHSA-qrxm-fqhp-jwvm |
 | http-cache-semantics | 4.2.0 | 4.3.0 | GHSA-ch52-4w7c-c8xp |
@@ -30,7 +31,7 @@ to the scanner or proof that the entire image is vulnerability-free.
   Upstream development dependencies were excluded. The 12 shipped workspace
   packages were bound to their same-version registry tarballs and SHA-512
   integrity values instead of source-tree links.
-- Root dependency versions are pinned to the shipped versions. Only the four
+- Root dependency versions are pinned to the shipped versions. Only the five
   dependency versions in the table change. `overrides` records those decisions.
   npm's lockfile resolver validated the complete graph without adding, removing,
   or changing any further package version.
