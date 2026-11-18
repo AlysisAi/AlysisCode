@@ -15,8 +15,6 @@ from alysis_code.ide.event_stream import EventContext, EventSequencer, ProtocolE
 from alysis_code.ide.prompt_queue import DurablePromptQueue, PromptState
 from alysis_code.ide.protocol import ProtocolError, ProtocolRequest
 
-ForgeRequestState = sb.ForgeRequestState
-
 
 def harness(tmp_path):
     output = io.StringIO()
@@ -225,10 +223,6 @@ def test_callbacks_hold_A_vacancy_across_all_real_admission_joins(tmp_path, monk
             with pytest.raises(ProtocolError, match="still settling"):
                 b._register_job_locked(
                     s, sb.BridgeJob(job_id="B", session_id=s.session_id, created_at="now")
-                )
-            with pytest.raises(ProtocolError, match="still settling"):
-                b._attach_durable_forge_job_locked(
-                    s, SimpleNamespace(state=ForgeRequestState.RUNNING)
                 )
         monkeypatch.setattr(b._prompt_queue, "claim_next", forbidden)
         b._drain_prompt_queue(s)

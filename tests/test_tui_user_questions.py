@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -182,7 +183,14 @@ def test_real_tui_keyboard_to_agent_roundtrip(tmp_path, monkeypatch, action):
                     raw={},
                 )
             if len(messages_seen) == 2:
-                identifier = captured["session"].surface.user_questions.active.id
+                # Like a real model, take the id from the request's tool result. Reading the
+                # live request instead raced the driver: once its fake clock passes the
+                # timeout (or the user answers), the broker has no active request.
+                identifier = next(
+                    json.loads(message["content"])["request_id"]
+                    for message in messages
+                    if message.get("tool_call_id") == "ask1"
+                )
                 return LLMResponse(
                     content="",
                     tool_calls=[ToolCall("wait1", "wait_user_input", {"request_id": identifier})],
@@ -302,8 +310,6 @@ def test_real_tui_keyboard_to_agent_roundtrip(tmp_path, monkeypatch, action):
     assert painted and any("Which theme?" in screen for screen in painted)
     assert captured["session"].surface.user_questions.active is None
     if action in ("answer", "custom"):
-        import json
-
         answers = [
             json.loads(message["content"])
             for message in messages_seen[-1]
@@ -329,8 +335,6 @@ def test_real_tui_keyboard_to_agent_roundtrip(tmp_path, monkeypatch, action):
         assert any("Exact custom answer 73" in text for role, text in transcript if role == "user")
         assert not any(text == "keep this draft" for role, text in transcript if role == "user")
     elif action in ("timeout", "partial_timeout"):
-        import json
-
         results = [
             json.loads(message["content"])
             for message in messages_seen[-1]

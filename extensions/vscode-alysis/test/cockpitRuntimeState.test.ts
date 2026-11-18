@@ -208,11 +208,8 @@ function configWithCli(options: { executionAllowed: boolean; reason?: string }):
     provider: "",
     transport: "stdio",
     sandboxProfile: "default",
-    forgeExecuteMaxSteps: undefined,
-    forgeExecuteNoLog: false,
     showStatusBar: true,
     autoStartBridge: false,
-    enableForge: true,
     security: {
       isWorkspaceTrusted: true,
       ignoredWorkspaceSettings: [],
@@ -329,20 +326,6 @@ test("FE-19: an idle status bar with no live bridge stays honestly stopped + gat
   const snap = runtime.snapshot();
   assert.equal(snap.bridgeProcess.status, "stopped");
   assert.equal(snap.compatibility.features.tools.supported, false, "no live bridge -> honestly gated");
-});
-
-test("FE-19: permanently-gated features stay gated even when the live bridge advertises their methods", () => {
-  const runtime = new CockpitRuntimeState();
-  // A bridge that (hypothetically) advertises EVERYTHING, including the permanently-gated method names.
-  const health = makeHealth(
-    ["forge.pr", "forge.swarm", "diff.apply", "diff.discard"],
-    ["readonly", "review", "auto", "fullaccess"]
-  );
-  runtime.applyStatusBarSnapshot(idleSnapshot, { running: true, health });
-  const features = runtime.snapshot().compatibility.features;
-  assert.equal(features.forgePr.supported, false, "forgePr stays permanently gated");
-  assert.equal(features.forgeSwarm.supported, false, "forgeSwarm stays permanently gated");
-  assert.equal(features.diffApplyDiscard.supported, false, "diffApplyDiscard stays permanently gated");
 });
 
 test("FE-19: a live healthy bridge overrides a flaky 'missing CLI' probe (no false re-gating)", () => {

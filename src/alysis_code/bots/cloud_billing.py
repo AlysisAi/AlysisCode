@@ -26,6 +26,19 @@ class BillingUnavailable(DesktopError):
     pass
 
 
+class CloudCreditsExhausted(BillingUnavailable):
+    """The account has no Cloud computer credits left until its next monthly reset.
+
+    `refusal` is closed, structured data for the app (a code and the reset time the
+    billing service gave), so it can say when credits return without reading this text.
+    """
+
+    def __init__(self, message, resets_at=None):
+        super().__init__(message)
+        reset = resets_at if isinstance(resets_at, str) and len(resets_at) <= 64 else None
+        self.refusal = {"code": "cloud_credits_exhausted", "resets_at": reset}
+
+
 class CloudBilling:
     def __init__(self, url, key, *, client=None):
         parsed = urlsplit(url)
@@ -115,9 +128,11 @@ class AccountBilling:
         return self.request("status")
 
     def admit(self):
-        if not self.status()["can_run"]:
-            raise BillingUnavailable(
-                "No Cloud computer credits are available. Check your plan allowance or wait for its monthly reset."
+        status = self.status()
+        if not status["can_run"]:
+            raise CloudCreditsExhausted(
+                "No Cloud computer credits are available. Check your plan allowance or wait for its monthly reset.",
+                status.get("resets_at"),
             )
 
     def start(self, bot, on_exhausted, *, running):
@@ -142,8 +157,11 @@ class BillingSession:
             return False
 
     def start(self):
-        if not self.account.request("begin", session=self.id, bot=self.bot)["can_run"]:
-            raise BillingUnavailable("No Cloud computer credits are available.")
+        begun = self.account.request("begin", session=self.id, bot=self.bot)
+        if not begun["can_run"]:
+            raise CloudCreditsExhausted(
+                "No Cloud computer credits are available.", begun.get("resets_at")
+            )
         self.thread = threading.Thread(target=self._run, name="alysis-cloud-meter", daemon=True)
         self.thread.start()
 

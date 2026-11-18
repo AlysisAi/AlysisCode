@@ -37,7 +37,6 @@ from ...surface.types import (
     remote_site_outcome,
 )
 from ...user_questions import UserQuestionBroker
-from .forge_status import FORGE_RUNNING_STATES, forge_status_counts
 from .tool_trace import bounded_text, patch_entry, tool_is_view_only, tool_output
 from .transcript import TuiTranscript
 
@@ -166,13 +165,6 @@ class TuiSurface:
         # leaving the bottom-right numbers frozen while the agent is visibly working.
         self._hud_refresh = on_hud_refresh
         self._hud_last_refresh: float = 0.0
-        # Live Forge execution context (set for the duration of /execute plan): the
-        # run paths (to refresh task statuses from plan.json), a debounce stamp, the
-        # worker cancellation token, and the run id (to drop stale/superseded events).
-        self._forge_paths: object | None = None
-        self._forge_last_refresh: float = 0.0
-        self._forge_token: object | None = None
-        self._forge_run_id: str = ""
         # Live subagent identity. The stack tracks concurrent subagent runs
         # (start pushes, end pops); the callback tells the app which name to pin
         # in the footer badge — None clears it. Entries are keyed by the pushing
@@ -327,136 +319,6 @@ class TuiSurface:
         # Static workspace/model/mode line — the footer already carries this.
         return
 
-    # ------------------------------------------------------------- Forge swarm
-    def begin_forge(self, paths: object, token: object | None = None) -> None:
-        """Open the live Forge execution view from the current plan on disk.
-
-        Called by the worker just before ``run_swarm`` so the task table shows the
-        initial statuses; the swarm then refreshes them through
-        :meth:`on_swarm_event` and the final pass in :meth:`end_forge`. ``token`` is
-        the worker's cancellation token — checked in :meth:`on_swarm_event` (which
-        runs on the trace sink's OWN thread, where the thread-local
-        ``_worker_cancelled`` would not see it) so a soft-interrupt stops painting."""
-        self._forge_paths = paths
-        self._forge_token = token
-        self._forge_last_refresh = 0.0
-        self._forge_run_id = str(getattr(paths, "run_id", "") or "")
-        self._t.forge_begin(self._forge_run_id, list(self._read_plan_tasks()))
-
-    def _forge_run_cancelled(self) -> bool:
-        token = self._forge_token
-        return bool(token is not None and getattr(token, "is_cancelled", False))
-
-    def on_swarm_event(self, event: object) -> None:
-        """Receive a structured swarm trace event (preferred by the serialized
-        sink over :meth:`on_progress_update`): stream it as a trace/error line,
-        highlight the in-flight task, and refresh statuses from plan.json.
-
-        Runs on the trace sink's daemon thread, so it guards on the worker's token
-        (not the thread-local cancel flag), on the view still being open (a new turn
-        clears it), and on the event's run id matching — so a soft-interrupted or
-        superseded run can never paint stale progress."""
-        if self._forge_run_cancelled():
-            return
-        if self._t.forge_snapshot() is None:
-            return  # the view was cleared (e.g. a new turn started)
-        event_run_id = str(getattr(event, "run_id", "") or "")
-        if event_run_id and self._forge_run_id and event_run_id != self._forge_run_id:
-            return  # stale event from a previous run
-        phase = str(getattr(event, "phase", "") or "")
-        message = str(getattr(event, "message", "") or "")
-        task_id = getattr(event, "task_id", None)
-        task_id = str(task_id) if task_id else None
-        # Keep the run CLEAN: the live task table + the single moving phase line tell
-        # the story, so progress events are NOT spilled as a wall of trace lines.
-        # Only errors are surfaced as persistent lines (they matter and are rare).
-        if "error" in phase.lower():
-            prefix = f"[{task_id}] " if task_id else ""
-            self._t.append(
-                "error", f"✗ {_truncate(f'{prefix}{message}'.strip() or phase, limit=200)}"
-            )
-        self._t.forge_set_active(task_id, phase=phase, message=message)
-        self._maybe_refresh_forge_statuses()
-
-    def end_forge(self, summary: str = "", *, paths: object | None = None) -> None:
-        """Apply the final task statuses from disk (adding any tasks enrichment added
-        mid-run) and freeze the view as done, with a concise outcome summary.
-
-        ``paths`` re-arms the run paths for a late finalize: a soft-interrupt
-        clears ``self._forge_paths`` (via :meth:`interrupt_forge`) even though
-        the swarm cannot actually be stopped — when it then runs to its natural
-        end, the worker passes the run's paths back so the frozen table shows
-        the statuses the finished swarm really wrote instead of an empty view."""
-        if paths is not None:
-            self._forge_paths = paths
-        tasks = self._read_plan_tasks()
-        self._t.forge_sync_tasks(tasks)
-        done, failed, remaining = forge_status_counts(status for _tid, _title, status in tasks)
-        ok = failed == 0 and remaining == 0
-        if not summary:
-            if not tasks:
-                summary = "No execution-ready tasks."
-            else:
-                parts = [f"{done} done"]
-                if failed:
-                    parts.append(f"{failed} failed")
-                if remaining:
-                    parts.append(f"{remaining} remaining")
-                summary = "Done · " + " · ".join(parts) if ok else "Finished · " + " · ".join(parts)
-        self._t.forge_finish({tid: status for tid, _title, status in tasks}, summary, ok=ok)
-        self._forge_paths = None
-        self._forge_token = None
-        self._forge_run_id = ""
-
-    def interrupt_forge(self, summary: str = "Interrupted.") -> None:
-        """Mark any live in-progress Forge tasks interrupted and freeze the view."""
-        path = getattr(self._forge_paths, "plan_json_path", None)
-        updated: dict[str, str] = {}
-        if path is not None:
-            try:
-                import json
-                from datetime import datetime, timezone
-
-                data = json.loads(path.read_text(encoding="utf-8"))
-                changed = False
-                for task in data.get("tasks") or []:
-                    if not isinstance(task, dict):
-                        continue
-                    status = str(task.get("status") or "").strip().lower()
-                    task_id = str(task.get("id") or "").strip()
-                    if not task_id or status not in FORGE_RUNNING_STATES:
-                        continue
-                    task["status"] = "interrupted"
-                    task["last_error"] = "Interrupted by user."
-                    updated[task_id] = "interrupted"
-                    changed = True
-                if changed:
-                    data["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    path.write_text(
-                        json.dumps(data, indent=2, sort_keys=False) + "\n",
-                        encoding="utf-8",
-                    )
-            except Exception:
-                updated = {}
-        tasks = self._read_plan_tasks()
-        if tasks:
-            self._t.forge_sync_tasks(tasks)
-            status_map = {tid: status for tid, _title, status in tasks}
-        else:
-            status_map = dict(updated)
-            if status_map:
-                self._t.forge_update_statuses(status_map)
-        self._t.forge_finish(status_map, summary, ok=False)
-        self._forge_paths = None
-        self._forge_token = None
-        self._forge_run_id = ""
-
-    def append_system(self, text: str) -> None:
-        """Append captured handler output (warnings / summary) as one system block."""
-        clean = str(text or "").rstrip()
-        if clean:
-            self._t.append("system", clean)
-
     def append_note(self, text: str, *, role: str = "system") -> None:
         """Append a single status line with an explicit role.
 
@@ -477,45 +339,6 @@ class TuiSurface:
         keeping the previous transcript. Tool calls/results are dropped by
         :meth:`TuiTranscript.load_history` so the view stays clean."""
         self._t.load_history(messages or [])
-
-    def _maybe_refresh_forge_statuses(self) -> None:
-        import time
-
-        now = time.monotonic()
-        if now - self._forge_last_refresh < 0.4:
-            return
-        self._forge_last_refresh = now
-        tasks = self._read_plan_tasks()
-        if tasks:
-            # Sync (not just update) so tasks added by plan enrichment mid-run show up.
-            self._t.forge_sync_tasks(tasks)
-
-    def _read_plan_tasks(self) -> list[tuple[str, str, str]]:
-        """Read ``(id, title, status)`` for each task from plan.json (best-effort).
-
-        Reads the raw JSON rather than the validating ``load_plan`` so a mid-run
-        refresh stays cheap and never raises while the swarm rewrites the file."""
-        paths = self._forge_paths
-        path = getattr(paths, "plan_json_path", None)
-        if path is None:
-            return []
-        try:
-            import json
-
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-        out: list[tuple[str, str, str]] = []
-        for task in data.get("tasks") or []:
-            if isinstance(task, dict) and task.get("id"):
-                out.append(
-                    (
-                        str(task["id"]),
-                        str(task.get("title") or ""),
-                        str(task.get("status") or "planned"),
-                    )
-                )
-        return out
 
     # -------------------------------------------------------------------- tools
     def on_tool_start(self, event: ToolStartEvent) -> None:

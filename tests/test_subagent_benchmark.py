@@ -231,7 +231,6 @@ def _write_config(config_dir: Path, *, base_url: str, repo: Path) -> None:
         "skills_enabled": False,
         "update_check_enabled": False,
         "max_steps": 8,
-        "task_max_steps": 8,
         "subagent_max_steps": 6,
         "verify_commands": ["python -m pytest -q tests/test_a.py"],
         "profiles": {

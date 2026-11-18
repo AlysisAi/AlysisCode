@@ -40,9 +40,6 @@ for (const commandId of ALL_COMMANDS) {
     assert.equal(contributions[0].category, "Alysis Code");
     assert.ok(contributions[0].title.trim().length > 0);
     assert.equal(contributions[0].title.startsWith("Alysis Code:"), false);
-    if (commandId === "alysis.forgePlan" || commandId === "alysis.runSwarm") {
-      assert.equal(contributions[0].enablement, "isWorkspaceTrusted");
-    }
   });
 }
 
@@ -56,11 +53,8 @@ test("QA settings manifest has the complete unique schema", () => {
     "alysis.provider",
     "alysis.transport",
     "alysis.sandboxProfile",
-    "alysis.forgeExecuteMaxSteps",
-    "alysis.forgeExecuteNoLog",
     "alysis.showStatusBar",
     "alysis.autoStartBridge",
-    "alysis.enableForge",
     "alysis.extraCaCerts"
   ];
   assert.deepEqual(Object.keys(properties).sort(), expected.sort());
@@ -168,28 +162,9 @@ test("QA sandboxProfile rejects malformed values", () => {
   assert.equal(getAlysisConfig(reader({ sandboxProfile: null })).sandboxProfile, "default");
 });
 
-test("QA forgeExecuteMaxSteps rejects non-positive and non-finite values", () => {
-  for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "not-a-number"]) {
-    assert.equal(getAlysisConfig(reader({ forgeExecuteMaxSteps: value })).forgeExecuteMaxSteps, undefined);
-  }
-});
-
-test("QA forgeExecuteMaxSteps floors positive fractions", () => {
-  assert.equal(getAlysisConfig(reader({ forgeExecuteMaxSteps: 12.8 })).forgeExecuteMaxSteps, 12);
-});
-
-test("QA forgeExecuteMaxSteps rejects unsafe huge integers", () => {
-  assert.equal(
-    getAlysisConfig(reader({ forgeExecuteMaxSteps: Number.MAX_SAFE_INTEGER + 1 })).forgeExecuteMaxSteps,
-    undefined
-  );
-});
-
 for (const [setting, defaultValue] of [
-  ["forgeExecuteNoLog", false],
   ["showStatusBar", true],
-  ["autoStartBridge", false],
-  ["enableForge", true]
+  ["autoStartBridge", false]
 ] as const) {
   test(`QA ${setting} accepts booleans and rejects malformed values`, () => {
     assert.equal((getAlysisConfig(reader({ [setting]: true })) as unknown as Record<string, unknown>)[setting], true);

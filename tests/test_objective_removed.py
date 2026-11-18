@@ -12,7 +12,6 @@ from alysis_code import cli as cli_mod
 from alysis_code.agent.task_evidence import restore_conversation_evidence
 from alysis_code.agent_loop import create_session
 from alysis_code.cli_impl.chat.loop import _handle_chat_command_impl
-from alysis_code.cli_impl.chat.state import _ForgeChatState
 from alysis_code.cli_impl.chat_slash_completer import SPECS
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMResponse
@@ -60,7 +59,6 @@ def _command(session, text):
         session=session,
         pending_images=[],
         console=Console(file=output, force_terminal=False),
-        forge_state=_ForgeChatState(),
     )
     return result, output.getvalue()
 

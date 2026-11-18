@@ -169,7 +169,8 @@ def test_save_preserves_unexposed_role_model_keys(
     tmp_path: Path,
 ) -> None:
     # Keys the menu does not expose — including the deprecated "router" key
-    # from the removed semantic router — must survive an unrelated save.
+    # from the removed semantic router and the retired "forge_role_models"
+    # block — must survive an unrelated save.
     _seed_config(tmp_path, monkeypatch)
     cfg = load_config()
     cfg.extra_fields["role_models"] = {
@@ -220,26 +221,6 @@ def test_subagent_role_override(monkeypatch, tmp_path: Path) -> None:
     assert result.saved is True
     assert role_models["coding"] == "anthropic/claude-sonnet-4-6"
     assert set(role_models) == {"coding"}
-
-
-def test_forge_role_override(monkeypatch, tmp_path: Path) -> None:
-    _seed_config(tmp_path, monkeypatch)
-    _patch_console(monkeypatch)
-    answers = [_menu_section_choice("forge")]
-    answers.extend(
-        "anthropic/claude-opus-4-7" if role == "planner" else ""
-        for role in config_menu_mod.FORGE_ROLE_ORDER
-    )
-    answers.append("s")
-    prompt = PromptScript(answers)
-    monkeypatch.setattr(config_menu_mod.typer, "prompt", prompt)
-
-    result = config_menu_mod.run_config_menu()
-
-    forge_role_models = load_config().extra_fields["forge_role_models"]
-    assert result.saved is True
-    assert forge_role_models["planner"] == "anthropic/claude-opus-4-7"
-    assert set(forge_role_models) == {"planner"}
 
 
 def test_legacy_router_override_has_no_menu_row_and_stays_out_of_summaries() -> None:
@@ -822,26 +803,3 @@ def test_subagent_section_abort_rolls_back_partial_role_edits(monkeypatch) -> No
     assert state.role_models == role_models_before
     assert state.role_temperatures == role_temperatures_before
     assert 'Section "Subagent model overrides" cancelled.' in output.getvalue()
-
-
-def test_forge_section_abort_rolls_back_partial_role_edits(monkeypatch) -> None:
-    output = io.StringIO()
-    console = Console(file=output, force_terminal=False, color_system=None, width=120)
-    state = config_menu_mod.ConfigMenuState.from_cfg(AppConfig(model="default"))
-    state.set_forge_role_model("coding", "old-coding")
-    state.set_forge_role_model("planner", "old-planner")
-    forge_role_models_before = dict(state.forge_role_models)
-    answers = iter(["new-coding", "new-planner"])
-
-    def prompt(text: str, *args: Any, **kwargs: Any) -> str:
-        del args, kwargs
-        if "Review model" in text:
-            raise Abort()
-        return next(answers)
-
-    monkeypatch.setattr(config_menu_mod.typer, "prompt", prompt)
-
-    config_menu_mod._run_forge_section(state, console)
-
-    assert state.forge_role_models == forge_role_models_before
-    assert 'Section "Forge model overrides" cancelled.' in output.getvalue()

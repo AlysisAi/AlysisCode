@@ -15,13 +15,6 @@ export interface SlashCommandHandlers {
   pickPermissions?(): Promise<SlashMode | undefined>;
   /** Bare (undefined name) opens the persona picker; a name sets it directly. Returns the outcome notice. */
   persona?(name?: string): Promise<string | void>;
-  plan(instruction: string): Promise<void>;
-  executePlan(): Promise<void>;
-  executePreview(): Promise<void>;
-  listPlans(): Promise<void>;
-  openPlan(planId?: string): Promise<void>;
-  openDiffs(): Promise<void>;
-  refreshArtifacts(): Promise<void>;
   cancel(): Promise<void>;
   doctor(): Promise<void>;
   /** Opens the provider/model picker. Returns the outcome notice, or void for the legacy message. */
@@ -52,7 +45,7 @@ export class SlashCommandRouter {
 
   public async execute(input: string): Promise<SlashCommandResult> {
     const parsed = parseSlashCommand(input);
-    if (["mode", "persona", "plan", "executePlan", "executePreview", "plans", "openPlan", "diffs", "artifacts"].includes(parsed.id)
+    if (["mode", "persona"].includes(parsed.id)
       && !this.catalog().some((definition) => definition.id === parsed.id)) {
       return result(parsed.command, "This command is unavailable in the current task or connected agent. Run /help to see available commands.", "warning");
     }
@@ -63,31 +56,6 @@ export class SlashCommandRouter {
         return this.executeMode(parsed);
       case "persona":
         return this.executePersona(parsed);
-      case "plan":
-        return this.executePlan(parsed);
-      case "executePlan":
-        return this.executeTrusted(parsed, () => this.handlers.executePlan(), "Running the plan in review mode.");
-      case "executePreview":
-        await this.handlers.executePreview();
-        return result(parsed.command, "Previewing what the plan would change.");
-      case "executeUnsupported":
-        return result(
-          parsed.command,
-          "IDE v1 only supports Forge Execute Preview and review-mode selected-task execution. Broad forge execute, auto, and fullaccess modes are unavailable in the VS Code extension.",
-          "warning"
-        );
-      case "plans":
-        await this.handlers.listPlans();
-        return result(parsed.command, "Opened your plans.");
-      case "openPlan":
-        await this.handlers.openPlan(parsed.args || undefined);
-        return result(parsed.command, parsed.args ? `Opened plan ${parsed.args}.` : "Opened your plans.");
-      case "diffs":
-        await this.handlers.openDiffs();
-        return result(parsed.command, "Opened the changes for this plan.");
-      case "artifacts":
-        await this.handlers.refreshArtifacts();
-        return result(parsed.command, "Refreshed the files this plan produced.");
       case "cancel":
         await this.handlers.cancel();
         return result(parsed.command, "Stopping the current run...");
@@ -167,26 +135,6 @@ export class SlashCommandRouter {
     return result(parsed.command, notice ?? "");
   }
 
-  private async executePlan(parsed: ParsedSlashCommand): Promise<SlashCommandResult> {
-    const instruction = parsed.args.trim();
-    if (!instruction) {
-      return result(parsed.command, "Usage: /forge plan <instruction>", "warning");
-    }
-    return this.executeTrusted(parsed, () => this.handlers.plan(instruction), "Planning this change.");
-  }
-
-  private async executeTrusted(
-    parsed: ParsedSlashCommand,
-    run: () => Promise<void>,
-    notice: string
-  ): Promise<SlashCommandResult> {
-    if (!this.handlers.isWorkspaceTrusted()) {
-      return result(parsed.command, `${parsed.command} requires Workspace Trust. Trust this workspace before running mutating Forge workflows.`, "warning");
-    }
-    await run();
-    return result(parsed.command, notice);
-  }
-
   private async executeBackendAction(parsed: ParsedSlashCommand): Promise<SlashCommandResult> {
     if (!parsed.backendActionId) {
       return result(parsed.command, "Backend action route is missing.", "error");
@@ -217,7 +165,7 @@ function result(command: string, notice: string, severity: "info" | "warning" | 
 
 function unknownCommandText(command: string, commands: readonly SlashCommandDefinition[]): string {
   if (command === "/mode") return "Use /permissions to choose what Alysis Code may do, or /persona to choose how it works.";
-  if (command === "/plan") return "Chat plan mode has been removed. Use /persona architect for planning, or /forge plan <goal> to create a Forge plan.";
+  if (command === "/plan") return "Chat plan mode has been removed. Use /persona architect for planning.";
   if (command === "/subagent") return "Use /subagents to inspect or configure subagents.";
   if (command === "/ask") return "One-turn /ask is currently CLI-only. In VS Code, /persona ask selects read-only Q&A for subsequent turns; switch back with /persona code when finished.";
   if (command === "/chat") return "/chat has been retired. Type a message directly, or use /persona ask for read-only Q&A.";

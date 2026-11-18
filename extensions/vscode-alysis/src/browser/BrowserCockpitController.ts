@@ -98,7 +98,7 @@ export interface BrowserCockpitState {
   diagnosticsTruncated: boolean;
 }
 
-/** Compact projection safe to publish with high-frequency chat/Forge deltas. */
+/** Compact projection safe to publish with high-frequency chat deltas. */
 export interface BrowserCockpitSummaryState {
   supported: boolean;
   reason: string | null;

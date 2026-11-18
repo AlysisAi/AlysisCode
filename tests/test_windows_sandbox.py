@@ -49,6 +49,31 @@ def test_read_only_never_grants_workspace_writes(workspace):
     assert str(workspace) in result["read"]
 
 
+@pytest.mark.parametrize("access", ["read-only", "workspace-write"])
+def test_fixed_worker_keeps_policy_and_bypasses_only_shell_startup(workspace, monkeypatch, access):
+    from alysis_code.contained_read_tools import _worker_argv
+
+    settings = ShellSandboxSettings(backend="windows-mxc", filesystem_access=access, network="off")
+    shell = request(workspace, settings, cmd="Write-Output hello")
+    assert shell["argv"][shell["argv"].index("-ExecutionPolicy") + 1] == "RemoteSigned"
+
+    def unavailable(_shell):
+        raise ConfigError("host policy unavailable")
+
+    monkeypatch.setattr(native, "_powershell_execution_policy", unavailable)
+    arguments = ("--request-file", "packet with spaces.json", "a" * 64)
+    worker = request(workspace, settings, cmd=native.FileWorkerCommand(arguments))
+    assert worker.pop("argv") == [*_worker_argv(), *arguments]
+    del shell["argv"]
+    assert worker == shell
+    with pytest.raises(ConfigError, match="host policy unavailable"):
+        request(workspace, settings, cmd="Write-Output hello")
+    with pytest.raises(ConfigError, match="require the Windows MXC backend"):
+        native.WindowsNativeRunner(settings)._prepare(
+            root=workspace, cwd=workspace, cmd=native.FileWorkerCommand(arguments)
+        )
+
+
 def test_workspace_write_keeps_metadata_protected(workspace):
     result = request(workspace)
     assert result["write"] == [str(workspace)]

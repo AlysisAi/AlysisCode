@@ -64,7 +64,6 @@ from .windows_verification_command import (
 )
 from .workspace_context import WorkspaceContext, WorkspaceContextError, resolve_workspace_context
 
-VERIFY_MODES = {"off", "warn", "strict"}
 VERIFY_SANDBOX_MODES = {"off", "warn", "strict"}
 VERIFY_OUTPUT_PREVIEW_CHARS = 400
 VERIFICATION_FAILURE_SNIPPET_MAX_CHARS = 240
@@ -457,19 +456,6 @@ class VerifyRunResult:
                 return f"verification passed ({passed}/{total}); skipped: {', '.join(skipped)}"
             return f"verification passed ({passed}/{total})"
         return f"verification failed ({passed}/{total}); failed: {', '.join(self.failed_commands)}"
-
-
-def verify_run_status(result: object) -> str:
-    """Tri-state run status for any VerifyRunResult-like object.
-
-    Falls back to deriving from ``all_passed`` for legacy or test-stub results
-    that predate the ``status`` property, preserving their old semantics
-    (a stub claiming ``all_passed=True`` keeps meaning "passed").
-    """
-    status = str(getattr(result, "status", "") or "")
-    if status in {"passed", "failed", "not_run"}:
-        return status
-    return "passed" if bool(getattr(result, "all_passed", False)) else "failed"
 
 
 @dataclass(frozen=True)
@@ -1672,46 +1658,6 @@ def resolve_project_verify_command_selection(
     return repair_invalid_verify_command_selection(resolved, root=root, repo_scan=scan).selection
 
 
-def resolve_authoritative_task_verify_command_selection(
-    *,
-    cfg: AppConfig,
-    verify_cmd: list[str] | None,
-    task: dict[str, Any] | None,
-    root: Path | None = None,
-    repo_scan: RepoScanResult | None = None,
-    plan_requirements: list[str] | None = None,
-    selection: ResolvedVerifyCommands | None = None,
-    allow_empty_config: bool = False,
-) -> ResolvedVerifyCommands:
-    resolved = selection
-    if resolved is not None and verify_cmd:
-        normalized_commands = tuple(
-            resolve_verify_commands(
-                cfg=cfg,
-                verify_cmd=verify_cmd,
-                root=root,
-                repo_scan=repo_scan,
-            )
-        )
-        if normalized_commands != resolved.commands:
-            resolved = resolve_verify_command_selection(
-                cfg=cfg,
-                verify_cmd=verify_cmd,
-                root=root,
-                repo_scan=repo_scan,
-            )
-    return resolve_task_aware_verify_command_selection(
-        cfg=cfg,
-        verify_cmd=(verify_cmd if resolved is None else None),
-        task=task,
-        root=root,
-        repo_scan=repo_scan,
-        plan_requirements=plan_requirements,
-        selection=resolved,
-        allow_empty_config=allow_empty_config,
-    )
-
-
 @dataclass(frozen=True)
 class VerificationCommandExecution:
     exit_code: int
@@ -2611,13 +2557,6 @@ def resolve_verify_artifact_payload(*, root: Path, artifact_path: Path) -> Verif
         artifact_readable_via_fs=True,
         artifact_location="workspace_root",
     )
-
-
-def normalize_verify_mode(mode: str) -> str:
-    value = mode.strip().lower()
-    if value not in VERIFY_MODES:
-        raise VerifyError("Invalid --verify. Use one of: off, warn, strict.")
-    return value
 
 
 def resolve_verify_command_selection(

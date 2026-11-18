@@ -14,7 +14,6 @@
         <div class="sidebar-top-actions">
           <button class="icon-button" type="button" data-action="new" data-icon="add" aria-label="New task" title="New task"></button>
           <button class="icon-button" type="button" data-surface="history" data-icon="history" aria-label="Task history" title="Task history"></button>
-          <button class="icon-button" type="button" data-surface="forge" data-icon="forge" aria-label="Open Forge" title="Forge — plan and review complex work"></button>
           <button class="icon-button" type="button" data-surface="models" data-icon="models" aria-label="Providers and models" title="Providers and models"></button>
           <button class="icon-button" type="button" data-surface="settings" data-icon="settings" aria-label="Settings" title="Settings"></button>
         </div>
@@ -64,8 +63,6 @@
               </header>
               <div id="recentCards" class="recent-cards"></div>
             </section>
-
-            <div class="welcome-shortcuts"><button class="quiet-link" type="button" data-surface="forge">Plan with Forge <span data-icon="chevron-right" aria-hidden="true"></span></button></div>
           </div>
 
           <section id="conversation" class="conversation" aria-label="Conversation" hidden>
@@ -79,42 +76,6 @@
               <span>Jump to latest</span>
             </button>
           </section>
-        </section>
-
-        <section id="forgeSurface" class="surface secondary-surface forge-surface" hidden>
-          <header class="surface-header forge-header">
-            <button class="back-button" type="button" data-surface="task" aria-label="Back to task" data-icon="chevron-left"></button>
-            <div class="surface-heading-copy"><h1>Forge</h1><p id="forgeHeaderDetail">Plan complex work before files change.</p></div>
-            <button class="header-action" type="button" data-command="alysis.forgeListPlans">Browse</button>
-          </header>
-
-          <section id="forgeEmpty" class="forge-empty">
-            <div class="forge-logo" aria-hidden="true"><img src="${markUri}" alt=""></div>
-            <h2>Build with a plan you can inspect</h2>
-            <p>Describe the outcome. Forge breaks it into reviewable tasks, checks scope, and shows changes before execution.</p>
-            <button class="primary-action" type="button" data-forge-draft="true">Create a Forge plan</button>
-            <button class="secondary-action" type="button" data-command="alysis.forgeOpenPlan">Open an existing plan</button>
-          </section>
-
-          <div id="forgeWorkspace" class="forge-workspace" hidden>
-            <section id="forgeSummary" class="forge-summary"></section>
-            <div class="forge-primary-actions" aria-label="Forge plan actions">
-              <button type="button" data-cockpit-action="forge.executePreview">Preview</button>
-              <button class="accent" type="button" data-cockpit-action="forge.executeReview">Review &amp; run</button>
-              <button type="button" data-cockpit-action="swarm.start">Run in parallel</button>
-              <button type="button" data-cockpit-action="forge.status.refresh" aria-label="Refresh Forge status">Refresh</button>
-            </div>
-            <nav class="forge-tabs" role="tablist" aria-label="Forge workspace">
-              <button type="button" role="tab" data-forge-tab="plan" aria-selected="true">Plan <span id="forgePlanCount"></span></button>
-              <button type="button" role="tab" data-forge-tab="changes" aria-selected="false">Changes <span id="forgeDiffCount"></span></button>
-              <button type="button" role="tab" data-forge-tab="files" aria-selected="false">Files <span id="forgeFileCount"></span></button>
-              <button type="button" role="tab" data-forge-tab="activity" aria-selected="false">Activity <span id="forgeActivityCount"></span></button>
-            </nav>
-            <section id="forgePlanPanel" class="forge-tab-panel" data-forge-panel="plan"></section>
-            <section id="forgeChangesPanel" class="forge-tab-panel" data-forge-panel="changes" hidden></section>
-            <section id="forgeFilesPanel" class="forge-tab-panel" data-forge-panel="files" hidden></section>
-            <section id="forgeActivityPanel" class="forge-tab-panel" data-forge-panel="activity" hidden></section>
-          </div>
         </section>
 
         <section id="historySurface" class="surface secondary-surface" hidden>
@@ -283,15 +244,6 @@
               </button>
               <button id="engineSettings" class="settings-row" type="button" data-action="engine">
                 <span><strong>Alysis Code engine</strong><small id="engineSettingsDetail">Check the local connection</small></span><span class="row-chevron" data-icon="chevron-right" aria-hidden="true"></span>
-              </button>
-            </section>
-            <section class="settings-group" aria-labelledby="forgeSettingsTitle">
-              <h2 id="forgeSettingsTitle">Forge</h2>
-              <button class="settings-row" type="button" data-surface="forge">
-                <span><strong>Forge workspace</strong><small>Plan work, review changes, and follow execution</small></span><span class="row-chevron" data-icon="chevron-right" aria-hidden="true"></span>
-              </button>
-              <button class="settings-row" type="button" data-command="alysis.manageForgeAssets">
-                <span><strong>Plan files and references</strong><small>Manage assets attached to the active Forge plan</small></span><span class="row-chevron" data-icon="chevron-right" aria-hidden="true"></span>
               </button>
             </section>
             <section class="settings-group" aria-labelledby="supportTitle">

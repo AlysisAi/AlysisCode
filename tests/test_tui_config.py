@@ -527,12 +527,12 @@ def test_alysis_disconnect_refreshes_menu_account_status(tmp_path, monkeypatch):
     assert "alysis" not in load_persisted_profile_keys()
 
 
-def test_advanced_submenu_holds_subagent_and_forge():
+def test_advanced_submenu_holds_request_timeout_and_subagents():
     flow = ConfigFlow(cfg=_cfg())
     flow.choose("advanced")
     assert flow.stage == "advanced" and flow.current_mode() == "list"
     values = [r.value for r in flow.screen().rows]
-    assert values == ["request_timeout", "subagents", "forge", "back"]
+    assert values == ["request_timeout", "subagents", "back"]
     flow.choose("back")
     assert flow.stage == "menu"
 
@@ -858,7 +858,7 @@ def test_no_routing_stages_remain_in_flow():
     assert not any("router" in stage or "routing" in stage for stage in flow_mod._STAGE_MODE)
 
 
-# --------------------------------------------------------------------------- subagent / forge
+# --------------------------------------------------------------------------- subagent
 
 
 def test_subagent_roles_list_and_single_role_edit():
@@ -958,22 +958,6 @@ def test_subagent_esc_reverts():
     assert flow.state.role_models.get("coding") == ""  # reverted
     flow.back()
     assert flow.stage == "advanced"
-
-
-def test_forge_overrides_edit_roles_individually():
-    flow = ConfigFlow(cfg=_cfg())
-    flow.choose("advanced")
-    flow.choose("forge")
-    assert flow.stage == "forge_roles"
-    values = [r.value for r in flow.screen().rows]
-    assert "coding" in values and values[-1] == "back"
-    # The removed semantic router's role is no longer an editable forge role.
-    assert "router" not in values
-    flow.choose("coding")
-    assert flow.stage == "forge_field"
-    flow.submit_input("forge-model")
-    assert flow.stage == "forge_roles"
-    assert flow.state.forge_role_models.get("coding") == "forge-model"
 
 
 # --------------------------------------------------------------------------- api key

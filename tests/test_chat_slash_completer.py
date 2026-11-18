@@ -9,8 +9,7 @@ from prompt_toolkit.formatted_text import fragment_list_to_text, to_formatted_te
 from alysis_code.cli_impl.chat_slash_completer import (
     ChatSlashCompleter,
     get_chat_specs,
-    get_forge_specs,
-    max_completions_for_mode,
+    max_completions,
 )
 from alysis_code.skills import discover_skills, resolve_skill_catalog
 
@@ -55,7 +54,6 @@ def test_get_chat_specs_match_curated_visible_surface() -> None:
         "logout",
         "toolbar",
         "image",
-        "forge",
         "report",
         "feedback",
         "skill",
@@ -63,22 +61,18 @@ def test_get_chat_specs_match_curated_visible_surface() -> None:
     ]
 
 
-def test_max_completions_for_mode_covers_static_chat_surface() -> None:
-    assert max_completions_for_mode("chat") >= len(get_chat_specs())
-
-
-def test_max_completions_for_mode_covers_static_forge_surface() -> None:
-    assert max_completions_for_mode("forge") >= len(get_forge_specs())
+def test_max_completions_covers_static_chat_surface() -> None:
+    assert max_completions() >= len(get_chat_specs())
 
 
 def test_get_chat_completions_filters_by_prefix() -> None:
-    completer = ChatSlashCompleter(mode_provider=lambda: "chat")
+    completer = ChatSlashCompleter()
 
     assert _completion_names(completer, "/co") == ["context", "compact", "config"]
 
 
 def test_permissions_completion_is_unique_and_mode_is_removed() -> None:
-    completer = ChatSlashCompleter(mode_provider=lambda: "chat")
+    completer = ChatSlashCompleter()
     names = [spec.name for spec in get_chat_specs()]
 
     assert _completion_names(completer, "/permissions") == ["permissions"]
@@ -88,7 +82,7 @@ def test_permissions_completion_is_unique_and_mode_is_removed() -> None:
 
 
 def test_chat_completions_exclude_hidden_and_removed_commands() -> None:
-    completer = ChatSlashCompleter(mode_provider=lambda: "chat")
+    completer = ChatSlashCompleter()
     names = set(_completion_names(completer, "/"))
     spec_names = {spec.name for spec in get_chat_specs()}
 
@@ -115,18 +109,8 @@ def test_chat_completions_exclude_hidden_and_removed_commands() -> None:
     )
 
 
-def test_forge_completions_include_general_chat_and_forge_commands() -> None:
-    completer = ChatSlashCompleter(mode_provider=lambda: "forge")
-
-    assert _completion_names(completer, "/go") == ["goal"]
-    assert _completion_names(completer, "/st") == ["status", "stream"]
-    assert _completion_names(completer, "/ta") == ["task"]
-    assert _completion_names(completer, "/ass") == ["assistant", "assets"]
-
-
 def test_nested_chat_completions_cover_usage_and_skill_names() -> None:
     completer = ChatSlashCompleter(
-        mode_provider=lambda: "chat",
         skill_names_provider=lambda: ["python", "docker"],
     )
 
@@ -156,7 +140,6 @@ def test_nested_chat_completions_cover_usage_and_skill_names() -> None:
 
 def test_dollar_skill_completion_only_applies_at_input_token_start() -> None:
     completer = ChatSlashCompleter(
-        mode_provider=lambda: "chat",
         skill_names_provider=lambda: ["code-review"],
     )
 
@@ -184,7 +167,6 @@ def test_dollar_skill_completion_excludes_disabled_bundled_skill(tmp_path: Path)
         user_config_dir=user_config_dir,
     )
     completer = ChatSlashCompleter(
-        mode_provider=lambda: "chat",
         skill_names_provider=lambda: sorted(catalog.effective.skills),
     )
 
@@ -212,7 +194,6 @@ def test_slash_skill_completion_excludes_disabled_bundled_skill(tmp_path: Path) 
         user_config_dir=user_config_dir,
     )
     completer = ChatSlashCompleter(
-        mode_provider=lambda: "chat",
         skill_names_provider=lambda: sorted(catalog.effective.skills),
     )
 
@@ -222,13 +203,13 @@ def test_slash_skill_completion_excludes_disabled_bundled_skill(tmp_path: Path) 
 
 
 def test_no_completions_for_plain_text() -> None:
-    completer = ChatSlashCompleter(mode_provider=lambda: "chat")
+    completer = ChatSlashCompleter()
 
     assert _completion_names(completer, "hello world") == []
 
 
 def test_completion_carries_usage_and_description() -> None:
-    completer = ChatSlashCompleter(mode_provider=lambda: "chat")
+    completer = ChatSlashCompleter()
     completion = list(completer.get_completions(Document(text="/model-i"), None))
 
     assert completion == []
@@ -242,7 +223,6 @@ def test_completion_carries_usage_and_description() -> None:
 @pytest.mark.parametrize("text", ["$", "/skill "])
 def test_completion_display_rows_are_bounded(text: str) -> None:
     completer = ChatSlashCompleter(
-        mode_provider=lambda: "chat",
         skill_names_provider=lambda: ["skill-with-a-very-long-name-that-keeps-going"],
     )
 
@@ -257,7 +237,7 @@ def test_completion_display_rows_are_bounded(text: str) -> None:
 
 
 def test_completion_yields_all_matching_top_level_commands() -> None:
-    completer = ChatSlashCompleter(mode_provider=lambda: "chat")
+    completer = ChatSlashCompleter()
 
     completions = list(completer.get_completions(Document(text="/"), None))
 
@@ -270,14 +250,12 @@ def test_completion_yields_all_matching_top_level_commands() -> None:
     assert "/subagent" not in completion_names
     assert "/subagents" in completion_names
     assert "/skill" in completion_names
-    assert "/forge" in completion_names
+    assert "/forge" not in completion_names
     assert "/exit" in completion_names
 
 
 def test_removed_subagent_command_has_no_completions() -> None:
-    completer = ChatSlashCompleter(
-        mode_provider=lambda: "chat",
-    )
+    completer = ChatSlashCompleter()
 
     top_level = _completion_names(completer, "/suba")
     nested = _completion_names(completer, "/subagent ")
@@ -291,22 +269,8 @@ def test_specs_match_legacy_chat_handler() -> None:
     handler_source = _source_between(
         source,
         "def _handle_chat_command(",
-        "def _handle_forge_chat_command(",
+        "def _handle_terminals_command(",
     )
-    cli_source = Path("src/alysis_code/cli.py").read_text(encoding="utf-8")
 
     for spec in get_chat_specs():
-        token = f'"/{spec.name}"'
-        if spec.name == "forge":
-            assert "_parse_forge_enter_command" in handler_source
-            assert token in cli_source
-            continue
-        assert token in handler_source
-
-
-def test_forge_specs_match_legacy_forge_handler() -> None:
-    source = Path("src/alysis_code/cli_impl/chat/commands.py").read_text(encoding="utf-8")
-    handler_source = source[source.index("def _handle_forge_chat_command(") :]
-
-    for spec in get_forge_specs():
         assert f'"/{spec.name}"' in handler_source

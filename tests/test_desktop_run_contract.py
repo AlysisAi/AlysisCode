@@ -95,7 +95,7 @@ def test_run_reads_large_instruction_from_stdin_without_echoing_it(
 
 
 def test_named_run_reconstructs_prior_turns(tmp_path: Path) -> None:
-    session_id = "forge_projectless_chat"
+    session_id = "projectless_chat"
     _write_prior_turns(tmp_path / f"{session_id}.jsonl")
 
     messages = _load_run_seed_messages(session_id=session_id, session_dir=tmp_path)

@@ -124,9 +124,7 @@ def drive(
             command_runner=runner,
             mode_cycle=lambda: modes.append("mode"),
             diff_viewer_factory=factory,
-            completer=ChatSlashCompleter(
-                mode_provider=lambda: "chat", extra_specs=(DIFF_COMMAND_SPEC,)
-            ),
+            completer=ChatSlashCompleter(extra_specs=(DIFF_COMMAND_SPEC,)),
         )
     if errors:
         raise errors[0]
@@ -325,8 +323,8 @@ def test_empty_and_non_git_states(monkeypatch, tmp_path, git_repository):
 def test_diff_discovery_is_tui_only():
     from prompt_toolkit.document import Document
 
-    classic = ChatSlashCompleter(mode_provider=lambda: "chat")
-    tui = ChatSlashCompleter(mode_provider=lambda: "chat", extra_specs=(DIFF_COMMAND_SPEC,))
+    classic = ChatSlashCompleter()
+    tui = ChatSlashCompleter(extra_specs=(DIFF_COMMAND_SPEC,))
     assert list(classic.get_completions(Document("/di"), None)) == []
     assert [c.text for c in tui.get_completions(Document("/di"), None)] == ["/diff"]
 

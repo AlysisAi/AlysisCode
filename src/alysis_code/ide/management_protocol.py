@@ -1215,18 +1215,12 @@ def _tool_untrust(params: dict[str, Any], request_id: RequestId) -> dict[str, An
 
 def _commands_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     # Reuse the terminal catalog; hosts decide which commands have native handlers.
-    from ..cli_impl.chat_slash_completer import get_chat_specs, get_forge_specs
+    from ..cli_impl.chat_slash_catalog import command_rows
 
     mode = params.get("mode", "chat")
-    if not isinstance(mode, str) or mode not in {"chat", "forge"}:
-        raise ProtocolError("invalid_field", "mode must be chat or forge", request_id=request_id)
-    specs = get_chat_specs() + (get_forge_specs() if mode == "forge" else ())
-    return {
-        "commands": [
-            {"name": spec.name, "usage": spec.usage, "description": spec.description}
-            for spec in specs
-        ]
-    }
+    if mode != "chat":
+        raise ProtocolError("invalid_field", "mode must be chat", request_id=request_id)
+    return {"commands": command_rows()}
 
 
 def _agents_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
@@ -1716,7 +1710,6 @@ def _report_create(params: dict[str, Any], request_id: RequestId) -> dict[str, A
         feedback_text=_optional_str_or_none(params, "feedback"),
         cfg=cfg,
         session_id=_optional_str_or_none(params, "session_id"),
-        run_id=_optional_str_or_none(params, "run_id"),
         latest=_optional_bool(params, "latest", default=False),
     )
     github_enabled = params.get("github") if "github" in params else False

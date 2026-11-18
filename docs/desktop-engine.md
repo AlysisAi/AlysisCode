@@ -38,10 +38,9 @@ existing approvals and file/sandbox restrictions enforced. See the
 [checkpoint regression tests](../tests/test_ide_checkpoint_setup.py). Preserve
 this contract when changing desktop dispatch or recovery.
 
-The engine interface advertises `forge.host-authoritative-verification-v1`.
-Commands selected explicitly by the host use `HOST_AUTHORITATIVE` provenance.
-[`alysis-code.schema.json`](../src/alysis_code/forge_host_protocol/alysis-code.schema.json)
-and the Python validator accept that value alongside `PREEXISTING_REPO_NATIVE`.
+Verification commands selected explicitly by the host use `HOST_AUTHORITATIVE` provenance.
+The validator in [`verification_contract.py`](../src/alysis_code/verification_contract.py)
+accepts that value alongside `PREEXISTING_REPO_NATIVE`.
 
 Both profiles require `pytest` or `pytest -q`, ARGV execution, trusted/required
 status, assertive analysis, an independently bound external pytest executable and
@@ -60,7 +59,7 @@ Run these checks locally with:
 ```sh
 uv sync --frozen --no-editable --python 3.12 --extra dev
 uv run --frozen --no-sync alysis capabilities
-uv run --frozen --no-sync pytest -q tests/test_capabilities_cli.py tests/test_desktop_run_contract.py tests/test_ide_protocol_contract.py tests/test_ide_stdio_bridge.py tests/test_ide_protocol_stream_isolation.py tests/test_forge_host_stdio.py tests/test_forge_host_protocol_v2.py tests/test_ide_computer_use_host.py tests/test_task_budget_channel.py
+uv run --frozen --no-sync pytest -q tests/test_capabilities_cli.py tests/test_desktop_run_contract.py tests/test_ide_protocol_contract.py tests/test_ide_stdio_bridge.py tests/test_ide_protocol_stream_isolation.py tests/test_ide_computer_use_host.py tests/test_task_budget_channel.py
 ```
 
 Run the full engine suite on macOS before handing off the branch. AL verifies the native Windows job and any attended Windows workflow; a macOS pass with forced cp1252 is a regression check, not a substitute for an actual Windows result. Retain the commit, operating system, Python version, test command and result. Report skips and incomplete runs explicitly.
@@ -75,4 +74,4 @@ ALYSIS_MANAGED_CLI_SOURCE=/absolute/path/to/engine ALYSIS_LOCAL_CANDIDATE=1 pnpm
 
 Local-candidate mode derives version and commit from that checkout, without changing `electron/runtime/managedCliRuntimeSource.json`. The builder still requires `scripts/managed-cli-runtime-constraints.txt` to contain the engine's exact candidate version and compatible pinned dependencies. Retain a candidate-only copy of that recipe for validation and restore the committed recipe afterward; permanently changing the app's engine pin/recipe happens after review. Use the app's exported capability validator against the actual CLI output, then package through its ordinary local candidate flow.
 
-Validate the actual installed Alysis Code app with one completed chat, one successful Forge run with independent output/verification checks, and one successful Computer Use turn. Record the installed artifact and runtime identities. A source test, a wheel build or a passing capabilities payload alone does not establish those live workflows. Preserve existing user state and use the app repository's single-bundle installation/rollback instructions. The separate Computer Use MCP completion-gate policy decision is outside this port.
+Validate the actual installed Alysis Code app with one completed chat, one completed owl task, and one successful Computer Use turn. Record the installed artifact and runtime identities. A source test, a wheel build or a passing capabilities payload alone does not establish those live workflows. Preserve existing user state and use the app repository's single-bundle installation/rollback instructions. The separate Computer Use MCP completion-gate policy decision is outside this port.

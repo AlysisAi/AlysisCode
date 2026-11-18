@@ -51,32 +51,22 @@ CHECK_RECEIPT_KEYS = frozenset(
     }
 )
 
-# A completed production report must exercise every release-defining path. These two checks
-# require a deliberately different capability or deployment shape, so they may be marked
-# not_applicable when the reviewer records why that shape was unavailable for this candidate.
+# A completed production report must exercise every release-defining path. This check requires a
+# deliberately different deployment shape, so it may be marked not_applicable when the reviewer
+# records why that shape was unavailable for this candidate.
 WAIVABLE_CHECK_IDS = frozenset(
     {
         "mcp_oauth_local_lifecycle",
-        "run_swarm_capability_gate",
     }
 )
 NON_WAIVABLE_CHECK_IDS = frozenset(
     {
         "active_cancellation_cooperative",
-        "assistant_show_update",
         "broken_cli_recovery",
         "configure_provider_secret_storage",
         "create_session",
         "diffs_artifacts",
         "doctor",
-        "execute_plan_review_mode",
-        "execute_preview",
-        "forge_exec_unsupported_warning",
-        "forge_plan_regenerate",
-        "forge_plan_state",
-        "forge_plan_validate",
-        "forge_show_status",
-        "goal_show_update",
         "hooks_watch_not_advertised",
         "image_path",
         "install_vsix",
@@ -87,12 +77,9 @@ NON_WAIVABLE_CHECK_IDS = frozenset(
         "normal_chat",
         "open_disposable_workspace",
         "paste_image",
-        "run_swarm_review_flow",
         "run_task",
         "secret_redaction",
-        "slash_plan",
         "subagent_status_on_off",
-        "task_show_update",
         "terminals_lifecycle",
         "trace_lifecycle",
     }

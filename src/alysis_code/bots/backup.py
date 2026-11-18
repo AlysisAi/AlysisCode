@@ -136,7 +136,8 @@ def _maintenance(dsn):
 def _references(db):
     refs = {}
     for (encoded,) in db.execute(
-        "SELECT ref FROM file_objects UNION SELECT ref FROM workspace_objects UNION SELECT ref FROM browser_states"
+        "SELECT ref FROM file_objects UNION SELECT ref FROM workspace_objects "
+        "UNION SELECT ref FROM browser_states UNION SELECT ref FROM browser_baselines"
     ):
         ref = ObjectRef.decode(encoded)
         if ref.key in refs and refs[ref.key] != ref:

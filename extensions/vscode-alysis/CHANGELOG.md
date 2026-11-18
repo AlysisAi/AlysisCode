@@ -2,6 +2,10 @@
 
 ## 0.3.0 — pre-release preparation
 
+- Remove Forge planning, plan execution, parallel runs, and their sidebar surface, commands,
+  settings (`alysis.enableForge`, `alysis.forgeExecuteMaxSteps`, `alysis.forgeExecuteNoLog`), and
+  `@alysis /forge` and `/execute` routes. Every task now runs in the chat conversation, and engines
+  without the retired plan methods are no longer reported as needing an update.
 - Bundle a signed, platform-specific CLI runtime; validate its signature and integrity before
   starting the bridge. The final source tag selects the bundled CLI version.
 - Allow local providers without an API key, including switching back to a configured local server.

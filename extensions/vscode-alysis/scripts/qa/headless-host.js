@@ -11,7 +11,7 @@
  *
  * Usage:
  *   node scripts/qa/headless-host.js --workspace <dir> --cli <alysis executable>
- *       [--task "<instruction>"] [--mode review|readonly|auto] [--forge] [--execute]
+ *       [--task "<instruction>"] [--mode review|readonly|auto]
  *       [--approve allow_once|allow_for_session|deny] [--timeout-ms 600000] [--log <file>]
  *       [--storage <dir>]
  */
@@ -37,8 +37,6 @@ const workspaceDir = path.resolve(String(opt("workspace", process.cwd())));
 const cliPath = String(opt("cli", ""));
 const task = opt("task", "");
 const mode = String(opt("mode", "review"));
-const useForge = opt("forge", false) === true;
-const executePlan = opt("execute", false) === true;
 const approveDecision = String(opt("approve", "allow_once"));
 const timeoutMs = Number(opt("timeout-ms", 600_000));
 const logFile = opt("log", "");
@@ -275,11 +273,8 @@ const settings = {
     provider: "",
     transport: "stdio",
     sandboxProfile: "default",
-    forgeExecuteMaxSteps: 0,
-    forgeExecuteNoLog: false,
     showStatusBar: true,
-    autoStartBridge: false,
-    enableForge: true
+    autoStartBridge: false
   },
   python: { defaultInterpreterPath: "" }
 };
@@ -734,7 +729,7 @@ function logNewItems(state) {
 async function main() {
   log("HOST", `ext=${extRoot}`);
   log("HOST", `workspace=${workspaceDir}`);
-  log("HOST", `cli=${cliPath || "(PATH)"} mode=${mode} forge=${useForge} execute=${executePlan}`);
+  log("HOST", `cli=${cliPath || "(PATH)"} mode=${mode}`);
   // Tap the live bridge event stream (the same one ChatController consumes) so every protocol
   // event is on record, whether or not the transcript chose to render it.
   const bridgeModule = require(path.join(extRoot, "out", "src", "client", "AlysisBridgeClient.js"));
@@ -791,7 +786,7 @@ async function main() {
 
   if (task) {
     const requestId = `headless-${Date.now()}`;
-    postToHost({ type: "task.submit", instruction: String(task), mode, workflow: useForge ? "forge" : "chat", requestId });
+    postToHost({ type: "task.submit", instruction: String(task), mode, requestId });
     const findResult = () => webviewMessages.find((message) => message.type === "task.result" && message.requestId === requestId);
     const resultDeadline = Date.now() + 90_000;
     while (!findResult() && Date.now() < resultDeadline) {
@@ -801,116 +796,38 @@ async function main() {
     log("TASK", "task.result:", preview(taskResult), `after ${Date.now() - (resultDeadline - 90_000)}ms`);
     if (!taskResult || !taskResult.started) finding("task_not_started", preview(taskResult));
 
-    if (!useForge) {
-      const deadline = Date.now() + timeoutMs;
-      let lastLogged = "";
-      while (Date.now() < deadline) {
-        const state = latestState;
-        if (state) {
-          logNewItems(state);
-          const summary = describeConversation(state);
-          if (summary !== lastLogged) {
-            log("STATE", summary);
-            lastLogged = summary;
-          }
-          for (const item of pendingApprovals(state)) {
-            if (!seenItemIds.has(`approved:${item.approvalId}`)) {
-              seenItemIds.add(`approved:${item.approvalId}`);
-              log("APPROVAL", `${approveDecision} -> ${item.approvalId}`, preview(item.text, 200));
-              postToHost({ type: "approval", approvalId: item.approvalId, decision: approveDecision });
-            }
-          }
-          const status = state.conversation ? state.conversation.jobStatus : "";
-          if (taskResult && taskResult.started && !state.conversation.running && ["completed", "failed", "cancelled", "interrupted"].includes(status)) {
-            log("TASK", `terminal status=${status}`);
-            break;
+    const deadline = Date.now() + timeoutMs;
+    let lastLogged = "";
+    while (Date.now() < deadline) {
+      const state = latestState;
+      if (state) {
+        logNewItems(state);
+        const summary = describeConversation(state);
+        if (summary !== lastLogged) {
+          log("STATE", summary);
+          lastLogged = summary;
+        }
+        for (const item of pendingApprovals(state)) {
+          if (!seenItemIds.has(`approved:${item.approvalId}`)) {
+            seenItemIds.add(`approved:${item.approvalId}`);
+            log("APPROVAL", `${approveDecision} -> ${item.approvalId}`, preview(item.text, 200));
+            postToHost({ type: "approval", approvalId: item.approvalId, decision: approveDecision });
           }
         }
-        await sleep(400);
-      }
-      if (latestState) {
-        logNewItems(latestState);
-        const final = latestState.conversation;
-        const failures = (final.items || []).filter((item) => item.errorKind);
-        for (const failure of failures) finding("conversation_error", `${failure.errorKind}: ${failure.errorTitle} — ${failure.errorDetail}`);
-        if (final.jobStatus !== "completed") finding("job_not_completed", `jobStatus=${final.jobStatus}`);
-      }
-    } else {
-      const deadline = Date.now() + timeoutMs;
-      let planSeen = false;
-      while (Date.now() < deadline) {
-        const state = latestState;
-        const forge = state && state.forge;
-        if (forge) {
-          const planning = forge.planning;
-          const summary = `forge: status=${forge.status || ""} planning=${planning ? planning.status : "none"} plan=${forge.plan ? `${forge.plan.title || forge.plan.planId || "?"} tasks=${(forge.plan.tasks || []).length}` : "none"} approvals=${(forge.approvals || []).length} diffs=${(forge.diffs || []).length} events=${(forge.events || []).length}`;
-          if (summary !== main.lastForge) {
-            log("FORGE", summary);
-            main.lastForge = summary;
-          }
-          for (const approval of forge.approvals || []) {
-            const key = `forge-approved:${approval.approvalId || approval.id}`;
-            if (!seenItemIds.has(key) && /pending|waiting/i.test(String(approval.status || "pending"))) {
-              seenItemIds.add(key);
-              log("APPROVAL", `${approveDecision} -> forge ${approval.approvalId || approval.id}`);
-              postToHost({ type: "cockpit", message: { type: "forge.approval", sessionId: approval.sessionId || forge.sessionId, approvalId: approval.approvalId || approval.id, decision: approveDecision } });
-            }
-          }
-          if (forge.plan && !planSeen) {
-            planSeen = true;
-            log("FORGE", "plan:", preview(forge.plan, 1500));
-            if (executePlan) {
-              postToHost({ type: "cockpit", message: { type: "forge.executePreview" } });
-              const previewState = await onNextState(
-                (candidate) => Boolean(candidate.forge && candidate.forge.executePreview),
-                120_000
-              ).catch((error) => {
-                finding("forge_preview_missing", error.message);
-                return latestState;
-              });
-              const executePreview = previewState && previewState.forge ? previewState.forge.executePreview : null;
-              log("FORGE", "executePreview:", preview(executePreview, 1500));
-              if (executePreview) {
-                for (const key of ["blockers", "warnings", "readiness", "gates", "sandbox", "errors"]) {
-                  if (executePreview[key] !== undefined) log("FORGE", `executePreview.${key}:`, preview(executePreview[key], 4000));
-                }
-              }
-              // Preview is a Forge operation of its own; wait for it to release before executing.
-              await onNextState((candidate) => !(candidate.forge && candidate.forge.activeJobId), 30_000).catch(() => undefined);
-              await sleep(500);
-              postToHost({ type: "cockpit", message: { type: "forge.executeReview" } });
-              const running = await onNextState((candidate) => Boolean(candidate.forge && candidate.forge.activeJobId), 90_000).catch(() => null);
-              if (!running) {
-                finding("forge_execute_not_started", "no active Forge job appeared after forge.executeReview");
-                break;
-              }
-              log("FORGE", `execute job ${running.forge.activeJobId} started`);
-              main.executeStarted = true;
-            } else {
-              break;
-            }
-          }
-          if (main.executeStarted && forge.activeJobId === null) {
-            log("FORGE", `execute finished: diffs=${(forge.diffs || []).length} artifacts=${(forge.artifacts || []).length} review=${preview(forge.review, 300)}`);
-            log("FORGE", "last events:", preview((forge.events || []).slice(-8), 1500));
-            if ((forge.diffs || []).length > 0) {
-              log("FORGE", "diffs:", preview(forge.diffs, 800));
-              const first = forge.diffs[0];
-              postToHost({ type: "cockpit", message: { type: "forge.diff.open", diffId: first.diff_id || first.diffId || first.id } });
-              await sleep(2500);
-            } else {
-              finding("forge_execute_no_diffs", "execution finished without diffs");
-            }
-            break;
-          }
-          if (planning && planning.status === "failed") {
-            finding("forge_plan_failed", preview(planning, 600));
-            break;
-          }
+        const status = state.conversation ? state.conversation.jobStatus : "";
+        if (taskResult && taskResult.started && !state.conversation.running && ["completed", "failed", "cancelled", "interrupted"].includes(status)) {
+          log("TASK", `terminal status=${status}`);
+          break;
         }
-        await sleep(500);
       }
-      if (!planSeen) finding("forge_plan_missing", "no plan appeared before the deadline");
+      await sleep(400);
+    }
+    if (latestState) {
+      logNewItems(latestState);
+      const final = latestState.conversation;
+      const failures = (final.items || []).filter((item) => item.errorKind);
+      for (const failure of failures) finding("conversation_error", `${failure.errorKind}: ${failure.errorTitle} — ${failure.errorDetail}`);
+      if (final.jobStatus !== "completed") finding("job_not_completed", `jobStatus=${final.jobStatus}`);
     }
   }
 

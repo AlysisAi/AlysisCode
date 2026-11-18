@@ -32,21 +32,34 @@ from ..llm.openai_compat import OpenAICompatClient
 from ..llm.openai_responses import OpenAIResponsesClient
 from ..llm.protocols import ANTHROPIC_MESSAGES_PROTOCOL, OPENAI_RESPONSES_PROTOCOL
 from ..llm.provider_limits import ProviderRetrySettings
+from ..provider_url import is_alysis_gateway_url
+from .about_me import AboutMeDecision, AboutMeSettings
 from .action_review import ApprovalDecision as ActionReviewDecision
 from .action_review import ReviewSettings, RuleInput, RuleRevision, RuleUpdate
 from .browser import BrowserComputers
 from .browser_images import declared_image_support
+from .browser_sign_ins import SignIns, SignOutInput
 from .clarifications import QuestionDecision
 from .computer import ComputerViews
 from .computer_control import ComputerRecovery, ControlRequest
 from .desktop import DesktopComputers
-from .desktop_connectors import CatalogInput, DesktopConnectors, ResultInput
+from .desktop_connectors import (
+    AppNeedDecision,
+    CatalogInput,
+    DesktopConnectors,
+    OwlApps,
+    PluginChoice,
+    ResultInput,
+)
 from .files import MAX_ENCODED_BYTES, BinaryFileInput, FileQuery, decode_file
 from .models import (
+    BotCreateInput,
     BotInput,
     ChatInput,
+    ConversationPageQuery,
     FileInput,
     HistoryQuery,
+    IntroInput,
     MemoryDecision,
     MemoryInput,
     NoteConsolidation,
@@ -56,10 +69,12 @@ from .models import (
     ReplyReviewSettings,
     RevisionQuery,
     TaskInput,
+    TimeZoneSettings,
 )
-from .proposals import ActionDecision
+from .proposals import ActionDecision, SetupDecision
+from .routine_access import RoutineAccessDecision
 from .runtime import BotRuntime, RuntimeLimits
-from .scheduling import ScheduleDecision, ScheduleInput, ScheduleRunsQuery
+from .scheduling import ScheduleDecision, ScheduleInput, ScheduleRunNow, ScheduleRunsQuery
 from .store import Conflict, LimitReached, NotFound, Store
 from .transfers import FileTransfers, UploadChunk, UploadInput
 from .triggers import TriggerDecision, TriggerInput
@@ -204,8 +219,9 @@ def create_app(
     ):
         raise ValueError("Use the task store's configured object storage.")
     connections = ConnectionStore(settings.database.parent / "connections.sqlite3")
-    # The desktop app's plugins, account-wide for every owl (desktop_connectors.py).
+    # The desktop app's plugins, each owl using those on for it (desktop_connectors.py).
     desktop_plugins = DesktopConnectors()
+    owl_apps = OwlApps(store, settings.owner, desktop_plugins)
     computers = computer_views or (
         browser_computers.views
         if browser_computers
@@ -336,7 +352,7 @@ def create_app(
         ),
         coding_enabled=bool(settings.coding_token),
         connections=lambda bot_id: BoundConnections(
-            connections, settings.owner, "bot:" + bot_id, github_reader, desktop_plugins
+            connections, settings.owner, "bot:" + bot_id, github_reader, owl_apps.for_owl(bot_id)
         ),
         browser_computers=browser_computers,
         desktop_computers=desktop_computers,
@@ -348,6 +364,8 @@ def create_app(
 
     runtime.reply_review = ReplyReview(runtime)
     runtime.action_review_enabled = True
+    # Refused credentials then mean signing in to Alysis again, not fixing a model key.
+    runtime.model_account = is_alysis_gateway_url(settings.base_url)
 
     cleanup_state = {"pending": False, "last_success_at": None}
 
@@ -455,6 +473,7 @@ def create_app(
     app.add_middleware(ComputerFrameCompression)
     app.state.connections = connections
     app.state.desktop_plugins = desktop_plugins
+    app.state.owl_apps = owl_apps
     from .coding_api import install_coding_routes
 
     install_coding_routes(
@@ -611,17 +630,59 @@ def create_app(
         runtime.wake()
         return result
 
+    # Sites the owl's browser is signed in to, from its saved browser storage.
+    sign_ins = (
+        SignIns(store, settings.owner, cloud_computers)
+        if cloud_computers is not None and cloud_computers.browser_states is not None
+        else None
+    )
+
+    def owl_sign_ins(bot_id):
+        store.bot(settings.owner, bot_id)
+        if sign_ins is None:
+            raise HTTPException(404, "This connection keeps no browser sign-ins.")
+        return sign_ins
+
+    @app.get("/v1/bots/{bot_id}/sign-ins")
+    def bot_sign_ins(bot_id: str):
+        return owl_sign_ins(bot_id).list(bot_id)
+
+    @app.post("/v1/bots/{bot_id}/sign-ins/sign-out")
+    def bot_sign_out(bot_id: str, data: SignOutInput):
+        return owl_sign_ins(bot_id).sign_out(
+            bot_id, None if data.everywhere else data.site, cancel=runtime._stop.is_set
+        )
+
     @app.patch("/v1/bots/{bot_id}/apps/{connection_id}")
     def bot_app_grant(bot_id: str, connection_id: str, decision: GrantInput):
         store.bot(settings.owner, bot_id)
         connections.set_grant(settings.owner, "bot:" + bot_id, connection_id, decision)
         return bot_apps(bot_id)
 
+    # Which connected apps an owl may use, and its cards asking for one (desktop_connectors.py).
+    @app.get("/v1/bots/{bot_id}/plugins")
+    def bot_plugins(bot_id: str):
+        return owl_apps.listing(bot_id)
+
+    @app.put("/v1/bots/{bot_id}/plugins")
+    def choose_bot_plugin(bot_id: str, data: PluginChoice):
+        return owl_apps.choose(bot_id, data)
+
+    @app.patch("/v1/bots/{bot_id}/app-needs/{need_id}")
+    def decide_app_need(bot_id: str, need_id: str, data: AppNeedDecision):
+        result = owl_apps.decide(bot_id, need_id, data)
+        runtime.wake()
+        return result
+
     # The desktop app's plugins (desktop_connectors.py). Only Electron main calls these; the
     # renderer's request allowlist doesn't include them.
     @app.put("/v1/desktop-plugins/catalog")
     def desktop_plugins_catalog(data: CatalogInput):
-        return desktop_plugins.publish(data)
+        result = desktop_plugins.publish(data)
+        # A request waiting for an app the person chose to connect carries on once it is.
+        if owl_apps.resume_connected():
+            runtime.wake()
+        return result
 
     @app.post("/v1/desktop-plugins/next")
     async def desktop_plugins_next():
@@ -675,7 +736,53 @@ def create_app(
                 "working_notes",
                 "schedules",
                 "file_event_activations",
+                # A message can carry file_ids: Library files the person attached to it.
+                "message_files",
+                # PUT /v1/settings/time-zone: owls read dates and times in the person's zone.
+                "time_zone",
+                # A failed or interrupted task carries failure: {kind} (failures.py).
+                "task_failure_kinds",
+                # Creating an owl takes request_id: the same id returns the owl already made.
+                "bot_create_request_id",
+                # POST /v1/chats/{id}/page reads a conversation a page at a time, and polls
+                # only what changed since the last read.
+                "conversation_pages",
+                # GET /v1/needs-you lists everything waiting for the person across owls.
+                "needs_you",
+                # Routines: Run now, their next run times, monthly and daily-window timings,
+                # and failed runs that are retried or wait for a limit instead of pausing.
+                "schedule_run_now",
+                "schedule_next_runs",
+                "schedule_monthly",
+                "schedule_windows",
+                "schedule_retries",
+                # GET/PUT /v1/settings/about-me: what the person wrote about themselves, read by
+                # every owl turn; owls suggest additions the person accepts or declines.
+                "about_me",
+                # An owl proposes its own setup (purpose, instructions, optional routine) as one
+                # card in its chat; PATCH /v1/bots/{id}/setup-proposals/{id} applies or declines it.
+                "owl_setup",
+                # GET/PUT /v1/bots/{id}/plugins: which connected apps each owl may use; owls ask
+                # for an app with a card (task app_needs, PATCH /v1/bots/{id}/app-needs/{id});
+                # the desktop app's catalog may name every app owls could use (apps).
+                "owl_apps",
+                # Routines declare the owl's computer, browser and websites they need
+                # (schedule needs); the person allows them once per routine
+                # (PUT/DELETE /v1/bots/{id}/schedules/{id}/access), runs use exactly that, and
+                # a run that needs more pauses its routine (pause_code "access").
+                "routine_access",
+                # GET /v1/bots/{id}/sign-ins and POST .../sign-ins/sign-out: the sites an owl's
+                # browser is signed in to, and signing it out of one or all of them.
+                *(["owl_sign_ins"] if sign_ins is not None else []),
+                # An owl takes color and background: the look the person picked for its face;
+                # owls and Needs you items carry it back (bot_color, bot_background).
+                "owl_looks",
             ],
+            # The person's IANA time zone as last sent, so an app sends it only when it changed.
+            "time_zone": store.time_zone(settings.owner),
+            # The app's version of the About me stored here, so it writes only when it changed;
+            # null before its first write, and after a fact was added here.
+            "about_me_version": runtime.about_me.version(),
             "coding_connected": bool(settings.coding_token)
             and any(w["online"] for w in runtime.coding.workspaces()),
         }
@@ -688,6 +795,26 @@ def create_app(
     def update_reply_review_settings(data: ReplyReviewSettings):
         return store.reply_review_settings(settings.owner, data)
 
+    @app.get("/v1/settings/time-zone")
+    def time_zone_settings():
+        return store.time_zone_settings(settings.owner)
+
+    @app.put("/v1/settings/time-zone")
+    def update_time_zone_settings(data: TimeZoneSettings):
+        return store.time_zone_settings(settings.owner, data)
+
+    @app.get("/v1/settings/about-me")
+    def about_me():
+        return runtime.about_me.read()
+
+    @app.put("/v1/settings/about-me")
+    def write_about_me(data: AboutMeSettings):
+        return runtime.about_me.write(data)
+
+    @app.patch("/v1/bots/{bot_id}/about-me/suggestions/{suggestion_id}")
+    def decide_about_me_suggestion(bot_id: str, suggestion_id: str, data: AboutMeDecision):
+        return runtime.about_me.decide(bot_id, suggestion_id, data)
+
     @app.get("/v1/bots")
     def bots():
         listed = store.list_bots(settings.owner)
@@ -698,7 +825,7 @@ def create_app(
         return listed
 
     @app.post("/v1/bots", status_code=201)
-    def create_bot(data: BotInput):
+    def create_bot(data: BotCreateInput):
         return store.save_bot(settings.owner, data)
 
     @app.put("/v1/bots/{bot_id}")
@@ -719,6 +846,19 @@ def create_app(
             factory.recover(bot_id, deleting=True)
         store.delete_bot(settings.owner, bot_id)
 
+    @app.post("/v1/bots/{bot_id}/intro", status_code=202)
+    def intro(bot_id: str, data: IntroInput):
+        """A new owl writes its first message itself; nothing happens once its chat has begun."""
+        if not runtime.is_running:
+            raise HTTPException(
+                status_code=503,
+                detail="The task worker is unavailable. Restart the development service; saved work is preserved.",
+            )
+        task = store.start_intro(settings.owner, bot_id, data)
+        if task is not None:
+            runtime.wake()
+        return {"task": task}
+
     @app.get("/v1/bots/{bot_id}/chats")
     def chats(bot_id: str):
         return store.list_chats(settings.owner, bot_id)
@@ -730,6 +870,14 @@ def create_app(
     @app.get("/v1/chats/{chat_id}")
     def conversation(chat_id: str):
         return store.conversation(settings.owner, chat_id)
+
+    @app.post("/v1/chats/{chat_id}/page")
+    def conversation_page(chat_id: str, data: ConversationPageQuery):
+        return store.conversation_page(settings.owner, chat_id, data)
+
+    @app.get("/v1/needs-you")
+    def needs_you():
+        return store.needs_you(settings.owner)
 
     @app.post("/v1/chats/{chat_id}/read")
     def read_chat(chat_id: str, data: ReadChatInput):
@@ -831,6 +979,10 @@ def create_app(
         runtime.wake()
         return proposal
 
+    @app.patch("/v1/bots/{bot_id}/setup-proposals/{proposal_id}")
+    def decide_setup(bot_id: str, proposal_id: str, data: SetupDecision):
+        return runtime.setups.decide(bot_id, proposal_id, data)
+
     @app.get("/v1/bots/{bot_id}/triggers")
     def triggers(bot_id: str):
         return runtime.triggers.list(bot_id)
@@ -871,13 +1023,52 @@ def create_app(
             settings.owner, bot_id, schedule_id, data.state, data.expected_revision
         )
 
+    @app.put("/v1/bots/{bot_id}/schedules/{schedule_id}/access")
+    def allow_routine_access(bot_id: str, schedule_id: str, data: RoutineAccessDecision):
+        """Allow what a routine needs; optionally turn it on and run it once now."""
+        if data.run_request_id and not runtime.is_running:
+            raise HTTPException(
+                status_code=503,
+                detail="The task worker is unavailable. Restart the development service; saved work is preserved.",
+            )
+        schedule = store.allow_routine_access(settings.owner, bot_id, schedule_id, data)
+        if data.run_request_id:
+            store.run_schedule_now(
+                settings.owner,
+                bot_id,
+                schedule_id,
+                data.run_request_id,
+                max_calls=settings.max_calls,
+            )
+            runtime.wake()
+        return schedule
+
+    @app.delete("/v1/bots/{bot_id}/schedules/{schedule_id}/access")
+    def revoke_routine_access(bot_id: str, schedule_id: str):
+        """Take back what a routine was allowed; its next run asks again."""
+        return store.revoke_routine_access(settings.owner, bot_id, schedule_id)
+
     @app.post("/v1/bots/{bot_id}/schedules/{schedule_id}/runs")
     def schedule_runs(bot_id: str, schedule_id: str, data: ScheduleRunsQuery):
         return store.schedule_runs(settings.owner, bot_id, schedule_id, data.before)
 
+    @app.post("/v1/bots/{bot_id}/schedules/{schedule_id}/run", status_code=202)
+    def run_schedule_now(bot_id: str, schedule_id: str, data: ScheduleRunNow):
+        """Run a routine once now; its schedule stays as it is."""
+        if not runtime.is_running:
+            raise HTTPException(
+                status_code=503,
+                detail="The task worker is unavailable. Restart the development service; saved work is preserved.",
+            )
+        result = store.run_schedule_now(
+            settings.owner, bot_id, schedule_id, data.request_id, max_calls=settings.max_calls
+        )
+        runtime.wake()
+        return result
+
     @app.get("/v1/bots/{bot_id}/memories")
     def memories(bot_id: str):
-        return store.list_memories(settings.owner, bot_id)
+        return store.list_memories(settings.owner, bot_id, for_person=True)
 
     @app.post("/v1/bots/{bot_id}/memories", status_code=201)
     def add_memory(bot_id: str, data: MemoryInput):
@@ -890,6 +1081,10 @@ def create_app(
     @app.patch("/v1/bots/{bot_id}/memories/{memory_id}")
     def review_memory(bot_id: str, memory_id: str, data: MemoryDecision):
         return store.decide_memory(settings.owner, bot_id, memory_id, data.status)
+
+    @app.post("/v1/bots/{bot_id}/memories/{memory_id}/undo")
+    def undo_memory(bot_id: str, memory_id: str):
+        return store.undo_memory(settings.owner, bot_id, memory_id)
 
     @app.delete("/v1/bots/{bot_id}/memories/{memory_id}", status_code=204)
     def delete_memory(bot_id: str, memory_id: str):
@@ -908,7 +1103,8 @@ def create_app(
 
     @app.post("/v1/bots/{bot_id}/history/search")
     def search_history(bot_id: str, data: HistoryQuery):
-        return store.search_history(settings.owner, bot_id, data)
+        # People see the words around each match; the owl's own tool reads previews.
+        return store.search_history(settings.owner, bot_id, data, excerpts=True)
 
     @app.get("/v1/bots/{bot_id}/notes")
     def notes(bot_id: str):

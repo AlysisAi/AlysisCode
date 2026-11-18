@@ -965,7 +965,7 @@ function formatDuration(milliseconds: number): string {
 
 /** Bridge job-lifecycle warnings that the job state machine already renders as an outcome. */
 const LIFECYCLE_WARNING_PATTERN =
-  /^(?:job_(?:started|completed|cancelled)|(?:forge_|swarm_)?cancellation_requested|prompt_recovery_stopped)\b/i;
+  /^(?:job_(?:started|completed|cancelled)|cancellation_requested|prompt_recovery_stopped)\b/i;
 
 function approvalDecisionText(
   approval: ApprovalPrompt,

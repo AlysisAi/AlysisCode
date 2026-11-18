@@ -52,8 +52,8 @@ MAX_CONSECUTIVE_DENIALS = 3
 MAX_DENIALS_PER_TURN = 20
 REVIEW_TIMEOUT_SECONDS = 90.0
 # A review is a short, bounded judgement and a person is waiting on it, so it
-# runs at low reasoning effort where the model offers that, as Codex runs its
-# own approval reviewer. Left unset, a provider default can be its maximum.
+# runs at low reasoning effort where the model offers that. Left unset, a
+# provider default can be its maximum.
 REVIEW_REASONING_EFFORT = "low"
 # Providers may count reasoning against this same allowance. Leave room for the
 # complete verdict; the independent wall-clock deadline still bounds each review.

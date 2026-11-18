@@ -484,8 +484,6 @@ test("AlysisBridgeClient sends run/chat parity params and parses session methods
     execution_lifecycle: "in_turn_parent_owned",
     cancellation: "parent_job",
     independently_resumable: false,
-    background_worker_surface: "forge.swarm",
-    forge_execute_policy: "disabled",
     secret_values_included: false
   });
   const parsedSubagentStatus = await subagentStatus;
@@ -494,7 +492,7 @@ test("AlysisBridgeClient sends run/chat parity params and parses session methods
   assert.equal(parsedSubagentStatus.execution_lifecycle, "in_turn_parent_owned");
   assert.equal(parsedSubagentStatus.cancellation, "parent_job");
   assert.equal(parsedSubagentStatus.independently_resumable, false);
-  assert.equal(parsedSubagentStatus.background_worker_surface, "forge.swarm");
+  assert.equal("background_worker_surface" in parsedSubagentStatus, false);
 
   const subagentToggle = client.sessionSubagentsSetEnabled("session-1", true, true);
   await fake.waitForRequests(20);
@@ -515,8 +513,6 @@ test("AlysisBridgeClient sends run/chat parity params and parses session methods
     execution_lifecycle: "in_turn_parent_owned",
     cancellation: "parent_job",
     independently_resumable: false,
-    background_worker_surface: "forge.swarm",
-    forge_execute_policy: "disabled",
     secret_values_included: false,
     changed: true,
     previous_enabled: false
@@ -1593,132 +1589,13 @@ test("AlysisBridgeClient rejects malformed managed-browser payloads", async () =
   client.dispose();
 });
 
-test("AlysisBridgeClient parses Forge plan/status and diff protocol responses", async () => {
-  const fake = new FakeBridgeProcess();
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  const plan = client.forgePlan({
-    workspace: "/workspace",
-    instruction: "Prepare Forge protocol foundation.",
-    mode: "readonly"
-  });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.plan");
-  assert.equal(fake.requests[0].params.instruction, "Prepare Forge protocol foundation.");
-  fake.respond(0, forgePlanPayload());
-  const planResult = await plan;
-  assert.equal(planResult.plan_id, "plan-1");
-  assert.equal(planResult.tasks[0].task_id, "T01");
-  assert.deepEqual(planResult.tasks[0].file_scope.write_scope, ["src/ide"]);
-
-  const status = client.forgeStatus("session-1", "plan-1");
-  await fake.waitForRequests(2);
-  assert.equal(fake.requests[1].method, "forge.status");
-  fake.respond(1, { ...forgePlanPayload(), diff_count: 1 });
-  assert.equal((await status).diff_count, 1);
-
-  const diffs = client.diffList("session-1", "plan-1");
-  await fake.waitForRequests(3);
-  assert.equal(fake.requests[2].method, "diff.list");
-  fake.respond(2, {
-    diffs: [
-      {
-        diff_id: "diff-1",
-        session_id: "session-1",
-        plan_id: "plan-1",
-        job_id: null,
-        file_path: "README.md",
-        status: "available",
-        old_label: "before",
-        new_label: "after",
-        size_bytes: 42
-      }
-    ]
-  });
-  assert.equal((await diffs).diffs[0].file_path, "README.md");
-
-  const diff = client.diffGet("diff-1", { sessionId: "session-1", planId: "plan-1", maxBytes: 1024 });
-  await fake.waitForRequests(4);
-  assert.equal(fake.requests[3].method, "diff.get");
-  assert.deepEqual(fake.requests[3].params, {
-    diff_id: "diff-1",
-    session_id: "session-1",
-    plan_id: "plan-1",
-    max_bytes: 1024
-  });
-  fake.respond(3, {
-    diff_id: "diff-1",
-    session_id: "session-1",
-    plan_id: "plan-1",
-    job_id: null,
-    file_path: "README.md",
-    old_text: null,
-    new_text: null,
-    old_artifact_id: null,
-    new_artifact_id: null,
-    unified_diff: "--- a/README.md\n+++ b/README.md\n",
-    truncated: false,
-    size_bytes: 42,
-    max_bytes: 1024,
-    redaction: "protocol_preview"
-  });
-  assert.equal((await diff).unified_diff.includes("README.md"), true);
-  client.dispose();
-});
-
-test("AlysisBridgeClient parses async Forge Plan start and result responses", async () => {
-  const fake = new FakeBridgeProcess({
-    initializePayload: healthPayloadWithMethods(["forge.plan.start", "forge.plan.result"])
-  });
-  const client = clientFor(fake);
-  await client.startStdio(config());
-  assert.equal(client.supportsMethod("forge.plan.start"), true);
-
-  const started = client.forgePlanStart({
-    workspace: "/workspace",
-    instruction: "Plan asynchronously.",
-    mode: "readonly",
-    idempotency_key: "forge-request-1"
-  });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.plan.start");
-  assert.equal(fake.requests[0].params.idempotency_key, "forge-request-1");
-  fake.respond(0, {
-    session_id: "session-1",
-    job_id: "job-plan-1",
-    status: "started",
-    durably_accepted: true,
-    duplicate: false
-  });
-  assert.deepEqual(await started, {
-    session_id: "session-1",
-    job_id: "job-plan-1",
-    status: "started",
-    durably_accepted: true,
-    duplicate: false
-  });
-
-  const result = client.forgePlanResult("job-plan-1");
-  await fake.waitForRequests(2);
-  assert.equal(fake.requests[1].method, "forge.plan.result");
-  assert.deepEqual(fake.requests[1].params, { job_id: "job-plan-1" });
-  fake.respond(1, { ...forgePlanPayload(), job_id: "job-plan-1" });
-  assert.equal((await result).job_id, "job-plan-1");
-  client.dispose();
-});
-
 test("AlysisBridgeClient public RPC methods are safe when detached", async () => {
-  const fake = new FakeBridgeProcess({
-    initializePayload: healthPayloadWithMethods(["forge.plan.start", "forge.plan.result"])
-  });
+  const fake = new FakeBridgeProcess();
   const client = clientFor(fake);
   await client.startStdio(config());
 
   const sendChat = client.sendChat;
   const startRun = client.startRun;
-  const forgePlanStart = client.forgePlanStart;
-  const forgePlanResult = client.forgePlanResult;
   const jobStatus = client.jobStatus;
 
   const chat = sendChat("session-1", "hello");
@@ -1745,459 +1622,6 @@ test("AlysisBridgeClient public RPC methods are safe when detached", async () =>
   assert.equal((await runStatus).status, "completed");
   assert.equal(client.canRestartSafely(), true);
 
-  const started = forgePlanStart({
-    workspace: "/workspace",
-    instruction: "Plan asynchronously.",
-    mode: "readonly"
-  });
-  await fake.waitForRequests(5);
-  assert.equal(fake.requests[4].method, "forge.plan.start");
-  fake.respond(4, { session_id: "session-3", job_id: "job-plan-1", status: "started" });
-  assert.equal((await started).job_id, "job-plan-1");
-  assert.equal(client.canRestartSafely(), false);
-
-  const result = forgePlanResult("job-plan-1");
-  await fake.waitForRequests(6);
-  assert.equal(fake.requests[5].method, "forge.plan.result");
-  fake.respond(5, { ...forgePlanPayload(), job_id: "job-plan-1" });
-  assert.equal((await result).job_id, "job-plan-1");
-  const planStatus = jobStatus("job-plan-1");
-  await fake.waitForRequests(7);
-  fake.respond(6, { job_id: "job-plan-1", session_id: "session-3", status: "completed" });
-  assert.equal((await planStatus).status, "completed");
-  assert.equal(client.canRestartSafely(), true);
-
-  // SW6: the swarm client methods must also survive being detached (the
-  // cockpit calls them through the auto-bound BridgeClientLike receiver).
-  const forgeSwarmStart = client.forgeSwarmStart;
-  const forgeSwarmResult = client.forgeSwarmResult;
-  const forgeSwarmReview = client.forgeSwarmReview;
-  const forgeSwarmApply = client.forgeSwarmApply;
-  const forgeSwarmDiscard = client.forgeSwarmDiscard;
-  const forgeSwarmCancel = client.forgeSwarmCancel;
-
-  const swarmStart = forgeSwarmStart({
-    session_id: "session-3",
-    plan_id: "plan-1",
-    workspace_trusted: true,
-    parallel: 3,
-    approval_scope_grants: []
-  });
-  await fake.waitForRequests(8);
-  assert.equal(fake.requests[7].method, "forge.swarm.start");
-  fake.respond(7, { session_id: "session-3", plan_id: "plan-1", job_id: "job-swarm-1", status: "started", parallel: 3 });
-  assert.equal((await swarmStart).job_id, "job-swarm-1");
-
-  const swarmProgress = forgeSwarmResult("job-swarm-1");
-  await fake.waitForRequests(9);
-  assert.equal(fake.requests[8].method, "forge.swarm.result");
-  fake.respond(8, { session_id: "session-3", job_id: "job-swarm-1", plan_id: "plan-1", status: "running", state: "running", complete: false });
-  const progress = await swarmProgress;
-  assert.equal("complete" in progress ? progress.complete : true, false);
-
-  const swarmReview = forgeSwarmReview("session-3", "plan-1");
-  await fake.waitForRequests(10);
-  assert.equal(fake.requests[9].method, "forge.swarm.review");
-  fake.respond(9, {
-    session_id: "session-3",
-    plan_id: "plan-1",
-    items: [],
-    state_counts: {},
-    pending_review_task_ids: [],
-    working_tree_untouched_until_apply: true
-  });
-  assert.deepEqual((await swarmReview).pending_review_task_ids, []);
-
-  const swarmApply = forgeSwarmApply("session-3", "plan-1", ["T01"]);
-  await fake.waitForRequests(11);
-  assert.equal(fake.requests[10].method, "forge.swarm.apply");
-  fake.respond(10, { session_id: "session-3", plan_id: "plan-1", applied: [{ task_id: "T01", applied: true }], working_tree_committed: false });
-  assert.equal((await swarmApply).working_tree_committed, false);
-
-  const swarmDiscard = forgeSwarmDiscard("session-3", "plan-1", ["T02"]);
-  await fake.waitForRequests(12);
-  assert.equal(fake.requests[11].method, "forge.swarm.discard");
-  fake.respond(11, { session_id: "session-3", plan_id: "plan-1", discarded: [{ task_id: "T02", discarded: true }] });
-  assert.equal((await swarmDiscard).discarded.length, 1);
-
-  const swarmCancel = forgeSwarmCancel("session-3", "job-swarm-1", "cancelled_by_user");
-  await fake.waitForRequests(13);
-  assert.equal(fake.requests[12].method, "forge.swarm.cancel");
-  fake.respond(12, { session_id: "session-3", plan_id: "plan-1", job_id: "job-swarm-1", status: "cancellation_requested", state: "cancellation_requested" });
-  await swarmCancel;
-
-  client.dispose();
-});
-
-test("AlysisBridgeClient parses durable Forge list/open responses", async () => {
-  const fake = new FakeBridgeProcess();
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  const list = client.forgeList({ workspace: "/workspace", max_items: 25 });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.list");
-  assert.deepEqual(fake.requests[0].params, { workspace: "/workspace", max_items: 25 });
-  fake.respond(0, {
-    workspace_root: "/workspace",
-    plans: [
-      {
-        plan_id: "plan-1",
-        session_id: null,
-        workspace_root: "/workspace",
-        status: "planned",
-        source: "persisted",
-        project_goal: "Goal",
-        summary: "Summary",
-        task_count: 1,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-02T00:00:00Z",
-        plan_artifact_id: "forge_plan_1:plan/plan.json",
-        plan_markdown_artifact_id: "forge_plan_1:plan/PLAN.md"
-      }
-    ],
-    truncated: false,
-    max_items: 25
-  });
-  const listResult = await list;
-  assert.equal(listResult.plans[0].source, "persisted");
-  assert.equal(listResult.plans[0].task_count, 1);
-
-  const open = client.forgeOpen({ workspace: "/workspace", plan_id: "plan-1" });
-  await fake.waitForRequests(2);
-  assert.equal(fake.requests[1].method, "forge.open");
-  fake.respond(1, { ...forgePlanPayload(), source: "loaded_persisted", created_session: true });
-  const opened = await open;
-  assert.equal(opened.source, "loaded_persisted");
-  assert.equal(opened.created_session, true);
-  client.dispose();
-});
-
-test("AlysisBridgeClient resumes and lists durable Forge swarm jobs across restarts", async () => {
-  const fake = new FakeBridgeProcess();
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  const resume = client.forgeSwarmResume({
-    session_id: "session-3",
-    plan_id: "plan-1",
-    job_id: "job-swarm-1",
-    workspace_trusted: true,
-    approval_scope_grants: [{ kind: "command", scope: { executable: "npm" } }],
-    parallel: 3,
-    expected_revision: 7
-  });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.swarm.resume");
-  assert.deepEqual(fake.requests[0].params, {
-    session_id: "session-3",
-    plan_id: "plan-1",
-    job_id: "job-swarm-1",
-    workspace_trusted: true,
-    approval_scope_grants: [{ kind: "command", scope: { executable: "npm" } }],
-    parallel: 3,
-    expected_revision: 7
-  });
-  fake.respond(0, {
-    session_id: "session-3",
-    plan_id: "plan-1",
-    status: "resumed",
-    ...durableSwarmStatusPayload({ state: "queued", revision: 8, resume_count: 1 })
-  });
-  const resumed = await resume;
-  assert.equal(resumed.job_id, "job-swarm-1");
-  assert.equal(resumed.status, "resumed");
-  assert.equal(resumed.revision, 8);
-  assert.equal(resumed.resume_count, 1);
-  assert.equal(resumed.usage.total_tokens, 15);
-
-  const list = client.forgeSwarmList({ session_id: "session-3", limit: 25 });
-  await fake.waitForRequests(2);
-  assert.equal(fake.requests[1].method, "forge.swarm.list");
-  assert.deepEqual(fake.requests[1].params, { session_id: "session-3", limit: 25 });
-  fake.respond(1, {
-    session_id: "session-3",
-    jobs: [durableSwarmStatusPayload({ state: "interrupted", resumable: true })],
-    count: 1
-  });
-  const listed = await list;
-  assert.equal(listed.count, 1);
-  assert.equal(listed.jobs[0]?.state, "interrupted");
-  assert.equal(listed.jobs[0]?.resumable, true);
-
-  const recoveredResult = client.forgeSwarmResult("job-swarm-1", "session-3");
-  await fake.waitForRequests(3);
-  assert.equal(fake.requests[2].method, "forge.swarm.result");
-  assert.deepEqual(fake.requests[2].params, {
-    job_id: "job-swarm-1",
-    session_id: "session-3"
-  });
-  fake.respond(2, {
-    job_id: "job-swarm-1",
-    status: "completed",
-    state: "succeeded",
-    complete: true
-  });
-  assert.equal((await recoveredResult).job_id, "job-swarm-1");
-  assert.equal(client.canRestartSafely(), true);
-
-  client.dispose();
-});
-
-test("AlysisBridgeClient parses Forge show/review/assets backend methods", async () => {
-  const fake = new FakeBridgeProcess({
-    initializePayload: healthPayloadWithMethods([
-      "forge.show",
-      "forge.review",
-      "forge.assets.add",
-      "forge.assets.list"
-    ])
-  });
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  const show = client.forgeShow({ session_id: "session-1", plan_id: "plan-1" });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.show");
-  fake.respond(0, {
-    ...forgePlanPayload(),
-    assets: [forgeAssetEntryPayload()],
-    legacy_assets: [{ stored_path: ".alysis/runs/plan-1/plan/assets/legacy.txt" }],
-    artifact_count: 2
-  });
-  const shown = await show;
-  assert.equal(shown.assets[0].record.id, "asset_1");
-  assert.equal(shown.legacy_assets.length, 1);
-
-  const add = client.forgeAssetsAdd({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    workspace_trusted: true,
-    source_path: "docs/spec.md",
-    title: "Spec",
-    wait: false
-  });
-  await fake.waitForRequests(2);
-  assert.equal(fake.requests[1].method, "forge.assets.add");
-  assert.equal(fake.requests[1].params.workspace_trusted, true);
-  fake.respond(1, {
-    session_id: "session-1",
-    plan_id: "plan-1",
-    asset: forgeAssetDetailPayload(),
-    bound_task_ids: ["T01"],
-    status: "added"
-  });
-  const added = await add;
-  assert.equal((added.asset as any).record.id, "asset_1");
-  assert.deepEqual(added.bound_task_ids, ["T01"]);
-
-  const review = client.forgeReview({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    task_id: "T01",
-    workspace_trusted: true
-  });
-  await fake.waitForRequests(3);
-  assert.equal(fake.requests[2].method, "forge.review");
-  fake.respond(2, {
-    session_id: "session-1",
-    plan_id: "plan-1",
-    task_id: "T01",
-    approved: false,
-    confidence: "medium",
-    summary: "Needs changes.",
-    blocking_issues_count: 1,
-    non_blocking_issues_count: 0,
-    review_json: { approved: false },
-    review_markdown: "# Review\n",
-    json_artifact_id: "forge_plan_1:execution/reviews/T01.json",
-    markdown_artifact_id: "forge_plan_1:execution/reviews/T01.md",
-    requires_human_approval: true,
-    action: { kind: "review_needed" }
-  });
-  const reviewed = await review;
-  assert.equal(reviewed.requires_human_approval, true);
-  assert.equal(reviewed.action?.kind, "review_needed");
-  client.dispose();
-});
-
-test("AlysisBridgeClient sends typed Forge plan editing methods", async () => {
-  const fake = new FakeBridgeProcess({
-    initializePayload: healthPayloadWithMethods([
-      "forge.plan.getState",
-      "forge.plan.setAssistant",
-      "forge.plan.setGoal",
-      "forge.plan.updateTask",
-      "forge.plan.validate",
-      "forge.plan.regenerate"
-    ])
-  });
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  const state = client.forgePlanGetState({ session_id: "session-1", plan_id: "plan-1" });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.plan.getState");
-  fake.respond(0, forgePlanStatePayload({ changed: false }));
-  assert.equal((await state).assistant.instruction, "Use scoped edits.");
-
-  const assistant = client.forgePlanSetAssistant({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    workspace_trusted: true,
-    instruction: "Use review mode.",
-    expected_revision: 1
-  });
-  await fake.waitForRequests(2);
-  assert.equal(fake.requests[1].method, "forge.plan.setAssistant");
-  assert.equal(fake.requests[1].params.workspace_trusted, true);
-  fake.respond(1, forgePlanStatePayload({ changed: true, ide_revision: 2 }));
-  assert.equal((await assistant).ide_revision, 2);
-
-  const goal = client.forgePlanSetGoal({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    workspace_trusted: true,
-    goal: "Ship typed Forge parity.",
-    expected_revision: 2
-  });
-  await fake.waitForRequests(3);
-  assert.equal(fake.requests[2].method, "forge.plan.setGoal");
-  assert.equal(fake.requests[2].params.goal, "Ship typed Forge parity.");
-  fake.respond(2, forgePlanStatePayload({ changed: true, goal: "Ship typed Forge parity.", ide_revision: 3 }));
-  assert.equal((await goal).goal, "Ship typed Forge parity.");
-
-  const task = client.forgePlanUpdateTask({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    task_id: "T01",
-    status: "blocked",
-    workspace_trusted: true,
-    expected_revision: 3
-  });
-  await fake.waitForRequests(4);
-  assert.equal(fake.requests[3].method, "forge.plan.updateTask");
-  assert.equal(fake.requests[3].params.task_id, "T01");
-  fake.respond(3, forgePlanStatePayload({ changed: true, task: forgeTaskPayload({ status: "blocked" }) }));
-  assert.equal((await task).task?.status, "blocked");
-
-  const validate = client.forgePlanValidate({ session_id: "session-1", plan_id: "plan-1" });
-  await fake.waitForRequests(5);
-  assert.equal(fake.requests[4].method, "forge.plan.validate");
-  fake.respond(4, { ok: true, missing: [] });
-  assert.equal((await validate).ok, true);
-
-  const regenerate = client.forgePlanRegenerate({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    workspace_trusted: true,
-    expected_revision: 3,
-    instruction: "Refresh the plan.",
-    focus: "demo.py"
-  });
-  await fake.waitForRequests(6);
-  assert.equal(fake.requests[5].method, "forge.plan.regenerate");
-  assert.equal(fake.requests[5].params.workspace_trusted, true);
-  fake.respond(5, forgePlanStatePayload({
-    changed: true,
-    old_revision: 3,
-    new_revision: 4,
-    ide_revision: 4,
-    redacted: true,
-    secret_values_included: false
-  }));
-  const regenerated = await regenerate;
-  assert.equal(regenerated.old_revision, 3);
-  assert.equal(regenerated.new_revision, 4);
-  assert.equal(regenerated.secret_values_included, false);
-
-  client.dispose();
-});
-
-test("AlysisBridgeClient separates forge.cancel method presence from feature support", async () => {
-  const initializePayload = healthPayloadWithMethods(["forge.cancel"]);
-  const capabilities = initializePayload.capabilities as Record<string, unknown>;
-  capabilities.features = {
-    forge: {
-      cancel: { supported: false }
-    }
-  };
-  const fake = new FakeBridgeProcess({ initializePayload });
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  assert.equal(client.supportsMethod("forge.cancel"), true);
-  assert.equal(client.supportsFeature(["forge", "cancel", "supported"]), false);
-  client.dispose();
-});
-
-test("AlysisBridgeClient parses Forge Execute Preview responses", async () => {
-  const fake = new FakeBridgeProcess();
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  const preview = client.forgeExecutePreview({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    task_ids: ["T01"],
-    mode: "readonly",
-    workspace_trusted: false,
-    sandbox_profile: "default"
-  });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.executePreview");
-  assert.deepEqual(fake.requests[0].params, {
-    session_id: "session-1",
-    plan_id: "plan-1",
-    task_ids: ["T01"],
-    mode: "readonly",
-    workspace_trusted: false,
-    sandbox_profile: "default"
-  });
-  fake.respond(0, forgeExecutePreviewPayload());
-  const result = await preview;
-  assert.equal(result.selected_task_ids[0], "T01");
-  assert.equal(result.execution_mode_requested, "readonly");
-  assert.equal(result.workspace_trust_required, false);
-  assert.equal(result.sandbox_profile.supported, true);
-  assert.equal(result.sandbox_profile.available, true);
-  assert.equal(result.required_approvals[0].allow_for_session_scope?.type, "exact_file_set");
-  assert.equal(result.real_execution_supported, false);
-  assert.equal(result.max_steps, 5);
-  assert.equal(result.no_log, true);
-  assert.equal(result.subagents_supported, false);
-  assert.equal(result.subagents_enabled, false);
-  assert.equal(result.subagents_policy, "disabled_for_ide_forge_execute_v1");
-  client.dispose();
-});
-
-test("AlysisBridgeClient surfaces unsupported Forge and diff errors clearly", async () => {
-  const fake = new FakeBridgeProcess();
-  const client = clientFor(fake);
-  await client.startStdio(config());
-
-  const execute = client.forgeExecute({
-    session_id: "session-1",
-    plan_id: "plan-1",
-    mode: "review"
-  });
-  await fake.waitForRequests(1);
-  assert.equal(fake.requests[0].method, "forge.execute");
-  fake.error(0, "forge_execute_unsupported", "forge.execute is fail-closed.");
-  await assert.rejects(execute, (error) => {
-    assert.equal(error instanceof ProtocolClientError, true);
-    assert.equal((error as ProtocolClientError).code, "forge_execute_unsupported");
-    return true;
-  });
-
-  const diff = client.diffGet("diff-missing", { sessionId: "session-1", planId: "plan-1" });
-  await fake.waitForRequests(2);
-  fake.error(1, "diff_not_found", "Diff was not found.");
-  await assert.rejects(diff, (error) => {
-    assert.equal(error instanceof ProtocolClientError, true);
-    assert.equal((error as ProtocolClientError).code, "diff_not_found");
-    return true;
-  });
   client.dispose();
 });
 
@@ -3011,7 +2435,6 @@ test("AlysisBridgeClient gives each bridge method a deadline that matches its wo
     "job.status",
     "config.get",
     "config.set",
-    "forge.assets.list",
     // Persona calls are config-shaped quick calls, so both live in the short bucket.
     "session.personas.list",
     "session.persona.set"
@@ -3019,11 +2442,6 @@ test("AlysisBridgeClient gives each bridge method a deadline that matches its wo
     assert.equal(requestTimeoutForMethod(method), 30_000, method);
   }
   for (const method of [
-    "forge.plan",
-    "forge.plan.result",
-    "forge.review",
-    "forge.review.result",
-    "forge.execute",
     "code.review.result",
     "session.compact"
   ]) {
@@ -3039,8 +2457,8 @@ test("AlysisBridgeClient keeps a long-running method alive past the default dead
   t.mock.timers.enable({ apis: ["setTimeout"] });
 
   const outcomes: unknown[] = [];
-  const plan = client
-    .forgePlan({ workspace: "/workspace", instruction: "Ship the release.", mode: "readonly" })
+  const compact = client
+    .sessionCompact("session-1")
     .then(
       () => "resolved",
       (error: unknown) => error
@@ -3050,14 +2468,14 @@ test("AlysisBridgeClient keeps a long-running method alive past the default dead
     });
   await fake.waitForRequests(1);
 
-  // The old shared 120s default abandoned the caller here while the CLI kept planning (and spending).
+  // The old shared 120s default abandoned the caller here while the CLI kept compacting (and spending).
   t.mock.timers.tick(150_000);
   await tick();
-  assert.deepEqual(outcomes, [], "a plan is still in flight two minutes in");
+  assert.deepEqual(outcomes, [], "a compaction is still in flight two minutes in");
 
   t.mock.timers.tick(600_000);
   await tick();
-  await plan;
+  await compact;
   assert.equal(outcomes.length, 1);
   const failure = outcomes[0] as ProtocolClientError;
   assert.equal(failure instanceof ProtocolClientError, true);
@@ -3375,11 +2793,8 @@ function config() {
     provider: "",
     transport: "stdio" as const,
     sandboxProfile: "default" as const,
-    forgeExecuteMaxSteps: undefined,
-    forgeExecuteNoLog: false,
     showStatusBar: true,
-    autoStartBridge: false,
-    enableForge: true
+    autoStartBridge: false
   };
 }
 
@@ -3520,201 +2935,6 @@ function mcpServerLifecyclePayload(
     prompt_snapshot_loaded: true,
     snapshotted_prompt_count: 1,
     secret_values_included: false,
-    ...overrides
-  };
-}
-
-function forgePlanPayload(): Record<string, unknown> {
-  return {
-    plan_id: "plan-1",
-    session_id: "session-1",
-    job_id: null,
-    status: "planned",
-    source: "active_memory",
-    created_session: false,
-    project_goal: "Prepare Forge protocol foundation.",
-    summary: "Prepare Forge protocol foundation.",
-    warnings: [],
-    incomplete: false,
-    tasks: [
-      forgeTaskPayload()
-    ],
-    artifacts: [
-      {
-        kind: "forge_plan_json",
-        artifact_id: "forge_plan_1:plan/plan.json",
-        path: "plan/plan.json"
-      }
-    ],
-    plan_artifact_id: "forge_plan_1:plan/plan.json",
-    plan_markdown_artifact_id: "forge_plan_1:plan/PLAN.md"
-  };
-}
-
-function forgePlanStatePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    ...forgePlanPayload(),
-    ide_revision: 1,
-    assistant: {
-      instruction: "Use scoped edits.",
-      updated_at: null,
-      source: "ide_protocol"
-    },
-    goal: "Prepare Forge protocol foundation.",
-    validation: { ok: true },
-    changed: false,
-    audit: { secret_values_included: false },
-    ...overrides
-  };
-}
-
-function forgeTaskPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    task_id: "T01",
-    title: "Prepare Forge protocol foundation.",
-    objective: "Prepare Forge protocol foundation.",
-    file_scope: {
-      estimated_files: ["src/ide"],
-      write_scope: ["src/ide"]
-    },
-    acceptance_criteria: ["Protocol schema is stable."],
-    verification_commands: ["pytest tests/test_ide_stdio_bridge.py"],
-    risk_notes: ["Low risk."],
-    dependencies: [],
-    order: 1,
-    scope_unknown_reason: "",
-    warnings: [],
-    status: "planned",
-    ...overrides
-  };
-}
-
-function forgeAssetRecordPayload(): Record<string, unknown> {
-  return {
-    id: "asset_1",
-    title: "Spec",
-    description: "",
-    kind: "text",
-    mime: "text/markdown",
-    original_filename: "spec.md",
-    size_bytes: 42,
-    sha256: "abc123",
-    stored_path: ".alysis/runs/plan-1/assets/raw/asset_1/spec.md",
-    extracted_text_path: ".alysis/runs/plan-1/assets/raw/asset_1/spec.md",
-    thumbnail_path: null,
-    pinned: false,
-    added_at: "2026-01-01T00:00:00Z",
-    added_by: { phase: "ide_protocol" },
-    deleted_at: null,
-    comprehension_status: "pending",
-    comprehension_current_version: null
-  };
-}
-
-function forgeAssetEntryPayload(): Record<string, unknown> {
-  return {
-    record: forgeAssetRecordPayload(),
-    comprehension_status: "pending",
-    comprehension_source: null,
-    comprehension_summary_preview: "",
-    detected_language: null
-  };
-}
-
-function forgeAssetDetailPayload(): Record<string, unknown> {
-  return {
-    record: forgeAssetRecordPayload(),
-    comprehension_status: "pending",
-    comprehension: null,
-    versions: [],
-    extracted_text_preview: ""
-  };
-}
-
-function forgeExecutePreviewPayload(): Record<string, unknown> {
-  return {
-    session_id: "session-1",
-    plan_id: "plan-1",
-    selected_task_ids: ["T01"],
-    execution_mode_requested: "readonly",
-    workspace_trust_required: false,
-    workspace_trusted: false,
-    estimated_file_scopes: [
-      {
-        task_id: "T01",
-        title: "Prepare Forge protocol foundation.",
-        estimated_files: ["src/ide"],
-        write_scope: ["src/ide"],
-        scope_unknown_reason: ""
-      }
-    ],
-    verification_commands: [
-      {
-        task_id: "T01",
-        commands: ["pytest tests/test_ide_stdio_bridge.py"],
-        source: "task",
-        missing_reason: ""
-      }
-    ],
-    required_approvals: [
-      {
-        kind: "fs_write",
-        task_id: "T01",
-        reason: "Forge execution may write the scoped task files.",
-        scope: { type: "exact_file_set" },
-        allow_for_session_scope: { type: "exact_file_set" },
-        allow_for_session_supported: true
-      }
-    ],
-    approval_scopes_safe: true,
-    sandbox_profile: {
-      requested: "default",
-      supported: true,
-      available: true,
-      diagnostic: null
-    },
-    known_risks: ["Real execution is not wired."],
-    missing_prerequisites: [],
-    preview_ready: true,
-    real_execution_supported: false,
-    unsupported_reason: "Forge runtime execution is not wired.",
-    active_cancellation_supported: true,
-    cancellation: { supported: true, kind: "cooperative_checkpoint", hard_interrupt: false },
-    max_steps: 5,
-    no_log: true,
-    subagents_supported: false,
-    subagents_enabled: false,
-    subagents_policy: "disabled_for_ide_forge_execute_v1",
-    next_recommended_action: "Review the preview.",
-    status: "preview"
-  };
-}
-
-function durableSwarmStatusPayload(
-  overrides: Record<string, unknown> = {}
-): Record<string, unknown> {
-  return {
-    job_id: "job-swarm-1",
-    state: "succeeded",
-    revision: 3,
-    attempts: 1,
-    resume_count: 0,
-    created_at: 1_700_000_000,
-    updated_at: 1_700_000_100,
-    started_at: 1_700_000_010,
-    terminal_at: 1_700_000_100,
-    lease_expires_at: null,
-    result_available: true,
-    error_code: null,
-    error_summary: null,
-    usage: {
-      calls: 2,
-      input_tokens: 10,
-      output_tokens: 5,
-      cached_input_tokens: 3,
-      total_tokens: 15
-    },
-    resumable: false,
     ...overrides
   };
 }

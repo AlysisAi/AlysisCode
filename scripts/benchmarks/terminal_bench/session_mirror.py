@@ -4,7 +4,7 @@ The defect this exists for
 --------------------------
 The harness-side adapter harvests a task's session artifacts from
 ``<workspace>/.alysis`` -- that is what ``--artifact /app/.alysis`` in
-``run_harbor_tbench.sh`` collects. In normal (non-Forge) mode nothing
+``run_harbor_tbench.sh`` collects. In normal mode nothing
 ever creates that directory: the box adapter points ``session_log_dir`` at
 ``/logs/artifacts/alysis-session`` instead. The result is that two full
 89-task trials retained **zero** session logs. Every question afterwards --

@@ -171,7 +171,6 @@ def test_cli_picker_uses_model_catalog_for_custom_endpoint():
         fields={"model": "glm-5.3-flash", "base_url": "https://custom.example/v1"},
         thinking_label="auto",
         role_models={},
-        forge_role_models={},
         role_temperatures={},
         profiles={},
         active_profile="",

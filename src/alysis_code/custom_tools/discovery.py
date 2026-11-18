@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..branding import canonical_user_config_dir, env_get, env_get_from
-from ..runtime_kind import RuntimeKind, runtime_kind_values
+from ..runtime_kind import RETIRED_RUNTIME_KINDS, RuntimeKind, runtime_kind_values
 
 _DEFAULT_TIMEOUT_S = 15.0
 _MAX_TIMEOUT_S = 300.0
@@ -47,7 +47,6 @@ _VALID_PROCESS_SPAWN_VALUES = {
 _DEFAULT_ENABLED_IN = (
     RuntimeKind.INTERACTIVE_CHAT.value,
     RuntimeKind.ONE_SHOT.value,
-    RuntimeKind.FORGE_EXEC.value,
 )
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -792,8 +791,12 @@ def _validate_enabled_in(value: Any) -> tuple[str, ...]:
     allowed = set(runtime_kind_values())
     items: list[str] = []
     seen: set[str] = set()
+    retired_only = bool(value)
     for item in value:
         runtime = str(item or "").strip().lower()
+        if runtime in RETIRED_RUNTIME_KINDS:
+            continue
+        retired_only = False
         if runtime not in allowed:
             raise ValueError(
                 "TOOL.enabled_in contains invalid runtime kind: "
@@ -804,6 +807,11 @@ def _validate_enabled_in(value: Any) -> tuple[str, ...]:
         seen.add(runtime)
         items.append(runtime)
     if not items:
+        if retired_only:
+            raise ValueError(
+                "TOOL.enabled_in names only runtimes that no longer exist. Expected one of: "
+                f"{', '.join(runtime_kind_values())}"
+            )
         raise ValueError("TOOL.enabled_in cannot be empty")
     return tuple(items)
 

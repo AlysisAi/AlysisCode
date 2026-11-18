@@ -213,12 +213,9 @@ def test_unknown_importability_never_installs() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "kind", (RuntimeKind.ONE_SHOT, RuntimeKind.FORGE_EXEC, RuntimeKind.SWARM_WORKER)
-)
-def test_top_level_autonomous_run_with_missing_runner_provisions(kind: RuntimeKind) -> None:
+def test_top_level_autonomous_run_with_missing_runner_provisions() -> None:
     decision = resolve_provisioning_decision(
-        declared=_declared(), importable=False, runtime_kind=kind, enabled=True
+        declared=_declared(), importable=False, runtime_kind=RuntimeKind.ONE_SHOT, enabled=True
     )
     assert decision.action is ProvisioningAction.PROVISION
     assert decision.package == "pytest"
@@ -229,8 +226,6 @@ def test_top_level_autonomous_run_with_missing_runner_provisions(kind: RuntimeKi
     "kind",
     (
         RuntimeKind.ONE_SHOT,
-        RuntimeKind.FORGE_EXEC,
-        RuntimeKind.SWARM_WORKER,
         RuntimeKind.SUBAGENT,
     ),
 )
@@ -253,13 +248,10 @@ def test_interactive_run_reports_the_gap_instead_of_installing() -> None:
     assert decision.reason == "interactive_run_does_not_install"
 
 
-@pytest.mark.parametrize(
-    "kind",
-    (RuntimeKind.SUBAGENT, RuntimeKind.CONFLICT_AUTO_RESOLVE),
-)
-def test_nested_runtime_kinds_never_install(kind: RuntimeKind) -> None:
-    # These can be spawned from an interactive chat. If they installed, the
+def test_nested_runtime_kinds_never_install() -> None:
+    # A subagent can be spawned from an interactive chat. If it installed, the
     # interactive "never install" rule would be trivially bypassable.
+    kind = RuntimeKind.SUBAGENT
     decision = resolve_provisioning_decision(
         declared=_declared(), importable=False, runtime_kind=kind, enabled=True
     )

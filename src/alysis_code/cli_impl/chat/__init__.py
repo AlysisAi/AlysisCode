@@ -10,8 +10,6 @@ _PUBLIC_FACADE_NAMES = {
     "_apply_chat_persona",
     "_handle_chat_command",
     "_handle_chat_command_impl",
-    "_handle_forge_chat_command",
-    "_handle_forge_chat_command_impl",
     "_sync_cli_globals",
     "_sync_loop_globals_from_public",
     "chat_impl",
@@ -80,11 +78,6 @@ def _handle_chat_command(*args: Any, **kwargs: Any) -> Any:
     return _commands_module()._handle_chat_command(*args, **kwargs)
 
 
-def _handle_forge_chat_command(*args: Any, **kwargs: Any) -> Any:
-    _commands_module()._sync_command_globals(globals())
-    return _commands_module()._handle_forge_chat_command(*args, **kwargs)
-
-
 def _apply_chat_effective_mode(*args: Any, **kwargs: Any) -> Any:
     _sync_loop_globals_from_public()
     return _loop_module()._apply_chat_effective_mode(*args, **kwargs)
@@ -98,11 +91,6 @@ def _apply_chat_persona(*args: Any, **kwargs: Any) -> Any:
 def _handle_chat_command_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
     _sync_cli_globals(cli_mod)
     return _handle_chat_command(*args, **kwargs)
-
-
-def _handle_forge_chat_command_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
-    _sync_cli_globals(cli_mod)
-    return _handle_forge_chat_command(*args, **kwargs)
 
 
 def _print_chat_context_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:

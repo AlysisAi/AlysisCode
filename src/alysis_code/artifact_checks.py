@@ -115,7 +115,9 @@ class ArtifactChecks:
                 if format_name == "pdf":
                     import pypdfium2
 
-                    with pypdfium2.PdfDocument(snapshot) as pdf:
+                    from .documents import PDFIUM_LOCK
+
+                    with PDFIUM_LOCK, pypdfium2.PdfDocument(snapshot) as pdf:
                         if not 1 <= len(pdf) <= 50:
                             raise ValueError("PDF must contain between 1 and 50 pages.")
                     inspected = {}

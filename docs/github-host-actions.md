@@ -75,13 +75,12 @@ surface and blocks mutation tools in readonly mode or restricted persona write
 scope; it does not show a duplicate approval prompt. GitHub actions do not imply
 permission to run arbitrary local commands or bypass shell policy.
 
-## Standalone and Forge behavior
+## Standalone behavior
 
 Standalone CLI remote sync retains its existing `gh`/`glab` and Git behavior.
 When `ALYSIS_DESKTOP_GITHUB_POLICY` is present, remote_sync refuses push and PR/MR
 lookup/creation without executing commands, regardless of the policy's value or
-local PATH, CLI path, credentials or login environment. This also blocks the
-current Forge remote-sync path because it has no negotiated host-action broker.
+local PATH, CLI path, credentials or login environment.
 Ordinary desktop chat uses the plugin's discovered MCP tools and native Git remote actions. Existing local file, Git
 status/diff/history and policy-controlled shell tools remain separate capabilities.
 This contract does not claim that arbitrary shell code is sandboxed from all

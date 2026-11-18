@@ -1,7 +1,7 @@
 # Alysis Code Terminal-Bench Adapter
 
 This adapter runs the plain one-shot Alysis Code agent through `alysis run`.
-It does not use Forge or subagents.
+It does not use subagents.
 
 ## Provider Configuration
 

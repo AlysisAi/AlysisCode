@@ -43,7 +43,7 @@ def test_dot_segments_never_produce_a_candidate() -> None:
     assert approval_dir_grant_candidate(_delete_request(["pkg/x.pyc"])) == "pkg/"
 
 
-# --------- Codex review on PR #26: mixed batches + swarm outcome honesty ---------
+# --------- Review on PR #26: mixed batches ---------
 
 
 def test_mixed_batch_ordinary_files_still_require_write_approval(tmp_path):
@@ -100,45 +100,3 @@ def test_mixed_batch_ordinary_files_still_require_write_approval(tmp_path):
     assert covered == {"pkg/a.pyc", "pkg/b.pyc", "pkg/creds.pem"}
     assert result["deleted_count"] == 3
     assert not any((tmp_path / "pkg" / name).exists() for name in ("a.pyc", "b.pyc", "creds.pem"))
-
-
-def test_swarm_outcome_reports_not_run_when_gates_skipped():
-    """Run-level skip honesty: a final integration gate that proceeded without
-    executing anything must record verification_status not_run, not passed."""
-    from types import SimpleNamespace
-
-    from alysis_code.swarm_orchestrator import _compute_swarm_run_outcome
-
-    def _outcome(results):
-        return _compute_swarm_run_outcome(
-            plan={"tasks": []},
-            integration_results=results,
-            worker_verification_warnings=False,
-            review_blocked=False,
-            remote_blocked_any=False,
-            integration_blocked=False,
-            only="t1",
-            max_tasks=None,
-            dry_run=False,
-        )
-
-    def _gate(**kwargs) -> SimpleNamespace:
-        base = {
-            "passed": True,
-            "phase": "post_merge",
-            "mode": "warn",
-            "policy_outcome": "passed",
-            "batch_label": "batch-1",
-            "summary": "stub",
-        }
-        base.update(kwargs)
-        return SimpleNamespace(**base)
-
-    skipped_final = _gate(phase="final_repo", policy_outcome="not_run")
-    executed_final = _gate(phase="final_repo", policy_outcome="passed")
-    skipped_mid = _gate(policy_outcome="not_run")
-
-    assert _outcome([skipped_final]).verification_status == "not_run"
-    assert _outcome([skipped_mid]).verification_status == "not_run"
-    assert _outcome([executed_final]).verification_status == "passed"
-    assert _outcome([skipped_mid, executed_final]).verification_status == "passed"

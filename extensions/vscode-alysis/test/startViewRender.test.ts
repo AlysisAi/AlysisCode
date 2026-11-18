@@ -117,18 +117,21 @@ test("settings search filters by group and copy, clears with Escape, and preserv
   assert.deepEqual(errors, []);
 });
 
-test("settings filtering never reveals host-hidden Forge controls or enables unavailable actions", () => {
+test("settings filtering never enables unavailable actions", () => {
   const { window } = mountStartView();
   const doc = window.document;
-  postState(window, { sessionId: null, items: [], running: false }, { forgeEnabled: false, commands: [] });
+  postState(window, { sessionId: null, items: [], running: false }, { commands: [
+    { command: "alysis.manageToolsSkills", available: false, unavailableReason: "Agent does not support tools management." }
+  ] });
   const search = doc.querySelector("#settingsSearch");
-  search.value = "Forge";
+  const unsupported = doc.querySelector('[data-command="alysis.manageToolsSkills"]');
+  search.value = "tools";
   search.dispatchEvent(new window.Event("input"));
-  assert.equal(doc.querySelector('#settingsSurface [data-surface="forge"]').hidden, true);
-  assert.equal(doc.querySelector('[data-command="alysis.manageForgeAssets"]').disabled, true);
+  assert.equal(unsupported.hidden, false);
+  assert.equal(unsupported.disabled, true);
   search.value = "";
   search.dispatchEvent(new window.Event("input"));
-  assert.equal(doc.querySelector('#settingsSurface [data-surface="forge"]').hidden, true);
+  assert.equal(unsupported.disabled, true);
 });
 
 test("provider disclosures and connection menus retain a complete keyboard path", () => {
@@ -961,7 +964,7 @@ test("the composer clears on Send and Enter, stays clear on success, and cannot 
   assert.equal(buttonSubmits.length, 1);
   assert.equal(buttonSubmits[0].instruction, "Check the connection");
   assert.equal(buttonSubmits[0].mode, "review");
-  assert.equal(buttonSubmits[0].workflow, "chat");
+  assert.equal("workflow" in buttonSubmits[0], false);
   buttonMount.window.dispatchEvent(new buttonMount.window.MessageEvent("message", {
     data: { type: "task.result", started: true }
   }));
@@ -984,7 +987,7 @@ test("the composer clears on Send and Enter, stays clear on success, and cannot 
   assert.equal(enterSubmits.length, 1);
   assert.equal(enterSubmits[0].instruction, "Send with Enter");
   assert.equal(enterSubmits[0].mode, "review");
-  assert.equal(enterSubmits[0].workflow, "chat");
+  assert.equal("workflow" in enterSubmits[0], false);
   enterMount.window.dispatchEvent(new enterMount.window.MessageEvent("message", {
     data: { type: "task.result", started: true, requestId: enterSubmits[0].requestId }
   }));
@@ -1205,22 +1208,19 @@ test("image badges follow confirmed agent baskets and cannot leak between tasks"
   assert.equal(basket.hidden, true, "late responses from a previous task are ignored");
 });
 
-test("Forge and settings controls respect the host's enabled workflows and availability", () => {
+test("settings controls respect the host's availability", () => {
   const { window } = mountStartView();
   const conversation = { sessionId: "session-1", mode: "review", jobStatus: "idle", running: false, items: [] };
-  postState(window, conversation, { forgeEnabled: false, commands: [
+  postState(window, conversation, { commands: [
     { command: "alysis.manageToolsSkills", available: false, unavailableReason: "Agent does not support tools management." }
   ] });
-  assert.equal(window.document.querySelector('[data-surface="forge"]').hidden, true);
   const unsupported = window.document.querySelector('[data-command="alysis.manageToolsSkills"]');
   assert.equal(unsupported.disabled, true);
   assert.match(unsupported.title, /does not support/);
-  postState(window, conversation, { forgeEnabled: true, commands: [
+  postState(window, conversation, { commands: [
     { command: "alysis.manageToolsSkills", available: true }
   ] });
   assert.equal(unsupported.disabled, false);
-  window.dispatchEvent(new window.MessageEvent("message", { data: { type: "surface.show", surface: "forge" } }));
-  assert.equal(window.document.querySelector("#permissionStrip").hidden, true, "chat permissions do not control Forge");
 });
 
 test("host permissions override a stale saved composer selection and stay locked during work", () => {
@@ -1326,12 +1326,12 @@ test("copy response sends original Markdown and is absent while streaming", () =
 
 test("IME confirmation does not accept a slash suggestion or send the task", () => {
   const { window, messages } = mountStartView();
-  postState(window, { sessionId: null, items: [] }, { slashCommands: [{ command: "/forge plan", usage: "/forge plan <instruction>", takesArgs: true, description: "Plan" }] });
+  postState(window, { sessionId: null, items: [] }, { slashCommands: [{ command: "/model", usage: "/model <name>", takesArgs: true, description: "Switch model" }] });
   const input = window.document.querySelector("#taskInput");
-  input.value = "/p";
+  input.value = "/m";
   input.dispatchEvent(new window.Event("input"));
   input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
-  assert.equal(input.value, "/p");
+  assert.equal(input.value, "/m");
   assert.equal(messages.some((m) => m.type === "task.submit"), false);
 });
 
@@ -1423,7 +1423,7 @@ test("rejected submissions preserve an oversized combined draft through reload a
 test("portable sidebar navigation preserves the draft, marks the current surface and routes new tasks to chat", () => {
   const { window, messages, errors } = mountStartView(undefined, true);
   const doc = window.document;
-  postState(window, { sessionId: null, items: [], running: false }, { forgeEnabled: true });
+  postState(window, { sessionId: null, items: [], running: false });
   const input = doc.querySelector("#taskInput");
   input.value = "Keep this draft while I check settings";
   input.dispatchEvent(new window.Event("input"));
@@ -1440,8 +1440,7 @@ test("portable sidebar navigation preserves the draft, marks the current surface
   assert.deepEqual(JSON.parse(JSON.stringify(messages.at(-1))), { type: "action", action: "new" });
   assert.equal(doc.querySelector("#taskSurface").hidden, false);
   assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1);
-  postState(window, { sessionId: null, items: [], running: false }, { forgeEnabled: false });
-  assert.equal(nav.querySelector('[data-surface="forge"]').hidden, true);
+  assert.equal(nav.querySelector('[data-surface="forge"]'), null);
   assert.deepEqual(errors, []);
 });
 
@@ -1505,10 +1504,6 @@ test("every static Start View button contract stays wired after a state render",
     button.click();
     assert.equal(messages.at(-1)?.type, "cockpit", button.dataset.cockpitAction);
     assert.equal(messages.at(-1)?.message?.type, button.dataset.cockpitAction);
-  }
-  for (const button of document.querySelectorAll("button[data-forge-tab]")) {
-    button.click();
-    assert.equal(document.querySelector(`[data-forge-panel="${button.dataset.forgeTab}"]`)?.hidden, false);
   }
   for (const button of document.querySelectorAll("button[data-starter]")) {
     button.click();
@@ -1601,7 +1596,7 @@ test("Browser Cockpit separates agent-shared public browsing from confirmed Dire
   assert.deepEqual(errors, []);
 });
 
-test("delegated conversation, history, and Forge controls route every dynamic action", () => {
+test("delegated conversation and history controls route every dynamic action", () => {
   const { window, messages, errors } = mountStartView();
   window.dispatchEvent(new window.MessageEvent("message", {
     data: {
@@ -1622,45 +1617,6 @@ test("delegated conversation, history, and Forge controls route every dynamic ac
           }]
         },
         recentTasks: [{ sessionId: "old-session", title: "Old task", detail: "Done", current: false, canResume: true }],
-        forge: {
-          sessionId: "forge-session",
-          planId: "plan-1",
-          activeJobId: null,
-          planning: null,
-          plan: {
-            plan_id: "plan-1", session_id: "forge-session", status: "ready", project_goal: "Audit actions",
-            summary: "", warnings: [],
-            tasks: [{
-              task_id: "task-1", title: "Review me", objective: "", status: "pending",
-              file_scope: { estimated_files: [], write_scope: [] }, acceptance_criteria: [], verification_commands: []
-            }]
-          },
-          events: [],
-          diffs: [{ diff_id: "diff-1", file_path: "src/app.ts", status: "ready", size_bytes: 12 }],
-          artifacts: [{ sessionId: "forge-session", artifacts: [{ artifact_id: "artifact-1", path: "report.txt", size_bytes: 8 }] }],
-          executePreview: null,
-          approvals: [{
-            sessionId: "forge-session", approvalId: "forge-approval", reason: "Run tests",
-            allowForSessionSupported: true
-          }],
-          review: null,
-          reviewBusy: false,
-          assets: [{ id: "asset-1", title: "Spec", kind: "File", sizeBytes: 4 }]
-        },
-        swarm: {
-          supported: true, status: "running", busy: false, cancellable: true,
-          tasks: [{ taskId: "swarm-1", title: "Worker", state: "review", reviewable: true, applied: false, discarded: false }],
-          recovery: {
-            supported: true,
-            status: "ready",
-            reason: null,
-            activeJobId: null,
-            jobs: [{
-              jobId: "durable-job-1", state: "interrupted", revision: 7, attempts: 2, resumeCount: 1,
-              updatedAt: 1_785_000_100, errorSummary: "Worker stopped safely.", calls: 3, totalTokens: 120
-            }]
-          }
-        },
         actionResults: [],
         runtimeEvents: [],
         commands: []
@@ -1682,28 +1638,6 @@ test("delegated conversation, history, and Forge controls route every dynamic ac
   document.querySelector("#recentCards .task-card").click();
   assert.equal(JSON.stringify(messages.at(-1)), JSON.stringify({ type: "session", action: "resume", sessionId: "old-session" }));
 
-  messages.length = 0;
-  for (const button of document.querySelectorAll("#forgeWorkspace [data-dynamic-cockpit-action]")) {
-    button.click();
-  }
-  const actions = messages
-    .filter((message: any) => message.type === "cockpit")
-    .map((message: any) => message.message.type);
-  assert.deepEqual(actions.sort(), [
-    "forge.approval", "forge.approval", "forge.approval", "forge.artifact.open", "forge.assets.open",
-    "forge.diff.open", "forge.review", "swarm.apply", "swarm.cancel", "swarm.discard",
-    "swarm.recovery.dismiss", "swarm.recovery.refresh", "swarm.recovery.resume"
-  ].sort());
-  const resumeMessage = messages.find((message: any) => message.message?.type === "swarm.recovery.resume");
-  assert.equal(
-    JSON.stringify(resumeMessage?.message),
-    JSON.stringify({ type: "swarm.recovery.resume", jobId: "durable-job-1", revision: 7 })
-  );
-  assert.match(document.querySelector(".swarm-recovery-job")?.textContent ?? "", /Worker stopped safely/);
-
-  messages.length = 0;
-  document.querySelector("#forgeWorkspace [data-dynamic-command]").click();
-  assert.equal(JSON.stringify(messages.at(-1)), JSON.stringify({ type: "command", command: "alysis.manageForgeAssets" }));
   assert.deepEqual(errors, []);
 });
 
@@ -1762,180 +1696,28 @@ test("task history is an in-view replacement surface, not another stacked sideba
   assert.equal(document.body.classList.contains("secondary-open"), true);
 });
 
-test("Forge is a complete in-sidebar workspace with plan tasks and safe run actions", () => {
-  const { window, messages } = mountStartView();
-  window.dispatchEvent(new window.MessageEvent("message", {
-    data: {
-      type: "state",
-      state: {
-        mode: "review",
-        engine: { tone: "ready", detail: "Connected" },
-        workspace: { tone: "ready", detail: "Trusted" },
-        provider: { tone: "ready", detail: "Configured" },
-        conversation: { sessionId: null, mode: null, jobStatus: "idle", running: false, items: [] },
-        forge: {
-          sessionId: "forge-session",
-          planId: "plan-123",
-          activeJobId: null,
-          planning: null,
-          plan: {
-            plan_id: "plan-123",
-            session_id: "forge-session",
-            status: "ready",
-            project_goal: "Ship the new sidebar",
-            summary: "Implement and verify the unified UI.",
-            warnings: [],
-            tasks: [{
-              task_id: "task-1",
-              title: "Build Forge surface",
-              objective: "Expose Forge without another editor panel.",
-              status: "pending",
-              file_scope: { estimated_files: ["media/startView.html"], write_scope: [] },
-              acceptance_criteria: ["Forge remains in the sidebar"],
-              verification_commands: ["npm test"]
-            }]
-          },
-          events: [],
-          diffs: [],
-          artifacts: [],
-          executePreview: null,
-          approvals: [],
-          review: null,
-          reviewBusy: false,
-          assets: []
-        },
-        swarm: { supported: true, status: "idle", busy: false, cancellable: false, tasks: [] },
-        actionResults: [],
-        runtimeEvents: [],
-        commands: []
-      }
-    }
-  }));
-  window.dispatchEvent(new window.MessageEvent("message", { data: { type: "surface.show", surface: "forge" } }));
-
-  const document = window.document;
-  assert.equal(document.querySelector("#forgeSurface").hidden, false);
-  assert.equal(document.querySelector("#forgeWorkspace").hidden, false);
-  assert.match(document.querySelector("#forgeSummary").textContent, /Ship the new sidebar/);
-  assert.equal(document.querySelectorAll(".forge-task-card").length, 1);
-  assert.equal(document.querySelector(".workflow-switch"), null, "workflow follows the active surface without a duplicate toggle");
-  assert.equal(document.querySelector("#forgeEmpty .forge-logo img")?.tagName, "IMG");
-  assert.equal(document.querySelector("#forgeEmpty .forge-orbit"), null, "the placeholder orbit is removed");
-
-  document.querySelector('[data-cockpit-action="forge.executePreview"]').click();
-  assert.equal(JSON.stringify(messages.at(-1)), JSON.stringify({ type: "cockpit", message: { type: "forge.executePreview", auto: true } }));
-});
-
-test("a swarm task shows the diff and the files that will not be applied before Apply", () => {
-  const { window, messages, errors } = mountStartView();
-  window.dispatchEvent(new window.MessageEvent("message", {
-    data: {
-      type: "state",
-      state: {
-        mode: "review",
-        engine: { tone: "ready", detail: "Connected" },
-        workspace: { tone: "ready", detail: "Trusted" },
-        provider: { tone: "ready", detail: "Configured" },
-        ready: true,
-        readyReason: "Ready",
-        conversation: { sessionId: null, mode: null, jobStatus: "idle", running: false, items: [] },
-        forge: {
-          sessionId: "forge-session",
-          planId: "plan-9",
-          activeJobId: null,
-          planning: null,
-          plan: {
-            plan_id: "plan-9",
-            session_id: "forge-session",
-            status: "ready",
-            project_goal: "Parallel work",
-            summary: "",
-            warnings: [],
-            tasks: []
-          },
-          events: [],
-          diffs: [],
-          artifacts: [],
-          executePreview: null,
-          approvals: [],
-          review: null,
-          reviewBusy: false,
-          assets: []
-        },
-        swarm: {
-          supported: true,
-          sessionId: "swarm-session",
-          status: "review_pending",
-          busy: false,
-          cancellable: false,
-          tasks: [{
-            taskId: "task-7",
-            title: "Rewrite the parser",
-            state: "review_pending",
-            reviewable: true,
-            applied: false,
-            discarded: false,
-            diffAvailable: true,
-            diffArtifactId: "artifact-diff-7",
-            untrackedFilesNotApplied: ["scratch/notes.md", "scratch/tmp.json"],
-            untrackedNote: "New files created by the worker stay outside the diff."
-          }]
-        },
-        actionResults: [],
-        runtimeEvents: [],
-        commands: []
-      }
-    }
-  }));
-  window.dispatchEvent(new window.MessageEvent("message", { data: { type: "surface.show", surface: "forge" } }));
-
-  const document = window.document;
-  const task = document.querySelector(".swarm-task");
-  assert.match(task.textContent, /2 new files will NOT be applied/);
-  assert.match(task.textContent, /scratch\/notes\.md/);
-  assert.match(task.textContent, /stay outside the diff/);
-
-  const buttons = Array.from(task.querySelectorAll("button")) as any[];
-  assert.deepEqual(buttons.map((button) => button.textContent), ["View diff", "Apply", "Discard"]);
-  assert.ok(
-    task.querySelector(".swarm-untracked").compareDocumentPosition(buttons[1])
-      & window.Node.DOCUMENT_POSITION_FOLLOWING,
-    "the review information comes before Apply"
-  );
-
-  messages.length = 0;
-  buttons[0].click();
-  assert.equal(
-    JSON.stringify(messages.at(-1)),
-    JSON.stringify({
-      type: "cockpit",
-      message: { type: "forge.artifact.open", sessionId: "swarm-session", artifactId: "artifact-diff-7" }
-    })
-  );
-  assert.deepEqual(errors, []);
-});
-
-test("task and Forge onboarding use the bundled Alysis Code logo", () => {
+test("task onboarding uses the bundled Alysis Code logo", () => {
   const { window } = mountStartView();
   const provider = readFileSync(resolve(ROOT, "src/views/StartViewProvider.ts"), "utf8");
   assert.match(provider, /resources", "alysis-logo\.png"/);
   assert.equal(window.document.querySelector(".welcome-mark img")?.tagName, "IMG");
-  assert.equal(window.document.querySelector(".forge-logo img")?.tagName, "IMG");
 });
 
-test("the active surface routes Chat and Forge automatically", () => {
+test("every task goes to chat: there is no separate plan workflow or surface", () => {
   const { window, messages } = mountStartView();
   const document = window.document;
   assert.equal(document.querySelector("#welcomeTitle")?.textContent, "Alysis Code");
   assert.equal(document.querySelector("[data-workflow]"), null);
+  assert.equal(document.querySelector("#forgeSurface"), null);
 
   postState(window, { sessionId: null, mode: null, jobStatus: "idle", running: false, items: [] });
 
   document.querySelector("#taskInput").value = "Plan the release";
   window.dispatchEvent(new window.MessageEvent("message", { data: { type: "surface.show", surface: "forge" } }));
+  assert.equal(document.querySelector("#taskSurface").hidden, false, "an unknown surface keeps the conversation visible");
   document.querySelector("#taskForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   assert.equal(messages.at(-1)?.type, "task.submit");
-  assert.equal(messages.at(-1)?.workflow, "forge");
+  assert.equal("workflow" in messages.at(-1), false);
 });
 
 test("slash button opens the slash-command menu and never runs VS Code commands from it", () => {
@@ -1954,18 +1736,18 @@ test("slash button opens the slash-command menu and never runs VS Code commands 
         runtimeEvents: [],
         // The VS Code command catalog is not what the "/" menu lists any more…
         commands: [{
-          id: "alysis.showForge",
-          command: "alysis.showForge",
-          title: "Open Forge",
-          description: "Plan and review complex work.",
-          category: "Forge",
+          id: "alysis.showHistory",
+          command: "alysis.showHistory",
+          title: "Task History",
+          description: "Continue earlier work.",
+          category: "Alysis Code",
           mutates: false,
           available: true,
           unavailableReason: ""
         }],
         // …the real slash commands are.
         slashCommands: [
-          { command: "/forge plan", title: "Forge Plan", description: "Create a Forge plan.", usage: "/forge plan <instruction>", takesArgs: true }
+          { command: "/model", title: "Model", description: "Switch the model for this task.", usage: "/model <name>", takesArgs: true }
         ]
       }
     }
@@ -1974,10 +1756,10 @@ test("slash button opens the slash-command menu and never runs VS Code commands 
   window.document.querySelector(".slash-button").click();
   assert.equal(window.document.querySelector("#commandPalette").hidden, false);
   assert.equal(window.document.querySelectorAll(".command-row").length, 1);
-  assert.equal(window.document.querySelector(".command-row code").textContent, "/forge plan");
+  assert.equal(window.document.querySelector(".command-row code").textContent, "/model");
   window.document.querySelector(".command-row").click();
   assert.equal(messages.some((message: any) => message.type === "command"), false, "a slash row inserts text; it never dispatches a host command");
-  assert.equal(window.document.querySelector("#taskInput").value, "/forge plan ");
+  assert.equal(window.document.querySelector("#taskInput").value, "/model ");
   assert.equal(window.document.querySelector("#commandPalette").hidden, true);
 });
 

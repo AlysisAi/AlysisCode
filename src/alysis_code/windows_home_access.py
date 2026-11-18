@@ -9,8 +9,8 @@ of that kind was found and then failed.
 
 No tool is named here. A command is told where the person's home and roaming
 application data really are, and can read what programs keep there, never
-write it. That is the arrangement Codex uses, and the one Windows itself
-makes for a sandboxed app: the profile stays where it is, and the app gets a
+write it. That is the arrangement Windows itself makes for a sandboxed
+app: the profile stays where it is, and the app gets a
 local application data and a temp folder of its own.
 
 Left unreadable, because no toolchain needs them and they are the person's:
@@ -53,8 +53,7 @@ from pathlib import Path
 from .sensitive_paths import sensitive_path_category
 from .windows_path_tools import _plain
 
-# The first twelve are the folders Codex leaves out of the profile it makes
-# readable (windows-sandbox-rs, USERPROFILE_ROOT_EXCLUSIONS). The rest are
+# The first twelve are common credential folders in a user profile. The rest are
 # this engine's own state and the places Windows and common command line
 # tools keep credentials, in the profile or in the roaming application data.
 _CREDENTIAL_FOLDERS = frozenset(

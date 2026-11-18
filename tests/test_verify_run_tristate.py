@@ -19,7 +19,6 @@ from pathlib import Path
 
 from alysis_code.agent.acceptance_contract import _command_passed
 from alysis_code.session_metrics import score_session_events
-from alysis_code.verification_repair import run_verification_repair_loop
 from alysis_code.verify_gate import VerifyCommandResult, VerifyRunResult
 
 ARTIFACT = Path("/tmp/verify-artifact-unused.json")
@@ -106,35 +105,6 @@ def test_inconclusive_execution_is_not_a_pass_and_not_a_skip() -> None:
 
 
 # --- consumers -----------------------------------------------------------------
-
-
-def test_repair_loop_does_not_treat_not_run_as_green_or_repairable() -> None:
-    calls: list[int] = []
-
-    def attempt_repair(attempt_number: int, failing_result: object) -> object:
-        calls.append(attempt_number)
-        raise AssertionError("repair must not run for a not_run verification")
-
-    outcome = run_verification_repair_loop(
-        initial_result=_run([_skipped()]),
-        max_attempts=3,
-        attempt_repair=attempt_repair,  # type: ignore[arg-type]
-    )
-    assert calls == []
-    assert outcome.passed is False
-    assert outcome.repaired is False
-    assert outcome.exhausted is False
-    assert outcome.skipped_reason == "verification did not execute; nothing to repair"
-
-
-def test_repair_loop_still_short_circuits_on_a_real_pass() -> None:
-    outcome = run_verification_repair_loop(
-        initial_result=_run([_passed()]),
-        max_attempts=3,
-        attempt_repair=lambda *_: (_ for _ in ()).throw(AssertionError("no repair")),  # type: ignore[arg-type]
-    )
-    assert outcome.passed is True
-    assert outcome.skipped_reason is None
 
 
 def test_acceptance_command_passed_treats_not_run_as_unknown() -> None:

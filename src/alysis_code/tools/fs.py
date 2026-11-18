@@ -1320,11 +1320,11 @@ def _find_git_marker_root(path: Path, *, boundary: Path) -> Path | None:
 
 
 def _git_repo_root(root: Path, *, boundary: Path) -> Path | None:
-    from ..git_safe import build_git_process_env
-
     marker_root = _find_git_marker_root(root, boundary=boundary)
     if marker_root is None:
         return None
+    from ..git_safe import build_git_process_env
+
     try:
         cp = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--show-toplevel"],

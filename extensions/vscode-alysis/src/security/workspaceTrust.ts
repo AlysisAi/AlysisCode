@@ -3,8 +3,6 @@ export type TrustAction =
   | "configureProvider"
   | "runDoctor"
   | "readonlyPlaceholder"
-  | "forgePlan"
-  | "forgeExecute"
   | "mutatingAction";
 
 export interface TrustGateResult {
@@ -26,8 +24,6 @@ export function evaluateWorkspaceTrust(isTrusted: boolean, action: TrustAction):
     case "runDoctor":
     case "readonlyPlaceholder":
       return { allowed: true };
-    case "forgePlan":
-    case "forgeExecute":
     case "mutatingAction":
       return {
         allowed: false,

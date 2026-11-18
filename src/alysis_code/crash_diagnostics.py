@@ -263,7 +263,7 @@ def build_error_event_fields(
     - ``error_summary``: the message, secret-redacted and length-bounded via the
       shared :func:`sanitize_error_summary`,
     - ``failure_category``: a real :class:`FailureCategory` (never the legacy
-      ``"llm_error"`` literal) so the cause joins across chat/run and Forge artifacts,
+      ``"llm_error"`` literal) so the cause joins across chat/run artifacts,
     - ``provider_status_code``: the HTTP status when one can be recovered.
 
     Safe to call from inside a failure path: it never raises.

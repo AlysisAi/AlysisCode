@@ -421,8 +421,8 @@ def test_picker_rows_wrap_long_description_capped_and_full_width():
 def test_picker_rows_tag_override_replaces_current_tag():
     # A row's "tag" key overrides the "(current)" tag text: "(default)" renders
     # in the tag slot, and an explicit empty tag suppresses the tag even on a
-    # row flagged current (the Forge launch gate relies on both — its focused
-    # row must not echo a redundant "(current)" next to the highlight band).
+    # row flagged current (a focused launch row must not echo a redundant
+    # "(current)" next to the highlight band).
     from alysis_code.cli_impl.tui.app import _render_picker_rows
 
     rows = [
@@ -581,7 +581,7 @@ def test_float_bodies_build_rows_at_their_own_content_width(monkeypatch):
             )
 
 
-def test_forge_planner_picker_renders_clean_at_95_columns():
+def test_picker_with_wrapping_descriptions_renders_clean_at_95_columns():
     # The reported break, pinned. At 95 columns the picker window is 74 wide, but
     # the rows were built at the help panel's 79 — so "…together before" ran 5
     # columns past the edge and prompt_toolkit re-wrapped it as "…together b" /
@@ -594,14 +594,14 @@ def test_forge_planner_picker_renders_clean_at_95_columns():
 
     rows = [
         {
-            "label": "Yes — use the planner assistant",
+            "label": "Yes — draft the plan together",
             "description": "Draft and refine the plan together before building.",
             "value": "yes",
             "current": True,
         },
         {
             "label": "No — plan it myself",
-            "description": "Enter Forge and shape the plan with /goal and /task.",
+            "description": "Write the plan yourself and ask for a review later.",
             "value": "no",
         },
     ]

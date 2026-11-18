@@ -14,26 +14,28 @@ import os
 import stat
 import sys
 from dataclasses import replace
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 from .project_folders import allowed_roots, containing_root, folder_scope, validate_worker_folders
 
-READ_TOOLS = frozenset(
-    {
-        "fs_read",
-        "fs_list",
-        "search_rg",
-        "symbol_search",
-        "repo_map",
-        "test_discover",
-        "git_diff",
-        "git_history",
-        "git_status",
-        "git_shell_inspect",
-        "mutation_snapshot",
-    }
-)
+# Each worker handles one request. Load only its implementation so a file
+# listing does not pay for importing Git and test discovery at every launch.
+_GIT_READER = ".tools.git_readonly" if os.name == "nt" else ".tools.git"
+_READ_MODULES = {
+    "fs_read": ".tools.fs",
+    "fs_list": ".tools.fs",
+    "search_rg": ".tools.search",
+    "symbol_search": ".tools.symbols",
+    "repo_map": ".tools.repo_map",
+    "test_discover": ".tools.test_discovery",
+    "git_diff": _GIT_READER,
+    "git_history": _GIT_READER,
+    "git_status": _GIT_READER,
+    "git_shell_inspect": ".git_shell_inspection",
+}
+READ_TOOLS = frozenset((*_READ_MODULES, "mutation_snapshot"))
 
 
 def mutation_snapshot(*, root: Path) -> dict[str, Any]:
@@ -93,7 +95,6 @@ def execute_write(name: str, arguments: dict[str, Any], root: Path) -> dict[str,
         write_prepared_fs_edit,
         write_prepared_fs_write,
     )
-    from .tools.git import git_apply_patch
 
     if name not in WRITE_TOOLS or not isinstance(arguments, dict):
         raise ValueError("Invalid contained mutation request")
@@ -120,6 +121,8 @@ def execute_write(name: str, arguments: dict[str, Any], root: Path) -> dict[str,
         prepared = PreparedFsEdit(root_obj=root, path_obj=target, **args)
         return write_prepared_fs_edit(prepared, root=root)
     if name == "git_apply_patch":
+        from .tools.git import git_apply_patch
+
         for item in args.pop("preconditions", []):
             assert_file_precondition(root=root, precondition=FilePrecondition(**item))
         return git_apply_patch(root=root, isolated_object_store=True, **args)
@@ -133,36 +136,12 @@ def execute_write(name: str, arguments: dict[str, Any], root: Path) -> dict[str,
 
 
 def execute(name: str, arguments: dict[str, Any], root: Path) -> dict[str, Any]:
-    from .tools.fs import fs_list, fs_read
-    from .tools.git import git_diff, git_history, git_status
-    from .tools.repo_map import repo_map
-    from .tools.search import search_rg
-    from .tools.symbols import symbol_search
-    from .tools.test_discovery import test_discover
-
-    if os.name == "nt":
-        # This worker already has read-only OS grants. Avoid Git for Windows'
-        # incompatible directory opens, without a failed call or write fallback.
-        from .tools.git_readonly import git_diff, git_history, git_status
-
-    from .git_shell_inspection import git_shell_inspect
-
-    readers = {
-        "fs_read": fs_read,
-        "fs_list": fs_list,
-        "search_rg": search_rg,
-        "symbol_search": symbol_search,
-        "repo_map": repo_map,
-        "test_discover": test_discover,
-        "git_diff": git_diff,
-        "git_history": git_history,
-        "git_status": git_status,
-        "git_shell_inspect": git_shell_inspect,
-        "mutation_snapshot": mutation_snapshot,
-    }
-    if name not in readers or not isinstance(arguments, dict) or "root" in arguments:
+    if name not in READ_TOOLS or not isinstance(arguments, dict) or "root" in arguments:
         raise ValueError("Invalid contained read request")
-    function = readers[name]
+    if name == "mutation_snapshot":
+        function = mutation_snapshot
+    else:
+        function = getattr(import_module(_READ_MODULES[name], __package__), name)
     # path_base is already resolved by main's tool wrapper. Never forward unknown
     # keywords or a caller-supplied host root into a reader.
     accepted = set(inspect.signature(function).parameters) - {"root"}
@@ -200,6 +179,13 @@ def inspect_with_opaque_files(request: dict[str, Any], root: Path) -> dict[str, 
 
 def main() -> int:
     try:
+        if os.name == "nt" and "ALYSIS_MXC_FILE_WORKER_LOCALAPPDATA" in os.environ:
+            # AppContainer rewrites TEMP/TMP at process creation. Restore
+            # the launcher's locations before starting file tools or children.
+            os.environ["TEMP"] = os.environ["TMP"] = os.environ["TMPDIR"]
+            scratch_local = os.environ.pop("ALYSIS_MXC_FILE_WORKER_LOCALAPPDATA")
+            if scratch_local:
+                os.environ["LOCALAPPDATA"] = scratch_local
         if len(sys.argv) == 4 and sys.argv[1] == "--request-file":
             # The expected digest travels in the launch command, not in the
             # workspace packet. A racing writer cannot change the approved input.

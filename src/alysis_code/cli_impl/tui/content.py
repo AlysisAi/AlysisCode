@@ -18,7 +18,7 @@ CREDIT_TEXT = "crafted by AlysisAI"
 WELCOME_SEPARATOR = "  ·  "
 HINT_TEXT = WELCOME_SEPARATOR.join(
     (
-        "/forge for an autonomous run",
+        "/resume for past sessions",
         "@ for file paths",
         "tab to switch persona",
         "/help for everything",
@@ -28,9 +28,6 @@ HINT_TEXT = WELCOME_SEPARATOR.join(
 # switches to the shorter follow-up placeholder below.
 INPUT_PLACEHOLDER = "I'm Alysis Code, your coding buddy — how can I help you?"
 INPUT_PLACEHOLDER_FOLLOWUP = "Message Alysis Code…"
-# Forge planning session: nudge the forge verbs (and that plain text becomes a
-# requirement) so the input reads as the plan editor it now is.
-INPUT_PLACEHOLDER_FORGE = "Forge — /goal · /task · /show · /execute plan · /done"
 
 # Tokens that should keep a specific casing instead of naive title-casing.
 _ACRONYMS = {
@@ -169,7 +166,6 @@ __all__ = [
     "HINT_TEXT",
     "INPUT_PLACEHOLDER",
     "INPUT_PLACEHOLDER_FOLLOWUP",
-    "INPUT_PLACEHOLDER_FORGE",
     "WELCOME_SEPARATOR",
     "heading_fragments",
     "hint_fragments",

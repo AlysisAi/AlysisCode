@@ -441,68 +441,27 @@ def test_same_evidence_cannot_get_new_repair_budget_from_stage_label():
 def test_server_command_completion_is_not_task_verification():
     from alysis_code.server.worker_runner import job_task_outcome
 
-    command_event = {"event": "run_completed", "data": {"ok": True, "exit_code": 0}}
-    result = job_task_outcome(status="succeeded", exit_code=0, event=command_event)
+    result = job_task_outcome(status="succeeded", exit_code=0)
     assert result["outcome"] == "completed_unverified"
     assert result["verified_success"] is False
-    positive = task_outcome_record(
-        exit_code=0,
-        reason="completed",
-        state={
-            "material_edit_count": 1,
-            "completion_certificate": {"status": "SUFFICIENT"},
-            "accepted_verification_evidence": [{"evidence_category": "HOST_AUTHORITATIVE"}],
-        },
-    )
-    command_event["data"]["task_outcome"] = positive
-    assert job_task_outcome(status="succeeded", exit_code=0, event=command_event)[
-        "verified_success"
-    ]
-    assert not job_task_outcome(status="cancelled", exit_code=0, event=command_event)[
-        "verified_success"
-    ]
-    assert not job_task_outcome(status="running", exit_code=None, event=command_event)[
-        "verified_success"
-    ]
+    running = job_task_outcome(status="running", exit_code=None)
+    assert running["terminal"] is False
+    assert running["verified_success"] is False
 
 
 @pytest.mark.parametrize(
-    "reason", ["provider_failure", "deadline_exhausted", "cancelled", "blocked"]
+    ("status", "exit_code"), [("failed", 1), ("failed", None), ("cancelled", 0), ("cancelled", 1)]
 )
-def test_failed_server_job_preserves_recorded_task_failure_and_identity(reason):
+def test_failed_or_cancelled_server_job_never_reports_success(status, exit_code):
     from alysis_code.server.worker_runner import job_task_outcome
 
-    record = task_outcome_record(
-        exit_code=1,
-        reason=reason,
-        task_id="current-task",
-        state={"verification_relevant_edit_generation": 7},
-    )
-    event = {"event": "run_completed", "data": {"ok": False, "task_outcome": record}}
-    result = job_task_outcome(status="failed", exit_code=1, event=event)
-    assert result == record
-
-
-def test_server_cancellation_and_failed_worker_override_success_without_losing_identity():
-    from alysis_code.server.worker_runner import job_task_outcome
-
-    record = task_outcome_record(
-        exit_code=0,
-        reason="completed",
-        task_id="current-task",
-        state={
-            "completion_certificate": {"status": "SUFFICIENT"},
-            "accepted_verification_evidence": [{}],
-            "verification_relevant_edit_generation": 3,
-            "material_edit_count": 1,
-        },
-    )
-    event = {"event": "run_completed", "data": {"ok": True, "task_outcome": record}}
-    for status, outcome in [("cancelled", "cancelled"), ("failed", "incomplete")]:
-        result = job_task_outcome(status=status, exit_code=1, event=event)
-        assert result["outcome"] == outcome and not result["verified_success"]
-        assert result["task_id"] == "current-task" and result["generation"] == 3
-    assert record["verified_success"] is True
+    result = job_task_outcome(status=status, exit_code=exit_code)
+    assert result["terminal"] is True
+    assert result["verified_success"] is False
+    if status == "cancelled":
+        assert (result["outcome"], result["reason"]) == ("cancelled", "cancelled")
+    else:
+        assert (result["outcome"], result["reason"]) == ("incomplete", "worker_failed")
 
 
 def test_passing_read_only_checks_are_reported_without_claiming_whole_task_success():

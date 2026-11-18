@@ -72,7 +72,9 @@ def installed_tools() -> dict[str, tuple[Path, Path]]:
             raise ValueError("Bundled Git file inventory changed")
         for relative, digest in manifest["files"].items():
             path = _local_path(root / relative, directory=False)
-            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            with path.open("rb") as binary:
+                actual_digest = hashlib.file_digest(binary, "sha256").hexdigest()
+            if actual_digest != digest:
                 raise ValueError("Bundled Git file integrity check failed: " + relative)
         result["git"] = (root / "cmd/git.exe", root)
     signer_root = Path(__file__).parent / "assets/git-sign"

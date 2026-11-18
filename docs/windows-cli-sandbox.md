@@ -30,6 +30,13 @@ Desktop installation. `sandbox doctor` checks the helper, runs a real command,
 tests outside read/write denials and exercises the contained file worker.
 `sandbox doctor --no-smoke` only checks helper identity and host capability.
 
+MXC starts the engine's built-in file worker directly for file reads and
+approved mutations. The worker uses the request's workspace grants, denials
+and offline network policy. A write or edit uses the same fixed runtime as a
+read, with a writable project and private scratch space. Stop waits for its
+owned process family to exit. Shell commands use host PATH discovery and
+start Windows PowerShell with the execution policy queried for that request.
+
 The current helper requires Windows x64 with MXC/PSEC support and local fixed
 NTFS workspace paths. Unsupported versions, ARM64, UNC paths, reparse points,
 shared hardlinks and a project inside the engine's trusted runtime are refused.
@@ -90,9 +97,9 @@ files, caches and "throwaway" environments landed among the person's files,
 and there was no home at all: `$HOME` was empty, `~` did not resolve and
 Python's `Path.home()` raised.
 
-A command that cannot write (read-only access) and the engine's own fixed
-workers (contained Git, the file workers) get no scratch folder. They keep
-the working directory as their temp folder, as before.
+Read-only commands and workers launched with a read-only base, including
+contained Git, use their working directory as their temp folder. Approved
+file mutations use the writable runner's scratch folder.
 
 If the scratch folder cannot be prepared (no `LOCALAPPDATA`, or it lies
 behind a link or on a volume the sandbox refuses), the command runs with the
@@ -183,9 +190,8 @@ card: `cargo test`, the edit, `cargo test` again.
 
 No tool is named in the engine for this. A command is told where the
 person's home and roaming application data really are, and can read what
-programs keep there, never write it. Codex does the same (it leaves the
-whole disk readable and the environment as it is), and so does Windows for
-a sandboxed app: the profile stays where it is and the app gets a local
+programs keep there, never write it. Windows does the same for a sandboxed
+app: the profile stays where it is and the app gets a local
 application data and a temp folder of its own.
 
 Readable, never writable:
@@ -202,8 +208,8 @@ read. Windows' own folders are no evidence either.
 
 Left unreadable, in every one of those places:
 
-- **Credential folders and files, by name.** The twelve folders Codex leaves
-  out of the profile (`.ssh`, `.tsh`, `.brev`, `.gnupg`, `.aws`, `.azure`,
+- **Credential folders and files, by name.** Twelve common credential folders
+  in the profile (`.ssh`, `.tsh`, `.brev`, `.gnupg`, `.aws`, `.azure`,
   `.kube`, `.docker`, `.config`, `.npm`, `.pki`, `.terraform.d`), this
   engine's own, `.mcp-auth`, and `Microsoft`, `gnupg`, `gh`, `GitHub CLI`
   and `gcloud` in the roaming data. Directly inside a readable folder, every
@@ -359,8 +365,8 @@ changes:
 it was looked at, and a hard-linked file or a link anywhere inside refused
 the folder. The legacy helper needs that: it grants access by changing
 permissions, and a hard-linked file has one set of permissions for all its
-names. This sandbox decides by path and changes no permissions, and Codex
-has no such rule. The folder is granted as it is. Two things follow, both
+names. This sandbox decides by path and changes no permissions, so it needs
+no such rule. The folder is granted as it is. Two things follow, both
 tested in the real sandbox:
 
 - What lies behind a link is decided where it lies. A link in the project
@@ -382,8 +388,8 @@ there for the agent or for Git to trust later. A folder a command is let
 write with `permissions.write_folders` was treated the same, and the eleven
 reserved entries appeared among the person's files for as long as the
 command ran. In such a folder nothing is reserved now. What exists of those
-names there stays read-only; what does not exist can be created, as in
-Codex, and stays: a command can make an `AGENTS.md` or a `.git` in a folder
+names there stays read-only; what does not exist can be created, and
+stays: a command can make an `AGENTS.md` or a `.git` in a folder
 the person let it write. The project itself and the folders attached to the
 session keep every reserved name.
 
@@ -411,8 +417,8 @@ Still not reachable from the sandbox, measured, and the model is told so:
 | Text to speech (`System.Speech`) | Fails |
 | Zip and unzip, CSV, file hashes, date and time zone, the registry's list of installed programs, `whoami`, `ipconfig`, a web request with `permissions.network` | Work |
 
-There is no way yet to run one such command outside the sandbox on request,
-as Codex's "escalate" does. A task that needs the clipboard, an Office
+There is no way yet to run one such command outside the sandbox on request
+(an escalation). A task that needs the clipboard, an Office
 program or a service cannot be done by a sandboxed command.
 
 ### What it is told about the computer
@@ -620,7 +626,7 @@ line 1, so a command's first line is reported as line 2.
 
 ## Commands in the sandbox follow the mode
 
-The sandbox is the boundary for a command, as it is in Codex. A command that
+The sandbox is the boundary for a command. A command that
 runs inside the MXC sandbox follows the mode: in "Approve for me" and with
 `--yes` it runs without a card, and in "Ask for approval" it gets the ordinary
 card, which can be allowed for the session. What a command needs beyond the
@@ -682,8 +688,7 @@ and the agent left 1,862 files of a throwaway environment in the project
 because it had no way to remove a folder.
 
 In this sandbox the command can delete only inside the approved folders and
-its own scratch folder. So the question is the mode's, as a forced delete is
-in Codex: the reviewer decides it in "Approve for me", the person in "Ask for
+its own scratch folder. So the question is the mode's: the reviewer decides it in "Approve for me", the person in "Ask for
 approval". It is decided every time: `--yes` does not waive it, it cannot be
 allowed for the session, and access that was reviewed for the same command
 (network, a folder) does not count as a decision about the delete. Without
@@ -986,8 +991,8 @@ reasons for a card: a card on every command did not make them safer.
 One more limit is not specific to this sandbox: a repository whose
 configuration points Git at files in the working tree (`core.hooksPath`, an
 `include.path`) lets any command that can write the project change what Git
-runs later on the host. Protecting `.git` does not cover that, here or in
-Codex.
+runs later on the host. Protecting `.git` does not cover that, in any
+sandbox.
 
 `windows_mxc_containment.py` lists these four, and one probe test fails when
 that list and the sandbox disagree in either direction. Closing the first
@@ -997,49 +1002,50 @@ app container is refused on the path the helper uses, and that dropping the
 `registryRead` capability changes nothing. The fourth needs the helper to
 deny a name wherever it appears.
 
-### How this compares with Codex
+### How this compares with a reference sandbox
 
-Read from the Codex source (not run), November 2026. With its default
-approval policy and a restricted sandbox, Codex runs a command in the sandbox
-without asking, and asks only when the model requests to leave the sandbox or
-the command matches a dangerous pattern; a reviewer model can answer those
-requests instead of the person. That is the behaviour this change brings to
-Windows.
+The reference is another coding agent's Windows sandbox, read from its source
+(not run), November 2026. With its default approval policy and a restricted
+sandbox, it runs a command in the sandbox without asking, and asks only when
+the model requests to leave the sandbox or the command matches a dangerous
+pattern; a reviewer model can answer those requests instead of the person.
+Here, too, a command in the sandbox follows the mode, because the sandbox is
+the boundary.
 
-The boundary itself is at least as tight here. Codex's Windows sandbox leaves
+The boundary itself is at least as tight here. The reference sandbox leaves
 the whole disk readable and its unelevated mode blocks networking through
 environment variables only; neither mode handles Credential Manager, DPAPI,
 `HKCU` or pipes. It protects the top-level `.git` that exists at launch and
 follows a `gitdir:` pointer, and has no rule for a repository in a subfolder,
 which is the fourth limit above.
 
-Two differences remain on purpose and are the owner's to decide: Codex has no
-rule that a push needs a person (its reviewer may approve one), and it
-treats networking the launcher turned on like any other sandbox setting.
-For other Git writes the two now differ the other way round: Codex keeps
-the whole `.git` read-only, so a commit there is a request to leave the
-sandbox, and here a commit runs inside it.
+Two differences remain on purpose and are the owner's to decide: the
+reference sandbox has no rule that a push needs a person (its reviewer may
+approve one), and it treats networking the launcher turned on like any other
+sandbox setting. For other Git writes the two differ the other way round:
+the reference sandbox keeps the whole `.git` read-only, so a commit there is
+a request to leave the sandbox, and here a commit runs inside it.
 
-Codex passes the person's PATH on unchanged, and with the whole disk readable
-every program on it runs. Here the PATH's own folders, the tool folders of
+The reference sandbox passes the person's PATH on unchanged, and with the
+whole disk readable every program on it runs. Here the PATH's own folders, the tool folders of
 the home and of the roaming data, and Program Files are readable and the
 rest of the disk is not. A program that keeps its files anywhere else (a
 toolchain on another drive, a version manager in the local application
 data) does not run until that folder is requested.
 
-Codex gives a command the person's real home to read and the person's real
-temp folder to write. Here the home is the person's as well, without the
-credential folders Codex's elevated Windows sandbox leaves out too, and
-without more that Codex leaves readable: the person's documents, browser
+The reference sandbox gives a command the person's real home to read and the
+person's real temp folder to write. Here the home is the person's as well,
+without the common credential folders, and without more that the reference
+sandbox leaves readable: the person's documents, browser
 and chat-app profiles, other agents' homes, and the application data of
 programs that are not on the PATH. The temp folder and the local application
 data are the command's own, so nothing a command leaves there is found by
-another program. Codex sets nothing up for a single language either. Where
+another program. Neither sets anything up for a single language. Where
 a toolchain has to write in the home, its model asks to leave the sandbox;
 here the model asks for that one folder.
 
 One consequence to know: a folder request is decided by the access review
-alone, as an escalation is in Codex. In "Approve for me" that is the
+alone, as an escalation is. In "Approve for me" that is the
 reviewer, also for a folder that holds a secret or one that Windows runs
 programs from at sign-in. Exact read files keep the person; folders do not,
 unless the path is on the engine's list of sensitive locations.

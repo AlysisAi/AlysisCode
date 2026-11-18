@@ -19,14 +19,8 @@ ARGS = ["auth", "status", "openai-codex", "--json"]
 HEAVY = (
     "alysis_code.agent",
     "alysis_code.agent_loop",
-    "alysis_code.cli_impl.forge",
-    "alysis_code.cli_impl.commands.forge",
-    "alysis_code.forge_host",
-    "alysis_code.forge_host_cli",
-    "alysis_code.forge_host_client",
     "alysis_code.ide.stdio_bridge",
     "alysis_code.assets",
-    "alysis_code.conflict_auto_resolver",
     "alysis_code.cli_impl.commands.cli_surface",
 )
 
@@ -197,7 +191,6 @@ def test_status_default_and_aliased_entrypoints(tmp_path, entry):
         ["auth", "status", "--json", "openai-codex"],
         ["auth", "status", "openai-codex", "--json", "--help"],
         ["auth", "nonsense"],
-        ["--version"],
         ["--help"],
         ["auth", "status", "--json", "--bad-option"],
     ],

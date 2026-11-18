@@ -47,34 +47,20 @@ test("parseHealthJson accepts bridge health with only baseline Cockpit methods",
   const withoutOptional = parseHealthJson(JSON.stringify(healthPayload()));
   assert.deepEqual(missingRequiredMethods(withoutOptional.capabilities.methods), []);
   assert.equal(hasBridgeMethod(withoutOptional.capabilities, "chat.send"), false);
-  assert.equal(hasBridgeMethod(withoutOptional.capabilities, "forge.plan"), false);
+  assert.equal(hasBridgeMethod(withoutOptional.capabilities, "code.review.start"), false);
 });
 
-test("parseHealthJson treats Chat, Forge, diff, and management methods as optional feature methods", () => {
+test("parseHealthJson treats Chat, review, and management methods as optional feature methods", () => {
   const withOptional = parseHealthJson(
     JSON.stringify(
       healthPayload({
         capabilities: {
           ...(healthPayload().capabilities as Record<string, unknown>),
-          methods: [...REQUIRED_BRIDGE_METHODS, ...OPTIONAL_BRIDGE_METHODS],
-          features: {
-            forge: {
-              plan: { supported: true },
-              execute: { supported: false, behavior: "fail_closed" }
-            },
-            diffs: { supported: true, opaque_ids: true }
-          }
+          methods: [...REQUIRED_BRIDGE_METHODS, ...OPTIONAL_BRIDGE_METHODS]
         }
       })
     )
   );
-  assert.equal(hasBridgeMethod(withOptional.capabilities, "forge.plan"), true);
-  assert.equal(hasBridgeMethod(withOptional.capabilities, "forge.plan.start"), true);
-  assert.equal(hasBridgeMethod(withOptional.capabilities, "forge.plan.result"), true);
-  assert.equal(hasBridgeMethod(withOptional.capabilities, "forge.executePreview"), true);
-  assert.equal(hasBridgeMethod(withOptional.capabilities, "forge.swarm.resume"), true);
-  assert.equal(hasBridgeMethod(withOptional.capabilities, "forge.swarm.list"), true);
-  assert.equal(hasBridgeMethod(withOptional.capabilities, "diff.get"), true);
   assert.equal(hasBridgeMethod(withOptional.capabilities, "chat.queue.list"), true);
   assert.equal(hasBridgeMethod(withOptional.capabilities, "checkpoint.revert"), true);
   assert.equal(hasBridgeMethod(withOptional.capabilities, "permission.evaluate"), true);

@@ -352,10 +352,8 @@ function baseConfig(cliPath = ""): AlysisConfig {
     provider: "",
     transport: "stdio",
     sandboxProfile: "default",
-    forgeExecuteNoLog: false,
     showStatusBar: true,
     autoStartBridge: false,
-    enableForge: true,
     security: {
       isWorkspaceTrusted: true,
       ignoredWorkspaceSettings: [],

@@ -104,8 +104,7 @@ class ContainedReadTools:
         if len(raw) > MAX_REQUEST_BYTES:
             raise ConfigError("Contained read request is too large; narrow the request")
         encoded = base64.b64encode(raw).decode("ascii")
-        argv = [*_worker_argv(), encoded]
-        return self._invoke(argv, write=False, cancel_check=cancel_check, timeout_s=timeout_s)
+        return self._invoke([encoded], write=False, cancel_check=cancel_check, timeout_s=timeout_s)
 
     def run_write(
         self,
@@ -122,13 +121,8 @@ class ContainedReadTools:
         raw = self._request(name, arguments)
         with stage_packet(self.root, raw) as packet:
             # Use cwd-relative names: bubblewrap's primary root is /workspace.
-            argv = [
-                *_worker_argv(),
-                "--request-file",
-                packet.name,
-                hashlib.sha256(raw).hexdigest(),
-            ]
-            return self._invoke(argv, write=True, cancel_check=cancel_check, timeout_s=timeout_s)
+            args = ["--request-file", packet.name, hashlib.sha256(raw).hexdigest()]
+            return self._invoke(args, write=True, cancel_check=cancel_check, timeout_s=timeout_s)
 
     def _request(self, name: str, arguments: dict[str, Any]) -> bytes:
         request: dict[str, Any] = {"tool": name, "arguments": arguments}
@@ -142,20 +136,13 @@ class ContainedReadTools:
         return json.dumps(request, ensure_ascii=True).encode()
 
     def _invoke(
-        self, argv: list[str], *, write: bool, cancel_check, timeout_s: int
+        self, arguments: list[str], *, write: bool, cancel_check, timeout_s: int
     ) -> dict[str, Any]:
         choice = select_shell_sandbox_backend(self.settings)
         if choice.backend not in {"windows-mxc", "windows-native", "bwrap", "seatbelt"}:
             raise ConfigError(
                 "No qualified contained file worker is available; no host fallback was used"
             )
-        if choice.backend in {"windows-mxc", "windows-native"}:
-            from .windows_sandbox import powershell_literal
-
-            command = "& " + " ".join("'" + powershell_literal(item) + "'" for item in argv)
-            command += "; exit $LASTEXITCODE"
-        else:
-            command = shlex.join(argv)
         if write:
             if self.write_runner is None:
                 self.write_runner = build_shell_runner_from_settings(
@@ -166,13 +153,30 @@ class ContainedReadTools:
             if self.runner is None:
                 self.runner = build_shell_runner_from_settings(self.settings, self.root)
             runner = self.runner
-        completed = runner.run(
-            root=self.root,
-            cwd=self.root,
-            cmd=command,
-            timeout_s=max(1, min(timeout_s, 30)),
-            cancel_check=cancel_check,
-        )
+        budget = max(1, min(timeout_s, 30))
+        if choice.backend == "windows-mxc":
+            run_worker = getattr(runner, "run_file_worker", None)
+            if run_worker is None:
+                raise ConfigError("The selected sandbox cannot directly launch the file worker.")
+            completed = run_worker(
+                root=self.root, arguments=arguments, timeout_s=budget, cancel_check=cancel_check
+            )
+        else:
+            argv = [*_worker_argv(), *arguments]
+            if choice.backend == "windows-native":
+                from .windows_sandbox import powershell_literal
+
+                command = "& " + " ".join("'" + powershell_literal(item) + "'" for item in argv)
+                command += "; exit $LASTEXITCODE"
+            else:
+                command = shlex.join(argv)
+            completed = runner.run(
+                root=self.root,
+                cwd=self.root,
+                cmd=command,
+                timeout_s=budget,
+                cancel_check=cancel_check,
+            )
         if len(completed.stdout) > MAX_RESULT_BYTES + 256:
             raise ConfigError("Contained read returned an oversized result")
         try:

@@ -84,9 +84,7 @@ test("Start Here accepts only bounded tasks, safe modes, and known actions", () 
   assert.equal(isStartViewMessage({ type: "task.submit", instruction: "Explain this project", mode: "readonly", requestId: "r-1" }), true);
   assert.equal(isStartViewMessage({ type: "task.submit", instruction: "Update the UI", mode: "review", requestId: "r-2" }), true);
   assert.equal(isStartViewMessage({ type: "task.submit", instruction: "Run the task", mode: "auto", requestId: "r-3" }), true);
-  assert.equal(isStartViewMessage({ type: "task.submit", instruction: "Plan the feature", mode: "review", workflow: "forge", requestId: "r-4" }), true);
   assert.equal(isStartViewMessage({ type: "task.submit", instruction: "Missing correlation", mode: "review" }), false);
-  assert.equal(isStartViewMessage({ type: "task.submit", instruction: "Plan the feature", mode: "review", workflow: "unknown" }), false);
   assert.equal(isStartViewMessage({ type: "task.submit", instruction: "   ", mode: "review" }), false);
   assert.equal(isStartViewMessage({ type: "task.submit", instruction: "x", mode: "fullaccess" }), false);
   assert.equal(isStartViewMessage({ type: "task.submit", instruction: "x".repeat(20001), mode: "review" }), false);
@@ -101,11 +99,12 @@ test("Start Here accepts only bounded tasks, safe modes, and known actions", () 
   assert.equal(isStartViewMessage({ type: "session", action: "delete", sessionId: "session-1" }), false);
   assert.equal(isStartViewMessage({ type: "session", action: "resume", sessionId: "" }), false);
   assert.equal(isStartViewMessage({ type: "session", action: "resume", sessionId: "x".repeat(1025) }), false);
-  assert.equal(isStartViewMessage({ type: "command", command: "alysis.showForge" }), true);
+  assert.equal(isStartViewMessage({ type: "command", command: "alysis.showHistory" }), true);
+  assert.equal(isStartViewMessage({ type: "command", command: "alysis.showForge" }), false);
   assert.equal(isStartViewMessage({ type: "command", command: "alysis.manage.remove" }), false);
   assert.equal(isStartViewMessage({ type: "command", command: "workbench.action.closeWindow" }), false);
-  assert.equal(isStartViewMessage({ type: "cockpit", message: { type: "forge.executePreview", auto: true } }), true);
-  assert.equal(isStartViewMessage({ type: "cockpit", message: { type: "forge.diff.open", diffId: "" } }), false);
+  assert.equal(isStartViewMessage({ type: "cockpit", message: { type: "mode.set", mode: "review" } }), true);
+  assert.equal(isStartViewMessage({ type: "cockpit", message: { type: "forge.executePreview", auto: true } }), false);
   assert.equal(isStartViewMessage({ type: "action", action: "setup" }), false);
   assert.equal(isStartViewMessage({ type: "action", action: "unknown" }), false);
 });
@@ -130,7 +129,7 @@ test("Cockpit Git changes dispatches to the same structured-review handler as th
   const provider = new StartViewProvider(
     {} as any, () => ({} as any), () => ({} as any), () => ({} as any), () => true,
     () => ({} as any), () => ({ sessions: [], activeSessionId: undefined }),
-    async () => false, async () => false, async () => undefined, async () => undefined, async () => undefined,
+    async () => false, async () => undefined, async () => undefined, async () => undefined,
     () => readyModels(), { worktreeAction: async (action: "new" | "move" | "review") => { if (action === "review") await reviewGitChanges(); } } as any
   );
   provider.resolveWebviewView({
@@ -153,31 +152,13 @@ test("Cockpit Git changes dispatches to the same structured-review handler as th
   } finally { provider.dispose(); }
 });
 
-test("Start Here keeps Stop available for a running swarm after startup is no longer busy", () => {
-  const commands = buildCommandCatalog({
+test("Start Here gates session tools on an active chat session and omits unsupported actions", () => {
+  const noSession = {
     sessionId: null,
     jobStatus: "idle",
-    cockpit: {
-      forge: { sessionId: "session-1", planId: "plan-1", activeJobId: null },
-      swarm: { busy: false, jobId: "swarm-job-1", status: "running" }
-    }
-  } as any, true);
-
-  const stop = commands.find((item) => item.command === "alysis.cancelCurrentRun");
-  assert.equal(stop?.available, true);
-  assert.equal(stop?.unavailableReason, "");
-});
-
-test("Start Here never treats a Forge session as an active chat session and omits unsupported actions", () => {
-  const forgeOnly = {
-    sessionId: null,
-    jobStatus: "idle",
-    cockpit: {
-      forge: { sessionId: "forge-session", planId: null, activeJobId: null },
-      swarm: { busy: false, jobId: null, status: "idle" }
-    }
+    cockpit: { actionResults: [] }
   } as any;
-  const commands = buildCommandCatalog(forgeOnly, true, (actionId) => actionId !== "session.status");
+  const commands = buildCommandCatalog(noSession, true, (actionId) => actionId !== "session.status");
 
   const sessionTools = commands.find((item) => item.command === "alysis.sessionActions");
   assert.equal(sessionTools?.available, false);
@@ -224,7 +205,6 @@ test("Start Here catches rejected async actions and releases the composer", asyn
     async () => {
       throw new Error("backend failed");
     },
-    async () => true,
     async () => undefined,
     async () => undefined,
     async () => undefined,
@@ -248,7 +228,7 @@ test("pending images are read on restore, image actions, and turn changes; stale
     compatibility: { protocol: { current: "1", compatible: true, direction: "aligned" }, features: {} }, events: []
   };
   const cockpit: any = { sessionId: "images-1", mode: "review", jobStatus: "idle", items: [],
-    cockpit: { forge: {}, swarm: {}, actionResults: [] } };
+    cockpit: { actionResults: [] } };
   const reads: Array<{ sessionId: string; resolve(value: unknown): void }> = [];
   const posted: any[] = [];
   let receive: ((message: unknown) => void) | undefined;
@@ -260,7 +240,7 @@ test("pending images are read on restore, image actions, and turn changes; stale
   const provider = new StartViewProvider({} as any, () => runtime,
     () => ({ defaultMode: "review", provider: "", baseUrl: "", defaultModel: "" } as any),
     () => ({ supported: true, activeProfile: "", profiles: [] } as any), () => true, () => cockpit,
-    () => ({ sessions: [], activeSessionId: undefined }), async () => true, async () => true,
+    () => ({ sessions: [], activeSessionId: undefined }), async () => true,
     async () => undefined, async () => undefined, async () => undefined, readyModels,
     { getImages: (sessionId: string) => new Promise((resolve) => reads.push({ sessionId, resolve })) } as any);
   provider.resolveWebviewView(view);
@@ -287,70 +267,6 @@ test("pending images are read on restore, image actions, and turn changes; stale
   reads[3].resolve({ session_id: "images-1", images: [{ path: "/repo/wrong-task.png" }] });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(posted.filter((item) => item.type === "image.basket").length, 2);
-  provider.dispose();
-});
-
-test("Start Here clears a Forge draft only when Forge reports a plan was created", async () => {
-  errors.length = 0;
-  let receive: ((message: unknown) => void) | undefined;
-  const posted: unknown[] = [];
-  const attempts: Array<{ instruction: string; mode: string }> = [];
-  const disposable = { dispose: () => undefined };
-  const view = {
-    visible: true,
-    show: () => undefined,
-    webview: {
-      options: {},
-      html: "",
-      cspSource: "vscode-webview:",
-      asWebviewUri: () => "vscode-webview://asset",
-      postMessage: async (message: unknown) => {
-        posted.push(message);
-        return true;
-      },
-      onDidReceiveMessage: (listener: (message: unknown) => void) => {
-        receive = listener;
-        return disposable;
-      }
-    },
-    onDidChangeVisibility: () => disposable,
-    onDidDispose: () => disposable
-  };
-  const { StartViewProvider } = require("../src/views/StartViewProvider") as typeof import("../src/views/StartViewProvider");
-  const provider = new StartViewProvider(
-    {} as any,
-    () => ({} as any),
-    () => ({} as any),
-    () => ({} as any),
-    () => true,
-    () => ({} as any),
-    () => ({ sessions: [], activeSessionId: undefined }),
-    async () => true,
-    async (instruction, mode) => {
-      attempts.push({ instruction, mode });
-      return instruction === "accepted plan";
-    },
-    async () => undefined,
-    async () => undefined,
-    async () => undefined,
-    () => readyModels()
-  );
-  provider.resolveWebviewView(view as any);
-
-  receive?.({ type: "task.submit", instruction: " blocked plan ", mode: "review", workflow: "forge", requestId: "forge-blocked" });
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  receive?.({ type: "task.submit", instruction: " accepted plan ", mode: "auto", workflow: "forge", requestId: "forge-accepted" });
-  await new Promise((resolve) => setTimeout(resolve, 10));
-
-  assert.deepEqual(attempts, [
-    { instruction: "blocked plan", mode: "review" },
-    { instruction: "accepted plan", mode: "auto" }
-  ]);
-  assert.deepEqual(posted, [
-    { type: "task.result", started: false, requestId: "forge-blocked" },
-    { type: "task.result", started: true, requestId: "forge-accepted" }
-  ]);
-  assert.deepEqual(errors, []);
   provider.dispose();
 });
 
@@ -430,7 +346,7 @@ test("the posted state carries the host readiness model and gates the composer o
     mode: null,
     items: [],
     lastAcceptedTaskRequestId: null,
-    cockpit: { forge: {}, swarm: {}, actionResults: [] }
+    cockpit: { actionResults: [] }
   };
   const config: any = { defaultMode: "review", provider: "", baseUrl: "", defaultModel: "" };
   const profiles: any = { supported: true, activeProfile: "", profiles: [] };
@@ -502,7 +418,7 @@ test("a classified transcript failure reaches the webview as a typed, actionable
     { defaultMode: "review", provider: "", baseUrl: "", defaultModel: "claude-opus-5" } as any,
     { supported: true, activeProfile: "", profiles: [] } as any,
     true,
-    { ...chatState, cockpit: { forge: {}, swarm: {}, actionResults: [] }, lastAcceptedTaskRequestId: null } as any,
+    { ...chatState, cockpit: { actionResults: [] }, lastAcceptedTaskRequestId: null } as any,
     { sessions: [], activeSessionId: undefined },
     readyModels()
   );
@@ -625,7 +541,7 @@ test("the persona surface reports active permissions and describes inactive pers
     items: [],
     lastAcceptedTaskRequestId: null,
     personas,
-    cockpit: { forge: {}, swarm: {}, actionResults: [] }
+    cockpit: { actionResults: [] }
   });
 
   const auto = buildStartViewState(
@@ -663,7 +579,7 @@ test("the persona surface reports active permissions and describes inactive pers
   // An older host projection without the surface fails closed to a hidden control.
   const legacy = buildStartViewState(
     runtime, config, profiles, true,
-    { sessionId: null, jobStatus: "idle", mode: null, items: [], lastAcceptedTaskRequestId: null, cockpit: { forge: {}, swarm: {}, actionResults: [] } } as any,
+    { sessionId: null, jobStatus: "idle", mode: null, items: [], lastAcceptedTaskRequestId: null, cockpit: { actionResults: [] } } as any,
     { sessions: [], activeSessionId: undefined }, readyModels()
   );
   assert.equal(legacy.personas.supported, false);
@@ -705,7 +621,7 @@ test("recent tasks are titled by their first prompt and dated relatively, curren
     mode: "review",
     items: [],
     lastAcceptedTaskRequestId: null,
-    cockpit: { forge: {}, swarm: {}, actionResults: [] }
+    cockpit: { actionResults: [] }
   };
   const config: any = { defaultMode: "review", provider: "", baseUrl: "", defaultModel: "claude-opus-5" };
   const profiles: any = { supported: true, activeProfile: "", profiles: [] };
@@ -755,17 +671,17 @@ test("the slash catalog lists real slash commands with argument hints, gated by 
     mode: null,
     items: [],
     lastAcceptedTaskRequestId: null,
-    cockpit: { forge: { planId: null, activeJobId: null }, swarm: { busy: false, status: "idle" }, actionResults: [] }
+    cockpit: { actionResults: [] }
   };
   const rows = buildSlashCommandCatalog(cockpit, true, () => true);
   const byCommand = new Map(rows.map((row) => [row.command, row]));
-  assert.equal(byCommand.get("/forge plan")?.takesArgs, true);
-  assert.equal(byCommand.get("/forge plan")?.usage, "/forge plan <instruction>");
+  assert.equal(byCommand.get("/model")?.takesArgs, true);
+  assert.equal(byCommand.get("/model")?.usage, "/model [name]");
   assert.equal(byCommand.get("/doctor")?.takesArgs, false);
   assert.equal(byCommand.has("/cancel"), false, "nothing is running, so /cancel is not offered");
-  assert.equal(byCommand.has("/execute plan"), false, "no plan is open, so /execute plan is not offered");
+  assert.equal(byCommand.has("/resume"), true);
   assert.equal(new Set(rows.map((row) => row.command.toLowerCase())).size, rows.length, "no duplicate spellings");
 
   const untrusted = buildSlashCommandCatalog(cockpit, false, () => true);
-  assert.equal(untrusted.some((row) => row.command === "/forge plan"), false, "/forge plan needs Workspace Trust");
+  assert.equal(untrusted.some((row) => row.command === "/resume"), false, "/resume needs Workspace Trust");
 });

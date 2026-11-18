@@ -22,7 +22,7 @@ body:
       options:
         - Terminal UI / chat
         - One-shot runs (alysis run)
-        - Forge / subagents
+        - Subagents
         - Providers and models
         - Sandbox and permissions
         - MCP, skills, plugins, hooks, custom tools

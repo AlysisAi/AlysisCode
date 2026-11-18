@@ -64,13 +64,10 @@ TURN_MUTATING_COMMANDS = [
     "/compact",
     "/ask what is this",
     "/subagent explorer find x",
-    "/forge",
-    ":forge",
     "/login",
     "/logout",
     "/report",
     "/feedback",
-    "/assets",
 ]
 
 DEFERRED_COMMANDS = [
@@ -212,7 +209,7 @@ def test_every_block_message_explains_and_names_escape_hatch(command: str) -> No
 
 def test_is_command_distinguishes_commands_from_prose() -> None:
     assert is_command("/help")
-    assert is_command(":forge")
+    assert is_command(":q")
     assert is_command("exit")
     assert not is_command("$code-review inspect this change")
     assert not is_command("please fix the parser")

@@ -301,118 +301,15 @@ def test_management_capabilities_match_mutating_method_trust_policy() -> None:
         assert methods[method]["mutates"] is False, method
 
 
-def test_capabilities_advertise_safe_forge_assets_and_blocked_unsafe_modes() -> None:
+def test_capabilities_advertise_no_retired_forge_methods_or_features() -> None:
     capabilities = capabilities_payload()
-    methods = set(capabilities["methods"])
 
-    for method in (
-        "forge.attach",
-        "forge.show",
-        "forge.review",
-        "forge.assets.list",
-        "forge.assets.show",
-        "forge.assets.add",
-        "forge.assets.delete",
-        "forge.assets.edit",
-        "forge.assets.refresh",
-        "forge.assets.cancelPending",
-        "forge.assets.checkPlan",
-        "forge.assets.pruneLegacy",
-    ):
-        assert method in methods
-    for method in (
-        "forge.swarm.start",
-        "forge.swarm.resume",
-        "forge.swarm.list",
-        "forge.swarm.status",
-        "forge.swarm.result",
-        "forge.swarm.cancel",
-        "forge.swarm.reconcile",
-        "forge.review.start",
-        "forge.review.result",
-    ):
-        assert method in methods
-
-    forge = capabilities["features"]["forge"]
-    assert forge["plan"]["durable_acceptance"] is True
-    assert forge["plan"]["payload_conflict_detection"] is True
-    assert forge["plan"]["worker_heartbeat"] is True
-    assert forge["plan"]["expired_running_lease"] == ("indeterminate_no_automatic_reexecution")
-    assert forge["review"]["mutates"] is True
-    assert forge["review"]["trust_required"] is True
-    assert forge["assets"]["rejects_symlinks"] is True
-    assert forge["assets"]["methods"]["forge.assets.delete"]["confirmation_required"] is True
-    assert forge["cancel"]["supported"] is True
-    assert forge["cancel"]["callable"] is True
-    assert forge["cancel"]["behavior"] == "cooperative_checkpoint_cancellation"
-    assert forge["cancel"]["interrupt_kind"] == "cooperative"
-    assert forge["cancel"]["hard_interrupt"] is False
-    assert forge["cancel"]["must_not_mark_cancelled_without_interrupt"] is False
-    assert forge["cancel"]["covered_job_kinds"] == [
-        "forge_plan",
-        "forge_plan_regenerate",
-        "forge_review",
-        "forge_execute",
-        "forge_swarm",
+    assert not [
+        method for method in capabilities["methods"] if method.startswith(("forge.", "diff."))
     ]
-    # The swarm gate lifted deliberately: jobs are trust-gated, cooperatively
-    # cancellable, scope-guarded, and reconcilable; approval routing is still
-    # a reserved placeholder.
-    assert forge["swarm"]["supported"] is True
-    assert forge["swarm"]["workspace_trust_required"] is True
-    assert forge["swarm"]["cancellation"] == "cooperative_checkpoint_cancellation"
-    assert forge["swarm"]["interrupted_task_status"] == "interrupted"
-    assert forge["swarm"]["interrupted_worktrees_preserved"] is True
-    assert forge["swarm"]["disjoint_write_scopes"] == "guaranteed_by_scheduler_invariant"
-    assert forge["swarm"]["approvals"]["yes_auto_approval"] is False
-    assert forge["swarm"]["approvals"]["timeout_behavior"] == "task_stays_paused_never_auto_denied"
-    assert forge["swarm"]["approval_scope_grants"]["supported"] is True
-    assert forge["swarm"]["merge_behavior"] == "review_only_per_task_apply_discard"
-    assert forge["swarm"]["review"]["never_commits"] is True
-    assert forge["swarm"]["review"]["working_tree_touched_only_on_apply"] is True
-    assert forge["execute"]["job_status_model"] == "data_outcome_completed_with_result"
-    assert forge["swarm"]["reconcile"]["read_only_report"] is True
-    assert forge["swarm"]["reconcile"]["discard_confirmation_required"] is True
-    assert "approval_pending" in forge["swarm"]["task_event_states"]
-    resumable_swarm = capabilities["features"]["resumable_swarm"]
-    assert resumable_swarm == {
-        "supported": True,
-        "durable": True,
-        "external_storage": True,
-        "workspace_and_session_scoped": True,
-        "idempotent_start": True,
-        "explicit_resume": True,
-        "fresh_permission_fingerprint_required": True,
-        "fenced_worker_leases": True,
-        "restart_recovery": True,
-        "atomic_cancellation": True,
-        "exactly_once_usage_events": True,
-        "methods": [
-            "forge.swarm.start",
-            "forge.swarm.resume",
-            "forge.swarm.list",
-            "forge.swarm.status",
-            "forge.swarm.result",
-            "forge.swarm.cancel",
-        ],
-    }
-    assert forge["review"]["async"] is True
-    assert forge["review"]["start_method"] == "forge.review.start"
-    assert forge["execute"]["unsafe_modes"]["supported"] is False
-    assert forge["execute"]["unsafe_modes"]["experimental_flags"] == {
-        "auto": False,
-        "fullaccess": False,
-        "forge.swarm": False,
-    }
-    assert (
-        "approval_ux_for_broad_mutation"
-        in forge["execute"]["unsafe_modes"]["required_before_reassessment"]
-    )
-    assert forge["execute"]["max_steps_param"] is True
-    assert forge["execute"]["no_log_param"] is True
-    assert forge["execute"]["subagents_supported"] is False
-    assert forge["execute"]["active_cancellation_supported"] is True
-    assert forge["execute"]["cancellation"] == "cooperative_checkpoint_cancellation"
+    assert "forge" not in capabilities["features"]
+    assert "forge_host" not in capabilities["features"]
+    assert "resumable_swarm" not in capabilities["features"]
 
 
 def test_capabilities_advertise_limited_session_method_semantics() -> None:
@@ -445,7 +342,6 @@ def test_capabilities_advertise_limited_session_method_semantics() -> None:
     )
     assert session_capabilities["session.subagents"]["cancellation"] == "parent_job"
     assert session_capabilities["session.subagents"]["independently_resumable"] is False
-    assert session_capabilities["session.subagents"]["background_worker_surface"] == "forge.swarm"
     assert session_capabilities["session.trace"]["supported"] is True
     assert session_capabilities["session.trace"]["full_trace_requires_confirmation"] is True
     assert session_capabilities["session.trace"]["redacted"] is True
@@ -471,36 +367,6 @@ def test_capabilities_advertise_limited_session_method_semantics() -> None:
     assert "session.terminals.kill" in capabilities["methods"]
     assert "session.terminals.clear" in capabilities["methods"]
     assert "session.images.add" in capabilities["methods"]
-
-    forge = capabilities["features"]["forge"]
-    for method in (
-        "forge.plan.getState",
-        "forge.plan.setAssistant",
-        "forge.plan.setGoal",
-        "forge.plan.updateTask",
-        "forge.plan.validate",
-        "forge.plan.regenerate",
-    ):
-        assert method in capabilities["methods"]
-        assert forge["plan_editing"]["methods"][method]["supported"] is True
-    assert forge["plan_editing"]["methods"]["forge.plan.regenerate"]["mutates"] is True
-    assert forge["plan_editing"]["methods"]["forge.plan.regenerate"]["trust_required"] is True
-    assert forge["plan_editing"]["methods"]["forge.plan.regenerate"]["optimistic_revision"] is True
-    assert forge["plan_editing"]["terminal_output_scraping"] is False
-    assert forge["plan_editing"]["unsafe_execution_exposed"] is False
-
-
-def test_forge_execute_contract_matches_subagent_capability() -> None:
-    contract_path = (
-        Path(__file__).resolve().parents[1] / "docs" / "generated" / "ide_protocol_methods.json"
-    )
-    contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    methods = contract["methods"]
-    forge_execute = capabilities_payload()["features"]["forge"]["execute"]
-
-    assert forge_execute["subagents_supported"] is False
-    assert "subagents_enabled" not in methods["forge.executePreview"]["optional_params"]
-    assert "subagents_enabled" not in methods["forge.execute"]["optional_params"]
 
 
 def test_all_current_ide_bridge_methods_are_documented() -> None:

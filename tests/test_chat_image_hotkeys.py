@@ -51,7 +51,6 @@ def test_chat_prompt_ctrl_alt_v_pastes_clipboard_image(tmp_path: Path, monkeypat
         console=Console(file=buffer, force_terminal=False),
         root=tmp_path,
         pending_images=pending_images,
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert session is not None
@@ -104,7 +103,6 @@ def test_chat_prompt_session_skips_history_when_data_dir_is_read_only(
         console=Console(file=io.StringIO(), force_terminal=False),
         root=tmp_path,
         pending_images=[],
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert session is not None

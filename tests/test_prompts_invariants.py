@@ -6,10 +6,6 @@ from alysis_code.agent_loop import (
     _SYSTEM_PROMPT_WRITE_SECTION,
     SYSTEM_PROMPT,
 )
-from alysis_code.conflict_auto_resolver import CONFLICT_RESOLVER_SYSTEM_PROMPT
-from alysis_code.merge_conflict_reviewer import MERGE_CONFLICT_REVIEWER_SYSTEM_PROMPT
-from alysis_code.plan_assistant import PLANNER_SYSTEM_PROMPT
-from alysis_code.review_gate import REVIEWER_SYSTEM_PROMPT
 
 
 def _assert_contains_all(prompt: str, required: list[str]) -> None:
@@ -317,55 +313,3 @@ def test_tool_descriptions_capture_canonical_workflow_guidance() -> None:
         metadata = get_builtin_tool_metadata(tool_name)
         assert metadata is not None
         assert snippet in metadata.description
-
-
-def test_planner_prompt_invariants() -> None:
-    _assert_contains_all(
-        PLANNER_SYSTEM_PROMPT,
-        [
-            "How to structure tasks (high quality)",
-            "Keep the plan tight (often 3-7 tasks",
-            "Output contract (STRICT)",
-            "plan_update may be null when the user message has no planning-relevant content.",
-            'For vague greenfield requests (for example "build me a website/app/tool") with missing key details,',
-            "Do not invent task ids for tasks_add",
-            "Treat explicit repo-relative file paths named by the user as authoritative anchors.",
-            "If the latest user message includes explicit task ids or a numbered/bulleted task breakdown, preserve that structure",
-        ],
-    )
-
-
-def test_reviewer_prompt_invariants() -> None:
-    _assert_contains_all(
-        REVIEWER_SYSTEM_PROMPT,
-        [
-            "Review rubric (apply in order; definition of done)",
-            "Return STRICT JSON only. No markdown, no extra text.",
-            "For every issue, provide a concrete suggested fix.",
-        ],
-    )
-
-
-def test_conflict_resolver_prompt_invariants() -> None:
-    _assert_contains_all(
-        CONFLICT_RESOLVER_SYSTEM_PROMPT,
-        [
-            "Resolve merge conflicts only.",
-            "Prefer search_rg plus fs_read line ranges for focused conflict inspection",
-            "Prefer fs_edit for deterministic localized edits in one existing conflicted file.",
-            "Prefer git_apply_patch for broader or context-heavy conflict edits",
-            "Do not modify .alysis/ or other denied prefixes unless explicitly instructed.",
-            "Use git_status to ensure no unmerged paths remain.",
-        ],
-    )
-
-
-def test_merge_conflict_reviewer_prompt_invariants() -> None:
-    _assert_contains_all(
-        MERGE_CONFLICT_REVIEWER_SYSTEM_PROMPT,
-        [
-            "You are a strict merge-conflict reviewer.",
-            "recommend manual_merge and explain why",
-            "Return valid JSON only, strictly matching the schema requested by the user prompt.",
-        ],
-    )

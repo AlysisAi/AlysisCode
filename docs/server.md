@@ -16,11 +16,6 @@ outer worker sandbox.
 Server endpoints expose modes as follows:
 
 - `POST /v1/runs/{run_id}/jobs/run`: `readonly|review|auto|fullaccess`
-- `POST /v1/runs/{run_id}/jobs/forge_exec`: `readonly|review|auto|fullaccess`
-- `POST /v1/runs/{run_id}/jobs/forge_swarm`: `auto` only
-
-Swarm remains auto-only in server mode because non-dry-run swarm orchestration enforces
-`--mode auto` at runtime.
 
 `fullaccess` disables mode-level approval/guard prompts in the inner agent runtime, but jobs still
 execute inside the configured outer worker sandbox backend (`bwrap`/`docker`) and its policy.
@@ -71,8 +66,6 @@ curl -sS -X POST \
   "http://127.0.0.1:7070/v1/runs/${RUN_ID}/jobs/run"
 ```
 
-`forge_exec` also supports `mode=fullaccess`; `forge_swarm` remains `mode=auto` only.
-
 Optional data directory override:
 
 ```bash
@@ -95,34 +88,11 @@ alysis server start --data-dir /var/lib/alysis-server
 - Existing ZIP validation still applies after staging succeeds, including bad-ZIP rejection, path
   sanitization, and the uncompressed-size guard during extraction.
 
-## Job Status And Machine Events
+## Job Status
 
-Forge job status is derived from what the job **reported**, not from what its exit code
-implies. Forge worker commands run with `--machine`, so they emit the newline-delimited
-JSON event stream described in [Forge machine mode](forge.md#machine-mode---machine), and
-the runner reads the terminal event (`run_completed` or `error`) out of the job output:
-
-- `run_completed` with `data.ok: true` → `succeeded`
-- `run_completed` with `data.ok: false` → `failed`
-- `error` → `failed`, and `data.message` becomes the job's `error`
-- no terminal event in the output → fall back to the exit code
-
-`GET /v1/jobs/{job_id}` reports which of those happened:
-
-- `status_source: "terminal_event"` — the job said what happened.
-- `status_source: "exit_code"` — the status was inferred from the process result.
-
-The response also carries `terminal_event`, the raw envelope the job emitted, and
-`result.json` records `status_source` and `terminal_event` alongside the status.
-
-This matters because exit codes conflate outcomes: a Forge command that exits nonzero may
-have run perfectly and simply not accepted the work. The terminal event distinguishes the
-two; the exit code cannot.
-
-`ALYSIS_SERVER_MACHINE_EVENTS` controls whether `forge_exec` and `forge_swarm` job
-commands get `--machine` (default `1`). Set it to `0` to keep human-readable Forge job logs;
-job status then falls back to exit codes and `status_source` reports `exit_code`. `run` jobs
-are never affected — they are not Forge commands and always stay human-readable.
+A job's status comes from its worker process: exit code `0` is `succeeded`, any other exit
+code is `failed`, and a cancelled job is `cancelled`. `GET /v1/jobs/{job_id}` reports
+`status_source: "exit_code"` and the `exit_code` it was decided from.
 
 ## Job Queue And Cancellation
 

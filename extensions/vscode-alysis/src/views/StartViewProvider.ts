@@ -13,10 +13,8 @@ import type { BrowserPreview } from "../browser/BrowserPreviewStore";
 import {
   ActionResultEntry,
   CockpitState,
-  ForgeCockpitState,
   PersonasSurfaceState,
   ProviderProfileState,
-  SwarmCockpitState,
   clampPersonaMode
 } from "../chat/CockpitState";
 import { CockpitRuntimeSnapshot } from "../chat/CockpitRuntimeState";
@@ -46,11 +44,10 @@ import {
 } from "../providers/ProviderCatalogController";
 
 type StartViewTone = "ready" | "attention" | "neutral";
-export type StartViewSurface = "task" | "forge" | "browser" | "history" | "settings" | "activity" | "models";
+export type StartViewSurface = "task" | "browser" | "history" | "settings" | "activity" | "models";
 
 export const START_VIEW_SURFACES: readonly StartViewSurface[] = [
   "task",
-  "forge",
   "browser",
   "history",
   "settings",
@@ -120,7 +117,6 @@ export interface StartViewPersonasState {
 
 export interface StartViewState {
   mode: AlysisMode;
-  forgeEnabled: boolean;
   providerName: string;
   modelName: string;
   engine: StartViewStatus;
@@ -128,8 +124,6 @@ export interface StartViewState {
   provider: StartViewStatus;
   recentTasks: StartViewRecentTask[];
   conversation: StartViewConversationState;
-  forge: ForgeCockpitState;
-  swarm: SwarmCockpitState;
   actionResults: ActionResultEntry[];
   runtimeEvents: CockpitRuntimeSnapshot["events"];
   commands: StartViewCommand[];
@@ -157,11 +151,11 @@ interface StartViewCommand {
 
 /** One row of the composer's "/" menu: a real slash command the chat controller can route. */
 export interface StartViewSlashCommand {
-  /** The exact spelling to insert, e.g. `/forge plan` or `/execute preview`. */
+  /** The exact spelling to insert, e.g. `/status` or `/persona`. */
   command: string;
   title: string;
   description: string;
-  /** Usage line, e.g. `/forge plan <instruction>`; equals `command` when the command takes no arguments. */
+  /** Usage line, e.g. `/persona [name]`; equals `command` when the command takes no arguments. */
   usage: string;
   takesArgs: boolean;
 }
@@ -222,7 +216,7 @@ interface StartViewSessionSnapshot {
 type StartViewMessage =
   | { type: "worktree"; action: "new" | "move" | "review" }
   | { type: "ready" }
-  | { type: "task.submit"; instruction: string; mode: AlysisMode; workflow?: "chat" | "forge"; requestId: string }
+  | { type: "task.submit"; instruction: string; mode: AlysisMode; requestId: string }
   | { type: "task.cancel" }
   | { type: "approval"; approvalId: string; decision: "allow_once" | "allow_for_session" | "deny" }
   | { type: "session"; action: "resume" | "show"; sessionId: string }
@@ -296,7 +290,6 @@ export class StartViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     private readonly getCockpit: () => CockpitState,
     private readonly getSessions: () => StartViewSessionSnapshot,
     private readonly startTask: (instruction: string, mode: AlysisMode, requestId?: string) => Promise<boolean>,
-    private readonly startForgePlan: (instruction: string, mode: AlysisMode, requestId?: string) => Promise<boolean>,
     private readonly cancelTask: () => Promise<void>,
     private readonly respondToApproval: (
       approvalId: string,
@@ -400,7 +393,7 @@ export class StartViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     }
   }
 
-  /** Latest-wins browser channel; large bounded diagnostics never ride chat/Forge state deltas. */
+  /** Latest-wins browser channel; large bounded diagnostics never ride chat state deltas. */
   public updateBrowser(): void {
     if (!this.view || !this.viewReady) {
       return;
@@ -501,10 +494,6 @@ export class StartViewProvider implements vscode.WebviewViewProvider, vscode.Dis
             void this.actions?.refreshModels();
           }
           return false;
-        }
-        if (message.workflow === "forge") {
-          await this.showSurface("forge");
-          return this.startForgePlan(message.instruction.trim(), message.mode, message.requestId);
         }
         return this.startTask(message.instruction.trim(), message.mode, message.requestId);
       });
@@ -663,9 +652,6 @@ export class StartViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       return;
     }
     switch (message.action) {
-      case "plan":
-        await vscode.commands.executeCommand("alysis.forgePlan");
-        return;
       case "recent":
         await this.showSurface("history");
         return;
@@ -930,7 +916,6 @@ export function buildStartViewState(
   });
   return {
     mode: sessionModeOf(cockpitState, config),
-    forgeEnabled: config.enableForge,
     providerName,
     modelName,
     engine: engineStatus(runtime),
@@ -940,8 +925,6 @@ export function buildStartViewState(
     provider: providerStatus(config, profiles, readiness, models),
     recentTasks: buildRecentTasks(sessionSnapshot),
     conversation: buildConversationState(cockpitState),
-    forge: cockpit.forge,
-    swarm: cockpit.swarm,
     actionResults: cockpit.actionResults,
     runtimeEvents: runtime.events,
     commands: buildCommandCatalog(cockpitState, workspaceTrusted, isBackendActionSupported),
@@ -1030,7 +1013,6 @@ export function isStartViewMessage(value: unknown): value is StartViewMessage {
       && record.instruction.length <= 20000
       && typeof record.mode === "string"
       && ["readonly", "review", "auto"].includes(record.mode)
-      && (record.workflow === undefined || record.workflow === "chat" || record.workflow === "forge")
       && boundedString(record.requestId, 128);
   }
   if (record.type === "approval") {
@@ -1144,8 +1126,6 @@ function optionalBoundedString(value: unknown, max: number): boolean {
 
 function startViewTaskSignature(message: Extract<StartViewMessage, { type: "task.submit" }>): string {
   return createHash("sha256")
-    .update(message.workflow ?? "chat")
-    .update("\0")
     .update(message.mode)
     .update("\0")
     .update(message.instruction.trim())
@@ -1276,12 +1256,6 @@ const CORE_COMMANDS: readonly Omit<StartViewCommand, "available" | "unavailableR
   command(COMMANDS.showSettings, "Alysis Code settings", "Open the unified settings and tools hub.", "Configure"),
   command(COMMANDS.showModels, "Models and providers", "Connect a provider, store its key, and pick a model.", "Configure"),
   command(COMMANDS.showBrowser, "Browser Cockpit", "Open the public-only browser shared with the Alysis Code agent.", "Tools"),
-  command(COMMANDS.showForge, "Open Forge", "Plan, preview, review, and run complex work.", "Forge"),
-  command(COMMANDS.forgePlan, "Create Forge plan", "Break a goal into reviewable tasks.", "Forge"),
-  command(COMMANDS.forgeListPlans, "Browse Forge plans", "Find a plan saved for this workspace.", "Forge"),
-  command(COMMANDS.forgeOpenPlan, "Open Forge plan", "Open a plan by choosing it from the workspace.", "Forge"),
-  command(COMMANDS.forgeExecute, "Review and run plan", "Preview scope and run selected tasks in review mode.", "Forge", true),
-  command(COMMANDS.runSwarm, "Run plan in parallel", "Use multiple Forge workers for the active plan.", "Forge", true),
   command(COMMANDS.cancelCurrentRun, "Stop current run", "Request safe cancellation at the next checkpoint.", "Task", true),
   command(COMMANDS.addSelection, "Add selected code", "Bring the current editor selection into the composer.", "Context"),
   command(COMMANDS.sessionActions, "Current task tools", "Status, usage, context, terminals, trace, and maintenance.", "Task"),
@@ -1290,7 +1264,6 @@ const CORE_COMMANDS: readonly Omit<StartViewCommand, "available" | "unavailableR
   command(COMMANDS.manageToolsSkills, "Tools and skills", "Inspect, validate, install, or toggle capabilities.", "Configure"),
   command(COMMANDS.manageMcpHooks, "MCP, hooks, and conventions", "Manage servers, project hooks, and rules.", "Configure"),
   command(COMMANDS.manageExtensions, "Alysis Code extensions", "Search, install, enable, or remove packages.", "Configure"),
-  command(COMMANDS.manageForgeAssets, "Forge files and references", "Manage files attached to the active plan.", "Forge"),
   command(COMMANDS.runDoctor, "Check setup", "Run the guided local setup check.", "Support"),
   command(COMMANDS.healthDiagnostics, "Troubleshooting", "Open detailed provider, sandbox, and diagnostic checks.", "Support"),
   command(COMMANDS.showBridgeHealth, "Check connection", "Inspect the local CLI and IDE bridge.", "Support"),
@@ -1345,47 +1318,29 @@ export function buildCommandCatalog(
   isBackendActionSupported: (actionId: string) => boolean = () => true
 ): StartViewCommand[] {
   const activeSession = Boolean(state.sessionId);
-  const activePlan = Boolean(state.cockpit.forge.planId);
-  const activeRun = ["queued", "starting", "running", "cancellation_requested"].includes(state.jobStatus)
-    || Boolean(state.cockpit.forge.activeJobId)
-    || state.cockpit.swarm.busy
-    || Boolean(state.cockpit.swarm.jobId)
-    || ["starting", "running", "cancelling"].includes(state.cockpit.swarm.status);
+  const activeRun = ["queued", "starting", "running", "cancellation_requested"].includes(state.jobStatus);
   const core = CORE_COMMANDS.map((item): StartViewCommand => {
     let unavailableReason = "";
-    const forgeCommand = item.category === "Forge";
     const featureByCommand: Record<string, CompatibilityFeatureId> = {
-      [COMMANDS.forgePlan]: "forgePlan", [COMMANDS.forgeExecute]: "forgeExecuteReview", [COMMANDS.runSwarm]: "forgeSwarm",
-      [COMMANDS.forgeListPlans]: "forgePlanPersistence", [COMMANDS.forgeOpenPlan]: "forgePlanPersistence",
-      [COMMANDS.manageForgeAssets]: "assets", [COMMANDS.checkForUpdates]: "update"
+      [COMMANDS.checkForUpdates]: "update"
     };
     const feature = featureByCommand[item.command];
     const compatibility = state.cockpit.status?.runtime?.compatibility;
     const group = BACKEND_ACTION_GROUPS.find((candidate) => candidate.commandId === item.command);
-    if (forgeCommand && state.cockpit.status?.enableForge === false) {
-      unavailableReason = "Forge is disabled in Alysis Code settings.";
-    } else if (feature && compatibility && (!compatibility.protocol.compatible || !compatibility.features[feature]?.supported)) {
+    if (feature && compatibility && (!compatibility.protocol.compatible || !compatibility.features[feature]?.supported)) {
       unavailableReason = compatibility.features[feature]?.disabledReason || "The connected agent does not support this action.";
     } else if (group && !BACKEND_ACTIONS.some((action) => action.group === group.id && isBackendActionSupported(action.id))) {
       unavailableReason = "The connected agent does not support these tools.";
-    } else if ((item.command === COMMANDS.forgeExecute || item.command === COMMANDS.runSwarm || item.command === COMMANDS.manageForgeAssets) && !activePlan) {
-      unavailableReason = "Create or open a Forge plan first.";
     } else if (item.command === COMMANDS.cancelCurrentRun && !activeRun) {
       unavailableReason = "There is no running task to stop.";
     } else if (item.command === COMMANDS.sessionActions && !activeSession) {
       unavailableReason = "Start or resume a task first.";
-    } else if ((item.command === COMMANDS.forgePlan || item.command === COMMANDS.forgeExecute || item.command === COMMANDS.runSwarm) && !workspaceTrusted) {
-      unavailableReason = "Trust this folder before using Forge.";
     }
     return { ...item, available: unavailableReason.length === 0, unavailableReason };
   });
   const backend = BACKEND_ACTIONS.filter((action) => isBackendActionSupported(action.id)).map((action): StartViewCommand => {
     let unavailableReason = "";
-    if (action.id.startsWith("forge.") && state.cockpit.status?.enableForge === false) {
-      unavailableReason = "Forge is disabled in Alysis Code settings.";
-    } else if (action.requiresActivePlan && !activePlan) {
-      unavailableReason = "Create or open a Forge plan first.";
-    } else if (action.requiresActiveSession && !activeSession) {
+    if (action.requiresActiveSession && !activeSession) {
       unavailableReason = "Start or resume a task first.";
     } else if (action.workspaceTrustRequired && !workspaceTrusted) {
       unavailableReason = "Trust this folder before using this action.";
@@ -1422,18 +1377,13 @@ export function buildSlashCommandCatalog(
   isBackendActionSupported: (actionId: string) => boolean = () => true
 ): StartViewSlashCommand[] {
   const activeSession = Boolean(state.sessionId);
-  const activePlan = Boolean(state.cockpit.forge.planId);
-  const activeRun = ["queued", "starting", "running", "cancellation_requested"].includes(state.jobStatus)
-    || Boolean(state.cockpit.forge.activeJobId)
-    || state.cockpit.swarm.busy;
+  const activeRun = ["queued", "starting", "running", "cancellation_requested"].includes(state.jobStatus);
   const seen = new Set<string>();
   const rows: StartViewSlashCommand[] = [];
   for (const definition of availableSlashCommands({
     workspaceTrusted,
     activeSession,
-    activePlan,
     activeRun,
-    forgeEnabled: state.cockpit.status?.enableForge,
     personasAvailable: state.personas?.supported && state.personas?.enabled,
     compatibility: state.cockpit.status?.runtime?.compatibility,
     isBackendActionSupported

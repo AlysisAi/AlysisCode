@@ -156,7 +156,7 @@ def test_real_turn_roundtrip_and_independent_work(tmp_path, finalize_early):
         {"non_interactive": True},
         {"one_shot_execution": True},
         {"subagent_depth": 1},
-        {"runtime_kind": "forge_exec"},
+        {"runtime_kind": "one_shot"},
     ],
 )
 def test_noninteractive_and_child_tools_do_not_request_tui_answers(tmp_path, settings):

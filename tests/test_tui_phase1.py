@@ -244,28 +244,6 @@ def test_tui_session_state_sync_updates_local_command_footer_state():
     assert state.usage_hud_enabled is False
 
 
-def test_footer_forge_badge_tracks_active_run():
-    text = _plain(footer_fragments(TuiState(model_name="m", username="u"), width=120))
-    assert "FORGE" not in text
-
-    state = TuiState(
-        model_name="m",
-        username="perdikis",
-        exec_mode="review",
-        forge_mode=True,
-        forge_run_id="run-1a2b",
-    )
-    text = _plain(footer_fragments(state, width=120))
-    assert "FORGE" in text
-    assert "⚒" not in text  # no wide emoji (it threw off the width math)
-    assert "run-1a2b" in text
-    # The execution-mode badge still renders alongside it (with a separator).
-    assert "safe" in text
-    # Order: FORGE chip precedes the exec-mode badge on line 2.
-    line2 = text.split("\n")[1]
-    assert line2.index("FORGE") < line2.index("safe")
-
-
 def test_footer_is_two_lines_and_right_aligned():
     state = TuiState(model_name="m", username="u", tokens=1234)
     lines = _plain(footer_fragments(state, width=100)).split("\n")

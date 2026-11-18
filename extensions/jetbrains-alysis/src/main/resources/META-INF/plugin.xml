@@ -5,7 +5,7 @@
   <vendor url="https://github.com/AlysisAi/AlysisCode">Alysis AI</vendor>
   <description><![CDATA[Local Alysis Code chat with streamed replies, scoped approvals and cancellation.
     Development preview: requires an explicitly selected, separately configured Alysis CLI.
-    Forge, managed browser and production managed-runtime installation are not included yet.]]></description>
+    Managed browser and production managed-runtime installation are not included yet.]]></description>
   <idea-version since-build="223"/>
   <depends>com.intellij.modules.platform</depends>
   <extensions defaultExtensionNs="com.intellij">

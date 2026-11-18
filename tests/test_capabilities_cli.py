@@ -39,20 +39,13 @@ def test_engine_reports_one_version_everywhere_it_is_written() -> None:
 
 
 @pytest.mark.parametrize("host", ["darwin", "win32"])
-def test_capabilities_advertise_host_v2_as_the_only_planner_authority(monkeypatch, host) -> None:
+def test_capabilities_advertise_desktop_features_without_retired_planner_protocols(
+    monkeypatch, host
+) -> None:
     monkeypatch.setattr(computer_use_platform_policy, "sys", SimpleNamespace(platform=host))
     payload = build_capabilities_payload()
 
-    assert (
-        payload["protocols"]
-        == dict(DESKTOP_PROTOCOLS)
-        == {
-            "forge-host": 2,
-            "forge-contract-v2": 2,
-            "forge-status": 1,
-        }
-    )
-    assert "forge-planner" not in payload["protocols"]
+    assert payload["protocols"] == dict(DESKTOP_PROTOCOLS) == {}
     cu = {
         "sensitive-host-context-v1",
         "computer-use-host-v1",
@@ -65,10 +58,7 @@ def test_capabilities_advertise_host_v2_as_the_only_planner_authority(monkeypatc
     assert all((feature in payload["features"]) == (host == "darwin") for feature in cu)
     assert payload["features"]["ide.bridge"] is True
     assert payload["features"]["ide.private-utf8-stdio-v1"] is True
-    assert payload["features"]["forge.host-v2"] is True
-    assert payload["features"]["forge.host-authoritative-verification-v1"] is True
-    assert payload["features"]["forge.planning-profiles-v1"] is True
-    assert "forge.plan.desktop-protocol" not in payload["features"]
+    assert not [feature for feature in payload["features"] if feature.startswith("forge.")]
 
 
 def test_capabilities_command_emits_machine_readable_json() -> None:

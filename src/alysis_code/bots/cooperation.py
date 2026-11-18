@@ -12,9 +12,11 @@ from pydantic import Field
 from ..cancellation import CooperativeCancellationError, EventCancellationToken
 from ..llm.types import LLMOutputLimitError
 from ..request_estimation import estimate_request_tokens
+from .about_me import peer_context, stored_facts
 from .memory_retrieval import selected
 from .models import Input
 from .store import TERMINAL, Conflict, LimitReached, NotFound, Store, encode, uid
+from .time_zone import time_context
 
 
 class PeerRequest(Input):
@@ -278,13 +280,17 @@ class PeerStore:
             if bot["memory_enabled"]
             else []
         )
-        fingerprint = encode({"bot": bot, "memories": memories})
+        # Both owls belong to the same person, so the recipient reads their About me too.
+        about_me = stored_facts(db, self.owner)
+        fingerprint = encode({"bot": bot, "memories": memories, "about_me": about_me})
         return bot, memories, fingerprint
 
     def context(self, exchange_id: str) -> tuple[dict, list[dict], str]:
         with self.store.connect() as db:
             item = self._get(db, exchange_id)
             bot, memories, fingerprint = self._recipient_context(db, item)
+            time_zone = self.store._time_zone(db, self.owner)
+            about_me = stored_facts(db, self.owner)
         system = (
             "You are the receiving peer bot, answering one bounded same-owner request. "
             "Use your identity and relevant approved memories to review the shared brief. "
@@ -303,6 +309,10 @@ class PeerStore:
             + "\nYour approved memories (use only relevant facts in the reply): "
             + encode(selected(memories, query=item["brief"] + encode(item["corrections"])))
             + "\nMemory selection can be partial. Do not infer absence from omission or invent missing facts."
+            + peer_context(about_me)
+            # The person's date and time when the request was made, as every owl turn has it.
+            + "\n"
+            + time_context(item["created_at"], time_zone)
         )
         messages = [
             {"role": "system", "content": system},

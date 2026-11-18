@@ -23,7 +23,6 @@ def report_create(
     feedback: str | None = typer.Argument(None, help="Optional feedback text."),
     path: Path = typer.Option(Path("."), "--path", help="Workspace path."),
     session_id: str | None = typer.Option(None, "--session-id", help="Retained session id."),
-    run_id: str | None = typer.Option(None, "--run-id", help="Forge run id."),
     latest: bool = typer.Option(
         False,
         "--latest",
@@ -59,7 +58,6 @@ def report_create(
             feedback_text=feedback,
             cfg=cfg,
             session_id=session_id,
-            run_id=run_id,
             latest=latest,
         )
     except (ConfigError, FeedbackReportError) as e:

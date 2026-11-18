@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from ... import __version__
-from ...build_identity import version_line
 from ...config import (
     AppConfig,
     ConfigError,
@@ -30,6 +28,7 @@ from ...skills import resolve_skills_enabled
 from ...step_budget import normalize_step_budget_policy
 from ...tools.availability import get_tool_availability
 from ...tools.registry import iter_builtin_tool_metadata
+from ..desktop_entry import _show_version, capabilities
 from . import _patchable
 from ._entry import UNIDENTIFIABLE_BUILD_EXIT_CODE as UNIDENTIFIABLE_BUILD_EXIT_CODE
 from ._entry import _cli_module, _enforce_clean_build
@@ -43,7 +42,7 @@ if TYPE_CHECKING:
     from rich.table import Table
 
 
-_BACKGROUND_UPDATE_SUBCOMMANDS = {"chat", "run", "forge"}
+_BACKGROUND_UPDATE_SUBCOMMANDS = {"chat", "run"}
 
 
 def _start_background_update_check() -> None:
@@ -70,7 +69,7 @@ def maybe_prompt_update_at_startup(*, console: Any | None = None) -> str | None:
 
 
 # Keep these patchable entry points while loading diagnostic backends only for
-# commands that use them. Registering run/IDE/Forge commands needs neither the
+# commands that use them. Registering run/IDE commands needs neither the
 # auth command implementation nor live provider and sandbox diagnostics.
 def auth_doctor_payload(*args: Any, **kwargs: Any) -> Any:
     from ...auth_diagnostics import auth_doctor_payload
@@ -135,25 +134,7 @@ app = typer.Typer(
 )
 
 
-@app.command()
-def capabilities() -> None:
-    """Emit the credential-free local surface capability contract."""
-
-    from ...capabilities import build_capabilities_payload
-
-    typer.echo(json.dumps(build_capabilities_payload(), sort_keys=True))
-
-
-def _show_version(value: bool) -> None:
-    if not value:
-        return
-    # Version, commit, build timestamp and dirty flag on one line, version
-    # first. Three behaviourally different builds once all reported "0.9.8",
-    # which made every score they produced unattributable; the bare version is
-    # kept as the leading token because the VS Code extension, the managed-CLI
-    # smoke test and the release distribution validator all read this output.
-    typer.echo(version_line(__version__))
-    raise typer.Exit()
+app.command()(capabilities)
 
 
 @app.callback(invoke_without_command=True)
@@ -227,7 +208,7 @@ def main(
     try:
         action = (
             typer.prompt(
-                "Action [1=chat|2=run|3=setup|4=doctor|5=plan|6=quit]",
+                "Action [1=chat|2=run|3=setup|4=doctor|5=quit]",
                 default="1",
             )
             .strip()
@@ -254,9 +235,6 @@ def main(
         return
     if action in {"doctor", "d"}:
         cli.doctor()
-        return
-    if action in {"plan", "p"}:
-        cli.forge_plan(path=Path("."))
         return
     console.print("[yellow]Unknown action.[/yellow] Run `alysis --help`.")
 
@@ -677,7 +655,6 @@ def _doctor_table(cfg: AppConfig) -> Table:
         table.add_row("step_limit", "unlimited")
     else:
         table.add_row("chat_step_limit", str(cfg.max_steps))
-        table.add_row("task_step_limit", str(cfg.task_max_steps))
         table.add_row("subagent_step_limit", str(cfg.subagent_max_steps))
     table.add_row("custom_tools_enabled", "yes" if cfg.custom_tools_enabled else "no")
     table.add_row("stream", "yes" if cfg.stream else "no")

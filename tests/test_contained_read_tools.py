@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+import sys
 from dataclasses import asdict
 
 import pytest
@@ -31,12 +32,32 @@ def test_worker_dispatch_is_fixed_and_root_cannot_be_supplied(tmp_path):
             execute(name, args, tmp_path)
 
 
+def test_file_workers_load_only_the_implementation_they_need(tmp_path, monkeypatch):
+    from alysis_code.host_read_worker import execute_write
+    from alysis_code.tools.fs import capture_file_precondition
+
+    for unrelated in ("git", "git_readonly", "repo_map", "test_discovery"):
+        monkeypatch.setitem(sys.modules, f"alysis_code.tools.{unrelated}", None)
+    monkeypatch.setitem(sys.modules, "alysis_code.git_safe", None)
+
+    name = "σημείωμα.txt"
+    precondition = capture_file_precondition(root=tmp_path, path=name)
+    result = execute_write(
+        "fs_write_prepared",
+        {"path": name, "content": "hello", "precondition": asdict(precondition)},
+        tmp_path,
+    )
+    assert result["created"]
+    assert name in str(execute("fs_list", {}, tmp_path))
+    assert "hello" in str(execute("fs_read", {"path": name}, tmp_path))
+
+
 def test_reader_uses_strict_readonly_offline_policy_and_no_host_fallback(tmp_path, monkeypatch):
     built = []
     calls = []
 
     class Runner:
-        def run(self, **kwargs):
+        def run_file_worker(self, **kwargs):
             calls.append(kwargs)
             return subprocess.CompletedProcess(
                 [], 0, json.dumps({"ok": True, "result": {"files": []}}), ""
@@ -58,9 +79,9 @@ def test_reader_uses_strict_readonly_offline_policy_and_no_host_fallback(tmp_pat
     assert policy.network == "off" and policy.filesystem_access == "read-only"
     assert policy.unavailable_fallback == "refuse" and policy.clear_env
     assert policy.protect_repo_meta and not policy.safe_git_writes
-    command = calls[0]["cmd"]
-    assert "'-I' '-B' '-m' 'alysis_code.host_read_worker'" in command
-    assert calls[0]["cwd"] == tmp_path
+    (encoded,) = calls[0]["arguments"]
+    assert json.loads(base64.b64decode(encoded)) == {"tool": "fs_list", "arguments": {}}
+    assert calls[0]["root"] == tmp_path
     with pytest.raises(ConfigError, match="cannot run"):
         worker.run("fs_write", {})
     with pytest.raises(ConfigError, match="too large"):
@@ -82,7 +103,7 @@ def test_malformed_or_failed_worker_response_never_runs_host_reader(tmp_path, co
     worker = contained.ContainedReadTools(ShellSandboxSettings(backend="windows-mxc"), tmp_path)
 
     class Runner:
-        def run(self, **kwargs):
+        def run_file_worker(self, **kwargs):
             return subprocess.CompletedProcess([], code, stdout, "error")
 
     worker.runner = Runner()

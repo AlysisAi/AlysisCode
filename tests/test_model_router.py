@@ -4,7 +4,6 @@ import pytest
 
 from alysis_code.config import AppConfig, ConfigError
 from alysis_code.model_router import (
-    PREFER_CONTEXT_FORGE,
     ROLE_CODING,
     ROLE_COMPACTOR,
     ROLE_COMPREHENSION,
@@ -71,38 +70,11 @@ def test_subscription_profile_ignores_role_models_outside_account_catalog(monkey
         "profiles": {profile.name: profile.to_dict()},
         "active_profile": profile.name,
         "role_models": {ROLE_ROUTER: "claude-old"},
-        "forge_role_models": {ROLE_REVIEW: "gemini-old"},
     }
 
     assert resolve_model_for_role(cfg=cfg, role=ROLE_ROUTER) == "sub-default"
-    assert (
-        resolve_model_for_role(
-            cfg=cfg,
-            role=ROLE_REVIEW,
-            prefer_context=PREFER_CONTEXT_FORGE,
-        )
-        == "sub-default"
-    )
     cfg.extra_fields["role_models"] = {ROLE_ROUTER: "sub-alt"}
     assert resolve_model_for_role(cfg=cfg, role=ROLE_ROUTER) == "sub-alt"
-
-
-def test_resolve_router_model_prefers_forge_override(monkeypatch) -> None:
-    cfg = AppConfig(model="default-model")
-    cfg.extra_fields = {
-        "role_models": {ROLE_ROUTER: "config-router-model"},
-        "forge_role_models": {ROLE_ROUTER: "forge-router-model"},
-    }
-    monkeypatch.delenv("ALYSIS_MODEL_ROUTER", raising=False)
-
-    resolved = resolve_model_for_role(
-        cfg=cfg,
-        role=ROLE_ROUTER,
-        plan={},
-        prefer_context=PREFER_CONTEXT_FORGE,
-    )
-
-    assert resolved == "forge-router-model"
 
 
 def test_resolve_model_for_role_falls_back_to_cfg_model(monkeypatch) -> None:

@@ -9,14 +9,10 @@ import pytest
 from alysis_code import cli as cli_mod
 from alysis_code.agent_loop import ToolDef, create_session
 from alysis_code.config import AppConfig
-from alysis_code.execution_budget import compute_execution_prompt_budget_inputs
 from alysis_code.llm.types import LLMResponse, ToolCall
 from alysis_code.surface import ApprovalDecision, ApprovalRequest, NoopSurface
 from alysis_code.tools.availability import (
     _reset_tool_availability_for_tests,
-    get_tool_availability,
-    mark_unavailable,
-    register_tool_availability,
     unavailable_tool_result,
 )
 
@@ -216,23 +212,3 @@ def test_failed_mode_rebuild_keeps_previous_tools_and_availability(
         assert session.tool_availability_snapshot is original_snapshot
     finally:
         session.close()
-
-
-def test_execution_budget_scratch_build_does_not_publish_availability(tmp_path: Path) -> None:
-    reason = "legacy caller has no persona switch surface"
-    register_tool_availability("switch_mode", optional=True)
-    mark_unavailable("switch_mode", reason)
-
-    compute_execution_prompt_budget_inputs(
-        cfg=AppConfig(model="test-model", routing_mode="code_only"),
-        root=tmp_path,
-        mode="auto",
-        yes=True,
-        non_interactive=True,
-        verification_enabled=False,
-        subagents_enabled=False,
-    )
-
-    state = get_tool_availability("switch_mode")
-    assert state is not None
-    assert state.unavailable_reason == reason

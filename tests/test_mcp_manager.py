@@ -15,11 +15,9 @@ from alysis_code.agent_loop import create_session
 from alysis_code.config import AppConfig, ConfigError
 from alysis_code.mcp.config import load_resolved_mcp_config, user_mcp_config_path
 from alysis_code.mcp.errors import McpConfigError
-from alysis_code.mcp.forge_scope import ForgeAllowedMcpTool, ForgeTaskMcpScope
 from alysis_code.mcp.manager import (
     McpManager,
     _validate_function_tool_schema,
-    create_forge_task_scoped_mcp_manager,
 )
 from alysis_code.mcp.untrusted_content import (
     MCP_UNTRUSTED_TEXT_CHAR_LIMIT,
@@ -300,7 +298,7 @@ def test_mcp_manager_filters_active_servers_by_runtime_kind(
                 "alpha": {
                     "transport": "stdio",
                     "command": "tool-a",
-                    "enabled_in": ["swarm_worker"],
+                    "enabled_in": ["subagent"],
                 },
                 "beta": {
                     "transport": "http",
@@ -320,7 +318,7 @@ def test_mcp_manager_filters_active_servers_by_runtime_kind(
     manager = McpManager(
         resolved_config=resolved,
         workspace_root=tmp_path,
-        runtime_kind=RuntimeKind.SWARM_WORKER,
+        runtime_kind=RuntimeKind.SUBAGENT,
         session_id="sid",
     )
 
@@ -423,7 +421,7 @@ def test_mcp_manager_rejects_invalid_tool_schema(
                 ]
             ]
         },
-        runtime_kind=RuntimeKind.FORGE_EXEC,
+        runtime_kind=RuntimeKind.ONE_SHOT,
     )
     try:
         # The server is left out of the session; its reason is kept for status.
@@ -1007,10 +1005,7 @@ def test_mcp_manager_snapshot_includes_roots_capability_without_workspace_path_l
     [
         (RuntimeKind.INTERACTIVE_CHAT, ["mcp_resources_list", "mcp_resource_read"]),
         (RuntimeKind.ONE_SHOT, ["mcp_resources_list", "mcp_resource_read"]),
-        (RuntimeKind.FORGE_EXEC, ["mcp_resources_list", "mcp_resource_read"]),
-        (RuntimeKind.SWARM_WORKER, []),
         (RuntimeKind.SUBAGENT, []),
-        (RuntimeKind.CONFLICT_AUTO_RESOLVE, []),
     ],
 )
 def test_mcp_manager_exposes_generic_resource_tools_only_in_supported_runtimes(
@@ -1832,260 +1827,6 @@ def test_global_prompt_list_still_fails_when_any_enabled_server_is_broken(
         manager.close()
 
 
-def test_forge_task_scoped_manager_filters_bindings_without_mutating_frozen_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manager = _load_manager(
-        tmp_path,
-        monkeypatch,
-        {
-            "capabilities": {"tools": {}, "resources": {}},
-            "tools_pages": [
-                [
-                    {
-                        "name": "echo",
-                        "description": "Echo tool",
-                        "inputSchema": {"type": "object", "properties": {}, "required": []},
-                    },
-                    {
-                        "name": "comment_pull_request",
-                        "description": "Comment tool",
-                        "inputSchema": {"type": "object", "properties": {}, "required": []},
-                    },
-                ]
-            ],
-            "resources_pages": [
-                [
-                    {
-                        "uri": "https://example.com/spec.json",
-                        "name": "spec",
-                        "mimeType": "application/json",
-                    }
-                ]
-            ],
-        },
-        runtime_kind=RuntimeKind.FORGE_EXEC,
-        server_overrides={"resources_mode": "listed_read_only"},
-    )
-    try:
-        base_aliases = [binding.tool_alias for binding in manager.tool_bindings]
-        assert any(alias.startswith("mcp__alpha__echo") for alias in base_aliases)
-        assert any(alias.startswith("mcp__alpha__comment_pull_request") for alias in base_aliases)
-        assert "mcp_resources_list" in base_aliases
-        assert "mcp_resource_read" in base_aliases
-
-        scoped = manager.scope_for_forge_task(
-            task_scope=ForgeTaskMcpScope(
-                allow_resources=True,
-                allowed_tools=(ForgeAllowedMcpTool(server_id="alpha", tool_name="echo"),),
-            )
-        )
-        scoped_aliases = [binding.tool_alias for binding in scoped.tool_bindings]
-
-        assert len(scoped_aliases) == 3
-        assert any(alias.startswith("mcp__alpha__echo") for alias in scoped_aliases)
-        assert "mcp_resources_list" in scoped_aliases
-        assert "mcp_resource_read" in scoped_aliases
-        assert not any("comment_pull_request" in alias for alias in scoped_aliases)
-
-        base_snapshot = manager.catalog_snapshot_metadata()
-        scoped_snapshot = scoped.catalog_snapshot_metadata()
-        assert "forge_task_mcp_scope" not in base_snapshot
-        assert scoped_snapshot["forge_task_mcp_scope"] == {
-            "forge_task_mcp_scope_present": True,
-            "forge_task_resources_allowed": True,
-            "forge_task_allowed_live_tool_count": 1,
-            "forge_task_filtered_live_tool_count": 1,
-            "forge_task_filtered_resource_tool_count": 2,
-            "forge_task_filtered_tool_count": 3,
-            "forge_task_live_bootstrap_skipped": False,
-        }
-        assert scoped_snapshot["exposed_tool_count"] == 3
-        assert any(
-            alias.startswith("mcp__alpha__echo")
-            for alias in scoped_snapshot["exposed_tool_aliases"]
-        )
-        assert "mcp_resources_list" in scoped_snapshot["exposed_tool_aliases"]
-        assert "mcp_resource_read" in scoped_snapshot["exposed_tool_aliases"]
-        assert not any(
-            "comment_pull_request" in alias for alias in scoped_snapshot["exposed_tool_aliases"]
-        )
-        scoped_server_catalog = scoped_snapshot["server_catalogs"][0]
-        assert scoped_server_catalog["exposed_tool_names"] == ["echo"]
-        assert scoped_server_catalog["exposed_tool_count"] == 1
-        assert base_snapshot["exposed_tool_count"] == 4
-        assert manager.catalog_snapshot_metadata()["exposed_tool_count"] == 4
-
-        summary = scoped.execution_context_summary()
-        assert summary["active_server_ids"] == ["alpha"]
-        assert summary["task_scope"] == {
-            "present": True,
-            "allow_resources": True,
-            "allowed_tools": [{"server_id": "alpha", "tool_name": "echo"}],
-        }
-        assert summary["servers"] == [
-            {
-                "server_id": "alpha",
-                "tool_names": ["echo"],
-                "resources_available": True,
-            }
-        ]
-        summary_text = json.dumps(summary, sort_keys=True)
-        assert os.fspath(tmp_path.resolve()) not in summary_text
-        assert tmp_path.resolve().as_uri() not in summary_text
-    finally:
-        manager.close()
-
-
-def test_create_forge_task_scoped_mcp_manager_without_scope_skips_live_bootstrap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    missing_command = os.fspath(tmp_path / "missing-mcp-server")
-    _write_user_stdio_config(
-        tmp_path,
-        monkeypatch,
-        None,
-        server_overrides={
-            "command": missing_command,
-            "resources_mode": "listed_read_only",
-        },
-    )
-
-    manager = create_forge_task_scoped_mcp_manager(
-        workspace_root=tmp_path,
-        session_id="sid",
-        task_scope=None,
-    )
-    try:
-        assert manager.tool_bindings == ()
-        assert manager.resolved_config.has_any_config is False
-        assert manager.execution_context_summary() == {
-            "active_server_ids": [],
-            "servers": [],
-            "task_scope": {
-                "present": False,
-                "allow_resources": False,
-                "allowed_tools": [],
-            },
-        }
-        assert manager.startup_metadata()["active_server_ids"] == []
-        assert manager.catalog_snapshot_metadata() == {
-            "catalog_initialized": True,
-            "live_tool_runtime_enabled": False,
-            "active_server_ids": [],
-            "active_server_count": 0,
-            "server_catalogs": [],
-            "exposed_tool_aliases": [],
-            "exposed_tool_names": [],
-            "exposed_tool_count": 0,
-            "snapshotted_resource_count": 0,
-            "resource_tool_names": [],
-            "resource_tool_count": 0,
-            "forge_task_mcp_scope": {
-                "forge_task_mcp_scope_present": False,
-                "forge_task_resources_allowed": False,
-                "forge_task_allowed_live_tool_count": 0,
-                "forge_task_filtered_live_tool_count": 0,
-                "forge_task_filtered_resource_tool_count": 0,
-                "forge_task_filtered_tool_count": 0,
-                "forge_task_live_bootstrap_skipped": True,
-            },
-        }
-    finally:
-        manager.close()
-
-
-def test_create_forge_task_scoped_mcp_manager_without_scope_ignores_malformed_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cfg_dir = tmp_path / "cfg"
-    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(cfg_dir))
-    _write_json(
-        user_mcp_config_path(),
-        {
-            "servers": {
-                "alpha": {
-                    "transport": "stdio",
-                    "command": os.fspath(tmp_path / "missing-mcp-server"),
-                    "resources_mode": 123,
-                }
-            }
-        },
-    )
-
-    manager = create_forge_task_scoped_mcp_manager(
-        workspace_root=tmp_path,
-        session_id="sid",
-        task_scope=None,
-    )
-    try:
-        assert manager.tool_bindings == ()
-        assert manager.resolved_config.has_any_config is False
-        assert manager.startup_metadata()["resolved_server_ids"] == []
-        assert manager.catalog_snapshot_metadata()["server_catalogs"] == []
-    finally:
-        manager.close()
-
-
-def test_create_forge_task_scoped_mcp_manager_with_non_empty_scope_keeps_live_bootstrap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    missing_command = os.fspath(tmp_path / "missing-mcp-server")
-    _write_user_stdio_config(
-        tmp_path,
-        monkeypatch,
-        None,
-        server_overrides={"command": missing_command},
-    )
-
-    manager = create_forge_task_scoped_mcp_manager(
-        workspace_root=tmp_path,
-        session_id="sid",
-        task_scope=ForgeTaskMcpScope(allow_resources=True),
-    )
-    try:
-        # Bootstrap really tried to start the server; its failure is kept per server.
-        assert manager.tool_bindings == ()
-        assert missing_command in manager.server_startup_errors()["alpha"]
-    finally:
-        manager.close()
-
-
-def test_forge_task_scoped_manager_rejects_unknown_allowed_tool(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manager = _load_manager(
-        tmp_path,
-        monkeypatch,
-        {
-            "tools_pages": [
-                [
-                    {
-                        "name": "echo",
-                        "description": "Echo tool",
-                        "inputSchema": {"type": "object", "properties": {}, "required": []},
-                    }
-                ]
-            ]
-        },
-        runtime_kind=RuntimeKind.FORGE_EXEC,
-    )
-    try:
-        scoped = manager.scope_for_forge_task(
-            task_scope=ForgeTaskMcpScope(
-                allowed_tools=(ForgeAllowedMcpTool(server_id="alpha", tool_name="missing_tool"),),
-            )
-        )
-        with pytest.raises(ConfigError) as exc_info:
-            _ = scoped.tool_bindings
-        message = str(exc_info.value)
-        assert "mcp_scope references MCP tools" in message
-        assert "missing_tool" in message
-        assert "frozen session catalog" in message
-    finally:
-        manager.close()
-
-
 def test_mcp_manager_sanitizes_prompt_facing_structured_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2548,10 +2289,7 @@ def test_create_session_no_mcp_config_keeps_builtin_tools_only(
     [
         (RuntimeKind.INTERACTIVE_CHAT, True),
         (RuntimeKind.ONE_SHOT, True),
-        (RuntimeKind.FORGE_EXEC, True),
-        (RuntimeKind.SWARM_WORKER, False),
         (RuntimeKind.SUBAGENT, False),
-        (RuntimeKind.CONFLICT_AUTO_RESOLVE, False),
     ],
 )
 def test_create_session_exposes_mcp_tools_only_in_supported_runtimes(
@@ -2599,10 +2337,7 @@ def test_create_session_exposes_mcp_tools_only_in_supported_runtimes(
     [
         (RuntimeKind.INTERACTIVE_CHAT, True),
         (RuntimeKind.ONE_SHOT, True),
-        (RuntimeKind.FORGE_EXEC, True),
-        (RuntimeKind.SWARM_WORKER, False),
         (RuntimeKind.SUBAGENT, False),
-        (RuntimeKind.CONFLICT_AUTO_RESOLVE, False),
     ],
 )
 def test_create_session_exposes_generic_mcp_resource_tools_only_in_supported_runtimes(
@@ -2703,7 +2438,6 @@ def test_create_session_persists_runtime_kind_and_mcp_startup_metadata(
     sessions_dir = tmp_path / "sessions"
     cfg = _basic_cfg()
     cfg.step_budget_policy = "fixed"
-    cfg.task_max_steps = 41
     cfg.subagent_max_steps = 9
 
     session = create_session(
@@ -2715,7 +2449,7 @@ def test_create_session_persists_runtime_kind_and_mcp_startup_metadata(
         no_log=False,
         api_key_override="k",
         session_log_dir_override=sessions_dir,
-        runtime_kind=RuntimeKind.SWARM_WORKER,
+        runtime_kind=RuntimeKind.SUBAGENT,
         enable_chat_turn_step_budget=True,
         chat_turn_fixed_override=4,
     )
@@ -2727,10 +2461,9 @@ def test_create_session_persists_runtime_kind_and_mcp_startup_metadata(
     )
     payload = dict(session_start.get("payload") or {})
 
-    assert session_start["runtime_kind"] == "swarm_worker"
-    assert payload["runtime_kind"] == "swarm_worker"
+    assert session_start["runtime_kind"] == "subagent"
+    assert payload["runtime_kind"] == "subagent"
     assert payload["step_budget_policy"] == "limited"
-    assert payload["task_max_steps"] == 41
     assert payload["subagent_max_steps"] == 9
     assert payload["enable_chat_turn_step_budget"] is True
     assert payload["chat_turn_fixed_override"] == 4

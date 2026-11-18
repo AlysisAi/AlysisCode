@@ -27,10 +27,6 @@ class WorkspaceRiskLevel:
 
 class WorkspaceAction:
     CHAT = "chat"
-    FORGE = "forge"
-    FORGE_PLAN = "forge_plan"
-    FORGE_RUN = "forge_run"
-    SWARM = "swarm"
 
 
 @dataclass(frozen=True)
@@ -132,37 +128,7 @@ def resolve_workspace_binding(
 
 
 def workspace_policy(action: str) -> WorkspacePolicy:
-    normalized = str(action or "").strip().lower()
-    if normalized == WorkspaceAction.FORGE:
-        return WorkspacePolicy(
-            action=WorkspaceAction.FORGE,
-            allow_guarded_override=False,
-            interactive_guarded_resolution=False,
-            interactive_allow_use_current=False,
-        )
-    if normalized == WorkspaceAction.FORGE_PLAN:
-        return WorkspacePolicy(
-            action=WorkspaceAction.FORGE_PLAN,
-            allow_guarded_override=True,
-            interactive_guarded_resolution=True,
-            interactive_allow_use_current=False,
-        )
-    if normalized == WorkspaceAction.FORGE_RUN:
-        # Same strength as swarm: both execute plan tasks and mutate the workspace.
-        # It gets its own action so the guard message names the command the user ran.
-        return WorkspacePolicy(
-            action=WorkspaceAction.FORGE_RUN,
-            allow_guarded_override=True,
-            interactive_guarded_resolution=False,
-            interactive_allow_use_current=False,
-        )
-    if normalized == WorkspaceAction.SWARM:
-        return WorkspacePolicy(
-            action=WorkspaceAction.SWARM,
-            allow_guarded_override=True,
-            interactive_guarded_resolution=False,
-            interactive_allow_use_current=False,
-        )
+    del action  # Chat and run are the only workspace actions.
     return WorkspacePolicy(
         action=WorkspaceAction.CHAT,
         allow_guarded_override=True,
@@ -172,15 +138,7 @@ def workspace_policy(action: str) -> WorkspacePolicy:
 
 
 def workspace_action_label(action: str) -> str:
-    normalized = workspace_policy(action).action
-    if normalized == WorkspaceAction.FORGE:
-        return "Forge"
-    if normalized == WorkspaceAction.FORGE_PLAN:
-        return "forge plan"
-    if normalized == WorkspaceAction.FORGE_RUN:
-        return "forge run"
-    if normalized == WorkspaceAction.SWARM:
-        return "forge swarm"
+    del action  # Chat and run are the only workspace actions.
     return "chat/run startup"
 
 
@@ -191,29 +149,11 @@ def workspace_policy_violation_message(
 ) -> str:
     policy = workspace_policy(action)
     label = workspace_action_label(policy.action)
-    root_label = os.fspath(binding.workspace_context.workspace_root)
     requested_label = os.fspath(binding.requested_path)
     detail = "; ".join(binding.risk_reasons) or "workspace selection is not allowed"
     common_guidance = "Use --path <project>, choose/create a project folder, or start alysis from inside a project."
     if binding.risk_level == WorkspaceRiskLevel.BLOCKED:
         return f"{label} is blocked for {requested_label}: {detail}. {common_guidance}"
-    if policy.action == WorkspaceAction.FORGE:
-        return (
-            f"{label} requires a narrower workspace than {root_label}: {detail}. {common_guidance}"
-        )
-    if policy.action in {WorkspaceAction.FORGE_RUN, WorkspaceAction.SWARM}:
-        return (
-            f"{label} requires a healthy workspace. Current binding for {requested_label} is "
-            f"guarded: {detail}. {common_guidance} "
-            f"Pass --allow-broad-workspace only if you intentionally want {label} to operate "
-            "on this broad workspace."
-        )
-    if policy.action == WorkspaceAction.FORGE_PLAN:
-        return (
-            f"{label} is guarded for {requested_label}: {detail}. {common_guidance} "
-            "Pass --allow-broad-workspace only if you intentionally want to plan from this "
-            "broad workspace."
-        )
     return (
         f"{label} is guarded for {requested_label}: {detail}. {common_guidance} "
         "Pass --allow-broad-workspace to continue non-interactively."
@@ -243,7 +183,7 @@ def classify_workspace_risk(workspace_context: WorkspaceContext) -> tuple[str, t
     if _is_filesystem_root(workspace_root):
         return (
             WorkspaceRiskLevel.BLOCKED,
-            ("filesystem root '/' is not a valid forge workspace",),
+            ("filesystem root '/' is not a valid workspace",),
         )
 
     home_dir = _home_directory()

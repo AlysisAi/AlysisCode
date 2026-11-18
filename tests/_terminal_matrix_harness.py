@@ -217,7 +217,7 @@ def assert_consistency(scenario: dict[str, Any], ansi: str) -> str:
         assert not panel_present(ansi)
 
     visible = to_visible(ansi)
-    for anchor in ("Alysis Code", "workspace", "model", "version", "/forge", "/status", "/help"):
+    for anchor in ("Alysis Code", "workspace", "model", "version", "/resume", "/status", "/help"):
         assert anchor in visible
     return actual_theme
 

@@ -417,7 +417,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "gpt-5-chat-latest": "gpt-5.6-sol",
             "gpt-5.1-chat-latest": "gpt-5.6-sol",
             # gpt-5.3-codex cannot be called on /v1/chat/completions at all;
-            # on this preset it remaps to Codex's own documented successor.
+            # on this preset it remaps to the model's documented successor.
             "gpt-5.3-codex": "gpt-5.6-sol",
         },
         validation_model="gpt-5.6-luna",

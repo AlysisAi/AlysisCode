@@ -64,7 +64,6 @@ from alysis_code.profiles import (
 from alysis_code.step_budget import (
     DEFAULT_CHAT_MAX_STEPS,
     DEFAULT_SUBAGENT_MAX_STEPS,
-    DEFAULT_TASK_MAX_STEPS,
 )
 
 
@@ -621,7 +620,6 @@ def test_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     cfg.temperature = 0.2
     cfg.stream = True
     cfg.step_budget_policy = "fixed"
-    cfg.task_max_steps = 144
     cfg.subagent_max_steps = 12
     cfg.subagent_timeout_s = 321.5
     cfg.subagent_orchestration.max_background_children = 5
@@ -636,16 +634,6 @@ def test_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     cfg.skills_enabled = False
     cfg.skills_auto_invoke = True
     cfg.custom_tools_enabled = False
-    cfg.assets.enabled = False
-    cfg.assets.comprehension.role = "asset_reader"
-    cfg.assets.comprehension.vision_fallback_profile = "vision-heavy"
-    cfg.assets.comprehension.vision_with_ocr_when_available = False
-    cfg.assets.comprehension.ocr_enabled = "always"
-    cfg.assets.comprehension.ocr_provider = "tesseract"
-    cfg.assets.comprehension.ocr_timeout_seconds = 45
-    cfg.assets.comprehension.image_max_edge_pixels = 1536
-    cfg.assets.comprehension.questioning_mode = "assertive"
-    cfg.assets.comprehension.schema_version = 2
     save_config(cfg)
 
     cfg2 = load_config()
@@ -654,7 +642,6 @@ def test_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert cfg2.temperature == 0.2
     assert cfg2.stream is True
     assert cfg2.step_budget_policy == "limited"
-    assert cfg2.task_max_steps == 144
     assert cfg2.subagent_max_steps == 12
     assert cfg2.subagent_timeout_s == 321.5
     assert cfg2.subagent_orchestration.max_background_children == 5
@@ -669,16 +656,6 @@ def test_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert cfg2.skills_enabled is False
     assert cfg2.skills_auto_invoke is True
     assert cfg2.custom_tools_enabled is False
-    assert cfg2.assets.enabled is False
-    assert cfg2.assets.comprehension.role == "asset_reader"
-    assert cfg2.assets.comprehension.vision_fallback_profile == "vision-heavy"
-    assert cfg2.assets.comprehension.vision_with_ocr_when_available is False
-    assert cfg2.assets.comprehension.ocr_enabled == "always"
-    assert cfg2.assets.comprehension.ocr_provider == "tesseract"
-    assert cfg2.assets.comprehension.ocr_timeout_seconds == 45
-    assert cfg2.assets.comprehension.image_max_edge_pixels == 1536
-    assert cfg2.assets.comprehension.questioning_mode == "assertive"
-    assert cfg2.assets.comprehension.schema_version == 2
     assert config_path().name == "config.json"
 
 
@@ -809,7 +786,6 @@ def test_app_config_uses_shared_step_budget_defaults() -> None:
 
     assert cfg.step_budget_policy == "autonomous"
     assert cfg.max_steps == DEFAULT_CHAT_MAX_STEPS
-    assert cfg.task_max_steps == DEFAULT_TASK_MAX_STEPS
     assert cfg.subagent_max_steps == DEFAULT_SUBAGENT_MAX_STEPS
     assert DEFAULT_SUBAGENT_TIMEOUT_S is None
     assert cfg.subagent_timeout_s is None
@@ -1021,7 +997,6 @@ class TestScalarConfigSettings(unittest.TestCase):
             "skills_auto_invoke": True,
             "bundled_skills_enabled": True,
             "custom_tools_enabled": True,
-            "integration_verify_mode": "warn",
         }
         cfg = AppConfig()
         for key, expected in defaults.items():
@@ -1058,7 +1033,6 @@ class TestScalarConfigSettings(unittest.TestCase):
             ("skills_auto_invoke", (("on", True),), ("maybe",)),
             ("bundled_skills_enabled", (("off", False),), ("maybe",)),
             ("custom_tools_enabled", (("false", False), ("on", True)), ("maybe",)),
-            ("integration_verify_mode", (("strict", "strict"), ("off", "off")), ("maybe",)),
             ("llm_timeout_s", (("12.5", 12.5),), ("0", "not-a-number")),
             ("llm_enable_thinking", (("false", False), ("true", True), ("auto", None)), ("maybe",)),
             (
@@ -1081,14 +1055,10 @@ class TestScalarConfigSettings(unittest.TestCase):
                     set_config_value(cfg, key, raw)
 
 
-def test_set_task_and_subagent_max_steps_validation() -> None:
+def test_set_subagent_max_steps_validation() -> None:
     cfg = AppConfig()
-    cfg = set_config_value(cfg, "task_max_steps", "120")
     cfg = set_config_value(cfg, "subagent_max_steps", "9")
-    assert cfg.task_max_steps == 120
     assert cfg.subagent_max_steps == 9
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "task_max_steps", "0")
     with pytest.raises(ConfigError):
         set_config_value(cfg, "subagent_max_steps", "-1")
 
@@ -1109,46 +1079,6 @@ def test_load_config_defaults_missing_skills_auto_invoke_to_true_and_preserves_f
         encoding="utf-8",
     )
     assert load_config().skills_auto_invoke is False
-
-
-def test_set_assets_config_validation() -> None:
-    cfg = AppConfig()
-
-    cfg = set_config_value(cfg, "assets.enabled", "false")
-    cfg = set_config_value(cfg, "assets.comprehension.role", "asset_reader")
-    cfg = set_config_value(cfg, "assets.comprehension.vision_fallback_profile", "vision-heavy")
-    cfg = set_config_value(cfg, "assets.comprehension.vision_with_ocr_when_available", "off")
-    cfg = set_config_value(cfg, "assets.comprehension.ocr_enabled", "always")
-    cfg = set_config_value(cfg, "assets.comprehension.ocr_provider", "tesseract")
-    cfg = set_config_value(cfg, "assets.comprehension.ocr_timeout_seconds", "45")
-    cfg = set_config_value(cfg, "assets.comprehension.image_max_edge_pixels", "1536")
-    cfg = set_config_value(cfg, "assets.comprehension.questioning_mode", "assumption_friendly")
-    cfg = set_config_value(cfg, "assets.comprehension.schema_version", "2")
-
-    assert cfg.assets.enabled is False
-    assert cfg.assets.comprehension.role == "asset_reader"
-    assert cfg.assets.comprehension.vision_fallback_profile == "vision-heavy"
-    assert cfg.assets.comprehension.vision_with_ocr_when_available is False
-    assert cfg.assets.comprehension.ocr_enabled == "always"
-    assert cfg.assets.comprehension.ocr_provider == "tesseract"
-    assert cfg.assets.comprehension.ocr_timeout_seconds == 45
-    assert cfg.assets.comprehension.image_max_edge_pixels == 1536
-    assert cfg.assets.comprehension.questioning_mode == "assumption_friendly"
-    assert cfg.assets.comprehension.schema_version == 2
-
-    cfg = set_config_value(cfg, "assets.comprehension.vision_fallback_profile", "")
-    assert cfg.assets.comprehension.vision_fallback_profile is None
-
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "assets.enabled", "maybe")
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "assets.comprehension.role", "")
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "assets.comprehension.ocr_enabled", "enabled")
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "assets.comprehension.questioning_mode", "reckless")
-    with pytest.raises(ConfigError):
-        set_config_value(cfg, "assets.comprehension.ocr_timeout_seconds", "0")
 
 
 def test_default_web_search_mode_is_auto() -> None:
@@ -1672,16 +1602,6 @@ def test_set_role_model_router_config_value() -> None:
 
     cfg = set_config_value(cfg, "role_models.router", "")
     assert cfg.extra_fields["role_models"] == {"coding": "coding-model"}
-
-
-def test_set_forge_role_model_router_config_value() -> None:
-    cfg = AppConfig()
-
-    cfg = set_config_value(cfg, "forge_role_models.router", "cheap-router-model")
-    assert cfg.extra_fields["forge_role_models"] == {"router": "cheap-router-model"}
-
-    cfg = set_config_value(cfg, "forge_role_models.router", "   ")
-    assert "forge_role_models" not in cfg.extra_fields
 
 
 def test_set_role_model_config_rejects_unknown_role() -> None:

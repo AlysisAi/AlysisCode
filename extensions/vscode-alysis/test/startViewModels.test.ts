@@ -664,10 +664,10 @@ test("a slash command takes the composer back from the @ picker", async () => {
     commands: [
       {
         id: "c1",
-        command: "alysis.showForge",
-        title: "Open Forge",
+        command: "alysis.showHistory",
+        title: "Task History",
         description: "",
-        category: "Forge",
+        category: "Alysis Code",
         mutates: false,
         available: true,
         unavailableReason: ""
@@ -690,9 +690,9 @@ test("a slash command takes the composer back from the @ picker", async () => {
     }
   }));
 
-  input.value = "/forge";
-  input.selectionStart = 6;
-  input.selectionEnd = 6;
+  input.value = "/hist";
+  input.selectionStart = 5;
+  input.selectionEnd = 5;
   input.dispatchEvent(new window.Event("input", { bubbles: true }));
 
   assert.equal(document.querySelector("#commandPalette").hidden, false);
@@ -749,9 +749,9 @@ test("the '/' menu lists real slash commands, inserts the pick, and closes once 
   const { window, messages } = mountStartView();
   postState(window, {
     slashCommands: [
-      { command: "/forge plan", title: "Forge Plan", description: "Create a Forge plan from an instruction.", usage: "/forge plan <instruction>", takesArgs: true },
+      { command: "/model", title: "Model", description: "Switch the model for this task.", usage: "/model <name>", takesArgs: true },
       { command: "/doctor", title: "Doctor", description: "Check the local setup.", usage: "/doctor", takesArgs: false },
-      { command: "/execute preview", title: "Forge Execute Preview", description: "Preview.", usage: "/execute preview", takesArgs: false }
+      { command: "/compact", title: "Compact", description: "Summarize earlier context.", usage: "/compact", takesArgs: false }
     ]
   });
   const document = window.document;
@@ -762,22 +762,22 @@ test("the '/' menu lists real slash commands, inserts the pick, and closes once 
   input.dispatchEvent(new window.Event("input", { bubbles: true }));
   assert.equal(palette.hidden, false);
   const rows = Array.from(document.querySelectorAll("#commandList .command-row")).map((row: any) => text(row.querySelector("code")));
-  assert.deepEqual(rows, ["/doctor", "/execute preview", "/forge plan"]);
+  assert.deepEqual(rows, ["/compact", "/doctor", "/model"]);
 
-  input.value = "/pl";
+  input.value = "/mo";
   input.dispatchEvent(new window.Event("input", { bubbles: true }));
   assert.equal(document.querySelectorAll("#commandList .command-row").length, 1);
   click(window, document.querySelector("#commandList .command-row"));
-  assert.equal(input.value, "/forge plan ", "an argument-taking command is inserted with a trailing space");
+  assert.equal(input.value, "/model ", "an argument-taking command is inserted with a trailing space");
   assert.equal(palette.hidden, true);
 
-  input.value = "/forge plan add a login page";
+  input.value = "/model my-local-model";
   input.dispatchEvent(new window.Event("input", { bubbles: true }));
   assert.equal(palette.hidden, true, "typing arguments must not reopen the menu");
   input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   const submit = messages.find((message: any) => message.type === "task.submit");
   assert.ok(submit, "Enter sends the slash command with its arguments");
-  assert.equal(submit.instruction, "/forge plan add a login page");
+  assert.equal(submit.instruction, "/model my-local-model");
 });
 
 test("picking an argument-less slash command sends it immediately", () => {

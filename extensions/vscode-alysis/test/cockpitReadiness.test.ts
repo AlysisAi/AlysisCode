@@ -4,11 +4,8 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
-  ASSETS_METHODS,
   BASELINE_COCKPIT_METHODS,
   CHAT_RUN_METHODS,
-  FORGE_PLAN_SYNC_METHODS,
-  FORGE_SWARM_METHODS,
   MANAGE_CONFIG_METHODS,
   MANAGE_PROFILES_METHODS,
   DOCTOR_METHODS,
@@ -151,9 +148,9 @@ test("an outdated CLI blocks and offers the upgrade command", () => {
   assert.equal(readiness.ok, false);
 });
 
-test("permanently gated capabilities never turn an up-to-date engine into 'An update is needed'", () => {
-  // A current CLI advertises every method the extension can use; the only unsupported features are
-  // the ones that have no backend at all (Open as PR, Keep/Discard) or are security-model gated.
+test("an engine without the retired plan-and-execute methods is not asked to upgrade for them", () => {
+  // Current engines no longer ship forge.* or diff.* bridge methods. No compatibility gate may still
+  // require them, or every up-to-date engine would show "An update is needed".
   const compatibility = evaluateBridgeCompatibility({
     ok: true,
     name: "alysis",
@@ -164,26 +161,25 @@ test("permanently gated capabilities never turn an up-to-date engine into 'An up
       methods: [
         ...BASELINE_COCKPIT_METHODS,
         ...CHAT_RUN_METHODS,
-        ...FORGE_PLAN_SYNC_METHODS,
-        ...FORGE_SWARM_METHODS,
         ...MANAGE_CONFIG_METHODS,
         ...MANAGE_PROFILES_METHODS,
-        ...DOCTOR_METHODS,
-        ...ASSETS_METHODS
+        ...DOCTOR_METHODS
       ],
       events: [],
       modes: ["readonly", "review", "auto"],
       transport: "stdio"
     }
   });
-  assert.equal(compatibility.features.forgePr.supported, false);
-  assert.equal(compatibility.features.diffApplyDiscard.supported, false);
+  for (const feature of Object.values(compatibility.features)) {
+    for (const method of feature.requiredMethods) {
+      assert.doesNotMatch(method, /^(forge|diff)\./, `${feature.id} still requires ${method}`);
+    }
+  }
 
   const readiness = buildCockpitReadiness(input({ runtime: runtimeSnapshot({ compatibility }) }));
 
-  // Some version-gated features ARE missing here (doctor bundle etc. are only partially listed), so
-  // the blocker may exist — but it must be driven only by version_gate reasons, never by the
-  // permanently gated slots. Count exactly what the card claims.
+  // Some version-gated features ARE missing here (tools, skills, etc. are not listed), so the blocker
+  // may exist — but it must be driven only by version_gate reasons. Count exactly what the card claims.
   const outdated = readiness.blockers.find((blocker) => blocker.id === "cli_outdated");
   const versionGated = Object.values(compatibility.features).filter(
     (feature) => !feature.supported && feature.reason?.category === "version_gate"
@@ -206,10 +202,9 @@ test("a fully capable engine reports no upgrade blocker at all", () => {
     feature.disabledReason = null;
     feature.missingMethods = [];
   }
-  compatibility.features.forgePr.supported = false;
-  compatibility.features.forgePr.reason = { category: "not_applicable", message: "Not available in the IDE" };
-  compatibility.features.diffApplyDiscard.supported = false;
-  compatibility.features.diffApplyDiscard.reason = { category: "not_applicable", message: "Not available in the IDE" };
+  // Gates an upgrade cannot restore (no IDE backend, security model) never count as outdated.
+  compatibility.features.report.supported = false;
+  compatibility.features.report.reason = { category: "not_applicable", message: "Not available in the IDE" };
   compatibility.features.modesFullaccess.supported = false;
   compatibility.features.modesFullaccess.reason = { category: "security_model", message: "Blocked pending the security model" };
 

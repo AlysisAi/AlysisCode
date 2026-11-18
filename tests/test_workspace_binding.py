@@ -8,7 +8,6 @@ import pytest
 
 from alysis_code import workspace_binding as workspace_binding_mod
 from alysis_code.workspace_binding import (
-    WorkspaceAction,
     WorkspaceBindingError,
     WorkspaceRiskLevel,
     discover_workspace_candidates,
@@ -279,21 +278,3 @@ def test_resolve_startup_workspace_binding_enter_path_cancel_returns_to_action_m
     assert binding.created_path is False
     assert binding.binding_source == "startup_candidate"
     assert binding.requested_path == project.resolve()
-
-
-def test_forge_plan_guarded_startup_disallows_use_current_override(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr(workspace_binding_mod, "_home_directory", lambda: home.resolve())
-
-    with pytest.raises(WorkspaceBindingError, match="--allow-broad-workspace"):
-        resolve_startup_workspace_binding(
-            requested_path=home,
-            interactive=True,
-            source="cwd",
-            action=WorkspaceAction.FORGE_PLAN,
-            select_action_interactive=lambda **_kwargs: ("use_current", True),
-        )

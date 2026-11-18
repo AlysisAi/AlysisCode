@@ -1,9 +1,7 @@
 """
 Engine event inventory (migration targets; current call sites are intentionally unchanged):
-- message_delta: assistant streaming tokens from agent_loop.py and plan_assistant.py via
-  on_text_delta callbacks, including Forge planner streaming in cli_impl/chat.py.
-- message_end: final assistant messages from agent_loop.py and Forge planner completion
-  flows in cli_impl/chat.py.
+- message_delta: assistant streaming tokens from agent_loop.py via on_text_delta callbacks.
+- message_end: final assistant messages from agent_loop.py.
 - reasoning_started / reasoning_delta / reasoning_ended: provider reasoning display text
   (safe summaries or provider-returned reasoning) from the agent core's reasoning sink.
   Only the IDE bridge surface emits them, and only for sessions whose host opted in with
@@ -16,27 +14,20 @@ Engine event inventory (migration targets; current call sites are intentionally 
   blocks, repeated-call guards, verify_run, shell, git, web, MCP/custom tool failures.
 - status_update: startup/session status in agent_loop.py plus command/status HUD text in
   cli_impl/chat.py.
-- mode_changed: /permissions, persona clamps, /ask one-turn overrides, and Forge UI
-  transitions in cli_impl/chat.py.
+- mode_changed: /permissions, persona clamps, and /ask one-turn overrides in cli_impl/chat.py.
 - persona_changed: persona-mode transitions (user-initiated /persona switches and
   approved model switch_mode proposals) applied through the chat loop's persona primitive.
-- plan_node_updated: task creation/status/validation/reconciliation updates in forge.py,
-  cli_impl/forge.py, cli_impl/chat.py, plan_assistant.py, and plan_reconciliation.py.
-- swarm_worker_state_changed: scheduler batches, worker task starts/ends, merge/retry state,
-  and dry-run output in swarm_orchestrator.py.
 - verify_gate_result: verify_run tool payloads in agent_loop.py and command execution/results
-  in verify_gate.py and cli_impl/forge.py.
-- review_gate_decision: review approvals, blocking issues, and changes_requested status in
-  review_gate.py and cli_impl/forge.py.
-- error_raised: agent/runtime/LLM/tool/config/Forge errors surfaced through on_error,
+  in verify_gate.py.
+- error_raised: agent/runtime/LLM/tool/config errors surfaced through on_error,
   console.print red paths, and raised domain errors in agent_loop.py, cli_impl/chat.py,
-  cli_impl/forge.py, tools/*.py, verify_gate.py, and review_gate.py.
-- warning_emitted: model metadata warnings, plan validation/reconciliation warnings, hook
-  notices, unknown command/usage warnings, repeated tool guards, and verify/review warnings.
-- info_emitted: progress/thinking lines, planner assistant meta text, saved artifact paths,
-  subagent summaries, usage/context/HUD lines, dry-run summaries, and feedback bundle paths.
-- prompt_for_input: approval prompts in RichSurface.request_approval, Forge pickers in
-  cli_impl/chat.py, workspace/model/menu selectors, and interactive chat input.
+  tools/*.py, and verify_gate.py.
+- warning_emitted: model metadata warnings, hook notices, unknown command/usage warnings,
+  repeated tool guards, and verify warnings.
+- info_emitted: progress/thinking lines, saved artifact paths, subagent summaries,
+  usage/context/HUD lines, and feedback bundle paths.
+- prompt_for_input: approval prompts in RichSurface.request_approval, workspace/model/menu
+  selectors, and interactive chat input.
 - config_form_request: future structured menus/forms replacing /config, setup, model metadata,
   toolbar, usage HUD, subagents, skills, and workspace binding command surfaces.
 """
@@ -213,30 +204,6 @@ class PersonaChanged:
 
 
 @dataclass(frozen=True, slots=True)
-class PlanNodeUpdated:
-    type: ClassVar[Literal["plan_node_updated"]] = "plan_node_updated"
-    node_id: str
-    state: str
-    summary: str | None = None
-    worker_id: str | None = None
-    role: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return _to_dict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class SwarmWorkerStateChanged:
-    type: ClassVar[Literal["swarm_worker_state_changed"]] = "swarm_worker_state_changed"
-    worker_id: str
-    state: str
-    role: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return _to_dict(self)
-
-
-@dataclass(frozen=True, slots=True)
 class SubagentStateChanged:
     """Read-only lifecycle projection for one model-managed child turn.
 
@@ -287,18 +254,6 @@ class ApprovalReviewed:
     reason: str = ""
     risk: str = ""
     approval_kind: str = ""
-    worker_id: str | None = None
-    role: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return _to_dict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewGateDecision:
-    type: ClassVar[Literal["review_gate_decision"]] = "review_gate_decision"
-    decision: str
-    summary: str
     worker_id: str | None = None
     role: str | None = None
 
@@ -385,11 +340,8 @@ Event: TypeAlias = (
     | StatusUpdate
     | ModeChanged
     | PersonaChanged
-    | PlanNodeUpdated
-    | SwarmWorkerStateChanged
     | SubagentStateChanged
     | VerifyGateResult
-    | ReviewGateDecision
     | ApprovalReviewed
     | ErrorRaised
     | WarningEmitted

@@ -247,7 +247,7 @@ def test_rebuild_session_tools_preserves_authoritative_verification_commands(
 
         with pytest.raises(
             VerifyError,
-            match="Managed verification commands are locked to the authoritative Forge command set.",
+            match="Managed verification commands are locked to the authoritative command set.",
         ):
             session.tools["verify_run"].run({"commands": ["ruff check ."]})
     finally:

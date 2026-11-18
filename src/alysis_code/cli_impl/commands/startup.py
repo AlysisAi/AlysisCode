@@ -29,10 +29,7 @@ def _home_panel() -> Panel:
         "- 2) run               one-shot agent execution (you will be prompted for instruction)",
         "- 3) setup             first-run setup wizard",
         "- 4) doctor            environment checks",
-        "- 5) plan              Forge plan command",
-        "- 6) quit              exit home prompt",
-        "- forge (in chat)    enter planning mode with /forge",
-        "- forge show         summarize current plan artifacts",
+        "- 5) quit              exit home prompt",
     ]
     update_notice = _cached_update_notice()
     if update_notice:
@@ -696,89 +693,6 @@ def _set_chat_trace_level(*, session: Any, level: str) -> str:
             value=applied,
         )
     return applied
-
-
-def _emit_forge_planner_trace(
-    *,
-    session: Any,
-    message: str,
-    full_only: bool = False,
-    source: str = "forge_planner",
-) -> None:
-    clean = message.strip()
-    if not clean:
-        return
-    trace_level = _chat_trace_level(session)
-    if trace_level == "off":
-        return
-    if full_only and trace_level != "full":
-        return
-
-    store = getattr(session, "store", None)
-    append = getattr(store, "append", None)
-    if callable(append):
-        try:
-            append("progress", {"message": clean, "source": source})
-        except Exception:  # noqa: BLE001
-            pass
-
-    surface = getattr(session, "surface", None)
-    handler = getattr(surface, "on_progress_update", None)
-    if callable(handler):
-        try:
-            handler(clean)
-        except Exception:  # noqa: BLE001
-            return
-
-
-def _make_forge_swarm_trace_sink(
-    *,
-    session: Any,
-    paths: Any,
-    console: Console,
-) -> SerializedSwarmTraceSink:
-    surface = getattr(session, "surface", None)
-    store = getattr(session, "store", None)
-    return SerializedSwarmTraceSink(
-        artifact_path=Path(paths.execution_dir) / "trace" / "swarm_trace.jsonl",
-        trace_level=_chat_trace_level(session),
-        surface=surface,
-        session_store=store,
-        console=console,
-        store_source="forge_swarm",
-    )
-
-
-def _make_forge_planner_delta_trace_callback(*, session: Any) -> Callable[[str], None] | None:
-    trace_level = _chat_trace_level(session)
-    if trace_level == "off":
-        return None
-
-    seen_chars = 0
-    started = False
-    last_full_bucket = -1
-
-    def _on_text_delta(delta: str) -> None:
-        nonlocal seen_chars, started, last_full_bucket
-        if not delta:
-            return
-        seen_chars += len(delta)
-        if not started:
-            _emit_forge_planner_trace(session=session, message="Receiving planner output...")
-            started = True
-        if trace_level != "full":
-            return
-        bucket = seen_chars // 320
-        if bucket <= last_full_bucket:
-            return
-        last_full_bucket = bucket
-        _emit_forge_planner_trace(
-            session=session,
-            message=f"Planner draft progress: ~{seen_chars} chars captured.",
-            full_only=True,
-        )
-
-    return _on_text_delta
 
 
 __all__ = [name for name in globals() if (not name.startswith("__") or name == "__version__")]

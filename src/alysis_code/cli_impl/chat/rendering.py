@@ -4,8 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ...surface.styles import STYLE_EMPHASIS
-
 _PROTECTED_RENDERING_GLOBAL_NAMES: set[str] = set()
 
 
@@ -19,20 +17,6 @@ def _sync_rendering_globals(source_globals: dict[str, Any]) -> None:
         if name.startswith("__") or name in _PROTECTED_RENDERING_GLOBAL_NAMES:
             continue
         module_globals[name] = value
-
-
-def _forge_plan_command_guidance_lines() -> tuple[str, ...]:
-    return (
-        "[yellow]Usage:[/yellow] /plan tasks|table|markdown|md|edit",
-        "/plan tasks     show the current plan summary (same as /show)",
-        "/plan markdown  preview PLAN.md for the current run",
-        "/plan edit      edit plan.json and reload Forge state",
-    )
-
-
-def _print_forge_plan_command_guidance(*, console: Any) -> None:
-    for line in _forge_plan_command_guidance_lines():
-        console.print(line)
 
 
 def _chat_skill_usage_lines() -> tuple[str, ...]:
@@ -57,32 +41,6 @@ def _artifact_display_ref(*, root: Path, store_obj: Any, artifact_path: Path | N
         return artifact_path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return artifact_path.name
-
-
-def _render_planner_reply(
-    *, console: Any, message: str, questions: list[str] | None = None
-) -> None:
-    console.print("[bold]Planner:[/bold]")
-    console.print(message)
-    if questions:
-        console.print("[dim]Planner questions[/dim]")
-        for question in questions:
-            console.print(f"- {question}")
-
-
-def _render_labeled_chat_message(*, console: Any, label: str, message: str) -> None:
-    clean = str(message or "").strip() or "(empty message)"
-    prefix = ""
-    if label and str(label).strip().lower() not in {"you", "user"}:
-        prefix = f"{str(label).strip()} · "
-    console.print(
-        _forge_bar_text(
-            text=f"{prefix}{clean}",
-            style=STYLE_EMPHASIS,
-            bar_style=STYLE_EMPHASIS,
-        ),
-        highlight=False,
-    )
 
 
 def _print_chat_context(*, console: Console, session: Any) -> None:

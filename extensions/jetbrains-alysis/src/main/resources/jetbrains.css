@@ -1,7 +1,6 @@
 /* The initial host exposes only implemented chat actions. Native dispatch also rejects all others. */
-[data-surface="forge"], [data-surface="browser"], [data-surface="history"], [data-surface="models"],
-[data-surface="activity"], [data-forge-starter], [data-forge-draft], [data-action="plan"],
-[data-action="addFiles"], [data-action="addContext"], [data-insert],
+[data-surface="browser"], [data-surface="history"], [data-surface="models"],
+[data-surface="activity"], [data-action="addFiles"], [data-action="addContext"], [data-insert],
 #modelButton, #personaButton, #personaChip, #checkpointButton, #imageBasket,
 #settingsSurface .settings-group:not([data-native-settings]) { display: none !important; }
 .welcome-description::after { content: " JetBrains preview · Chat and reviewed actions."; }

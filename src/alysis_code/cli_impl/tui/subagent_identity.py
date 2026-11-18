@@ -1,6 +1,6 @@
 """Per-subagent visual identity — accent colour only.
 
-One tiny authority (like ``forge_status``) so the transcript spawn line, the
+One tiny authority so the transcript spawn line, the
 live status, and the footer badge can never disagree about who a given
 subagent is. Activity comes from runtime events, never from role narration.
 Result attribution prints the registry name alone and deliberately does not
@@ -9,7 +9,7 @@ nothing to keep in sync.
 
 The name is the identity: the shared ``↪``/``↩`` marks say only that a nested
 run started or ended, never which agent it was. Colours are distinct from the
-fixed mode accents (green chat, violet forge, cyan brand) so a
+fixed mode accents (green chat, cyan brand) so a
 subagent badge never impersonates a mode. Custom subagents get a colour picked
 deterministically from the name — the same agent looks the same every run.
 """

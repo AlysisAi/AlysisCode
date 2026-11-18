@@ -192,6 +192,12 @@ class ClarificationStore:
                             request_id="clarification_" + question_id,
                         ),
                     )["id"]
+            elif not delivered:
+                # Skipping the question a finished turn ended on carries its request on without
+                # the answer (the owl picks sensible defaults and says which). Still-running work
+                # sees the question closed in its clarification state, which says the same.
+                carried_on = self.store.continue_without_answer(db, self.owner, source, row)
+                task_id = carried_on["id"] if carried_on else None
             if data.action == "answer" and delivered:
                 # The same background task consumes this exact answer before
                 # any further writes. Its existing instruction fence handles a

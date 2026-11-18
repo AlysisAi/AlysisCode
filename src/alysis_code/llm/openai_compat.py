@@ -1444,6 +1444,15 @@ def _json_error_payload(body: str) -> dict[str, Any]:
 # {"error": {"message": ..., "type": ..., "code": "<reason>"}} with these string
 # codes; upstream/other-provider errors use different codes and fall through.
 _ALYSIS_PROXY_ERROR_MESSAGES: dict[str, str] = {
+    "campaign_budget_exceeded": (
+        "Alysis's shared hosted budget is temporarily at its limit. "
+        "Your account credits were not charged. Try again later or use your own API key."
+    ),
+    "free_daily_budget_exceeded": (
+        "Alysis's shared daily free-tier budget is temporarily at its limit. "
+        "Your account credits were not charged. Try again after the UTC day resets "
+        "or use your own API key."
+    ),
     "invalid_key": (
         "Your Alysis Code session is invalid or has been reset. "
         "Run `alysis login` to reconnect your account."
@@ -1499,6 +1508,55 @@ _ALYSIS_PROXY_ERROR_MESSAGES: dict[str, str] = {
 }
 
 
+# The hosted plans' rolling usage windows, as the gateway words them.
+_HOSTED_WINDOW_LIMITS = ("5-hour fair-use limit reached (", "Weekly fair-use limit reached (")
+# A date or clock time the gateway already wrote into its answer.
+_STATED_TIME = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{2}:\d{2} UTC\b")
+
+
+def _with_reset_time(message: str, err: LLMError) -> str:
+    """Say when a usage window lets requests through again.
+
+    The gateway's Retry-After is the account's own reset time for the window; it is
+    added only when the gateway's sentence states no date or time of its own.
+    """
+    reset_at = getattr(err, "provider_reset_at", 0)
+    now = datetime.now(timezone.utc)
+    if type(reset_at) is not int or reset_at <= now.timestamp() or _STATED_TIME.search(message):
+        return message
+    when = datetime.fromtimestamp(reset_at, timezone.utc).strftime("%Y-%m-%d %H:%M")
+    return f"{message.rstrip()} It frees up at {when} UTC."
+
+
+def alysis_plan_limit_message(err: BaseException) -> str | None:
+    """The hosted plan's own answer when one of its limits stopped a request.
+
+    A rolling 5-hour or weekly window, a paid plan's limits, or the plan's credits.
+    These answers are written for people (the CLI shows them as sent); None for any
+    other failure, including other providers' limits and temporary capacity answers.
+    """
+    if not isinstance(err, LLMError):
+        return None
+    payload = _json_error_payload(_llm_error_body(err))
+    error = payload.get("error")
+    if not isinstance(error, dict) or not isinstance(error.get("message"), str):
+        return None
+    code = str(error.get("code") or "").strip()
+    message = error["message"]
+    if code in ("plan_limit_reached", "plan_credits_exhausted") or (
+        code == "rate_limit_exceeded"
+        and message.startswith(
+            (*_HOSTED_WINDOW_LIMITS, "Your available credit allowance is exhausted.")
+        )
+    ):
+        return alysis_trial_error_message(err)
+    if code == "insufficient_quota" and message.startswith(
+        ("Free credits are exhausted.", "Out of credits.")
+    ):
+        return message[:2048]
+    return None
+
+
 def alysis_trial_error_message(err: LLMError) -> str | None:
     """Friendly message for an Alysis hosted/legacy proxy error, or None if not ours.
 
@@ -1526,9 +1584,10 @@ def alysis_trial_error_message(err: LLMError) -> str | None:
     # Paid-plan answers (Plan 1 / Plan 5) are written for people and carry the
     # reset date or upgrade link, so show them as sent. A paused model names
     # itself and how long the pause lasts.
+    if code == "plan_limit_reached" and isinstance(message, str):
+        return _with_reset_time(message[:2048], err)
     if code in (
         "plan_credits_exhausted",
-        "plan_limit_reached",
         "plan_unavailable",
         "hosted_model_paused",
     ) and isinstance(message, str):
@@ -1568,6 +1627,8 @@ def alysis_trial_error_message(err: LLMError) -> str | None:
                 message[:1900].rstrip()
                 + " Run `alysis upgrade` to review plans on your Alysis account page."
             )
+        if message.startswith(_HOSTED_WINDOW_LIMITS):
+            return _with_reset_time(message[:2048], err)
         return message[:2048]
     template = _ALYSIS_PROXY_ERROR_MESSAGES.get(code)
     if template is None or "{account_url}" not in template:

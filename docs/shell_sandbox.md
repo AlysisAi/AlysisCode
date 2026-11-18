@@ -482,8 +482,8 @@ nested approved roots. macOS Seatbelt supports these folders under the policy ab
 Docker refuses additional folders; the engine never silently drops the list or switches to
 host execution. Full access remains an explicit choice to run without the sandbox.
 
-This follows Codex's separation of approved folders, approval decisions and network
-policy. It is not a claim of feature identity: secondary repository/history
+Approved folders, approval decisions and network policy stay separate. Not every
+related feature is provided: secondary repository/history
 selection, native protected Git writes, durable sandbox services and host-loopback
 access are not provided by this candidate. MXC network-on permits outbound traffic;
 inbound and host-loopback restrictions remain in place.
@@ -497,7 +497,7 @@ its own rule:
 - macOS Seatbelt was proven to leave a command no route to a remote, no
   credentials and no way to stage a remote write, so a command with no grant
   follows the mode (`macos_seatbelt_20261024.md`).
-- The Windows MXC sandbox is the boundary as Codex's sandbox is: a command in
+- The Windows MXC sandbox is the boundary: a command in
   it follows the mode, and access it asks for (network, a local preview,
   folders) is decided by the access review, with no second mandatory card.
   Credentials, a literal Git command that changes the repository and

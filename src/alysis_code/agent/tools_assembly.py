@@ -118,7 +118,7 @@ from ..mcp.github_host import (
     wrap_mcp_result,
 )
 from ..mcp.google_host import GOOGLE_MCP_ACTION, assert_google_current, wrap_google_result
-from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager, McpToolBinding
+from ..mcp.manager import McpManager, McpToolBinding
 from ..mcp.models import ResolvedMcpConfig, ResolvedMcpServer
 from ..mcp.native_relay_guard import (
     legacy_windows_description_max_chars,
@@ -1032,7 +1032,7 @@ def build_tools(
     emit_web_search_runtime_diagnostics: bool = False,
     runtime_kind: RuntimeKind | str = RuntimeKind.ONE_SHOT,
     persona_switch_state: Any | None = None,
-    mcp_manager: McpManager | ForgeTaskScopedMcpManager | None = None,
+    mcp_manager: McpManager | None = None,
     custom_tool_session_state: CustomToolSessionState | None = None,
     get_active_workdir_relpath: Callable[[], str] | None = None,
     set_active_workdir_callback: Callable[[str, str], dict[str, Any]] | None = None,
@@ -1307,7 +1307,7 @@ def build_tools(
     # reviewer: a person. "Approve for me" (auto): the reviewer, unless a standing rule
     # decides first or the request always needs a person. See agent/approval_review.py.
     # The reviewer stands in for a person, so it only answers where a person could be asked:
-    # unattended runs (Forge workers, one-shot runs without a host) keep failing
+    # unattended runs (one-shot runs without a host) keep failing
     # closed, as before.
     can_ask_person = not non_interactive or host_managed_approvals
     unified_host_approvals = getattr(surface, "host_action_approval_protocol", 0) == 1
@@ -1529,9 +1529,8 @@ def build_tools(
         A forced recursive delete is refused outright, because without a
         boundary one wrong path removes the person's files. In the Windows
         MXC sandbox the command can delete only inside the approved folders
-        and its own scratch folder, so who decides is the mode's question, as
-        a forced delete is in Codex: the reviewer in "Approve for me", the
-        person in "Ask for approval". It is never waived, also not by --yes.
+        and its own scratch folder, so who decides is the mode's question:
+        the reviewer in "Approve for me", the person in "Ask for approval". It is never waived, also not by --yes.
         A delete of a drive, a system folder or a profile stays refused, and
         one aimed at the project or home folder still asks as before
         (``_critical_delete_reason``). Other backends are unchanged.
@@ -2091,7 +2090,7 @@ def build_tools(
         literal push keeps the person there too: what it changes is a remote.
 
         Seatbelt bounds a command that has no route to a remote, so any grant
-        keeps the person. MXC bounds a command as Codex's sandbox does: extra
+        keeps the person. MXC bounds a command as a sandbox: extra
         access (network, a local preview, folders) is requested and goes
         through the access review, and that review is the decision about it.
         Credentials are never part of that and keep the person.
@@ -3278,7 +3277,6 @@ def build_tools(
         in {
             RuntimeKind.INTERACTIVE_CHAT,
             RuntimeKind.ONE_SHOT,
-            RuntimeKind.FORGE_EXEC,
         }
     ):
 
@@ -3307,7 +3305,7 @@ def build_tools(
     # switch_mode: model-proposed persona switch, user-approved, applied by the
     # chat loop at turn end (the tool surface is never swapped mid-turn). Only
     # the top-level interactive chat runtime provides persona_switch_state, so
-    # one_shot/forge/swarm/subagent/conflict runtimes never see this tool and
+    # one_shot/subagent runtimes never see this tool and
     # automation can never switch personas silently.
     if (
         persona_switch_state is not None
@@ -5130,7 +5128,7 @@ def build_tools(
                 requested_commands = _normalized_verify_commands(verify_cmd)
                 if requested_commands != authoritative_verify_commands:
                     raise VerifyError(
-                        "Managed verification commands are locked to the authoritative Forge command set."
+                        "Managed verification commands are locked to the authoritative command set."
                     )
             commands = list(authoritative_verify_commands)
         elif verify_cmd is not None and current_effective_verification_commands:
@@ -6816,13 +6814,7 @@ def build_tools(
             approval_reviewer=approval_reviewer,
             workspace_provider=workspace_provider,
             child_run_registry=child_run_registry,
-            helpers_enabled_for_children=(
-                resolved_runtime_kind
-                not in {
-                    RuntimeKind.FORGE_EXEC,
-                    RuntimeKind.SWARM_WORKER,
-                }
-            ),
+            helpers_enabled_for_children=True,
             managed_browser_service=managed_browser_service,
             managed_browser_owner_id=managed_browser_owner_id,
             managed_browser_cancel_check=managed_browser_cancel_check,
@@ -6847,69 +6839,64 @@ def build_tools(
             parameters=subagent_parameters,
             run=subagent_launcher.run,
         )
-        background_tools_enabled = resolved_runtime_kind not in {
-            RuntimeKind.FORGE_EXEC,
-            RuntimeKind.SWARM_WORKER,
-        }
-        if background_tools_enabled:
-            spawn_parameters = copied_tool_parameters("subagent_spawn")
-            spawn_properties = spawn_parameters.get("properties")
-            if not isinstance(spawn_properties, dict):
-                raise AgentRuntimeError("subagent_spawn parameters must define properties")
-            spawn_name_schema = spawn_properties.get("name")
-            if not isinstance(spawn_name_schema, dict):
-                raise AgentRuntimeError("subagent_spawn parameters must define a name property")
-            if callable_subagent_names:
-                spawn_name_schema["enum"] = callable_subagent_names
+        spawn_parameters = copied_tool_parameters("subagent_spawn")
+        spawn_properties = spawn_parameters.get("properties")
+        if not isinstance(spawn_properties, dict):
+            raise AgentRuntimeError("subagent_spawn parameters must define properties")
+        spawn_name_schema = spawn_properties.get("name")
+        if not isinstance(spawn_name_schema, dict):
+            raise AgentRuntimeError("subagent_spawn parameters must define a name property")
+        if callable_subagent_names:
+            spawn_name_schema["enum"] = callable_subagent_names
 
-            def _subagent_spawn(args: dict[str, Any]) -> dict[str, Any]:
-                parent_token = args.get(_SUBAGENT_CANCELLATION_TOKEN_ARG)
-                public_args = {key: value for key, value in args.items() if isinstance(key, str)}
-                return child_scheduler.spawn(
-                    public_args,
-                    parent_cancellation_token=parent_token,
-                )
-
-            def _subagent_status(args: dict[str, Any]) -> dict[str, Any]:
-                raw_run_id = str(args.get("run_id") or "").strip()
-                return child_scheduler.status(run_id=raw_run_id or None)
-
-            def _subagent_send(args: dict[str, Any]) -> dict[str, Any]:
-                return child_scheduler.send(
-                    run_id=str(args.get("run_id") or "").strip(),
-                    message=str(args.get("message") or ""),
-                )
-
-            def _subagent_resume(args: dict[str, Any]) -> dict[str, Any]:
-                return child_scheduler.resume(
-                    args,
-                    parent_cancellation_token=args.get(_SUBAGENT_CANCELLATION_TOKEN_ARG),
-                )
-
-            def _subagent_wait(args: dict[str, Any]) -> dict[str, Any]:
-                raw_run_id = str(args.get("run_id") or "all").strip() or "all"
-                raw_timeout = args.get("timeout_s")
-                timeout_s = float(raw_timeout) if raw_timeout is not None else None
-                return child_scheduler.collect(
-                    run_id=raw_run_id,
-                    timeout_s=timeout_s,
-                    cancellation_token=args.get(_SUBAGENT_CANCELLATION_TOKEN_ARG),
-                )
-
-            def _subagent_cancel(args: dict[str, Any]) -> dict[str, Any]:
-                raw_run_id = str(args.get("run_id") or "all").strip() or "all"
-                return child_scheduler.cancel(run_id=raw_run_id, wait_for_running=False)
-
-            _append_builtin_tool(
-                "subagent_spawn",
-                parameters=spawn_parameters,
-                run=_subagent_spawn,
+        def _subagent_spawn(args: dict[str, Any]) -> dict[str, Any]:
+            parent_token = args.get(_SUBAGENT_CANCELLATION_TOKEN_ARG)
+            public_args = {key: value for key, value in args.items() if isinstance(key, str)}
+            return child_scheduler.spawn(
+                public_args,
+                parent_cancellation_token=parent_token,
             )
-            _append_builtin_tool("subagent_send", run=_subagent_send)
-            _append_builtin_tool("subagent_resume", run=_subagent_resume)
-            _append_builtin_tool("subagent_status", run=_subagent_status)
-            _append_builtin_tool("subagent_wait", run=_subagent_wait)
-            _append_builtin_tool("subagent_cancel", run=_subagent_cancel)
+
+        def _subagent_status(args: dict[str, Any]) -> dict[str, Any]:
+            raw_run_id = str(args.get("run_id") or "").strip()
+            return child_scheduler.status(run_id=raw_run_id or None)
+
+        def _subagent_send(args: dict[str, Any]) -> dict[str, Any]:
+            return child_scheduler.send(
+                run_id=str(args.get("run_id") or "").strip(),
+                message=str(args.get("message") or ""),
+            )
+
+        def _subagent_resume(args: dict[str, Any]) -> dict[str, Any]:
+            return child_scheduler.resume(
+                args,
+                parent_cancellation_token=args.get(_SUBAGENT_CANCELLATION_TOKEN_ARG),
+            )
+
+        def _subagent_wait(args: dict[str, Any]) -> dict[str, Any]:
+            raw_run_id = str(args.get("run_id") or "all").strip() or "all"
+            raw_timeout = args.get("timeout_s")
+            timeout_s = float(raw_timeout) if raw_timeout is not None else None
+            return child_scheduler.collect(
+                run_id=raw_run_id,
+                timeout_s=timeout_s,
+                cancellation_token=args.get(_SUBAGENT_CANCELLATION_TOKEN_ARG),
+            )
+
+        def _subagent_cancel(args: dict[str, Any]) -> dict[str, Any]:
+            raw_run_id = str(args.get("run_id") or "all").strip() or "all"
+            return child_scheduler.cancel(run_id=raw_run_id, wait_for_running=False)
+
+        _append_builtin_tool(
+            "subagent_spawn",
+            parameters=spawn_parameters,
+            run=_subagent_spawn,
+        )
+        _append_builtin_tool("subagent_send", run=_subagent_send)
+        _append_builtin_tool("subagent_resume", run=_subagent_resume)
+        _append_builtin_tool("subagent_status", run=_subagent_status)
+        _append_builtin_tool("subagent_wait", run=_subagent_wait)
+        _append_builtin_tool("subagent_cancel", run=_subagent_cancel)
 
         workspace_actions_enabled = bool(
             workspace_provider is not None

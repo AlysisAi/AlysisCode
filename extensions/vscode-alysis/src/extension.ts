@@ -42,9 +42,6 @@ import { registerCancelCurrentRunCommand } from "./commands/cancelCurrentRun";
 import { registerCliSetupCommands } from "./commands/cliSetup";
 import { registerConfigureProviderCommand } from "./commands/configureProvider";
 import { registerPickModelCommand, runModelPicker, type ModelPickerDeps } from "./commands/pickModel";
-import { registerForgeExecuteCommand } from "./commands/forgeExecute";
-import { registerForgePlanCommand } from "./commands/forgePlan";
-import { registerRunSwarmCommand } from "./commands/runSwarm";
 import { registerLocateCliCommand } from "./commands/locateCli";
 import { registerOpenChatCommands } from "./commands/openChat";
 import { registerManageCommands } from "./commands/manageCommands";
@@ -55,8 +52,6 @@ import { CodeReviewPresenter } from "./review/CodeReviewPresenter";
 import { registerReviewCommands } from "./commands/reviewCommands";
 import { registerRunDoctorCommand, registerShowBridgeHealthCommand } from "./commands/runDoctor";
 import { registerSessionCommands } from "./commands/sessionCommands";
-import { ForgeDiffContentProvider } from "./forge/ForgeDiffContentProvider";
-import { ForgeController } from "./forge/ForgeController";
 import { AlysisSecretStore } from "./secrets/secretStorage";
 import { probeSecretStorageRoundTrip } from "./secrets/secretStorageProbe";
 import { evaluateProcessExecutionCommand } from "./security/commandGuards";
@@ -64,8 +59,6 @@ import { SlashCommandRouter } from "./slash/SlashCommandRouter";
 import { availableSlashCommands } from "./slash/SlashCommandRegistry";
 import { routeSlashModeChange } from "./slash/modeRouting";
 import { AlysisStatusBar } from "./status/statusBar";
-import { ArtifactsViewProvider } from "./views/artifactsView";
-import { ForgePlanViewProvider } from "./views/forgePlanView";
 import { ManageViewProvider } from "./views/manageView";
 import { SessionsViewProvider } from "./views/sessionsView";
 import { StartViewProvider } from "./views/StartViewProvider";
@@ -87,7 +80,6 @@ import { VsCodeTasksHostAdapter, createVsCodeTasksApi } from "./hostActions/VsCo
 import { VsCodeDebugHostAdapter, createVsCodeDebugApi } from "./hostActions/VsCodeDebugHostAdapter";
 
 let activeChatController: ChatController | undefined;
-let activeForgeController: ForgeController | undefined;
 let activeBridgeClient: AlysisBridgeClient | undefined;
 let activeBrowserController: BrowserCockpitController | undefined;
 let activeHostActionController: HostActionController | undefined;
@@ -99,7 +91,6 @@ export interface AlysisExtensionApi {
     state(): {
       bridgeCanRestart: boolean;
       chat: ReturnType<ChatController["testState"]> | null;
-      forge: ReturnType<ForgeController["testState"]> | null;
       browser: ReturnType<BrowserCockpitController["state"]> | null;
       statusBar: ReturnType<AlysisStatusBar["snapshot"]> | null;
     };
@@ -108,7 +99,6 @@ export interface AlysisExtensionApi {
     hasConfiguredApiKey(): Promise<boolean>;
     setConfiguredApiKey(value: string): Promise<void>;
     clearConfiguredApiKey(): Promise<void>;
-    respondForgeApproval(sessionId: string, approvalId: string, decision: "allow_once" | "allow_for_session" | "deny"): Promise<void>;
     browserStart(): Promise<void>;
     browserStartLocal(): Promise<void>;
     browserNavigate(url: string): Promise<void>;
@@ -175,9 +165,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     getSessions: () => context.workspaceState.get("alysis.sessionHistory"),
     updateSessions: (sessions) => context.workspaceState.update("alysis.sessionHistory", sessions)
   });
-  const forgePlanView = new ForgePlanViewProvider();
-  const artifactsView = new ArtifactsViewProvider();
-  const diffContentProvider = new ForgeDiffContentProvider();
   const reportedConfigNotices = new Set<string>();
   const readBaseConfig = (): AlysisConfig =>
     getAlysisConfig(vscode.workspace.getConfiguration("alysis"), {
@@ -328,23 +315,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     report: (message) => output.appendLine(message)
   });
   activeBrowserController = browserController;
-  const forgeController = new ForgeController(
-    bridgeClient,
-    getConfig,
-    secrets,
-    statusBar,
-    sessionsView,
-    forgePlanView,
-    artifactsView,
-    output,
-    diffContentProvider,
-    runtime,
-    {
-      get: () => context.workspaceState.get("alysis.activeForgeContext"),
-      update: (value) => context.workspaceState.update("alysis.activeForgeContext", value)
-    }
-  );
-  activeForgeController = forgeController;
   const actionResultStore = new ActionResultStore(() => chatController.refreshCockpit());
   const codeReviewPresenter = new CodeReviewPresenter(
     bridgeClient,
@@ -363,8 +333,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     isWorkspaceTrusted: () => vscode.workspace.isTrusted,
     activeContext: () => ({
       sessionId: chatController.activeSessionId(),
-      workspaceRoot: chatController.activeSessionWorkspaceRoot(),
-      forgePlan: forgeController.activePlanContext()
+      workspaceRoot: chatController.activeSessionWorkspaceRoot()
     }),
     ensureLiveSession: () => chatController.ensureLiveSession(),
     resumeSession: (sessionId, targetSessionId) => chatController.resumeRetainedContext(sessionId, targetSessionId),
@@ -410,15 +379,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
         )
     })),
     persona: (name) => chatController.routeSlashPersona(name),
-    plan: async (instruction) => {
-      await forgeController.planWithInstruction(instruction);
-    },
-    executePlan: () => forgeController.execute(),
-    executePreview: () => forgeController.executePreview(),
-    listPlans: () => forgeController.listPlans(),
-    openPlan: (planId) => forgeController.openPlanById(planId),
-    openDiffs: () => forgeController.openDiff(),
-    refreshArtifacts: () => forgeController.refreshArtifacts(),
     cancel: async () => {
       await vscode.commands.executeCommand("alysis.cancelCurrentRun");
     },
@@ -441,20 +401,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     backendAction: (actionId, args) => backendActions.executeSlashAction(actionId, args),
     commandCatalog: () => {
       const state = chatController.primaryCockpitState();
-      const forge = state.cockpit.forge;
-      const swarm = state.cockpit.swarm;
       return availableSlashCommands({
         workspaceTrusted: vscode.workspace.isTrusted,
         activeSession: Boolean(state.sessionId),
-        activePlan: Boolean(forge.planId),
-        forgeEnabled: state.cockpit.status.enableForge,
         personasAvailable: state.personas.supported && state.personas.enabled,
         compatibility: state.cockpit.status.runtime.compatibility,
-        activeRun: ["queued", "starting", "running", "cancellation_requested"].includes(state.jobStatus)
-          || Boolean(forge.activeJobId)
-          || swarm.busy
-          || Boolean(swarm.jobId)
-          || ["starting", "running", "cancelling"].includes(swarm.status),
+        activeRun: ["queued", "starting", "running", "cancellation_requested"].includes(state.jobStatus),
         isBackendActionSupported: (actionId) => backendActions.isActionIdSupported(actionId)
       });
     }
@@ -465,21 +417,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     return {
       status: {
         mode: config.defaultMode,
-        composerMode: "chat",
         model: config.defaultModel || "default",
         provider: config.provider || (config.baseUrl ? "custom" : "default"),
         sandbox: config.sandboxProfile,
         workspaceTrusted: vscode.workspace.isTrusted,
         bridgeStatus: statusBar.snapshot(),
-        enableForge: config.enableForge,
         cliTrusted: config.security?.cliPath.executionAllowed ?? true,
         cliReason: config.security?.cliPath.reason ?? null,
         providerProfile: profileStore.snapshot(),
         sessionModel: emptySessionModelState(),
         runtime: runtime.snapshot()
       },
-      forge: forgeController.cockpitState(),
-      swarm: forgeController.swarmCockpitState(runtime.snapshot().compatibility),
       browser: browserCockpitSummary(browserController.state()),
       actionResults: actionResultStore.list()
     };
@@ -531,24 +479,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     cancel: async () => {
       await vscode.commands.executeCommand("alysis.cancelCurrentRun");
     },
-    executePreview: (auto) => forgeController.executePreview(auto),
-    executeReview: () => forgeController.execute(),
-    refreshForgeStatus: () => forgeController.refreshStatus(),
-    openDiff: (diffId) => forgeController.openDiff(diffId),
-    openForgeArtifact: (sessionId, artifactId) => forgeController.openArtifact(sessionId, artifactId),
-    respondForgeApproval: (sessionId, approvalId, decision) => forgeController.respondToCockpitApproval(sessionId, approvalId, decision),
-    reviewChanges: (taskId) => forgeController.reviewChanges(taskId),
-    refreshAssets: () => forgeController.refreshAssets(),
-    openAsset: (assetId) => forgeController.openAsset(assetId),
-    runSwarm: (parallel) => forgeController.runSwarm(parallel),
-    cancelSwarm: () => forgeController.cancelSwarm(),
-    refreshSwarmRecovery: () => forgeController.refreshSwarmRecovery(),
-    resumeSwarm: (jobId, revision) => forgeController.resumeSwarm(jobId, revision),
-    dismissSwarmRecovery: (jobId, revision) => forgeController.dismissSwarmRecovery(jobId, revision),
-    refreshSwarmReview: () => forgeController.refreshSwarmReview(),
-    applySwarmTask: (taskId) => forgeController.applySwarmTask(taskId),
-    discardSwarmTask: (taskId) => forgeController.discardSwarmTask(taskId),
-    regenerateSwarmTask: (taskId, instruction) => forgeController.regenerateSwarmTask(taskId, instruction),
     reconnect: () => checkBridgeStatus(),
     useProfile: async (name) => {
       // Use the same guarded provider transition as the composer and model picker.
@@ -588,10 +518,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     },
     browserOwnerChanged: (sessionId) => browserController.setOwnerSession(sessionId),
     browserDisconnected: (reason) => browserController.disconnect(reason)
-  });
-  forgeController.setCockpitCallbacks({
-    reveal: () => startView ? startView.showSurface("forge") : chatController.openChat(),
-    refresh: () => chatController.refreshCockpit()
   });
 
   const providerCatalog = new ProviderCatalogController(
@@ -637,10 +563,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
   };
   openModelPicker = async (model?: string) => (await runModelPicker(modelPickerDeps, model)).notice;
   registerPickModelCommand(context, modelPickerDeps);
-  const worktrees = new WorktreeController(chatController, () => startView?.update(), context.globalState, () => {
-    const state = chatController.primaryCockpitState().cockpit;
-    return Boolean(state.forge.activeJobId || state.swarm.busy || ["running", "queued"].includes(state.swarm.status));
-  });
+  const worktrees = new WorktreeController(chatController, () => startView?.update(), context.globalState);
   const reviewGitChanges = registerReviewCommands(context, backendActions);
   context.subscriptions.push(worktrees,
     vscode.commands.registerCommand(COMMANDS.newWorktree, () => worktrees.create()),
@@ -654,10 +577,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     () => chatController.primaryCockpitState(),
     () => sessionsView.snapshot(),
     (instruction, mode, requestId) => chatController.submitPrimaryMessage(instruction, mode, requestId),
-    (instruction, mode, requestId) =>
-      requestId
-        ? forgeController.submitPlanWithInstruction(instruction, mode, requestId)
-        : forgeController.planWithInstruction(instruction, mode),
     async () => {
       await vscode.commands.executeCommand("alysis.cancelCurrentRun");
     },
@@ -691,11 +610,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     output,
     statusBar,
     chatController,
-    forgeController,
     backendActions,
     hostActionController,
     { dispose: () => { void browserController.dispose(); } },
-    diffContentProvider,
     startView,
     chatController.onDidChangeState(() => startView?.update()),
     sessionsView.onDidChangeTreeData(() => startView?.update()),
@@ -708,8 +625,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
       await startView?.showSurface("models");
       await providerCatalog.refresh();
     }),
-    vscode.commands.registerCommand(COMMANDS.showBrowser, () => startView?.showSurface("browser")),
-    vscode.commands.registerCommand(COMMANDS.showForge, () => startView?.showSurface("forge"))
+    vscode.commands.registerCommand(COMMANDS.showBrowser, () => startView?.showSurface("browser"))
   );
   const manageView = new ManageViewProvider(
     bridgeClient,
@@ -724,9 +640,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
   const liveBridge = () => ({ running: bridgeClient.isRunning(), health: bridgeClient.currentHealth() });
   const syncCommandContexts = (): void => {
     const health = bridgeClient.currentHealth();
-    // alysis.cancelCurrentRun is the only unwedge path, so its enablement key must reflect BOTH
-    // run owners. A Forge-only run previously left the command disabled exactly when it was needed.
-    const hasActiveJob = chatController.hasActiveJob() || forgeController.hasActiveJob();
+    const hasActiveJob = chatController.hasActiveJob();
     void Promise.all([
       vscode.commands.executeCommand("setContext", "alysis.bridgeReady", bridgeClient.isRunning() && health !== undefined),
       vscode.commands.executeCommand("setContext", "alysis.hasActiveSession", chatController.hasSession()),
@@ -750,10 +664,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
       void manageView.refresh();
     }
   };
-  const syncArtifactViewContext = (): void => {
-    const hasArtifacts = artifactsView.state().some((group) => group.artifacts.length > 0);
-    void vscode.commands.executeCommand("setContext", "alysis.hasArtifacts", hasArtifacts);
-  };
   context.subscriptions.push(
     runtime.onDidChange(() => {
       browserController.syncCompatibility();
@@ -767,25 +677,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
     }),
     statusBar.onDidChangeSnapshot((snapshot) => runtime.applyStatusBarSnapshot(snapshot, liveBridge())),
     chatController.onDidChangeState(syncCommandContexts),
-    // Forge state transitions are the other half of alysis.hasActiveJob; nothing else observes them.
-    forgeController.onDidChangeActivity(syncCommandContexts),
     vscode.window.onDidChangeActiveTextEditor(syncCommandContexts),
     vscode.workspace.onDidChangeWorkspaceFolders(syncCommandContexts),
-    vscode.window.registerWebviewViewProvider("alysis.start", startView),
-    forgePlanView.onDidChangeTreeData(() => chatController.refreshCockpit()),
-    artifactsView.onDidChangeTreeData(() => {
-      syncArtifactViewContext();
-      chatController.refreshCockpit();
-    })
+    vscode.window.registerWebviewViewProvider("alysis.start", startView)
   );
   refreshManageWhenStale();
-  syncArtifactViewContext();
 
   registerOpenChatCommands(context, chatController);
-  registerCancelCurrentRunCommand(context, chatController, forgeController);
-  registerForgePlanCommand(context, forgeController);
-  registerForgeExecuteCommand(context, forgeController);
-  registerRunSwarmCommand(context, forgeController);
+  registerCancelCurrentRunCommand(context, chatController);
   registerRunDoctorCommand(context, cliDiscovery, getConfig, output, statusBar, runtime, () => runtimeValidation);
   registerShowBridgeHealthCommand(context, cliDiscovery, getConfig, output, statusBar, runtime, () => runtimeValidation);
   registerConfigureProviderCommand(context, secrets, bridgeClient, getConfig, () =>
@@ -882,7 +781,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Alysis
   return createExtensionApi(
     context,
     chatController,
-    forgeController,
     browserController,
     statusBar,
     secrets,
@@ -900,12 +798,10 @@ export const DEACTIVATE_DEADLINE_MS = 4_000;
 
 export async function deactivate(): Promise<void> {
   const chatController = activeChatController;
-  const forgeController = activeForgeController;
   const browserController = activeBrowserController;
   const hostActionController = activeHostActionController;
   const bridgeClient = activeBridgeClient;
   activeChatController = undefined;
-  activeForgeController = undefined;
   activeBrowserController = undefined;
   activeHostActionController = undefined;
   activeBridgeClient = undefined;
@@ -913,7 +809,6 @@ export async function deactivate(): Promise<void> {
   await withDeadline(
     (async () => {
       await chatController?.shutdown({ shutdownBridge: false });
-      await forgeController?.shutdown();
       await browserController?.dispose();
       await bridgeClient?.shutdown("bridge_stopped");
     })(),
@@ -945,7 +840,6 @@ export async function withDeadline(work: Promise<unknown>, timeoutMs: number): P
 function createExtensionApi(
   context: vscode.ExtensionContext,
   chatController: ChatController,
-  forgeController: ForgeController,
   browserController: BrowserCockpitController,
   statusBar: AlysisStatusBar,
   secrets: AlysisSecretStore,
@@ -983,7 +877,6 @@ function createExtensionApi(
       state: () => ({
         bridgeCanRestart: bridgeClient.canRestartSafely(),
         chat: chatController.testState(),
-        forge: forgeController.testState(),
         browser: browserController.state(),
         statusBar: statusBar.snapshot()
       }),
@@ -992,7 +885,6 @@ function createExtensionApi(
       hasConfiguredApiKey: async () => Boolean((await secrets.getApiKey())?.trim()),
       setConfiguredApiKey: async (value: string) => secrets.setApiKey(value),
       clearConfiguredApiKey: async () => secrets.deleteApiKey(),
-      respondForgeApproval: (sessionId, approvalId, decision) => forgeController.respondToCockpitApproval(sessionId, approvalId, decision),
       browserStart: () => browserController.start(),
       browserStartLocal: () => browserController.startLocal(),
       browserNavigate: (url) => browserController.navigate(url),

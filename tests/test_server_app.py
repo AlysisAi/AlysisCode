@@ -5,26 +5,20 @@ import sys
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from alysis_code.server.app import (
-    ForgeExecRequest,
-    ForgeSwarmRequest,
     RunJobRequest,
     _agent_entrypoint_prefix,
     _append_common_agent_args,
-    _build_forge_exec_job_command,
-    _build_forge_swarm_job_command,
     _build_run_job_command,
     _create_run_from_upload,
-    _validate_forge_exec_task_id,
     create_app,
 )
 from alysis_code.server.settings import ServerSettings
 from alysis_code.server.store import ServerStoreError
 
 
-def _settings(*, worker_backend: str, worker_machine_events: bool = True) -> ServerSettings:
+def _settings(*, worker_backend: str) -> ServerSettings:
     return ServerSettings(
         host="127.0.0.1",
         port=7070,
@@ -39,7 +33,6 @@ def _settings(*, worker_backend: str, worker_machine_events: bool = True) -> Ser
         default_base_url=None,
         allow_client_model=True,
         allow_client_base_url=False,
-        worker_machine_events=worker_machine_events,
     )
 
 
@@ -164,16 +157,6 @@ def test_run_job_request_accepts_fullaccess_mode() -> None:
     assert req.mode == "fullaccess"
 
 
-def test_forge_exec_request_accepts_fullaccess_mode() -> None:
-    req = ForgeExecRequest(task_id="T01", mode="fullaccess")
-    assert req.mode == "fullaccess"
-
-
-def test_forge_swarm_request_is_auto_only() -> None:
-    with pytest.raises(ValidationError):
-        ForgeSwarmRequest(mode="fullaccess")
-
-
 def test_build_run_job_command_preserves_fullaccess_mode_flag() -> None:
     req = RunJobRequest(
         instruction="implement feature",
@@ -191,89 +174,6 @@ def test_build_run_job_command_preserves_fullaccess_mode_flag() -> None:
     )
     mode_idx = command.index("--mode")
     assert command[mode_idx + 1] == "fullaccess"
-
-
-def test_build_forge_exec_job_command_preserves_fullaccess_mode_flag() -> None:
-    req = ForgeExecRequest(
-        task_id="T01",
-        mode="fullaccess",
-        yes=True,
-        model="ignored",
-        base_url=None,
-        temperature=None,
-    )
-    command = _build_forge_exec_job_command(
-        settings=_settings(worker_backend="bwrap"),
-        req=req,
-        model="gpt-test",
-        base_url=None,
-    )
-    mode_idx = command.index("--mode")
-    assert command[mode_idx + 1] == "fullaccess"
-
-
-def _forge_exec_command(*, worker_machine_events: bool) -> list[str]:
-    return _build_forge_exec_job_command(
-        settings=_settings(
-            worker_backend="bwrap",
-            worker_machine_events=worker_machine_events,
-        ),
-        req=ForgeExecRequest(
-            task_id="T01",
-            mode="auto",
-            yes=True,
-            model="ignored",
-            base_url=None,
-            temperature=None,
-        ),
-        model="gpt-test",
-        base_url=None,
-    )
-
-
-def _forge_swarm_command(*, worker_machine_events: bool) -> list[str]:
-    return _build_forge_swarm_job_command(
-        settings=_settings(
-            worker_backend="bwrap",
-            worker_machine_events=worker_machine_events,
-        ),
-        req=ForgeSwarmRequest(
-            mode="auto",
-            yes=True,
-            model="ignored",
-            base_url=None,
-            temperature=None,
-        ),
-        model="gpt-test",
-        base_url=None,
-    )
-
-
-def test_forge_job_commands_request_machine_events_by_default() -> None:
-    assert "--machine" in _forge_exec_command(worker_machine_events=True)
-    assert "--machine" in _forge_swarm_command(worker_machine_events=True)
-
-
-def test_forge_job_commands_omit_machine_flag_when_disabled() -> None:
-    assert "--machine" not in _forge_exec_command(worker_machine_events=False)
-    assert "--machine" not in _forge_swarm_command(worker_machine_events=False)
-
-
-def test_run_job_command_stays_human_readable() -> None:
-    command = _build_run_job_command(
-        settings=_settings(worker_backend="bwrap"),
-        req=RunJobRequest(
-            instruction="do the thing",
-            mode="auto",
-            yes=True,
-            model="ignored",
-            base_url=None,
-            temperature=None,
-        ),
-        model="gpt-test",
-        base_url=None,
-    )
-    assert "--machine" not in command
 
 
 def test_create_app_smoke_openapi_generation(tmp_path: Path) -> None:
@@ -345,7 +245,7 @@ def test_create_app_token_auth_dependency_enforces_bearer_and_accepts_valid_toke
     assert isinstance(ok_response.json().get("run_id"), str)
 
 
-def test_create_app_fullaccess_job_routes_preserve_mode_and_swarm_rejects_non_auto(
+def test_create_app_fullaccess_run_job_route_preserves_mode_and_serves_no_forge_jobs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -397,23 +297,15 @@ def test_create_app_fullaccess_job_routes_preserve_mode_and_swarm_rejects_non_au
     mode_idx = captured_commands[-1].index("--mode")
     assert captured_commands[-1][mode_idx + 1] == "fullaccess"
 
-    exec_job_resp = client.post(
-        f"/v1/runs/{run_id}/jobs/forge_exec",
-        headers=headers,
-        json={"task_id": "T01", "mode": "fullaccess"},
-    )
-    assert exec_job_resp.status_code == 200
-    assert "forge" in captured_commands[-1]
-    assert "exec" in captured_commands[-1]
-    mode_idx = captured_commands[-1].index("--mode")
-    assert captured_commands[-1][mode_idx + 1] == "fullaccess"
-
-    swarm_job_resp = client.post(
-        f"/v1/runs/{run_id}/jobs/forge_swarm",
-        headers=headers,
-        json={"mode": "fullaccess"},
-    )
-    assert swarm_job_resp.status_code == 422
+    started = len(captured_commands)
+    for retired in ("forge_exec", "forge_swarm"):
+        retired_resp = client.post(
+            f"/v1/runs/{run_id}/jobs/{retired}",
+            headers=headers,
+            json={"task_id": "T01", "mode": "auto"},
+        )
+        assert retired_resp.status_code == 404
+    assert len(captured_commands) == started
 
 
 def test_create_app_auth_locality_policy_via_asgi_transport(tmp_path: Path) -> None:
@@ -504,12 +396,6 @@ def test_create_app_auth_token_policy_via_asgi_transport(tmp_path: Path) -> None
         )
     )
     assert correct_token_resp.status_code == 200
-
-
-@pytest.mark.parametrize("task_id", ["--bad", "bad id"])
-def test_validate_forge_exec_task_id_rejects_unsafe_values(task_id: str) -> None:
-    with pytest.raises(ValueError, match="task_id"):
-        _validate_forge_exec_task_id(task_id)
 
 
 def test_create_run_from_upload_stages_small_upload_and_passes_temp_path() -> None:

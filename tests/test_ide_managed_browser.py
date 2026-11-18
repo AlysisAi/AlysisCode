@@ -2040,3 +2040,117 @@ def test_close_page_preserves_dialogs_and_checks_ownership_generation_and_busy(t
         assert not any(m == "Target.closeTarget" for m, *_ in transport.calls)
     finally:
         service.close_all()
+
+
+class CookieTransport(FakeTransport):
+    """A browser holding cookies of two sites, with their values."""
+
+    cookies = [
+        {"name": "sid", "value": "secret-1", "domain": ".example.co.uk", "path": "/"},
+        {
+            "name": "pref",
+            "value": "secret-2",
+            "domain": "widget.example",
+            "path": "/",
+            "partitionKey": {
+                "topLevelSite": "https://example.co.uk",
+                "hasCrossSiteAncestor": False,
+            },
+        },
+        {
+            "name": "legacy",
+            "value": "secret-3",
+            "domain": "old.example",
+            "path": "/",
+            "partitionKey": "https://old.example",
+        },
+    ]
+
+    def call(self, method, params=None, *, session_id=None, timeout, cancel=None):
+        result = super().call(method, params, session_id=session_id, timeout=timeout, cancel=cancel)
+        if method == "Storage.getCookies":
+            return {"cookies": self.cookies}
+        return result
+
+
+def test_site_cookies_name_cookies_by_identity_and_never_their_values(tmp_path: Path) -> None:
+    service, executable, _launcher, _terminator, _factory = make_service(
+        tmp_path, transport=CookieTransport()
+    )
+    status = service.start("owner", executable_path=executable)
+    cookies = service.site_cookies("owner", status.session_id)
+    assert "secret" not in repr(cookies)
+    assert cookies == [
+        {"name": "sid", "domain": ".example.co.uk", "path": "/", "partition": None},
+        {
+            "name": "pref",
+            "domain": "widget.example",
+            "path": "/",
+            "partition": {"topLevelSite": "https://example.co.uk", "hasCrossSiteAncestor": False},
+        },
+        {
+            "name": "legacy",
+            "domain": "old.example",
+            "path": "/",
+            "partition": "https://old.example",
+        },
+    ]
+
+
+def test_clear_site_data_deletes_exactly_the_given_cookies_and_origins(tmp_path: Path) -> None:
+    transport = CookieTransport()
+    service, executable, _launcher, _terminator, _factory = make_service(
+        tmp_path, transport=transport
+    )
+    status = service.start("owner", executable_path=executable)
+    before = service.status("owner", status.session_id).command_generation
+    cookies = service.site_cookies("owner", status.session_id)[:2]
+    transport.calls.clear()
+    origin = "https://" + "παράδειγμα.δοκιμή".encode("idna").decode()
+    result = service.clear_site_data("owner", status.session_id, cookies=cookies, origins=[origin])
+    assert result == {"cookies": 2, "origins": 1}
+    assert transport.calls == [
+        (
+            "Network.deleteCookies",
+            {"name": "sid", "domain": ".example.co.uk", "path": "/"},
+            "cdp-session-1",
+        ),
+        (
+            "Network.deleteCookies",
+            {
+                "name": "pref",
+                "domain": "widget.example",
+                "path": "/",
+                "partitionKey": {
+                    "topLevelSite": "https://example.co.uk",
+                    "hasCrossSiteAncestor": False,
+                },
+            },
+            "cdp-session-1",
+        ),
+        ("Storage.clearDataForOrigin", {"origin": origin, "storageTypes": "all"}, None),
+    ]
+    # The site's pages may have changed: earlier observations expire.
+    assert service.status("owner", status.session_id).command_generation > before
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "file:///etc",
+        "https://user@example.com",
+        "https://example.com/path",
+        "https://example.com:8443",
+        "example.com",
+    ],
+)
+def test_clear_site_data_refuses_anything_but_a_plain_web_origin(tmp_path: Path, origin) -> None:
+    transport = CookieTransport()
+    service, executable, _launcher, _terminator, _factory = make_service(
+        tmp_path, transport=transport
+    )
+    status = service.start("owner", executable_path=executable)
+    transport.calls.clear()
+    with pytest.raises(BrowserValidationError):
+        service.clear_site_data("owner", status.session_id, cookies=[], origins=[origin])
+    assert transport.calls == []

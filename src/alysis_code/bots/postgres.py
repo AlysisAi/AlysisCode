@@ -186,9 +186,13 @@ class PostgresStore(Store):
                 "WHERE (record::jsonb->>'state') IS DISTINCT FROM 'deleted'"
             )
             db.execute("ALTER TABLE action_proposals ADD COLUMN IF NOT EXISTS browser_origin TEXT")
+            db.execute("ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS origin TEXT")
             db.execute(
                 "ALTER TABLE action_proposals ADD COLUMN IF NOT EXISTS offline_computer INTEGER NOT NULL DEFAULT 0"
             )
+            db.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS failure TEXT")
+            db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS color TEXT")
+            db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS background TEXT")
             db.execute("""CREATE TABLE IF NOT EXISTS upload_parts (
                 upload_id TEXT NOT NULL REFERENCES file_uploads(id) ON DELETE CASCADE,
                 start_offset INTEGER NOT NULL, data BYTEA NOT NULL,

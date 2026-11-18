@@ -134,7 +134,6 @@ test("backend action registry entries declare capability and trust metadata", ()
     assert.equal(typeof action.workspaceTrustRequired, "boolean", action.id);
     assert.equal(typeof action.workspaceRequired, "boolean", action.id);
     assert.equal(typeof action.requiresActiveSession, "boolean", action.id);
-    assert.equal(typeof action.requiresActivePlan, "boolean", action.id);
     assert.ok(action.parameterStrategy.length > 0, action.id);
   }
 });
@@ -214,38 +213,15 @@ test("backend action controller hides unsupported actions from grouped QuickPick
   assert.deepEqual(bridge.calls.map((call: { method: string }) => call.method), ["config.get"]);
 });
 
-test("grouped QuickPick explains which Forge plan actions can make changes", async () => {
-  reset();
-  const bridge = bridgeMock([
-    "forge.plan.getState",
-    "forge.plan.setAssistant",
-    "forge.plan.setGoal",
-    "forge.plan.updateTask"
-  ]);
-  const controller = controllerFor(bridge, { forgePlan: { sessionId: "session-1", planId: "plan-1" } });
-  quickPickLabel = "Forge Assistant";
-
-  await controller.runGroup("forgeAssets");
-
-  assert.equal(quickPickItems.find((item) => item.label === "Forge Assistant")?.description, "View or update");
-  assert.equal(quickPickItems.find((item) => item.label === "Forge Goal")?.description, "View or update");
-  assert.equal(quickPickItems.find((item) => item.label === "Forge Task")?.description, "View or update");
-  assert.equal(quickPickItems.find((item) => item.label === "Forge Plan State")?.description, "View only");
-});
-
 test("backend action controller honors explicit unsupported capability metadata", async () => {
   reset();
   const bridge = bridgeMock(
-    ["forge.assets.list"],
-    { "forge.assets.supported": false }
+    ["config.get"],
+    { "management.methods.config.get.supported": false }
   );
-  const controller = controllerFor(
-    bridge,
-    { forgePlan: { sessionId: "session-1", planId: "plan-1" } },
-    async () => undefined
-  );
+  const controller = controllerFor(bridge, { sessionId: "session-1" }, async () => undefined);
 
-  const result = await controller.runGroup("forgeAssets");
+  const result = await controller.runGroup("profiles");
 
   assert.equal(result, undefined);
   assert.deepEqual(bridge.calls, []);
@@ -1136,8 +1112,7 @@ test("backend action controller trust-gates every workspace-mutating action rout
   const methods = Array.from(new Set(BACKEND_ACTIONS.flatMap((action) => action.requiredMethods)));
   const bridge = bridgeMock(methods);
   const controller = controllerFor(bridge, {
-    sessionId: "session-1",
-    forgePlan: { sessionId: "session-1", planId: "plan-1" }
+    sessionId: "session-1"
   });
 
   for (const action of BACKEND_ACTIONS.filter((item) => item.workspaceTrustRequired)) {
@@ -1157,10 +1132,7 @@ test("backend action controller params satisfy the IDE method contract for every
   const bridge = contractBridgeMock(methods);
   const controller = controllerFor(
     bridge,
-    {
-      sessionId: "session-1",
-      forgePlan: { sessionId: "session-1", planId: "plan-1" }
-    },
+    { sessionId: "session-1" },
     async () => undefined
   );
   const tested = new Set<string>();
@@ -1931,355 +1903,6 @@ test("grouped command registration routes through action controller", async () =
   assert.deepEqual(bridge.calls.map((call: { method: string }) => call.method), ["profile.list"]);
 });
 
-test("forge asset actions route with active plan context and trust gates", async () => {
-  reset();
-  const bridge = bridgeMock([
-    "forge.assets.list",
-    "forge.assets.show",
-    "forge.assets.add",
-    "forge.assets.delete",
-    "forge.assets.edit",
-    "forge.assets.refresh",
-    "forge.assets.cancelPending",
-    "forge.assets.checkPlan",
-    "forge.assets.pruneLegacy"
-  ]);
-  const controller = controllerFor(
-    bridge,
-    { forgePlan: { sessionId: "session-1", planId: "plan-1" } },
-    async () => undefined
-  );
-
-  await controller.executeSlashAction("forge.assets.list");
-  assert.deepEqual(bridge.calls[0], {
-    method: "forge.assets.list",
-    params: { session_id: "session-1", plan_id: "plan-1" }
-  });
-  await controller.executeSlashAction("forge.assets.show", "asset-1");
-  inputValues = ["New title"];
-  await controller.executeSlashAction("forge.assets.edit", "asset-1");
-  await controller.executeSlashAction("forge.assets.refresh", "asset-1");
-  await controller.executeSlashAction("forge.assets.cancelPending");
-  await controller.executeSlashAction("forge.assets.checkPlan");
-  await controller.executeSlashAction("forge.assets.delete", "asset-1");
-  await controller.executeSlashAction("forge.assets.pruneLegacy");
-  assert.deepEqual(bridge.calls.slice(1), [
-    {
-      method: "forge.assets.show",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        asset_id: "asset-1"
-      }
-    },
-    {
-      method: "forge.assets.edit",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        asset_id: "asset-1",
-        workspace_trusted: true,
-        title: "New title"
-      }
-    },
-    {
-      method: "forge.assets.refresh",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        asset_id: "asset-1",
-        workspace_trusted: true,
-        yes: true
-      }
-    },
-    {
-      method: "forge.assets.cancelPending",
-      params: { session_id: "session-1", plan_id: "plan-1" }
-    },
-    {
-      method: "forge.assets.checkPlan",
-      params: { session_id: "session-1", plan_id: "plan-1" }
-    },
-    {
-      method: "forge.assets.delete",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        asset_id: "asset-1",
-        workspace_trusted: true,
-        yes: true
-      }
-    },
-    {
-      method: "forge.assets.pruneLegacy",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        workspace_trusted: true,
-        yes: true
-      }
-    }
-  ]);
-
-  workspaceTrusted = false;
-  await assert.rejects(controller.executeSlashAction("forge.assets.add", "docs/spec.md"), /requires Workspace Trust/);
-});
-
-test("backend action controller release dogfood gates Forge assets and review by capability and trust", async () => {
-  reset();
-  const unsupported = bridgeMock(
-    ["forge.assets.list", "forge.review"],
-    { "forge.assets.supported": false, "forge.review.supported": false }
-  );
-  const unsupportedController = controllerFor(unsupported, {
-    forgePlan: { sessionId: "session-1", planId: "plan-1" }
-  });
-  const byId = (id: string) => BACKEND_ACTIONS.find((action) => action.id === id)!;
-
-  assert.equal(unsupportedController.isActionSupported(byId("forge.assets.list")), false);
-  assert.equal(unsupportedController.isActionSupported(byId("forge.review")), false);
-  const result = await unsupportedController.runGroup("forgeAssets");
-  assert.equal(result, undefined);
-  assert.deepEqual(unsupported.calls, []);
-
-  reset();
-  workspaceTrusted = false;
-  const untrusted = bridgeMock(["forge.assets.add", "forge.review"]);
-  const untrustedController = controllerFor(untrusted, {
-    forgePlan: { sessionId: "session-1", planId: "plan-1" }
-  });
-
-  await assert.rejects(untrustedController.executeAction("forge.assets.add", "docs/spec.md"), /requires Workspace Trust/);
-  await assert.rejects(untrustedController.executeAction("forge.review", "T01"), /requires Workspace Trust/);
-  assert.deepEqual(untrusted.calls, []);
-});
-
-test("backend action controller starts credential-capable bridge for Forge review", async () => {
-  reset();
-  let credentialBridgeStarts = 0;
-  const bridge = bridgeMock(["forge.review"]);
-  const controller = controllerFor(
-    bridge,
-    { forgePlan: { sessionId: "session-1", planId: "plan-1" } },
-    async () => {
-      credentialBridgeStarts += 1;
-    }
-  );
-
-  await controller.executeSlashAction("forge.review", "T01");
-
-  assert.equal(credentialBridgeStarts, 1);
-  assert.deepEqual(bridge.calls[0], {
-    method: "forge.review",
-    params: {
-      session_id: "session-1",
-      plan_id: "plan-1",
-      task_id: "T01",
-      workspace_trusted: true
-    }
-  });
-});
-
-test("backend action controller routes Forge show from active plan or prompted plan id", async () => {
-  reset();
-  const bridge = bridgeMock(["forge.show"]);
-  const controller = controllerFor(
-    bridge,
-    { forgePlan: { sessionId: "session-1", planId: "plan-1" } },
-    async () => undefined
-  );
-
-  await controller.executeSlashAction("forge.show");
-
-  assert.deepEqual(bridge.calls[0], {
-    method: "forge.show",
-    params: { session_id: "session-1", plan_id: "plan-1" }
-  });
-
-  const promptedBridge = bridgeMock(["forge.show"]);
-  const promptedController = controllerFor(promptedBridge, { sessionId: "session-2" });
-  await promptedController.executeSlashAction("forge.show", "plan-2");
-
-  assert.deepEqual(promptedBridge.calls[0], {
-    method: "forge.show",
-    params: { session_id: "session-2", plan_id: "plan-2" }
-  });
-});
-
-test("backend action controller routes safe Forge plan editing actions", async () => {
-  reset();
-  const bridge = bridgeMock([
-    "forge.plan.getState",
-    "forge.plan.setAssistant",
-    "forge.plan.setGoal",
-    "forge.plan.updateTask",
-    "forge.plan.validate",
-    "forge.plan.regenerate"
-  ]);
-  const controller = controllerFor(
-    bridge,
-    { forgePlan: { sessionId: "session-1", planId: "plan-1" } },
-    async () => undefined
-  );
-
-  await controller.executeSlashAction("forge.plan.getState");
-  await controller.executeSlashAction("forge.plan.setAssistant", "show");
-  await controller.executeSlashAction("forge.plan.setAssistant", "Use scoped IDE edits.");
-  await controller.executeSlashAction("forge.plan.setGoal", "Ship the typed Forge parity routes.");
-  await controller.executeSlashAction("forge.plan.updateTask", "T01 show");
-  await controller.executeSlashAction("forge.plan.updateTask", "T01 status blocked");
-  await controller.executeSlashAction("forge.plan.validate");
-  await controller.executeSlashAction("forge.plan.regenerate", "focus demo.py");
-
-  assert.deepEqual(bridge.calls, [
-    {
-      method: "forge.plan.getState",
-      params: { session_id: "session-1", plan_id: "plan-1" }
-    },
-    {
-      method: "forge.plan.getState",
-      params: { session_id: "session-1", plan_id: "plan-1" }
-    },
-    {
-      method: "forge.plan.setAssistant",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        instruction: "Use scoped IDE edits.",
-        workspace_trusted: true
-      }
-    },
-    {
-      method: "forge.plan.setGoal",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        goal: "Ship the typed Forge parity routes.",
-        workspace_trusted: true
-      }
-    },
-    {
-      method: "forge.plan.updateTask",
-      params: { session_id: "session-1", plan_id: "plan-1", task_id: "T01" }
-    },
-    {
-      method: "forge.plan.updateTask",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        task_id: "T01",
-        status: "blocked",
-        workspace_trusted: true
-      }
-    },
-    {
-      method: "forge.plan.validate",
-      params: { session_id: "session-1", plan_id: "plan-1" }
-    },
-    {
-      method: "forge.plan.regenerate",
-      params: {
-        session_id: "session-1",
-        plan_id: "plan-1",
-        focus: "demo.py",
-        workspace_trusted: true
-      }
-    }
-  ]);
-});
-
-test("backend action controller records dynamic Forge plan edit mutation state", async () => {
-  reset();
-  const bridge = bridgeMock([
-    "forge.plan.getState",
-    "forge.plan.setAssistant",
-    "forge.plan.setGoal",
-    "forge.plan.updateTask"
-  ]);
-  const resultStore = new ActionResultStore(() => undefined);
-  const controller = controllerFor(
-    bridge,
-    { forgePlan: { sessionId: "session-1", planId: "plan-1" } },
-    undefined,
-    undefined,
-    resultStore
-  );
-
-  await controller.executeSlashAction("forge.plan.setAssistant", "show");
-  await controller.executeSlashAction("forge.plan.setAssistant", "Use scoped IDE edits.");
-  await controller.executeSlashAction("forge.plan.setGoal", "show");
-  await controller.executeSlashAction("forge.plan.setGoal", "Ship the typed Forge parity routes.");
-  await controller.executeSlashAction("forge.plan.updateTask", "T01 show");
-  await controller.executeSlashAction("forge.plan.updateTask", "T01 status blocked");
-  await controller.executeSlashAction("forge.plan.updateTask", "T01 title New title");
-  await controller.executeSlashAction("forge.plan.updateTask", "T01 body New body");
-
-  assert.deepEqual(
-    resultStore.list().map((entry) => ({
-      actionId: entry.actionId,
-      status: entry.status,
-      mutates: entry.mutates
-    })),
-    [
-      { actionId: "forge.plan.setAssistant", status: "ok", mutates: false },
-      { actionId: "forge.plan.setAssistant", status: "ok", mutates: true },
-      { actionId: "forge.plan.setGoal", status: "ok", mutates: false },
-      { actionId: "forge.plan.setGoal", status: "ok", mutates: true },
-      { actionId: "forge.plan.updateTask", status: "ok", mutates: false },
-      { actionId: "forge.plan.updateTask", status: "ok", mutates: true },
-      { actionId: "forge.plan.updateTask", status: "ok", mutates: true },
-      { actionId: "forge.plan.updateTask", status: "ok", mutates: true }
-    ]
-  );
-});
-
-test("backend action controller trust-gates mutating Forge plan edits only", async () => {
-  reset();
-  workspaceTrusted = false;
-  const bridge = bridgeMock([
-    "forge.plan.getState",
-    "forge.plan.setAssistant",
-    "forge.plan.setGoal",
-    "forge.plan.updateTask",
-    "forge.plan.regenerate"
-  ]);
-  const controller = controllerFor(bridge, { forgePlan: { sessionId: "session-1", planId: "plan-1" } });
-
-  await controller.executeSlashAction("forge.plan.setAssistant", "show");
-  await controller.executeSlashAction("forge.plan.updateTask", "T01 show");
-  await assert.rejects(
-    controller.executeSlashAction("forge.plan.setAssistant", "Use scoped IDE edits."),
-    /Workspace Trust/
-  );
-  await assert.rejects(
-    controller.executeSlashAction("forge.plan.setGoal", "New goal"),
-    /Workspace Trust/
-  );
-  await assert.rejects(
-    controller.executeSlashAction("forge.plan.updateTask", "T01 title New title"),
-    /Workspace Trust/
-  );
-  await assert.rejects(
-    controller.executeSlashAction("forge.plan.regenerate", "Refresh the plan"),
-    /Workspace Trust/
-  );
-  await assert.rejects(
-    controller.executeSlashAction("forge.plan.updateTask", "../T01 show"),
-    /not a path/
-  );
-
-  assert.deepEqual(bridge.calls, [
-    {
-      method: "forge.plan.getState",
-      params: { session_id: "session-1", plan_id: "plan-1" }
-    },
-    {
-      method: "forge.plan.updateTask",
-      params: { session_id: "session-1", plan_id: "plan-1", task_id: "T01" }
-    }
-  ]);
-});
-
 test("backend action controller source does not scrape terminal output", () => {
   const packageRoot = resolve(__dirname, "../..");
   const source = readFileSync(resolve(packageRoot, "src/backend/BackendActionController.ts"), "utf8");
@@ -2316,7 +1939,7 @@ function dirtyDocument(fsPath: string): any {
 
 function controllerFor(
   bridge: ReturnType<typeof bridgeMock>,
-  context: { sessionId?: string; workspaceRoot?: string; forgePlan?: { sessionId: string; planId: string } } = { sessionId: "session-1" },
+  context: { sessionId?: string; workspaceRoot?: string } = { sessionId: "session-1" },
   ensureCredentialBridge?: () => Promise<void>,
   ensureLiveSession?: () => Promise<string>,
   actionResults?: ActionResultStore,
@@ -2336,11 +1959,8 @@ function controllerFor(
       provider: "",
       transport: "stdio",
       sandboxProfile: "default",
-      forgeExecuteMaxSteps: undefined,
-      forgeExecuteNoLog: false,
       showStatusBar: true,
       autoStartBridge: false,
-      enableForge: true,
       security: { cliPath: { executionAllowed: true, apiKeyForwardingAllowed: false } }
     } as any),
     output: {
@@ -2511,15 +2131,6 @@ function bridgeMock(methods: string[], featureValues: Record<string, unknown> = 
     skillValidate: async (params: unknown) => record(bridge, "skill.validate", params, { valid: true }),
     skillInstall: async (params: unknown) => record(bridge, "skill.install", params, { changed: true }),
     extInstall: async (params: unknown) => record(bridge, "ext.install", params, { changed: true }),
-    forgeAssetsList: async (params: unknown) => record(bridge, "forge.assets.list", params, { assets: [] }),
-    forgeAssetsShow: async (params: unknown) => record(bridge, "forge.assets.show", params, { asset: {} }),
-    forgeAssetsAdd: async (params: unknown) => record(bridge, "forge.assets.add", params, { status: "added" }),
-    forgeAssetsDelete: async (params: unknown) => record(bridge, "forge.assets.delete", params, { status: "deleted" }),
-    forgeAssetsEdit: async (params: unknown) => record(bridge, "forge.assets.edit", params, { status: "edited" }),
-    forgeAssetsRefresh: async (params: unknown) => record(bridge, "forge.assets.refresh", params, { status: "refreshed" }),
-    forgeAssetsCancelPending: async (params: unknown) => record(bridge, "forge.assets.cancelPending", params, { cancelled: 0 }),
-    forgeAssetsCheckPlan: async (params: unknown) => record(bridge, "forge.assets.checkPlan", params, { ok: true }),
-    forgeAssetsPruneLegacy: async (params: unknown) => record(bridge, "forge.assets.pruneLegacy", params, { pruned: 0 }),
     doctorSummary: async () => record(bridge, "doctor.summary", undefined, { ok: true }),
     doctorProviders: async () => record(bridge, "doctor.providers", undefined, { providers: [] }),
     doctorBundle: async () => record(bridge, "doctor.bundle", undefined, { bundle: {} }),
@@ -2527,15 +2138,7 @@ function bridgeMock(methods: string[], featureValues: Record<string, unknown> = 
     sandboxSetup: async (params: unknown) => record(bridge, "sandbox.setup", params, { changed: true }),
     sandboxPull: async (params: unknown) => record(bridge, "sandbox.pull", params, { changed: true }),
     updateCheck: async (params: unknown) => record(bridge, "update.check", params, { cached: true }),
-    conventionsRender: async (params: unknown) => record(bridge, "conventions.render", params, { rendered: "" }),
-    forgeShow: async (params: unknown) => record(bridge, "forge.show", params, { plan: {} }),
-    forgePlanGetState: async (params: unknown) => record(bridge, "forge.plan.getState", params, { plan: {} }),
-    forgePlanSetAssistant: async (params: unknown) => record(bridge, "forge.plan.setAssistant", params, { changed: true }),
-    forgePlanSetGoal: async (params: unknown) => record(bridge, "forge.plan.setGoal", params, { changed: true }),
-    forgePlanUpdateTask: async (params: unknown) => record(bridge, "forge.plan.updateTask", params, { changed: true }),
-    forgePlanValidate: async (params: unknown) => record(bridge, "forge.plan.validate", params, { ok: true }),
-    forgePlanRegenerate: async (params: unknown) => record(bridge, "forge.plan.regenerate", params, { changed: true }),
-    forgeReview: async (params: unknown) => record(bridge, "forge.review", params, { approved: true })
+    conventionsRender: async (params: unknown) => record(bridge, "conventions.render", params, { rendered: "" })
   };
   return bridge;
 }
@@ -2551,11 +2154,6 @@ function defaultArgsForAction(actionId: string): string {
   }
   if (actionId === "permission.rules.grant") {
     return "ask tool shell_run";
-  }
-  if (actionId.includes("assets") || actionId === "forge.attach") {
-    return actionId.endsWith(".list") || actionId.endsWith(".checkPlan") || actionId.endsWith(".cancelPending")
-      ? ""
-      : "demo";
   }
   if (actionId === "profile.rename") {
     return "old";
@@ -2793,25 +2391,7 @@ const BRIDGE_METHOD_TO_PROTOCOL: Record<string, string> = {
   extInstall: "ext.install",
   extUninstall: "ext.uninstall",
   extEnable: "ext.enable",
-  extDisable: "ext.disable",
-  forgeShow: "forge.show",
-  forgePlanGetState: "forge.plan.getState",
-  forgePlanSetAssistant: "forge.plan.setAssistant",
-  forgePlanSetGoal: "forge.plan.setGoal",
-  forgePlanUpdateTask: "forge.plan.updateTask",
-  forgePlanValidate: "forge.plan.validate",
-  forgePlanRegenerate: "forge.plan.regenerate",
-  forgeAssetsList: "forge.assets.list",
-  forgeAssetsShow: "forge.assets.show",
-  forgeAssetsAdd: "forge.assets.add",
-  forgeAssetsDelete: "forge.assets.delete",
-  forgeAssetsEdit: "forge.assets.edit",
-  forgeAssetsRefresh: "forge.assets.refresh",
-  forgeAssetsCancelPending: "forge.assets.cancelPending",
-  forgeAssetsCheckPlan: "forge.assets.checkPlan",
-  forgeAssetsPruneLegacy: "forge.assets.pruneLegacy",
-  forgeAttach: "forge.attach",
-  forgeReview: "forge.review"
+  extDisable: "ext.disable"
 };
 
 function normalizeBridgeParams(prop: string, args: unknown[]): Record<string, unknown> {
@@ -2996,18 +2576,6 @@ function contractArgsForAction(actionId: string): string {
       return "publisher.plugin";
     case "sandbox.pull":
       return "img-a,img-b";
-    case "forge.assets.show":
-    case "forge.assets.delete":
-    case "forge.assets.refresh":
-    case "forge.assets.edit":
-      return "asset-1";
-    case "forge.assets.add":
-    case "forge.attach":
-      return "docs/spec.md";
-    case "forge.review":
-      return "T01";
-    case "forge.plan.updateTask":
-      return "T01 title Updated title";
     default:
       return "";
   }
@@ -3025,8 +2593,6 @@ function contractInputsForAction(actionId: string): string[] {
       return ["openai"];
     case "mcp.prompts.get":
       return ["prompt"];
-    case "forge.assets.edit":
-      return ["New title"];
     default:
       return [];
   }

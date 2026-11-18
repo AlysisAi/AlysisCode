@@ -18,10 +18,7 @@ from alysis_code.runtime_kind import RuntimeKind
     [
         (RuntimeKind.INTERACTIVE_CHAT, True),
         (RuntimeKind.ONE_SHOT, True),
-        (RuntimeKind.FORGE_EXEC, True),
-        (RuntimeKind.SWARM_WORKER, False),
         (RuntimeKind.SUBAGENT, False),
-        (RuntimeKind.CONFLICT_AUTO_RESOLVE, False),
     ],
 )
 def test_resources_runtime_supported_only_in_allowed_runtimes(

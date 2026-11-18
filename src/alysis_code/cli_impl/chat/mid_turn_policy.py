@@ -60,13 +60,10 @@ _BLOCK_REASONS = {
     "/resume": "resuming replaces the session this turn is using",
     "/compact": "compaction rewrites the history this turn is appending to",
     "/ask": "that starts a new turn",
-    "/forge": "Forge takes over the session",
-    ":forge": "Forge takes over the session",
     "/login": "signing in replaces the active session",
     "/logout": "signing out replaces the active session",
     "/report": "report generation requires a settled session",
     "/feedback": "feedback generation requires a settled session",
-    "/assets": "the assets view requires a settled Forge session",
 }
 
 _GENERIC_BLOCK_REASON = "that command cannot run while a turn is in flight"

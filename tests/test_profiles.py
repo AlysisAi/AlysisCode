@@ -222,15 +222,10 @@ def test_switching_active_profile_clears_only_router_overrides() -> None:
         "router": "gemini-router",
         "coding": "shared-coder",
     }
-    cfg.extra_fields["forge_role_models"] = {
-        "router": "gemini-forge-router",
-        "review": "shared-reviewer",
-    }
 
     set_active_profile(cfg, "anthropic")
 
     assert cfg.extra_fields["role_models"] == {"coding": "shared-coder"}
-    assert cfg.extra_fields["forge_role_models"] == {"review": "shared-reviewer"}
 
 
 def test_remove_only_profile_clears_active() -> None:

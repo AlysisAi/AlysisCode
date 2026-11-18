@@ -75,21 +75,6 @@ jobs:
       - name: Python Windows console encoding tests
         run: uv run --frozen --no-sync python -m pytest -q tests/test_surface_console_encoding.py
 
-      - name: Python Forge baseline tests
-        run: uv run --frozen --no-sync python -m pytest -q tests/test_cli_impl_forge.py tests/test_forge.py
-
-      - name: Python Forge execution suite
-        run: uv run --frozen --no-sync python -m pytest -q tests/test_forge_exec.py
-
-      - name: Python Forge swarm suite
-        run: uv run --frozen --no-sync python -m pytest -q tests/test_forge_swarm.py
-
-      - name: Python Forge review suite
-        run: uv run --frozen --no-sync python -m pytest -q tests/test_forge_review.py
-
-      - name: Python combined Forge release gate
-        run: uv run --frozen --no-sync python -m pytest -q tests/test_forge_exec.py tests/test_forge_swarm.py tests/test_forge_review.py
-
       - name: Python dependency audit
         run: uv run --frozen --no-sync python scripts/qa/check_deps.py
 

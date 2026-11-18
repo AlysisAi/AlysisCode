@@ -47,27 +47,6 @@ const REQUIRED_METHODS = [
   "browser.status",
   "browser.list",
   "browser.close",
-  "forge.plan",
-  "forge.plan.start",
-  "forge.plan.result",
-  "forge.list",
-  "forge.open",
-  "forge.resume",
-  "forge.status",
-  "forge.executePreview",
-  "forge.execute",
-  "forge.cancel",
-  "forge.swarm.start",
-  "forge.swarm.resume",
-  "forge.swarm.list",
-  "forge.swarm.status",
-  "forge.swarm.result",
-  "forge.swarm.cancel",
-  "forge.swarm.review",
-  "forge.swarm.apply",
-  "forge.swarm.discard",
-  "diff.list",
-  "diff.get",
   "tools.catalog",
   "tool.list",
   "tool.info",
@@ -142,46 +121,8 @@ function runStdioBridge() {
   const jobs = new Map();
   const browsers = new Map();
   const eventsBySession = new Map();
-  const planInstructionBySession = new Map();
   let nextSequence = 1;
   let nextChatJobNumber = 1;
-  let nextPlanJobNumber = 1;
-  let lastExecuteJobId = null;
-  const swarmState = {
-    jobId: null,
-    complete: false,
-    cancelled: false,
-    resumeCount: 0,
-    revision: 0,
-    applied: {},
-    discarded: {}
-  };
-  const swarmDurableStatus = () => {
-    const state = swarmState.cancelled ? "cancelled" : swarmState.complete ? "succeeded" : "running";
-    return {
-      job_id: swarmState.jobId,
-      state,
-      revision: swarmState.revision,
-      attempts: swarmState.resumeCount + 1,
-      resume_count: swarmState.resumeCount,
-      created_at: 0,
-      updated_at: 0,
-      started_at: 0,
-      terminal_at: swarmState.complete ? 0 : null,
-      lease_expires_at: null,
-      result_available: swarmState.complete,
-      error_code: null,
-      error_summary: null,
-      usage: {
-        calls: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        cached_input_tokens: 0,
-        total_tokens: 0
-      },
-      resumable: state === "interrupted"
-    };
-  };
   const browserStatus = (entry) => ({
     browser_session_id: entry.browserSessionId,
     product: "Mock Chromium",
@@ -195,36 +136,6 @@ function runStdioBridge() {
   const ownedBrowser = (params) => {
     const entry = browsers.get(params.browser_session_id);
     return entry && entry.ownerSessionId === params.session_id ? entry : null;
-  };
-  const swarmReviewPayload = (sessionId) => {
-    const stateFor = (taskId, base) =>
-      swarmState.applied[taskId] ? "applied" : swarmState.discarded[taskId] ? "discarded" : base;
-    const item = (taskId, title, base) => ({
-      task_id: taskId,
-      title,
-      status: base === "failed" ? "failed" : base === "merged" ? "ready_for_merge" : base,
-      state: stateFor(taskId, base),
-      reviewable: base === "merged" && !swarmState.applied[taskId] && !swarmState.discarded[taskId],
-      diff_available: base === "merged",
-      diff_artifact_id: base === "merged" ? `forge_run_mock-plan:execution/harvest/${taskId}.diff` : null,
-      untracked_files: taskId === "T03" ? ["scratch_note.txt"] : [],
-      untracked_files_note: taskId === "T03" ? "untracked files created: scratch_note.txt" : null,
-      worktree_present: base === "merged",
-      applied: Boolean(swarmState.applied[taskId]),
-      discarded: Boolean(swarmState.discarded[taskId]),
-      recovery:
-        base === "failed"
-          ? { kind: "regenerate_subtree", start_method: "forge.plan.regenerate.start", suggested_params: { instruction: "Regenerate the plan subtree for task T02; the previous attempt ended failed.", focus: "src/b.py" } }
-          : null
-    });
-    return {
-      session_id: sessionId,
-      plan_id: "mock-plan",
-      items: [item("T01", "Wire retry/back-off", "merged"), item("T02", "Add cancel events", "failed"), item("T03", "Document swarm", "merged")],
-      state_counts: { ready_for_merge: 2, failed: 1 },
-      pending_review_task_ids: ["T01", "T03"].filter((id) => !swarmState.applied[id] && !swarmState.discarded[id]),
-      working_tree_untouched_until_apply: true
-    };
   };
   const emitEvent = (sequence, sessionId, jobId, type, payload) => {
     const event = {
@@ -403,6 +314,10 @@ function runStdioBridge() {
           }
         }
         const sessionId = params.session_id || "mock-session";
+        if (String(params.message || params.instruction || "").toLowerCase().includes("trigger bridge exit")) {
+          process.nextTick(() => process.exit(7));
+          return;
+        }
         const job = {
           job_id: `mock-job-${nextChatJobNumber++}`,
           session_id: sessionId,
@@ -477,20 +392,12 @@ function runStdioBridge() {
       case "artifact.list":
         const artifacts = [
           {
-            artifact_id: "forge_mock:plan/plan.json",
-            root: "forge_run",
-            path: "plan/plan.json",
+            artifact_id: "mock_run:output/result.json",
+            root: "run",
+            path: "output/result.json",
             size_bytes: 42
           }
         ];
-        if (lastExecuteJobId) {
-          artifacts.push({
-            artifact_id: "forge_mock:execute/result.json",
-            root: "forge_run",
-            path: "execute/result.json",
-            size_bytes: 64
-          });
-        }
         writeResult(request.id, {
           session_id: params.session_id,
           artifacts,
@@ -503,18 +410,12 @@ function runStdioBridge() {
         writeResult(request.id, {
           session_id: params.session_id,
           artifact_id: params.artifact_id,
-          path: String(params.artifact_id || "forge_mock:plan/plan.json"),
+          path: String(params.artifact_id || "mock_run:output/result.json"),
           size_bytes: 42,
           truncated: false,
           max_bytes: 65536,
           encoding: "utf-8",
-          content: JSON.stringify(
-            String(params.artifact_id || "").includes("execute")
-              ? { plan_id: "mock-plan", job_id: lastExecuteJobId, status: "completed", fixture: "extension-host" }
-              : { plan_id: "mock-plan", fixture: "extension-host" },
-            null,
-            2
-          )
+          content: JSON.stringify({ status: "completed", fixture: "extension-host" }, null, 2)
         });
         return;
       case "approval.respond":
@@ -753,395 +654,6 @@ function runStdioBridge() {
         });
         return;
       }
-      case "forge.plan.start": {
-        const sessionId = params.session_id || "mock-session";
-        const instruction = String(params.instruction || "");
-        if (instruction.toLowerCase().includes("trigger bridge exit")) {
-          process.nextTick(() => process.exit(7));
-          return;
-        }
-        const failed = instruction.toLowerCase().includes("fail plan");
-        const planJobNumber = nextPlanJobNumber++;
-        const job = {
-          job_id: failed ? `mock-plan-job-failed-${planJobNumber}` : `mock-plan-job-${planJobNumber}`,
-          session_id: sessionId,
-          status: failed ? "failed" : "completed",
-          created_at: new Date(0).toISOString(),
-          started_at: new Date(0).toISOString(),
-          completed_at: new Date(0).toISOString(),
-          exit_code: failed ? 1 : 0,
-          error: failed ? "Mock Forge Plan failed for deterministic Cockpit coverage." : null,
-          plan_result: failed ? null : forgePlanResult(sessionId, instruction || "Mock Forge plan")
-        };
-        if (!sessions.has(sessionId)) {
-          sessions.set(sessionId, mockSession(sessionId, params));
-        }
-        jobs.set(job.job_id, job);
-        const session = sessions.get(sessionId);
-        if (session) {
-          session.active_job = job;
-        }
-        planInstructionBySession.set(sessionId, instruction);
-        writeResult(request.id, { session_id: sessionId, job_id: job.job_id, status: "started" });
-        if (!failed) {
-          queueMicrotask(() => {
-            emitEvent(nextSequence++, sessionId, job.job_id, "plan_node_updated", {
-              node_id: "T01",
-              state: "planned",
-              summary: "Mock Forge task"
-            });
-          });
-        }
-        return;
-      }
-      case "forge.plan.result": {
-        const job = jobs.get(params.job_id);
-        if (!job || !job.plan_result) {
-          writeError(request.id, "mock_plan_result_missing", "Mock Forge Plan result is unavailable.");
-          return;
-        }
-        writeResult(request.id, job.plan_result);
-        return;
-      }
-      case "forge.plan": {
-        const sessionId = params.session_id || "mock-session";
-        const instruction = String(params.instruction || "");
-        if (instruction.toLowerCase().includes("fail plan")) {
-          writeError(request.id, "mock_plan_failure", "Mock Forge Plan failed for deterministic Cockpit coverage.");
-          return;
-        }
-        if (instruction.toLowerCase().includes("trigger bridge exit")) {
-          process.nextTick(() => process.exit(7));
-          return;
-        }
-        if (!sessions.has(sessionId)) {
-          sessions.set(sessionId, mockSession(sessionId, params));
-        }
-        const plan = forgePlanResult(sessionId, instruction || "Mock Forge plan");
-        planInstructionBySession.set(sessionId, instruction);
-        writeResult(request.id, plan);
-        queueMicrotask(() => {
-          emitEvent(nextSequence++, sessionId, null, "plan_node_updated", {
-            node_id: "T01",
-            state: "planned",
-            summary: "Mock Forge task"
-          });
-        });
-        return;
-      }
-      case "forge.status":
-        writeResult(request.id, forgePlanResult(params.session_id || "mock-session", "Mock Forge plan"));
-        return;
-      case "forge.list":
-        writeResult(request.id, {
-          workspace_root: typeof params.workspace === "string" ? params.workspace : "",
-          plans: [
-            {
-              plan_id: "mock-plan",
-              session_id: null,
-              workspace_root: typeof params.workspace === "string" ? params.workspace : "",
-              status: "planned",
-              source: "persisted",
-              project_goal: "Mock Forge plan",
-              summary: "Mock Forge plan summary",
-              task_count: 1,
-              created_at: "2026-01-01T00:00:00Z",
-              updated_at: "2026-01-01T00:00:00Z",
-              plan_artifact_id: "forge_mock:plan/plan.json",
-              plan_markdown_artifact_id: "forge_mock:plan/PLAN.md"
-            }
-          ],
-          truncated: false,
-          max_items: Number(params.max_items || 50)
-        });
-        return;
-      case "forge.open":
-      case "forge.resume": {
-        const sessionId = params.session_id || "mock-session-opened";
-        if (!sessions.has(sessionId)) {
-          sessions.set(sessionId, mockSession(sessionId, { ...params, mode: "readonly" }));
-        }
-        writeResult(request.id, { ...forgePlanResult(sessionId, "Mock Forge plan"), source: "loaded_persisted", created_session: !params.session_id });
-        return;
-      }
-      case "forge.executePreview":
-        writeResult(request.id, forgeExecutePreviewResult(params, planInstructionBySession.get(params.session_id || "mock-session")));
-        if (shouldEmitApprovalForPreview(planInstructionBySession.get(params.session_id || "mock-session"))) {
-          queueMicrotask(() => {
-            emitEvent(nextSequence++, params.session_id || "mock-session", "mock-preview-job", "prompt_for_input", {
-              kind: "approval",
-              approval_kind: "verify_run",
-              approval_id: "mock-approval",
-              prompt_id: "mock-approval",
-              reason: "Mock verification command set requires approval.",
-              preview: "npm test",
-              command: "npm test",
-              files: ["README.md"],
-              allow_for_session_supported: true,
-              allow_for_session_scope: { type: "exact_verify_command_set", command_count: 1 }
-            });
-          });
-        }
-        return;
-      case "forge.execute":
-        if (params.dry_run === true) {
-          writeResult(request.id, forgeExecutePreviewResult(params, planInstructionBySession.get(params.session_id || "mock-session")));
-          return;
-        }
-        if (shouldSupportRealExecute(planInstructionBySession.get(params.session_id || "mock-session"))) {
-          const sessionId = params.session_id || "mock-session";
-          const planId = params.plan_id || "mock-plan";
-          const job = {
-            job_id: "mock-execute-job",
-            session_id: sessionId,
-            kind: "forge_execute",
-            plan_id: planId,
-            status: "running",
-            created_at: new Date(0).toISOString(),
-            started_at: new Date(0).toISOString(),
-            completed_at: null,
-            exit_code: null,
-            error: null
-          };
-          jobs.set(job.job_id, job);
-          lastExecuteJobId = job.job_id;
-          const session = sessions.get(sessionId);
-          if (session) {
-            session.active_job = job;
-          }
-          writeResult(request.id, {
-            session_id: sessionId,
-            plan_id: planId,
-            job_id: job.job_id,
-            status: "started"
-          });
-          queueMicrotask(() => {
-            emitEvent(nextSequence++, sessionId, job.job_id, "verify_gate_result", {
-              task_id: "T01",
-              command: "npm test",
-              success: true,
-              summary: "mock verification passed"
-            });
-            job.status = "completed";
-            job.completed_at = new Date(0).toISOString();
-            job.exit_code = 0;
-            if (session) {
-              session.active_job = { ...job };
-            }
-            emitEvent(nextSequence++, sessionId, job.job_id, "review_gate_decision", {
-              task_id: "T01",
-              decision: "accepted",
-              summary: "mock review accepted"
-            });
-            emitEvent(nextSequence++, sessionId, job.job_id, "status_update", {
-              mode: "review",
-              model: "mock execute completed"
-            });
-          });
-          return;
-        }
-        writeError(request.id, "forge_execute_unsupported", "forge.execute unsupported");
-        return;
-      case "forge.cancel":
-        writeResult(request.id, {
-          session_id: params.session_id || "mock-session",
-          plan_id: params.plan_id || "mock-plan",
-          status: "no_active_job",
-          state: "idle",
-          job: null
-        });
-        return;
-      // ---- SW6: deterministic swarm scenario --------------------------------
-      // Three tasks: T01 + T02 are disjoint and run in parallel; T03 overlaps
-      // and serializes. T01 raises a non-modal approval, T02 fails closed on a
-      // scope violation, T03 completes clean and becomes reviewable.
-      case "forge.swarm.start": {
-        const sessionId = params.session_id || "mock-session";
-        swarmState.jobId = "mock-swarm-job";
-        swarmState.complete = false;
-        swarmState.cancelled = false;
-        swarmState.resumeCount = 0;
-        swarmState.revision += 1;
-        swarmState.applied = {};
-        swarmState.discarded = {};
-        if (!sessions.has(sessionId)) {
-          sessions.set(sessionId, mockSession(sessionId, params));
-        }
-        writeResult(request.id, {
-          session_id: sessionId,
-          plan_id: params.plan_id || "mock-plan",
-          job_id: swarmState.jobId,
-          status: "started",
-          parallel: params.parallel || 2
-        });
-        // Emit the parallel task lifecycle deterministically.
-        queueMicrotask(() => {
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T01", state: "scheduled", role: "forge_swarm" });
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T02", state: "scheduled", role: "forge_swarm" });
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T01", state: "started", role: "forge_swarm" });
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T02", state: "started", role: "forge_swarm" });
-          // T01 pauses on a non-modal task-attributed approval.
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T01", state: "approval_pending", role: "forge_swarm" });
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "prompt_for_input", {
-            prompt_id: "mock-swarm-approval",
-            approval_id: "mock-swarm-approval",
-            kind: "approval",
-            approval_kind: "shell_run",
-            prompt_text: "npm run release:publish",
-            command: "npm run release:publish",
-            reason: "sensitive command requires approval",
-            files: [],
-            allow_for_session_supported: false,
-            metadata: { forge_swarm_task_id: "T01", worker: "forge_swarm:T01" }
-          });
-          // T02 fails closed on a scope violation (one error card).
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T02", state: "failed", role: "forge_swarm" });
-          // T03 serializes after, runs, and becomes reviewable.
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T03", state: "started", role: "forge_swarm" });
-          emitEvent(nextSequence++, sessionId, swarmState.jobId, "swarm_worker_state_changed", { worker_id: "T03", state: "merged", role: "forge_swarm" });
-          swarmState.complete = true;
-        });
-        return;
-      }
-      case "forge.swarm.resume": {
-        const sessionId = params.session_id || "mock-session";
-        swarmState.jobId = params.job_id || swarmState.jobId || "mock-swarm-job";
-        swarmState.complete = false;
-        swarmState.cancelled = false;
-        swarmState.resumeCount += 1;
-        swarmState.revision += 1;
-        writeResult(request.id, {
-          session_id: sessionId,
-          plan_id: params.plan_id || "mock-plan",
-          status: "resumed",
-          ...swarmDurableStatus()
-        });
-        return;
-      }
-      case "forge.swarm.list": {
-        const jobs = swarmState.jobId === null ? [] : [swarmDurableStatus()];
-        writeResult(request.id, {
-          session_id: params.session_id || "mock-session",
-          jobs,
-          count: jobs.length
-        });
-        return;
-      }
-      case "forge.swarm.status":
-        writeResult(request.id, {
-          job_id: params.job_id || swarmState.jobId,
-          session_id: params.session_id || "mock-session",
-          status: swarmState.complete ? "completed" : "running",
-          state: swarmState.complete ? "completed" : "running",
-          plan_id: "mock-plan",
-          cancellation_requested: swarmState.cancelled,
-          task_status_counts: { ready_for_merge: 1, failed: 1 }
-        });
-        return;
-      case "forge.swarm.result": {
-        if (!swarmState.complete && !swarmState.cancelled) {
-          writeResult(request.id, {
-            session_id: params.session_id || "mock-session",
-            job_id: params.job_id || swarmState.jobId,
-            plan_id: "mock-plan",
-            status: "running",
-            state: "running",
-            complete: false
-          });
-          return;
-        }
-        writeResult(request.id, {
-          job_id: params.job_id || swarmState.jobId,
-          status: swarmState.cancelled ? "cancelled" : "completed",
-          state: swarmState.cancelled ? "cancelled" : "completed",
-          complete: true,
-          exit_code: swarmState.cancelled ? 130 : 1,
-          run_status: swarmState.cancelled ? "interrupted" : "incomplete",
-          clean: false,
-          interrupted: swarmState.cancelled,
-          interrupted_task_ids: swarmState.cancelled ? ["T01", "T03"] : [],
-          task_status_counts: { ready_for_merge: 1, failed: 1 }
-        });
-        return;
-      }
-      case "forge.swarm.cancel":
-        swarmState.cancelled = true;
-        swarmState.complete = true;
-        writeResult(request.id, {
-          session_id: params.session_id || "mock-session",
-          plan_id: "mock-plan",
-          job_id: params.job_id || swarmState.jobId,
-          status: "cancellation_requested",
-          state: "cancellation_requested"
-        });
-        return;
-      case "forge.swarm.review":
-        writeResult(request.id, swarmReviewPayload(params.session_id || "mock-session"));
-        return;
-      case "forge.swarm.apply": {
-        const taskIds = Array.isArray(params.task_ids) ? params.task_ids : [];
-        for (const id of taskIds) {
-          swarmState.applied[String(id)] = true;
-        }
-        writeResult(request.id, {
-          session_id: params.session_id || "mock-session",
-          plan_id: "mock-plan",
-          applied: taskIds.map((id) => ({ task_id: String(id), applied: true, untracked_files_not_applied: ["scratch_note.txt"] })),
-          working_tree_committed: false
-        });
-        return;
-      }
-      case "forge.swarm.discard": {
-        const taskIds = Array.isArray(params.task_ids) ? params.task_ids : [];
-        for (const id of taskIds) {
-          swarmState.discarded[String(id)] = true;
-        }
-        writeResult(request.id, {
-          session_id: params.session_id || "mock-session",
-          plan_id: "mock-plan",
-          discarded: taskIds.map((id) => ({ task_id: String(id), discarded: true }))
-        });
-        return;
-      }
-      case "diff.list":
-        writeResult(request.id, {
-          diffs: [
-            {
-              diff_id: "mock-diff",
-              session_id: params.session_id || "mock-session",
-              plan_id: params.plan_id || "mock-plan",
-              job_id: lastExecuteJobId,
-              file_path: "README.md",
-              status: "available",
-              old_label: "Alysis Code original",
-              new_label: "Alysis Code proposed",
-              size_bytes: 12
-            }
-          ]
-        });
-        return;
-      case "diff.get":
-        if (!params.session_id || !params.plan_id) {
-          writeError(request.id, "missing_field", "session_id and plan_id are required.");
-          return;
-        }
-        writeResult(request.id, {
-          diff_id: params.diff_id || "mock-diff",
-          session_id: params.session_id,
-          plan_id: params.plan_id,
-          job_id: null,
-          file_path: "README.md",
-          old_text: "old\n",
-          new_text: "new\n",
-          old_artifact_id: null,
-          new_artifact_id: null,
-          unified_diff: "--- a/README.md\n+++ b/README.md\n",
-          truncated: false,
-          size_bytes: 12,
-          max_bytes: 65536,
-          redaction: "protocol_preview"
-        });
-        return;
       default:
         writeError(request.id, "method_not_found", `Unknown method: ${request.method}`);
     }
@@ -1156,9 +668,6 @@ function healthForScenario() {
   }
   const current = health(REQUIRED_METHODS);
   current.capabilities.features.mock_scenario = SCENARIO || "default";
-  if (SCENARIO === "execute-supported") {
-    current.capabilities.features.forge.execute.supported = true;
-  }
   return current;
 }
 
@@ -1243,44 +752,6 @@ function health(methods) {
           bounded_diagnostics: true,
           session_cleanup: true
         },
-        forge: {
-          plan: { supported: true, schema: "ide_forge_plan_v1", terminal_output_scraping: false },
-          list: { supported: true, durable: true },
-          open: { supported: true, durable: true },
-          resume: { supported: true, alias: "forge.open" },
-          status: { supported: true },
-          execute_preview: { supported: true, method: "forge.executePreview", mutates: false },
-          execute: { supported: false, behavior: "fail_closed", dry_run_supported: true },
-          cancel: {
-            supported: true,
-            callable: true,
-            behavior: "cooperative_checkpoint_cancellation",
-            interrupt_kind: "cooperative",
-            hard_interrupt: false
-          },
-          swarm: {
-            supported: true,
-            workspace_trust_required: true,
-            cancellation: "cooperative_checkpoint_cancellation",
-            merge_behavior: "review_only_per_task_apply_discard",
-            approvals: { yes_auto_approval: false }
-          }
-        },
-        resumable_swarm: {
-          supported: true,
-          durable: true,
-          explicit_resume: true,
-          fresh_permission_fingerprint_required: true,
-          fenced_worker_leases: true,
-          restart_recovery: true,
-          atomic_cancellation: true,
-          exactly_once_usage_events: true
-        },
-        diffs: {
-          supported: true,
-          opaque_ids: true,
-          arbitrary_file_reads: false
-        },
         approvals: {
           host_managed: true,
           allow_for_session: "scoped",
@@ -1291,125 +762,12 @@ function health(methods) {
   };
 }
 
-function forgePlanResult(sessionId, instruction) {
-  return {
-    plan_id: "mock-plan",
-    session_id: sessionId,
-    job_id: null,
-    status: "planned",
-    source: "active_memory",
-    created_session: true,
-    project_goal: String(instruction),
-    summary: "Mock Forge plan summary",
-    warnings: [],
-    incomplete: false,
-    tasks: [
-      {
-        task_id: "T01",
-        title: "Mock Forge task",
-        objective: String(instruction),
-        file_scope: {
-          estimated_files: ["README.md"],
-          write_scope: []
-        },
-        acceptance_criteria: ["Plan is inspectable."],
-        verification_commands: ["npm test"],
-        risk_notes: [],
-        dependencies: [],
-        order: 1,
-        scope_unknown_reason: "",
-        warnings: [],
-        status: "planned"
-      }
-    ],
-    artifacts: [
-      {
-        kind: "forge_plan_json",
-        artifact_id: "forge_mock:plan/plan.json",
-        path: "plan/plan.json"
-      }
-    ],
-    plan_artifact_id: "forge_mock:plan/plan.json",
-    plan_markdown_artifact_id: "forge_mock:plan/PLAN.md"
-  };
-}
-
-function forgeExecutePreviewResult(params, instruction) {
-  const mode = params.mode === "auto" || params.mode === "review" || params.mode === "readonly"
-    ? params.mode
-    : "review";
-  const realExecutionSupported = shouldSupportRealExecute(instruction);
-  return {
-    session_id: params.session_id || "mock-session",
-    plan_id: params.plan_id || "mock-plan",
-    selected_task_ids: Array.isArray(params.task_ids) && params.task_ids.length > 0 ? params.task_ids : ["T01"],
-    execution_mode_requested: mode,
-    workspace_trust_required: mode !== "readonly",
-    workspace_trusted: typeof params.workspace_trusted === "boolean" ? params.workspace_trusted : null,
-    estimated_file_scopes: [
-      {
-        task_id: "T01",
-        title: "Mock Forge task",
-        estimated_files: ["README.md"],
-        write_scope: [],
-        scope_unknown_reason: ""
-      }
-    ],
-    verification_commands: [
-      {
-        task_id: "T01",
-        commands: ["npm test"],
-        source: "task",
-        missing_reason: ""
-      }
-    ],
-    required_approvals: mode === "readonly" ? [] : [
-      {
-        kind: "verify_run",
-        task_id: "T01",
-        reason: "Mock verification command set would require approval.",
-        scope: { type: "exact_verify_command_set", command_count: 1 },
-        allow_for_session_scope: { type: "exact_verify_command_set", command_count: 1 },
-        allow_for_session_supported: true
-      }
-    ],
-    runtime_approval_requirements: [],
-    approval_scopes_safe: true,
-    sandbox_profile: {
-      requested: params.sandbox_profile || "default",
-      supported: true,
-      available: true,
-      diagnostic: null
-    },
-    known_risks: ["Forge runtime cancellation uses cooperative checkpoints; hard interrupt is unavailable."],
-    missing_prerequisites: [],
-    preview_ready: true,
-    real_execution_supported: realExecutionSupported,
-    unsupported_reason: realExecutionSupported ? "" : "Forge runtime execution is not wired in the mock bridge.",
-    active_cancellation_supported: true,
-    cancellation: { supported: true, kind: "cooperative_checkpoint", hard_interrupt: false },
-    next_recommended_action: realExecutionSupported ? "Confirm explicit review-mode execution." : "Review the preview.",
-    status: "preview"
-  };
-}
-
 function writeResult(id, result) {
   process.stdout.write(JSON.stringify({ protocol_version: PROTOCOL_VERSION, id, ok: true, result }) + "\n");
 }
 
 function writeError(id, code, message) {
   process.stdout.write(JSON.stringify({ protocol_version: PROTOCOL_VERSION, id, ok: false, error: { code, message } }) + "\n");
-}
-
-function shouldEmitApprovalForPreview(instruction) {
-  return typeof instruction === "string" && instruction.toLowerCase().includes("approval cockpit");
-}
-
-function shouldSupportRealExecute(instruction) {
-  return (
-    SCENARIO === "execute-supported" ||
-    (typeof instruction === "string" && instruction.toLowerCase().includes("execute review e2e"))
-  );
 }
 
 function mockSession(sessionId, params) {

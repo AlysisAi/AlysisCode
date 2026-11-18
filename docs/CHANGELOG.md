@@ -1,5 +1,112 @@
 # Changelog
 
+## 0.17.3 - 2026-11-18
+
+- Add optional anonymous activity counts for the CLI, off by default: `ALYSIS_USAGE_METRICS=1`
+  counts the days a run or chat task is started, with a random installation identifier, and
+  `DO_NOT_TRACK=1` turns it off. No prompts, paths, host names, account details or credentials
+  are sent, engines started by the desktop app are not counted, and a request never holds up a
+  task.
+- Fix the picomatch ReDoS advisory (GHSA-fc5q-39xc-vjpf) in the sandbox image's npm and the VS
+  Code extension's build: both use picomatch 4.0.7 rebuilt with the upstream parser fix
+  (`4.0.8-alysis.1`), with its matcher and hostile-input checks run in the image build.
+- On Windows, contained file reads, writes and edits run in fixed workers started directly inside
+  the MXC sandbox, whatever folders commands may reach, and each worker loads only the code it
+  needs.
+- The desktop app reads the chat commands from the engine's capabilities at startup
+  (`chat_commands`), and its capability and version probes no longer load the terminal interface.
+- About me: what the person wrote about themselves, shared by all their owls. The app writes
+  it to each place (`PUT /v1/settings/about-me`, capability `about_me`); every turn reads it,
+  labelled as the person's own words and apart from each owl's memories, within a fixed token
+  budget that leaves out the last facts when it is long. Owls may suggest adding a fact the
+  person stated in a chat; nothing is added unless the person accepts it.
+- Each owl uses only the desktop app's plugins the person leaves on for it (`GET/PUT
+  /v1/bots/{id}/plugins`, capability `owl_apps`). New owls and owls from before have every
+  connected plugin on. A plugin switched off for an owl isn't offered to it in any turn, and a
+  call already chosen is refused before anything is sent, with a coded refusal (`app_off`).
+- An owl can ask for an app its request needs that is off for it or not connected
+  (`need_app`, by the app's id): the task's `app_needs` carry the card, Needs you lists it, and
+  turning it on or connecting it (`PATCH /v1/bots/{id}/app-needs/{id}`) carries the request on
+  as a turn with no new message. The desktop app's catalog may name every app owls could use
+  (`apps`).
+- Routines can use the owl's offline computer, its online browser and named websites. The owl
+  declares what a routine needs (`needs`: `offline_computer`, `online_browser`, `sites`) when it
+  creates, suggests or edits it; the person allows exactly that once for the routine
+  (`PUT /v1/bots/{id}/schedules/{id}/access`, optionally turning it on and running it now), and
+  each run uses what was allowed when it was queued, without a card. A run that asks for more
+  pauses its routine (`pause_code` `access`, with the request in `access.requested`) and shows in
+  Needs you. A changed job or needs asks again, `DELETE …/access` revokes from the next run, and
+  deleting a routine or its owl deletes what was allowed. Website actions that need review still
+  ask, and peer reports and activations still get no computer (capability `routine_access`,
+  schema 42).
+- An owl keeps the look the person picked for its face: its colour and the background behind it
+  (`color`, `background`, capability `owl_looks`). Set when it is made or later, a look is a label
+  like the name and changes at once even while the owl works. A change that leaves a part out
+  keeps it, so older apps renaming an owl don't reset it; null goes back to the app's default.
+  Owls and Needs you items (`bot_color`, `bot_background`) carry it.
+- Owls know the person's local date, weekday, time and time zone on every turn,
+  including routine runs, first hellos and exchanges between owls, so "today",
+  "tomorrow" and "9 AM" mean the person's own. The app sends its computer's time
+  zone (`PUT /v1/settings/time-zone`, capability `time_zone`); a new zone applies
+  from the next turn. Without one, owls say they are working in UTC.
+- Daily and weekly routines an owl sets up use the person's time zone unless they
+  name another; an edit keeps the routine's own zone.
+- Say why an owl's turn stopped: a failed or interrupted task carries `failure` with a closed
+  `kind` (`sign_in`, `model`, `plan_limit`, `computer`, `network`, `service`, `task_limit`,
+  `unknown`), decided where the turn fails from structured data, never from error wording,
+  plus the model service's status and code when it answered (capability `task_failure_kinds`).
+- Creating an owl takes an optional `request_id`: sending the same create again returns the
+  owl already made instead of a second one, and the same id with other details is refused
+  (capability `bot_create_request_id`).
+- A conversation's tasks list the actions a person approved or declined (`decided_actions`),
+  without the review screenshot, and a plugin step records its effect label.
+- Read an owl's conversation a page at a time (`POST /v1/chats/{id}/page`, capability
+  `conversation_pages`): the latest messages with their tasks, earlier pages on request, and
+  polls that return only what changed, so long chats open and refresh quickly.
+- List everything waiting for the person across their owls in one read
+  (`GET /v1/needs-you`, capability `needs_you`): questions, approvals, suggestions, help on an
+  owl's computer, routines that paused or wait to be turned on, and unseen failed turns.
+- Search an owl's messages in any language: matching is Unicode-normalised and case-folded,
+  and when nothing matches exactly it also ignores accents, full- and half-width forms and
+  spacing. The app's search shows the words around each match.
+- Skipping an owl's question no longer stops its work: the owl carries the request on
+  without the answer, picks sensible defaults and says which, unless the person has asked
+  something newer since.
+- An owl sets itself up from the person's own description of the job: its new
+  `propose_setup` tool puts a one-line purpose, working instructions and an optional routine
+  on one card under its reply (the task's `setup_proposal`, and a `proposal` with
+  `setup: true` in Needs you). `PATCH /v1/bots/{id}/setup-proposals/{id}` applies it, with
+  the person's own changes, or declines it (capability `owl_setup`). Apply changes the
+  purpose and instructions through the owl's update path and saves the routine as a draft
+  the person turns on, in one step; the same answer twice makes one change, a card made
+  before the owl's setup last changed is refused, and a setup the person said Not now to is
+  never proposed again. Only the person's own request in the chat can lead to one.
+- See the sites an owl's browser is signed in to and sign it out of one site or of every
+  site (`GET /v1/bots/{id}/sign-ins`, `POST /v1/bots/{id}/sign-ins/sign-out`, capability
+  `owl_sign_ins`). The list comes from the browser's own saved storage (its cookies, site
+  storage and visited pages), never from page text; signing out of a site removes that site's
+  cookies and stored data and leaves every other site as it was. An owl computer image with
+  this engine also signs its running browser out at once (cookies and all of the site's
+  storage); with an older image, sign-out waits until the owl's computer closes and the answer
+  says so (`reason: computer_in_use`).
+- Sign-ins a person makes while only viewing an owl's computer are kept for its next browser;
+  saving that storage used to fail when no task owned the computer.
+- When an owl needs the person on its computer it says what for, as a closed `kind` of its own
+  tool call (`human_check`, `code`, `sign_in`, `permission`, `other`). For a human check, a code,
+  a sign-in or a permission prompt it first waits a few seconds and reloads the page once (a
+  code page is not reloaded), and asks only if it is still blocked. The request and its Needs
+  you item carry `help: {kind, site, site_name}` from the browser's page. The owl still never
+  types passwords or codes and never solves human checks itself.
+- Remove Forge: the `alysis forge` commands, the `/forge` chat mode and its plan views,
+  parallel swarm runs, the Forge host protocol, the IDE bridge `forge.*` and `diff.*`
+  methods, and the server's Forge jobs. Use chat with the Architect persona to plan, and
+  subagents for parallel exploration. Plans and logs that Forge already wrote stay on disk.
+- Settings that name a runtime only Forge used (`forge_exec`, `swarm_worker`,
+  `conflict_auto_resolve`) are skipped. An MCP server, hook or custom tool scoped only to
+  those runtimes no longer runs anywhere; a custom tool scoped only to them is reported as
+  invalid.
+- Stop offering the merge-conflict review and resolve role models, which only Forge used.
+
 ## 0.17.1 - 2026-11-16
 
 - Add the Pro plan to `alysis login`, the terminal interface and the hosted model

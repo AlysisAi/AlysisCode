@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
-  ASSETS_METHODS,
   CLI_INSTALL_COMMAND,
   CLI_UPGRADE_COMMAND,
   MANAGED_BROWSER_DIRECT_LOOPBACK_SECURITY_FLAGS,
@@ -30,12 +29,10 @@ test("compatibility contract allows baseline Cockpit while disabling missing fea
 
   assert.equal(compatibility.features.baselineCockpit.supported, true);
   assert.equal(compatibility.features.chatRun.supported, false);
-  assert.equal(compatibility.features.forgePlan.supported, false);
-  assert.equal(compatibility.features.forgeExecutePreview.supported, false);
-  assert.match(featureDisabledReason(compatibility, "forgeExecutePreview"), /forge\.executePreview/);
+  assert.match(featureDisabledReason(compatibility, "chatRun"), /chat\.send/);
 });
 
-test("compatibility contract supports chat while disabling Forge independently", () => {
+test("compatibility contract supports chat while disabling management features independently", () => {
   const compatibility = evaluateBridgeCompatibility(
     healthPayload([
       ...REQUIRED_BRIDGE_METHODS,
@@ -53,21 +50,8 @@ test("compatibility contract supports chat while disabling Forge independently",
   );
 
   assert.equal(compatibility.features.chatRun.supported, true);
-  assert.equal(compatibility.features.forgePlan.supported, false);
-  assert.match(featureDisabledReason(compatibility, "forgePlan"), /Needs a newer Alysis Code CLI/);
-});
-
-test("compatibility contract accepts sync or async Forge Plan methods", () => {
-  assert.equal(
-    evaluateBridgeCompatibility(healthPayload([...REQUIRED_BRIDGE_METHODS, "forge.plan"])).features.forgePlan.supported,
-    true
-  );
-  assert.equal(
-    evaluateBridgeCompatibility(
-      healthPayload([...REQUIRED_BRIDGE_METHODS, "forge.plan.start", "forge.plan.result"])
-    ).features.forgePlan.supported,
-    true
-  );
+  assert.equal(compatibility.features.doctor.supported, false);
+  assert.match(featureDisabledReason(compatibility, "doctor"), /Needs a newer Alysis Code CLI/);
 });
 
 test("managed browser compatibility is fail-closed until the complete method set is advertised", () => {
@@ -194,7 +178,7 @@ test("compatibility setup commands are safe static commands", () => {
 
 test("Phase 3 reserved feature gates default OFF with today's bridge", () => {
   const compatibility = evaluateBridgeCompatibility(healthPayload([...REQUIRED_BRIDGE_METHODS]));
-  const reserved = ["forgePr", "forgeReviewGate", "forgeSwarm", "assets", "providersProfiles", "diffApplyDiscard", "modesFullaccess"] as const;
+  const reserved = ["providersProfiles", "modesFullaccess"] as const;
   for (const id of reserved) {
     assert.equal(compatibility.features[id].supported, false, `${id} should default OFF`);
   }
@@ -204,25 +188,13 @@ test("FE-8: reserved ids resolve to the REAL bridge methods and light up when ad
   const compatibility = evaluateBridgeCompatibility(
     healthPayload([
       ...REQUIRED_BRIDGE_METHODS,
-      "forge.review",
-      "forge.assets.list",
-      "forge.assets.show",
-      "forge.assets.add",
       "config.get",
       "config.set",
       "profile.list",
       "profile.use"
     ])
   );
-  assert.equal(compatibility.features.forgeReviewGate.supported, true, "forge.review");
-  assert.equal(compatibility.features.assets.supported, true, "forge.assets.list+show");
-  assert.equal(compatibility.features.assetsMutate.supported, true, "forge.assets.add");
   assert.equal(compatibility.features.providersProfiles.supported, true, "config.* + profile.*");
-  // The assets surface needs BOTH list and show.
-  assert.equal(
-    evaluateBridgeCompatibility(healthPayload([...REQUIRED_BRIDGE_METHODS, "forge.assets.list"])).features.assets.supported,
-    false
-  );
   // providersProfiles needs ALL of config.* + profile.* — not just profile.list (the pre-FE-8 bug).
   assert.equal(
     evaluateBridgeCompatibility(healthPayload([...REQUIRED_BRIDGE_METHODS, "profile.list"])).features.providersProfiles.supported,
@@ -230,81 +202,12 @@ test("FE-8: reserved ids resolve to the REAL bridge methods and light up when ad
   );
 });
 
-test("FE-8: forgePr / fullaccess / diffApplyDiscard stay permanently gated with clear reasons", () => {
-  // Even with the real review/assets/config methods present, the no-backend slots stay off.
-  const compatibility = evaluateBridgeCompatibility(
-    healthPayload([
-      ...REQUIRED_BRIDGE_METHODS,
-      "forge.review",
-      "forge.assets.list",
-      "forge.assets.show",
-      "config.get",
-      "config.set",
-      "profile.list",
-      "profile.use"
-    ])
-  );
-  assert.equal(compatibility.features.forgePr.supported, false);
-  assert.equal(compatibility.features.diffApplyDiscard.supported, false);
-  assert.equal(compatibility.features.modesFullaccess.supported, false);
-  assert.equal(compatibility.features.forgePr.reason?.category, "not_applicable");
-  assert.equal(compatibility.features.diffApplyDiscard.reason?.category, "not_applicable");
-  assert.match(compatibility.features.forgePr.disabledReason ?? "", /not yet supported/i);
-  assert.match(compatibility.features.diffApplyDiscard.disabledReason ?? "", /Source Control/);
-
-  // Truly permanent: even if the bridge advertised these methods, the cockpit keeps them gated
-  // (they have no wired-up UI; re-enable deliberately when that changes).
-  const advertised = evaluateBridgeCompatibility(
-    healthPayload([...REQUIRED_BRIDGE_METHODS, "forge.pr", "diff.apply", "diff.discard"])
-  );
-  assert.equal(advertised.features.forgePr.supported, false);
-  assert.equal(advertised.features.diffApplyDiscard.supported, false);
-});
-
-test("SW6: forgeSwarm is a live method-driven gate (off without methods, on with the swarm methods)", () => {
-  // Without the swarm methods the Run Swarm control is dimmed with a version-gate reason.
-  const withoutSwarm = evaluateBridgeCompatibility(
-    healthPayload([...REQUIRED_BRIDGE_METHODS, "forge.review", "forge.assets.list", "forge.assets.show"])
-  );
-  assert.equal(withoutSwarm.features.forgeSwarm.supported, false);
-  assert.equal(withoutSwarm.features.forgeSwarm.reason?.category, "version_gate");
-
-  // With the full swarm job + review method set advertised, the gate flips live.
-  const withSwarm = evaluateBridgeCompatibility(
-    healthPayload([
-      ...REQUIRED_BRIDGE_METHODS,
-      "forge.swarm.start",
-      "forge.swarm.resume",
-      "forge.swarm.list",
-      "forge.swarm.status",
-      "forge.swarm.result",
-      "forge.swarm.cancel",
-      "forge.swarm.review",
-      "forge.swarm.apply",
-      "forge.swarm.discard"
-    ])
-  );
-  assert.equal(withSwarm.features.forgeSwarm.supported, true);
-  assert.equal(withSwarm.features.forgeSwarm.reason, null);
-
-  // Partial advertisement (missing apply/discard) stays gated, fail-closed.
-  const partial = evaluateBridgeCompatibility(
-    healthPayload([...REQUIRED_BRIDGE_METHODS, "forge.swarm.start", "forge.swarm.status", "forge.swarm.result"])
-  );
-  assert.equal(partial.features.forgeSwarm.supported, false);
-});
-
 test("structured compatibility reasons classify security-model blocks, version gates, and protocol gaps", () => {
   const blocked = evaluateBridgeCompatibility(
     healthPayload([...REQUIRED_BRIDGE_METHODS], ["readonly", "review", "auto", "fullaccess"], {
-      forge: {
-        unsafe_modes: {
-          blocked_until_security_model: ["auto", "fullaccess"],
-          reason: "IDE v1 lacks strong enough cancellation, sandbox, and approval guarantees."
-        },
-        swarm: {
-          supported: true
-        }
+      unsafe_modes: {
+        blocked_until_security_model: ["auto", "fullaccess"],
+        reason: "IDE v1 lacks strong enough cancellation, sandbox, and approval guarantees."
       }
     })
   );
@@ -312,10 +215,6 @@ test("structured compatibility reasons classify security-model blocks, version g
   assert.equal(blocked.features.modesFullaccess.reason?.category, "security_model");
   assert.equal(blocked.features.modesFullaccess.reason?.message, "Blocked pending the security model");
   assert.match(blocked.features.modesFullaccess.reason?.detail ?? "", /cancellation/);
-  // SW6: forgeSwarm is method-driven now (not a security_model features hint). With the swarm
-  // methods absent from this health payload, it is a plain version_gate.
-  assert.equal(blocked.features.forgeSwarm.supported, false);
-  assert.equal(blocked.features.forgeSwarm.reason?.category, "version_gate");
 
   const missingManagement = evaluateBridgeCompatibility(healthPayload([...REQUIRED_BRIDGE_METHODS]));
   assert.equal(missingManagement.features.tools.reason?.category, "version_gate");
@@ -332,35 +231,6 @@ test("structured compatibility reasons classify security-model blocks, version g
   });
   assert.equal(incompatible.protocol.reason?.category, "version_gate");
   assert.match(featureDisabledReason(incompatible, "tools"), /Needs a newer Alysis Code CLI/);
-});
-
-test("assets compatibility does not enable from legacy assets.list", () => {
-  const compatibility = evaluateBridgeCompatibility(
-    healthPayload([...REQUIRED_BRIDGE_METHODS, "assets.list"])
-  );
-
-  assert.equal(compatibility.features.assets.supported, false);
-  assert.deepEqual(compatibility.features.assets.requiredMethods, [...ASSETS_METHODS]);
-  assert.match(featureDisabledReason(compatibility, "assets"), /forge\.assets\.list/);
-});
-
-test("assets compatibility prefers explicit forge assets capability when present", () => {
-  assert.equal(
-    evaluateBridgeCompatibility(
-      healthPayload([...REQUIRED_BRIDGE_METHODS], ["readonly", "review"], {
-        forge: { assets: { supported: true } }
-      })
-    ).features.assets.supported,
-    true
-  );
-
-  const explicitlyDisabled = evaluateBridgeCompatibility(
-    healthPayload([...REQUIRED_BRIDGE_METHODS, ...ASSETS_METHODS], ["readonly", "review"], {
-      forge: { assets: { supported: false } }
-    })
-  );
-  assert.equal(explicitlyDisabled.features.assets.supported, false);
-  assert.deepEqual(explicitlyDisabled.features.assets.missingMethods, ["features.forge.assets.supported"]);
 });
 
 test("modesFullaccess reflects the bridge capabilities.modes list, not a method", () => {

@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from ..config import ConfigError as AppConfigError
-from ..runtime_kind import RuntimeKind, normalize_runtime_kind
+from ..runtime_kind import RETIRED_RUNTIME_KINDS, RuntimeKind, normalize_runtime_kind
 from .errors import McpConfigError as ConfigError
 
 TransportKind = Literal["stdio", "http"]
@@ -171,6 +171,8 @@ def normalize_runtime_kind_list(value: object) -> list[RuntimeKind] | None:
     normalized: list[RuntimeKind] = []
     seen: set[RuntimeKind] = set()
     for item in value:
+        if isinstance(item, str) and item.strip().lower() in RETIRED_RUNTIME_KINDS:
+            continue
         try:
             kind = normalize_runtime_kind(item)
         except AppConfigError as exc:
@@ -621,7 +623,10 @@ class ResolvedMcpServer:
             "id": self.id,
             "transport": self.transport,
             "enabled": self.enabled,
-            "enabled_in": [kind.value for kind in self.enabled_in] if self.enabled_in else None,
+            # None means every runtime; an empty list (e.g. only retired runtimes) means none.
+            "enabled_in": (
+                [kind.value for kind in self.enabled_in] if self.enabled_in is not None else None
+            ),
             "trust": self.trust,
             "allowed_tools": list(self.allowed_tools),
             "denied_tools": list(self.denied_tools),

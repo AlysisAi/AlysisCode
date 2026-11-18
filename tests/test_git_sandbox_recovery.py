@@ -217,6 +217,8 @@ def test_transport_rejects_wrong_phase_backend_and_malformed_envelopes(
                 "",
             )
 
+        run_file_worker = run
+
     reader = contained.ContainedReadTools(SETTINGS, tmp_path)
     reader.runner = reader.write_runner = Runner()
     with pytest.raises(ConfigError) as caught:

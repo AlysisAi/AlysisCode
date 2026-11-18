@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import sys
 from pathlib import Path
 
@@ -31,14 +32,14 @@ def test_parity_extraction_finds_current_command_surfaces() -> None:
 
     assert parity.FeatureRef("cli_command", "run") in features
     assert parity.FeatureRef("cli_command", "chat") in features
-    assert parity.FeatureRef("cli_command", "forge assets add") in features
-    assert parity.FeatureRef("cli_command_group", "forge assets") in features
-    assert parity.FeatureRef("cli_chat_slash_command", "/forge") in features
+    assert parity.FeatureRef("cli_command", "skill init") in features
+    assert parity.FeatureRef("cli_command_group", "mcp auth") in features
     assert parity.FeatureRef("cli_chat_slash_command", "/subagents") in features
-    assert parity.FeatureRef("cli_forge_chat_command", "/execute") in features
-    assert parity.FeatureRef("extension_command", "alysis.forgeExecute") in features
-    assert parity.FeatureRef("extension_slash_command", "/forge plan") in features
-    assert parity.FeatureRef("ide_bridge_method", "forge.executePreview") in features
+    assert parity.FeatureRef("extension_command", "alysis.openChat") in features
+    assert parity.FeatureRef("extension_slash_command", "/doctor") in features
+    assert parity.FeatureRef("ide_bridge_method", "chat.send") in features
+    # The retired plan-and-execute surfaces are gone from every inventory.
+    assert not [ref for ref in features if re.search(r"\bforge\b|swarm", ref.name, re.IGNORECASE)]
 
 
 def test_cli_extraction_follows_nested_imports_and_scopes_app_names(tmp_path, monkeypatch):
@@ -70,60 +71,6 @@ def test_parity_burndown_report_is_current() -> None:
     assert burndown.read_text(encoding="utf-8") == parity.generate_parity_burndown(matrix)
 
 
-def test_forge_parity_burndown_report_is_current() -> None:
-    matrix = parity.load_parity_matrix()
-    burndown = REPO_ROOT / "docs" / "generated" / "ide_forge_parity_burndown.md"
-
-    assert burndown.read_text(encoding="utf-8") == parity.generate_forge_parity_burndown(matrix)
-
-
-def test_forge_swarm_bridge_methods_are_advertised_with_lifecycle_guarantees() -> None:
-    # SW6: the swarm gate fully lifted into the IDE. The cockpit Run Swarm
-    # console routes the swarm job + review methods, so forge swarm is
-    # implemented_in_extension and chat /execute is experimental_with_gate
-    # (review-only, capability-gated; broad auto/fullaccess stays blocked).
-    # Durable list/resume are now routed by the native recovery picker;
-    # forge.swarm.reconcile stays bridge-only as an internal crash-recovery primitive.
-    matrix = parity.load_parity_matrix()
-    forge_report = parity.generate_forge_parity_burndown(matrix)
-    ide_methods = {ref.name for ref in parity.extract_ide_method_features()}
-
-    assert _matrix_status("cli_command", "forge swarm") == "implemented_in_extension"
-    assert _matrix_status("cli_forge_chat_command", "/execute") == "experimental_with_gate"
-    expected_swarm_methods = {
-        "forge.swarm.start",
-        "forge.swarm.resume",
-        "forge.swarm.list",
-        "forge.swarm.status",
-        "forge.swarm.result",
-        "forge.swarm.cancel",
-        "forge.swarm.reconcile",
-        "forge.swarm.review",
-        "forge.swarm.apply",
-        "forge.swarm.discard",
-    }
-    assert {
-        method for method in ide_methods if method.startswith("forge.swarm")
-    } == expected_swarm_methods
-    assert "`forge swarm` is `implemented_in_extension`." in forge_report
-    assert "Advertised swarm methods:" in forge_report
-    assert "`forge.swarm.reconcile`" in forge_report
-    assert "`forge.swarm.resume`" in forge_report
-    assert "`forge.swarm.list`" in forge_report
-    assert _matrix_status("ide_bridge_method", "forge.swarm.resume") == "implemented_in_extension"
-    assert _matrix_status("ide_bridge_method", "forge.swarm.list") == "implemented_in_extension"
-    # /execute is now experimental_with_gate (the capability-gated Run Swarm path).
-    assert "| `experimental_with_gate` | 1 |" in forge_report
-
-
-def test_forge_asset_slash_routes_are_in_forge_burndown() -> None:
-    matrix = parity.load_parity_matrix()
-    forge_report = parity.generate_forge_parity_burndown(matrix)
-
-    for alias in ("/asset edit", "/asset cancel-pending", "/asset prune"):
-        assert f"`{alias}`" in forge_report
-
-
 def test_managed_browser_methods_are_routed_by_the_native_cockpit() -> None:
     expected = {
         "browser.start",
@@ -145,29 +92,6 @@ def test_managed_browser_methods_are_routed_by_the_native_cockpit() -> None:
         entry = _matrix_entry("ide_bridge_method", method)
         assert entry["status"] == "implemented_in_extension"
         assert "native Browser Cockpit" in str(entry.get("rationale") or "")
-
-
-def test_forge_parity_entries_project_to_release_review_statuses() -> None:
-    matrix = parity.load_parity_matrix()
-    allowed = {
-        "implemented_in_extension",
-        "intentionally_cli_only",
-        "blocked_until_security_model",
-        "experimental_with_gate",
-    }
-
-    for entry in parity.expanded_parity_entries(matrix):
-        if not parity._forge_specific_entry(entry):  # noqa: SLF001 - test covers generator policy.
-            continue
-        status = parity._display_status_for_forge(entry)  # noqa: SLF001 - test covers generator policy.
-        if status == "implemented_in_bridge_only":
-            # Transitional state for bridge-first Forge methods: it must carry a
-            # written rationale describing the planned extension adoption.
-            assert str(entry.get("bridge_only_rationale") or "").strip(), (
-                f"{entry['id']} is implemented_in_bridge_only without a bridge_only_rationale"
-            )
-            continue
-        assert status in allowed, f"{entry['id']} has unexpected Forge status {status!r}"
 
 
 def test_no_feature_is_left_in_ambiguous_parity_status() -> None:
@@ -210,7 +134,7 @@ def test_implemented_cli_slash_entries_have_reachable_extension_routes() -> None
     for entry in matrix["entries"]:
         if entry["status"] != "implemented_in_extension":
             continue
-        if entry["surface"] not in {"cli_chat_slash_command", "cli_forge_chat_command"}:
+        if entry["surface"] != "cli_chat_slash_command":
             continue
         names = [entry["name"]] if "name" in entry else entry["names"]
         equivalents = entry.get("extension_equivalents", {})
@@ -511,31 +435,13 @@ def test_known_intentionally_excluded_commands_have_correct_classification() -> 
     assert _matrix_status("cli_command", "config menu") == "intentionally_cli_only"
     assert _matrix_status("cli_command", "config set-api-key") == "intentionally_cli_only"
     assert _matrix_status("cli_command", "profile set-key") == "intentionally_cli_only"
-    assert _matrix_status("cli_command", "forge exec") == "blocked_until_security_model"
-    assert _matrix_status("cli_command", "forge swarm") == "implemented_in_extension"
     assert _matrix_status("cli_command", "hooks watch") == "blocked_until_security_model"
     assert _matrix_status("cli_command", "mcp auth login") == "implemented_in_extension"
-    assert _matrix_status("cli_forge_chat_command", "/execute") == "experimental_with_gate"
 
 
 def test_high_risk_features_are_not_left_planned() -> None:
-    for surface, name in (
-        ("cli_command", "forge exec"),
-        ("cli_command", "hooks watch"),
-        ("ide_capability", "features.forge.execute.unsafe_modes"),
-    ):
-        assert _matrix_status(surface, name) == "blocked_until_security_model"
-    # forge swarm graduated all the way to a first-class IDE workflow; it must
-    # never drift into an ambiguous planned_for_protocol status.
-    assert _matrix_status("cli_command", "forge swarm") == "implemented_in_extension"
+    assert _matrix_status("cli_command", "hooks watch") == "blocked_until_security_model"
     assert _matrix_status("cli_command", "mcp auth login") == "implemented_in_extension"
     assert _matrix_status("ide_bridge_method", "mcp.auth.login.start") == (
         "implemented_in_extension"
     )
-
-
-def test_forge_cancel_is_classified_as_cooperative_extension_capability() -> None:
-    assert _matrix_status("ide_bridge_method", "forge.cancel") == "implemented_in_extension"
-    entry = _matrix_entry("ide_bridge_method", "forge.cancel")
-    assert "cooperative checkpoint cancellation" in entry["rationale"]
-    assert "not a hard interrupt" in entry["security_or_lifecycle_reason"]

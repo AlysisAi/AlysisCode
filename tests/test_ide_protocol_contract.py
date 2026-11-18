@@ -81,44 +81,6 @@ def test_protocol_method_contract_matches_management_capabilities() -> None:
         assert capability["secret_values_in_params"] is False, method
 
 
-def test_protocol_method_contract_captures_durable_swarm_recovery() -> None:
-    methods = _expanded_contract_methods()
-
-    assert "idempotency_key" in methods["forge.swarm.start"]["optional_params"]
-    resume = methods["forge.swarm.resume"]
-    assert resume["required_params"] == [
-        "session_id",
-        "plan_id",
-        "job_id",
-        "workspace_trusted",
-    ]
-    assert "expected_revision" in resume["optional_params"]
-    assert resume["mutates"] is True
-    assert resume["workspace_trust_required"] is True
-    assert methods["forge.swarm.list"]["required_params"] == ["session_id"]
-    assert "session_id" in methods["forge.swarm.result"]["optional_params"]
-    cancel = methods["forge.swarm.cancel"]
-    assert "expected_revision" in cancel["optional_params"]
-    assert cancel["mutates"] is True
-
-
-def test_protocol_method_contract_captures_durable_forge_plan_acceptance() -> None:
-    methods = _expanded_contract_methods()
-
-    assert "idempotency_key" in methods["forge.plan.start"]["optional_params"]
-    assert "idempotency_key" not in methods["forge.plan"]["optional_params"]
-    plan = capabilities_payload()["features"]["forge"]["plan"]
-    assert plan["durable_acceptance"] is True
-    assert plan["idempotency_key_and_payload_hashed"] is True
-    assert plan["acknowledgement_after_durable_acceptance"] is True
-    assert plan["stable_job_id_across_bridge_restart"] is True
-    assert plan["job_status_restart_recovery"] is True
-    assert plan["result_restart_recovery"] is True
-    assert plan["fenced_worker_leases"] is True
-    assert plan["expired_running_lease"] == "indeterminate_no_automatic_reexecution"
-    assert plan["legacy_sync_exactly_once"] is False
-
-
 def test_protocol_method_contract_captures_managed_browser_security_boundary() -> None:
     methods = _expanded_contract_methods()
 

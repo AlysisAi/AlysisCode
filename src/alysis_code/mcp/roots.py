@@ -17,7 +17,6 @@ _ROOTS_ENABLED_RUNTIME_KINDS = frozenset(
     {
         RuntimeKind.INTERACTIVE_CHAT,
         RuntimeKind.ONE_SHOT,
-        RuntimeKind.FORGE_EXEC,
     }
 )
 

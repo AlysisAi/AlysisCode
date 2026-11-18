@@ -428,6 +428,53 @@ def test_contained_file_worker_reads_writes_and_rejects_stale_mutation(scope):
         readonly.run_write("fs_write_prepared", request)
 
 
+def test_registered_tools_create_and_edit_a_project_file_through_seatbelt(scope, monkeypatch):
+    from alysis_code.agent_loop import build_tools
+    from alysis_code.config import AppConfig
+    from alysis_code.session_store import SessionStore
+
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "strict")
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_BACKEND", "seatbelt")
+    worker_calls = []
+    native_run = SeatbeltShellRunner.run
+
+    def run_worker(runner, **kwargs):
+        if "--request-file" in shlex.split(kwargs["cmd"]):
+            worker_calls.append(kwargs["cwd"])
+        return native_run(runner, **kwargs)
+
+    monkeypatch.setattr(SeatbeltShellRunner, "run", run_worker)
+    root = scope["main"].resolve()
+    store = SessionStore(
+        enabled=False,
+        sessions_dir=scope["data"],
+        session_id="seatbelt-edit",
+        cwd=str(root),
+        repo_root=str(root),
+    )
+    tools = build_tools(
+        root=root,
+        console=None,
+        mode="auto",
+        yes=True,
+        non_interactive=True,
+        cfg=AppConfig(),
+        store=store,
+    )
+    path = "notes/café.txt"
+    tools["fs_write"].run({"path": path, "content": "before β\n"})
+    assert (root / path).read_bytes() == "before β\n".encode()
+    assert worker_calls == [root]
+    tools["fs_edit"].run(
+        {
+            "path": path,
+            "edits": [{"op": "replace_exact", "target": "before", "replacement": "after"}],
+        }
+    )
+    assert (root / path).read_bytes() == "after β\n".encode()
+    assert worker_calls == [root, root]
+
+
 def test_contained_search_does_not_read_parent_repository_metadata(scope):
     parent = scope["main"]
     # A linked parent repository has a .git file which ripgrep would open while

@@ -1,7 +1,7 @@
 """Shared cooperative-cancellation primitives.
 
 One token discipline for every long-running execution surface (IDE bridge
-jobs, Forge swarm workers): a ``threading.Event`` is the single cancel
+jobs, subagents): a ``threading.Event`` is the single cancel
 signal, a token wraps it for duck-typed checkpoints, and cancellation
 surfaces as a dedicated exception type so callers can distinguish a
 cooperative stop from a failure.

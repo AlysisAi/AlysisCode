@@ -12,11 +12,8 @@ from .events import (
     MessageEnd,
     ModeChanged,
     PersonaChanged,
-    PlanNodeUpdated,
     PromptForInput,
-    ReviewGateDecision,
     StatusUpdate,
-    SwarmWorkerStateChanged,
     ToolCallCompleted,
     ToolCallProgress,
     ToolCallStarted,
@@ -144,26 +141,6 @@ class Surface(Protocol):
     def emit_persona_changed(self, persona: str, effective_mode: str, source: str = "user") -> None:
         _ = (persona, effective_mode, source)
 
-    def emit_plan_node_updated(
-        self,
-        node_id: str,
-        state: str,
-        summary: str | None = None,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        _ = (node_id, state, summary, worker_id, role)
-
-    def emit_swarm_worker_state_changed(
-        self,
-        worker_id: str,
-        state: str,
-        *,
-        role: str | None = None,
-    ) -> None:
-        _ = (worker_id, state, role)
-
     def emit_verify_gate_result(
         self,
         command: str,
@@ -187,16 +164,6 @@ class Surface(Protocol):
         role: str | None = None,
     ) -> None:
         _ = (outcome, subject, reason, risk, approval_kind, worker_id, role)
-
-    def emit_review_gate_decision(
-        self,
-        decision: str,
-        summary: str,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        _ = (decision, summary, worker_id, role)
 
     def emit_error(
         self,
@@ -276,16 +243,6 @@ class Surface(Protocol):
             self.emit_mode_changed(event.mode)
         elif event.type == PersonaChanged.type:
             self.emit_persona_changed(event.persona, event.effective_mode, event.source)
-        elif event.type == PlanNodeUpdated.type:
-            self.emit_plan_node_updated(
-                event.node_id,
-                event.state,
-                event.summary,
-                worker_id=event.worker_id,
-                role=event.role,
-            )
-        elif event.type == SwarmWorkerStateChanged.type:
-            self.emit_swarm_worker_state_changed(event.worker_id, event.state, role=event.role)
         elif event.type == VerifyGateResult.type:
             self.emit_verify_gate_result(
                 event.command,
@@ -301,13 +258,6 @@ class Surface(Protocol):
                 event.reason,
                 risk=event.risk,
                 approval_kind=event.approval_kind,
-                worker_id=event.worker_id,
-                role=event.role,
-            )
-        elif event.type == ReviewGateDecision.type:
-            self.emit_review_gate_decision(
-                event.decision,
-                event.summary,
                 worker_id=event.worker_id,
                 role=event.role,
             )

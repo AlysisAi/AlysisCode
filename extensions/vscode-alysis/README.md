@@ -53,29 +53,16 @@ Bring your own model. Review mode asks before important changes. You control com
   with streamed replies, collapsible tool calls, approvals, diffs, and diagnostics in the same
   place. Slash commands are routed by the extension to typed handlers, not sent to the model as
   text; unknown commands fail closed with help.
-- **Plan before you change anything.** **Alysis Code: Create a Plan** produces a structured plan with
-  file scope, acceptance criteria, verification commands, and dependencies, plus a readiness panel
-  that names write scope, required approvals, and gates before you run it.
-- **Review-mode execution that never commits.** **Alysis Code: Review and Run Plan** runs a
-  non-mutating preview first, then executes selected tasks only after explicit confirmation.
-  Changes land in your working tree and are reviewed file by file in the native VS Code diff
-  editor; committing and reverting stay in the Source Control panel where you control them.
-- **Parallel work, reviewed per task.** **Alysis Code: Run Plan in Parallel** dispatches plan tasks
-  across workers with disjoint write scopes and a task-attributed approvals inbox, then presents
-  each task's diff for Keep or Discard. Nothing merges on its own.
-- **Approvals you actually see.** Workers run without auto-approval. Dangerous actions pause and
-  wait; "allow for session" appears only when the backend scopes it to an exact command or file
-  set, and a timed-out approval is denied, not granted.
+- **Approvals you actually see.** In review mode, dangerous actions pause and wait; "allow for
+  session" appears only when the backend scopes it to an exact command or file set, and a
+  timed-out approval is denied, not granted.
 - **Personas that only narrow, never widen.** A picker beside the model chip (or `/persona`)
   switches between the CLI's code, architect, ask, and debug personas plus your custom ones — each
   row shows the mode it would land on, because a persona can narrow what the agent may do, never
   widen it.
 - **Managed browser and native chat.** **Alysis Code: Open Managed Browser** gives the agent a
   public-web-only browser with bounded snapshots and diagnostics, and an `@alysis` participant
-  in VS Code's native chat routes `/help`, `/forge`, `/execute`, and `/doctor` into the same
-  controllers.
-
-![Forge plan with tasks and review controls](resources/screenshots/plan.png)
+  in VS Code's native chat routes `/help` and `/doctor` into the same controllers.
 
 ![Review the proposed file change and allow or deny it](resources/screenshots/review.png)
 
@@ -101,9 +88,6 @@ Pick one with **Alysis Code: Configure Provider** or **Alysis Code: Models and P
 | `alysis.defaultModel` | Optional default model name passed to the Alysis Code IDE bridge. |
 | `alysis.baseUrl` | Optional OpenAI-compatible provider base URL. Credentials must be stored in SecretStorage, not this setting. |
 | `alysis.sandboxProfile` | Extension-side label for the intended Alysis Code sandbox profile (`default`, `strict`, `warn`, `off`). Runtime policy remains owned by the CLI. |
-| `alysis.enableForge` | Show Alysis Code Forge commands and views. Trusted-workspace gates still apply. |
-| `alysis.forgeExecuteMaxSteps` | Optional positive `max_steps` override for plan execution. Leave 0 to use the CLI config default. |
-| `alysis.forgeExecuteNoLog` | Pass `no_log=true` for plan execution jobs. Structured events and bounded artifacts remain available. |
 | `alysis.showStatusBar` | Show the Alysis Code status bar item. |
 | `alysis.autoStartBridge` | Automatically check bridge health after activation. Off by default. |
 | `alysis.cliPath` | Development-only override for the `alysis` executable. Leave empty to use the signed, extension-managed runtime. |
@@ -123,10 +107,6 @@ Conversation history and runtime data are stored locally. Avoid including secret
 
 Stated plainly, because you will hit them.
 
-- **Forge execution is review-mode only.** Selected-task execution is Workspace-Trust gated and
-  approval-gated. Broad Forge `auto` and `fullaccess` execution are not available in the IDE.
-- **Parallel runs never merge.** Each task's diff is presented for Keep or Discard; there is no
-  auto-merge and no write to the base worktree.
 - **Cancellation is cooperative.** A cancel request is honored at the backend's next checkpoint.
   There is no hard interrupt, and a job is never shown as cancelled until the backend confirms it.
 - **MCP OAuth is local-window only.** It is unavailable on every remote extension host — SSH,

@@ -8,8 +8,6 @@ from . import chat_terminal as _chat_terminal
 from . import welcome as _welcome
 from . import chat_resume_helpers as _chat_resume_helpers
 from . import chat_status as _chat_status
-from . import forge_helpers as _forge_helpers
-from . import execution_helpers as _execution_helpers
 from . import prompt_helpers as _prompt_helpers
 from . import update as _update
 
@@ -20,8 +18,6 @@ from .chat_terminal import *
 from .welcome import *
 from .chat_resume_helpers import *
 from .chat_status import *
-from .forge_helpers import *
-from .execution_helpers import *
 from .prompt_helpers import *
 from .update import *
 
@@ -33,8 +29,6 @@ _CLI_SURFACE_MODULES = (
     _welcome,
     _chat_resume_helpers,
     _chat_status,
-    _forge_helpers,
-    _execution_helpers,
     _prompt_helpers,
     _update,
 )
@@ -47,8 +41,6 @@ _CLI_SURFACE_INTERNAL_NAMES = {
     "_chat_status",
     "_chat_terminal",
     "_cli_common",
-    "_execution_helpers",
-    "_forge_helpers",
     "_prompt_helpers",
     "_startup",
     "_sync_module_globals",

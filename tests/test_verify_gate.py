@@ -29,7 +29,6 @@ from alysis_code.verify_gate import (
     compact_verification_payload,
     is_authoritative_verify_command_selection,
     is_toolchain_unavailable_verification_output,
-    normalize_verify_mode,
     refine_generic_fallback_verify_command_selection,
     resolve_task_aware_verify_command_selection,
     resolve_verify_artifact_payload,
@@ -1216,15 +1215,6 @@ def test_verify_gate_rejects_wrapped_shell_compound_go_verification(
     body = artifact.read_text(encoding="utf-8")
     assert "status: not_executed" in body
     assert "non_execution_reason: disallowed_shell_control_flow" in body
-
-
-def test_verify_mode_and_command_resolution() -> None:
-    assert normalize_verify_mode("STRICT") == "strict"
-    cfg = AppConfig(model="test-model")
-    assert resolve_verify_commands(cfg=cfg, verify_cmd=None) == ["pytest -q"]
-    assert resolve_verify_commands(cfg=cfg, verify_cmd=["python -m pytest -q"]) == [
-        "python -m pytest -q"
-    ]
 
 
 def test_verify_command_resolution_prefers_repo_inference_over_generic_default_fallback(

@@ -5,14 +5,6 @@ export type SlashCommandId =
   | "help"
   | "mode"
   | "persona"
-  | "plan"
-  | "executePlan"
-  | "executePreview"
-  | "executeUnsupported"
-  | "plans"
-  | "openPlan"
-  | "diffs"
-  | "artifacts"
   | "cancel"
   | "doctor"
   | "config"
@@ -33,9 +25,7 @@ export interface SlashCommandDefinition {
 export interface SlashCommandCatalogContext {
   workspaceTrusted: boolean;
   activeSession: boolean;
-  activePlan: boolean;
   activeRun: boolean;
-  forgeEnabled?: boolean;
   personasAvailable?: boolean;
   compatibility?: BridgeCompatibilitySnapshot;
   isBackendActionSupported(actionId: string): boolean;
@@ -79,63 +69,6 @@ const CORE_SLASH_COMMANDS: readonly SlashCommandDefinition[] = [
     title: "Persona",
     description: "Switch persona. A persona can narrow what the agent may do, never widen it.",
     usage: "/persona [name]",
-    trust: "controllerGuarded"
-  },
-  {
-    id: "plan",
-    command: "/forge plan",
-    title: "Forge Plan",
-    description: "Break a goal into a reviewable Forge plan.",
-    usage: "/forge plan <instruction>",
-    trust: "requiresTrust"
-  },
-  {
-    id: "executePlan",
-    command: "/execute plan",
-    aliases: ["/execute", "/forge exec", "/forge execute"],
-    title: "Forge Execute Review",
-    description: "Run the open plan in review mode, after a preview and your confirmation.",
-    usage: "/execute plan",
-    trust: "requiresTrust"
-  },
-  {
-    id: "executePreview",
-    command: "/execute preview",
-    title: "Forge Execute Preview",
-    description: "Preview what running the open plan would change, without changing anything.",
-    usage: "/execute preview",
-    trust: "controllerGuarded"
-  },
-  {
-    id: "plans",
-    command: "/plans",
-    title: "List Plans",
-    description: "Browse the plans saved for this workspace.",
-    usage: "/plans",
-    trust: "controllerGuarded"
-  },
-  {
-    id: "openPlan",
-    command: "/open plan",
-    title: "Open Plan",
-    description: "Open a saved plan by picking it or by id.",
-    usage: "/open plan [plan_id]",
-    trust: "controllerGuarded"
-  },
-  {
-    id: "diffs",
-    command: "/diffs",
-    title: "Diffs",
-    description: "Open the changes made by the active plan.",
-    usage: "/diffs",
-    trust: "controllerGuarded"
-  },
-  {
-    id: "artifacts",
-    command: "/artifacts",
-    title: "Artifacts",
-    description: "Refresh the files the active plan produced.",
-    usage: "/artifacts",
     trust: "controllerGuarded"
   },
   {
@@ -206,26 +139,13 @@ export function availableSlashCommands(context: SlashCommandCatalogContext): Sla
     if (definition.id === "backendAction") {
       const action = BACKEND_ACTIONS.find((candidate) => candidate.id === definition.backendActionId);
       return action !== undefined
-        && (!action.id.startsWith("forge.") || context.forgeEnabled !== false)
         && context.isBackendActionSupported(action.id)
         && (!action.workspaceTrustRequired || context.workspaceTrusted)
-        && (!action.requiresActiveSession || context.activeSession)
-        && (!action.requiresActivePlan || context.activePlan);
+        && (!action.requiresActiveSession || context.activeSession);
     }
     if (definition.id === "mode") return !context.activeRun;
     if (definition.id === "persona") return context.activeSession && !context.activeRun
       && context.personasAvailable !== false && supports("personas");
-    if (["plan", "executePlan", "executePreview", "plans", "openPlan", "diffs", "artifacts"].includes(definition.id)
-      && context.forgeEnabled === false) return false;
-    if (definition.id === "plan") {
-      return context.workspaceTrusted && !context.activeRun && supports("forgePlan");
-    }
-    if (definition.id === "executePlan") {
-      return context.workspaceTrusted && context.activePlan && !context.activeRun && supports("forgeExecuteReview");
-    }
-    if (definition.id === "executePreview") return context.activePlan && !context.activeRun && supports("forgeExecutePreview");
-    if (definition.id === "diffs" || definition.id === "artifacts") return context.activePlan && supports(definition.id);
-    if (definition.id === "plans" || definition.id === "openPlan") return supports("forgePlanPersistence");
     if (definition.id === "cancel") {
       return context.activeRun;
     }
@@ -243,15 +163,6 @@ export function parseSlashCommand(input: string): ParsedSlashCommand {
 
   if (lower === "/help") {
     return parsed("help", raw, "/help", "");
-  }
-  if (lower === "/plans") {
-    return parsed("plans", raw, "/plans", "");
-  }
-  if (lower === "/diffs") {
-    return parsed("diffs", raw, "/diffs", "");
-  }
-  if (lower === "/artifacts") {
-    return parsed("artifacts", raw, "/artifacts", "");
   }
   if (lower === "/cancel") {
     return parsed("cancel", raw, "/cancel", "");
@@ -280,78 +191,6 @@ export function parseSlashCommand(input: string): ParsedSlashCommand {
   }
   if (lower.startsWith("/persona ")) {
     return parsed("persona", raw, "/persona", raw.slice(raw.indexOf(" ") + 1).trim());
-  }
-  if (lower === "/forge plan show" || lower.startsWith("/forge plan show ")) {
-    const alias = "/forge plan show";
-    return parsed(
-      "backendAction",
-      raw,
-      alias,
-      lower === alias ? "" : raw.slice(raw.toLowerCase().indexOf(alias) + alias.length).trim(),
-      "forge.show"
-    );
-  }
-  if (lower === "/forge plan state" || lower.startsWith("/forge plan state ")) {
-    const alias = "/forge plan state";
-    return parsed(
-      "backendAction",
-      raw,
-      alias,
-      lower === alias ? "" : raw.slice(raw.toLowerCase().indexOf(alias) + alias.length).trim(),
-      "forge.plan.getState"
-    );
-  }
-  if (lower === "/forge plan validate" || lower.startsWith("/forge plan validate ")) {
-    const alias = "/forge plan validate";
-    return parsed(
-      "backendAction",
-      raw,
-      alias,
-      lower === alias ? "" : raw.slice(raw.toLowerCase().indexOf(alias) + alias.length).trim(),
-      "forge.plan.validate"
-    );
-  }
-  if (lower === "/forge plan regenerate" || lower.startsWith("/forge plan regenerate ")) {
-    const alias = "/forge plan regenerate";
-    return parsed(
-      "backendAction",
-      raw,
-      alias,
-      lower === alias ? "" : raw.slice(raw.toLowerCase().indexOf(alias) + alias.length).trim(),
-      "forge.plan.regenerate"
-    );
-  }
-  if (lower.startsWith("/forge plan ")) {
-    return parsed("plan", raw, "/forge plan", raw.slice(raw.toLowerCase().indexOf("/forge plan") + "/forge plan".length).trim());
-  }
-  if (lower === "/forge plan") {
-    return parsed("plan", raw, "/forge plan", "");
-  }
-  if (lower === "/execute plan") {
-    return parsed("executePlan", raw, "/execute plan", "");
-  }
-  if (lower === "/execute") {
-    return parsed("executePlan", raw, "/execute", "");
-  }
-  if (lower === "/execute preview") {
-    return parsed("executePreview", raw, "/execute preview", "");
-  }
-  if (lower === "/forge exec" || lower === "/forge execute") {
-    return parsed("executePlan", raw, lower.startsWith("/forge execute") ? "/forge execute" : "/forge exec", "");
-  }
-  if (lower.startsWith("/execute ") || lower.startsWith("/forge exec ") || lower.startsWith("/forge execute ")) {
-    const command = lower.startsWith("/forge execute")
-      ? "/forge execute"
-      : lower.startsWith("/forge exec")
-        ? "/forge exec"
-        : "/execute";
-    return parsed("executeUnsupported", raw, command, raw.slice(command.length).trim());
-  }
-  if (lower === "/open plan") {
-    return parsed("openPlan", raw, "/open plan", "");
-  }
-  if (lower.startsWith("/open plan ")) {
-    return parsed("openPlan", raw, "/open plan", raw.slice(raw.toLowerCase().indexOf("/open plan") + "/open plan".length).trim());
   }
   const backendCommand = backendSlashAliases()
     .sort((a, b) => b.alias.length - a.alias.length)
@@ -404,7 +243,7 @@ export function slashHelpText(commands: readonly SlashCommandDefinition[] = SLAS
     "",
     ...commands.map((command) => `${command.usage} - ${command.description}`),
     "",
-    "Mutating commands such as /forge plan and /execute plan require Workspace Trust. /execute plan always starts with Preview and explicit confirmation."
+    "Commands that change files or settings require Workspace Trust."
   ].join("\n");
 }
 
@@ -451,9 +290,7 @@ function slashUsage(alias: string, parameterStrategy: string): string {
     case "tool-name":
     case "profile-name":
     case "extension-id":
-    case "asset-id":
       return `${alias} <name_or_id>`;
-    case "asset-source":
     case "extension-source":
       return `${alias} <path_or_url>`;
     case "feedback":
@@ -464,8 +301,6 @@ function slashUsage(alias: string, parameterStrategy: string): string {
       return `${alias} <key=value>`;
     case "update-check":
       return `${alias} [cached|online]`;
-    case "forge-plan-id":
-      return `${alias} [plan_id]`;
     case "optional-model":
       return `${alias} [model]`;
     case "subagent-status-or-toggle":
@@ -474,12 +309,6 @@ function slashUsage(alias: string, parameterStrategy: string): string {
       return `${alias} [off|compact|full|events|clear]`;
     case "terminals-command":
       return `${alias} [list|show <id>|kill <id>|clear <id>]`;
-    case "forge-assistant":
-      return `${alias} [show|instruction]`;
-    case "forge-goal":
-      return `${alias} [show|goal]`;
-    case "forge-task":
-      return `${alias} <task_id> [show|status <status>|title <title>|body <text>]`;
     default:
       return alias;
   }

@@ -16,7 +16,6 @@ from .trust import ProjectToolTrustState, is_project_tool_trusted, load_trust_st
 _CUSTOM_TOOL_TOP_LEVEL_RUNTIMES = {
     RuntimeKind.INTERACTIVE_CHAT,
     RuntimeKind.ONE_SHOT,
-    RuntimeKind.FORGE_EXEC,
 }
 _CUSTOM_TOOL_TOP_LEVEL_RUNTIME_VALUES = frozenset(
     runtime_kind.value for runtime_kind in _CUSTOM_TOOL_TOP_LEVEL_RUNTIMES

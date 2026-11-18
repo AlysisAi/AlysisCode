@@ -17,7 +17,7 @@ from .managed_host_deadline import (
 if TYPE_CHECKING:
     from .config import AppConfig
     from .crash_diagnostics import CrashDiagnosticLogger
-    from .mcp.manager import ForgeTaskScopedMcpManager, McpManager
+    from .mcp.manager import McpManager
     from .runtime_kind import RuntimeKind
     from .surface.base import Surface
     from .tools.search import search_rg
@@ -519,7 +519,7 @@ def run_agent(
     enforce_explicit_subagent_requests: bool = True,
     workspace_binding: WorkspaceBinding | None = None,
     runtime_kind: RuntimeKind | str | None = None,
-    mcp_manager: McpManager | ForgeTaskScopedMcpManager | None = None,
+    mcp_manager: McpManager | None = None,
     execution_deadline: ExecutionDeadline | None = None,
     run_deadline_seconds: float | None = None,
     no_run_deadline: bool = False,
@@ -538,7 +538,7 @@ def run_agent(
     if execution_deadline is None:
         deadline_has_one_shot_semantics = (
             one_shot_execution
-            or runtime_kind_text in {"one_shot", "forge_exec", "swarm_worker"}
+            or runtime_kind_text == "one_shot"
             or run_deadline_seconds is not None
             or no_run_deadline
         )

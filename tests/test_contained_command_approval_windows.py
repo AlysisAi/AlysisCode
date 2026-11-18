@@ -1,4 +1,4 @@
-"""On Windows a command inside the MXC sandbox follows the mode, as it does in Codex.
+"""On Windows a command inside the MXC sandbox follows the mode.
 
 MXC runs PowerShell, whose aliases, functions and profiles this engine cannot
 resolve, so every PowerShell command used to need a person. The sandbox is the

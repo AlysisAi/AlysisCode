@@ -38,7 +38,7 @@ CONNECTION_TOOLS = (
         (),
     ),
     (
-        # Like Grok Bot's in-chat Connect card (AL, 2026-11-10). The person decides on the card.
+        # An in-chat Connect card (AL, 2026-11-10). The person decides on the card.
         "connectors.plugins.offer",
         "offer_plugin_connection",
         "Show the person a Connect card for a plugin from Alysis's catalog (Notion, Linear, Slack, "

@@ -15,16 +15,6 @@ def test_resolve_server_settings_defaults(tmp_path: Path) -> None:
     assert settings.default_base_url is None
     assert settings.allow_client_base_url is False
     assert settings.allow_client_model is True
-    assert settings.worker_machine_events is True
-
-
-def test_resolve_server_settings_can_disable_worker_machine_events(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("ALYSIS_SERVER_MACHINE_EVENTS", "0")
-    settings = resolve_server_settings(host="127.0.0.1", port=7070, data_dir=tmp_path)
-    assert settings.worker_machine_events is False
 
 
 def test_resolve_server_settings_parses_model_and_base_url_env(

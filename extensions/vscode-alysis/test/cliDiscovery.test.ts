@@ -41,8 +41,6 @@ test("getAlysisConfig parses configured CLI and mode", () => {
       cliPath: "/opt/alysis/bin/alysis",
       defaultMode: "readonly",
       defaultModel: "deepseek-v4-pro",
-      forgeExecuteMaxSteps: 12.8,
-      forgeExecuteNoLog: true,
       showStatusBar: false
     })
   );
@@ -50,15 +48,7 @@ test("getAlysisConfig parses configured CLI and mode", () => {
   assert.equal(resolveCliPath(config), "/opt/alysis/bin/alysis");
   assert.equal(config.defaultMode, "readonly");
   assert.equal(config.defaultModel, "deepseek-v4-pro");
-  assert.equal(config.forgeExecuteMaxSteps, 12);
-  assert.equal(config.forgeExecuteNoLog, true);
   assert.equal(config.showStatusBar, false);
-});
-
-test("getAlysisConfig leaves Forge Execute max_steps unset for zero or invalid values", () => {
-  assert.equal(getAlysisConfig(reader({ forgeExecuteMaxSteps: 0 })).forgeExecuteMaxSteps, undefined);
-  assert.equal(getAlysisConfig(reader({ forgeExecuteMaxSteps: -5 })).forgeExecuteMaxSteps, undefined);
-  assert.equal(getAlysisConfig(reader({ forgeExecuteMaxSteps: "not-a-number" })).forgeExecuteMaxSteps, undefined);
 });
 
 test("getAlysisConfig never rewrites any provider's configured endpoint", () => {
@@ -319,15 +309,15 @@ test("untrusted workspace ignores workspace-scoped autoStartBridge", () => {
   const config = getAlysisConfig(
     inspectReader({
       autoStartBridge: { defaultValue: false, workspaceValue: true },
-      forgeExecuteNoLog: { defaultValue: false, workspaceValue: true }
+      sandboxProfile: { defaultValue: "default", workspaceValue: "off" }
     }),
     { isWorkspaceTrusted: false }
   );
 
   assert.equal(config.autoStartBridge, false);
   assert.equal(config.security?.ignoredWorkspaceSettings.map((notice) => notice.setting).includes("autoStartBridge"), true);
-  assert.equal(config.forgeExecuteNoLog, false);
-  assert.equal(config.security?.ignoredWorkspaceSettings.map((notice) => notice.setting).includes("forgeExecuteNoLog"), true);
+  assert.equal(config.sandboxProfile, "default");
+  assert.equal(config.security?.ignoredWorkspaceSettings.map((notice) => notice.setting).includes("sandboxProfile"), true);
 });
 
 test("untrusted workspace rejects workspace-relative cliPath from trusted scopes", () => {

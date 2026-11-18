@@ -14,7 +14,7 @@ class TuiAction:
     label: str
     command: str
     capability: str
-    modes: tuple[str, ...] = ("chat", "forge")
+    modes: tuple[str, ...] = ("chat",)
     mid_turn: bool = True
     description: str | None = None
 
@@ -24,7 +24,6 @@ DEFAULT_ACTIONS = (
     TuiAction("subagent.previous", "Previous subagent", "subagent.previous", "subagents"),
     TuiAction("subagent.close", "Close subagent view", "subagent.close", "subagent-view"),
     TuiAction("subagent.next", "Next subagent", "subagent.next", "subagents"),
-    TuiAction("planmeta.toggle", "Expand/collapse plan metadata", "planmeta.toggle", "composer"),
     TuiAction("mcp", "Inspect MCP integrations", "/mcp", "integrations"),
     TuiAction("extensions", "Inspect extensions", "/extensions", "integrations"),
     TuiAction("planning", "Planning choices and return", "/planning", "planning", mid_turn=False),
@@ -72,7 +71,4 @@ DEFAULT_ACTIONS = (
     TuiAction("context", "Show context usage", "/context", "/context"),
     TuiAction("stream", "Change streaming output", "/stream", "/stream"),
     TuiAction("trace", "Change reasoning trace detail", "/trace", "/trace"),
-    TuiAction("forge", "Enter Forge", "/forge", "/forge", ("chat",), False),
-    TuiAction("show", "Show Forge plan", "/show", "/show", ("forge",), False),
-    TuiAction("back", "Return to chat", "/back", "runner", ("forge",), False),
 )

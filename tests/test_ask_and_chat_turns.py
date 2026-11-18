@@ -23,7 +23,6 @@ from alysis_code.cli import app as alysis_app
 from alysis_code.cli_impl.chat import loop as chat_loop_mod
 from alysis_code.cli_impl.chat.state import (
     _ChatExecutionRequest,
-    _ForgeChatState,
 )
 from alysis_code.config import AppConfig, save_config
 from alysis_code.llm.openai_compat import LLMResponse
@@ -38,7 +37,6 @@ def _dispatch(input_text: str, *, session: Any, tmp_path: Path) -> Any:
         session=session,
         pending_images=[],
         console=Console(),
-        forge_state=_ForgeChatState(),
     )
 
 
@@ -51,7 +49,6 @@ def _dispatch_output(input_text: str, *, session: Any, tmp_path: Path) -> tuple[
         session=session,
         pending_images=[],
         console=Console(file=output, force_terminal=False),
-        forge_state=_ForgeChatState(),
     )
     return result, output.getvalue()
 
@@ -141,7 +138,6 @@ def test_deferred_model_cache_note_only_appears_on_actual_change(
             session=session,
             pending_images=[],
             console=Console(file=output, force_terminal=False),
-            forge_state=_ForgeChatState(),
         )
         assert result == "handled"
         return output.getvalue()

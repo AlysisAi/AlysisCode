@@ -25,16 +25,14 @@ MCP tools are exposed only in write-capable top-level runtimes:
 
 - `interactive_chat`
 - `one_shot`
-- `forge_exec`
 
 MCP tools are not exposed in:
 
 - `readonly` sessions, including the `ask` persona and `/ask` turns
-- `swarm_worker`
 - `subagent`
-- `conflict_auto_resolve`
 
-Forge execution can apply task-level MCP scope on top of the session catalog. A Forge task without MCP scope does not receive live MCP tools or generic MCP resource tools.
+`enabled_in` entries that name a retired runtime (`forge_exec`, `swarm_worker`,
+`conflict_auto_resolve`) are skipped. A server scoped only to retired runtimes runs nowhere.
 
 ## Config Files
 
@@ -281,7 +279,7 @@ Roots are disabled by default. Enable the current workspace root for a server wi
 }
 ```
 
-When enabled in a supported runtime, Alysis Code answers `roots/list` with a single `file://` root for the bound workspace. Roots are not exposed in subagents, swarm workers, or conflict-resolution automation.
+When enabled in a supported runtime, Alysis Code answers `roots/list` with a single `file://` root for the bound workspace. Roots are not exposed in subagents.
 
 ## Resources
 

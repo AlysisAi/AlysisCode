@@ -201,6 +201,58 @@ def test_load_resolved_hooks_config_accepts_v11_hook_metadata(
     assert hook.timeout == 2.5
 
 
+def test_hook_runtime_kinds_keep_retired_runtimes_inert(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg_dir = tmp_path / "cfg"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(cfg_dir))
+
+    def write_hooks(*hooks: dict[str, object]) -> None:
+        _write_json(
+            user_hooks_config_path(),
+            {"hooks": {"SessionStart": [{"hooks": list(hooks)}]}},
+        )
+
+    write_hooks(
+        {
+            "type": "command",
+            "command": "echo retired",
+            "id": "retired.only",
+            "runtimeKinds": ["swarm_worker"],
+        },
+        {
+            "type": "command",
+            "command": "echo mixed",
+            "id": "mixed.kinds",
+            "runtimeKinds": ["Interactive_Chat", "forge_exec"],
+        },
+    )
+
+    hooks = {
+        hook.id: hook
+        for hook in load_resolved_hooks_config(workspace).groups_for_event("SessionStart")[0].hooks
+    }
+
+    # A hook scoped only to a runtime that no longer exists keeps that scope, so it matches
+    # no live runtime instead of widening to all of them or failing the whole file.
+    assert hooks["retired.only"].runtime_kinds == ["swarm_worker"]
+    assert hooks["mixed.kinds"].runtime_kinds == ["interactive_chat", "forge_exec"]
+
+    write_hooks(
+        {
+            "type": "command",
+            "command": "echo typo",
+            "id": "typo.kind",
+            "runtimeKinds": ["interactive-chat"],
+        }
+    )
+    with pytest.raises(ConfigError):
+        load_resolved_hooks_config(workspace)
+
+
 def test_load_resolved_hooks_config_overrides_same_hook_id_with_more_specific_layer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

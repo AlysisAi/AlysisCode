@@ -15,7 +15,7 @@ import stat
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -373,12 +373,87 @@ def git_directory_left_writable(root: Path, settings: ShellSandboxSettings) -> b
         return True
 
 
+@dataclass(frozen=True)
+class FileWorkerCommand:
+    """A bounded request for the built-in worker. Only the engine selects the program."""
+
+    arguments: tuple[str, ...] = field(repr=False)
+
+    def argv(self) -> list[str]:
+        from .contained_read_tools import _worker_argv
+
+        prefix = _worker_argv()
+        if not Path(prefix[0]).is_absolute():
+            raise ConfigError("Cannot identify the contained file worker executable.")
+        return [*prefix, *self.arguments]
+
+    def __str__(self) -> str:
+        return "contained file worker"
+
+
+def _powershell_workload(
+    shell: Path, cwd_root: Path, cwd: Path, cmd: str, real_location: bool
+) -> dict[str, Any]:
+    # PowerShell source is a single argv element. The host never evaluates it.
+    # PowerShell's default C: drive tries to enumerate ancestors that an
+    # AppContainer cannot read. A process-local drive starts at the granted
+    # workspace, preserving relative commands without granting ancestor listing.
+    ps_root = powershell_literal(str(cwd_root))
+    relative_cwd = str(cwd.relative_to(cwd_root)).replace("/", "\\")
+    ps_cwd = powershell_literal("Alysis:\\" + ("" if relative_cwd == "." else relative_cwd))
+    # Unqualified command discovery scans every installed module before
+    # finding these built-ins on a fresh, isolated profile. Import only our
+    # bootstrap dependencies by their trusted installation paths first.
+    bootstrap = (
+        r"Microsoft.PowerShell.Core\Import-Module -Name "
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1", '
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1", '
+        r'"$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" '
+        "-ErrorAction Stop; "
+    )
+    # The command starts on a line of its own. PowerShell quotes the line an
+    # error is on: with everything on one line a mistake in the command was
+    # reported with this preparation in front of it and a column counted from
+    # the start of it, which nobody who wrote the command could read.
+    on_the_drive = (
+        "$null = Microsoft.PowerShell.Management\\New-PSDrive -Name Alysis "
+        f"-PSProvider FileSystem -Root '{ps_root}' -Scope Global -ErrorAction Stop; "
+        f"Microsoft.PowerShell.Management\\Set-Location -LiteralPath '{ps_cwd}' "
+        "-ErrorAction Stop;\n"
+    )
+    # "$PWD" is then a path every program takes. On the drive it was
+    # "Alysis:\", which .NET refuses ("The given path's format is not
+    # supported"), and the folder above it was the folder itself.
+    in_the_folder = (
+        "Microsoft.PowerShell.Management\\Set-Location -LiteralPath "
+        f"'{powershell_literal(str(cwd))}' -ErrorAction Stop;\n"
+    )
+    source = bootstrap + (in_the_folder if real_location else on_the_drive) + cmd
+    argv = [
+        str(shell),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        _powershell_execution_policy(shell),
+        "-Command",
+        source,
+    ]
+    if real_location:
+        # For the caller, which learns only later whether PowerShell can stand
+        # in the folder; it must take this entry out before the request is sent.
+        location = {"location": [in_the_folder, on_the_drive]}
+    else:
+        location = {}
+    return {"argv": argv, **location}
+
+
 def build_request(
     settings: ShellSandboxSettings,
     *,
     root: Path,
     cwd: Path,
-    cmd: str,
+    cmd: str | FileWorkerCommand,
     helper: Path,
     env_overrides: dict[str, str] | None = None,
     include_helper_read: bool = True,
@@ -535,51 +610,10 @@ def build_request(
             ),
         )
     )
-    # PowerShell source is a single argv element. The host never evaluates it.
-    # PowerShell's default C: drive tries to enumerate ancestors that an
-    # AppContainer cannot read. A process-local drive starts at the granted
-    # workspace, preserving relative commands without granting ancestor listing.
-    ps_root = powershell_literal(str(cwd_root))
-    relative_cwd = str(cwd.relative_to(cwd_root)).replace("/", "\\")
-    ps_cwd = powershell_literal("Alysis:\\" + ("" if relative_cwd == "." else relative_cwd))
-    # Unqualified command discovery scans every installed module before
-    # finding these built-ins on a fresh, isolated profile. Import only our
-    # bootstrap dependencies by their trusted installation paths first.
-    bootstrap = (
-        r"Microsoft.PowerShell.Core\Import-Module -Name "
-        r'"$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1", '
-        r'"$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1", '
-        r'"$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" '
-        "-ErrorAction Stop; "
-    )
-    # The command starts on a line of its own. PowerShell quotes the line an
-    # error is on: with everything on one line a mistake in the command was
-    # reported with this preparation in front of it and a column counted from
-    # the start of it, which nobody who wrote the command could read.
-    on_the_drive = (
-        "$null = Microsoft.PowerShell.Management\\New-PSDrive -Name Alysis "
-        f"-PSProvider FileSystem -Root '{ps_root}' -Scope Global -ErrorAction Stop; "
-        f"Microsoft.PowerShell.Management\\Set-Location -LiteralPath '{ps_cwd}' "
-        "-ErrorAction Stop;\n"
-    )
-    # "$PWD" is then a path every program takes. On the drive it was
-    # "Alysis:\", which .NET refuses ("The given path's format is not
-    # supported"), and the folder above it was the folder itself.
-    in_the_folder = (
-        "Microsoft.PowerShell.Management\\Set-Location -LiteralPath "
-        f"'{powershell_literal(str(cwd))}' -ErrorAction Stop;\n"
-    )
-    source = bootstrap + (in_the_folder if real_location else on_the_drive) + cmd
-    argv = [
-        str(shell),
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        _powershell_execution_policy(shell),
-        "-Command",
-        source,
-    ]
+    if isinstance(cmd, FileWorkerCommand):
+        workload = {"argv": cmd.argv()}
+    else:
+        workload = _powershell_workload(shell, cwd_root, cwd, cmd, real_location)
     # A folder the command was let write for one operation is not a project:
     # the agent takes no instructions from it and no Git job runs there. What
     # exists of these names in it stays read-only; nothing is reserved. With
@@ -673,17 +707,10 @@ def build_request(
         for name in (".ssh", ".aws", ".azure", ".gnupg", ".alysis", ".sylliptor")
         if (Path.home() / name).exists()
     ]
-    if real_location:
-        # For the caller, which learns only later whether PowerShell can stand
-        # in the folder; it must take this entry out before the request is sent.
-        location = {"location": [in_the_folder, on_the_drive]}
-    else:
-        location = {}
     return {
-        **location,
+        **workload,
         "protocol": PROTOCOL_VERSION,
         "cwd": str(cwd),
-        "argv": argv,
         "read": list(dict.fromkeys(map(str, reads))),
         "traverse": traverse,
         "write": list(map(str, roots)) if settings.filesystem_access == "workspace-write" else [],
@@ -753,8 +780,15 @@ class WindowsNativeRunner:
     close_stdin: bool = True
 
     def _prepare(
-        self, *, root: Path, cwd: Path, cmd: str, env_overrides: dict[str, str] | None = None
+        self,
+        *,
+        root: Path,
+        cwd: Path,
+        cmd: str | FileWorkerCommand,
+        env_overrides: dict[str, str] | None = None,
     ) -> tuple[list[str], bytes]:
+        if isinstance(cmd, FileWorkerCommand):
+            raise ConfigError("Direct file workers require the Windows MXC backend.")
         helper = resolve_helper()
         request = build_request(
             self.settings, root=root, cwd=cwd, cmd=cmd, helper=helper, env_overrides=env_overrides
@@ -804,16 +838,17 @@ class WindowsNativeRunner:
         *,
         root: Path,
         cwd: Path,
-        cmd: str,
+        cmd: str | FileWorkerCommand,
         timeout_s: int,
         cancel_check: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        description = str(cmd)
         if cancel_check is not None and cancel_check():
-            raise CommandCancelledError(cmd)
+            raise CommandCancelledError(description)
         argv, request = self._prepare(root=root, cwd=cwd, cmd=cmd)
         execution_context = self._execution_context(argv, request)
         if cancel_check is not None and cancel_check():
-            raise CommandCancelledError(cmd)
+            raise CommandCancelledError(description)
         # The native broker owns UI-restricted jobs that cannot be nested under
         # an engine observer job. Its private completion event proves that the
         # native process guards unwound; exit alone is never cancellation proof.
@@ -883,10 +918,10 @@ class WindowsNativeRunner:
                         exc.stdout = stdout.decode("utf-8", errors="replace")
                         exc.stderr = stderr.decode("utf-8", errors="replace")
                         if isinstance(exc, CommandCancelledError):
-                            exc.cmd = cmd
+                            exc.cmd = description
                     if drain_error is not None:
                         raise CommandCleanupError(
-                            cmd,
+                            description,
                             stdout=stdout.decode("utf-8", errors="replace"),
                             stderr=stderr.decode("utf-8", errors="replace"),
                         ) from drain_error
@@ -898,7 +933,7 @@ class WindowsNativeRunner:
                         lifecycle.verify()
                     except RuntimeError as error:
                         raise CommandCleanupError(
-                            cmd,
+                            description,
                             stdout=stdout.decode("utf-8", errors="replace"),
                             stderr=stderr.decode("utf-8", errors="replace"),
                         ) from error
@@ -911,7 +946,7 @@ class WindowsNativeRunner:
                 if lifecycle is not None:
                     lifecycle.close()
         completed = subprocess.CompletedProcess(
-            cmd,
+            description,
             child.returncode,
             stdout.decode("utf-8", errors="replace"),
             stderr.decode("utf-8", errors="replace"),

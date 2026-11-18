@@ -42,7 +42,6 @@ from .step_budget import (
     AUTONOMOUS_STEP_BUDGET_POLICY,
     DEFAULT_CHAT_MAX_STEPS,
     DEFAULT_SUBAGENT_MAX_STEPS,
-    DEFAULT_TASK_MAX_STEPS,
     normalize_step_budget_policy,
 )
 from .web_research import normalize_trusted_domain_entry
@@ -76,7 +75,6 @@ _VALID_TOOLBAR_ITEMS: set[str] = {
     "subagents",
     "tokens",
     "cost",
-    "forge",
 }
 _DEFAULT_TOOLBAR_ITEMS: tuple[str, ...] = ("mode", "model", "ctx", "subagents")
 DEFAULT_SUBAGENT_TIMEOUT_S: float | None = None
@@ -136,45 +134,6 @@ _CONFIG_STORE_LOCK = threading.RLock()
 _CONFIG_TRANSACTION_STATE = threading.local()
 
 CLOUD_PROFILE_KEY = "alysis"
-
-
-class AssetsComprehensionConfig(BaseModel):
-    role: str = "comprehension"
-    vision_fallback_profile: str | None = None
-    vision_with_ocr_when_available: bool = True
-    ocr_enabled: Literal["auto", "always", "never"] = "auto"
-    ocr_provider: str = "tesseract"
-    ocr_timeout_seconds: int = 30
-    image_max_edge_pixels: int = 2048
-    questioning_mode: Literal["assertive", "balanced", "assumption_friendly"] = "balanced"
-    schema_version: int = 1
-
-
-class AssetsPlannerConfig(BaseModel):
-    inline_images: bool = True
-    max_inline_images: int = 8
-    readiness_policy: Literal["soft", "block", "partial"] = "soft"
-    readiness_timeout_seconds: float = 60.0
-    max_chars_per_asset: int = 2000
-    max_primary_per_task: int = 8
-
-
-class AssetsWorkerConfig(BaseModel):
-    inline_images: bool = True
-    max_inline_images: int = 8
-    fail_on_mirror_error: bool = False
-    allocator_role: str = "comprehension"
-    allocator_timeout_seconds: int = 30
-    max_chars_per_asset_block: int = 4000
-    max_focused_extract_chars: int = 4000
-    schema_version: int = 1
-
-
-class AssetsConfig(BaseModel):
-    enabled: bool = True
-    comprehension: AssetsComprehensionConfig = Field(default_factory=AssetsComprehensionConfig)
-    planner: AssetsPlannerConfig = Field(default_factory=AssetsPlannerConfig)
-    worker: AssetsWorkerConfig = Field(default_factory=AssetsWorkerConfig)
 
 
 class ImageGenerationConfig(BaseModel):
@@ -635,7 +594,6 @@ class AppConfig(BaseModel):
     empty_response_max_recovery_cycles: int = Field(default=2, gt=0)
     empty_response_handling_budget_seconds: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     step_budget_policy: str = AUTONOMOUS_STEP_BUDGET_POLICY
-    task_max_steps: int = DEFAULT_TASK_MAX_STEPS
     subagent_max_steps: int = DEFAULT_SUBAGENT_MAX_STEPS
     subagent_timeout_s: float | None = Field(
         default=DEFAULT_SUBAGENT_TIMEOUT_S,
@@ -709,14 +667,10 @@ class AppConfig(BaseModel):
     verify_commands: list[str] = Field(
         default_factory=lambda: list(DEFAULT_VERIFY_COMMANDS),
     )
-    integration_verify_mode: str = "warn"
-    integration_verify_commands: list[str] = Field(default_factory=list)
     anytime_checkpoint: AnytimeCheckpointConfig = Field(default_factory=AnytimeCheckpointConfig)
-    replanning_mode: str = "off"
     toolbar_items: list[str] = Field(
         default_factory=lambda: list(_DEFAULT_TOOLBAR_ITEMS),
     )
-    assets: AssetsConfig = Field(default_factory=AssetsConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
 
     # Internal: allow future keys without crashing older clients.
@@ -1908,7 +1862,6 @@ _SETTABLE_KEYS: set[str] = {
     "skills_auto_invoke",
     "experimental_gemini_interactions_enabled",
     "custom_tools_enabled",
-    "task_max_steps",
     "subagent_max_steps",
     "subagent_timeout_s",
     "subagent_orchestration.max_background_children",
@@ -1962,37 +1915,9 @@ _SETTABLE_KEYS: set[str] = {
     "anthropic_prompt_cache_enabled",
     "anthropic_prompt_cache_ttl",
     "verify_commands",
-    "integration_verify_mode",
-    "integration_verify_commands",
-    "replanning_mode",
     "toolbar_items",
-    "assets.enabled",
-    "assets.comprehension.role",
-    "assets.comprehension.vision_fallback_profile",
-    "assets.comprehension.vision_with_ocr_when_available",
-    "assets.comprehension.ocr_enabled",
-    "assets.comprehension.ocr_provider",
-    "assets.comprehension.ocr_timeout_seconds",
-    "assets.comprehension.image_max_edge_pixels",
-    "assets.comprehension.questioning_mode",
-    "assets.comprehension.schema_version",
-    "assets.planner.inline_images",
-    "assets.planner.max_inline_images",
-    "assets.planner.readiness_policy",
-    "assets.planner.readiness_timeout_seconds",
-    "assets.planner.max_chars_per_asset",
-    "assets.planner.max_primary_per_task",
-    "assets.worker.inline_images",
-    "assets.worker.max_inline_images",
-    "assets.worker.fail_on_mirror_error",
-    "assets.worker.allocator_role",
-    "assets.worker.allocator_timeout_seconds",
-    "assets.worker.max_chars_per_asset_block",
-    "assets.worker.max_focused_extract_chars",
-    "assets.worker.schema_version",
 }
 
-_VERIFY_LIKE_MODES: set[str] = {"off", "warn", "strict"}
 _MODEL_METADATA_POLICIES: set[str] = {"warn", "strict"}
 _ROLE_MODEL_NAMES: set[str] = {
     "coding",
@@ -2005,7 +1930,7 @@ _ROLE_MODEL_NAMES: set[str] = {
     "router",
     "approval_review",
 }
-_ROLE_MODEL_CONFIG_PREFIXES: set[str] = {"role_models", "forge_role_models"}
+_ROLE_MODEL_CONFIG_PREFIXES: set[str] = {"role_models"}
 # Persona vocabulary for persona_models.<persona> keys and default_persona
 # validation. Kept as a local literal set like _ROLE_MODEL_NAMES (the runtime
 # registry lives in personas.BUILTIN_PERSONAS).
@@ -3110,7 +3035,7 @@ def set_config_value(
         raise ConfigError(
             f"Unknown/unsupported key: {key}. Supported keys: "
             f"{', '.join(sorted(_SETTABLE_KEYS))}, role_models.<role>, "
-            "forge_role_models.<role>, persona_models.<persona>, "
+            "persona_models.<persona>, "
             "agent_runtimes.<runtime-id>.<field>, prompt_guidance.model_profiles.<model-id>"
         )
 
@@ -3276,7 +3201,7 @@ def set_config_value(
             return cfg
         raise ConfigError("persona_modes_enabled must be true/false")
 
-    if key in {"max_steps", "task_max_steps", "subagent_max_steps"}:
+    if key in {"max_steps", "subagent_max_steps"}:
         setattr(cfg, key, _coerce_positive_int(value, key=key))
         return cfg
 
@@ -3820,149 +3745,6 @@ def set_config_value(
             key="verify_commands",
             allow_empty=False,
         )
-        return cfg
-
-    if key == "integration_verify_mode":
-        normalized = value.strip().lower()
-        if normalized not in _VERIFY_LIKE_MODES:
-            raise ConfigError("integration_verify_mode must be one of: off, warn, strict")
-        cfg.integration_verify_mode = normalized
-        return cfg
-
-    if key == "integration_verify_commands":
-        cfg.integration_verify_commands = _parse_command_list(
-            value,
-            key="integration_verify_commands",
-            allow_empty=True,
-        )
-        return cfg
-
-    if key == "replanning_mode":
-        normalized = value.strip().lower()
-        if normalized not in {"off", "suggest", "apply"}:
-            raise ConfigError("replanning_mode must be one of: off, suggest, apply")
-        cfg.replanning_mode = normalized
-        return cfg
-
-    if key == "assets.enabled":
-        cfg.assets.enabled = _coerce_bool(value, key=key)
-        return cfg
-
-    if key == "assets.comprehension.role":
-        role = value.strip().lower()
-        if not role:
-            raise ConfigError("assets.comprehension.role must be non-empty")
-        cfg.assets.comprehension.role = role
-        return cfg
-
-    if key == "assets.comprehension.vision_fallback_profile":
-        cfg.assets.comprehension.vision_fallback_profile = value.strip().lower() or None
-        return cfg
-
-    if key == "assets.comprehension.vision_with_ocr_when_available":
-        cfg.assets.comprehension.vision_with_ocr_when_available = _coerce_bool(value, key=key)
-        return cfg
-
-    if key == "assets.comprehension.ocr_enabled":
-        normalized = value.strip().lower()
-        if normalized not in {"auto", "always", "never"}:
-            raise ConfigError(
-                "assets.comprehension.ocr_enabled must be one of: auto, always, never"
-            )
-        cfg.assets.comprehension.ocr_enabled = normalized  # type: ignore[assignment]
-        return cfg
-
-    if key == "assets.comprehension.ocr_provider":
-        provider = value.strip().lower()
-        if not provider:
-            raise ConfigError("assets.comprehension.ocr_provider must be non-empty")
-        cfg.assets.comprehension.ocr_provider = provider
-        return cfg
-
-    if key == "assets.comprehension.ocr_timeout_seconds":
-        cfg.assets.comprehension.ocr_timeout_seconds = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.comprehension.image_max_edge_pixels":
-        cfg.assets.comprehension.image_max_edge_pixels = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.comprehension.questioning_mode":
-        normalized = value.strip().lower()
-        if normalized not in {"assertive", "balanced", "assumption_friendly"}:
-            raise ConfigError(
-                "assets.comprehension.questioning_mode must be one of: "
-                "assertive, balanced, assumption_friendly"
-            )
-        cfg.assets.comprehension.questioning_mode = normalized  # type: ignore[assignment]
-        return cfg
-
-    if key == "assets.comprehension.schema_version":
-        cfg.assets.comprehension.schema_version = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.planner.inline_images":
-        cfg.assets.planner.inline_images = _coerce_bool(value, key=key)
-        return cfg
-
-    if key == "assets.planner.max_inline_images":
-        cfg.assets.planner.max_inline_images = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.planner.readiness_policy":
-        normalized = value.strip().lower()
-        if normalized not in {"soft", "block", "partial"}:
-            raise ConfigError(
-                "assets.planner.readiness_policy must be one of: soft, block, partial"
-            )
-        cfg.assets.planner.readiness_policy = normalized  # type: ignore[assignment]
-        return cfg
-
-    if key == "assets.planner.readiness_timeout_seconds":
-        cfg.assets.planner.readiness_timeout_seconds = _coerce_positive_float(value, key=key)
-        return cfg
-
-    if key == "assets.planner.max_chars_per_asset":
-        cfg.assets.planner.max_chars_per_asset = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.planner.max_primary_per_task":
-        cfg.assets.planner.max_primary_per_task = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.worker.inline_images":
-        cfg.assets.worker.inline_images = _coerce_bool(value, key=key)
-        return cfg
-
-    if key == "assets.worker.max_inline_images":
-        cfg.assets.worker.max_inline_images = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.worker.fail_on_mirror_error":
-        cfg.assets.worker.fail_on_mirror_error = _coerce_bool(value, key=key)
-        return cfg
-
-    if key == "assets.worker.allocator_role":
-        role = value.strip().lower()
-        if not role:
-            raise ConfigError("assets.worker.allocator_role must be non-empty")
-        cfg.assets.worker.allocator_role = role
-        return cfg
-
-    if key == "assets.worker.allocator_timeout_seconds":
-        cfg.assets.worker.allocator_timeout_seconds = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.worker.max_chars_per_asset_block":
-        cfg.assets.worker.max_chars_per_asset_block = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.worker.max_focused_extract_chars":
-        cfg.assets.worker.max_focused_extract_chars = _coerce_positive_int(value, key=key)
-        return cfg
-
-    if key == "assets.worker.schema_version":
-        cfg.assets.worker.schema_version = _coerce_positive_int(value, key=key)
         return cfg
 
     if key == "toolbar_items":

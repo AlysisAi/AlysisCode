@@ -8,46 +8,24 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 
 | Status | Feature count |
 | --- | ---: |
-| `blocked_until_security_model` | 14 |
-| `experimental_with_gate` | 1 |
-| `implemented_in_bridge_only` | 51 |
-| `implemented_in_extension` | 411 |
-| `intentionally_cli_only` | 50 |
-| `not_applicable_to_ide` | 32 |
+| `blocked_until_security_model` | 10 |
+| `experimental_with_gate` | 0 |
+| `implemented_in_bridge_only` | 46 |
+| `implemented_in_extension` | 309 |
+| `intentionally_cli_only` | 46 |
+| `not_applicable_to_ide` | 27 |
 | `planned_for_protocol` | 0 |
 
 ## Source Inventory
 
-- Backend action metadata entries: 122
-- CLI Forge chat commands: 10
-- CLI chat slash commands: 36
-- CLI commands and groups: 158
-- IDE bridge methods: 224
-- VS Code package/chat commands: 54
-- VS Code slash commands and aliases: 68
+- Backend action metadata entries: 104
+- CLI chat slash commands: 34
+- CLI commands and groups: 132
+- IDE bridge methods: 180
+- VS Code package/chat commands: 45
+- VS Code slash commands and aliases: 38
 
 ## blocked_until_security_model
-
-### cli.command.forge_exec_blocked
-
-- Surface: `cli_command`
-- Features: `forge exec`
-- Rationale: The broad CLI Forge exec command remains larger than IDE Forge Execute v1 review mode; IDE callers may pass explicit no_log and optional positive max_steps, but auto/fullaccess execution stays blocked until cancellation, sandbox, worker lifecycle, and approval guarantees are stronger.
-- Security/lifecycle reason: Broad Forge exec can enter auto/fullaccess-style mutation and requires worker lifecycle ownership, stronger cancellation guarantees for broad mutation, sandbox guarantees, and approval UX before IDE exposure. VS Code exposes only typed selected-task review-mode execute aliases.
-
-### cli.command.forge_resume_blocked
-
-- Surface: `cli_command`
-- Features: `forge resume`
-- Rationale: forge resume continues an interrupted run by delegating to the sequential execution engine with retries enabled, so it inherits every constraint on broad CLI Forge execution. It also adds a decision of its own: when the plan drifted while the run was dead, --reapprove accepts work that was never approved. That approval belongs in typed IDE UI showing the drift, not in a terminal-scraped flag.
-- Security/lifecycle reason: Resume performs broad plan mutation under the same worker-lifecycle, cancellation, sandbox, and approval gaps that block forge exec, and its --reapprove path grants execution approval for a plan the user has not reviewed in the IDE. The run state it reports on is already exposed: forge show/status carry run_status, run_status_reason, run_owner and resumable, and a crashed run reconciles to interrupted on read, so hosts can render an interrupted run truthfully without being able to resume it.
-
-### cli.command.forge_unlock_blocked
-
-- Surface: `cli_command`
-- Features: `forge unlock`
-- Rationale: forge unlock without --force only clears locks whose owner is provably gone, which is already automatic on acquisition and needs no IDE surface. The command exists for the ambiguous cases, and its one real power -- --force -- is what must not be a button until there is an approval surface for it.
-- Security/lifecycle reason: --force clears a lock whose owner was not provably dead. If that process is alive, two executions can mutate the same workspace at once, so exposing it needs an explicit approval UX rather than a protocol method.
 
 ### cli.commands.security_blocked
 
@@ -63,46 +41,12 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Rationale: The VS Code extension exposes safe typed /trace and /terminals list/show/kill routes, but it does not expose arbitrary terminal creation, interactive PTY streaming, raw unredacted trace disclosure, or provider login/logout through untyped slash forwarding.
 - Security/lifecycle reason: Provider login/logout needs an IDE-owned browser/device-code and credential-removal lifecycle with explicit confirmation. Terminal start/interactive streaming needs an IDE-owned subscription lifecycle, cancellation model, and approval UX; raw trace disclosure remains blocked because provider headers, environment values, and prompt-like content must stay backend-redacted and bounded.
 
-### ide.feature.forge_unsafe_execution_modes
-
-- Surface: `ide_capability`
-- Features: `features.forge.execute.unsafe_modes`
-- Rationale: IDE protocol intentionally blocks auto/fullaccess Forge execution and exposes no experimental flag by default.
-- Security/lifecycle reason: Auto/fullaccess modes need stronger cancellation guarantees for broad mutation, sandbox guarantees, approval routing, and worker lifecycle ownership before IDE exposure.
-
 
 ## experimental_with_gate
 
-### cli.forge_chat.execute
-
-- Surface: `cli_forge_chat_command`
-- Features: `/execute`
-- Rationale: Terminal Forge /execute plan drives full-plan parallel mutation. The IDE now exposes that as the capability-gated Run Swarm console (forgeSwarm gate + Workspace Trust), with cooperative cancellation, the disjoint-write-scope scheduler invariant, the swarm-layer write guard, non-modal approvals replacing --yes, and review-only merge (per-task Keep/Discard, never auto-merged). It is experimental-with-gate rather than fully implemented because broad auto/fullaccess execution and merge-to-base stay blocked: the IDE swarm is review-only and selected by capability, not an unscoped chat command.
-- Security/lifecycle reason: Broad auto/fullaccess Forge execution and direct merge-to-base remain blocked in the IDE; the swarm path is gated by the forgeSwarm capability, Workspace Trust, per-task approvals, and review-only apply/discard.
-
+_No entries._
 
 ## implemented_in_bridge_only
-
-### ide.methods.forge_plan_regenerate_async
-
-- Surface: `ide_bridge_method`
-- Features: `forge.plan.regenerate.start`, `forge.plan.regenerate.result`
-- Rationale: Async job form of forge.plan.regenerate on the shared bridge job registry, mirroring forge.plan.start/forge.plan.result. The planner runs outside the bridge state lock (snapshot, compute, commit) with cooperative checkpoint cancellation via forge.cancel; the commit re-checks the persisted plan revision and fails closed with stale_plan_revision when a concurrent plan edit landed during regeneration. The typed bridge client covers both methods.
-- Bridge-only rationale: Cockpit routes still call sync forge.plan.regenerate; the cockpit adopts the async pair in the Forge-swarm-in-IDE track before any user-facing route is added.
-
-### ide.methods.forge_review_async
-
-- Surface: `ide_bridge_method`
-- Features: `forge.review.start`, `forge.review.result`
-- Rationale: Async job form of forge.review on the shared bridge job registry: the review provider call runs in a job thread instead of freezing the stdio dispatch loop, with cooperative cancellation checkpoints before and after the provider call and structured failure codes preserved. Sync forge.review remains for back-compat.
-- Bridge-only rationale: Cockpit review routes still call sync forge.review; adoption of the async pair lands with the Forge-swarm-in-IDE cockpit work.
-
-### ide.method.forge_swarm_reconcile
-
-- Surface: `ide_bridge_method`
-- Features: `forge.swarm.reconcile`
-- Rationale: Post-crash/reload reconciliation: a read-only per-task report (merged / interrupted with diff-available / unstarted) over run artifacts and preserved worktrees, plus explicit idempotent harvest/discard actions. Typed-client covered (forgeSwarmReconcile) but not yet surfaced as a cockpit recovery flow β€” it backs harvest/discard and crash recovery beneath the Run Swarm console.
-- Bridge-only rationale: The crash-recovery reconcile UX (a post-reload harvest/discard surface) lands as a follow-up; the method is typed-client covered and exercised by the swarm console's apply/discard paths but has no standalone user route yet.
 
 ### ide.methods.mcp_server_lifecycle
 
@@ -250,8 +194,8 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### cli.commands.extension_workflows
 
 - Surface: `cli_command`
-- Features: `chat`, `config show`, `config set`, `conventions list`, `conventions render`, `doctor`, `ext disable`, `ext enable`, `ext info`, `ext install`, `ext list`, `ext search`, `ext uninstall`, `forge assets add`, `forge assets cancel-pending`, `forge assets check-plan`, `forge assets delete`, `forge assets edit`, `forge assets list`, `forge assets prune-legacy`, `forge assets refresh`, `forge assets show`, `forge attach`, `forge plan`, `forge review`, `forge run`, `forge show`, `forge status`, `hooks disable`, `hooks doctor`, `hooks effective`, `hooks enable`, `hooks init`, `hooks list`, `hooks test`, `hooks trace`, `hooks trust`, `hooks untrust`, `ide-bridge health`, `mcp auth logout`, `mcp auth status`, `mcp prompts get`, `mcp prompts list`, `mcp status`, `profile add`, `profile convert`, `profile list`, `profile preset`, `profile presets`, `profile remove`, `profile rename`, `profile show`, `profile use`, `report create`, `run`, `sandbox doctor`, `sandbox pull`, `sandbox setup`, `sessions list`, `sessions score`, `sessions show`, `sessions usage`, `skill create`, `skill disable`, `skill enable`, `skill info`, `skill init`, `skill install`, `skill list`, `skill remove`, `skill uninstall`, `skill validate`, `tool info`, `tool list`, `tool trust`, `tool untrust`, `tools`, `update check`
-- Rationale: These CLI workflows have typed VS Code command, Cockpit, slash, grouped backend-action, health, session, sandbox doctor, Forge, or management equivalents and do not require terminal-output scraping.
+- Features: `chat`, `config show`, `config set`, `conventions list`, `conventions render`, `doctor`, `ext disable`, `ext enable`, `ext info`, `ext install`, `ext list`, `ext search`, `ext uninstall`, `hooks disable`, `hooks doctor`, `hooks effective`, `hooks enable`, `hooks init`, `hooks list`, `hooks test`, `hooks trace`, `hooks trust`, `hooks untrust`, `ide-bridge health`, `mcp auth logout`, `mcp auth status`, `mcp prompts get`, `mcp prompts list`, `mcp status`, `profile add`, `profile convert`, `profile list`, `profile preset`, `profile presets`, `profile remove`, `profile rename`, `profile show`, `profile use`, `report create`, `run`, `sandbox doctor`, `sandbox pull`, `sandbox setup`, `sessions list`, `sessions score`, `sessions show`, `sessions usage`, `skill create`, `skill disable`, `skill enable`, `skill info`, `skill init`, `skill install`, `skill list`, `skill remove`, `skill uninstall`, `skill validate`, `tool info`, `tool list`, `tool trust`, `tool untrust`, `tools`, `update check`
+- Rationale: These CLI workflows have typed VS Code command, Cockpit, slash, grouped backend-action, health, session, sandbox doctor, or management equivalents and do not require terminal-output scraping.
 
 ### cli.command.mcp_auth_login
 
@@ -259,42 +203,16 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Features: `mcp auth login`
 - Rationale: The VS Code MCP Login action now routes through the complete typed lifecycle: Workspace-Trust-gated start, explicit HTTPS browser opening, durable flow status polling, cancellation, owned loopback callback cleanup, state + S256 PKCE, and encrypted token persistence. Codes and tokens never cross the IDE protocol.
 
-### cli.command.forge_swarm
-
-- Surface: `cli_command`
-- Features: `forge swarm`
-- Rationale: Forge swarm is now a first-class IDE workflow: the cockpit Run Swarm console (renderSwarmConsole) and the alysis.runSwarm command dispatch the active plan across parallel workers behind the forgeSwarm capability gate and Workspace Trust. Workers run without --yes auto-approval (dangerous actions raise non-modal task-attributed approvals); merge is review-only (per-task Keep/Discard via forge.swarm.apply/discard, never auto-merged, untracked-files surfaced); cancellation is cooperative; failed/interrupted tasks offer an editable regenerate-subtree recovery. Terminal forge swarm keeps --yes and auto-merge.
-
 ### cli.chat_slash.implemented
 
 - Surface: `cli_chat_slash_command`
-- Features: `/assets`, `/cd`, `/clear`, `/clear-images`, `/compact`, `/config`, `/context`, `/ctx`, `/feedback`, `/help`, `/history`, `/image`, `/images`, `/model`, `/model-info`, `/paste-image`, `/permissions`, `/persona`, `/pwd`, `/report`, `/resume`, `/skill`, `/status`, `/stream`, `/terminals`, `/trace`, `/usage`
+- Features: `/cd`, `/clear`, `/clear-images`, `/compact`, `/config`, `/context`, `/ctx`, `/feedback`, `/help`, `/history`, `/image`, `/images`, `/model`, `/model-info`, `/paste-image`, `/permissions`, `/persona`, `/pwd`, `/report`, `/resume`, `/skill`, `/status`, `/stream`, `/terminals`, `/trace`, `/usage`
 - Rationale: The Cockpit implements these as native slash routes, typed session/backend actions, settings/status UI, or help without forwarding unknown slash text to the model.
-
-### cli.forge_chat.implemented
-
-- Surface: `cli_forge_chat_command`
-- Features: `/assets`, `/help`, `/show`
-- Rationale: The extension exposes Forge help, plan display, and active-plan asset actions through typed Cockpit, Forge Plan, and backend-action routes.
-- Extension equivalents: `/show` -> `/forge show`, `/plan show`
-
-### cli.forge_chat.implemented_plan_edits
-
-- Surface: `cli_forge_chat_command`
-- Features: `/assistant`, `/goal`, `/task`
-- Rationale: The VS Code extension exposes typed Forge plan-edit routes for assistant instruction, goal updates, and task show/update via forge.plan.getState, forge.plan.setAssistant, forge.plan.setGoal, and forge.plan.updateTask. Mutations are Workspace Trust gated and use optimistic plan revisions instead of terminal Forge chat state.
-
-### cli.forge_chat.plan_regenerate
-
-- Surface: `cli_forge_chat_command`
-- Features: `/plan`
-- Rationale: Forge-context /plan inspection and regeneration use typed Forge methods. Chat plan mode and global /plan are retired; new IDE plans are explicitly created through /forge plan.
-- Extension equivalents: `/plan` -> `/forge plan state`, `/forge plan regenerate`
 
 ### ide.methods.extension_backed
 
 - Surface: `ide_bridge_method`
-- Features: `approval.respond`, `artifact.list`, `artifact.read`, `chat.send`, `diff.get`, `diff.list`, `forge.execute`, `forge.executePreview`, `forge.list`, `forge.open`, `forge.plan`, `forge.plan.result`, `forge.plan.start`, `forge.review`, `forge.resume`, `forge.status`, `getCapabilities`, `health`, `initialize`, `job.status`, `config.get`, `config.set`, `config.schema`, `config.validate`, `doctor.summary`, `doctor.providers`, `doctor.providers.live`, `doctor.bundle`, `profile.list`, `profile.show`, `profile.add`, `profile.remove`, `profile.use`, `profile.rename`, `profile.presets`, `profile.preset`, `profile.convert`, `session.show`, `session.score`, `tools.catalog`, `tool.list`, `tool.info`, `tool.trust`, `tool.untrust`, `skill.list`, `skill.info`, `skill.init`, `skill.validate`, `skill.install`, `skill.enable`, `skill.disable`, `skill.remove`, `report.create`, `mcp.status`, `mcp.prompts.list`, `mcp.prompts.get`, `mcp.auth.status`, `mcp.auth.logout`, `hooks.list`, `hooks.doctor`, `hooks.trace`, `hooks.test`, `hooks.trust`, `hooks.untrust`, `hooks.init`, `hooks.effective`, `hooks.enable`, `hooks.disable`, `conventions.list`, `conventions.render`, `ext.search`, `ext.list`, `ext.info`, `ext.install`, `ext.uninstall`, `ext.enable`, `ext.disable`, `forge.attach`, `forge.show`, `forge.assets.list`, `forge.assets.show`, `forge.assets.add`, `forge.assets.delete`, `forge.assets.edit`, `forge.assets.refresh`, `forge.assets.cancelPending`, `forge.assets.checkPlan`, `forge.assets.pruneLegacy`, `run.start`, `session.cancel`, `session.clear`, `session.compact`, `session.context`, `session.create`, `session.getEvents`, `session.history`, `session.images.list`, `session.images.add`, `session.images.clear`, `session.list`, `session.resume`, `session.setActiveWorkdir`, `session.setMode`, `session.setModel`, `session.setProfile`, `session.setStream`, `session.status`, `session.usage`, `sandbox.doctor`, `sandbox.setup`, `sandbox.pull`, `update.check`, `forge.plan.getState`, `forge.plan.setAssistant`, `forge.plan.setGoal`, `forge.plan.updateTask`, `forge.plan.validate`, `forge.plan.regenerate`, `session.modelInfo`, `session.subagents.setEnabled`, `session.subagents.status`, `session.trace.status`, `session.trace.setLevel`, `session.trace.listEvents`, `session.trace.readArtifact`, `session.trace.clear`, `session.terminals.list`, `session.terminals.show`, `session.terminals.kill`, `session.terminals.clear`, `session.fork`
+- Features: `approval.respond`, `artifact.list`, `artifact.read`, `chat.send`, `getCapabilities`, `health`, `initialize`, `job.status`, `config.get`, `config.set`, `config.schema`, `config.validate`, `doctor.summary`, `doctor.providers`, `doctor.providers.live`, `doctor.bundle`, `profile.list`, `profile.show`, `profile.add`, `profile.remove`, `profile.use`, `profile.rename`, `profile.presets`, `profile.preset`, `profile.convert`, `session.show`, `session.score`, `tools.catalog`, `tool.list`, `tool.info`, `tool.trust`, `tool.untrust`, `skill.list`, `skill.info`, `skill.init`, `skill.validate`, `skill.install`, `skill.enable`, `skill.disable`, `skill.remove`, `report.create`, `mcp.status`, `mcp.prompts.list`, `mcp.prompts.get`, `mcp.auth.status`, `mcp.auth.logout`, `hooks.list`, `hooks.doctor`, `hooks.trace`, `hooks.test`, `hooks.trust`, `hooks.untrust`, `hooks.init`, `hooks.effective`, `hooks.enable`, `hooks.disable`, `conventions.list`, `conventions.render`, `ext.search`, `ext.list`, `ext.info`, `ext.install`, `ext.uninstall`, `ext.enable`, `ext.disable`, `run.start`, `session.cancel`, `session.clear`, `session.compact`, `session.context`, `session.create`, `session.getEvents`, `session.history`, `session.images.list`, `session.images.add`, `session.images.clear`, `session.list`, `session.resume`, `session.setActiveWorkdir`, `session.setMode`, `session.setModel`, `session.setProfile`, `session.setStream`, `session.status`, `session.usage`, `sandbox.doctor`, `sandbox.setup`, `sandbox.pull`, `update.check`, `session.modelInfo`, `session.subagents.setEnabled`, `session.subagents.status`, `session.trace.status`, `session.trace.setLevel`, `session.trace.listEvents`, `session.trace.readArtifact`, `session.trace.clear`, `session.terminals.list`, `session.terminals.show`, `session.terminals.kill`, `session.terminals.clear`, `session.fork`
 - Rationale: These IDE Protocol v1 methods are documented, advertised by health.py, and consumed by VS Code feature gates, controllers, or typed bridge-client methods.
 
 ### ide.method.host_action_respond
@@ -315,18 +233,6 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Features: `browser.start`, `browser.navigate`, `browser.snapshot`, `browser.screenshot`, `browser.artifact.read`, `browser.diagnostics`, `browser.click`, `browser.type`, `browser.status`, `browser.list`, `browser.close`
 - Rationale: The native Browser Cockpit routes the complete lifecycle through a bounded typed controller. Public sessions are shared with the top-level agent; separately confirmed Direct IDE sessions permit only public and loopback destinations and are filtered and rejected by every model-controlled browser tool. Screenshots are verified, previewed through private webview URIs, and saved only through native Save As; snapshots and semantic diagnostics are bounded, redacted, and coalesced outside the chat stream.
 
-### ide.methods.forge_swarm_async
-
-- Surface: `ide_bridge_method`
-- Features: `forge.swarm.start`, `forge.swarm.status`, `forge.swarm.result`, `forge.swarm.cancel`, `forge.swarm.review`, `forge.swarm.apply`, `forge.swarm.discard`
-- Rationale: The cockpit Run Swarm console (renderSwarmConsole + alysis.runSwarm) routes these typed bridge methods: forge.swarm.start creates an idempotent durable job and runs the swarm engine behind Workspace Trust with cooperative cancellation; the task grid renders swarm_worker_state_changed progress by glyph/weight; non-modal task-attributed approvals replace --yes (workers stay paused, never auto-denied); forge.swarm.review lists per-task diffs (with the untracked-files-not-applied list surfaced) which the user keeps via forge.swarm.apply (working tree only, never commits) or drops via forge.swarm.discard; failed/interrupted tasks offer an editable regenerate-subtree recovery.
-
-### ide.methods.forge_swarm_durable_recovery
-
-- Surface: `ide_bridge_method`
-- Features: `forge.swarm.resume`, `forge.swarm.list`
-- Rationale: The Forge Cockpit exposes a bounded durable recovery picker backed by workspace/session-scoped list and revision-fenced resume calls. Resume requires Workspace Trust and a fresh explicit confirmation, never reuses prior grants, cancels superseded local ownership safely, and keeps interrupted task worktrees isolated for review.
-
 ### ide.method.mcp_auth_login_start
 
 - Surface: `ide_bridge_method`
@@ -345,17 +251,10 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Features: `code.review.start`, `code.review.result`
 - Rationale: The native review presenter starts and bounded-polls working-tree, branch/base, commit, and range reviews, then atomically projects workspace-contained, redacted, range-clamped findings into VS Code Problems. Starting, cancellation, failure, and replacement clear stale diagnostics, and controller disposal cancels active presentation work.
 
-### ide.method.forge_cancel
-
-- Surface: `ide_bridge_method`
-- Features: `forge.cancel`
-- Rationale: The method is implemented as cooperative checkpoint cancellation for active Forge jobs, advertised through features.forge.cancel.supported, and routed by the VS Code Cancel Current Run command without relying on method presence alone.
-- Security/lifecycle reason: Forge cancellation is cooperative, not a hard interrupt. Jobs enter cancellation_requested, stop at backend checkpoints or pending approval boundaries, emit bounded redacted events, and reconcile active_job/last_job before the UI reports a terminal cancelled state.
-
 ### extension.commands.palette
 
 - Surface: `extension_command`
-- Features: `alysis.addSelection`, `alysis.cancelCurrentRun`, `alysis.checkForUpdates`, `alysis.configureProvider`, `alysis.copyCliInstallCommand`, `alysis.copyCliUpgradeCommand`, `alysis.forgeExecute`, `alysis.forgeListPlans`, `alysis.forgeOpenPlan`, `alysis.forgePlan`, `alysis.healthDiagnostics`, `alysis.locateCli`, `alysis.manageExtensions`, `alysis.manageForgeAssets`, `alysis.manageMcpHooks`, `alysis.manageProfiles`, `alysis.manageToolsSkills`, `alysis.newSession`, `alysis.openChat`, `alysis.openSetupGuide`, `alysis.pickModel`, `alysis.runDoctor`, `alysis.runSwarm`, `alysis.runTask`, `alysis.sessionActions`, `alysis.showBridgeHealth`, `alysis.showBrowser`, `alysis.showForge`, `alysis.showHistory`, `alysis.showModels`, `alysis.showSettings`, `alysis.newWorktree`, `alysis.moveToWorktree`, `alysis.reviewGitChanges`, `alysis.openSourceControl`
+- Features: `alysis.addSelection`, `alysis.cancelCurrentRun`, `alysis.checkForUpdates`, `alysis.configureProvider`, `alysis.copyCliInstallCommand`, `alysis.copyCliUpgradeCommand`, `alysis.healthDiagnostics`, `alysis.locateCli`, `alysis.manageExtensions`, `alysis.manageMcpHooks`, `alysis.manageProfiles`, `alysis.manageToolsSkills`, `alysis.newSession`, `alysis.openChat`, `alysis.openSetupGuide`, `alysis.pickModel`, `alysis.runDoctor`, `alysis.runTask`, `alysis.sessionActions`, `alysis.showBridgeHealth`, `alysis.showBrowser`, `alysis.showHistory`, `alysis.showModels`, `alysis.showSettings`, `alysis.newWorktree`, `alysis.moveToWorktree`, `alysis.reviewGitChanges`, `alysis.openSourceControl`
 - Rationale: These command-palette entries are contributed by package.json and route to typed extension controllers or recovery helpers. alysis.locateCli locates, validates, and persists the Alysis Code CLI path safely.
 
 ### extension.commands.manage_tree_title
@@ -385,20 +284,14 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### extension.chat_participant.commands
 
 - Surface: `extension_chat_participant_command`
-- Features: `doctor`, `execute`, `help`, `forge`
+- Features: `doctor`, `help`
 - Rationale: The optional native VS Code chat participant is a thin router into the Cockpit and typed extension controllers.
 
 ### extension.slash.commands
 
 - Surface: `extension_slash_command`
-- Features: `/artifacts`, `/asset add`, `/asset cancel-pending`, `/asset check`, `/asset delete`, `/asset edit`, `/asset list`, `/asset prune`, `/asset refresh`, `/asset show`, `/assets`, `/assistant`, `/cancel`, `/cd`, `/clear`, `/clear-images`, `/compact`, `/config`, `/config set`, `/context`, `/ctx`, `/diffs`, `/doctor`, `/execute plan`, `/execute preview`, `/feedback`, `/forge plan`, `/forge plan regenerate`, `/forge plan show`, `/forge plan state`, `/forge plan validate`, `/forge review`, `/forge show`, `/goal`, `/help`, `/history`, `/hooks`, `/image`, `/images`, `/mcp`, `/model`, `/model-info`, `/open plan`, `/paste-image`, `/permissions`, `/persona`, `/plans`, `/profile`, `/profile use`, `/profiles`, `/pwd`, `/report`, `/resume`, `/review`, `/skill`, `/skills`, `/status`, `/stream`, `/subagents`, `/task`, `/terminals`, `/tools`, `/trace`, `/update`, `/usage`
+- Features: `/cancel`, `/cd`, `/clear`, `/clear-images`, `/compact`, `/config`, `/config set`, `/context`, `/ctx`, `/doctor`, `/feedback`, `/help`, `/history`, `/hooks`, `/image`, `/images`, `/mcp`, `/model`, `/model-info`, `/paste-image`, `/permissions`, `/persona`, `/profile`, `/profile use`, `/profiles`, `/pwd`, `/report`, `/resume`, `/skill`, `/skills`, `/status`, `/stream`, `/subagents`, `/terminals`, `/tools`, `/trace`, `/update`, `/usage`
 - Rationale: These webview slash commands are registered in SlashCommandRegistry.ts and route through extension controllers, not terminal CLI parsing.
-
-### extension.slash.aliases.safe_execute
-
-- Surface: `extension_slash_alias`
-- Features: `/execute`, `/forge exec`, `/forge execute`
-- Rationale: These aliases are registered in SlashCommandRegistry.ts and route only to the existing Forge Execute Review path. Broad execute arguments return a structured IDE v1 warning; auto/fullaccess execution remains blocked.
 
 ### ide.methods.personas
 
@@ -436,7 +329,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### cli.commands.desktop_engine_contract
 
 - Surface: `cli_command`
-- Features: `capabilities`, `forge _host-stdio`, `forge preflight`, `forge verification-check`, `forge workspace-check`
+- Features: `capabilities`
 - Rationale: Machine-readable commands consumed by the Alysis Code desktop host or release validation. VS Code uses its existing typed IDE protocol and does not launch the desktop Host v2 lifecycle.
 
 ### cli.commands.provider_model_selection
@@ -493,20 +386,14 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 ### cli.groups.namespaces
 
 - Surface: `cli_command_group`
-- Features: `agents`, `auth`, `bots`, `config`, `conventions`, `ext`, `forge`, `forge assets`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `memory`, `profile`, `report`, `sandbox`, `sessions`, `sessions messaging`, `skill`, `tool`, `update`
+- Features: `agents`, `auth`, `bots`, `config`, `conventions`, `ext`, `hooks`, `ide-bridge`, `mcp`, `mcp auth`, `mcp prompts`, `memory`, `profile`, `report`, `sandbox`, `sessions`, `sessions messaging`, `skill`, `tool`, `update`
 - Rationale: Typer group namespaces are tracked so new groups cannot appear silently; concrete subcommands and IDE methods carry the actual parity decision.
 
 ### cli.chat_slash.not_applicable
 
 - Surface: `cli_chat_slash_command`
-- Features: `/`, `/back`, `/exit`, `/forge`, `/quit`, `/subagents`, `/toolbar`
+- Features: `/`, `/back`, `/exit`, `/quit`, `/subagents`, `/toolbar`
 - Rationale: These terminal navigation, quick-panel, active-child picker, and toolbar affordances use native IDE surfaces. The IDE /subagents status|on|off route exposes typed delegation configuration; the CLI active-child monitor remains a terminal surface.
-
-### cli.forge_chat.not_applicable
-
-- Surface: `cli_forge_chat_command`
-- Features: `/back`, `/done`
-- Rationale: These are terminal Forge mode navigation/finalization commands; the IDE uses persistent typed plan state and native view lifecycle.
 
 ### cli.chat_slash.chat_retired
 

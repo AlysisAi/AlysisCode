@@ -21,12 +21,10 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PARITY_MATRIX_PATH = REPO_ROOT / "docs" / "generated" / "ide_cli_parity_matrix.json"
 PARITY_BURNDOWN_PATH = REPO_ROOT / "docs" / "generated" / "ide_cli_parity_burndown.md"
-FORGE_PARITY_BURNDOWN_PATH = REPO_ROOT / "docs" / "generated" / "ide_forge_parity_burndown.md"
 IDE_PROTOCOL_DOC_PATH = REPO_ROOT / "docs" / "ide_protocol.md"
 VSCODE_EXTENSION_DOC_PATH = REPO_ROOT / "docs" / "vscode_extension.md"
 CLI_ROOT_PATH = REPO_ROOT / "src" / "alysis_code" / "cli_impl" / "commands" / "root.py"
 CHAT_COMMANDS_PATH = REPO_ROOT / "src" / "alysis_code" / "cli_impl" / "chat" / "commands.py"
-CHAT_STATE_PATH = REPO_ROOT / "src" / "alysis_code" / "cli_impl" / "commands" / "chat_state.py"
 IDE_HEALTH_PATH = REPO_ROOT / "src" / "alysis_code" / "ide" / "health.py"
 IDE_STDIO_BRIDGE_PATH = REPO_ROOT / "src" / "alysis_code" / "ide" / "stdio_bridge.py"
 IDE_MANAGEMENT_PROTOCOL_PATH = REPO_ROOT / "src" / "alysis_code" / "ide" / "management_protocol.py"
@@ -108,28 +106,6 @@ COCKPIT_ROUTE_METHODS = {
     "session.getEvents",
     "artifact.list",
     "artifact.read",
-    "forge.plan",
-    "forge.plan.start",
-    "forge.plan.result",
-    "forge.list",
-    "forge.open",
-    "forge.resume",
-    "forge.status",
-    "forge.executePreview",
-    "forge.execute",
-    "forge.cancel",
-    # SW6: the cockpit Run Swarm console routes these (renderSwarmConsole +
-    # alysis.runSwarm command + swarm.* webview messages).
-    "forge.swarm.start",
-    "forge.swarm.status",
-    "forge.swarm.result",
-    "forge.swarm.cancel",
-    "forge.swarm.review",
-    "forge.swarm.apply",
-    "forge.swarm.discard",
-    # Durable recovery is a native Forge Cockpit picker with revision-fenced resume.
-    "forge.swarm.list",
-    "forge.swarm.resume",
     # BrowserCockpitController routes the complete managed-browser lifecycle.
     "browser.start",
     "browser.navigate",
@@ -145,8 +121,6 @@ COCKPIT_ROUTE_METHODS = {
     # CodeReviewPresenter publishes completed structured findings to Problems.
     "code.review.start",
     "code.review.result",
-    "diff.list",
-    "diff.get",
     # Models surface: ProviderCatalogController.verifyConnection routes the explicit-intent live
     # key check (connect / switch / replace-key), and configureProvider.ts routes it for the
     # command-palette key flow.
@@ -483,18 +457,7 @@ def _extract_slash_commands_from_function(path: Path, function_name: str) -> set
 
 def extract_cli_chat_slash_features() -> set[FeatureRef]:
     commands = _extract_slash_commands_from_function(CHAT_COMMANDS_PATH, "_handle_chat_command")
-    commands.update(
-        _extract_slash_commands_from_function(CHAT_STATE_PATH, "_parse_forge_enter_command")
-    )
     return {FeatureRef("cli_chat_slash_command", command) for command in sorted(commands)}
-
-
-def extract_cli_forge_chat_features() -> set[FeatureRef]:
-    commands = _extract_slash_commands_from_function(
-        CHAT_COMMANDS_PATH,
-        "_handle_forge_chat_command",
-    )
-    return {FeatureRef("cli_forge_chat_command", command) for command in sorted(commands)}
 
 
 def extract_ide_method_features() -> set[FeatureRef]:
@@ -915,7 +878,6 @@ def extract_all_features() -> set[FeatureRef]:
     return {
         *extract_cli_command_features(),
         *extract_cli_chat_slash_features(),
-        *extract_cli_forge_chat_features(),
         *extract_ide_method_features(),
         *extract_management_method_features(),
         *extract_extension_command_features(),
@@ -1142,7 +1104,6 @@ def generate_parity_burndown(matrix: dict[str, Any]) -> str:
     source_counts = {
         "CLI commands and groups": len(extract_cli_command_features()),
         "CLI chat slash commands": len(extract_cli_chat_slash_features()),
-        "CLI Forge chat commands": len(extract_cli_forge_chat_features()),
         "IDE bridge methods": len(extract_ide_method_features()),
         "VS Code package/chat commands": len(extract_extension_command_features()),
         "VS Code slash commands and aliases": len(extract_extension_slash_features()),
@@ -1205,124 +1166,6 @@ def generate_parity_burndown(matrix: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _forge_specific_entry(entry: dict[str, Any]) -> bool:
-    surface = str(entry.get("surface") or "")
-    name = str(entry.get("name") or "")
-    entry_id = str(entry.get("id") or "")
-    if surface == "cli_forge_chat_command":
-        return True
-    if "forge" in entry_id or "swarm" in entry_id:
-        return True
-    lowered = name.lower()
-    if "forge" in lowered or "swarm" in lowered:
-        return True
-    if surface == "ide_bridge_method" and (
-        lowered.startswith("artifact.") or lowered.startswith("diff.")
-    ):
-        return True
-    if surface == "extension_command" and (
-        name.startswith("alysis.forge") or name == "alysis.manageForgeAssets"
-    ):
-        return True
-    if surface in {"extension_slash_command", "extension_slash_alias"} and (
-        lowered in {"/assets", "/artifacts", "/diffs", "/assistant", "/goal", "/task"}
-        or lowered.startswith("/asset")
-        or lowered.startswith("/execute")
-        or lowered.startswith("/forge")
-        or lowered.startswith("/plan")
-        or lowered.startswith("/review")
-    ):
-        return True
-    return False
-
-
-def _display_status_for_forge(entry: dict[str, Any]) -> str:
-    status = str(entry.get("status") or "")
-    if status in {
-        "implemented_in_extension",
-        "intentionally_cli_only",
-        "blocked_until_security_model",
-        "experimental_with_gate",
-    }:
-        return status
-    if status == "not_applicable_to_ide":
-        return "intentionally_cli_only"
-    return status
-
-
-def generate_forge_parity_burndown(matrix: dict[str, Any]) -> str:
-    expanded = [entry for entry in expanded_parity_entries(matrix) if _forge_specific_entry(entry)]
-    counts = Counter(_display_status_for_forge(entry) for entry in expanded)
-    ide_methods = sorted(ref.name for ref in extract_ide_method_features())
-    swarm_methods = [method for method in ide_methods if method.startswith("forge.swarm")]
-
-    lines = [
-        "# Forge CLI to VS Code parity burn-down",
-        "",
-        "<!-- Generated by scripts/qa/check_ide_cli_parity.py. Do not edit by hand. -->",
-        "",
-        "This Forge-specific report is generated from `docs/generated/ide_cli_parity_matrix.json` and the current static feature inventory. It projects the Forge command, Forge chat, IDE bridge, VS Code command, and slash surfaces into a compact release-review table.",
-        "",
-        "## Summary",
-        "",
-        "| Forge status | Feature count |",
-        "| --- | ---: |",
-    ]
-    for status in (
-        "implemented_in_extension",
-        "implemented_in_bridge_only",
-        "intentionally_cli_only",
-        "blocked_until_security_model",
-        "experimental_with_gate",
-    ):
-        lines.append(f"| `{status}` | {counts.get(status, 0)} |")
-
-    swarm_cli_status = next(
-        (
-            str(entry.get("status") or "")
-            for entry in expanded
-            if entry.get("surface") == "cli_command" and entry.get("name") == "forge swarm"
-        ),
-        "unknown",
-    )
-    lines.extend(
-        [
-            "",
-            "## Swarm Gate",
-            "",
-            f"- `forge swarm` is `{swarm_cli_status}`.",
-            (
-                "- IDE bridge swarm job methods are advertised: cooperative checkpoint "
-                "cancellation with preserved interrupted worktrees, a scheduler invariant "
-                "guaranteeing disjoint concurrent write scopes, a swarm-layer write-scope "
-                "dispatch guard, bounded redacted progress events with reconnect replay, "
-                "and read-only reconcile with explicit harvest/discard actions."
-                if swarm_methods
-                else "- No `forge.swarm.*` IDE bridge methods are advertised."
-            ),
-            f"- Advertised swarm methods: {_markdown_list(swarm_methods) if swarm_methods else '_none_'}",
-            "",
-            "## Forge Features",
-            "",
-            "| Status | Surface | Feature | Rationale |",
-            "| --- | --- | --- | --- |",
-        ]
-    )
-    for entry in sorted(
-        expanded,
-        key=lambda item: (_display_status_for_forge(item), str(item["surface"]), str(item["name"])),
-    ):
-        lines.append(
-            "| "
-            f"`{_display_status_for_forge(entry)}` | "
-            f"`{entry['surface']}` | "
-            f"`{entry['name']}` | "
-            f"{str(entry['rationale']).strip()} |"
-        )
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def _format_refs(refs: Iterable[FeatureRef]) -> str:
     return "\n".join(f"- {ref.surface}: {ref.name}" for ref in sorted(refs))
 
@@ -1358,7 +1201,6 @@ def validate_parity_matrix() -> list[str]:
         "blocked_security_reason_required",
         "bridge_only_rationale_required",
         "burn_down_report_required",
-        "forge_burn_down_report_required",
     ):
         if not isinstance(contract_tests, dict) or contract_tests.get(key) is not True:
             errors.append(f"contract_tests.{key} must be true")
@@ -1414,54 +1256,8 @@ def validate_parity_matrix() -> list[str]:
             "docs/generated/ide_cli_parity_burndown.md is missing; "
             "run scripts/qa/check_ide_cli_parity.py --write-burndown"
         )
-    if FORGE_PARITY_BURNDOWN_PATH.exists():
-        expected_forge_burndown = generate_forge_parity_burndown(matrix)
-        actual_forge_burndown = FORGE_PARITY_BURNDOWN_PATH.read_text(encoding="utf-8")
-        if actual_forge_burndown != expected_forge_burndown:
-            errors.append(
-                "docs/generated/ide_forge_parity_burndown.md is out of date; "
-                "run scripts/qa/check_ide_cli_parity.py --write-burndown"
-            )
-    else:
-        errors.append(
-            "docs/generated/ide_forge_parity_burndown.md is missing; "
-            "run scripts/qa/check_ide_cli_parity.py --write-burndown"
-        )
-
     matrix_refs = parity_feature_refs(matrix)
     matrix_statuses = parity_statuses_by_ref(matrix)
-    forge_review_statuses = {
-        "implemented_in_extension",
-        "intentionally_cli_only",
-        "blocked_until_security_model",
-        "experimental_with_gate",
-    }
-    for entry in expanded_parity_entries(matrix):
-        if not _forge_specific_entry(entry):
-            continue
-        status = _display_status_for_forge(entry)
-        if status == "implemented_in_bridge_only":
-            # Allowed for Forge features only as an explicit transitional state:
-            # the bridge ships the method first and the extension adopts it in a
-            # tracked follow-up. The written bridge_only_rationale keeps the
-            # burndown reviewable.
-            if not str(entry.get("bridge_only_rationale") or "").strip():
-                errors.append(
-                    "Forge parity feature "
-                    f"{entry['surface']} {entry['name']} is implemented_in_bridge_only "
-                    "but is missing a bridge_only_rationale explaining the planned "
-                    "extension adoption"
-                )
-            continue
-        if status not in forge_review_statuses:
-            errors.append(
-                "Forge parity feature "
-                f"{entry['surface']} {entry['name']} projects to invalid Forge review status "
-                f"{status!r}; use implemented_in_extension, intentionally_cli_only, "
-                "blocked_until_security_model, experimental_with_gate, or "
-                "implemented_in_bridge_only with a bridge_only_rationale"
-            )
-
     extracted_refs = extract_all_features()
     missing = extracted_refs - matrix_refs
     if missing:
@@ -1640,10 +1436,7 @@ def validate_parity_matrix() -> list[str]:
             continue
         if entry.get("status") != "implemented_in_extension":
             continue
-        if entry.get("surface") not in {
-            "cli_chat_slash_command",
-            "cli_forge_chat_command",
-        }:
+        if entry.get("surface") != "cli_chat_slash_command":
             continue
         equivalents = entry.get("extension_equivalents", {})
         if equivalents is not None and not isinstance(equivalents, dict):
@@ -1671,7 +1464,7 @@ def validate_parity_matrix() -> list[str]:
             )
     if implemented_cli_slash_route_errors:
         errors.append(
-            "CLI slash/Forge chat commands marked implemented_in_extension must "
+            "CLI slash commands marked implemented_in_extension must "
             "have a reachable extension slash route:\n"
             + "\n".join(f"- {error}" for error in implemented_cli_slash_route_errors)
         )
@@ -1834,12 +1627,7 @@ def main(argv: list[str] | None = None) -> int:
             generate_parity_burndown(matrix),
             encoding="utf-8",
         )
-        FORGE_PARITY_BURNDOWN_PATH.write_text(
-            generate_forge_parity_burndown(matrix),
-            encoding="utf-8",
-        )
         print(f"Wrote {PARITY_BURNDOWN_PATH.relative_to(REPO_ROOT)}.")
-        print(f"Wrote {FORGE_PARITY_BURNDOWN_PATH.relative_to(REPO_ROOT)}.")
         return 0
 
     errors = validate_parity_matrix()

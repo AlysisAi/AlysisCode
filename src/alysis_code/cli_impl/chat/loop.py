@@ -54,8 +54,7 @@ from ..run import (
     _strict_provenance_problems as _strict_provenance_problems,
 )
 from ..run import run as _one_shot_run
-from .forge_visibility import forge_session_active
-from .state import _ChatExecutionRequest, _ForgeChatState
+from .state import _ChatExecutionRequest
 
 _PATCHABLE_DEPENDENCY_GLOBAL_NAMES: set[str] = {
     "create_session",
@@ -185,13 +184,6 @@ def _cfg_with_warn_shell_sandbox_mode(cfg: Any) -> Any:
     return cfg.model_copy(update={"extra_fields": extra_fields}, deep=True)
 
 
-def _resolve_forge_entry_root(*, session: Any, fallback_root: Path) -> Path:
-    session_root = getattr(session, "root", None)
-    if session_root is None:
-        return Path(fallback_root).resolve()
-    return Path(resolve_session_active_workdir_path(session)).resolve()
-
-
 def _strip_wrapping_quotes(text: str) -> str:
     stripped = str(text or "").strip()
     if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {'"', "'"}:
@@ -278,32 +270,6 @@ def _parse_chat_workdir_navigation_request(
     return (requested_path, trailing_instruction)
 
 
-def _forge_plan_command_guidance_lines(*args: Any, **kwargs: Any) -> Any:
-    from . import rendering as _rendering
-
-    _rendering._sync_rendering_globals(globals())
-    return _rendering._forge_plan_command_guidance_lines(*args, **kwargs)
-
-
-def _print_forge_plan_command_guidance(*args: Any, **kwargs: Any) -> Any:
-    from . import rendering as _rendering
-
-    _rendering._sync_rendering_globals(globals())
-    return _rendering._print_forge_plan_command_guidance(*args, **kwargs)
-
-
-def _open_assets_modal(*, session: Any, console: Console, run_paths: Any) -> None:
-    cfg = getattr(session, "cfg", None)
-    if not isinstance(cfg, AppConfig):
-        cfg = load_config()
-    try:
-        from ..assets_modal import run_assets_modal
-
-        run_assets_modal(cfg=cfg, run_paths=run_paths, console=console)
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Assets modal failed:[/red] {exc}")
-
-
 def _chat_skill_usage_lines(*args: Any, **kwargs: Any) -> Any:
     from . import rendering as _rendering
 
@@ -316,20 +282,6 @@ def _artifact_display_ref(*args: Any, **kwargs: Any) -> Any:
 
     _rendering._sync_rendering_globals(globals())
     return _rendering._artifact_display_ref(*args, **kwargs)
-
-
-def _render_planner_reply(*args: Any, **kwargs: Any) -> Any:
-    from . import rendering as _rendering
-
-    _rendering._sync_rendering_globals(globals())
-    return _rendering._render_planner_reply(*args, **kwargs)
-
-
-def _render_labeled_chat_message(*args: Any, **kwargs: Any) -> Any:
-    from . import rendering as _rendering
-
-    _rendering._sync_rendering_globals(globals())
-    return _rendering._render_labeled_chat_message(*args, **kwargs)
 
 
 def _apply_chat_effective_mode(
@@ -1591,104 +1543,6 @@ def _handle_idle_skill_invocation(*args: Any, **kwargs: Any) -> Any:
     return _commands._handle_idle_skill_invocation(*args, **kwargs)
 
 
-def _handle_forge_chat_command(*args: Any, **kwargs: Any) -> Any:
-    from . import commands as _commands
-
-    _commands._sync_command_globals(globals())
-    return _commands._handle_forge_chat_command(*args, **kwargs)
-
-
-def _finalize_deferred_forge_execution(
-    *,
-    surface: Any,
-    token: Any,
-    paths: Any,
-    forge_state: Any,
-    captured: str,
-    completed: bool,
-) -> None:
-    """Close out a TUI ``/execute plan`` worker run honestly.
-
-    A cancelled token does NOT mean the run died: ``run_swarm`` never receives
-    the token, so a soft-interrupt at any point still lets the swarm run to its
-    natural end and the handler return normally (``completed``). The old logic
-    keyed everything on the token alone, which silently discarded a finished
-    run's entire completion output and froze the view as "Interrupted." — the
-    user never learned the run had actually completed.
-    """
-    if surface is None:
-        return
-    cancelled = bool(getattr(token, "is_cancelled", False))
-    run_attempted = bool(getattr(forge_state, "swarm_run_attempted", False))
-    out = str(captured or "").rstrip("\n")
-    if out and (completed or not cancelled):
-        try:
-            surface.append_system(out)
-        except Exception:
-            pass
-    try:
-        if cancelled and not completed:
-            interrupt_forge = getattr(surface, "interrupt_forge", None)
-            if callable(interrupt_forge):
-                interrupt_forge()
-        elif completed and not run_attempted:
-            # The handler rejected the execute before run_swarm (empty plan, no
-            # execution-ready tasks, guard failure): say so instead of freezing
-            # a "Finished · 0 done · N remaining" table for a run that never
-            # started (the rejection reason is in the note above).
-            surface.end_forge(
-                summary="Execution did not start — see the note above.",
-                paths=paths,
-            )
-        elif cancelled:
-            # The Esc-time UI handler already froze the view as "Interrupted."
-            # and cleared the surface's run paths; re-arm them so the frozen
-            # table reflects the statuses the finished swarm actually wrote.
-            surface.end_forge(paths=paths)
-        else:
-            surface.end_forge()
-    except Exception:
-        pass
-
-
-def _planner_workspace_context_for_session(*, session: Any) -> dict[str, Any] | None:
-    cached = getattr(session, "planner_workspace_context", None)
-    if isinstance(cached, dict):
-        return cached
-    root_obj = getattr(session, "root", None)
-    if root_obj is None:
-        return None
-    try:
-        workspace_root = Path(root_obj)
-        workspace_context = resolve_workspace_context(workspace_root)
-        scan = scan_workspace(context=workspace_context)
-        payload = scan.to_dict()
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        session.planner_workspace_context = payload
-    except Exception:  # noqa: BLE001
-        pass
-    return payload
-
-
-def _should_defer_forge_planner_submission(*, forge_state: Any, text: str) -> bool:
-    """Return whether a Forge submission will perform a planner model call.
-
-    Plain text in Forge is planner input only while the planner assistant is
-    enabled. Slash/colon commands remain on the synchronous command path because
-    they are local state operations (except explicitly deferred commands such as
-    ``/execute plan``).
-    """
-    trimmed = str(text or "").strip()
-    return bool(
-        trimmed
-        and trimmed[:1] not in "/:"
-        and getattr(forge_state, "ui_mode", None) == "forge"
-        and getattr(forge_state, "assistant_enabled", False)
-    )
-
-
 def _finish_chat_surface_activity(*, session: Any) -> None:
     surface = getattr(session, "surface", None)
     handler = getattr(surface, "on_assistant_message_done", None)
@@ -2210,215 +2064,9 @@ def chat(
                         pass
                     return _TuiConfigReloadOutcome.APPLIED
 
-                _tui_forge_state = _ForgeChatState()
-
-                def _tui_make_forge_execute(command_text: str):
-                    # Build the callable the worker thread runs for "/execute plan":
-                    # it opens the live forge view, runs the swarm (whose events
-                    # stream into that view via TuiSurface.on_swarm_event), and
-                    # surfaces the handler's captured warnings/summary at the end.
-                    def _run(token: Any) -> None:
-                        import io as _io
-
-                        from rich.console import Console as _RichConsole
-
-                        built = _tui_box.get("session")
-                        if built is None:
-                            return
-                        surface = getattr(built, "surface", None)
-                        paths = getattr(_tui_forge_state, "paths", None)
-                        buf = _io.StringIO()
-                        cap = _RichConsole(
-                            file=buf,
-                            force_terminal=False,
-                            no_color=True,
-                            highlight=False,
-                            width=100,
-                        )
-                        if surface is not None and paths is not None:
-                            try:
-                                # Pass the worker token so the trace sink's own thread
-                                # can drop events after a soft-interrupt.
-                                surface.begin_forge(paths, token)
-                            except Exception:
-                                pass
-
-                        def _report_sink(report_md: Any) -> None:
-                            # Render the run's completion answer as a real assistant
-                            # markdown block. Deliberately NOT gated on the token: a
-                            # soft-interrupt cannot stop run_swarm, so by the time the
-                            # handler emits this report the swarm ran to its natural
-                            # end — dropping the answer would hide a finished run. The
-                            # interrupt is acknowledged with a preface instead.
-                            if surface is None:
-                                return
-                            text = str(report_md or "").strip()
-                            if not text:
-                                return
-                            if bool(getattr(token, "is_cancelled", False)):
-                                text = (
-                                    "_The interrupt could not stop the running swarm; "
-                                    "it ran to completion._\n\n" + text
-                                )
-                            try:
-                                surface.append_note(text, role="assistant")
-                            except Exception:
-                                pass
-
-                        completed = False
-                        try:
-                            _handle_chat_command(
-                                input_text=command_text,
-                                root=focus_path,
-                                session=built,
-                                pending_images=[],
-                                console=cap,
-                                forge_state=_tui_forge_state,
-                                forge_execution_report_sink=_report_sink,
-                            )
-                            completed = True
-                        except Exception as _exec_exc:  # noqa: BLE001
-                            if surface is not None:
-                                try:
-                                    surface.append_system(f"Forge execution failed: {_exec_exc}")
-                                except Exception:
-                                    pass
-                        finally:
-                            _finalize_deferred_forge_execution(
-                                surface=surface,
-                                token=token,
-                                paths=paths,
-                                forge_state=_tui_forge_state,
-                                captured=buf.getvalue(),
-                                completed=completed,
-                            )
-
-                    return _run
-
-                def _tui_make_forge_planner_execute(command_text: str, width: int):
-                    """Build the worker job for a plain Forge planner message."""
-
-                    def _run(token: Any) -> None:
-                        import io as _io
-
-                        from rich.console import Console as _RichConsole
-
-                        built = _tui_box.get("session")
-                        if built is None:
-                            return
-                        surface = getattr(built, "surface", None)
-                        buf = _io.StringIO()
-                        # Capture UNWRAPPED: the planmeta renderer reconstructs
-                        # logical notes from the captured "│ …" bar lines and
-                        # re-wraps them at the live panel width, so wrapping here
-                        # would only mangle notes into bar-less continuation
-                        # fragments (soft_wrap also stops Rich character-folding
-                        # a single giant token, e.g. a provider error blob).
-                        cap = _RichConsole(
-                            file=buf,
-                            force_terminal=False,
-                            no_color=True,
-                            highlight=False,
-                            soft_wrap=True,
-                            width=4096,
-                        )
-
-                        def _planner_reply_sink(message: Any, questions: Any) -> None:
-                            # Render the planner reply as a real assistant markdown
-                            # block (styled like any chat turn) instead of dumping the
-                            # captured, flat "Planner: …" console text as a system line.
-                            if surface is None or getattr(token, "is_cancelled", False):
-                                return
-                            text = str(message or "").strip()
-                            asks = [str(q).strip() for q in (questions or []) if str(q).strip()]
-                            parts: list[str] = []
-                            if text:
-                                parts.append(text)
-                            if asks:
-                                if parts:
-                                    parts.append("")
-                                parts.append("**A few questions to sharpen the plan:**")
-                                parts.extend(f"- {q}" for q in asks)
-                            body = "\n".join(parts).strip()
-                            if body:
-                                try:
-                                    surface.append_note(body, role="assistant")
-                                except Exception:
-                                    pass
-
-                        try:
-                            _handle_chat_command(
-                                input_text=command_text,
-                                root=focus_path,
-                                session=built,
-                                pending_images=[],
-                                console=cap,
-                                forge_state=_tui_forge_state,
-                                forge_planner_reply_sink=_planner_reply_sink,
-                            )
-                        except Exception as _planner_exc:  # noqa: BLE001
-                            if surface is not None and not getattr(token, "is_cancelled", False):
-                                try:
-                                    surface.append_system(f"Forge planner failed: {_planner_exc}")
-                                except Exception:
-                                    pass
-                            return
-
-                        if surface is None or getattr(token, "is_cancelled", False):
-                            return
-                        output = buf.getvalue().rstrip("\n")
-                        if output:
-                            try:
-                                # Captured planner meta / plan-reconciliation notes go
-                                # into a collapsible dim aside (one line by default,
-                                # Ctrl+O to expand) so they never bury the reply.
-                                surface.append_note(output, role="planmeta")
-                            except Exception:
-                                pass
-
-                    return _run
-
                 def _tui_command_runner(
                     sess: Any, text: str, width: int
                 ) -> tuple[str, str, str | None, dict[str, Any] | None]:
-                    # A plain Forge message with the planner enabled performs a
-                    # network/model call. Return a worker job immediately so the
-                    # input buffer can repaint cleared and the TUI stays responsive.
-                    if _should_defer_forge_planner_submission(
-                        forge_state=_tui_forge_state,
-                        text=text,
-                    ):
-                        return (
-                            "run",
-                            "",
-                            text.strip(),
-                            {
-                                "_deferred_execute": _tui_make_forge_planner_execute(
-                                    text.strip(), width
-                                )
-                            },
-                        )
-                    # "/execute plan" inside Forge runs the swarm — defer it to the
-                    # worker thread (not the synchronous runner, which would freeze
-                    # the UI) with a live forge view instead of a flat captured dump.
-                    # The bare form is normally intercepted by the launch-gate panel
-                    # provider; only its "Launch now" action (a one-shot re-submit of
-                    # "/execute plan") reaches here. We normalize to a plain
-                    # "/execute plan" (the command handler rejects any other arg); the
-                    # chosen knobs travel out-of-band on the forge state.
-                    _exec_parts = text.strip().lower().split()
-                    if (
-                        _tui_forge_state.ui_mode == "forge"
-                        and len(_exec_parts) >= 2
-                        and _exec_parts[0] == "/execute"
-                        and _exec_parts[1] == "plan"
-                    ):
-                        return (
-                            "run",
-                            "",
-                            "/execute plan",
-                            {"_deferred_execute": _tui_make_forge_execute("/execute plan")},
-                        )
                     # Typed "/resume <index|id>" applies natively (resolve → swap →
                     # reload transcript) instead of the capture path (whose history
                     # render no-ops with console=None and which can't run the picker).
@@ -2488,7 +2136,6 @@ def chat(
                             session=sess,
                             pending_images=[],
                             console=cap,
-                            forge_state=_tui_forge_state,
                         )
                         result = (
                             idle_skill_result
@@ -2499,7 +2146,6 @@ def chat(
                                 session=sess,
                                 pending_images=[],
                                 console=cap,
-                                forge_state=_tui_forge_state,
                                 # run_tui records every submitted slash/exit
                                 # command before choosing a native overlay or this
                                 # shared handler. Suppress the classic-path marker
@@ -2515,18 +2161,6 @@ def chat(
                     # Keep footer badges in sync after local commands such as
                     # /permissions and /usage hud.
                     _sync_tui_session_state(_tui_state, sess, include_exec_mode=True)
-                    # The forge state machine flips ui_mode inside _enter_forge_mode
-                    # (and back to "chat" on /back / /done); this single sync drives
-                    # the FORGE footer badge + the forge-specific input placeholder.
-                    _tui_state.forge_mode = _tui_forge_state.ui_mode == "forge"
-                    if _tui_state.forge_mode:
-                        _forge_paths = getattr(_tui_forge_state, "paths", None)
-                        _run_id = str(getattr(_forge_paths, "run_id", "") or "")
-                        _tui_state.forge_run_id = (
-                            _run_id if len(_run_id) <= 12 else _run_id[:11] + "…"
-                        )
-                    else:
-                        _tui_state.forge_run_id = ""
                     if result == "exit":
                         return ("exit", output, None, None)
                     if result == "send":
@@ -2558,21 +2192,13 @@ def chat(
                         workspace_root=session_root,
                         cfg=getattr(sess, "cfg", None) or effective,
                         active_session=sess,
-                        active_run_paths=(
-                            _tui_forge_state.paths if _tui_forge_state.ui_mode == "forge" else None
-                        ),
                         feedback_text=feedback,
                     )
 
                 from ..commands.chat_status import _chat_status_panel_spec
                 from ..commands.chat_tui_panels import (
-                    _chat_asset_detail_panel_spec,
-                    _chat_assets_picker_spec,
                     _chat_config_panel_spec,
                     _chat_context_panel_spec,
-                    _chat_forge_intro_panel_spec,
-                    _chat_forge_markdown_panel_spec,
-                    _chat_forge_plan_panel_spec,
                     _chat_model_info_panel_spec,
                     _chat_skill_listing_panel_spec,
                     _chat_terminals_panel_spec,
@@ -2679,236 +2305,6 @@ def chat(
                     except Exception:  # noqa: BLE001
                         return None
 
-                def _tui_forge_planner_choice(value: Any) -> dict[str, Any]:
-                    # A pick from the "Use the planner?" prompt → enter Forge with the
-                    # plan assistant forced on/off. Submitting the flagged /forge form
-                    # runs the full entry pipeline (workspace binding + footer sync);
-                    # the flag is parsed into planner_assistant_default, never a goal.
-                    choice = str(value or "").strip().lower()
-                    submit = "/forge --planner" if choice == "yes" else "/forge --no-planner"
-                    return {"submit": submit}
-
-                def _tui_forge_planner_prompt() -> dict[str, Any]:
-                    # on_confirm for the /forge intro popup: instead of entering Forge
-                    # directly, open a native picker asking whether to use the planner
-                    # assistant (the classic stdin prompt can't run in the alt-screen).
-                    return {
-                        "picker": {
-                            "title": "Use the planner assistant?",
-                            "hint": "↑↓ move · Enter select · Esc cancel",
-                            "rows": [
-                                {
-                                    "value": "yes",
-                                    "label": "Yes — use the planner assistant",
-                                    "description": (
-                                        "Draft and refine the plan together before building."
-                                    ),
-                                    "current": True,
-                                },
-                                {
-                                    "value": "no",
-                                    "label": "No — plan it myself",
-                                    "description": (
-                                        "Enter Forge and shape the plan with /goal and /task."
-                                    ),
-                                },
-                            ],
-                            "on_select": _tui_forge_planner_choice,
-                        }
-                    }
-
-                def _tui_forge_intro_panel(arg: str = "") -> dict[str, Any] | None:
-                    # Plain /forge opens a guidance popup explaining how Forge works.
-                    # Its Enter runs on_confirm, which opens the native "Use the
-                    # planner?" picker; the pick enters Forge with the assistant on/off.
-                    # "/forge <goal>" / "/forge resume" (arg present) and re-entry while
-                    # already in Forge return None so they fall through to the runner
-                    # and enter directly (no intro, no planner prompt).
-                    if arg.strip():
-                        return None
-                    if _tui_forge_state.ui_mode == "forge":
-                        return None
-                    try:
-                        spec = _chat_forge_intro_panel_spec()
-                    except Exception:  # noqa: BLE001 - never crash the UI on a panel
-                        return None
-                    # Swap the bare confirm-command for the planner prompt so the user
-                    # chooses the planner natively before Forge actually enters.
-                    spec.pop("confirm", None)
-                    spec["on_confirm"] = _tui_forge_planner_prompt
-                    spec["hint"] = "↵ Enter — choose planner   ·   Esc — cancel"
-                    return spec
-
-                # --- Forge read-only panels (only fire inside a Forge session) ---
-                def _tui_forge_plan_and_paths() -> tuple[Any, Any] | None:
-                    if not forge_session_active(_tui_forge_state.ui_mode):
-                        return None  # chat-mode /plan, /show handled elsewhere
-                    plan = getattr(_tui_forge_state, "plan", None)
-                    paths = getattr(_tui_forge_state, "paths", None)
-                    if not isinstance(plan, dict) or paths is None:
-                        return None
-                    return plan, paths
-
-                def _tui_forge_show_panel(arg: str = "") -> dict[str, Any] | None:
-                    # Forge /show → the plan summary panel.
-                    pair = _tui_forge_plan_and_paths()
-                    if pair is None:
-                        return None
-                    plan, paths = pair
-                    try:
-                        return _chat_forge_plan_panel_spec(paths=paths, plan=plan)
-                    except Exception:  # noqa: BLE001 - never crash the UI on a panel
-                        return None
-
-                def _tui_forge_plan_edit_spec(plan: Any, paths: Any) -> dict[str, Any]:
-                    # /plan edit → open plan.json in the in-TUI editor; on save,
-                    # validate the JSON shape, persist it, and reload the in-memory
-                    # plan (no $EDITOR, which can't run under the alt-screen).
-                    import json as _json
-
-                    from ...forge import save_plan as _save_plan
-
-                    try:
-                        _save_plan(paths, plan)  # PLAN.md/json reflect the live plan
-                    except Exception:
-                        pass
-                    try:
-                        text = paths.plan_json_path.read_text(encoding="utf-8")
-                    except Exception:
-                        text = _json.dumps(plan, indent=2, ensure_ascii=False)
-
-                    def _on_save(new_text: str) -> tuple[bool, str]:
-                        try:
-                            candidate = _json.loads(new_text)
-                        except _json.JSONDecodeError as exc:
-                            return (False, f"Invalid JSON: {exc}")
-                        from ..commands.forge_helpers import _validate_forge_plan_shape
-
-                        shape_error = _validate_forge_plan_shape(candidate)
-                        if shape_error:
-                            return (False, shape_error)
-                        try:
-                            _save_plan(paths, candidate)
-                        except Exception as exc:  # noqa: BLE001
-                            return (False, f"Failed to save plan: {exc}")
-                        _tui_forge_state.plan = candidate
-                        suffix = ""
-                        try:
-                            from ..commands.forge_helpers import (
-                                _validate_forge_plan_for_paths,
-                            )
-
-                            warnings = _validate_forge_plan_for_paths(paths, candidate)
-                            if warnings:
-                                suffix = f" · {len(warnings)} validation warning(s)"
-                        except Exception:
-                            pass
-                        return (True, f"Plan saved and reloaded.{suffix}")
-
-                    return {
-                        "editor": {
-                            "title": f"Edit plan.json · {getattr(paths, 'run_id', '')}".rstrip(
-                                " ·"
-                            ),
-                            "text": text,
-                            "on_save": _on_save,
-                        }
-                    }
-
-                def _tui_forge_plan_panel(arg: str = "") -> dict[str, Any] | None:
-                    # Forge /plan: tasks|table|view → plan panel; markdown|md → PLAN.md
-                    # doc panel; edit → in-TUI JSON editor. Bare /plan returns None so
-                    # it falls through to the forge /plan picker.
-                    pair = _tui_forge_plan_and_paths()
-                    if pair is None:
-                        return None
-                    plan, paths = pair
-                    sub = arg.strip().lower()
-                    try:
-                        if sub in {"tasks", "table", "view"}:
-                            return _chat_forge_plan_panel_spec(paths=paths, plan=plan)
-                        if sub in {"markdown", "md"}:
-                            return _chat_forge_markdown_panel_spec(paths=paths, plan=plan)
-                        if sub in {"edit", "edit-json"}:
-                            return _tui_forge_plan_edit_spec(plan, paths)
-                    except Exception:  # noqa: BLE001
-                        return None
-                    return None
-
-                # --- Forge assets (picker + detail panel; replaces the stdin modal) ---
-                def _tui_asset_context() -> tuple[Any, Any] | None:
-                    if not forge_session_active(_tui_forge_state.ui_mode):
-                        return None
-                    built = _tui_box.get("session")
-                    if built is None:
-                        return None
-                    cfg = getattr(built, "cfg", None)
-                    if not isinstance(cfg, AppConfig):
-                        cfg = effective if isinstance(effective, AppConfig) else None
-                    asset_paths = getattr(_tui_forge_state, "paths", None)
-                    if asset_paths is None:
-                        # Outside a Forge session, resolve the workspace's current run.
-                        try:
-                            from ...agent.prompt_context import (
-                                resolve_session_active_workdir_path,
-                            )
-                            from ...forge import load_current_run_paths
-
-                            asset_paths = load_current_run_paths(
-                                Path(resolve_session_active_workdir_path(built))
-                            )
-                        except Exception:
-                            asset_paths = None
-                    if cfg is None or asset_paths is None:
-                        return None
-                    return cfg, asset_paths
-
-                def _tui_assets_panel(arg: str = "") -> dict[str, Any] | None:
-                    ctx = _tui_asset_context()
-                    if ctx is None:
-                        return None
-                    cfg_obj, asset_paths = ctx
-                    asset_id = arg.strip()
-                    if asset_id:
-                        try:
-                            return _chat_asset_detail_panel_spec(
-                                cfg=cfg_obj, paths=asset_paths, asset_id=asset_id
-                            )
-                        except Exception:  # noqa: BLE001
-                            return None
-                    # Bare /assets: show a small panel only when there is nothing to
-                    # pick; otherwise fall through to the selectable picker below.
-                    try:
-                        from ...assets.surface import build_asset_surface
-
-                        count = len(
-                            build_asset_surface(cfg=cfg_obj, run_paths=asset_paths).list_assets()
-                        )
-                    except Exception:  # noqa: BLE001
-                        return None
-                    if count == 0:
-                        return {
-                            "title": "Assets",
-                            "sections": [
-                                (
-                                    "Assets",
-                                    [("status", "No assets attached to this run yet.", "plain")],
-                                )
-                            ],
-                            "hint": "Esc close",
-                        }
-                    return None
-
-                def _tui_assets_picker() -> dict[str, Any] | None:
-                    ctx = _tui_asset_context()
-                    if ctx is None:
-                        return None
-                    cfg_obj, asset_paths = ctx
-                    try:
-                        return _chat_assets_picker_spec(cfg=cfg_obj, paths=asset_paths)
-                    except Exception:  # noqa: BLE001
-                        return None
-
                 def _tui_login_select(value: str) -> dict[str, Any]:
                     return {"exit": ("login_connection", str(value))}
 
@@ -2930,189 +2326,6 @@ def chat(
                         "on_select": _tui_login_select,
                     }
 
-                # --- Forge launch gate: /execute plan opens a confirm + knob picker ---
-                # One-shot flag: "Launch now" sets it, then re-submits a clean
-                # "/execute plan"; the gate provider consumes it and falls through to
-                # the runner, so the swarm launches without echoing any internal
-                # sentinel into the visible transcript.
-                _tui_forge_launch = {"confirmed": False}
-                _FORGE_KNOB_DEFAULTS: dict[str, Any] = {
-                    "parallel": 2,
-                    "scope_mode": "strict",
-                    "verify_mode": "warn",
-                    "review": False,
-                }
-
-                def _tui_forge_knobs() -> dict[str, Any]:
-                    knobs = dict(_FORGE_KNOB_DEFAULTS)
-                    stored = _tui_forge_state.swarm_knobs
-                    if isinstance(stored, dict):
-                        knobs.update(stored)
-                    return knobs
-
-                def _tui_forge_cycle_knob(key: str) -> None:
-                    knobs = _tui_forge_knobs()
-                    if key == "parallel":
-                        current = int(knobs.get("parallel", 2) or 2)
-                        knobs["parallel"] = current + 1 if current < 4 else 1
-                    elif key == "scope_mode":
-                        knobs["scope_mode"] = (
-                            "warn" if knobs.get("scope_mode") == "strict" else "strict"
-                        )
-                    elif key == "verify_mode":
-                        order = ["warn", "strict", "off"]
-                        try:
-                            idx = order.index(str(knobs.get("verify_mode")))
-                        except ValueError:
-                            idx = 0
-                        knobs["verify_mode"] = order[(idx + 1) % len(order)]
-                    elif key == "review":
-                        knobs["review"] = not bool(knobs.get("review"))
-                    _tui_forge_state.swarm_knobs = knobs
-
-                def _tui_forge_knob_blurb(key: str, knobs: dict[str, Any]) -> str:
-                    # One terse line describing only the *currently selected* value —
-                    # cycling a knob swaps the line, so each alternative explains
-                    # itself the moment it is picked (never an all-values glossary).
-                    if key == "parallel":
-                        n = int(knobs.get("parallel", 2) or 2)
-                        if n <= 1:
-                            return "Tasks build one at a time."
-                        return f"Up to {n} tasks build at once."
-                    if key == "scope_mode":
-                        if knobs.get("scope_mode") == "strict":
-                            return "A worker edits only its task's files."
-                        return "Cross-task edits allowed, just flagged in the report."
-                    if key == "verify_mode":
-                        # NB: warn still fails a task on NEW check failures — it only
-                        # downgrades pre-existing/baseline failures and infra problems
-                        # (see swarm_worker._run_authoritative_verification).
-                        mode = str(knobs.get("verify_mode"))
-                        if mode == "strict":
-                            return "Any check failure fails the task."
-                        if mode == "off":
-                            return "Skip verification checks."
-                        return "New failures fail the task; pre-existing just warn."
-                    if key == "review":
-                        if knobs.get("review"):
-                            return "A reviewer checks each task before it merges."
-                        return "Merge without a reviewer pass."
-                    return ""
-
-                def _tui_forge_launch_gate_picker(
-                    plan: Any, paths: Any, focus: str | None = None
-                ) -> dict[str, Any]:
-                    knobs = _tui_forge_knobs()
-                    tasks = plan.get("tasks") if isinstance(plan, dict) else None
-                    n_tasks = len(tasks) if isinstance(tasks, list) else 0
-                    run_id = str(getattr(paths, "run_id", "") or "")
-                    all_default = all(
-                        knobs.get(key) == value for key, value in _FORGE_KNOB_DEFAULTS.items()
-                    )
-
-                    def _default_tag(key: str) -> str:
-                        if knobs.get(key) == _FORGE_KNOB_DEFAULTS.get(key):
-                            return "(default)"
-                        return ""
-
-                    rows = [
-                        {
-                            "value": "__launch__",
-                            "label": "Launch now",
-                            "description": (
-                                f"Build {n_tasks} task(s) — recommended defaults."
-                                if all_default
-                                else f"Build {n_tasks} task(s) with the settings below."
-                            ),
-                            "current": focus in (None, "__launch__"),
-                            "tag": "",
-                        },
-                        {
-                            "value": "parallel",
-                            "label": f"Workers: {knobs['parallel']}",
-                            "description": _tui_forge_knob_blurb("parallel", knobs),
-                            "current": focus == "parallel",
-                            "tag": _default_tag("parallel"),
-                        },
-                        {
-                            "value": "scope_mode",
-                            "label": f"File scope: {knobs['scope_mode']}",
-                            "description": _tui_forge_knob_blurb("scope_mode", knobs),
-                            "current": focus == "scope_mode",
-                            "tag": _default_tag("scope_mode"),
-                        },
-                        {
-                            "value": "verify_mode",
-                            "label": f"Verify: {knobs['verify_mode']}",
-                            "description": _tui_forge_knob_blurb("verify_mode", knobs),
-                            "current": focus == "verify_mode",
-                            "tag": _default_tag("verify_mode"),
-                        },
-                        {
-                            "value": "review",
-                            "label": f"Review: {'on' if knobs['review'] else 'off'}",
-                            "description": _tui_forge_knob_blurb("review", knobs),
-                            "current": focus == "review",
-                            "tag": _default_tag("review"),
-                        },
-                    ]
-
-                    def _on_select(value: Any) -> dict[str, Any] | None:
-                        selected = str(value)
-                        if selected == "__launch__":
-                            # Confirm-launch: flag a one-shot bypass, then re-submit a
-                            # clean "/execute plan" (no sentinel echoed to the
-                            # transcript). The gate provider consumes the flag and the
-                            # runner defers the real swarm execution on the worker.
-                            _tui_forge_launch["confirmed"] = True
-                            return {"submit": "/execute plan"}
-                        _tui_forge_cycle_knob(selected)
-                        pair = _tui_forge_plan_and_paths()
-                        if pair is None:
-                            return None
-                        # Re-present the gate with the cycled value, keeping focus.
-                        return {
-                            "picker": _tui_forge_launch_gate_picker(
-                                pair[0], pair[1], focus=selected
-                            )
-                        }
-
-                    title = (f"Launch Forge · {run_id}".rstrip(" ·")) or "Launch Forge"
-                    return {
-                        "title": title,
-                        "hint": "↑↓ move · Enter/1 launch · 2-5 cycle setting · Esc cancel",
-                        "rows": rows,
-                        "on_select": _on_select,
-                    }
-
-                def _tui_forge_execute_gate(arg: str = "") -> dict[str, Any] | None:
-                    # /execute plan → open the launch gate instead of firing the swarm
-                    # blind. Only the bare "plan" form opens it; any other arg returns
-                    # None to fall through to the runner.
-                    if not forge_session_active(_tui_forge_state.ui_mode):
-                        return None
-                    if arg.strip().lower() != "plan":
-                        return None
-                    if _tui_forge_launch.get("confirmed"):
-                        # The gate's own "Launch now" re-submitting "/execute plan":
-                        # consume the one-shot flag and fall through so the runner
-                        # defers the real execution (no second gate, no loop).
-                        _tui_forge_launch["confirmed"] = False
-                        return None
-                    pair = _tui_forge_plan_and_paths()
-                    if pair is None:
-                        return None
-                    plan, paths = pair
-                    # No usable plan yet → let the runner surface the "add tasks first"
-                    # guidance rather than offering a launch that will be rejected.
-                    tasks = plan.get("tasks") if isinstance(plan, dict) else None
-                    reqs = plan.get("requirements") if isinstance(plan, dict) else None
-                    if not (isinstance(tasks, list) and tasks) and not (
-                        isinstance(reqs, list) and reqs
-                    ):
-                        return None
-                    return {"picker": _tui_forge_launch_gate_picker(plan, paths)}
-
                 _tui_panel_providers = {
                     "/status": _tui_status_panel,
                     "/usage": _tui_usage_panel,
@@ -3123,11 +2336,6 @@ def chat(
                     "/toolbar": _tui_toolbar_panel,
                     "/terminals": _tui_terminals_panel,
                     "/skill": _tui_skill_panel,
-                    "/forge": _tui_forge_intro_panel,
-                    "/show": _tui_forge_show_panel,
-                    "/plan": _tui_forge_plan_panel,
-                    "/assets": _tui_assets_panel,
-                    "/execute": _tui_forge_execute_gate,
                 }
 
                 # Slash-command dropdown: same completer the classic prompt uses, so
@@ -3145,7 +2353,6 @@ def chat(
                     return sorted(str(n) for n in (getattr(built, "skill_registry", {}) or {}))
 
                 _tui_completer = ChatSlashCompleter(
-                    mode_provider=lambda: _tui_forge_state.ui_mode,
                     skill_names_provider=_tui_skill_names,
                     extra_specs=(DIFF_COMMAND_SPEC, REVIEW_COMMAND_SPEC, *NAVIGATION_COMMAND_SPECS),
                 )
@@ -3494,66 +2701,6 @@ def chat(
                         "on_select": _tui_trace_select,
                     }
 
-                # TUI-native forge pickers: bare /plan opens a tasks/markdown/edit
-                # chooser; bare /assistant toggles the planner assistant. Each row's
-                # on_select SUBMITS the explicit form (e.g. "/plan tasks") so the
-                # panel/runner path applies with no extra Enter. They fire only in a
-                # Forge session; in chat mode they return None and fall through.
-                def _tui_forge_plan_picker() -> dict[str, Any] | None:
-                    if not forge_session_active(_tui_forge_state.ui_mode):
-                        return None
-                    rows = [
-                        {
-                            "label": "tasks",
-                            "description": "Show the plan summary — goal, requirements, task table.",
-                            "value": "tasks",
-                            "current": False,
-                        },
-                        {
-                            "label": "markdown",
-                            "description": "Preview PLAN.md for the current run.",
-                            "value": "markdown",
-                            "current": False,
-                        },
-                        {
-                            "label": "edit",
-                            "description": "Edit plan.json in an in-TUI editor, then reload.",
-                            "value": "edit",
-                            "current": False,
-                        },
-                    ]
-                    return {
-                        "title": "Plan",
-                        "rows": rows,
-                        "on_select": lambda value: {"submit": f"/plan {value}"},
-                        "hint": "↑↓ select · Enter · Esc cancel",
-                    }
-
-                def _tui_forge_assistant_picker() -> dict[str, Any] | None:
-                    if not forge_session_active(_tui_forge_state.ui_mode):
-                        return None
-                    enabled = bool(getattr(_tui_forge_state, "assistant_enabled", False))
-                    rows = [
-                        {
-                            "label": "on",
-                            "description": "Planner assistant drafts and refines the plan with you.",
-                            "value": "on",
-                            "current": enabled,
-                        },
-                        {
-                            "label": "off",
-                            "description": "Manual planning only — you drive /goal, /task, /plan edit.",
-                            "value": "off",
-                            "current": not enabled,
-                        },
-                    ]
-                    return {
-                        "title": "Planner Assistant",
-                        "rows": rows,
-                        "on_select": lambda value: {"submit": f"/assistant {value}"},
-                        "hint": "↑↓ select · Enter · Esc cancel",
-                    }
-
                 # TUI-native /resume picker: bare /resume opens a selectable list of
                 # previous sessions (label = relative time, description = preview);
                 # choosing one swaps the live session in place and reloads the prior
@@ -3726,20 +2873,14 @@ def chat(
                     "/stream": _tui_stream_picker,
                     "/trace": _tui_trace_picker,
                     "/resume": _tui_resume_picker,
-                    "/plan": _tui_forge_plan_picker,
-                    "/assistant": _tui_forge_assistant_picker,
-                    "/assets": _tui_assets_picker,
                 }
 
-                from ..commands.forge_helpers import _enter_forge_mode as _planning_enter_forge
                 from ..tui.planning_backend import ChatPlanningBackend
 
                 _planning_backend = ChatPlanningBackend(
                     lambda: _tui_box.get("session"),
-                    _tui_forge_state,
                     _tui_state,
                     apply_persona=_apply_chat_persona,
-                    enter_forge=_planning_enter_forge,
                 )
 
                 _tui_ok = False
@@ -3947,13 +3088,11 @@ def chat(
                 "`alysis config set subagents_enabled true`, then start a new session.[/dim]"
             )
         pending_images = [os.fspath(p) for p in (image or [])]
-        forge_state = _ForgeChatState()
         _apply_startup_persona(session=session, console=console)
         prompt_session = _maybe_make_chat_prompt_session(
             console=console,
             root=focus_path,
             pending_images=pending_images,
-            forge_state=forge_state,
             session=session,
         )
         if pending_images:
@@ -3971,28 +3110,20 @@ def chat(
                         return _chat_bottom_toolbar(
                             session=session,
                             pending_images=_pending_images,
-                            forge_state=forge_state,
                         )
 
                     user_msg = prompt_session.prompt(
-                        _chat_prompt_label_formatted(
-                            ui_mode=forge_state.ui_mode,
-                            mode=str(getattr(session, "mode", "")),
-                        ),
+                        _chat_prompt_label_formatted(mode=str(getattr(session, "mode", ""))),
                         bottom_toolbar=_bottom_toolbar,
                     )
                     if not prompt_session_erases and isinstance(user_msg, str):
                         _clear_submitted_prompt_line(
                             submitted_text=user_msg,
-                            prompt_label=_chat_prompt_label(
-                                ui_mode=forge_state.ui_mode,
-                                mode=str(getattr(session, "mode", "")),
-                            ),
+                            prompt_label=_chat_prompt_label(mode=str(getattr(session, "mode", ""))),
                         )
                 else:
                     fallback_label = _chat_prompt_fallback_label(
-                        ui_mode=forge_state.ui_mode,
-                        mode=str(getattr(session, "mode", "")),
+                        mode=str(getattr(session, "mode", ""))
                     )
                     user_msg = typer.prompt(fallback_label, prompt_suffix=" ")
                     _clear_submitted_prompt_line(
@@ -4009,7 +3140,6 @@ def chat(
                 session=session,
                 pending_images=pending_images,
                 console=console,
-                forge_state=forge_state,
             )
             if command_result is None:
                 command_result = _handle_chat_command(
@@ -4018,7 +3148,6 @@ def chat(
                     session=session,
                     pending_images=pending_images,
                     console=console,
-                    forge_state=forge_state,
                 )
             if command_result == "exit":
                 return
@@ -4189,11 +3318,6 @@ def chat(
 def _handle_chat_command_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
     _sync_cli_globals(cli_mod)
     return _handle_chat_command(*args, **kwargs)
-
-
-def _handle_forge_chat_command_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:
-    _sync_cli_globals(cli_mod)
-    return _handle_forge_chat_command(*args, **kwargs)
 
 
 def _print_chat_context_impl(cli_mod: Any, *args: Any, **kwargs: Any) -> Any:

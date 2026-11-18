@@ -16,6 +16,8 @@ from alysis_code.llm_error_display import friendly_llm_error_message
 @pytest.mark.parametrize(
     "status, code, expected",
     [
+        (503, "campaign_budget_exceeded", "shared hosted budget"),
+        (503, "free_daily_budget_exceeded", "shared daily free-tier budget"),
         (403, "account_restricted", "account requires review"),
         (403, "email_verification_required", "Confirm your Alysis account email"),
         (403, "free_mailbox_conflict", "already linked to another account for this mailbox"),

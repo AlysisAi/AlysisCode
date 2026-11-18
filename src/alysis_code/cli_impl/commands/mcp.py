@@ -42,7 +42,6 @@ mcp_app.add_typer(mcp_auth_app, name="auth")
 _MANUAL_MCP_PROMPT_RUNTIME_KINDS = (
     RuntimeKind.INTERACTIVE_CHAT,
     RuntimeKind.ONE_SHOT,
-    RuntimeKind.FORGE_EXEC,
 )
 
 
@@ -571,10 +570,7 @@ def mcp_status(
     runtime: str = typer.Option(
         RuntimeKind.INTERACTIVE_CHAT.value,
         "--runtime",
-        help=(
-            "Runtime profile used to resolve enabled MCP servers: "
-            "interactive_chat, one_shot, or forge_exec."
-        ),
+        help=("Runtime profile used to resolve enabled MCP servers: interactive_chat or one_shot."),
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit deterministic JSON output."),
 ) -> None:
@@ -640,10 +636,7 @@ def mcp_prompts_list(
     runtime: str = typer.Option(
         RuntimeKind.INTERACTIVE_CHAT.value,
         "--runtime",
-        help=(
-            "Runtime profile used to resolve enabled MCP servers: "
-            "interactive_chat, one_shot, or forge_exec."
-        ),
+        help=("Runtime profile used to resolve enabled MCP servers: interactive_chat or one_shot."),
     ),
     server: str | None = typer.Option(
         None, "--server", help="Optional exact MCP server id filter."
@@ -708,10 +701,7 @@ def mcp_prompts_get(
     runtime: str = typer.Option(
         RuntimeKind.INTERACTIVE_CHAT.value,
         "--runtime",
-        help=(
-            "Runtime profile used to resolve enabled MCP servers: "
-            "interactive_chat, one_shot, or forge_exec."
-        ),
+        help=("Runtime profile used to resolve enabled MCP servers: interactive_chat or one_shot."),
     ),
     arg: list[str] = typer.Option(None, "--arg", help="Prompt string argument as key=value."),
     refresh: bool = typer.Option(

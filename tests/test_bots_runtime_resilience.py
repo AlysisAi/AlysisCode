@@ -750,13 +750,11 @@ def test_uploaded_text_stored_as_bytes_is_read_in_pages(tmp_path):
 @pytest.mark.parametrize(
     "name,data",
     [
-        ("photo.png", b"\x89PNG\r\n\x1a\n" + bytes(64)),
-        ("report.pdf", b"%PDF-1.7 plain looking text"),
         ("notes.txt", b"caf\xe9 is not UTF-8"),
         ("dump.txt", b"text\x00with a NUL"),
         ("huge.txt", b"a" * (INLINE_FILE_BYTES + 1)),
     ],
-    ids=["image", "pdf", "latin1", "nul", "over_2mib"],
+    ids=["latin1", "nul", "over_2mib"],
 )
 def test_other_uploads_are_explained_without_a_missing_computer(tmp_path, name, data):
     store, task, file = uploaded(tmp_path, name, data)
@@ -767,3 +765,23 @@ def test_other_uploads_are_explained_without_a_missing_computer(tmp_path, name, 
     runtime.desktop_computers = SimpleNamespace()
     result = runtime._tool(task, "read_file", {"file_id": file["id"]}, ["read_file"])
     assert result["message"] == BINARY_FILE_MESSAGE
+
+
+@pytest.mark.parametrize(
+    "name,data",
+    [
+        ("photo.png", b"\x89PNG\r\n\x1a\n" + bytes(64)),
+        ("report.pdf", b"%PDF-1.7 plain looking text"),
+    ],
+    ids=["image", "pdf"],
+)
+def test_damaged_images_and_documents_say_so_plainly(tmp_path, name, data):
+    # Recognised by their content, these are read here (documents.py), not sent to a computer.
+    store, task, file = uploaded(tmp_path, name, data)
+    runtime = BotRuntime(store, "alice", lambda _: None)
+    for computer in (None, SimpleNamespace()):
+        runtime.desktop_computers = computer
+        result = runtime._tool(task, "read_file", {"file_id": file["id"]}, ["read_file"])
+        assert result["content"] is None
+        assert "damaged or incomplete" in result["message"]
+        assert "Binary file" not in result["message"]

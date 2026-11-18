@@ -8,7 +8,7 @@ from typing import Any
 from rich.console import Console
 
 from alysis_code import cli as cli_mod
-from alysis_code.cli_impl.chat_slash_completer import max_completions_for_mode
+from alysis_code.cli_impl.chat_slash_completer import max_completions
 from alysis_code.cli_impl.commands import prompt_helpers as prompt_helpers_mod
 
 
@@ -21,8 +21,8 @@ def test_chat_prompt_completion_menu_height_uses_dynamic_completion_count(
         lambda fallback=(80, 24): os.terminal_size((80, 80)),
     )
 
-    height = prompt_helpers_mod._chat_prompt_completion_menu_height("chat")
-    expected_count = prompt_helpers_mod._chat_prompt_session_completion_count("chat")
+    height = prompt_helpers_mod._chat_prompt_completion_menu_height()
+    expected_count = max_completions()
 
     assert height == min(expected_count, max(8, int(80 * 0.6)))
     assert 8 <= height <= expected_count
@@ -35,10 +35,10 @@ def test_chat_prompt_completion_menu_height_handles_tiny_terminal(monkeypatch) -
         lambda fallback=(80, 24): os.terminal_size((80, 10)),
     )
 
-    height = prompt_helpers_mod._chat_prompt_completion_menu_height("chat")
+    height = prompt_helpers_mod._chat_prompt_completion_menu_height()
 
     assert height == 8
-    assert height <= prompt_helpers_mod._chat_prompt_session_completion_count("chat")
+    assert height <= max_completions()
 
 
 def test_chat_prompt_session_passes_dynamic_reserve_space_for_menu(
@@ -74,7 +74,6 @@ def test_chat_prompt_session_passes_dynamic_reserve_space_for_menu(
         console=Console(),
         root=tmp_path,
         pending_images=[],
-        forge_state=prompt_helpers_mod._ForgeChatState(),
     )
 
     assert session is not None
@@ -85,10 +84,3 @@ def test_chat_prompt_session_passes_dynamic_reserve_space_for_menu(
     assert selected.color == "3fb950" and selected.bold
     assert selected.bgcolor != ordinary.bgcolor
     assert ordinary.bgcolor == "0d1117"
-
-
-def test_chat_prompt_session_completion_count_covers_mode_switching() -> None:
-    count = prompt_helpers_mod._chat_prompt_session_completion_count("chat")
-
-    assert count >= max_completions_for_mode("chat")
-    assert count >= max_completions_for_mode("forge")

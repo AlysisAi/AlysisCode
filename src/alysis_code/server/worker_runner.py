@@ -6,7 +6,6 @@ import queue
 import subprocess
 import sys
 import threading
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +16,6 @@ from ..atomic_io import atomic_write_json
 from ..branding import default_sandbox_docker_image, env_get
 from ..bwrap_etc import ensure_minimal_etc_dir
 from ..command_text import command_text
-from ..forge_events import EVENT_RUN_COMPLETED, is_terminal_event, parse_event_line
 from ..logging_redaction import redact_log_text
 from ..run_outcome import task_outcome_fields, task_outcome_record
 from .settings import ServerSettings
@@ -26,9 +24,7 @@ from .store import JobPaths, RunPaths, ServerStore, ServerStoreError
 _DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 _TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
 
-# How a job's terminal status was decided. "terminal_event" means the worker told us in
-# its own words; "exit_code" means we had to infer it from the process result.
-STATUS_SOURCE_TERMINAL_EVENT = "terminal_event"
+# How a job's terminal status was decided: from the worker process's exit code.
 STATUS_SOURCE_EXIT_CODE = "exit_code"
 
 
@@ -309,7 +305,6 @@ class JobState:
     error: str | None = None
     logs_path: str | None = None
     status_source: str | None = None
-    terminal_event: dict[str, object] | None = None
     _cancel_requested: bool = False
     _process: subprocess.Popen[str] | None = None
 
@@ -332,20 +327,15 @@ class JobStatus:
     exit_code: int | None
     error: str | None
     status_source: str | None = None
-    terminal_event: dict[str, object] | None = None
     task_outcome: dict[str, object] | None = None
 
 
-def job_task_outcome(
-    *, status: str, exit_code: int | None, event: Mapping[str, object] | None
-) -> dict[str, object]:
+def job_task_outcome(*, status: str, exit_code: int | None) -> dict[str, object]:
     """The worker command's accepted/exit status is distinct from task verification."""
     if status not in _TERMINAL_JOB_STATUSES:
         return task_outcome_record(exit_code=None, reason="running", terminal=False)
-    data = event.get("data") if isinstance(event, Mapping) else None
-    record = data.get("task_outcome") if isinstance(data, Mapping) else None
     outcome = task_outcome_fields(
-        record, exit_code=exit_code, reason="worker_failed" if status == "failed" else "completed"
+        None, exit_code=exit_code, reason="worker_failed" if status == "failed" else "completed"
     )["task_outcome"]
     if status == "cancelled":
         # Cancellation is the outer worker's authority, but it does not erase
@@ -361,35 +351,6 @@ def job_task_outcome(
             exit_code=exit_code or 1,
         )
     return outcome
-
-
-def job_status_from_terminal_event(event: Mapping[str, object] | None) -> str | None:
-    """Map a terminal Forge event to a job status, or None when it says nothing.
-
-    ``run_completed`` reports whether the command's work was accepted; ``error`` means
-    the command itself failed. Everything else is not terminal and decides nothing.
-    """
-    if not isinstance(event, Mapping) or not is_terminal_event(event):
-        return None
-    if str(event.get("event")) != EVENT_RUN_COMPLETED:
-        return "failed"
-    data = event.get("data")
-    ok = data.get("ok") if isinstance(data, Mapping) else None
-    if isinstance(ok, bool):
-        return "succeeded" if ok else "failed"
-    # A run_completed without an explicit verdict is not evidence of success.
-    return None
-
-
-def _terminal_event_error(event: Mapping[str, object] | None) -> str | None:
-    """Surface the worker's own error message when it reported one."""
-    if not isinstance(event, Mapping) or str(event.get("event")) == EVENT_RUN_COMPLETED:
-        return None
-    data = event.get("data")
-    if not isinstance(data, Mapping):
-        return None
-    message = data.get("message")
-    return str(message) if message else None
 
 
 class JobRunner:
@@ -503,10 +464,7 @@ class JobRunner:
                 exit_code=state.exit_code,
                 error=state.error,
                 status_source=state.status_source,
-                terminal_event=state.terminal_event,
-                task_outcome=job_task_outcome(
-                    status=status, exit_code=state.exit_code, event=state.terminal_event
-                ),
+                task_outcome=job_task_outcome(status=status, exit_code=state.exit_code),
             )
 
     def read_logs(self, job_id: str) -> str:
@@ -587,7 +545,6 @@ class JobRunner:
         runner = self._outer_runner()
         exit_code: int | None = None
         error: str | None = None
-        terminal_event: dict[str, object] | None = None
         try:
             proc = runner.spawn(
                 workspace=run_paths.workspace_dir,
@@ -608,16 +565,8 @@ class JobRunner:
                 logs.write(redact_log_text(f"[{_now_iso()}] starting job {state.job_id}\n"))
                 if proc.stdout is not None:
                     for line in proc.stdout:
-                        # Only the on-disk copy is redacted; `line` stays verbatim
-                        # below so terminal-event parsing is unaffected.
                         logs.write(redact_log_text(line))
                         logs.flush()
-                        # Machine-mode workers narrate themselves. Keep the last
-                        # terminal event: it, not the exit code, is what the job
-                        # actually reported.
-                        event = parse_event_line(line)
-                        if event is not None and is_terminal_event(event):
-                            terminal_event = event
                 exit_code = proc.wait()
             if state._cancel_requested:
                 with self._jobs_lock:
@@ -625,23 +574,13 @@ class JobRunner:
                     state.finished_at = _now_iso()
                     state.exit_code = exit_code
                     state.status_source = STATUS_SOURCE_EXIT_CODE
-                    state.terminal_event = terminal_event
                     state._process = None
             else:
-                reported_status = job_status_from_terminal_event(terminal_event)
-                reported_error = _terminal_event_error(terminal_event)
                 with self._jobs_lock:
-                    if reported_status is not None:
-                        state.status = reported_status
-                        state.status_source = STATUS_SOURCE_TERMINAL_EVENT
-                        if reported_error:
-                            state.error = reported_error
-                    else:
-                        state.status = "succeeded" if exit_code == 0 else "failed"
-                        state.status_source = STATUS_SOURCE_EXIT_CODE
+                    state.status = "succeeded" if exit_code == 0 else "failed"
+                    state.status_source = STATUS_SOURCE_EXIT_CODE
                     state.finished_at = _now_iso()
                     state.exit_code = exit_code
-                    state.terminal_event = terminal_event
                     state._process = None
         except Exception as e:  # noqa: BLE001
             error = str(e)
@@ -651,7 +590,6 @@ class JobRunner:
                 state.error = error
                 state.exit_code = 1 if exit_code is None else exit_code
                 state.status_source = STATUS_SOURCE_EXIT_CODE
-                state.terminal_event = terminal_event
                 state._process = None
             with job_paths.logs_path.open("a", encoding="utf-8") as logs:
                 logs.write(redact_log_text(f"[{_now_iso()}] job failed to start: {error}\n"))
@@ -685,9 +623,6 @@ class JobRunner:
             "error": error or state.error,
             "started_at": state.started_at,
             "finished_at": state.finished_at,
-            "terminal_event": state.terminal_event,
-            "task_outcome": job_task_outcome(
-                status=state.status, exit_code=state.exit_code, event=state.terminal_event
-            ),
+            "task_outcome": job_task_outcome(status=state.status, exit_code=state.exit_code),
         }
         atomic_write_json(job_paths.result_path, payload)

@@ -82,11 +82,9 @@ def test_catalog_lists_every_builtin_with_the_model_a_run_would_use() -> None:
         "planner",
         "review",
         "compactor",
-        "conflict_review",
-        "conflict_resolve",
         "approval_review",
     ]
-    assert roles["approval_review"]["forge"] is False
+    assert set(roles["approval_review"]) == {"role", "description", "model", "effective_model"}
     assert roles["review"]["effective_model"] == "parent-model"
     profiles = {item["name"]: item for item in payload["profiles"]}
     assert profiles["parent"] == {"name": "parent", "active": True, "usable": True, "reason": None}

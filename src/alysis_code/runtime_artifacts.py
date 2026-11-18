@@ -100,10 +100,6 @@ def runtime_artifact_git_exclude_entries(root: Path) -> tuple[str, ...]:
     return (*RUNTIME_ARTIFACT_GIT_EXCLUDE_ENTRIES, *rust_target_entries)
 
 
-def has_grounded_rust_target_runtime_artifacts(root: Path) -> bool:
-    return bool(_iter_rust_manifest_dirs(root))
-
-
 def is_runtime_artifact_path(path: str, *, root: Path | None = None) -> bool:
     cleaned = normalize_runtime_artifact_path(path)
     if not cleaned:

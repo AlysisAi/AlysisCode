@@ -18,7 +18,6 @@ from ...surface.theme import (
 from .cli_common import *
 from ...branding import env_get
 from ...tools.availability import tool_availability_snapshot as copy_tool_availability_snapshot
-from ..chat.forge_visibility import command_visible, visible_commands
 
 
 def stripAnsi(value: str) -> str:
@@ -440,7 +439,7 @@ def printWelcome(
             *context_lines,
             rule_text("─" * min(max(max_width, 1), 64)),
             "",
-            f"{primary_text('/forge')}     {body_text('begin an autonomous run')}",
+            f"{primary_text('/resume')}    {body_text('continue a past session')}",
             f"{primary_text('/status')}    {body_text('view run state and usage')}",
             f"{primary_text('/help')}      {body_text('show all commands')}",
         ]
@@ -454,7 +453,7 @@ def printWelcome(
                 f"{indent}{brand}",
                 f"{indent}{tagline}",
                 "",
-                f"{indent}{primary_text('/forge')}  {primary_text('/status')}  {primary_text('/help')}",
+                f"{indent}{primary_text('/resume')}  {primary_text('/status')}  {primary_text('/help')}",
             ]
 
         if owl_frames:
@@ -516,7 +515,7 @@ def printWelcome(
             [
                 f"{indent}{rule_text('─' * min(max(terminal_width - 4, 1), 64))}",
                 "",
-                f"{indent}{primary_text('/forge')}   {body_text('begin an autonomous run')}",
+                f"{indent}{primary_text('/resume')}    {body_text('continue a past session')}",
                 f"{indent}{primary_text('/status')}    {body_text('view run state and usage')}",
                 f"{indent}{primary_text('/help')}      {body_text('show all commands')}",
             ]
@@ -601,115 +600,7 @@ def _render_command_sections_panel(
     return _Panel(table, title=title, border_style="bright_black")
 
 
-def _forge_help_footer_lines() -> list[str]:
-    return [
-        "Plain /forge starts a fresh run for a new chat session.",
-        "/forge resume explicitly attaches to the current run pointer.",
-        "After /back, plain /forge resumes this chat session's run only in the same workspace.",
-        "Same-workspace re-entry keeps the same run id and tracks the chat's current focus.",
-        "Changing workspaces starts a fresh run instead of resuming prior session-local state.",
-        "Type freely to add requirements or talk to the planner.",
-        "/plan tasks|markdown|edit views or edits the plan; /back returns to chat.",
-    ]
-
-
-def _is_forge_ui_mode(ui_mode: str) -> bool:
-    return str(ui_mode or "").strip().lower() == "forge"
-
-
-def _forge_commands_panel() -> Panel:
-    sections = _chat_command_sections(ui_mode="forge")
-    footer_lines = _forge_help_footer_lines()
-    if _patchable("_is_narrow_terminal", _is_narrow_terminal)():
-        lines: list[str] = []
-        for section_name, rows in sections:
-            lines.append(f"\n[bold]{section_name}[/bold]")
-            for cmd, desc in rows:
-                lines.append(f"  {cmd}  {desc}")
-        lines.append("")
-        for line in footer_lines:
-            lines.append(f"[dim]{line}[/dim]")
-        return _Panel("\n".join(lines).strip(), title="Forge Commands", border_style="bright_black")
-
-    table = _Table(show_header=False, box=None, expand=True, padding=(0, 1), collapse_padding=True)
-    table.add_column("command", style=STYLE_EMPHASIS, no_wrap=True, ratio=2)
-    table.add_column("description", style="dim", no_wrap=False, ratio=5, overflow="fold")
-    for idx, (section_name, rows) in enumerate(sections):
-        table.add_row(f"[bold]{section_name}[/bold]", "")
-        for cmd, desc in rows:
-            table.add_row(cmd, desc)
-        if idx < len(sections) - 1:
-            table.add_row("", "")
-
-    content = _table_grid(expand=True)
-    content.add_row(table)
-    content.add_row("")
-    for line in footer_lines:
-        content.add_row(_forge_bar_text(text=line, style="dim"))
-    return _Panel(content, title="Forge Commands", border_style="bright_black")
-
-
-def _chat_command_sections(*, ui_mode: str = "chat") -> list[tuple[str, list[tuple[str, str]]]]:
-    if _is_forge_ui_mode(ui_mode):
-        return [
-            (
-                "Forge",
-                [
-                    ("/help", "show Forge & chat commands"),
-                    ("/show", "show the current plan summary"),
-                    ("/plan markdown|md", "preview PLAN.md for the current run"),
-                    ("/plan edit", "edit plan.json and reload Forge state"),
-                    ("/execute plan", "save, validate, and run scoped planned tasks"),
-                    ("/goal <text>", "set project goal"),
-                    (
-                        "/task <title>",
-                        "add a task; ambiguous/mutating work must name repo-relative file paths",
-                    ),
-                    ("/done", "save + validate the plan, then return to chat"),
-                    ("/back", "return to chat without that final save/validate step"),
-                ],
-            ),
-            (
-                "Session",
-                [
-                    ("/status", "session details"),
-                    ("/subagents", "open an active subagent run"),
-                    ("/terminals", "list/read/kill background processes"),
-                    ("/pwd", "show active workdir, focus dir, and workspace root"),
-                    ("/usage", "token count & cost; /usage hud on|off toggles HUD"),
-                    ("/permissions", "change execution mode"),
-                    ("/persona", "switch persona (code, architect, ask, debug)"),
-                    ("/stream", "toggle streaming"),
-                    ("/trace", "reasoning detail (off/compact/full)"),
-                ],
-            ),
-            (
-                "Context",
-                [
-                    ("/context", "context window left"),
-                    ("/compact [focus]", "force compaction"),
-                    ("/resume [id]", "continue previous session"),
-                    ("/report [text]", "create feedback bundle + issue draft"),
-                    ("/feedback [text]", "alias for /report"),
-                ],
-            ),
-            (
-                "Tools & Config",
-                [
-                    ("/login", "choose Alysis Code or an AI subscription connection"),
-                    (
-                        "/skill",
-                        "no args lists; <name> shows info; <name> <task> attaches",
-                    ),
-                    ("/image [path]", "attach an image or file (drag & drop, or Ctrl+V to paste)"),
-                    ("/assets", "open assets for the active Forge run"),
-                    ("/config", "inline config menu; /config show|set|clear for model metadata"),
-                    ("/toolbar", "customize toolbar items"),
-                    ("/exit", "quit"),
-                ],
-            ),
-        ]
-
+def _chat_command_sections() -> list[tuple[str, list[tuple[str, str]]]]:
     sections = [
         (
             "Getting Started",
@@ -751,11 +642,6 @@ def _chat_command_sections(*, ui_mode: str = "chat") -> list[tuple[str, list[tup
                 ),
                 ("$<name> [task]", "show skill info or attach it for one turn"),
                 ("/image [path]", "attach an image or file (drag & drop, or Ctrl+V to paste)"),
-                ("/assets", "open assets for the current Forge run pointer"),
-                (
-                    "/forge [resume]",
-                    "fresh run by default; same-workspace re-entry resumes session-local state and tracks the current focus; resume explicitly loads the current pointer",
-                ),
             ],
         ),
         (
@@ -768,42 +654,25 @@ def _chat_command_sections(*, ui_mode: str = "chat") -> list[tuple[str, list[tup
             ],
         ),
     ]
-    return [
-        (
-            section_name,
-            [row for row in rows if command_visible(row[0], ui_mode=ui_mode)],
-        )
-        for section_name, rows in sections
-    ]
+    return sections
 
 
-def _chat_commands_panel(*, ui_mode: str = "chat") -> Panel:
-    if _is_forge_ui_mode(ui_mode):
-        return _forge_commands_panel()
-    title = "Forge Commands" if _is_forge_ui_mode(ui_mode) else "Commands"
-    return _render_command_sections_panel(
-        title=title,
-        sections=_chat_command_sections(ui_mode=ui_mode),
-    )
+def _chat_commands_panel() -> Panel:
+    return _render_command_sections_panel(title="Commands", sections=_chat_command_sections())
 
 
-def _chat_quick_commands_panel(*, ui_mode: str = "chat") -> Panel:
-    return _chat_commands_panel(ui_mode=ui_mode)
+def _chat_quick_commands_panel() -> Panel:
+    return _chat_commands_panel()
 
 
-def _chat_visible_commands(*, ui_mode: str = "chat") -> list[str]:
-    if _is_forge_ui_mode(ui_mode):
-        return visible_commands(_FORGE_SUGGESTION_COMMANDS, ui_mode=ui_mode)
-    return visible_commands(_CHAT_GLOBAL_VISIBLE_COMMANDS, ui_mode=ui_mode)
+def _chat_visible_commands() -> list[str]:
+    return list(_CHAT_GLOBAL_VISIBLE_COMMANDS)
 
 
-def _chat_completer_commands(*, ui_mode: str = "chat") -> list[str]:
-    if _is_forge_ui_mode(ui_mode):
-        return visible_commands(_FORGE_COMPLETER_COMMANDS, ui_mode=ui_mode)
-    commands = _ordered_unique_strings(
+def _chat_completer_commands() -> list[str]:
+    return _ordered_unique_strings(
         _CHAT_GLOBAL_VISIBLE_COMMANDS
         + [
-            "/forge resume",
             "/usage hud",
             "/usage hud on",
             "/usage hud off",
@@ -814,10 +683,9 @@ def _chat_completer_commands(*, ui_mode: str = "chat") -> list[str]:
             "/terminals help",
         ]
     )
-    return visible_commands(commands, ui_mode=ui_mode)
 
 
-def _suggest_chat_command(raw_command: str, *, ui_mode: str = "chat") -> str | None:
+def _suggest_chat_command(raw_command: str) -> str | None:
     candidate = raw_command.strip().lower()
     if not candidate.startswith("/"):
         return None
@@ -825,7 +693,7 @@ def _suggest_chat_command(raw_command: str, *, ui_mode: str = "chat") -> str | N
         return None
     if candidate in _CHAT_COMMANDS:
         return None
-    matches = get_close_matches(candidate, _chat_visible_commands(ui_mode=ui_mode), n=1, cutoff=0.6)
+    matches = get_close_matches(candidate, _chat_visible_commands(), n=1, cutoff=0.6)
     return matches[0] if matches else None
 
 
@@ -961,8 +829,8 @@ def _session_build_tools_kwargs(*, session: Any, mode: str) -> dict[str, Any]:
     }
 
 
-def _chat_help_panel(*, ui_mode: str = "chat") -> Panel:
-    return _chat_commands_panel(ui_mode=ui_mode)
+def _chat_help_panel() -> Panel:
+    return _chat_commands_panel()
 
 
 __all__ = [name for name in globals() if (not name.startswith("__") or name == "__version__")]

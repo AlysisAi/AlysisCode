@@ -16,7 +16,6 @@ Core capabilities include:
 - filesystem, search, git, shell, web, and verification tools
 - workspace-aware execution modes
 - optional MCP, skills, plugins, hooks, custom tools, and subagents
-- Forge planning and execution workflows
 - local session logs and feedback bundles
 
 ## Commands
@@ -75,24 +74,6 @@ alysis doctor auth --json
 
 See [Account Runtimes](account-runtimes.md) for the payload contract.
 
-Forge:
-
-```bash
-alysis forge plan --path . --goal "Build the scoped feature" --intent build
-alysis forge show --path .
-alysis forge status --path .
-alysis forge run --path . --mode auto --verify strict
-alysis forge exec T01 --path . --mode review
-alysis forge swarm --path . --parallel 3 --mode auto --verify warn
-alysis forge resume --path .
-alysis forge unlock --path .
-```
-
-`forge plan` accepts `build`, `fix`, `refactor`, `audit`, `test`, or `document`
-as its intent. It prompts for a missing goal; machine callers should pass both
-`--goal` and `--intent`. Use `--planning-profile deep` for a fuller impact review.
-`forge run` reviews the saved plan and requests approval before execution.
-
 ## Execution Modes
 
 Execution mode controls the default approval posture.
@@ -120,7 +101,7 @@ alysis run --benchmark --deadline-seconds 855 --require-deadline -- "Fix the fai
 ```
 
 Session policy also records a `runtime_kind` such as `interactive_chat`,
-`one_shot`, or `forge_exec`; extension systems use that runtime kind when
+`one_shot`, or `subagent`; extension systems use that runtime kind when
 deciding which tools or catalogs may be exposed.
 
 `alysis run --benchmark` applies the raw autonomy profile for benchmark and
@@ -164,7 +145,6 @@ Common interactive commands:
 - `/subagents`: open the active-subagent picker and select a run for the live pane
 - `/skill`: list discovered skills
 - `$<skill> [task]`: at an idle prompt, show skill info or attach it for one turn
-- `/forge [resume]`: enter or resume Forge for the workspace
 - `/report [text]`: open the report panel (private delivery to Alysis, optional diagnostics, local export, and GitHub preview)
 - `/exit`: quit chat
 
@@ -250,14 +230,10 @@ Bare `/config` open their overlays immediately so settings
 can be browsed and saved while output continues. A save reaches disk at once,
 but the live session reload waits until the running turn finishes. Other
 commands that replace history or start another session remain blocked while a
-turn is in flight; the mid-turn allowlist fails closed. Forge-session-only verbs
-are unknown outside Forge rather than appearing as chat commands.
-
-Forge mode has its own command surface for goal, task, plan, review, and
-execution actions. See [Forge](forge.md).
+turn is in flight; the mid-turn allowlist fails closed.
 
 The former chat `/plan` commands have been removed. Use `/persona architect`
-for planning in chat; inside Forge, `/plan tasks|markdown|edit` remains available.
+for planning in chat.
 
 Interactive chat opens in the full-screen TUI. The transcript owns mouse-wheel
 scrolling and shows a persistent scrollbar while the input and footer remain
@@ -351,7 +327,7 @@ Common keys:
 
 ### Autonomous execution and optional limits
 
-Normal chat, one-shot, Forge, conflict-resolution, and subagent work uses the
+Normal chat, one-shot, and subagent work uses the
 `autonomous` execution policy. It has no default step ceiling and continues
 until completion, cancellation, a genuine blocker, or a fatal error.
 
@@ -708,8 +684,6 @@ checker is created, modified, replaced, deleted, or symlink-retargeted by the
 agent, Alysis Code emits a mutable-authoritative-checker downgrade and treats the
 evidence as supplemental instead of host-authoritative.
 
-Forge can make verification authoritative for task gates. See [Forge](forge.md).
-
 ## Extensions
 
 Alysis Code supports several extension points:
@@ -741,8 +715,7 @@ Use `alysis run` for focused tasks such as:
 - make a small targeted change
 - run a specific verification command
 
-Prefer `alysis chat` or Forge for ambiguous, exploratory, or highly
-iterative work.
+Prefer `alysis chat` for ambiguous, exploratory, or highly iterative work.
 
 For execution-style repository tasks, the one-shot completion gate accepts a
 final answer only when the runtime has evidence for the requested work. The
@@ -803,7 +776,7 @@ fallback summary if there is not enough time for a final model call. Deadline
 telemetry records whether the source was explicit CLI, environment, config,
 runtime default, inherited parent, or absent.
 
-Non-interactive runs (`one_shot`, `forge_exec`, `swarm_worker`) resolve a
+Non-interactive runs (`one_shot`) resolve a
 default budget of 3600 seconds when none is configured, so an unattended run
 cannot grind indefinitely. Precedence is `--deadline-seconds`, then
 `ALYSIS_RUN_DEADLINE_SECONDS`, then `run_deadline_seconds`, then that
@@ -972,22 +945,6 @@ Release maintainers should keep the focused regression matrix in the
 [release checklist](release_checklist.md) green and follow the
 [release process](RELEASING.md) when changing this behavior.
 
-## Forge
-
-Forge is the plan-driven workflow for larger tasks. It creates a structured
-plan, executes scoped tasks, records verification/review evidence, and keeps run
-artifacts under the workspace runtime directory.
-
-Use Forge when a change benefits from:
-
-- an explicit plan
-- scoped task boundaries
-- review or verification gates
-- batch execution
-- local PR-style task flow
-
-See [Forge](forge.md).
-
 ## Sessions And Logs
 
 Alysis Code stores session logs locally as JSONL. Session commands include:
@@ -1105,7 +1062,6 @@ running it.
 - [Security model](security_model.md): trust boundaries and sandboxing.
 - [Shell sandbox](shell_sandbox.md): Docker and Bubblewrap setup.
 - [Server mode](server.md): HTTP API operation.
-- [Forge](forge.md): plan-driven workflows.
 - [MCP](mcp.md): external server integration.
 - [Skills](skills.md): reusable instruction bundles.
 - [Skills lifecycle](skills_lifecycle.md): skill authoring, validation, installation, and removal.

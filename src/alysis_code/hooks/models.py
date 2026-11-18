@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from ..runtime_kind import normalize_runtime_kind
+from ..runtime_kind import RETIRED_RUNTIME_KINDS, normalize_runtime_kind
 
 CanonicalHookEventName = Literal[
     "PreToolUse",
@@ -129,7 +129,11 @@ def _normalize_runtime_kinds(value: object) -> list[str] | None:
     normalized: list[str] = []
     seen: set[str] = set()
     for item in items:
-        kind = normalize_runtime_kind(item).value
+        text = str(item).strip().lower() if isinstance(item, str) else None
+        # A retired runtime never runs again. Keeping its name means a hook scoped only to
+        # retired runtimes matches nothing, instead of failing the whole hooks file or
+        # silently widening to every runtime.
+        kind = text if text in RETIRED_RUNTIME_KINDS else normalize_runtime_kind(item).value
         if kind in seen:
             continue
         seen.add(kind)

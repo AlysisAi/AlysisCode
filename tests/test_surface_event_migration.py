@@ -11,7 +11,6 @@ import alysis_code.cli_impl.chat as chat_mod
 from alysis_code.agent_loop import AgentSession
 from alysis_code.config import AppConfig
 from alysis_code.hooks.models import HookDispatchResult
-from alysis_code.knowledge_capture import RecordingSurface as KnowledgeRecordingSurface
 from alysis_code.llm.openai_compat import LLMResponse
 from alysis_code.model_registry import ModelMeta
 from alysis_code.session_store import SessionStore
@@ -281,20 +280,6 @@ def test_prompt_blocked_path_emits_error_event(tmp_path: Path) -> None:
         "worker_id": None,
         "role": None,
     } in surface.events
-
-
-def test_knowledge_recording_surface_preserves_warning_scope() -> None:
-    delegate = _RecordingEventSurface()
-    surface = KnowledgeRecordingSurface(delegate)  # type: ignore[arg-type]
-
-    surface.emit_warning("scoped warning", worker_id="w1", role="coder")
-
-    assert {
-        "type": "warning_emitted",
-        "message": "scoped warning",
-        "worker_id": "w1",
-        "role": "coder",
-    } in delegate.events
 
 
 def test_chat_mode_change_emits_mode_changed_event(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -1,8 +1,8 @@
 """Shell commands that only look: the set no permission mode needs to ask about.
 
 "Ask for approval" (``review``) runs these without asking and "Approve for me" (``auto``)
-runs them without a review, the way Claude Code auto-allows read-only Bash commands and the
-way Codex treated its "known safe" commands. Everything else keeps the mode's normal gate.
+runs them without a review: a command that only reads changes nothing a person would need to
+approve. Everything else keeps the mode's normal gate.
 
 A command counts as read-only only when *every* part of it is provably read-only:
 

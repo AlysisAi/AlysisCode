@@ -1923,8 +1923,7 @@ def run_turn(
         getattr(self.runtime_kind, "value", self.runtime_kind) or ""
     ).strip()
     if deadline is None and (
-        self.one_shot_execution
-        or runtime_kind_text_for_deadline in {"one_shot", "forge_exec", "swarm_worker"}
+        self.one_shot_execution or runtime_kind_text_for_deadline == "one_shot"
     ):
         payload = {
             "runtime_kind": runtime_kind_text_for_deadline,

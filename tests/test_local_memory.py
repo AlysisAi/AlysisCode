@@ -200,14 +200,10 @@ def test_disabled_readonly_sensitive_and_children(store, monkeypatch):
         "memory_history",
         "memory_source_read",
     }
-    for kind in (
-        RuntimeKind.SUBAGENT,
-        RuntimeKind.FORGE_EXEC,
-    ):
-        child = session()
-        child.runtime_kind = kind
-        assert memory_turn(child).tools == {}
-        assert memory_turn(child).context() == ""
+    child = session()
+    child.runtime_kind = RuntimeKind.SUBAGENT
+    assert memory_turn(child).tools == {}
+    assert memory_turn(child).context() == ""
     assert memory_turn(session(sensitive_media=True)).tools == {}
     assert memory_turn(session(sensitive_media=True)).context() == ""
     monkeypatch.setenv("ALYSIS_MEMORY_DISABLED", "1")

@@ -4,7 +4,7 @@
   let saved;
   let state = {
     gitWorkspace: { available: true, root: "/projects/example", branch: "main", isWorktree: false, additions: 17083, deletions: 1453, files: 24, untracked: 2, reason: "", canMove: !["welcome", "setup"].includes(scenario), busy: scenario === "streaming" },
-    ready: true, readiness: { ok: true, blockers: [] }, mode: "review", forgeEnabled: true, providerName: "OpenAI", modelName: "gpt-5.6-sol",
+    ready: true, readiness: { ok: true, blockers: [] }, mode: "review", providerName: "OpenAI", modelName: "gpt-5.6-sol",
     engine: { tone: "ready", detail: "Connected and ready" }, workspace: { tone: "ready", detail: "Trusted for reviewed changes" },
     provider: { tone: "ready", detail: "OpenAI · gpt-5.6-sol" },
     recentTasks: [
@@ -15,7 +15,6 @@
     conversation: { sessionId: null, mode: "review", running: false, jobStatus: "idle", items: [] },
     commands: [{ command: "alysis.backend.checkpoint.list", title: "Checkpoints", available: true }],
     slashCommands: [
-      { command: "/forge plan", description: "Plan a change before editing files", takesArgs: true, usage: "/forge plan <instruction>" },
       { command: "/permissions", description: "Choose what the agent may do", takesArgs: true, usage: "/permissions [readonly|review|auto]" },
       { command: "/subagents", description: "Inspect or toggle delegation settings", takesArgs: true, usage: "/subagents [status|on|off]" },
       { command: "/model", description: "Choose a model for this task", takesArgs: true, usage: "/model [name]" },
@@ -78,20 +77,9 @@
     approval.status = scenario === "approved" ? "allow_once" : scenario === "denied" ? "deny" : "expired";
   }
   if (scenario === "history-empty") state.recentTasks = [];
-  if (scenario === "forge-plan") {
-    state.forge = {
-      sessionId: "forge-ui", planId: "plan-ui", activeJobId: null, planning: null,
-      plan: { plan_id: "plan-ui", session_id: "forge-ui", status: "ready", project_goal: "Make project search feel effortless", summary: "Show recent projects for empty queries, then verify keyboard navigation and loading states.", warnings: [],
-        tasks: [
-          { task_id: "task-1", title: "Improve empty search results", objective: "Reuse recent projects when the search field is empty.", status: "pending", file_scope: { estimated_files: ["src/components/Search.tsx"], write_scope: [] }, acceptance_criteria: ["Clearing a query shows recent projects"], verification_commands: ["npm test -- Search"] },
-          { task_id: "task-2", title: "Verify keyboard navigation", objective: "Keep focus predictable when results change.", status: "pending", file_scope: { estimated_files: ["src/components/Search.test.tsx"], write_scope: [] }, acceptance_criteria: ["All results can be reached with the keyboard"], verification_commands: ["npm test"] }
-        ] }, events: [], diffs: [], artifacts: [], executePreview: null, approvals: [], review: null, reviewBusy: false, assets: []
-    };
-    state.swarm = { supported: true, status: "idle", busy: false, cancellable: false, tasks: [] };
-  }
   const showInitialSurface = () => {
-    const target = scenario === "forge-plan" ? "forge" : scenario === "history-empty" ? "history" : scenario;
-    if (["history", "models", "settings", "forge", "browser", "activity"].includes(target)) window.postMessage({ type: "surface.show", surface: target }, "*");
+    const target = scenario === "history-empty" ? "history" : scenario;
+    if (["history", "models", "settings", "browser", "activity"].includes(target)) window.postMessage({ type: "surface.show", surface: target }, "*");
     if (target === "browser") window.postMessage({ type: "browser.state", state: { supported: true, localTestingSupported: true, phase: "idle", sessions: [], selectedBrowserId: null, workspaceTrusted: true } }, "*");
   };
   const publish = () => window.postMessage({ type: "state", state }, "*");

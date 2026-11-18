@@ -68,6 +68,17 @@ def test_answer_review_preference_is_shared_and_new_tasks_capture_it(shared):
     assert store.task(owner, task["id"])["config"]["reply_review_enabled"] is False
 
 
+def test_the_persons_time_zone_is_shared_per_owner(shared):
+    from alysis_code.bots.models import TimeZoneSettings
+
+    store, other, owner = shared
+    assert store.time_zone_settings(owner) == {"time_zone": None}
+    store.time_zone_settings(owner, TimeZoneSettings(time_zone="Pacific/Auckland"))
+    other.time_zone_settings(owner, TimeZoneSettings(time_zone="America/New_York"))
+    assert store.time_zone(owner) == "America/New_York"
+    assert other.time_zone(uuid4().hex) is None
+
+
 def test_action_rules_and_human_approval_survive_shared_store_reconnect(shared):
     from alysis_code.bots.action_review import (
         ActionReviews,

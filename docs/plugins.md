@@ -416,5 +416,5 @@ https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/.
 The descriptors and registry hashes are pinned together. Provider read-only hints
 never expand the reviewed list or bypass approval. These additions reuse the
 protected OAuth store; no credentials are placed in descriptors or model context.
-See the app’s `PLUGIN_COVERAGE_20261104.md` for live test status and the Grok Bot gap
+See the app’s `PLUGIN_COVERAGE_20261104.md` for live test status and the reference app gap
 analysis; passing discovery does not establish account access or tool execution.

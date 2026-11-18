@@ -15,14 +15,9 @@ Extension Enable/Disable applies to a new session. Make changes while the sessio
 is idle. Closing the inspector cancels unstarted work; an operation already
 applying finishes and reports its outcome. The composer draft is preserved.
 
-In normal chat, `/plan` opens planning choices. Architect keeps the current
-conversation and permissions. Forge opens its planner with the assistant off;
-entry does not start a model turn or execute a plan. Creating its artifacts needs
-explicit approval, including in auto/fullaccess. Readonly and custom write scopes
-cannot enter Forge through this chooser.
-
-`/planning` opens the chooser from chat or Forge. Choose Return to restore the
-prior persona and permission ceiling while respecting newer restrictions and
-retaining the conversation and Forge plan. Inside Forge, `/plan` still opens its
-tasks, Markdown and edit views. Escape cancels without changing the draft or mode.
+`/plan` and `/planning` open planning choices. Architect keeps the current
+conversation and permissions; choosing it does not start a model turn. Choose
+Return to restore the prior persona and permission ceiling while respecting newer
+restrictions and retaining the conversation. Escape cancels without changing the
+draft or mode.
 Use `/help` to find the available commands and shortcuts.

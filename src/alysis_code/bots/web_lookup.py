@@ -1,6 +1,6 @@
 """Looking things up for owls without a computer: web search and reading public pages.
 
-Grok-style research needs neither a desktop nor a browser: a search, then the pages it
+Looking things up needs neither a desktop nor a browser: a search, then the pages it
 points to, read as text. Both reuse the engine's own hardened pieces: the keyless search
 adapter, and web_fetch with its address checks (public http(s) hosts only, no private,
 loopback or link-local addresses, bounded size and time, redirects re-checked). Failures

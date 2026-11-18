@@ -16,8 +16,6 @@ update the desktop app before bundling this engine into an installed application
 | Plugin manifest / compatibility key | `alysis-plugin.toml` / `compatibility.alysis` |
 | VS Code configuration | `alysis.*` |
 | Capability contract | `alysis.capabilities`, version 1 |
-| Forge Host / status protocols | `alysis.forge-host` v2 / `alysis.forge.status` v1 |
-| Verification contract schema | `alysis.forge.verification-contract/v2` |
 | Computer Use workflow metadata | `alysis_workflow` |
 | Release signature domain / key ID | `sylliptor-managed-cli-release-v3`, frozen for schema v3 / `alysis-release-2026-01`; `sylliptor-release-2026-01` is still accepted |
 | MCP OAuth authenticated-data tag / keyring service | `alysis-mcp-oauth-store` / `alysis-code` |
@@ -52,7 +50,7 @@ stores sealed under a different authenticated-data tag require reauthentication;
 renaming the file cannot change its cryptographic domain.
 
 Run the engine contract tests and the app's admission validator before an app
-runtime pin update. Then validate a packaged app with chat, Forge, and Computer Use.
+runtime pin update. Then validate a packaged app with chat, owls, and Computer Use.
 
 ## Repository audit scope
 

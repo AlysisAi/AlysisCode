@@ -50,7 +50,6 @@ COMMON_CHECKS = frozenset(
         "bridge_health",
         "normal_chat",
         "run_task",
-        "forge_review",
         "artifacts_diffs",
         "extension_reload_recovery",
         "secret_leak_check",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import shutil
 import sys
 from enum import StrEnum
@@ -9,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from click import get_current_context
 
-from ...forge_events import machine_output_active
 from ...surface.console import make_console
 from ...workspace_context import resolve_workspace_context
 from . import _patchable
@@ -37,33 +35,7 @@ def _Table(*args: Any, **kwargs: Any) -> Any:
     return Table(*args, **kwargs)
 
 
-class _DiscardStream(io.TextIOBase):
-    """Sink for Rich output while stdout belongs to the machine event stream."""
-
-    encoding = "utf-8"
-
-    def write(self, text: str) -> int:  # type: ignore[override]
-        return len(text)
-
-    def isatty(self) -> bool:
-        return False
-
-
-def _quiet_console() -> Console:
-    return make_console(
-        file=_DiscardStream(),
-        force_terminal=False,
-        no_color=True,
-        width=_terminal_width(),
-    )
-
-
 def _console() -> Console:
-    # In machine mode stdout carries NDJSON only, so Rich renders into a sink instead.
-    # Deep execution code keeps printing through the console it was handed; nothing
-    # below this point needs to know which mode it is in.
-    if machine_output_active():
-        return _quiet_console()
     return make_console(width=_terminal_width())
 
 

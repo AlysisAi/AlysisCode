@@ -2,11 +2,23 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 class Input(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+# A part of an owl's look (its colour, its background), by the app's name for it; the app draws
+# the face and treats a name it doesn't know as no choice.
+BotLookName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,23}$")]
 
 
 class BotInput(Input):
@@ -17,6 +29,19 @@ class BotInput(Input):
     instructions: str = Field(default="", max_length=6000)
     memory_enabled: bool = True
     files_enabled: bool = True
+    # The look the person picked for its face (capability "owl_looks"): the owl's colour and the
+    # background behind it. Null: none, so the app picks a colour from the name and the soft tile
+    # of that colour, as for owls made before. Left out of a change, each stays as it was.
+    color: BotLookName | None = None
+    background: BotLookName | None = None
+
+
+class BotCreateInput(BotInput):
+    # The same id from the same person returns the owl it already made, so a create whose answer
+    # was lost can be sent again without making a second owl. Optional for older apps.
+    request_id: str | None = Field(
+        default=None, min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$"
+    )
 
 
 class ChatInput(Input):
@@ -27,13 +52,55 @@ class ReadChatInput(Input):
     activity_seq: int = Field(ge=1)
 
 
+# Files a person can attach to one message: each must already be in the owl's Library.
+MAX_MESSAGE_FILES = 10
+
+
 class TaskInput(Input):
-    message: str = Field(min_length=1, max_length=20000)
+    # Words, files or both: a message may be only the files the person attached.
+    message: str = Field(max_length=20000)
     request_id: str = Field(min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+    # Library files the person attached to this message, in the order they added them.
+    file_ids: list[Annotated[str, StringConstraints(min_length=1, max_length=100)]] = Field(
+        default_factory=list, max_length=MAX_MESSAGE_FILES
+    )
+
+    @field_validator("file_ids")
+    @classmethod
+    def each_file_once(cls, file_ids: list[str]) -> list[str]:
+        if len(set(file_ids)) != len(file_ids):
+            raise ValueError("Attach each file once.")
+        return file_ids
+
+    @model_validator(mode="after")
+    def words_or_files(self) -> TaskInput:
+        if not self.message.strip() and not self.file_ids:
+            raise ValueError("Write a message or attach a file.")
+        return self
+
+
+class IntroInput(Input):
+    request_id: str = Field(min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+    # The app's language, as a language tag: the owl writes its first message in it.
+    language: str = Field(
+        default="en", max_length=35, pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+    )
 
 
 class ReplyReviewSettings(Input):
     enabled: bool = Field(strict=True)
+
+
+class TimeZoneSettings(Input):
+    # The person's IANA time zone, from their computer: owls read dates and clock times in it.
+    time_zone: str = Field(min_length=1, max_length=100)
+
+    @field_validator("time_zone")
+    @classmethod
+    def known_zone(cls, value: str) -> str:
+        from .time_zone import valid_time_zone
+
+        return valid_time_zone(value)
 
 
 class MemoryInput(Input):
@@ -79,6 +146,31 @@ class HistoryQuery(Input):
     query: str = Field(default="", max_length=500)
     before: int | None = Field(default=None, ge=1)
     limit: int = Field(default=10, ge=1, le=20)
+
+
+class ConversationPageQuery(Input):
+    """One page of an owl's conversation, by message id, so a long chat never loads whole.
+
+    Without ``before`` it is the latest page. With the ``version`` a previous latest page
+    returned (and ``after``, the newest message the client has), only what changed since comes
+    back. ``before`` reads the page of earlier messages, and ``through_task`` reaches back far
+    enough to include that task's first message (a search result, or something waiting for
+    the person).
+    """
+
+    limit: int = Field(default=40, ge=1, le=200)
+    before: str | None = Field(default=None, min_length=1, max_length=100)
+    after: str | None = Field(default=None, min_length=1, max_length=100)
+    version: str | None = Field(default=None, max_length=20000)
+    through_task: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _one_direction(self) -> ConversationPageQuery:
+        if self.after is not None and self.version is None:
+            raise ValueError("A newest message goes with the version it was read with.")
+        if self.version is not None and (self.before is not None or self.through_task is not None):
+            raise ValueError("Read the changes since a version, or an earlier page, not both.")
+        return self
 
 
 class ReadMessage(Input):

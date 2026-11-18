@@ -18,7 +18,7 @@ from typing import Any
 from .atomic_io import atomic_write_text
 from .config import AppConfig, ConfigError, resolve_api_key
 from .frontmatter_utils import split_frontmatter
-from .model_router import PREFER_CONTEXT_FORGE, resolve_model_for_role
+from .model_router import resolve_model_for_role
 from .profiles import get_active_profile, get_profile, list_profiles
 from .subagents import (
     SubagentDefinition,
@@ -80,43 +80,27 @@ def _user_files_by_name() -> dict[str, Path]:
     return files
 
 
-def _safe_role_model(cfg: AppConfig, role: str, *, forge: bool) -> str | None:
+def _safe_role_model(cfg: AppConfig, role: str) -> str | None:
     try:
-        model = resolve_model_for_role(
-            cfg=cfg,
-            role=role,
-            plan=None,
-            prefer_context=PREFER_CONTEXT_FORGE if forge else "default",
-        )
+        model = resolve_model_for_role(cfg=cfg, role=role, plan=None)
     except ConfigError:
         return None
     return str(model or "").strip() or None
 
 
 def _roles_payload(cfg: AppConfig) -> list[dict[str, Any]]:
-    from .cli_impl.config_menu import FORGE_ROLE_ORDER, ROLE_ORDER, _role_description
+    from .cli_impl.config_menu import ROLE_ORDER, _role_description
 
     extra = cfg.extra_fields if isinstance(cfg.extra_fields, dict) else {}
     saved = extra.get("role_models") if isinstance(extra.get("role_models"), dict) else {}
-    forge_saved = (
-        extra.get("forge_role_models") if isinstance(extra.get("forge_role_models"), dict) else {}
-    )
     roles: list[dict[str, Any]] = []
     for role in ROLE_ORDER:
-        in_forge = role in FORGE_ROLE_ORDER
         roles.append(
             {
                 "role": role,
                 "description": _role_description(role),
                 "model": str(saved.get(role) or "").strip() or None,
-                "effective_model": _safe_role_model(cfg, role, forge=False),
-                "forge": in_forge,
-                "forge_model": (str(forge_saved.get(role) or "").strip() or None)
-                if in_forge
-                else None,
-                "forge_effective_model": _safe_role_model(cfg, role, forge=True)
-                if in_forge
-                else None,
+                "effective_model": _safe_role_model(cfg, role),
             }
         )
     return roles

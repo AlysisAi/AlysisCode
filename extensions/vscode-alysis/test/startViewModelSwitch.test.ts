@@ -79,7 +79,7 @@ async function scenario(options: { active?: boolean; rejectDefault?: boolean; re
   const view = new StartViewProvider(
     {} as any, () => ({} as any), () => ({} as any), () => ({} as any), () => true,
     () => ({} as any), () => ({ sessions: [], activeSessionId: undefined }),
-    async () => false, async () => false, async () => undefined, async () => undefined, async () => undefined,
+    async () => false, async () => undefined, async () => undefined, async () => undefined,
     () => catalog.snapshot()
   );
   view.resolveWebviewView({

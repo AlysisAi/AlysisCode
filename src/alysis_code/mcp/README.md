@@ -11,7 +11,6 @@ transports, OAuth, catalog snapshots, and runtime filtering.
 - `manager.py` starts servers, snapshots catalogs, and builds runtime bindings.
 - `oauth*.py` and `token_store.py` handle HTTP OAuth state.
 - `resources.py`, `prompts.py`, and `roots.py` normalize optional MCP surfaces.
-- `forge_scope.py` contains task-level MCP scope helpers for Forge execution.
 
 ## Scope
 

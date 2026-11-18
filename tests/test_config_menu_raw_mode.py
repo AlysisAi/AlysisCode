@@ -10,7 +10,7 @@ from typing import Any
 from rich.console import Console
 
 from alysis_code.cli_impl import config_menu as config_menu_mod
-from alysis_code.config import AppConfig, load_config, save_config
+from alysis_code.config import load_config, save_config
 from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
 
 
@@ -122,7 +122,6 @@ def test_run_config_menu_raw_picker_sequence_persists_expected_changes(
     # rewrites it, so the seeded value survives the save untouched.
     assert saved_cfg.routing_mode == "code_only"
     assert saved_cfg.step_budget_policy == "limited"
-    assert saved_cfg.task_max_steps == AppConfig().task_max_steps
 
 
 def test_top_level_live_menu_renders_unknown_key_message(monkeypatch, tmp_path: Path) -> None:

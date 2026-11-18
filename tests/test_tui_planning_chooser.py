@@ -1,10 +1,6 @@
-import io
-from types import SimpleNamespace
-
 import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from rich.console import Console
 from test_persona_modes import _FakeChatSession
 
 from alysis_code.cli_impl.tui.app import run_tui
@@ -24,15 +20,13 @@ def setup(monkeypatch):
     session = _FakeChatSession(mode="auto", persona="debug")
     session.messages.append({"role": "assistant", "content": "Existing plan: keep this."})
     owner = ["session"]
-    forge = SimpleNamespace(ui_mode="chat", plan={"goal": "existing"})
-    queued, calls = [], []
+    queued = []
 
     def read():
         return PlanningState(
             owner[0],
             session.persona,
             session.mode,
-            forge.ui_mode,
             persona_write_globs=(
                 tuple(session.persona_allow_write_globs)
                 if session.persona_allow_write_globs is not None
@@ -40,30 +34,18 @@ def setup(monkeypatch):
             ),
         )
 
-    def enter():
-        calls.append("forge")
-        forge.ui_mode = "forge"
-        return True
-
-    def leave():
-        calls.append("back")
-        forge.ui_mode = "chat"
-
     controller = PlanningController(
         read_state=read,
         dispatch=queued.append,
         apply_persona=lambda **kwargs: loop._apply_chat_persona(session=session, **kwargs),
-        enter_forge=enter,
-        leave_forge=leave,
     )
-    return controller, session, forge, queued, calls, owner, loop
+    return controller, session, queued, owner, loop
 
 
 @pytest.mark.parametrize("mode", ["readonly", "review", "auto", "fullaccess"])
 def test_architect_and_explicit_return_reuse_real_persona_helper(setup, mode):
-    c, session, forge, queued, calls, _, _ = setup
+    c, session, queued, _, _ = setup
     session.mode = mode
-    plan = forge.plan
     messages = session.messages
     c.choose("architect")
     assert session.persona == "debug"
@@ -72,27 +54,25 @@ def test_architect_and_explicit_return_reuse_real_persona_helper(setup, mode):
     assert session.persona == "architect"
     assert session.mode == ("readonly" if mode == "readonly" else "review")
     assert session.persona_allow_write_globs == ["*.md", "**/*.md"]
-    assert "Return to debug" == c.picker_spec()["rows"][2]["label"]
+    assert "Return to debug" == c.picker_spec()["rows"][1]["label"]
     c.choose("return")
     assert queued.pop()().status == "applied"
     assert session.persona == "debug"
     assert session.mode == mode
-    assert forge.plan is plan
     assert session.messages is messages
     assert any(m.get("content") == "Existing plan: keep this." for m in messages)
-    assert not calls
     assert c.return_state is None
 
 
 def test_ask_readonly_saved_auto_return_is_ask_not_code(setup):
-    c, session, _, queued, _, _, loop = setup
+    c, session, queued, _, loop = setup
     loop._apply_chat_persona(session=session, persona="ask")
     assert session.mode == "readonly"
     assert session.persona_restore_mode == "auto"
     c.choose("architect")
     queued.pop()()
     assert session.mode == "readonly"
-    assert c.picker_spec()["rows"][2]["label"] == "Return to ask"
+    assert c.picker_spec()["rows"][1]["label"] == "Return to ask"
     c.choose("return")
     queued.pop()()
     assert session.persona == "ask"
@@ -100,7 +80,7 @@ def test_ask_readonly_saved_auto_return_is_ask_not_code(setup):
 
 
 def test_later_readonly_choice_is_not_undone_on_return(setup):
-    c, session, _, queued, _, _, loop = setup
+    c, session, queued, _, loop = setup
     c.choose("architect")
     queued.pop()()
     loop._clear_persona_restore(session)
@@ -111,60 +91,12 @@ def test_later_readonly_choice_is_not_undone_on_return(setup):
     assert session.mode == "readonly"
 
 
-def test_forge_is_fail_closed_without_write_authorization(setup):
-    c, session, forge, queued, calls, _, _ = setup
-    c.choose("forge")
-    assert queued.pop()().status == "unavailable"
-    assert calls == []
-    assert forge.ui_mode == "chat"
-    session.mode = "readonly"
-    c.forge_allowed = lambda: pytest.fail("readonly must not reach artifact approval")
-    result = c.choose("forge")
-    assert "readonly" in result["messages"][0][1]
-    assert queued == []
-
-
-def test_forge_back_uses_real_backend_and_retains_actual_plan(tmp_path, setup):
-    from alysis_code import cli
-    from alysis_code.cli_impl import chat
-    from alysis_code.cli_impl.chat.state import _ForgeChatState
-
-    c, session, _, queued, _, owner, _ = setup
-    root = tmp_path / "repo"
-    root.mkdir()
-    forge = _ForgeChatState()
-    console = Console(file=io.StringIO(), force_terminal=False)
-    c.read_state = lambda: PlanningState(owner[0], session.persona, session.mode, forge.ui_mode)
-    c.forge_allowed = lambda: True  # Explicit fake authorization; no user policy changed.
-    c.enter_forge = lambda: cli._enter_forge_mode(
-        root=root,
-        console=console,
-        forge_state=forge,
-        mode=session.mode,
-        planner_assistant_default=False,
-    )
-    c.leave_forge = lambda: chat._handle_forge_chat_command_impl(
-        cli, input_text="/back", forge_state=forge, session=session, console=console
-    )
-    c.choose("forge")
-    assert queued.pop()().status == "applied"
-    assert forge.ui_mode == "forge"
-    plan, paths = forge.plan, forge.paths
-    assert plan is not None and paths is not None
-    data = paths.plan_json_path.read_bytes()
-    c.choose("return")
-    assert queued.pop()().status == "applied"
-    assert forge.ui_mode == "chat"
-    assert forge.plan is plan and forge.paths is paths
-    assert paths.plan_json_path.read_bytes() == data
-    assert session.mode == "auto"
-
-
 @pytest.mark.parametrize("change", ["session", "mode", "persona"])
 def test_stale_selection_and_duplicate_queue_do_not_mutate(setup, change):
-    c, session, _, queued, calls, owner, _ = setup
+    c, session, queued, owner, _ = setup
     c.choose("architect")
-    c.choose("forge")
+    duplicate = c.choose("architect")
+    assert "already queued" in duplicate["messages"][0][1]
     assert len(queued) == 1
     if change == "session":
         owner[0] = "new"
@@ -173,12 +105,12 @@ def test_stale_selection_and_duplicate_queue_do_not_mutate(setup, change):
     else:
         session.persona = "ask"
     assert queued.pop()().status == "cancelled"
-    assert not calls
+    assert session.persona != "architect"
     assert c.return_state is None
 
 
 def test_custom_write_scope_is_not_silently_replaced(setup):
-    c, session, _, queued, _, _, _ = setup
+    c, session, queued, _, _ = setup
     session.persona_allow_write_globs = ["notes/*.txt"]
     result = c.choose("architect")
     assert "custom write scope" in result["messages"][0][1].lower()
@@ -186,7 +118,7 @@ def test_custom_write_scope_is_not_silently_replaced(setup):
 
 
 def test_picker_cancel_and_selection_return_composer_focus(setup):
-    c, session, _, queued, _, _, _ = setup
+    c, session, queued, _, _ = setup
 
     # /persona is only a test host for the generic picker; normal-chat /plan
     # visibility and its actual action registration remain central integration.
@@ -214,7 +146,7 @@ def test_picker_cancel_and_selection_return_composer_focus(setup):
 
 
 def test_failed_backend_outcome_does_not_claim_success(setup):
-    c, _, _, queued, _, _, _ = setup
+    c, _, queued, _, _ = setup
 
     def fail(**kwargs):
         raise RuntimeError("token=secret")
@@ -227,21 +159,21 @@ def test_failed_backend_outcome_does_not_claim_success(setup):
     assert c.return_state is None
 
 
-def test_backend_true_without_transition_is_not_reported_as_active(setup):
-    c, _, _, queued, _, _, _ = setup
-    c.forge_allowed = lambda: True
-    c.enter_forge = lambda: True
-    c.choose("forge")
+def test_backend_without_transition_is_not_reported_as_active(setup):
+    c, session, queued, _, _ = setup
+    c.apply_persona = lambda **kwargs: None  # the backend accepts but changes nothing
+    c.choose("architect")
     assert queued.pop()().status == "failed"
+    assert session.persona == "debug"
     assert c.return_state is None
 
 
-def test_failed_forge_back_keeps_return_choice(setup):
-    c, _, _, queued, _, _, _ = setup
-    c.forge_allowed = lambda: True
-    c.choose("forge")
-    queued.pop()()
-    c.leave_forge = lambda: None
+def test_failed_return_keeps_return_choice(setup):
+    c, session, queued, _, _ = setup
+    c.choose("architect")
+    assert queued.pop()().status == "applied"
+    c.apply_persona = lambda **kwargs: None
     c.choose("return")
     assert queued.pop()().status == "failed"
+    assert session.persona == "architect"
     assert c.return_state is not None

@@ -61,7 +61,6 @@ def test_plural_subagents_command_lists_only_active_children_with_state(role: st
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"
@@ -82,7 +81,6 @@ def test_plural_subagents_command_handles_empty_active_set() -> None:
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"
@@ -127,7 +125,6 @@ def test_removed_subagent_commands_fall_through_to_unknown_command(
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"

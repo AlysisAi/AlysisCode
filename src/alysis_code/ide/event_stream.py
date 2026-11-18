@@ -18,15 +18,12 @@ from ..surface.events import (
     MessageEnd,
     ModeChanged,
     PersonaChanged,
-    PlanNodeUpdated,
     PromptForInput,
     ReasoningDelta,
     ReasoningEnded,
     ReasoningStarted,
-    ReviewGateDecision,
     StatusUpdate,
     SubagentStateChanged,
-    SwarmWorkerStateChanged,
     ToolCallCompleted,
     ToolCallProgress,
     ToolCallStarted,
@@ -485,34 +482,6 @@ class ProtocolEventSurface(NoopSurface):
             PersonaChanged(persona=persona, effective_mode=effective_mode, source=source)
         )
 
-    def emit_plan_node_updated(
-        self,
-        node_id: str,
-        state: str,
-        summary: str | None = None,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        self._emit_event(
-            PlanNodeUpdated(
-                node_id=node_id,
-                state=state,
-                summary=summary,
-                worker_id=worker_id,
-                role=role,
-            )
-        )
-
-    def emit_swarm_worker_state_changed(
-        self,
-        worker_id: str,
-        state: str,
-        *,
-        role: str | None = None,
-    ) -> None:
-        self._emit_event(SwarmWorkerStateChanged(worker_id=worker_id, state=state, role=role))
-
     def on_subagent_start(self, event: SubagentStartEvent) -> None:
         run_id = str(event.subagent_run_id or "").strip() or uuid.uuid4().hex
         self._thread_context.subagent_run_id = run_id
@@ -593,18 +562,6 @@ class ProtocolEventSurface(NoopSurface):
                 worker_id=worker_id,
                 role=role,
             )
-        )
-
-    def emit_review_gate_decision(
-        self,
-        decision: str,
-        summary: str,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        self._emit_event(
-            ReviewGateDecision(decision=decision, summary=summary, worker_id=worker_id, role=role)
         )
 
     def emit_error(

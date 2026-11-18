@@ -22,17 +22,6 @@ from .config import (
     resolve_feedback_github_repo,
     resolve_feedback_open_browser,
 )
-from .failure_category import (
-    empty_failure_category_counts,
-    increment_failure_category_count,
-)
-from .forge import (
-    ForgeError,
-    RunPaths,
-    current_run_pointer_path,
-    load_current_run_paths,
-    make_run_paths,
-)
 from .git_ops import GitOpsError, ensure_git_repo, ensure_runtime_artifact_excludes
 from .host_browser import open_url
 from .logging_redaction import redact_log_text
@@ -236,7 +225,6 @@ class FeedbackBundleResult:
     output_root: Path
     workspace_root: Path
     session_id: str | None
-    run_id: str | None
 
 
 @dataclass(frozen=True)
@@ -262,14 +250,6 @@ class _ResolvedSessionSource:
     web_research_payload: dict[str, Any] | None
 
 
-@dataclass(frozen=True)
-class _ResolvedRunSource:
-    source: str
-    paths: RunPaths | None
-    pointer_path: Path | None
-    pointer_matches_run: bool
-
-
 def resolve_feedback_workspace_root(path: Path) -> Path:
     candidate = path.expanduser().resolve()
     if not candidate.exists():
@@ -288,10 +268,8 @@ def create_feedback_bundle(
     feedback_text: str | None = None,
     cfg: AppConfig | None = None,
     active_session: Any | None = None,
-    active_run_paths: RunPaths | None = None,
     pending_images: list[str] | None = None,
     session_id: str | None = None,
-    run_id: str | None = None,
     latest: bool = False,
     progress: Callable[[str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -305,10 +283,8 @@ def create_feedback_bundle(
             feedback_text=feedback_text,
             cfg=cfg,
             active_session=active_session,
-            active_run_paths=active_run_paths,
             pending_images=pending_images,
             session_id=session_id,
-            run_id=run_id,
             latest=latest,
         )
     except BaseException as exc:
@@ -335,10 +311,8 @@ def _create_feedback_bundle(
     feedback_text: str | None,
     cfg: AppConfig | None,
     active_session: Any | None,
-    active_run_paths: RunPaths | None,
     pending_images: list[str] | None,
     session_id: str | None,
-    run_id: str | None,
     latest: bool,
 ) -> FeedbackBundleResult:
     if session_id and latest:
@@ -359,22 +333,13 @@ def _create_feedback_bundle(
         session_id=session_id,
         latest=latest,
     )
-    run_source = _resolve_run_source(
-        root=root,
-        active_run_paths=active_run_paths,
-        run_id=run_id,
-    )
-
-    if not _session_source_has_exportable_content(session_source) and run_source.paths is None:
-        raise FeedbackReportError(
-            "No retained session logs found and no current Forge run could be resolved."
-        )
+    if not _session_source_has_exportable_content(session_source):
+        raise FeedbackReportError("No retained session logs found.")
 
     created_at = _now_utc()
     bundle_name = _make_bundle_name(
         created_at=created_at,
         session_id=session_source.session_id,
-        run_id=run_source.paths.run_id if run_source.paths is not None else None,
     )
     while True:
         bundle_dir = _allocate_bundle_dir(output_root=output_root, base_name=bundle_name)
@@ -393,8 +358,6 @@ def _create_feedback_bundle(
     copied_session_artifacts_path: Path | None = None
     snapshot_path: Path | None = None
     copied_web_research_path: Path | None = None
-    copied_run_root_path: Path | None = None
-    copied_pointer_path: Path | None = None
 
     session_bundle_dir = bundle_dir / "session"
     if session_source.log_path is not None:
@@ -424,20 +387,6 @@ def _create_feedback_bundle(
             workspace_root=root,
         )
 
-    if run_source.paths is not None:
-        failure_category_counts = _collect_run_failure_category_counts(run_source.paths)
-        copied_run_root_path = bundle_dir / "forge" / "run"
-        _copy_selected_run_artifacts(
-            run_source.paths,
-            copied_run_root_path,
-            workspace_root=root,
-        )
-        if run_source.pointer_path is not None and run_source.pointer_matches_run:
-            copied_pointer_path = bundle_dir / "forge" / "current_run.json"
-            _copy_file(run_source.pointer_path, copied_pointer_path, workspace_root=root)
-    else:
-        failure_category_counts = empty_failure_category_counts()
-
     session_score_path = bundle_dir / "session_score.json"
     _write_json(session_score_path, session_source.score_payload, workspace_root=root)
 
@@ -447,7 +396,6 @@ def _create_feedback_bundle(
             created_at=created_at,
             feedback_text=feedback_text,
             session_id=session_source.session_id,
-            run_id=run_source.paths.run_id if run_source.paths is not None else None,
             workspace_root=root,
         ),
         encoding="utf-8",
@@ -460,13 +408,10 @@ def _create_feedback_bundle(
             bundle_dir=bundle_dir,
             output_root=output_root,
             session_source=session_source,
-            run_source=run_source,
             copied_session_log_path=copied_session_log_path,
             copied_session_artifacts_path=copied_session_artifacts_path,
             snapshot_path=snapshot_path,
             copied_web_research_path=copied_web_research_path,
-            copied_pointer_path=copied_pointer_path,
-            copied_run_root_path=copied_run_root_path,
         ),
         encoding="utf-8",
     )
@@ -517,37 +462,6 @@ def _create_feedback_bundle(
                 "included_snapshot": snapshot_path is not None,
                 "included_web_research_artifact": copied_web_research_path is not None,
             },
-            "run": {
-                "source": run_source.source,
-                "run_id": run_source.paths.run_id if run_source.paths is not None else None,
-                "run_dir": (
-                    safe_serialized_path_field(
-                        "run_dir",
-                        run_source.paths.run_dir,
-                        workspace_root=root,
-                    )
-                    if run_source.paths is not None
-                    else None
-                ),
-                "current_run_pointer_path": (
-                    safe_serialized_path_field(
-                        "current_run_pointer_path",
-                        run_source.pointer_path,
-                        workspace_root=root,
-                    )
-                    if run_source.pointer_path is not None
-                    else None
-                ),
-                "included_current_run_pointer": copied_pointer_path is not None,
-                "included_plan": copied_run_root_path is not None
-                and (copied_run_root_path / "plan").exists(),
-                "included_execution": copied_run_root_path is not None
-                and (copied_run_root_path / "execution").exists(),
-                "included_knowledge": copied_run_root_path is not None
-                and (copied_run_root_path / "knowledge").exists(),
-                "failure_category_counts": failure_category_counts,
-                "excluded_worktrees": True,
-            },
             "platform": {
                 "python_version": platform.python_version(),
                 "platform": platform.platform(),
@@ -560,7 +474,6 @@ def _create_feedback_bundle(
                     "api_keys",
                     "environment_dumps",
                     "full_workspace_snapshots",
-                    "forge_worktrees",
                 ],
             },
         },
@@ -575,7 +488,6 @@ def _create_feedback_bundle(
         output_root=output_root,
         workspace_root=root,
         session_id=session_source.session_id,
-        run_id=run_source.paths.run_id if run_source.paths is not None else None,
     )
 
 
@@ -755,7 +667,6 @@ def _feedback_issue_body(
     platform_payload = (
         manifest.get("platform") if isinstance(manifest.get("platform"), dict) else {}
     )
-    run_payload = manifest.get("run") if isinstance(manifest.get("run"), dict) else {}
     session_payload = manifest.get("session") if isinstance(manifest.get("session"), dict) else {}
     feedback_block = _truncate_issue_text(
         feedback_text or "_No feedback text was provided._",
@@ -779,9 +690,7 @@ def _feedback_issue_body(
         "### Session",
         "",
         f"- Session ID: `{bundle_result.session_id or '(none)'}`",
-        f"- Run ID: `{bundle_result.run_id or '(none)'}`",
         f"- Session source: `{session_payload.get('source') or '(unknown)'}`",
-        f"- Run source: `{run_payload.get('source') or '(unknown)'}`",
         f"- Verification authoritative: `{_yes_no(score.get('verification_authoritative'))}`",
         f"- Last verification failure: `{score.get('last_verification_failure_kind') or '(none recorded)'}`",
         "",
@@ -1041,63 +950,6 @@ def _overlay_web_research_metrics(
     score_payload.update(build_web_research_metrics_from_artifact_payload(web_research_payload))
 
 
-def _resolve_run_source(
-    *,
-    root: Path,
-    active_run_paths: RunPaths | None,
-    run_id: str | None,
-) -> _ResolvedRunSource:
-    if active_run_paths is not None:
-        _validate_run_paths(active_run_paths)
-        pointer_path = current_run_pointer_path(active_run_paths.root)
-        return _ResolvedRunSource(
-            source="active_chat_forge",
-            paths=active_run_paths,
-            pointer_path=pointer_path if pointer_path.exists() else None,
-            pointer_matches_run=True,
-        )
-
-    selected_run_id = _validate_export_id("run id", run_id) if run_id else ""
-    if selected_run_id:
-        paths = make_run_paths(root=root, run_id=selected_run_id)
-        _validate_run_paths(paths)
-        if not paths.run_dir.exists():
-            raise FeedbackReportError(f"Forge run not found: {paths.run_dir}")
-        pointer_path = current_run_pointer_path(root)
-        pointer_matches = False
-        if pointer_path.exists():
-            try:
-                current_paths = load_current_run_paths(root)
-                pointer_matches = current_paths.run_id == paths.run_id
-            except ForgeError:
-                pointer_matches = False
-        return _ResolvedRunSource(
-            source="explicit_run_id",
-            paths=paths,
-            pointer_path=pointer_path if pointer_path.exists() else None,
-            pointer_matches_run=pointer_matches,
-        )
-
-    try:
-        paths = load_current_run_paths(root)
-    except ForgeError:
-        return _ResolvedRunSource(
-            source="none",
-            paths=None,
-            pointer_path=None,
-            pointer_matches_run=False,
-        )
-
-    _validate_run_paths(paths)
-    pointer_path = current_run_pointer_path(paths.root)
-    return _ResolvedRunSource(
-        source="current_run_pointer",
-        paths=paths,
-        pointer_path=pointer_path if pointer_path.exists() else None,
-        pointer_matches_run=True,
-    )
-
-
 def _build_in_memory_session_snapshot(
     *,
     active_session: Any,
@@ -1196,42 +1048,6 @@ def _session_source_has_exportable_content(source: _ResolvedSessionSource) -> bo
         or source.snapshot_payload is not None
         or source.web_research_payload is not None
     )
-
-
-def _copy_selected_run_artifacts(
-    paths: RunPaths,
-    target_root: Path,
-    *,
-    workspace_root: Path,
-) -> None:
-    selected = [
-        (paths.plan_dir, target_root / "plan"),
-        (paths.execution_dir, target_root / "execution"),
-        (paths.knowledge_dir, target_root / "knowledge"),
-    ]
-    for src, dest in selected:
-        if _io_path(src).exists():
-            _copy_tree(src, dest, workspace_root=workspace_root)
-
-
-def _collect_run_failure_category_counts(paths: RunPaths) -> dict[str, int]:
-    counts = empty_failure_category_counts()
-    _collect_failure_categories_from_json_dir(paths.execution_dir / "worker_results", counts)
-    _collect_failure_categories_from_json_dir(paths.execution_integration_dir, counts)
-    return counts
-
-
-def _collect_failure_categories_from_json_dir(path: Path, counts: dict[str, int]) -> None:
-    if not path.exists():
-        return
-    for item in sorted(path.rglob("*.json")):
-        try:
-            payload = json.loads(item.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        increment_failure_category_count(counts, payload.get("failure_category"))
 
 
 def _copy_tree(src: Path, dest: Path, *, workspace_root: Path) -> None:
@@ -1368,7 +1184,6 @@ def _render_feedback_markdown(
     created_at: datetime,
     feedback_text: str | None,
     session_id: str | None,
-    run_id: str | None,
     workspace_root: Path,
 ) -> str:
     lines = [
@@ -1376,7 +1191,6 @@ def _render_feedback_markdown(
         "",
         f"- Created At: {_now_iso(created_at)}",
         f"- Session ID: {session_id or '(none)'}",
-        f"- Run ID: {run_id or '(none)'}",
         "",
         "## User Feedback",
         "",
@@ -1396,13 +1210,10 @@ def _render_summary_markdown(
     bundle_dir: Path,
     output_root: Path,
     session_source: _ResolvedSessionSource,
-    run_source: _ResolvedRunSource,
     copied_session_log_path: Path | None,
     copied_session_artifacts_path: Path | None,
     snapshot_path: Path | None,
     copied_web_research_path: Path | None,
-    copied_pointer_path: Path | None,
-    copied_run_root_path: Path | None,
 ) -> str:
     score_payload = (
         session_source.score_payload if isinstance(session_source.score_payload, dict) else {}
@@ -1449,20 +1260,6 @@ def _render_summary_markdown(
             if copied_web_research_path is not None
             else "- Included Web Research Artifact: (none)"
         ),
-        f"- Run Source: `{run_source.source}`",
-        f"- Run ID: `{run_source.paths.run_id if run_source.paths is not None else '(none)'}`",
-        (
-            f"- Included Current Run Pointer: `"
-            f"{safe_serialized_path(copied_pointer_path, bundle_root=bundle_dir, prefer_bundle_relative=True)}`"
-            if copied_pointer_path is not None
-            else "- Included Current Run Pointer: (none)"
-        ),
-        (
-            f"- Included Run Artifacts: `"
-            f"{safe_serialized_path(copied_run_root_path, bundle_root=bundle_dir, prefer_bundle_relative=True)}`"
-            if copied_run_root_path is not None
-            else "- Included Run Artifacts: (none)"
-        ),
         f"- Verification Selection Source: `{verification_selection_source or '(unknown)'}`",
         f"- Verification Contract Type: `{verification_contract_type or '(unknown)'}`",
         f"- Verification Authoritative: {'yes' if verification_authoritative else 'no'}",
@@ -1476,7 +1273,7 @@ def _render_summary_markdown(
             if verification_selection_reason
             else "- Verification Selection Reason: (none recorded)"
         ),
-        "- Excluded By Policy: API keys, environment dumps, full workspace snapshots, Forge worktrees",
+        "- Excluded By Policy: API keys, environment dumps, full workspace snapshots",
         "",
     ]
     return "\n".join(lines)
@@ -1501,13 +1298,10 @@ def _make_bundle_name(
     *,
     created_at: datetime,
     session_id: str | None,
-    run_id: str | None,
 ) -> str:
     parts = [f"report_{created_at.strftime('%Y%m%dT%H%M%SZ')}"]
     if session_id:
         parts.append(f"session_{sanitize_session_id(session_id)[:24]}")
-    if run_id:
-        parts.append(f"run_{sanitize_session_id(run_id)[:24]}")
     return "__".join(parts)
 
 
@@ -1551,26 +1345,6 @@ def _path_within_dir(
     except ValueError as e:
         raise FeedbackReportError(f"{label.capitalize()} escapes its expected directory.") from e
     return candidate_resolved
-
-
-def _validate_run_paths(paths: RunPaths) -> None:
-    allowed_runs_dir = paths.runs_dir.resolve()
-    run_dir_resolved = paths.run_dir.resolve()
-    try:
-        run_dir_resolved.relative_to(allowed_runs_dir)
-    except ValueError as e:
-        raise FeedbackReportError(f"Resolved run path escapes {allowed_runs_dir}") from e
-    for label, candidate in (
-        ("plan directory", paths.plan_dir),
-        ("execution directory", paths.execution_dir),
-        ("knowledge directory", paths.knowledge_dir),
-    ):
-        if not candidate.exists():
-            continue
-        try:
-            candidate.resolve().relative_to(run_dir_resolved)
-        except ValueError as e:
-            raise FeedbackReportError(f"Resolved {label} escapes run directory") from e
 
 
 def _redact_bundle_text(text: str) -> str:

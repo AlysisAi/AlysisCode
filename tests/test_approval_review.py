@@ -491,7 +491,7 @@ def test_sandboxed_opaque_commands_require_a_person_before_any_reviewer(workspac
 
 
 def test_the_reviewer_only_stands_in_where_a_person_could_be_asked(workspace: Path) -> None:
-    # Unattended runs (Forge workers, one-shot runs) keep failing closed.
+    # Unattended runs (one-shot runs, headless hosts) keep failing closed.
     reviewer, client, store = _reviewer(workspace, [{"decision": "allow", "reason": "ok"}])
 
     class _Headless(_Surface):

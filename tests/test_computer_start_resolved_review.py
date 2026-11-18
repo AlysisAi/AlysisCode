@@ -1,4 +1,4 @@
-"""Regression coverage adapted from the Claude S2b review: resolved entry through the real bridge and real session.
+"""Regression coverage from the S2b review: resolved entry through the real bridge and real session.
 
 Real StdioBridge.process_line, real create_session, real run_turn, actual Responses /
 OpenAI-compatible clients over raw synthetic HTTP/SSE (httpx MockTransport), and a host

@@ -57,10 +57,7 @@ def test_workspace_root_descriptor_uses_file_uri_and_stable_name(tmp_path: Path)
     [
         (RuntimeKind.INTERACTIVE_CHAT, True),
         (RuntimeKind.ONE_SHOT, True),
-        (RuntimeKind.FORGE_EXEC, True),
-        (RuntimeKind.SWARM_WORKER, False),
         (RuntimeKind.SUBAGENT, False),
-        (RuntimeKind.CONFLICT_AUTO_RESOLVE, False),
     ],
 )
 def test_roots_request_handler_advertises_capability_only_in_supported_runtimes(
@@ -108,9 +105,7 @@ def test_roots_request_handler_returns_workspace_root_result(tmp_path: Path) -> 
     ("roots_mode", "runtime_kind"),
     [
         ("disabled", RuntimeKind.INTERACTIVE_CHAT),
-        ("workspace", RuntimeKind.SWARM_WORKER),
         ("workspace", RuntimeKind.SUBAGENT),
-        ("workspace", RuntimeKind.CONFLICT_AUTO_RESOLVE),
     ],
 )
 def test_roots_request_handler_rejects_disabled_or_unsupported_roots(

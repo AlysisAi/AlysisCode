@@ -58,9 +58,7 @@ _MAX_CONFIG_BYTES = 1_000_000
 # Runtime kinds that are a top-level autonomous execution run. Mirrors the
 # non-interactive predicate already used by the deadline logic in agent_loop and
 # the turn loop; nested kinds are deliberately absent (see the module docstring).
-AUTONOMOUS_PROVISIONING_RUNTIME_KINDS = frozenset(
-    {RuntimeKind.ONE_SHOT, RuntimeKind.FORGE_EXEC, RuntimeKind.SWARM_WORKER}
-)
+AUTONOMOUS_PROVISIONING_RUNTIME_KINDS = frozenset({RuntimeKind.ONE_SHOT})
 
 _attempt_lock = threading.Lock()
 _attempted: set[str] = set()
@@ -428,7 +426,7 @@ def provision_test_runner(
 
     Returns ``None`` when another session in this process already claimed the
     attempt. That is not a failure and must not be reported as one, or every
-    swarm worker but the first would log an install failure that never happened.
+    session but the first would log an install failure that never happened.
     The claim is taken before the command runs, so a failure is never retried: a
     broken or offline environment costs one install, not one per session.
     """

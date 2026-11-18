@@ -106,9 +106,8 @@ and CLI SHA-256, `native_signature_check: passed`, `release_signature_check: pas
 `secret_leak_check: passed`, and a `completed_checks` object covering every generated
 `required_checks` ID. Every check is a timestamped receipt with an immutable artifact SHA-256;
 free-form event IDs and bare status strings are rejected. Release-defining checks are non-waivable and must be `passed`. Only
-`run_swarm_capability_gate` and `mcp_oauth_local_lifecycle` may be `not_applicable`, and then only
-with a concrete rationale explaining why the alternate capability or deployment shape was
-unavailable. Blank, pending, skipped, unknown, or missing checks are rejected.
+`mcp_oauth_local_lifecycle` may be `not_applicable`, and then only with a concrete rationale
+explaining why the alternate deployment shape was unavailable. Blank, pending, skipped, unknown, or missing checks are rejected.
 
 Validate completed evidence against the exact retained target candidate before signoff:
 
@@ -250,15 +249,11 @@ Run the same smoke coverage on all three OSes:
 - Normal chat and `Alysis Code: Run Task` / `run.start`.
 - `/image` and `/paste-image` path handling, including missing file, outside-workspace, and
   unsupported-type recovery when practical.
-- Forge plan, Forge show/status, Forge Execute Preview, and review-mode Forge Execute.
-- Artifact and diff opening from the Activity Bar or Cockpit.
-- Extension reload/restart with persisted plan/session recovery.
-- Workspace Trust behavior for readonly flows, mutating actions, Forge assets, and plan edits.
+- Artifact opening from the Cockpit.
+- Extension reload/restart with persisted session recovery.
+- Workspace Trust behavior for readonly flows and mutating actions.
 - MCP OAuth start/status/cancel/logout on a local extension host, including explicit HTTPS browser
   confirmation and verification that authorization codes and tokens never cross JSONL.
-- Review-only Run Swarm plus bridge-restart recovery through the native recovery picker: verify
-  bounded interrupted/failed rows, revision revalidation, explicit Resume confirmation, fresh
-  zero-grant permission scope, durable usage, result polling, cancellation, and review ownership.
 - Managed-browser agent-tool use against a public disposable page, including per-action host
   approvals, blocked local/private navigation, redacted previews, and exact owned-process cleanup.
 - Direct IDE **Start local testing** against a disposable loopback server: modal confirmation,
@@ -282,7 +277,7 @@ Run these in a disposable workspace with a current local `alysis` CLI:
 - Run `/model-info` and verify provider/model metadata is redacted and contains no API keys,
   bearer tokens, or secret headers.
 - Run `/subagent status`, then `/subagent on` and `/subagent off` in a trusted workspace; verify
-  toggles affect subsequent live-session turns only and do not change Forge Execute subagent policy.
+  toggles affect subsequent live-session turns only.
 - Attach an image with `/image <path>` and verify workspace path validation.
 - Attach an image with `/paste-image <path>` or the no-arg file-picker fallback and verify no image
   binary is serialized through JSONL.
@@ -293,25 +288,6 @@ Run these in a disposable workspace with a current local `alysis` CLI:
   structured unavailable result. If it has managed background terminals, run `/terminals show <id>`
   and verify output is redacted/bounded. Run `/terminals kill <id>` and `/terminals clear <id>` only
   in a trusted disposable workspace with explicit confirmation.
-- Run Forge Plan from the Cockpit or `/plan`.
-- Run Forge show/status and Forge review for the active plan.
-- Run `/forge plan state`, `/forge plan validate`, `/assistant show`, `/assistant <instruction>`,
-  `/goal show`, `/goal <goal>`, `/task <task_id> show`, one safe `/task <task_id> status <status>`
-  update, and `/plan regenerate focus <text>` or `/forge plan regenerate focus <text>`; verify
-  show invocations are reported as read-only, update/regenerate invocations are reported as
-  mutating, mutations require Workspace Trust, use optimistic revisions, and persist to the plan
-  store.
-- Run bare `/execute`, `/forge exec`, and `/forge execute` and verify they route only to Forge
-  Execute Review. Run a broad execute argument such as `/forge exec auto` and verify the IDE v1
-  unsupported warning.
-- Run Forge Execute Preview and confirm it does not mutate files.
-- Run Forge review-mode execute only after Preview is ready and explicit confirmation is accepted.
-- Run the review-only Forge swarm console and verify per-task approvals, cooperative cancellation,
-  Keep/Discard review semantics, and no direct merge-to-base. Interrupt a run by restarting the
-  bridge and verify the durable job appears in the native recovery picker with its bounded revision,
-  attempts, and usage. Resume it only after the modal confirmation; verify the host revalidates the
-  exact revision, supplies a fresh zero-grant permission scope, does not reuse prior grants, and
-  restores Stop plus review/apply/discard ownership.
 - From a local extension host, run **MCP Login** for an OAuth-capable disposable server. Verify the
   authorization URL opens only after explicit confirmation, status polling is cancellable, logout
   fences late token writes, and no authorization code, token, verifier, or client secret appears in
@@ -333,7 +309,7 @@ Run these in a disposable workspace with a current local `alysis` CLI:
   `network_scope: "public_loopback"` plus `confirm: true` and never
   `allow_local_destinations`, the resulting session is unavailable to agent tools, loopback works,
   and LAN/link-local destinations remain denied.
-- Open artifacts and diffs from the Activity Bar and Cockpit.
+- Open artifacts from the Cockpit.
 - Refresh Manage tree domains for tools, skills, hooks, MCP, conventions, and extension packages.
 - Verify Manage context actions appear only when capability, state, and Workspace Trust allow them.
 - Clear provider credentials and verify missing-provider recovery routes to Configure Provider /
@@ -345,8 +321,7 @@ Run these in a disposable workspace with a current local `alysis` CLI:
 
 - Parity drift is a release blocker: every `package.json` command, hidden context command, tree
   command, slash command, and backend route must be represented in the parity matrix.
-- The generated burn-down reports `docs/generated/ide_cli_parity_burndown.md` and
-  `docs/generated/ide_forge_parity_burndown.md` must be current. `planned_for_protocol` entries
+- The generated burn-down report `docs/generated/ide_cli_parity_burndown.md` must be current. `planned_for_protocol` entries
   must carry owner/milestone/next-step metadata, and `blocked_until_security_model` entries must
   carry an explicit security or lifecycle blocker.
 - IDE protocol drift is a release blocker: backend action parameters must satisfy
@@ -357,10 +332,6 @@ Run these in a disposable workspace with a current local `alysis` CLI:
   action such as `/update online` or the command-palette online selection.
 - Backend action prompts must not ask for API keys, bearer tokens, passwords, or secret-looking
   config values. Provider keys remain in SecretStorage through Configure Provider.
-- Forge assets and review actions must remain capability-gated and Workspace-Trust-gated.
-- Forge plan edits through `/assistant`, `/goal`, and `/task` must remain typed dual-mode
-  read/update actions: show routes are audited as read-only, update routes are audited as mutating,
-  mutations are Workspace-Trust gated, revision-safe, and free of terminal-output scraping.
 - `/model-info` must not expose API keys, provider headers, or unredacted secret-bearing URLs.
 - `/subagent` supports status/toggle only. Explicit subagent execution remains outside IDE v1.
 - `/paste-image` must remain path/file-picker based; image binaries must not cross JSONL.
@@ -368,7 +339,7 @@ Run these in a disposable workspace with a current local `alysis` CLI:
   and no raw headers, environment variables, API keys, or secret-bearing prompts may be returned.
 - `/terminals` must remain scoped to existing managed background terminals; it must not become
   arbitrary shell execution, terminal-output scraping, or unmanaged PTY streaming.
-- Forge cancellation must be capability-driven: cooperative `cancellation_requested` is in-progress
+- Cancellation must be capability-driven: cooperative `cancellation_requested` is in-progress
   until backend terminal status, and unsupported or non-cancellable work must be displayed honestly
   rather than as success.
 - MCP login must be advertised only when the complete start/status/cancel lifecycle and OAuth
@@ -385,19 +356,10 @@ Run these in a disposable workspace with a current local `alysis` CLI:
   `allow_local_destinations` flag.
 - `hooks.watch` must not be advertised until it has a typed subscription lifecycle, bounded
   redacted event buffers, dropped-event accounting, watcher cancellation, and stop cleanup.
-- `session.cancel` and `forge.cancel` must not mark running jobs cancelled unless the backend
+- `session.cancel` must not mark running jobs cancelled unless the backend
   reaches a cooperative checkpoint or pending approval boundary and reconciles job state.
-- Forge swarm in the IDE is the review-only Run Swarm console (per-task Keep/Discard, never
-  auto-merged), capability- and Workspace-Trust-gated, with cooperative checkpoint cancellation and
-  non-modal task-attributed approvals replacing --yes. Broad auto/fullaccess execution and direct
-  merge-to-base must remain unavailable in the IDE.
-- Durable swarm list/resume must require the full `features.resumable_swarm` contract, a live
-  session/workspace binding, Workspace Trust for resume, optimistic revision checks, and a freshly
-  supplied permission fingerprint. The extension must not silently restart work after bridge
-  recovery; the native picker must require an explicit, revision-revalidated Resume confirmation.
-- Release notes must keep the known IDE v1 limitations explicit: Forge swarm is review-only
-  (per-task Keep/Discard, never auto-merged) and capability-gated; broad Forge exec and
-  auto/fullaccess execution are unavailable; cancellation is cooperative checkpoint only with no
+- Release notes must keep the known IDE v1 limitations explicit: auto/fullaccess execution is
+  unavailable; cancellation is cooperative checkpoint only with no
   hard interrupt; MCP OAuth is unavailable on
   Remote-SSH extension hosts; agent-controlled Managed Browser access is public-only and
   unavailable to nested subagents, while direct IDE local testing is loopback-only; `hooks.watch`,
@@ -428,8 +390,6 @@ Run these in a disposable workspace with a current local `alysis` CLI:
 ## Non-Goals In IDE v1
 
 - Auto/fullaccess execution is unavailable in the VS Code extension.
-- Forge swarm is review-only; durable Resume is explicit, revision-revalidated, and never reuses
-  prior permission grants.
 - MCP OAuth is supported on a local extension host; Remote-SSH callback handling remains
   unavailable until a VS Code URI-handler or device-code flow exists.
 - Managed-browser built-in agent tools and the native Browser Cockpit share the top-level IDE

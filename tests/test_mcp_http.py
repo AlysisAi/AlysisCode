@@ -550,10 +550,7 @@ def test_http_initialized_notification_respects_short_startup_timeout(
     [
         ("workspace", RuntimeKind.INTERACTIVE_CHAT, {"roots": {}}),
         ("workspace", RuntimeKind.ONE_SHOT, {"roots": {}}),
-        ("workspace", RuntimeKind.FORGE_EXEC, {"roots": {}}),
-        ("workspace", RuntimeKind.SWARM_WORKER, {}),
         ("workspace", RuntimeKind.SUBAGENT, {}),
-        ("workspace", RuntimeKind.CONFLICT_AUTO_RESOLVE, {}),
         ("workspace", None, {}),
         ("disabled", RuntimeKind.INTERACTIVE_CHAT, {}),
     ],
@@ -2239,10 +2236,7 @@ def test_http_client_rejects_unsupported_or_malformed_initialize_bodies(
     [
         (RuntimeKind.INTERACTIVE_CHAT, True),
         (RuntimeKind.ONE_SHOT, True),
-        (RuntimeKind.FORGE_EXEC, True),
-        (RuntimeKind.SWARM_WORKER, False),
         (RuntimeKind.SUBAGENT, False),
-        (RuntimeKind.CONFLICT_AUTO_RESOLVE, False),
     ],
 )
 def test_http_manager_exposes_tools_only_in_supported_runtimes(

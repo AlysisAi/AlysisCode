@@ -12,7 +12,6 @@ _PROMPT_ENABLED_RUNTIME_KINDS = frozenset(
     {
         RuntimeKind.INTERACTIVE_CHAT,
         RuntimeKind.ONE_SHOT,
-        RuntimeKind.FORGE_EXEC,
     }
 )
 _INLINE_PROMPT_TEXT_CHAR_LIMIT = 12_000

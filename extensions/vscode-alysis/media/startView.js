@@ -27,7 +27,6 @@
   // These controls belong to the static template (their handlers are bound once below).
   // Reuse the nodes while reading their current values/text on each state update.
   const permissionOptions = Array.from(document.querySelectorAll("[data-permission]"));
-  const forgeControls = Array.from(document.querySelectorAll('[data-surface="forge"], [data-forge-starter], [data-forge-draft]'));
   const settingsGroups = Array.from(document.querySelectorAll(".settings-group"), group => ({
     group, heading: group.querySelector("h2"), rows: Array.from(group.querySelectorAll(".settings-row"))
   }));
@@ -73,15 +72,13 @@
   const browserFullPage = /** @type {HTMLInputElement | null} */ (document.querySelector("#browserFullPage"));
   const browserSnapshotKind = /** @type {HTMLSelectElement | null} */ (document.querySelector("#browserSnapshotKind"));
   const browserSessionSelect = /** @type {HTMLSelectElement | null} */ (document.querySelector("#browserSessionSelect"));
-  const savedState = /** @type {{ draft?: unknown, pendingInstruction?: unknown, pendingRequestId?: unknown, pendingMode?: unknown, pendingWorkflow?: unknown, retryInstruction?: unknown, retryRequestId?: unknown, retryMode?: unknown, retryWorkflow?: unknown, mode?: unknown, agentMode?: unknown, autoApprove?: unknown, surface?: unknown, workflow?: unknown, forgeTab?: unknown, history?: string[] } | undefined} */ (host.getState());
+  const savedState = /** @type {{ draft?: unknown, pendingInstruction?: unknown, pendingRequestId?: unknown, pendingMode?: unknown, retryInstruction?: unknown, retryRequestId?: unknown, retryMode?: unknown, mode?: unknown, agentMode?: unknown, autoApprove?: unknown, surface?: unknown, history?: string[] } | undefined} */ (host.getState());
   const savedMode = savedState && typeof savedState.mode === "string" ? savedState.mode : "";
   const savedSurface = savedState?.surface;
   // Migrate old Plan/Act drafts without widening their permissions. The first host state wins.
   let permissionMode = ["readonly", "review", "auto"].includes(savedMode) ? savedMode
     : savedState?.agentMode === "plan" ? "readonly" : savedState?.autoApprove === true ? "auto" : "review";
   let surface = isSurface(savedSurface) ? savedSurface : "task";
-  let workflow = surface === "forge" ? "forge" : "chat";
-  let forgeTab = ["plan", "changes", "files", "activity"].includes(String(savedState?.forgeTab)) ? String(savedState?.forgeTab) : "plan";
   let taskPending = false;
   /** The submitted text is kept off-screen until the host accepts or rejects it. */
   let pendingInstruction = savedState && typeof savedState.pendingInstruction === "string"
@@ -93,7 +90,6 @@
   let pendingMode = savedState && ["readonly", "review", "auto"].includes(String(savedState.pendingMode))
     ? String(savedState.pendingMode)
     : "review";
-  let pendingWorkflow = savedState?.pendingWorkflow === "forge" ? "forge" : "chat";
   let retryInstruction = savedState && typeof savedState.retryInstruction === "string"
     ? savedState.retryInstruction.slice(0, 20000)
     : "";
@@ -103,10 +99,8 @@
   let retryMode = savedState && ["readonly", "review", "auto"].includes(String(savedState.retryMode))
     ? String(savedState.retryMode)
     : "review";
-  let retryWorkflow = savedState?.retryWorkflow === "forge" ? "forge" : "chat";
   let taskAckTimer = 0;
   let taskRunning = false;
-  let forgeRunning = false;
   let modeControlSignature = "";
   let settingsFilterSignature = "";
   let currentState = null;
@@ -209,48 +203,13 @@
       }
     });
   }
-  for (const button of document.querySelectorAll("[data-cockpit-action]")) {
-    button.addEventListener("click", () => postCockpitAction(button.getAttribute("data-cockpit-action") || ""));
-  }
-  for (const button of document.querySelectorAll("[data-forge-tab]")) {
-    button.addEventListener("click", () => showForgeTab(button.getAttribute("data-forge-tab") || "plan"));
-    button.addEventListener("keydown", (event) => {
-      if (!(event instanceof KeyboardEvent)) {
-        return;
-      }
-      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-        return;
-      }
-      event.preventDefault();
-      const tabs = Array.from(document.querySelectorAll("[data-forge-tab]"));
-      const index = tabs.indexOf(button);
-      const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
-        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-      const next = tabs[nextIndex];
-      if (next instanceof HTMLElement) {
-        showForgeTab(next.getAttribute("data-forge-tab") || "plan");
-        next.focus();
-      }
-    });
-  }
-  for (const button of document.querySelectorAll("[data-forge-draft]")) {
-    button.addEventListener("click", () => {
-      showSurface("forge");
-      taskInput?.focus();
-    });
-  }
   for (const button of document.querySelectorAll("[data-starter]")) {
     button.addEventListener("click", () => {
       if (!taskInput) {
         return;
       }
       taskInput.value = button.getAttribute("data-starter") || "";
-      if (button.hasAttribute("data-forge-starter")) {
-        showSurface("forge");
-      }
-      if (!button.hasAttribute("data-forge-starter")) {
-        showSurface("task");
-      }
+      showSurface("task");
       taskInput.focus();
       taskInput.setSelectionRange(taskInput.value.length, taskInput.value.length);
       autoGrowComposer();
@@ -324,7 +283,7 @@
       event.preventDefault();
       resetHistoryBrowsing();
       return;
-    } else if (event.key === "Escape" && (taskRunning || forgeRunning) && !taskInput.value.trim()) {
+    } else if (event.key === "Escape" && taskRunning && !taskInput.value.trim()) {
       // Escape on an empty composer stops the running task.
       event.preventDefault();
       cancelTask?.click();
@@ -400,14 +359,10 @@
     submitCurrentTask();
   });
   cancelTask?.addEventListener("click", () => {
-    if (forgeRunning) {
-      host.postMessage({ type: "command", command: "alysis.cancelCurrentRun" });
-    } else {
-      host.postMessage({ type: "task.cancel" });
-    }
+    host.postMessage({ type: "task.cancel" });
   });
   permissionStrip?.addEventListener("click", () => {
-    if (taskRunning || forgeRunning || !permissionPalette) return;
+    if (taskRunning || !permissionPalette) return;
     if (!permissionPalette.hidden) { closePermissionPalette(); return; }
     closeModelPalette();
     closePersonaPalette();
@@ -418,7 +373,7 @@
   });
   for (const button of permissionOptions) {
     button.addEventListener("click", () => {
-      if (taskRunning || forgeRunning || taskPending) return;
+      if (taskRunning || taskPending) return;
       const nextPermission = button.getAttribute("data-permission");
       if (!["readonly", "review", "auto"].includes(nextPermission || "")) return;
       closePermissionPalette();
@@ -658,21 +613,6 @@
       host.postMessage({ type: "approval", approvalId, decision });
     }
   });
-  document.getElementById("forgeWorkspace")?.addEventListener("click", (event) => {
-    const target = event.target instanceof Element ? event.target.closest("button") : null;
-    if (!target) {
-      return;
-    }
-    const action = target.getAttribute("data-dynamic-cockpit-action");
-    if (action) {
-      postCockpitAction(action, target);
-      return;
-    }
-    const command = target.getAttribute("data-dynamic-command");
-    if (command) {
-      host.postMessage({ type: "command", command });
-    }
-  });
   document.getElementById("browserRefresh")?.addEventListener("click", () => postBrowserAction({ type: "browser.refresh" }));
   document.getElementById("browserStart")?.addEventListener("click", () => postBrowserAction({ type: "browser.start" }));
   document.getElementById("browserStartLocal")?.addEventListener("click", () => postBrowserAction({ type: "browser.startLocal" }));
@@ -779,14 +719,9 @@
     }
     currentState = state;
     renderWorkspaceBar(state.gitWorkspace);
-    for (const control of forgeControls) {
-      if (control instanceof HTMLElement) control.hidden = state.forgeEnabled === false;
-    }
-    if (state.forgeEnabled === false && surface === "forge") showSurface("task");
     renderConversation(state.conversation);
     renderRecentTasks(state.recentTasks);
     renderSettings(state);
-    renderForge(state.forge, state.swarm);
     renderActivity(state.actionResults, state.runtimeEvents);
     renderPersona(state);
     renderCommandPalette();
@@ -802,7 +737,7 @@
       modelLabel.setAttribute("title", description);
       if (modelButton) modelButton.title = description;
     }
-    syncWorkflowContext();
+    syncComposerPlaceholder();
     syncModeControl();
   }
 
@@ -975,8 +910,7 @@
     }
     const instruction = taskInput.value.trim();
     const mode = taskMode.value;
-    const runningBlocksSubmit = forgeRunning || (taskRunning && workflow !== "chat");
-    if (!composerReady || taskPending || runningBlocksSubmit || !instruction || instruction.length > MAX_TASK_CHARS || !["readonly", "review", "auto"].includes(mode)) {
+    if (!composerReady || taskPending || !instruction || instruction.length > MAX_TASK_CHARS || !["readonly", "review", "auto"].includes(mode)) {
       return;
     }
     // Treat the click/Enter gesture as the hand-off point. Waiting for a later bridge event left
@@ -985,15 +919,12 @@
     pendingRequestId = retryRequestId
       && retryInstruction === instruction
       && retryMode === mode
-      && retryWorkflow === workflow
       ? retryRequestId
       : createRequestId();
     pendingMode = mode;
-    pendingWorkflow = workflow;
     retryInstruction = "";
     retryRequestId = "";
     retryMode = "review";
-    retryWorkflow = "chat";
     taskInput.value = "";
     taskPending = true;
     rememberSubmission(instruction);
@@ -1004,10 +935,8 @@
     armPendingAckTimer();
     // Show the message in the transcript the moment it is sent. Starting the engine or creating a
     // session can take many seconds; a composer that just goes blank reads as "Send did nothing".
-    if (workflow === "chat") {
-      renderConversation(currentState?.conversation || null);
-    }
-    host.postMessage({ type: "task.submit", instruction, mode, workflow, requestId: pendingRequestId });
+    renderConversation(currentState?.conversation || null);
+    host.postMessage({ type: "task.submit", instruction, mode, requestId: pendingRequestId });
   }
 
   // ---------------------------------------------------------------------------
@@ -1130,15 +1059,11 @@
     imageBasket.hidden = false;
   }
 
-  function syncWorkflowContext() {
-    workflow = surface === "forge" ? "forge" : "chat";
-    const forge = workflow === "forge";
+  function syncComposerPlaceholder() {
     if (taskInput) {
       taskInput.placeholder = !composerReady
         ? (readyGateProgress ? "Checking your connection…" : "Finish setup to start…")
-        : forge
-          ? "Describe what Forge should plan…"
-          : taskRunning ? "Add a follow-up…" : "Ask Alysis Code…";
+        : taskRunning ? "Add a follow-up…" : "Ask Alysis Code…";
     }
   }
 
@@ -1156,20 +1081,18 @@
     }
     taskMode.value = permissionMode;
     persistDraft();
-    // Conversation, Forge, and readiness all synchronize these controls. Repainting
+    // Conversation and readiness both synchronize these controls. Repainting
     // identical permissions on every token dominates the sidebar's rendering cost.
-    const signature = JSON.stringify([permissionMode, taskRunning, forgeRunning, taskPending, workflow]);
+    const signature = JSON.stringify([permissionMode, taskRunning, taskPending]);
     if (signature === modeControlSignature) return;
     modeControlSignature = signature;
-    taskMode.disabled = taskRunning || forgeRunning || taskPending;
+    taskMode.disabled = taskRunning || taskPending;
     if (permissionStrip) {
-      // This picker controls chat permissions. Forge owns a separate review-only execution gate.
-      permissionStrip.hidden = workflow === "forge";
       permissionStrip.classList.toggle("auto", permissionMode === "auto");
       permissionStrip.title = "Choose permissions";
-      permissionStrip.disabled = taskRunning || forgeRunning || taskPending;
+      permissionStrip.disabled = taskRunning || taskPending;
     }
-    if (taskRunning || forgeRunning || taskPending) closePermissionPalette();
+    if (taskRunning || taskPending) closePermissionPalette();
     for (const option of permissionOptions) {
       option.setAttribute("aria-checked", String(option.getAttribute("data-permission") === permissionMode));
     }
@@ -1186,7 +1109,7 @@
       }
     }
     if (modeHint) {
-      modeHint.textContent = taskRunning || forgeRunning
+      modeHint.textContent = taskRunning
         ? "Permissions are fixed while this task is running."
         : permissionMode === "readonly"
           ? "Alysis Code can inspect and explain, but cannot change files."
@@ -1873,7 +1796,7 @@
    * as the host's own copy of that message is in the transcript, so it never shows twice.
    */
   function pendingConversationEntry() {
-    if (!taskPending || !pendingInstruction || pendingWorkflow !== "chat") {
+    if (!taskPending || !pendingInstruction) {
       return null;
     }
     const items = Array.isArray(currentState?.conversation?.items) ? currentState.conversation.items : [];
@@ -1976,487 +1899,6 @@
     return item;
   }
 
-  function renderForge(forge, swarm) {
-    const empty = document.getElementById("forgeEmpty");
-    const workspace = document.getElementById("forgeWorkspace");
-    if (!empty || !workspace) {
-      return;
-    }
-    forgeRunning = Boolean(forge?.activeJobId || forge?.planning || swarm?.busy);
-    const hasPlan = Boolean(forge?.plan || forge?.planning);
-    empty.hidden = hasPlan;
-    workspace.hidden = !hasPlan;
-    if (!hasPlan) {
-      setText("forgeHeaderDetail", "Plan complex work before files change.");
-      syncWorkflowContext();
-      syncModeControl();
-      updateSubmitState();
-      return;
-    }
-
-    const plan = forge?.plan;
-    const planning = forge?.planning;
-    setText("forgeHeaderDetail", planning ? "Alysis Code is creating a reviewable plan." : "Review the plan, then preview its changes.");
-    renderForgeSummary(plan, planning, forge?.executePreview);
-    renderForgePlanPanel(plan, forge, swarm);
-    renderForgeChanges(forge?.diffs || []);
-    renderForgeFiles(forge);
-    renderForgeActivity(forge, swarm);
-    setText("forgePlanCount", plan?.tasks?.length ? String(plan.tasks.length) : "");
-    setText("forgeDiffCount", forge?.diffs?.length ? String(forge.diffs.length) : "");
-    const fileCount = countForgeFiles(forge);
-    setText("forgeFileCount", fileCount ? String(fileCount) : "");
-    const activityCount = (forge?.events?.length || 0) + (forge?.approvals?.length || 0);
-    setText("forgeActivityCount", activityCount ? String(activityCount) : "");
-
-    const preview = document.querySelector('[data-cockpit-action="forge.executePreview"]');
-    const execute = document.querySelector('[data-cockpit-action="forge.executeReview"]');
-    const runSwarm = document.querySelector('[data-cockpit-action="swarm.start"]');
-    const busy = forgeRunning;
-    if (preview instanceof HTMLButtonElement) {
-      preview.disabled = !plan || busy;
-    }
-    if (execute instanceof HTMLButtonElement) {
-      execute.disabled = !plan || busy;
-      execute.title = forge?.executePreview?.preview_ready === false
-        ? "Resolve preview blockers before running."
-        : "Review scope, choose tasks, and run with approval gates.";
-    }
-    if (runSwarm instanceof HTMLButtonElement) {
-      runSwarm.disabled = !plan || busy || swarm?.supported !== true;
-      runSwarm.title = swarm?.supported === true ? "Run plan tasks across parallel workers." : (swarm?.reason || "Parallel Forge is unavailable in this CLI.");
-    }
-    syncWorkflowContext();
-    syncModeControl();
-    updateSubmitState();
-    showForgeTab(forgeTab);
-  }
-
-  function renderForgeSummary(plan, planning, preview) {
-    const root = document.getElementById("forgeSummary");
-    if (!root) {
-      return;
-    }
-    if (planning) {
-      const pulse = document.createElement("span");
-      pulse.className = "forge-live-dot";
-      const copy = document.createElement("div");
-      copy.append(textNode("Creating your Forge plan", "forge-kicker"), textNode(planning.instruction || "Analyzing the workspace and defining safe tasks.", "forge-goal"));
-      root.replaceChildren(pulse, copy);
-      root.classList.add("planning");
-      return;
-    }
-    root.classList.remove("planning");
-    if (!plan) {
-      root.replaceChildren();
-      return;
-    }
-    const copy = document.createElement("div");
-    copy.append(
-      textNode(`${friendlyStatus(plan.status)} · ${plan.tasks?.length || 0} tasks`, "forge-kicker"),
-      textNode(plan.project_goal || "Forge plan", "forge-goal")
-    );
-    if (plan.summary) {
-      copy.append(textNode(plan.summary, "forge-summary-text"));
-    }
-    if (Array.isArray(plan.warnings) && plan.warnings.length > 0) {
-      copy.append(textNode(`${plan.warnings.length} item${plan.warnings.length === 1 ? "" : "s"} need attention`, "forge-warning-count"));
-    }
-    if (preview) {
-      copy.append(textNode(preview.preview_ready ? "Preview ready" : "Preview has blockers", preview.preview_ready ? "forge-ready" : "forge-warning-count"));
-    }
-    root.replaceChildren(copy);
-  }
-
-  function renderForgePlanPanel(plan, forge, swarm) {
-    const root = document.getElementById("forgePlanPanel");
-    if (!root) {
-      return;
-    }
-    const nodes = [];
-    if (Array.isArray(forge?.approvals) && forge.approvals.length > 0) {
-      nodes.push(sectionLabel("Waiting for you"));
-      nodes.push(...forge.approvals.map(renderForgeApproval));
-    }
-    if (plan?.warnings?.length) {
-      const warning = document.createElement("section");
-      warning.className = "forge-notice warning";
-      warning.append(textNode("Before you run", "forge-card-title"));
-      const list = document.createElement("ul");
-      for (const item of plan.warnings) {
-        const li = document.createElement("li");
-        li.textContent = item;
-        list.append(li);
-      }
-      warning.append(list);
-      nodes.push(warning);
-    }
-    if (plan?.tasks?.length) {
-      nodes.push(sectionLabel("Plan tasks"));
-      nodes.push(...plan.tasks.map(renderForgeTask));
-    } else if (!forge?.planning) {
-      nodes.push(emptyPanel("No plan tasks are available yet."));
-    }
-    if (forge?.executePreview) {
-      nodes.push(sectionLabel("Execution preview"));
-      nodes.push(renderForgePreview(forge.executePreview));
-    }
-    if (forge?.review || forge?.reviewBusy) {
-      nodes.push(sectionLabel("Review"));
-      nodes.push(renderForgeReview(forge.review, forge.reviewBusy));
-    }
-    if (swarm?.recovery?.supported || swarm?.recovery?.reason) {
-      nodes.push(sectionLabel("Interrupted runs"));
-      nodes.push(renderSwarmRecovery(swarm.recovery));
-    }
-    if (swarm?.status && swarm.status !== "idle") {
-      nodes.push(sectionLabel("Parallel run"));
-      nodes.push(renderSwarm(swarm));
-    }
-    root.replaceChildren(...nodes);
-  }
-
-  function renderForgeTask(task) {
-    const details = document.createElement("details");
-    details.className = "forge-task-card";
-    const summary = document.createElement("summary");
-    summary.append(
-      stateMarker(task.status, `forge-task-state ${safeStatus(task.status)}`),
-      textNode(task.title || task.task_id, "forge-task-title"),
-      textNode(friendlyStatus(task.status), "forge-task-status")
-    );
-    details.append(summary);
-    const body = document.createElement("div");
-    body.className = "forge-task-body";
-    if (task.objective) {
-      body.append(textNode(task.objective, "forge-task-objective"));
-    }
-    const writeScope = task.file_scope?.write_scope || [];
-    const estimated = task.file_scope?.estimated_files || [];
-    if (writeScope.length || estimated.length) {
-      body.append(metaRow("Files", [...new Set([...writeScope, ...estimated])].join(", ")));
-    }
-    if (task.acceptance_criteria?.length) {
-      body.append(metaList("Done when", task.acceptance_criteria));
-    }
-    if (task.verification_commands?.length) {
-      body.append(metaList("Checks", task.verification_commands, true));
-    }
-    const actions = document.createElement("div");
-    actions.className = "forge-card-actions";
-    const review = actionButton("Review task", "forge.review");
-    review.dataset.taskId = task.task_id;
-    actions.append(review);
-    body.append(actions);
-    details.append(body);
-    return details;
-  }
-
-  function renderForgePreview(preview) {
-    const card = document.createElement("section");
-    card.className = `forge-card readiness ${preview.preview_ready ? "ready" : "blocked"}`;
-    card.append(
-      textNode(preview.preview_ready ? "Ready for review" : "Resolve these blockers", "forge-card-title"),
-      textNode(preview.next_recommended_action || (preview.preview_ready ? "Review scope and start when ready." : "Review missing prerequisites."), "forge-card-detail")
-    );
-    const issues = [...(preview.missing_prerequisites || []), ...(preview.known_risks || [])];
-    if (issues.length) {
-      card.append(metaList("Details", issues));
-    }
-    const scopes = (preview.estimated_file_scopes || []).map((item) => item.path || item.file_path || item.scope).filter(Boolean);
-    if (scopes.length) {
-      card.append(metaList("Expected files", scopes));
-    }
-    return card;
-  }
-
-  function renderForgeReview(review, busy) {
-    const card = document.createElement("section");
-    card.className = "forge-card";
-    if (busy) {
-      card.append(textNode("Reviewing changes...", "forge-card-title"), textNode("Checking the selected task against its plan and verification evidence.", "forge-card-detail"));
-      return card;
-    }
-    card.append(
-      textNode(review?.approved ? "Review passed" : "Review needs attention", "forge-card-title"),
-      textNode(review?.summary || "No review summary is available.", "forge-card-detail")
-    );
-    if (review) {
-      card.append(metaRow("Confidence", review.confidence || "Unknown"));
-      card.append(metaRow("Issues", `${review.blockingIssues || 0} blocking · ${review.nonBlockingIssues || 0} non-blocking`));
-    }
-    return card;
-  }
-
-  function renderSwarm(swarm) {
-    const card = document.createElement("section");
-    card.className = "forge-card swarm-card";
-    card.append(textNode(`Parallel run · ${friendlyStatus(swarm.status)}`, "forge-card-title"));
-    const tasks = document.createElement("div");
-    tasks.className = "swarm-tasks";
-    for (const task of swarm.tasks || []) {
-      const row = document.createElement("div");
-      row.className = "swarm-task";
-      row.append(stateMarker(task.state, "forge-task-state"), textNode(task.title || task.taskId, "forge-task-title"), textNode(friendlyStatus(task.state), "forge-task-status"));
-      // Everything a reviewer needs before Apply, in the order they need it: what is in the change,
-      // then what is NOT in the change, and only then the buttons that land it.
-      const untracked = Array.isArray(task.untrackedFilesNotApplied) ? task.untrackedFilesNotApplied : [];
-      if (untracked.length > 0 || task.untrackedNote) {
-        const warning = document.createElement("div");
-        warning.className = "swarm-untracked";
-        warning.append(iconElement("warning", "swarm-untracked-icon"));
-        const copy = document.createElement("div");
-        copy.append(textNode(
-          untracked.length > 0
-            ? `${untracked.length} new file${untracked.length === 1 ? "" : "s"} will NOT be applied`
-            : "Some worker output will not be applied",
-          "swarm-untracked-title"
-        ));
-        if (untracked.length > 0) {
-          const list = document.createElement("ul");
-          list.className = "swarm-untracked-list";
-          for (const file of untracked.slice(0, 8)) {
-            const entry = document.createElement("li");
-            entry.textContent = String(file);
-            list.append(entry);
-          }
-          if (untracked.length > 8) {
-            const more = document.createElement("li");
-            more.textContent = `and ${untracked.length - 8} more`;
-            list.append(more);
-          }
-          copy.append(list);
-        }
-        if (task.untrackedNote) {
-          copy.append(textNode(task.untrackedNote, "swarm-untracked-note"));
-        }
-        warning.append(copy);
-        row.append(warning);
-      }
-      if (task.reviewable) {
-        const actions = document.createElement("div");
-        actions.className = "forge-card-actions";
-        if (task.diffAvailable && task.diffArtifactId) {
-          const diff = actionButton("View diff", "swarm.diff.open");
-          diff.dataset.taskId = task.taskId;
-          diff.dataset.artifactId = task.diffArtifactId;
-          diff.dataset.sessionId = swarm.sessionId || "";
-          diff.title = "Review every change this worker proposes before applying it.";
-          actions.append(diff);
-        }
-        if (!task.applied && !task.discarded) {
-          const apply = actionButton("Apply", "swarm.apply");
-          apply.dataset.taskId = task.taskId;
-          const discard = actionButton("Discard", "swarm.discard");
-          discard.dataset.taskId = task.taskId;
-          actions.append(apply, discard);
-        }
-        row.append(actions);
-      }
-      tasks.append(row);
-    }
-    card.append(tasks);
-    if (swarm.cancellable) {
-      const cancel = actionButton("Stop parallel run", "swarm.cancel");
-      cancel.classList.add("danger-quiet");
-      card.append(cancel);
-    }
-    return card;
-  }
-
-  function renderSwarmRecovery(recovery) {
-    const section = document.createElement("section");
-    section.className = "forge-card swarm-recovery-card";
-    section.setAttribute("aria-live", "polite");
-    section.setAttribute("aria-busy", recovery?.status === "loading" || recovery?.status === "resuming" ? "true" : "false");
-
-    const header = document.createElement("div");
-    header.className = "swarm-recovery-header";
-    const copy = document.createElement("div");
-    copy.append(
-      textNode("Recover parallel work", "forge-card-title"),
-      textNode("Continue unfinished workers without reusing earlier permission grants.", "forge-card-detail")
-    );
-    const refresh = actionButton("Check again", "swarm.recovery.refresh");
-    refresh.classList.add("quiet-button");
-    refresh.disabled = recovery?.supported !== true || recovery?.status === "loading" || recovery?.status === "resuming";
-    refresh.setAttribute("aria-label", "Refresh interrupted Forge swarm jobs");
-    header.append(copy, refresh);
-    section.append(header);
-
-    if (recovery?.status === "loading") {
-      section.append(textNode("Checking durable job state…", "swarm-recovery-notice"));
-      return section;
-    }
-    const jobs = Array.isArray(recovery?.jobs) ? recovery.jobs : [];
-    if (recovery?.reason) {
-      section.append(textNode(recovery.reason, recovery.status === "error" ? "swarm-recovery-notice error" : "swarm-recovery-notice"));
-    }
-    if (jobs.length === 0) {
-      if (!recovery?.reason && recovery?.status === "ready") {
-        section.append(textNode("No interrupted or failed swarms are waiting for recovery.", "swarm-recovery-notice success"));
-      }
-      return section;
-    }
-
-    const list = document.createElement("div");
-    list.className = "swarm-recovery-list";
-    for (const job of jobs) {
-      const item = document.createElement("article");
-      item.className = "swarm-recovery-job";
-      const title = document.createElement("div");
-      title.className = "swarm-recovery-job-title";
-      title.append(
-        textNode(friendlyStatus(job.state), `swarm-recovery-state ${safeStatus(job.state)}`),
-        textNode(shortValue(job.jobId), "swarm-recovery-job-id")
-      );
-      item.append(title);
-      item.append(textNode(
-        `Updated ${formatRecoveryTime(job.updatedAt)} · ${job.attempts || 0} attempt${job.attempts === 1 ? "" : "s"} · ${job.resumeCount || 0} resume${job.resumeCount === 1 ? "" : "s"}`,
-        "forge-card-detail"
-      ));
-      if (job.errorSummary) {
-        item.append(textNode(job.errorSummary, "swarm-recovery-error"));
-      }
-      const usage = document.createElement("div");
-      usage.className = "swarm-recovery-usage";
-      usage.textContent = `${job.calls || 0} model call${job.calls === 1 ? "" : "s"} · ${Number(job.totalTokens || 0).toLocaleString()} tokens recorded`;
-      item.append(usage);
-      const actions = document.createElement("div");
-      actions.className = "forge-card-actions";
-      const resume = actionButton(
-        recovery.activeJobId === job.jobId ? "Resuming…" : "Review & resume",
-        "swarm.recovery.resume"
-      );
-      resume.classList.add("accent");
-      resume.dataset.jobId = job.jobId;
-      resume.dataset.revision = String(job.revision);
-      resume.disabled = recovery.status === "resuming";
-      const dismiss = actionButton("Dismiss", "swarm.recovery.dismiss");
-      dismiss.dataset.jobId = job.jobId;
-      dismiss.dataset.revision = String(job.revision);
-      dismiss.disabled = recovery.status === "resuming";
-      dismiss.title = "Hide this version of the recovery card without deleting backend state.";
-      actions.append(resume, dismiss);
-      item.append(actions);
-      list.append(item);
-    }
-    section.append(list);
-    return section;
-  }
-
-  function formatRecoveryTime(value) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) {
-      return "at an unknown time";
-    }
-    const milliseconds = numeric < 10_000_000_000 ? numeric * 1000 : numeric;
-    try {
-      return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(milliseconds));
-    } catch {
-      return "recently";
-    }
-  }
-
-  function renderForgeApproval(approval) {
-    const card = document.createElement("section");
-    card.className = "forge-card approval-card";
-    card.append(
-      textNode(approval.swarmWorker ? `${approval.swarmWorker} needs approval` : "Forge needs approval", "forge-card-title"),
-      textNode(approval.reason || approval.preview || approval.kind || "Review this action before continuing.", "forge-card-detail")
-    );
-    if (approval.command) {
-      card.append(metaRow("Command", approval.command, true));
-    }
-    if (approval.files?.length) {
-      card.append(metaList("Files", approval.files));
-    }
-    const actions = document.createElement("div");
-    actions.className = "forge-card-actions";
-    actions.append(forgeApprovalButton("Allow once", approval, "allow_once"));
-    if (approval.allowForSessionSupported) {
-      actions.append(forgeApprovalButton("Allow for task", approval, "allow_for_session"));
-    }
-    actions.append(forgeApprovalButton("Deny", approval, "deny"));
-    card.append(actions);
-    return card;
-  }
-
-  function renderForgeChanges(diffs) {
-    const root = document.getElementById("forgeChangesPanel");
-    if (!root) {
-      return;
-    }
-    if (!diffs.length) {
-      root.replaceChildren(emptyPanel("No proposed file changes yet. Run a Forge task, then refresh."));
-      return;
-    }
-    root.replaceChildren(...diffs.map((diff) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "forge-list-row";
-      button.dataset.dynamicCockpitAction = "forge.diff.open";
-      button.dataset.diffId = diff.diff_id;
-      button.append(textNode(diff.file_path, "forge-row-title"), textNode(`${friendlyStatus(diff.status)} · ${formatBytes(diff.size_bytes)}`, "forge-row-detail"), textNode("Open", "forge-row-action"));
-      return button;
-    }));
-  }
-
-  function renderForgeFiles(forge) {
-    const root = document.getElementById("forgeFilesPanel");
-    if (!root) {
-      return;
-    }
-    const nodes = [];
-    if (forge?.assets?.length) {
-      nodes.push(sectionLabel("Plan references"));
-      for (const asset of forge.assets) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "forge-list-row";
-        button.dataset.dynamicCockpitAction = "forge.assets.open";
-        button.dataset.assetId = asset.id;
-        button.append(textNode(asset.title || asset.id, "forge-row-title"), textNode(`${asset.kind || "File"} · ${formatBytes(asset.sizeBytes || 0)}`, "forge-row-detail"), textNode("Open", "forge-row-action"));
-        nodes.push(button);
-      }
-    }
-    const groups = forge?.artifacts || [];
-    const artifacts = groups.flatMap((group) => (group.artifacts || []).map((artifact) => ({ group, artifact })));
-    if (artifacts.length) {
-      nodes.push(sectionLabel("Results"));
-      for (const { group, artifact } of artifacts) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "forge-list-row";
-        button.dataset.dynamicCockpitAction = "forge.artifact.open";
-        button.dataset.sessionId = group.sessionId;
-        button.dataset.artifactId = artifact.artifact_id;
-        button.append(textNode(artifact.path, "forge-row-title"), textNode(formatBytes(artifact.size_bytes), "forge-row-detail"), textNode("Open", "forge-row-action"));
-        nodes.push(button);
-      }
-    }
-    const manage = document.createElement("button");
-    manage.type = "button";
-    manage.className = "secondary-action wide";
-    manage.dataset.dynamicCommand = "alysis.manageForgeAssets";
-    manage.textContent = "Manage plan files and references";
-    nodes.push(manage);
-    root.replaceChildren(...nodes);
-  }
-
-  function renderForgeActivity(forge, swarm) {
-    const root = document.getElementById("forgeActivityPanel");
-    if (!root) {
-      return;
-    }
-    const events = forge?.events || [];
-    const nodes = events.map((event) => activityRow(event.label || friendlyStatus(event.type), event.description || "", event.severity));
-    if (swarm?.status && swarm.status !== "idle") {
-      nodes.unshift(activityRow("Parallel Forge", friendlyStatus(swarm.status), swarm.status === "failed" ? "error" : "info"));
-    }
-    root.replaceChildren(...(nodes.length ? nodes : [emptyPanel("Forge activity will appear here as the plan runs.")]));
-  }
-
   function renderActivity(results, events) {
     // Streamed chat state also carries these panes. Keep open disclosures and
     // focused controls attached while their own data remains unchanged.
@@ -2488,7 +1930,7 @@
   }
 
   /**
-   * The "/" menu lists the real slash commands the host routes (`/forge plan`, `/model`, `/doctor`, …),
+   * The "/" menu lists the real slash commands the host routes (`/model`, `/doctor`, …),
    * filtered by what has been typed so far. Picking a row inserts the command; a command that takes
    * arguments leaves the caret after a trailing space so the user can keep typing, and the menu
    * closes as soon as arguments are being typed so Enter sends the message instead of re-picking.
@@ -3736,83 +3178,6 @@
     updateSubmitState();
   }
 
-  function showForgeTab(nextTab) {
-    if (!["plan", "changes", "files", "activity"].includes(nextTab)) {
-      return;
-    }
-    forgeTab = nextTab;
-    for (const button of document.querySelectorAll("[data-forge-tab]")) {
-      const tab = button.getAttribute("data-forge-tab") || "plan";
-      const selected = tab === nextTab;
-      button.id = `forgeTab-${tab}`;
-      button.setAttribute("aria-controls", `forge${tab[0].toUpperCase()}${tab.slice(1)}Panel`);
-      button.classList.toggle("selected", selected);
-      button.setAttribute("aria-selected", selected ? "true" : "false");
-      button.setAttribute("tabindex", selected ? "0" : "-1");
-    }
-    for (const panel of document.querySelectorAll("[data-forge-panel]")) {
-      if (panel instanceof HTMLElement) {
-        panel.hidden = panel.getAttribute("data-forge-panel") !== nextTab;
-        panel.setAttribute("role", "tabpanel");
-        panel.setAttribute("aria-labelledby", `forgeTab-${panel.getAttribute("data-forge-panel")}`);
-        panel.tabIndex = 0;
-      }
-    }
-    persistDraft();
-  }
-
-  function postCockpitAction(action, source) {
-    let message = null;
-    switch (action) {
-      case "forge.executePreview": message = { type: action, auto: true }; break;
-      case "forge.executeReview":
-      case "forge.status.refresh":
-      case "forge.assets.refresh":
-      case "swarm.start":
-      case "swarm.cancel":
-      case "swarm.review": message = { type: action }; break;
-      case "swarm.recovery.refresh": message = { type: action }; break;
-      case "swarm.recovery.resume":
-      case "swarm.recovery.dismiss": message = {
-        type: action,
-        jobId: source?.dataset.jobId || "",
-        revision: Number(source?.dataset.revision)
-      }; break;
-      case "forge.diff.open": message = { type: action, diffId: source?.dataset.diffId || "" }; break;
-      case "forge.review": message = { type: action, taskId: source?.dataset.taskId || undefined }; break;
-      case "forge.assets.open": message = { type: action, assetId: source?.dataset.assetId || "" }; break;
-      case "forge.artifact.open": message = { type: action, sessionId: source?.dataset.sessionId || "", artifactId: source?.dataset.artifactId || "" }; break;
-      case "forge.approval": message = { type: action, sessionId: source?.dataset.sessionId || "", approvalId: source?.dataset.approvalId || "", decision: source?.dataset.decision || "deny" }; break;
-      case "swarm.apply":
-      case "swarm.discard": message = { type: action, taskId: source?.dataset.taskId || "" }; break;
-      // A swarm diff is stored as a Forge artifact, so reviewing it reuses the artifact opener.
-      case "swarm.diff.open": message = {
-        type: "forge.artifact.open",
-        sessionId: source?.dataset.sessionId || "",
-        artifactId: source?.dataset.artifactId || ""
-      }; break;
-    }
-    if (message) {
-      host.postMessage({ type: "cockpit", message });
-    }
-  }
-
-  function actionButton(label, action) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.dataset.dynamicCockpitAction = action;
-    return button;
-  }
-
-  function forgeApprovalButton(label, approval, decision) {
-    const button = actionButton(label, "forge.approval");
-    button.dataset.sessionId = approval.sessionId;
-    button.dataset.approvalId = approval.approvalId;
-    button.dataset.decision = decision;
-    return button;
-  }
-
   function sectionLabel(value) {
     const heading = document.createElement("h2");
     heading.className = "subsection-label";
@@ -3827,30 +3192,6 @@
     return node;
   }
 
-  function metaRow(label, value, code) {
-    const row = document.createElement("div");
-    row.className = "forge-meta-row";
-    row.append(textNode(label, "forge-meta-label"));
-    const content = textNode(value, code ? "forge-meta-value code" : "forge-meta-value");
-    row.append(content);
-    return row;
-  }
-
-  function metaList(label, values, code) {
-    const root = document.createElement("div");
-    root.className = "forge-meta-list";
-    root.append(textNode(label, "forge-meta-label"));
-    const list = document.createElement("ul");
-    for (const value of values) {
-      const li = document.createElement("li");
-      li.className = code ? "code" : "";
-      li.textContent = String(value);
-      list.append(li);
-    }
-    root.append(list);
-    return root;
-  }
-
   function activityRow(title, detail, severity) {
     const row = document.createElement("div");
     row.className = `activity-row ${severity === "error" ? "error" : severity === "warning" ? "warning" : "info"}`;
@@ -3858,20 +3199,11 @@
     return row;
   }
 
-  function countForgeFiles(forge) {
-    return (forge?.assets?.length || 0) + (forge?.artifacts || []).reduce((total, group) => total + (group.artifacts?.length || 0), 0);
-  }
-
   function formatBytes(bytes) {
     const value = Number(bytes) || 0;
     if (value < 1024) return `${value} B`;
     if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10240 ? 1 : 0)} KB`;
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  function shortValue(value) {
-    const text = String(value || "");
-    return text.length > 14 ? `${text.slice(0, 12)}…` : text;
   }
 
   function safeJson(value) {
@@ -4578,7 +3910,7 @@
     setTone("engineSettings", state.engine?.tone);
     // Command gates above still apply to newly rendered buttons. Only the static
     // settings rows can reuse filtering; search input also filters them directly.
-    const signature = JSON.stringify([state.commands, state.provider, state.workspace, state.engine, state.forgeEnabled]);
+    const signature = JSON.stringify([state.commands, state.provider, state.workspace, state.engine]);
     if (signature !== settingsFilterSignature) {
       settingsFilterSignature = signature;
       filterSettings();
@@ -4696,7 +4028,7 @@
     if (signature === readyGateSignature) {
       // Conversation changes still update Send/Stop and the composer, without
       // replacing a recovery button between pointer-down and click.
-      syncWorkflowContext();
+      syncComposerPlaceholder();
       updateSubmitState();
       return;
     }
@@ -4752,7 +4084,7 @@
     if (starterPrompts) {
       starterPrompts.hidden = !composerReady;
     }
-    syncWorkflowContext();
+    syncComposerPlaceholder();
     updateSubmitState();
   }
 
@@ -4765,7 +4097,7 @@
     closeComposerPalettes();
     closeModelPalette();
     closePersonaPalette();
-    for (const candidate of ["task", "forge", "browser", "history", "settings", "activity", "models"]) {
+    for (const candidate of ["task", "browser", "history", "settings", "activity", "models"]) {
       const node = document.getElementById(`${candidate}Surface`);
       if (node) {
         node.hidden = candidate !== nextSurface;
@@ -4787,10 +4119,9 @@
         heading.focus();
       }
     }
-    const composerVisible = nextSurface === "task" || nextSurface === "forge";
+    const composerVisible = nextSurface === "task";
     document.body.classList.toggle("secondary-open", !composerVisible);
-    document.body.classList.toggle("forge-open", nextSurface === "forge");
-    syncWorkflowContext();
+    syncComposerPlaceholder();
     persistDraft();
     syncModeControl();
     if (composerVisible) {
@@ -4803,27 +4134,27 @@
     const instruction = taskInput?.value.trim() || "";
     const mode = taskMode?.value || "";
     const tooLong = instruction.length > MAX_TASK_CHARS;
-    const blocked = !composerReady || taskPending || forgeRunning || (taskRunning && workflow !== "chat") || tooLong;
+    const blocked = !composerReady || taskPending || tooLong;
     if (composerError) {
       composerError.hidden = !tooLong;
       composerError.textContent = tooLong ? `Your draft is preserved. Shorten it to ${MAX_TASK_CHARS.toLocaleString()} characters before sending.` : "";
     }
     taskInput?.setAttribute("aria-invalid", String(tooLong));
     if (taskForm) {
-      taskForm.setAttribute("aria-busy", taskPending || forgeRunning ? "true" : "false");
+      taskForm.setAttribute("aria-busy", taskPending ? "true" : "false");
     }
     if (submitTask) {
       submitTask.disabled = blocked || !instruction || !["readonly", "review", "auto"].includes(mode);
-      setText("submitTaskLabel", taskRunning && workflow === "chat" ? "Queue" : "Send");
-      submitTask.classList.toggle("queue-task", taskRunning && workflow === "chat");
-      submitTask.setAttribute("aria-label", taskRunning && workflow === "chat" ? "Queue follow-up" : "Send task");
-      submitTask.title = taskRunning && workflow === "chat" ? "Queue after the current request (Enter)" : "Send (Enter)";
+      setText("submitTaskLabel", taskRunning ? "Queue" : "Send");
+      submitTask.classList.toggle("queue-task", taskRunning);
+      submitTask.setAttribute("aria-label", taskRunning ? "Queue follow-up" : "Send task");
+      submitTask.title = taskRunning ? "Queue after the current request (Enter)" : "Send (Enter)";
       // While a task runs and nothing is typed, Stop is the only meaningful control: hide Send so
       // the row reads as one clear action instead of a disabled button next to a live one.
-      submitTask.hidden = (taskRunning || forgeRunning || taskPending) && !instruction;
+      submitTask.hidden = (taskRunning || taskPending) && !instruction;
     }
     if (cancelTask) {
-      const running = taskRunning || forgeRunning;
+      const running = taskRunning;
       const stopping = currentState?.conversation?.jobStatus === "cancellation_requested";
       cancelTask.hidden = !running;
       cancelTask.disabled = stopping;
@@ -4876,7 +4207,6 @@
     retryInstruction = pendingInstruction;
     retryRequestId = pendingRequestId;
     retryMode = pendingMode;
-    retryWorkflow = pendingWorkflow;
     pendingInstruction = "";
     pendingRequestId = "";
     taskPending = false;
@@ -4903,7 +4233,6 @@
       retryInstruction = "";
       retryRequestId = "";
       retryMode = "review";
-      retryWorkflow = "chat";
     }
     persistDraft();
     autoGrowComposer();
@@ -4943,15 +4272,11 @@
       pendingInstruction,
       pendingRequestId,
       pendingMode,
-      pendingWorkflow,
       retryInstruction,
       retryRequestId,
       retryMode,
-      retryWorkflow,
       mode: taskMode?.value || "review",
       surface,
-      workflow,
-      forgeTab,
       history
     });
   }
@@ -5206,7 +4531,6 @@
   const ICON_PATHS = {
     send: "M2 2.5 14 8 2 13.5l2-5.5zM4 8h10",
     attachment: "M5.5 8.5 9.8 4.2a2 2 0 0 1 2.8 2.8l-6.2 6.2a3 3 0 0 1-4.2-4.2l6.2-6.2M4.6 9.4l4.5-4.5",
-    forge: "M2.5 3.5h4v4h-4zM9.5 8.5h4v4h-4zM4.5 7.5V11h5M6.5 5.5H11v3",
     models: "M8 1.5 14 5 8 8.5 2 5zM2 8l6 3.5L14 8M2 11l6 3.5 6-3.5",
     settings: "M3.5 2v12M8 2v12M12.5 2v12M2 5h3M6.5 10h3M11 6h3",
     "chevron-right": "M6 3.5 10.5 8 6 12.5",
@@ -5272,7 +4596,7 @@
     return iconElement(name, className ? `${className} state-${status || "neutral"}` : `state-${status || "neutral"}`);
   }
 
-  /** A run-state marker for plan, swarm, and activity rows. The words beside it carry the meaning. */
+  /** A run-state marker for activity rows. The words beside it carry the meaning. */
   function stateMarker(status, className) {
     const value = String(status || "").toLowerCase();
     const state = ["completed", "complete", "done", "passed", "merged", "kept", "ok", "success"].includes(value)
@@ -5371,7 +4695,6 @@
 
   function isSurface(value) {
     return value === "task"
-      || value === "forge"
       || value === "browser"
       || value === "history"
       || value === "settings"
@@ -5383,7 +4706,7 @@
   showSurface(surface);
   autoGrowComposer();
   syncModeControl();
-  syncWorkflowContext();
+  syncComposerPlaceholder();
   updateSubmitState();
   if (taskPending) {
     armPendingAckTimer();

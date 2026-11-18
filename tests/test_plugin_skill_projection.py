@@ -305,7 +305,6 @@ def test_projection_starts_no_runtime_services_and_role_is_read_only(installed, 
         raise AssertionError("Runtime service constructed")
 
     monkeypatch.setattr(stdio_bridge, "DurablePromptQueue", deny)
-    monkeypatch.setattr(stdio_bridge, "DurableForgeRequestLedger", deny)
     bridge = StdioBridge(stdout=io.StringIO(), role="plugin_projection")
     try:
         with pytest.raises(AttributeError):

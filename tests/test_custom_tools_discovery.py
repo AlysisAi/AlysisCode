@@ -202,6 +202,33 @@ def test_discovery_rejects_explicit_inprocess_isolation(tmp_path: Path) -> None:
     assert any("TOOL.isolation must be subprocess" in issue.message for issue in result.issues)
 
 
+def test_discovery_skips_retired_runtimes_and_rejects_retired_only_scopes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _write_tool(
+        workspace,
+        ".alysis/tools/mixed_scope.py",
+        name="mixed_scope",
+        extra_manifest_lines=['"enabled_in": ["interactive_chat", "forge_exec"],'],
+    )
+    _write_tool(
+        workspace,
+        ".alysis/tools/retired_scope.py",
+        name="retired_scope",
+        extra_manifest_lines=['"enabled_in": ["swarm_worker"],'],
+    )
+
+    result = discover_custom_tools(
+        workspace_root=workspace,
+        built_in_tool_names=_built_in_tool_names(),
+    )
+
+    [tool] = result.effective_tools
+    assert tool.name == "mixed_scope"
+    assert tool.enabled_in == ("interactive_chat",)
+    # A tool scoped only to runtimes that no longer exist is reported, never widened.
+    assert any("no longer exist" in issue.message for issue in result.issues)
+
+
 def test_docs_workspace_manifest_example_is_discoverable(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     example = repo_root / "docs" / "examples" / "custom_tools" / "workspace_manifest.py"

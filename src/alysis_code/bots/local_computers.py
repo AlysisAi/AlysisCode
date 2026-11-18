@@ -14,6 +14,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from . import failures
 from .action_review import ActionReviews
 from .models import FileInput, Input
 from .store import Conflict, NotFound, encode, uid
@@ -410,9 +411,10 @@ class LocalComputers:
                 self.store._event(db, task["id"], "cancelled", {})
             elif task["status"] == "waiting" and row["generation"] != self._generation(db, task):
                 db.execute(
-                    "UPDATE tasks SET status='interrupted',error=?,updated_at=? WHERE id=?",
+                    "UPDATE tasks SET status='interrupted',error=?,failure=?,updated_at=? WHERE id=?",
                     (
                         "Instructions changed while local work was pending. Its receipt is saved; continue with the corrected request after inspecting any partial effects.",
+                        encode(failures.failure(failures.UNKNOWN)),
                         self.clock(),
                         task["id"],
                     ),
@@ -421,7 +423,10 @@ class LocalComputers:
                     db,
                     task["id"],
                     "interrupted",
-                    {"message": "Local work stopped after instructions changed."},
+                    {
+                        "message": "Local work stopped after instructions changed.",
+                        "failure": failures.failure(failures.UNKNOWN),
+                    },
                 )
             elif task["status"] in {"running", "waiting"} and (
                 # "Deny and stop" ends the task, whether or not it was parked waiting.
@@ -434,13 +439,16 @@ class LocalComputers:
                     if data.action == "deny" or receipt.get("status") == "stopped"
                     else "interrupted"
                 )
+                # Work that broke off on the person's computer, not a refusal by the person.
+                failure = failures.failure(failures.COMPUTER) if state == "interrupted" else None
                 db.execute(
-                    "UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?",
+                    "UPDATE tasks SET status=?,error=?,failure=?,updated_at=? WHERE id=?",
                     (
                         state,
                         "You declined the work on your computer, so this task stopped. Nothing ran."
                         if data.action == "deny"
                         else "The work on your computer was declined or stopped. Nothing was run again; check what it did before asking again.",
+                        encode(failure) if failure else None,
                         self.clock(),
                         task["id"],
                     ),
@@ -449,7 +457,10 @@ class LocalComputers:
                     db,
                     task["id"],
                     state,
-                    {"message": "Work on your computer ended; nothing was retried."},
+                    {
+                        "message": "Work on your computer ended; nothing was retried.",
+                        **({"failure": failure} if failure else {}),
+                    },
                 )
             elif task["status"] == "waiting" and checkpoint:
                 messages = json.loads(checkpoint[0])

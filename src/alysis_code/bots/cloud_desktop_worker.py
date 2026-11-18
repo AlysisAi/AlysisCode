@@ -161,7 +161,7 @@ def serve(session, *, memory_sleep=False):
         BrowserPageUnreachableError,
     )
     from .cloud_browser import ERRORS
-    from .cloud_browser_worker import BrowserBridge
+    from .cloud_browser_worker import FEATURES, BrowserBridge
     from .workspace_archive import WorkspaceArchiveError
 
     root = root_for(session)
@@ -298,12 +298,20 @@ def serve(session, *, memory_sleep=False):
                                 browser_restore = None
                             screen.bind(browser.computer.capture)
                             active_surface = "browser"
-                            result = {"ready": browser.computer.alive()}
+                            # What this computer's browser can do beyond the first images'.
+                            result = {"ready": browser.computer.alive(), "features": list(FEATURES)}
                         elif operation == "browser_call":
                             if browser is None:
                                 raise ValueError("Browser has not started.")
                             screen.bind(browser.computer.capture)
                             active_surface = "browser"
+                            result = browser.call(args)
+                        elif operation == "browser_site_data":
+                            # Sign-ins from the owl's details: the screen the person sees stays.
+                            if browser is None:
+                                raise ValueError("Browser has not started.")
+                            if args.get("method") not in {"site_cookies", "clear_site_data"}:
+                                raise ValueError("Unsupported site data operation.")
                             result = browser.call(args)
                         elif operation == "browser_restore_prepare":
                             if browser is not None or browser_restore is not None:

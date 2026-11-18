@@ -113,9 +113,7 @@ def test_visible_result_limits():
 
 
 def test_composite_preserves_slash_and_dollar_skill_completion():
-    delegate = ChatSlashCompleter(
-        mode_provider=lambda: "chat", skill_names_provider=lambda: ["demo"]
-    )
+    delegate = ChatSlashCompleter(skill_names_provider=lambda: ["demo"])
     composite = ChatComposerCompleter(
         delegate, workdir_provider=Path.cwd, index=StaticIndex("src/a.py")
     )
