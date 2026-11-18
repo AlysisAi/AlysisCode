@@ -154,8 +154,8 @@ def resolve_reap_decision(
     An interactive turn is never auto-killed: a user may have asked for a dev
     server and expects it to outlive the turn. Their still-running groups are
     reported instead, and reaped when the session itself ends. Every autonomous
-    runtime kind (one-shot, forge, swarm worker, subagent, conflict resolver,
-    nested worker) declares itself done at turn end, so anything it left
+    runtime kind (one-shot, subagent, nested worker) declares itself done at
+    turn end, so anything it left
     running is a leak and is terminated.
     """
     if not enabled:

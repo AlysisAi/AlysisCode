@@ -3,14 +3,14 @@
 ## Build contract — 8 September 2026
 
 The user approved extending Alysis Code to Cursor and JetBrains while retaining the existing
-VS Code experience. One Python agent owns execution, permissions, tools, sessions and Forge.
+VS Code experience. One Python agent owns execution, permissions, tools and sessions.
 Editor integrations own project trust, executable selection, editor operations and UI transport.
 
 The first executable slice shares the existing sidebar assets, proves the VS Code extension in
 Cursor, and adds an IntelliJ Platform tool window for chat, streaming, permission prompts and
 cancellation. JetBrains initially uses an explicitly selected development CLI and its existing
 provider configuration. No credentials go into the webview. Production managed-runtime packaging,
-JetBrains Forge/browser panels, native task/debug actions and ACP are subsequent milestones.
+JetBrains browser panels, native task/debug actions and ACP are subsequent milestones.
 Unsupported UI actions must be hidden or disabled and rejected by the host.
 
 ## Decisions
@@ -80,7 +80,7 @@ file dialogs, project trust enforcement and native session ownership still requi
 Plugin Verifier and a supported-product/version matrix. The generated ZIP is a development preview,
 not a production-ready compatibility guarantee. It has not been installed or published.
 
-JetBrains Forge/browser panels, history/resume, attachments and editor context, host Tasks/Debug,
+JetBrains browser panels, history/resume, attachments and editor context, host Tasks/Debug,
 model/persona management, slash commands and managed-runtime delivery remain separate implementation
 milestones. The existing VS Code runtime packaging/release gates also remain in force; this change
 does not publish a Cursor/Open VSX release or assert production runtime completeness.

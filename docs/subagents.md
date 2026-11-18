@@ -1,14 +1,11 @@
 # Subagents
 
-## Subagents (Non-Swarm)
+## Overview
 
 Subagents are optional focused helper agents that run as nested sessions from normal
-`alysis run` / `alysis chat` (non-swarm) flows. Their model context, messages, and tool loop
+`alysis run` / `alysis chat` flows. Their model context, messages, and tool loop
 are isolated from the parent transcript. The default `workspace_view=shared` uses the parent's
 working tree; `workspace_view=isolated` uses a retained Git worktree.
-
-Forge execution and swarm workers currently do not expose subagents. Use subagents during
-top-level exploration or planning, then execute scoped Forge tasks directly.
 
 ### Current orchestration capabilities
 
@@ -142,8 +139,7 @@ defaults to 3, queue release is FIFO, and the same-response batch cap remains 4.
 
 Shared-view background children must resolve to exact `readonly`. An isolated background child may
 use any post-clamp mode because it owns a separate worktree. Background lifecycle tools are
-top-level only; eligible writers may consult the bounded helpers described below. Forge execution
-and swarm workers do not receive the background tools.
+top-level only; eligible writers may consult the bounded helpers described below.
 
 A parent turn never completes with an unjoined child. When the model tries to finalize early, the
 host sends at most two corrective messages asking it to wait or cancel. If it still finalizes,
@@ -322,8 +318,7 @@ Depth-1 write-capable children may consult a small non-editing helper roster wit
 the parent between implementation steps. Built-in helpers are `explorer` for repository research,
 `code-reviewer` for independent review, `verifier` for evidence-based checks, and `debugger` for
 root-cause investigation. Automatically routable custom roles with
-`allow_workspace_writes: false` are also eligible. Readonly children, Forge execution, and swarm
-workers do not receive this tool.
+`allow_workspace_writes: false` are also eligible. Readonly children do not receive this tool.
 
 The helper runs synchronously in the same root the writer sees. An isolated writer's helper reads
 that writer's worktree; a shared writer's helper reads the shared root. Helper reports are advisory

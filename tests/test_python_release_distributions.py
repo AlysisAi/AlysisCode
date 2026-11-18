@@ -326,7 +326,7 @@ def test_certificate_named_file_requires_the_independent_repository_asset(tmp_pa
         "workspace-output.txt",
         "docs/debug.txt",
         "CHANGELOG.md",
-        "tests/fixtures/forge_host_v2/debug.json",
+        "tests/fixtures/debug.json",
         "schemas/other.schema.json",
     ],
 )

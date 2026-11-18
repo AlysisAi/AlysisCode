@@ -24,8 +24,8 @@ the desktop remains a presentation client.
   approvals, and extension trust are enforced by Alysis Code, not by model prose.
 - Progressive context: the model receives bounded workspace context and can ask
   for more through tools instead of receiving the entire repository upfront.
-- Inspectable runs: session logs, verification output, Forge artifacts, and
-  feedback bundles are written as local records for review and debugging.
+- Inspectable runs: session logs, verification output, and feedback bundles
+  are written as local records for review and debugging.
 
 ## Runtime Flow
 
@@ -54,15 +54,15 @@ The High-level flow is:
    continues until the task completes, the user cancels it, a genuine blocker
    or fatal error stops it, or an explicitly configured step/deadline safety
    limit is exhausted.
-7. Logs and artifacts remain available locally for status views, resumes,
-   feedback exports, and Forge execution reports.
+7. Logs and artifacts remain available locally for status views, resumes, and
+   feedback exports.
 
 ## Main Components
 
 ### CLI And Session Runtime
 
-The Typer CLI exposes `alysis`, `alysis chat`, `alysis run`, Forge
-commands, setup commands, and supporting inspection commands.
+The Typer CLI exposes `alysis`, `alysis chat`, `alysis run`, setup commands,
+and supporting inspection commands.
 
 The session runtime owns:
 
@@ -74,11 +74,11 @@ The session runtime owns:
 - session logging and local artifacts
 
 `alysis chat` is interactive and supports commands such as `/status`,
-`/permissions`, `/persona`, `/pwd`, `/subagents`, and `/forge`.
+`/permissions`, `/persona`, `/pwd`, and `/subagents`.
 
 `alysis run` is the one-shot entrypoint. It is best for focused tasks that
 can be completed from a single instruction. For exploratory or highly iterative
-work, interactive chat or Forge is usually a better fit.
+work, interactive chat is usually a better fit.
 
 Both entrypoints share the same unified turn path. Execution mode, sandboxing,
 and approvals decide whether a proposed action may run; the model's prose never
@@ -173,8 +173,7 @@ model convention. Alysis Code can infer likely commands from the workspace,
 accept explicit `--verify-cmd` values, and expose a `verify_run` tool when
 verification is enabled for the session.
 
-Forge workflows can make verification authoritative for execution gates. Normal
-chat and one-shot sessions use verification as task evidence and completion
+Chat and one-shot sessions use verification as task evidence and completion
 support.
 
 Verification evidence is classified before it affects a gate. Authoritative
@@ -422,9 +421,6 @@ each has a clear trust model.
   and workspace provider across live tool-surface rebuilds. Public tools are
   adapters to that stable owner; each submitted child snapshots its immutable
   launch context so later Permissions changes affect only future submissions.
-- The coordinator modules do not depend on Forge execution or swarm workers,
-  and those runtimes do not receive the top-level background
-  orchestration surface.
 - Every child inherits an active parent run deadline exactly. A child-specific
   fallback is optional operator policy, so delegation cannot extend a bounded
   one-shot run but has no arbitrary lifetime ceiling by default.
@@ -437,18 +433,6 @@ Release work that touches completion-gate, verification-evidence,
 deadline, diagnostic, or compatibility behavior should also follow the
 [release checklist](release_checklist.md).
 
-### Forge
-
-Forge is the plan-driven workflow for larger tasks. It creates a structured
-plan, executes scoped tasks, records verification and review evidence, and keeps
-run artifacts under the workspace runtime directory.
-
-Forge is stricter than normal chat. It expects scoped tasks, concrete write
-paths, and clear verification commands for strict gates. Use it when a change
-is large enough that planning, task boundaries, and review artifacts are useful.
-
-See [Forge](forge.md) for commands and operational guidance.
-
 ### Server Mode
 
 Server mode exposes Alysis Code through an HTTP API for managed runs and worker
@@ -459,8 +443,8 @@ See [Server mode](server.md) for API and deployment details.
 
 ## Local State And Artifacts
 
-Alysis Code writes local state for sessions, logs, verification output, Forge
-runs, knowledge artifacts, tool-output artifacts, and feedback exports. Runtime
+Alysis Code writes local state for sessions, logs, verification output,
+knowledge artifacts, tool-output artifacts, and feedback exports. Runtime
 artifacts are kept separate from source files and are excluded from normal
 project work whenever possible.
 
@@ -472,7 +456,7 @@ environment dumps.
 
 The important rule is that artifacts are evidence, not hidden authority. The
 host decides which artifacts are used for resuming, verification, planning,
-Forge execution, and feedback export.
+and feedback export.
 
 ## Trust Boundaries
 
@@ -490,7 +474,6 @@ and the rules that apply to them.
 - [Reference](reference.md): detailed runtime behavior and configuration.
 - [Security model](security_model.md): trust boundaries and sandboxing.
 - [Shell sandbox](shell_sandbox.md): Docker and Bubblewrap setup.
-- [Forge](forge.md): plan-driven execution.
 - [MCP](mcp.md): external server integration.
 - [Skills](skills.md): reusable instruction bundles.
 - [Plugins](plugins.md): extension packaging.

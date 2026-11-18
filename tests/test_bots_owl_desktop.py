@@ -1,4 +1,4 @@
-"""The owl computers' bar (AL, 2026-11-07; like Grok Bot's, 2026-11-13): launchers for installed
+"""The owl computers' bar (AL, 2026-11-07, 2026-11-13): launchers for installed
 apps, the open windows and the clock, quoted safely, on the desktop and on the browser screen."""
 
 from pathlib import PurePosixPath

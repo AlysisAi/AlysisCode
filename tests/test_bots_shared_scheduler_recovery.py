@@ -23,7 +23,7 @@ from alysis_code.bots.models import BotInput
 from alysis_code.bots.object_storage import LocalObjectStorage
 from alysis_code.bots.postgres import PostgresStore
 from alysis_code.bots.runtime import BotRuntime
-from alysis_code.bots.scheduling import ScheduleInput
+from alysis_code.bots.scheduling import CATCH_UP_SECONDS, ScheduleInput
 from alysis_code.bots.store import NotFound
 from alysis_code.bots.worker_lease import WorkerLease, WorkerLeaseLost
 from alysis_code.llm.types import LLMResponse, ToolCall
@@ -190,7 +190,7 @@ def test_scheduled_runs_survive_real_controller_death_without_replay(
                 bot = store.save_bot(
                     group["owner"], BotInput(name=f"Routine {index}/{n}", purpose="Synthetic study")
                 )["id"]
-                at = due if n < 7 else time.time() - 1800
+                at = due if n < 7 else time.time() - CATCH_UP_SECONDS - 1800
                 schedule = store.save_schedule(
                     group["owner"],
                     bot,
@@ -276,14 +276,13 @@ def test_scheduled_runs_survive_real_controller_death_without_replay(
                     group["owner"], groups[(groups.index(group) + 1) % 3]["scheduled"][0][0]
                 )
         failed_schedule = next(s for b, s in groups[0]["scheduled"] if b == uncertain["bot_id"])
-        assert (
-            next(
-                s
-                for s in store.list_schedules(groups[0]["owner"], uncertain["bot_id"])
-                if s["id"] == failed_schedule
-            )["state"]
-            == "paused"
+        interrupted = next(
+            s
+            for s in store.list_schedules(groups[0]["owner"], uncertain["bot_id"])
+            if s["id"] == failed_schedule
         )
+        # The interrupted one-time run may have acted, so nothing retries it.
+        assert interrupted["state"] == "ended" and interrupted["retry"] is None
 
         # A clean subsequent restart also must not republish/replay completed
         # or interrupted occurrences. Observe several actual scheduler ticks.

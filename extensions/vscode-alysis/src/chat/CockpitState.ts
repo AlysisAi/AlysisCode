@@ -5,155 +5,12 @@ import {
   emptyBrowserCockpitState
 } from "../browser/BrowserCockpitController";
 import { emptyCompatibilitySnapshot } from "../client/compatibility";
-import {
-  DiffSummary,
-  ForgeExecutePreviewResult,
-  ForgePlanResult
-} from "../client/AlysisProtocol";
 import { AlysisStatusBar } from "../status/statusBar";
-import { ArtifactGroup } from "../views/artifactsView";
-import { ForgePlanEventSummary } from "../views/forgePlanView";
 import { CockpitReadiness } from "./CockpitReadiness";
 import { CockpitRuntimeSnapshot } from "./CockpitRuntimeState";
 import { ChatState } from "./ChatTranscript";
 
 export type { CockpitAction, CockpitBlocker, CockpitReadiness, CockpitReadinessState } from "./CockpitReadiness";
-
-export interface ForgeCockpitApproval {
-  approvalId: string;
-  sessionId: string;
-  jobId: string | null;
-  kind: string;
-  reason: string;
-  preview: string;
-  command: string;
-  files: string[];
-  allowForSessionSupported: boolean;
-  allowForSessionScope: Record<string, unknown> | null;
-  warning: string | null;
-  // When this approval was raised by a swarm worker, the attributed task id +
-  // worker label so the non-modal inbox can show who is paused. null for
-  // ordinary (non-swarm) Forge approvals.
-  swarmTaskId: string | null;
-  swarmWorker: string | null;
-}
-
-// One task in a swarm run, projected for the cockpit. `state` is the cockpit
-// rendering state (scheduled/running/approval/interrupted/failed/merged/kept/
-// discarded), distinct from the raw plan `status`. Status is encoded by glyph/
-// weight in the webview, never by colour.
-export interface SwarmTaskView {
-  taskId: string;
-  title: string;
-  status: string;
-  state: string;
-  writeScope: string[];
-  reviewable: boolean;
-  diffAvailable: boolean;
-  diffArtifactId: string | null;
-  // Files the worker created that are NOT part of the diff and will not be
-  // applied — surfaced prominently so nothing lands silently.
-  untrackedFilesNotApplied: string[];
-  untrackedNote: string | null;
-  applied: boolean;
-  discarded: boolean;
-  // Editable, pre-filled regenerate-subtree offer for failed/interrupted tasks.
-  recovery: { instruction: string; focus: string | null } | null;
-}
-
-export interface SwarmRecoveryJobView {
-  jobId: string;
-  state: "interrupted" | "failed";
-  revision: number;
-  attempts: number;
-  resumeCount: number;
-  createdAt: number;
-  updatedAt: number;
-  errorCode: string | null;
-  errorSummary: string | null;
-  calls: number;
-  totalTokens: number;
-}
-
-export interface SwarmRecoveryState {
-  supported: boolean;
-  status: "idle" | "loading" | "ready" | "resuming" | "error";
-  reason: string | null;
-  activeJobId: string | null;
-  jobs: SwarmRecoveryJobView[];
-}
-
-// The IDE swarm console run state. Lives on cockpit alongside forge.
-export interface SwarmCockpitState {
-  supported: boolean;
-  reason: string | null;
-  sessionId: string | null;
-  planId: string | null;
-  jobId: string | null;
-  // idle | running | review_pending | incomplete | failed | interrupted | clean
-  status: string;
-  runStatus: string | null;
-  parallel: number;
-  busy: boolean;
-  cancellable: boolean;
-  tasks: SwarmTaskView[];
-  pendingReviewTaskIds: string[];
-  workingTreeUntouchedUntilApply: boolean;
-  recovery: SwarmRecoveryState;
-}
-
-export interface ForgeReviewSummary {
-  taskId: string;
-  approved: boolean;
-  confidence: string;
-  summary: string;
-  blockingIssues: number;
-  nonBlockingIssues: number;
-  requiresHumanApproval: boolean;
-  jsonArtifactId: string;
-  markdownArtifactId: string;
-}
-
-export interface ForgeAssetSummary {
-  id: string;
-  title: string;
-  kind: string;
-  mime: string;
-  sizeBytes: number;
-  pinned: boolean;
-  comprehensionStatus: string;
-  summaryPreview: string;
-}
-
-export interface ForgeAssetDetailView {
-  id: string;
-  title: string;
-  description: string;
-  kind: string;
-  mime: string;
-  sizeBytes: number;
-  comprehensionStatus: string;
-  extractedTextPreview: string;
-}
-
-export interface ForgeCockpitState {
-  sessionId: string | null;
-  planId: string | null;
-  activeJobId: string | null;
-  plan: ForgePlanResult | null;
-  planning: { sessionId: string; jobId: string; instruction: string } | null;
-  events: ForgePlanEventSummary[];
-  diffs: DiffSummary[];
-  artifacts: ArtifactGroup[];
-  executePreview: ForgeExecutePreviewResult | null;
-  selectedTaskIds: string[];
-  approvals: ForgeCockpitApproval[];
-  review: ForgeReviewSummary | null;
-  reviewBusy: boolean;
-  assets: ForgeAssetSummary[];
-  assetDetail: ForgeAssetDetailView | null;
-  assetsBusy: boolean;
-}
 
 // One management-action run, surfaced in the cockpit (running -> ok/error). The payload is the
 // redacted structured bridge result (rendered as kv/table/raw text); error is a redacted message.
@@ -228,13 +85,11 @@ export interface SessionModelState {
 
 export interface CockpitStatusState {
   mode: AlysisConfig["defaultMode"];
-  composerMode: "chat" | "forge";
   model: string;
   provider: string;
   sandbox: AlysisConfig["sandboxProfile"];
   workspaceTrusted: boolean;
   bridgeStatus: ReturnType<AlysisStatusBar["snapshot"]>;
-  enableForge: boolean;
   cliTrusted: boolean;
   cliReason: string | null;
   runtime: CockpitRuntimeSnapshot;
@@ -254,56 +109,8 @@ export interface CockpitState extends ChatState {
   personas: PersonasSurfaceState;
   cockpit: {
     status: CockpitStatusState;
-    forge: ForgeCockpitState;
-    swarm: SwarmCockpitState;
     browser: BrowserCockpitSummaryState;
     actionResults: ActionResultEntry[];
-  };
-}
-
-export function emptySwarmCockpitState(): SwarmCockpitState {
-  return {
-    supported: false,
-    reason: null,
-    sessionId: null,
-    planId: null,
-    jobId: null,
-    status: "idle",
-    runStatus: null,
-    parallel: 2,
-    busy: false,
-    cancellable: false,
-    tasks: [],
-    pendingReviewTaskIds: [],
-    workingTreeUntouchedUntilApply: true,
-    recovery: {
-      supported: false,
-      status: "idle",
-      reason: null,
-      activeJobId: null,
-      jobs: []
-    }
-  };
-}
-
-export function emptyForgeCockpitState(): ForgeCockpitState {
-  return {
-    sessionId: null,
-    planId: null,
-    activeJobId: null,
-    plan: null,
-    planning: null,
-    events: [],
-    diffs: [],
-    artifacts: [],
-    executePreview: null,
-    selectedTaskIds: [],
-    approvals: [],
-    review: null,
-    reviewBusy: false,
-    assets: [],
-    assetDetail: null,
-    assetsBusy: false
   };
 }
 
@@ -318,7 +125,6 @@ export function emptyCockpitState(chat: ChatState): CockpitState {
     cockpit: {
       status: {
         mode: "readonly",
-        composerMode: "chat",
         model: "",
         provider: "",
         sandbox: "default",
@@ -329,7 +135,6 @@ export function emptyCockpitState(chat: ChatState): CockpitState {
           tooltip: "Alysis Code is ready",
           visible: true
         },
-        enableForge: false,
         cliTrusted: false,
         cliReason: null,
         providerProfile: { supported: false, activeProfile: "", profiles: [] },
@@ -345,8 +150,6 @@ export function emptyCockpitState(chat: ChatState): CockpitState {
           events: []
         }
       },
-      forge: emptyForgeCockpitState(),
-      swarm: emptySwarmCockpitState(),
       browser: browserCockpitSummary(emptyBrowserCockpitState()),
       actionResults: []
     }

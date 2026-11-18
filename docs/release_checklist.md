@@ -70,7 +70,7 @@ an explicit release-source binding and the dependency SBOM before the existing
 
 ## Autonomous Execution And Optional Limits
 
-- Normal chat, one-shot, Forge, conflict-resolution, and subagent loops use the
+- Normal chat, one-shot, and subagent loops use the
   `autonomous` policy and must continue beyond the persisted legacy caps until
   completion, cancellation, a genuine blocker, a fatal error, or an optional
   invocation deadline.

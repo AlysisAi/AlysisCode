@@ -34,4 +34,3 @@ changes narrow and test the runtime path being changed.
 
 - [Architecture](../../../docs/architecture.md)
 - [Security model](../../../docs/security_model.md)
-- [Forge](../../../docs/forge.md)

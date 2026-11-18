@@ -6,11 +6,9 @@ vulnerability reporting process live in
 
 ## Workspace Trust
 
-Untrusted workspaces allow bridge health, provider setup, doctor checks, readonly placeholders, and
-readonly Forge Execute Preview when executable-origin guards pass. Forge Plan requires Workspace
-Trust in this build because the current backend records Forge artifacts under the workspace.
-`review`/`auto` Forge Execute Preview modes, real Forge execution, and future write-capable or
-shell-capable actions require Workspace Trust.
+Untrusted workspaces allow bridge health, provider setup, doctor checks, and readonly placeholders
+when executable-origin guards pass. Write-capable and shell-capable actions require Workspace
+Trust.
 
 If the workspace is untrusted and `alysis.defaultMode` is `review`, `auto`, or any future
 write-capable mode, chat submission is blocked before the bridge process starts, before
@@ -22,9 +20,7 @@ grant Workspace Trust.
 Workspace settings that can affect execution are restricted in VS Code metadata and checked again in
 extension code. In Restricted Mode, workspace-scoped values for `alysis.cliPath`,
 `alysis.defaultMode`, `alysis.defaultModel`, `alysis.baseUrl`, `alysis.provider`,
-`alysis.transport`, `alysis.sandboxProfile`, `alysis.forgeExecuteMaxSteps`,
-`alysis.forgeExecuteNoLog`, `alysis.autoStartBridge`, and `alysis.enableForge` are
-ignored.
+`alysis.transport`, `alysis.sandboxProfile`, and `alysis.autoStartBridge` are ignored.
 
 `alysis.cliPath` uses VS Code's `machine` scope: the executable path does not roam between
 operating systems through Settings Sync, and a workspace cannot override which executable the
@@ -52,9 +48,8 @@ Workspace-local CLI paths and write-capable flows require Workspace Trust.
 - Non-credential child processes — version, health, executable validation, and sandbox doctor probes
   — are launched through `cliCommandEnvironment`, which deletes every credential-bearing variable
   from the inherited environment first.
-- The extension tracks the running bridge launch profile. Safe readonly/no-secret operations such as
-  Forge plan list/open and Forge Execute Preview start with `stripApiKey` when possible. Chat, Run
-  Task, and Forge Plan require a credential-capable launch profile; an idle no-secret bridge is
+- The extension tracks the running bridge launch profile. Safe readonly/no-secret operations start
+  with `stripApiKey` when possible. Chat and Run Task require a credential-capable launch profile; an idle no-secret bridge is
   restarted with credentials, while pending requests, active jobs, or pending approvals block the
   restart with a clear error instead of silently reusing the weaker process.
 - Command, error, and result surfaces redact secret-like values before display, and config/profile

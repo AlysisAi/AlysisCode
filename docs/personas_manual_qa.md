@@ -67,10 +67,9 @@ model-behavior (should hold, but wording varies).
 | Type | Expected |
 |---|---|
 | `/plan`, `/plan mode`, `/plan approve`, `/plan off`, `/plan refactor parser` | ✅ `Unknown command: /plan. Try /help.` — no draft, no model call, badge and mode unchanged |
-| Type `/pl` in the TUI | ✅ Completer offers nothing for `/plan` (outside Forge) |
+| Type `/pl` in the TUI | ✅ Completer offers nothing for `/plan` |
 | `/help` | ✅ No `/plan` row; planning is `/persona architect` |
 | Tab (empty input) right after any of the above | ✅ Persona still cycles normally — no interlock remains |
-| Inside `/forge`: `/plan` | ✅ Forge picker (tasks · markdown · edit) still opens |
 
 ## 9. Resume
 

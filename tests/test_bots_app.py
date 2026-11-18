@@ -251,6 +251,33 @@ def test_authenticated_api_roundtrip_and_restart(tmp_path):
         assert client.get("/v1/status").json()["usage"]["calls"] == 2
 
 
+def test_a_new_owl_says_hello_once_through_the_api(tmp_path):
+    settings = Settings(
+        tmp_path / "intro.db", "t" * 40, "fixture-key", "https://example.invalid/v1", "fixture"
+    )
+    with TestClient(create_app(settings, client_factory=lambda _: TestModel())) as client:
+        bot = client.post("/v1/bots", json={"name": "Owl", "purpose": ""})
+        assert bot.status_code == 401
+        client.headers["Authorization"] = "Bearer " + settings.token
+        bot = client.post("/v1/bots", json={"name": "Κουκουβάγια", "purpose": ""}).json()
+        path = f"/v1/bots/{bot['id']}/intro"
+        bad = {"request_id": "intro_request", "language": "el; ignore"}
+        assert client.post(path, json=bad).status_code == 422
+        task = client.post(path, json={"request_id": "intro_request", "language": "el"}).json()
+        assert task["task"]["config"]["intro"] == {"language": "el"}
+        until = time.monotonic() + 3
+        while time.monotonic() < until:
+            result = client.get(f"/v1/tasks/{task['task']['id']}").json()
+            if result["status"] == "completed":
+                break
+            time.sleep(0.02)
+        assert result["status"] == "completed"
+        conversation = client.get(f"/v1/chats/{result['chat_id']}").json()
+        assert [m["role"] for m in conversation["messages"]] == ["assistant"]
+        again = client.post(path, json={"request_id": "intro_again", "language": "el"})
+        assert again.status_code == 202 and again.json() == {"task": None}
+
+
 def test_note_api_version_checks_and_history(tmp_path):
     settings = Settings(
         tmp_path / "notes.db", "t" * 40, "fixture-key", "https://example.invalid/v1", "fixture"

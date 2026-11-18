@@ -814,7 +814,6 @@ test("ChatTranscript keeps bridge job-lifecycle warnings out of the conversation
   transcript.setSession({ session_id: "session-1", workspace_root: "/workspace", mode: "review" });
   transcript.applyEvent(event({ sequence: 1, type: "warning_emitted", payload: { message: "cancellation_requested 27169b7c reason=cancelled_by_user" } }));
   transcript.applyEvent(event({ sequence: 2, type: "warning_emitted", payload: { message: "job_cancelled 27169b7c reason=cancelled_by_user" } }));
-  transcript.applyEvent(event({ sequence: 3, type: "warning_emitted", payload: { message: "forge_cancellation_requested j1 reason=user" } }));
   transcript.applyEvent(event({ sequence: 4, type: "warning_emitted", payload: { message: "Checkpoint storage is still initializing; continuing without checkpoints." } }));
   transcript.applyEvent(event({ sequence: 5, type: "warning_emitted", payload: { message: "prompt_recovery_stopped 27169b7c reason=interrupted_indeterminate" } }));
 

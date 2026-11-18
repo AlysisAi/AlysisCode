@@ -165,8 +165,8 @@ def test_bot_cannot_read_another_bots_file(store):
     assert store.list_files("alice", first["id"]) == []
 
 
-def test_proposed_memory_requires_review_then_appears_in_new_conversation(store):
-    bot, _, _ = setup_task(store, message="I prefer concise replies in Greek")
+def test_a_memory_the_owl_saves_is_used_at_once_and_undo_forgets_it(store):
+    bot, _, _ = setup_task(store, message="Προτιμώ σύντομες απαντήσεις στα ελληνικά")
     client = ScriptedClient(
         [
             response(
@@ -174,17 +174,19 @@ def test_proposed_memory_requires_review_then_appears_in_new_conversation(store)
                     ToolCall(
                         "memory1",
                         "propose_memory",
-                        {"title": "Reply style", "content": "Concise replies in Greek"},
+                        {"title": "Ύφος απαντήσεων", "content": "Σύντομες απαντήσεις στα ελληνικά"},
                     )
                 ]
             ),
-            response("Review my memory suggestion."),
+            response("Το κράτησα."),
         ]
     )
     result = run_claimed(store, client)
     assert result["status"] == "completed"
     memory = store.list_memories("alice", bot["id"])[0]
-    assert memory["status"] == "pending"
+    assert memory["status"] == "active"
+    tool = next(m for m in reversed(client.requests[-1]) if m["role"] == "tool")
+    assert '"status": "active"' in tool["content"] or '"status":"active"' in tool["content"]
     chat2 = store.create_chat("alice", bot["id"], "New conversation")
     task2 = store.enqueue(
         "alice",
@@ -192,11 +194,9 @@ def test_proposed_memory_requires_review_then_appears_in_new_conversation(store)
         TaskInput(message="What do you remember?", request_id="second_request"),
     )
     runtime = BotRuntime(store, "alice", lambda _: client)
-    assert "Concise replies in Greek" not in task_state(runtime._context(task2))
-    store.decide_memory("alice", bot["id"], memory["id"], "active")
-    assert "Concise replies in Greek" in task_state(runtime._context(task2))
-    store.delete_item("alice", bot["id"], memory["id"], kind="memories")
-    assert "Concise replies in Greek" not in task_state(runtime._context(task2))
+    assert "Σύντομες απαντήσεις στα ελληνικά" in task_state(runtime._context(task2))
+    store.undo_memory("alice", bot["id"], memory["id"])
+    assert "Σύντομες απαντήσεις στα ελληνικά" not in task_state(runtime._context(task2))
 
 
 def test_disabled_capability_is_enforced_even_if_model_calls_it(store):

@@ -287,4 +287,4 @@ The starter pack above is bundled and versioned with Alysis Code. These distribu
 - no dynamic per-skill slash aliases; explicit per-skill invocation uses `$<name>`
 - no implicit script execution
 - no arbitrary-root scanning outside approved paths
-- no automatic skill loading inside swarm workers
+- no automatic skill loading inside subagents

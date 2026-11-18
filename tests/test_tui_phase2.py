@@ -2152,29 +2152,6 @@ def test_headless_status_panel_opens_via_provider_not_routed_to_runner():
     assert not any(text.strip().lower() == "/status" for text, _w in calls)
 
 
-def test_headless_forge_only_panel_falls_through_outside_forge():
-    state = TuiState(model_name="m", username="t")
-    calls: list = []
-    opened = {"n": 0}
-
-    def _assets_provider(arg=""):
-        opened["n"] += 1
-        return {"title": "Assets", "sections": []}
-
-    _result, transcript = _run_headless(
-        state,
-        "/assets\r/exit\r",
-        session_builder=_FakeSession,
-        command_runner=_fake_command_runner(calls),
-        panel_providers={"/assets": _assets_provider},
-        background_turns=False,
-    )
-
-    assert opened["n"] == 0
-    assert any(text.strip().lower() == "/assets" for text, _w in calls)
-    assert ("user", "/assets") in transcript
-
-
 def test_slash_completer_lists_commands_including_stream():
     # The dropdown content includes the restored /stream control, while prefix
     # filtering still narrows the list.
@@ -2182,7 +2159,7 @@ def test_slash_completer_lists_commands_including_stream():
 
     from alysis_code.cli_impl.chat_slash_completer import ChatSlashCompleter
 
-    completer = ChatSlashCompleter(mode_provider=lambda: "chat")
+    completer = ChatSlashCompleter()
 
     def comps(text: str) -> list[str]:
         return [c.text for c in completer.get_completions(Document(text, len(text)), None)]
@@ -2452,7 +2429,7 @@ def test_headless_with_completer_does_not_crash():
         "/status\r/exit\r",
         session_builder=_FakeSession,
         command_runner=_fake_command_runner(calls),
-        completer=ChatSlashCompleter(mode_provider=lambda: "chat"),
+        completer=ChatSlashCompleter(),
         background_turns=False,
     )
     assert result == "/exit"
@@ -2573,7 +2550,6 @@ def test_headless_slash_clear_resets_session_and_clears_prior_transcript(monkeyp
             session=session,
             pending_images=pending_images,
             console=Console(file=stream, force_terminal=False),
-            forge_state=cli_mod._ForgeChatState(),
             record_local_command=False,
         )
         return (result, stream.getvalue().rstrip("\n"), None, None)

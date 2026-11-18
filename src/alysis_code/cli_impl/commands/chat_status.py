@@ -13,7 +13,6 @@ from ...provider_telemetry import last_provider_call_summary, last_web_search_su
 from ...step_budget import (
     DEFAULT_CHAT_MAX_STEPS,
     DEFAULT_SUBAGENT_MAX_STEPS,
-    DEFAULT_TASK_MAX_STEPS,
     normalize_step_budget_policy,
 )
 
@@ -51,12 +50,10 @@ def _session_step_limit_label(session: Any, *, scope: str) -> str:
         return "unlimited"
     field = {
         "chat": "max_steps",
-        "task": "task_max_steps",
         "subagent": "subagent_max_steps",
     }[scope]
     default = {
         "chat": DEFAULT_CHAT_MAX_STEPS,
-        "task": DEFAULT_TASK_MAX_STEPS,
         "subagent": DEFAULT_SUBAGENT_MAX_STEPS,
     }[scope]
     return str(getattr(session, field, getattr(getattr(session, "cfg", None), field, default)))
@@ -145,7 +142,6 @@ def _print_chat_status(
         _session_execution_policy(session),
     )
     table.add_row("chat_step_limit", _session_step_limit_label(session, scope="chat"))
-    table.add_row("task_step_limit", _session_step_limit_label(session, scope="task"))
     table.add_row("subagent_step_limit", _session_step_limit_label(session, scope="subagent"))
     table.add_row("active_step_limit", _active_step_limit_label(session))
     table.add_row("session", str(getattr(getattr(session, "store", None), "session_id", "-")))
@@ -161,7 +157,6 @@ def _print_chat_status(
     table.add_row("branch", branch)
     table.add_row("dirty", "yes" if _is_git_dirty(root) else "no")
     table.add_row("update", _cached_update_status_summary(resolved_cfg))
-    table.add_row("task", "-")
     table.add_row("queued_images", str(len(pending_images)))
     for index, label in enumerate(_pending_operation_labels(session), start=1):
         table.add_row(f"pending_{index}", label)
@@ -356,7 +351,6 @@ def _chat_status_panel_spec(*, session: Any, pending_images: list[str]) -> dict[
         ("subagents", "on" if subagents else "off", tone(subagents)),
         ("execution_policy", _session_execution_policy(session), "plain"),
         ("chat_step_limit", _session_step_limit_label(session, scope="chat"), "plain"),
-        ("task_step_limit", _session_step_limit_label(session, scope="task"), "plain"),
         (
             "subagent_step_limit",
             _session_step_limit_label(session, scope="subagent"),
@@ -925,7 +919,6 @@ def _chat_bottom_toolbar(
     *,
     session: Any,
     pending_images: list[str],
-    forge_state: _ForgeChatState | None = None,
 ) -> str:
     model = str(getattr(getattr(session, "client", None), "model", "?"))
     mode = str(getattr(session, "mode", "?"))
@@ -1015,43 +1008,26 @@ def _chat_bottom_toolbar(
         cost_value = cost_part.split("=", 1)[-1]
         toolbar_parts.append(cost_value)
 
-    if (
-        forge_state is not None
-        and _is_forge_ui_mode(forge_state.ui_mode)
-        and "forge" in visible_items
-    ):
-        run_id = forge_state.paths.run_id if forge_state.paths is not None else "-"
-        task_count = len((forge_state.plan or {}).get("tasks") or [])
-        toolbar_parts.append(run_id)
-        toolbar_parts.append(f"{task_count} task" + ("" if task_count == 1 else "s"))
     if not toolbar_parts:
         return " /help "
     return " " + " · ".join([*toolbar_parts, "/help"]) + " "
 
 
-def _chat_prompt_label(*, ui_mode: str = "chat", mode: str = "") -> str:
-    if _is_forge_ui_mode(ui_mode):
-        # ASCII-safe fallback (used when prompt_toolkit HTML is unavailable);
-        # the interactive path uses the ``\u25b8`` form below.
-        return "forge > "
+def _chat_prompt_label(*, mode: str = "") -> str:
     _ = mode
     return _CHAT_PROMPT_TEXT
 
 
-def _chat_prompt_label_formatted(*, ui_mode: str = "chat", mode: str = "") -> Any:
+def _chat_prompt_label_formatted(*, mode: str = "") -> Any:
     try:
         from prompt_toolkit.formatted_text import HTML
     except Exception:
-        return _chat_prompt_label(ui_mode=ui_mode, mode=mode)
-    if _is_forge_ui_mode(ui_mode):
-        return HTML("<b>forge</b> <ansicyan>\u25b8</ansicyan> ")
+        return _chat_prompt_label(mode=mode)
     _ = mode
     return HTML("<b>&gt;</b> ")
 
 
-def _chat_prompt_fallback_label(*, ui_mode: str = "chat", mode: str = "") -> str:
-    if _is_forge_ui_mode(ui_mode):
-        return "forge"
+def _chat_prompt_fallback_label(*, mode: str = "") -> str:
     _ = mode
     return _CHAT_PROMPT_FALLBACK_LABEL
 

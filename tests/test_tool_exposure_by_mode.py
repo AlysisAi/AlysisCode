@@ -583,7 +583,6 @@ def test_build_tools_readonly_excludes_trusted_custom_tools(
     [
         RuntimeKind.INTERACTIVE_CHAT,
         RuntimeKind.ONE_SHOT,
-        RuntimeKind.FORGE_EXEC,
     ],
 )
 def test_build_tools_top_level_write_runtimes_expose_trusted_custom_tools(
@@ -787,7 +786,7 @@ def test_build_tools_scope_restricted_session_excludes_custom_tools(
     tools = _build_tools(
         tmp_path,
         mode="auto",
-        runtime_kind=RuntimeKind.FORGE_EXEC,
+        runtime_kind=RuntimeKind.ONE_SHOT,
         allow_write_globs=["allowed.txt"],
     )
 
@@ -806,7 +805,7 @@ def test_build_tools_duplicate_default_protected_prefix_does_not_hide_custom_too
     tools = _build_tools(
         tmp_path,
         mode="auto",
-        runtime_kind=RuntimeKind.FORGE_EXEC,
+        runtime_kind=RuntimeKind.ONE_SHOT,
         deny_write_prefixes=[".alysis"],
     )
 
@@ -835,9 +834,7 @@ def test_build_tools_extra_denied_prefixes_exclude_custom_tools(
 @pytest.mark.parametrize(
     "runtime_kind",
     [
-        RuntimeKind.SWARM_WORKER,
         RuntimeKind.SUBAGENT,
-        RuntimeKind.CONFLICT_AUTO_RESOLVE,
     ],
 )
 def test_build_tools_non_top_level_runtimes_exclude_custom_tools(

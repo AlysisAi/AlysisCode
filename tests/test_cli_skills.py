@@ -144,7 +144,6 @@ def test_chat_skill_command_lists_discovered_skills_and_info(tmp_path: Path) -> 
 
     stream = io.StringIO()
     console = Console(file=stream, force_terminal=False)
-    forge_state = cli_mod._ForgeChatState()
 
     result = cli_mod._handle_chat_command(
         input_text="/skill",
@@ -152,7 +151,6 @@ def test_chat_skill_command_lists_discovered_skills_and_info(tmp_path: Path) -> 
         session=session,
         pending_images=[],
         console=console,
-        forge_state=forge_state,
     )
 
     assert result == "handled"
@@ -167,7 +165,6 @@ def test_chat_skill_command_lists_discovered_skills_and_info(tmp_path: Path) -> 
         session=session,
         pending_images=[],
         console=console,
-        forge_state=forge_state,
     )
 
     assert result == "handled"
@@ -182,7 +179,6 @@ def test_chat_skill_command_lists_discovered_skills_and_info(tmp_path: Path) -> 
         session=session,
         pending_images=[],
         console=console,
-        forge_state=forge_state,
     )
 
     assert result == "handled"
@@ -212,7 +208,6 @@ def test_chat_skill_list_marks_bundled_skills(tmp_path: Path) -> None:
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"
@@ -245,7 +240,6 @@ def test_chat_skill_command_returns_one_turn_execution_request(tmp_path: Path) -
         session=session,
         pending_images=[],
         console=console,
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert isinstance(result, cli_mod._ChatExecutionRequest)
@@ -288,7 +282,6 @@ def test_idle_dollar_skill_task_returns_one_turn_execution_request(tmp_path: Pat
         session=session,
         pending_images=[],
         console=Console(file=io.StringIO(), force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
     handler = getattr(chat_commands, "_handle_idle_skill_invocation", None)
 
@@ -300,7 +293,6 @@ def test_idle_dollar_skill_task_returns_one_turn_execution_request(tmp_path: Pat
         session=session,
         pending_images=[],
         console=Console(file=io.StringIO(), force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert isinstance(result, cli_mod._ChatExecutionRequest)
@@ -401,7 +393,6 @@ def test_idle_bare_dollar_skill_shows_info(tmp_path: Path) -> None:
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"
@@ -439,7 +430,6 @@ def test_idle_unknown_dollar_token_remains_user_message(
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result is None
@@ -451,7 +441,6 @@ def test_idle_unknown_dollar_token_remains_user_message(
             session=session,
             pending_images=[],
             console=Console(file=io.StringIO(), force_terminal=False),
-            forge_state=cli_mod._ForgeChatState(),
         )
         == "send"
     )
@@ -482,7 +471,6 @@ def test_idle_dollar_token_does_not_resolve_hidden_skill_alias(tmp_path: Path) -
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result is None
@@ -499,7 +487,6 @@ def test_chat_help_documents_dollar_skill_syntax(tmp_path: Path) -> None:
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False, width=120),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"
@@ -534,7 +521,6 @@ def test_chat_skill_command_rejects_when_skills_are_disabled(tmp_path: Path) -> 
         session=session,
         pending_images=[],
         console=console,
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"

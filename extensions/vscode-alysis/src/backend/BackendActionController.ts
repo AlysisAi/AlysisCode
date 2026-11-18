@@ -27,10 +27,6 @@ type SessionMode = "readonly" | "review" | "auto";
 export interface BackendActionContext {
   sessionId?: string;
   workspaceRoot?: string;
-  forgePlan?: {
-    sessionId: string;
-    planId: string;
-  };
 }
 
 export interface BackendActionDependencies {
@@ -239,9 +235,6 @@ export class BackendActionController implements vscode.Disposable {
     if (action.requiresActiveSession && !context.sessionId && !(action.id === "session.search" && this.deps.ensureLiveSession)) {
       return false;
     }
-    if (action.requiresActivePlan && !context.forgePlan) {
-      return false;
-    }
     return true;
   }
 
@@ -290,12 +283,6 @@ export class BackendActionController implements vscode.Disposable {
         "active_session_required",
         `${action.title} requires an active Alysis Code chat session.`
           + (action.id === "code.review.start" ? " Use Alysis Code: New Session or Task History to start or resume a task, then run Review Git Changes again." : "")
-      );
-    }
-    if (action.requiresActivePlan && !context.forgePlan) {
-      throw new ProtocolClientError(
-        "active_plan_required",
-        `${action.title} requires an active Forge plan.`
       );
     }
   }
@@ -621,37 +608,6 @@ export class BackendActionController implements vscode.Disposable {
       case "update.check":
         return updateCheckParams(raw);
 
-      case "forge.show":
-        return forgeShowParams(context, raw);
-      case "forge.plan.getState":
-      case "forge.plan.validate":
-        return forgePlanParams(context);
-      case "forge.plan.setAssistant":
-        return forgeAssistantParams(context, raw, trusted);
-      case "forge.plan.setGoal":
-        return forgeGoalParams(context, raw, trusted);
-      case "forge.plan.updateTask":
-        return forgeTaskParams(context, raw, trusted);
-      case "forge.plan.regenerate":
-        return forgePlanRegenerateParams(context, raw, trusted);
-      case "forge.assets.list":
-      case "forge.assets.cancelPending":
-      case "forge.assets.checkPlan":
-        return forgePlanParams(context);
-      case "forge.assets.show":
-        return { ...forgePlanParams(context), asset_id: await inputOrArg(raw, "Forge asset id") };
-      case "forge.assets.delete":
-      case "forge.assets.refresh":
-        return { ...forgePlanParams(context), asset_id: await inputOrArg(raw, "Forge asset id"), workspace_trusted: trusted, yes: true };
-      case "forge.assets.add":
-      case "forge.attach":
-        return { ...forgePlanParams(context), source_path: await inputOrArg(raw, "Workspace-scoped source path"), workspace_trusted: trusted, wait: false };
-      case "forge.assets.edit":
-        return { ...forgePlanParams(context), asset_id: await inputOrArg(raw, "Forge asset id"), title: await optionalInput("New title (optional)"), workspace_trusted: trusted };
-      case "forge.assets.pruneLegacy":
-        return { ...forgePlanParams(context), workspace_trusted: trusted, yes: true };
-      case "forge.review":
-        return { ...forgePlanParams(context), task_id: await inputOrArg(raw, "Forge task id"), workspace_trusted: trusted };
       default:
         throw new Error(`No parameter collector exists for ${action.id}.`);
     }
@@ -1000,46 +956,6 @@ export class BackendActionController implements vscode.Disposable {
         return bridge.sandboxPull(params as never);
       case "update.check":
         return bridge.updateCheck(params);
-      case "forge.show":
-        return bridge.forgeShow(params as never);
-      case "forge.plan.getState":
-        return bridge.forgePlanGetState(params as never);
-      case "forge.plan.setAssistant":
-        return "instruction" in params
-          ? bridge.forgePlanSetAssistant(params as never)
-          : bridge.forgePlanGetState(params as never);
-      case "forge.plan.setGoal":
-        return "goal" in params
-          ? bridge.forgePlanSetGoal(params as never)
-          : bridge.forgePlanGetState(params as never);
-      case "forge.plan.updateTask":
-        return bridge.forgePlanUpdateTask(params as never);
-      case "forge.plan.validate":
-        return bridge.forgePlanValidate(params as never);
-      case "forge.plan.regenerate":
-        return bridge.forgePlanRegenerate(params as never);
-      case "forge.assets.list":
-        return bridge.forgeAssetsList(params as never);
-      case "forge.assets.show":
-        return bridge.forgeAssetsShow(params as never);
-      case "forge.assets.add":
-        return bridge.forgeAssetsAdd(params as never);
-      case "forge.assets.delete":
-        return bridge.forgeAssetsDelete(params as never);
-      case "forge.assets.edit":
-        return bridge.forgeAssetsEdit(params as never);
-      case "forge.assets.refresh":
-        return bridge.forgeAssetsRefresh(params as never);
-      case "forge.assets.cancelPending":
-        return bridge.forgeAssetsCancelPending(params as never);
-      case "forge.assets.checkPlan":
-        return bridge.forgeAssetsCheckPlan(params as never);
-      case "forge.assets.pruneLegacy":
-        return bridge.forgeAssetsPruneLegacy(params as never);
-      case "forge.attach":
-        return bridge.forgeAttach(params as never);
-      case "forge.review":
-        return bridge.forgeReview(params as never);
       default:
         throw new Error(`No backend invoker exists for ${action.id}.`);
     }
@@ -2193,134 +2109,6 @@ function requireActiveSession(context: BackendActionContext): string {
   return context.sessionId;
 }
 
-function forgePlanParams(context: BackendActionContext): Record<string, string> {
-  if (!context.forgePlan) {
-    throw new ProtocolClientError("active_plan_required", "An active Forge plan is required.");
-  }
-  return {
-    session_id: context.forgePlan.sessionId,
-    plan_id: context.forgePlan.planId
-  };
-}
-
-function forgeAssistantParams(
-  context: BackendActionContext,
-  raw: string,
-  trusted: boolean
-): Record<string, unknown> {
-  const base = forgePlanParams(context);
-  const instruction = forgeTextArgument(raw, "assistant instruction");
-  if (!instruction || instruction.toLowerCase() === "show") {
-    return base;
-  }
-  requireWorkspaceTrustForMutation(trusted, "Updating the Forge assistant instruction");
-  return { ...base, instruction, workspace_trusted: trusted };
-}
-
-function forgeGoalParams(
-  context: BackendActionContext,
-  raw: string,
-  trusted: boolean
-): Record<string, unknown> {
-  const base = forgePlanParams(context);
-  const goal = forgeTextArgument(raw, "goal");
-  if (!goal || goal.toLowerCase() === "show") {
-    return base;
-  }
-  requireWorkspaceTrustForMutation(trusted, "Updating the Forge goal");
-  return { ...base, goal, workspace_trusted: trusted };
-}
-
-function forgeTaskParams(
-  context: BackendActionContext,
-  raw: string,
-  trusted: boolean
-): Record<string, unknown> {
-  const base = forgePlanParams(context);
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new ProtocolClientError(
-      "invalid_forge_task_command",
-      "Usage: /task <task_id> show, /task <task_id> status <status>, /task <task_id> title <title>, or /task <task_id> body <text>."
-    );
-  }
-  const [taskId, ...rest] = trimmed.split(/\s+/);
-  validateForgeTaskId(taskId);
-  const tail = rest.join(" ").trim();
-  if (!tail || tail.toLowerCase() === "show") {
-    return { ...base, task_id: taskId };
-  }
-
-  const parsed = parseForgeTaskEdit(tail);
-  requireWorkspaceTrustForMutation(trusted, "Updating a Forge task");
-  return { ...base, task_id: taskId, ...parsed, workspace_trusted: trusted };
-}
-
-function forgePlanRegenerateParams(
-  context: BackendActionContext,
-  raw: string,
-  trusted: boolean
-): Record<string, unknown> {
-  const base = forgePlanParams(context);
-  requireWorkspaceTrustForMutation(trusted, "Regenerating a Forge plan");
-  const text = forgeTextArgument(raw, "regeneration instruction");
-  if (!text) {
-    return { ...base, workspace_trusted: trusted };
-  }
-  const normalized = text.toLowerCase();
-  if (normalized.startsWith("focus ")) {
-    return {
-      ...base,
-      focus: forgeTextArgument(text.slice("focus ".length), "regeneration focus"),
-      workspace_trusted: trusted
-    };
-  }
-  return { ...base, instruction: text, workspace_trusted: trusted };
-}
-
-function parseForgeTaskEdit(tail: string): Record<string, string> {
-  const normalized = tail.toLowerCase();
-  if (normalized.startsWith("status ")) {
-    return { status: forgeTextArgument(tail.slice("status ".length), "task status") };
-  }
-  if (normalized.startsWith("set status ")) {
-    return { status: forgeTextArgument(tail.slice("set status ".length), "task status") };
-  }
-  if (normalized.startsWith("title ")) {
-    return { title: forgeTextArgument(tail.slice("title ".length), "task title") };
-  }
-  if (normalized.startsWith("body ")) {
-    return { body: forgeTextArgument(tail.slice("body ".length), "task body") };
-  }
-  throw new ProtocolClientError(
-    "invalid_forge_task_command",
-    "Usage: /task <task_id> show, /task <task_id> status <status>, /task <task_id> title <title>, or /task <task_id> body <text>."
-  );
-}
-
-function forgeTextArgument(value: string, label: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return "";
-  }
-  if (trimmed.includes("\0")) {
-    throw new ProtocolClientError("invalid_forge_plan_edit", `Forge ${label} cannot contain NUL bytes.`);
-  }
-  if (trimmed.length > 8_000) {
-    throw new ProtocolClientError("invalid_forge_plan_edit", `Forge ${label} is too large for an IDE plan edit.`);
-  }
-  return trimmed;
-}
-
-function validateForgeTaskId(taskId: string): void {
-  if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(taskId) || taskId.includes("..")) {
-    throw new ProtocolClientError(
-      "invalid_task_id",
-      "Forge task id must be an existing task identifier, not a path."
-    );
-  }
-}
-
 function requireCodeReviewWorkspace(value: string | undefined): string {
   const workspace = value?.trim();
   if (!workspace) {
@@ -2337,7 +2125,7 @@ function workspaceRoot(): string | undefined {
 }
 
 function backendActionCanTouchWorkspace(action: BackendActionMetadata): boolean {
-  return action.workspaceRequired || action.requiresActivePlan || action.group === "forgeAssets";
+  return action.workspaceRequired;
 }
 
 function stringOrUndefined(value: unknown): string | undefined {
@@ -2468,13 +2256,4 @@ async function updateCheckParams(raw: string): Promise<Record<string, unknown>> 
     throw new ProtocolClientError("input_cancelled", "Update check selection was cancelled.");
   }
   return picked.value;
-}
-
-async function forgeShowParams(context: BackendActionContext, raw: string): Promise<Record<string, string>> {
-  if (context.forgePlan && !raw) {
-    return forgePlanParams(context);
-  }
-  const sessionId = context.forgePlan?.sessionId || context.sessionId || (await inputOrArg("", "Forge session id"));
-  const planId = raw || context.forgePlan?.planId || (await inputOrArg("", "Forge plan id"));
-  return { session_id: sessionId, plan_id: planId };
 }

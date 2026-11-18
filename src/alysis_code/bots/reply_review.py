@@ -36,6 +36,11 @@ feedback for the bot, never shown to the person. The reply itself must still fol
 the language rules below.
 
 Check operational truth and fulfillment, not writing style or general knowledge:
+- The bot's own writing guidance (how many examples to give, length, lists or
+  tables, tone, suggested follow-up messages) shapes its replies but is never a
+  reason to repair: a truthful draft that delivers what was asked is ready however
+  it is written. A style or format the person explicitly asked for, and the
+  response language rule below, still apply.
 - Check every material claim across the whole draft, including the final suggested
   next steps. One accurate paragraph cannot justify a contradictory later promise.
   A proposed remedy must be capable of overcoming the blocker under the supplied
@@ -109,6 +114,11 @@ Check operational truth and fulfillment, not writing style or general knowledge:
   matching the user's missing input. This lets the service preserve the draft
   before closing the computer. Do not create questions for finished work or
   unrelated ordinary conversation.
+- A draft that stops partway through requested work leaves it undone, in any
+  language: it ends by announcing a next step it has not taken, or asks whether
+  to carry on with work the person already asked for. That is an omission. The
+  exception is a next step that needs the person's own input, choice or
+  permission, which must then come through the actual question or approval tool.
 - Check every requested deliverable, including text the user asked to receive
   in chat. Acknowledging a memory, saved note or background job does not replace
   the requested answer, draft or analysis.
@@ -280,10 +290,47 @@ class ReplyVerdict(BaseModel):
         return value.strip() or None if isinstance(value, str) else value
 
     @property
+    def carries_on(self) -> bool:
+        """Whether this repair asks for more of the requested work, not a corrected claim."""
+        return self.decision == "repair" and self.issue == "omission" and self.false_claim is None
+
+    @property
     def withholds_final_status(self) -> bool:
         return self.decision == "repair" and (
             self.issue not in ("omission", "wording") or self.false_claim is not None
         )
+
+
+class RepairAllowance:
+    """How many withheld drafts one turn may still correct before it gives a plain status.
+
+    A draft withheld because requested work was left undone, after the bot completed new
+    work since its previous withheld draft, is a carry-on: the bot keeps working without
+    using up its corrections, so a long task does not end in a status halfway through.
+    Progress is the number of completed tool calls, so the rule is the same for every
+    task, language and model. Carry-ons are bounded, and a draft withheld without new
+    work always uses a correction, so a turn that keeps stopping early still ends.
+    """
+
+    CORRECTIONS = 2
+    CARRY_ONS = 6
+
+    def __init__(self):
+        self.corrections = 0
+        self.carry_ons = 0
+        self._completed_at_last_repair = 0
+
+    def allows(self, verdict: ReplyVerdict, completed_tools: int) -> bool:
+        """Record one withheld draft; False when the turn must give a plain status instead."""
+        progressed = completed_tools > self._completed_at_last_repair
+        self._completed_at_last_repair = completed_tools
+        if verdict.carries_on and progressed and self.carry_ons < self.CARRY_ONS:
+            self.carry_ons += 1
+            return True
+        if self.corrections >= self.CORRECTIONS:
+            return False
+        self.corrections += 1
+        return True
 
 
 _THINKING = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)

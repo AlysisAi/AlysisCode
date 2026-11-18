@@ -1,4 +1,4 @@
-"""The pinned footer — Alysis Code's own status grammar (not a Cline clone).
+"""The pinned footer — Alysis Code's own status grammar.
 
 Two lines, each split left/right against the terminal width::
 
@@ -135,14 +135,6 @@ def _line1(state: TuiState) -> tuple[Fragments, Fragments]:
 
 def _line2(state: TuiState) -> tuple[Fragments, Fragments]:
     left: Fragments = []
-    if state.forge_mode:
-        # A distinct violet chip so the forge session is unmistakable at a glance
-        # (green stays the chat accent). No glyph — a wide emoji would throw off the
-        # width math that keeps the footer from wrapping.
-        label = "FORGE"
-        if state.forge_run_id:
-            label = f"{label} {state.forge_run_id}"
-        left.append(("class:tui.footer.forge", label))
     if state.exec_mode:
         # Glanceable active execution-mode badge. A pending selection is shown
         # explicitly as a transition, never as though it were already active.

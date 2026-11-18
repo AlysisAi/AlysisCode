@@ -39,7 +39,7 @@
         ]
       };
       this.emit({ type: "state", state: {
-        mode: this.mode, forgeEnabled: false, providerName: "Alysis Code", modelName: this.model,
+        mode: this.mode, providerName: "Alysis Code", modelName: this.model,
         ready, readyReason: blocker.detail, readiness: { ok: ready, blockers: ready ? [] : [blocker] },
         engine: { label: "Local agent", detail: ready ? "Connected · development runtime" : blocker.detail, tone: ready ? "ready" : "attention" },
         workspace: { detail: "Project access is checked by the IDE before the agent starts." },
@@ -120,7 +120,6 @@
         if (!this.connected) throw new Error("Connect to the local agent first.");
         if (this.busy) throw new Error("Wait for this task to finish or stop it before sending another message.");
         if (instruction.startsWith("/")) throw new Error("Slash commands are not available in the JetBrains preview. Use the chat controls.");
-        if (message.workflow && message.workflow !== "chat") throw new Error("Forge is not available in the JetBrains preview yet.");
         if (!MODES.has(message.mode)) throw new Error("Unsupported permissions.");
         this.busy = true;
         started = true;

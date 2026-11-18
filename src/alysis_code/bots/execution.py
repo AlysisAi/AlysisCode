@@ -21,6 +21,7 @@ from ..runtime_kind import RuntimeKind
 from ..tools.artifacts import session_artifact_read
 from ..tools.history import history_search
 from ..tools.registry import require_builtin_tool_metadata
+from . import failures
 from .action_review import ApprovalRequired
 from .browser import BrowserImageResult, BrowserInteractionStalled
 from .browser_images import append_browser_image, retire_browser_images
@@ -29,9 +30,14 @@ from .computer import ComputerControlPause
 from .desktop_linux import ComputerActionUncertain
 from .local_computers import LocalComputerPending
 from .object_storage import ObjectStorageError
-from .reply_review import validate_tool_response
-from .reply_style import FOLLOW_UPS_GUIDANCE, REPLY_STYLE
-from .runtime import RESEARCH_GUIDANCE, REVIEW_STATUS_ONLY, provider_retry_wait
+from .reply_review import RepairAllowance, validate_tool_response
+from .reply_style import FOLLOW_UPS_GUIDANCE, PROGRESS_NOTE_GUIDANCE, REPLY_STYLE
+from .runtime import (
+    NO_PROGRESS_NOTE_TOOLS,
+    RESEARCH_GUIDANCE,
+    REVIEW_STATUS_ONLY,
+    provider_retry_wait,
+)
 from .store import BackgroundInstructionsPending, LibraryCapacityExceeded, LimitReached, encode
 
 PROMPT = (
@@ -123,6 +129,7 @@ persistence or deletion when the receipts do not establish it.
 """
     + RESEARCH_GUIDANCE
     + "\n"
+    + PROGRESS_NOTE_GUIDANCE
     + REPLY_STYLE
     + FOLLOW_UPS_GUIDANCE
 )
@@ -274,12 +281,16 @@ class TaskClient:
         # which reply came of which response; see _keep_receipts.
         self.replies = None
         self.fatal = None
-        self.review_attempts = 0
+        self.repairs = RepairAllowance()
+        # Tool calls completed in this session: repairs after new work carry it on.
+        self.completed_tools = 0
         self.status_only = False
         self.reviewed_report = None
         self.reply_review_enabled = bool(
             runtime.reply_review and task["config"].get("reply_review_enabled", True)
         )
+        # Background work continues the person's request, with the updates it already sent.
+        self.turn_updates = runtime._turn_updates(task)
 
     def check_control(self):
         try:
@@ -404,6 +415,12 @@ class TaskClient:
             wire, memory_inputs = runtime._fit_context(
                 task, wire, offered_tools or [], with_memory_inputs=True
             )
+            completed_tools = sum(1 for message in messages if message.get("role") == "tool")
+            update_request = self.turn_updates.reminder(
+                completed_tools, tools_offered=bool(offered_tools)
+            )
+            if update_request:
+                wire = [*wire, {"role": "system", "content": update_request}]
             try:
                 call_id = runtime.store.reserve_call(
                     runtime.owner, task["id"], self.model, runtime.limits.max_calls, background=True
@@ -517,6 +534,19 @@ class TaskClient:
                     runtime.owner, task["id"], "tool_batch_rejected", {"message": reason}
                 )
                 continue
+            if response.tool_calls:
+                kind, lines = self.turn_updates.take(
+                    response.content,
+                    completed_tools,
+                    card=any(call.name in NO_PROGRESS_NOTE_TOOLS for call in response.tool_calls),
+                )
+                for line in lines:
+                    runtime.store.event(
+                        runtime.owner,
+                        task["id"],
+                        "progress_note",
+                        {"text": line, "kind": kind},
+                    )
             if not response.tool_calls and self.reply_review_enabled:
                 try:
                     verdict = runtime.reply_review.check(
@@ -538,11 +568,14 @@ class TaskClient:
                     self.corrections.extend(updates)
                     continue
                 if verdict.decision == "repair":
-                    if self.review_attempts >= 2:
+                    if not self.repairs.allows(verdict, self.completed_tools):
                         if self.status_only:
-                            raise LimitReached(
-                                "The work report didn't match the results, so it wasn't sent. "
-                                "Saved files are still in the Library. Try asking again."
+                            raise failures.with_kind(
+                                LimitReached(
+                                    "The work report didn't match the results, so it wasn't sent. "
+                                    "Saved files are still in the Library. Try asking again."
+                                ),
+                                failures.MODEL,
                             )
                         # Before giving the person nothing, ask once for a plain status limited
                         # to the receipts, with no tools; it is reviewed like any report.
@@ -559,7 +592,6 @@ class TaskClient:
                             ]
                         )
                         continue
-                    self.review_attempts += 1
                     feedback.extend(
                         [
                             runtime._keep_receipt(
@@ -623,6 +655,7 @@ def execute(runtime, task, client, token, schemas, dispatch, context):
                     raise
                 raise
             receipt = result.observation if isinstance(result, BrowserImageResult) else result
+            task_client.completed_tools += 1
             result_id = runtime.task_results.archive(task["id"], name, encode(receipt))
             runtime.store.event(
                 runtime.owner,
@@ -777,8 +810,12 @@ def execute(runtime, task, client, token, schemas, dispatch, context):
                 raise task_client.fatal
             runtime.background.assert_current(task["id"])
             if exit_code != 0:
-                raise LimitReached(
-                    "The execution did not finish. Review saved partial files before continuing."
+                # The engine run ended without saying why: no allowance was reached.
+                raise failures.with_kind(
+                    LimitReached(
+                        "The execution did not finish. Review saved partial files before continuing."
+                    ),
+                    failures.UNKNOWN,
                 )
             # The shared Code engine may append its own acceptance-contract
             # commentary after the model reply. Bots use remote tool receipts
@@ -800,8 +837,11 @@ def execute(runtime, task, client, token, schemas, dispatch, context):
                 )
             )
             if not content:
-                raise LimitReached(
-                    "Execution returned no final report. Saved files remain available."
+                raise failures.with_kind(
+                    LimitReached(
+                        "Execution returned no final report. Saved files remain available."
+                    ),
+                    failures.MODEL,
                 )
             return content
         except (ComputerControlPause, LocalComputerPending):

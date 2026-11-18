@@ -41,7 +41,6 @@ RELIABILITY_TESTS = (
     "test_web_search_startup_boundary.py",
     "test_tool_execution_startup_boundary.py",
     "test_tool_schema_budgeter.py",
-    "test_execution_budget.py",
     "test_cli_run_deadline.py",
     "test_acceptance_evidence_authority_integration.py",
     "test_artifact_output_observation.py",
@@ -50,7 +49,6 @@ RELIABILITY_TESTS = (
     "test_task_outcome_authority.py",
     "test_ide_stdio_bridge.py",
     "test_ide_session_close.py",
-    "test_plan_reconciliation.py",
     "test_agent_loop_event_emission.py",
     "test_external_tool_repetition.py",
     "test_wire_request_diagnostics.py",
@@ -95,8 +93,7 @@ RELIABILITY_TESTS = (
     "test_cli_entrypoint.py::test_cli_and_plain_trace_imports_defer_optional_execution_and_rendering",
     "test_cli_entrypoint.py::test_command_registration_does_not_load_interactive_compatibility_surface",
     "test_cli_entrypoint.py::test_selected_cli_group_preserves_routing_without_loading_other_commands",
-    "test_cli_entrypoint.py::test_cold_host_executor_materializes_complete_canonical_dependencies",
-    "test_cli_entrypoint.py::test_ide_registration_defers_session_and_swarm_execution",
+    "test_cli_entrypoint.py::test_ide_registration_defers_session_execution",
     "test_cli_entrypoint.py::test_cli_registration_defers_credential_crypto_until_store_access",
     "test_cli_entrypoint.py::test_cli_registration_defers_diagnostic_backends",
     "test_cli_entrypoint.py::test_one_shot_admission_does_not_load_interactive_shell",
@@ -119,7 +116,6 @@ SAFETY_TESTS = (
     "test_search_rg_security.py",
     "test_custom_tools_trust.py",
     "test_chat_resume.py",
-    "test_mcp_scope.py",
 )
 INSTALLED_TESTS = (
     "test_deadline_fault_injection.py",

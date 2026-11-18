@@ -869,6 +869,24 @@ class BrowserComputers:
         if failed:
             raise RuntimeError("Computer cleanup did not finish; retained handles for retry.")
 
+    def page_url(self, task) -> str | None:
+        """The address of the page this task's browser shows, as the browser reports it."""
+        with self._operations.hold(task["bot_id"], blocking=False) as admitted:
+            if not admitted:
+                return None
+            computer = self._computers.get(task["bot_id"])
+            if not computer or computer.retired or computer.task_id != task["id"]:
+                return None
+            executor = computer.executor
+            try:
+                pages = executor.browser.pages(
+                    executor.owner, executor.session_id, cancel=computer.cancelled
+                )
+            except BrowserError:
+                # Only says where the person is needed; the request goes ahead without it.
+                return None
+            return next((page["url"] for page in pages["pages"] if page["active"]), None)
+
     def checkpoint_draft(self, task):
         """Save read-only observations of owned pages; never grant website input."""
         with self._operations.hold(task["bot_id"], blocking=False) as admitted:

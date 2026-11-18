@@ -14,7 +14,16 @@ from pydantic import ValidationError
 
 from alysis_code.bots.models import BotInput, NoteInput, TaskInput
 from alysis_code.bots.runtime import BotRuntime, RuntimeLimits
-from alysis_code.bots.scheduling import ScheduleInput, advance_run, next_run
+from alysis_code.bots.scheduling import (
+    CATCH_UP_SECONDS,
+    ON_TIME_SECONDS,
+    PAUSE_REASONS,
+    RunFailure,
+    ScheduleInput,
+    advance_run,
+    latest_run,
+    next_run,
+)
 from alysis_code.bots.store import Conflict, NotFound, Store
 from alysis_code.cancellation import EventCancellationToken
 from alysis_code.llm.types import LLMResponse
@@ -197,14 +206,71 @@ def test_failed_enqueue_rolls_back_due_time_run_and_chat(setup, monkeypatch):
     assert store.enqueue_due_schedules("alice", max_calls=10, now=1300) == 1
 
 
-def test_missed_backlog_is_recorded_once_and_never_replayed(setup):
+def test_missed_backlog_is_recorded_once_and_only_the_latest_occurrence_runs(setup):
     store, bot = setup
     schedule = store.save_schedule("alice", bot, data(), now=1000)
-    assert store.enqueue_due_schedules("alice", max_calls=10, now=10000) == 0
+    assert store.enqueue_due_schedules("alice", max_calls=10, now=10000) == 1
     assert store.enqueue_due_schedules("alice", max_calls=10, now=10000) == 0
     runs = store.schedule_runs("alice", bot, schedule["id"])["runs"]
-    assert len(runs) == 1 and runs[0]["current_status"] == "missed"
+    assert sorted((r["scheduled_for"], r["current_status"]) for r in runs) == [
+        (1300, "missed"),
+        (10000, "queued"),
+    ]
     assert store.list_schedules("alice", bot)[0]["next_run_at"] == 10300
+
+
+def daily(at="09:00", zone="Asia/Tokyo"):
+    return data(timing={"kind": "daily", "time": at, "timezone": zone})
+
+
+def test_a_routine_missed_while_away_runs_once_late_within_the_catch_up_window(setup):
+    store, bot = setup
+    due = stamp("2026-11-17T09:00:00+09:00")
+    schedule = store.save_schedule("alice", bot, daily(), now=due - 3600)
+    back = due + 5 * 3600  # the computer woke five hours later
+    assert store.enqueue_due_schedules("alice", max_calls=10, now=back) == 1
+    assert store.enqueue_due_schedules("alice", max_calls=10, now=back + 60) == 0
+    (run,) = store.schedule_runs("alice", bot, schedule["id"])["runs"]
+    assert (run["scheduled_for"], run["current_status"]) == (due, "queued")
+    events = store.task("alice", run["task_id"])["events"]
+    scheduled = [e for e in events if e["kind"] == "scheduled"]
+    assert scheduled[0]["data"]["late_by_seconds"] == 5 * 3600
+    context = store.schedule_context("alice", run["task_id"])
+    assert context["started_late_minutes"] == 300 and context["late_start"]
+    assert store.list_schedules("alice", bot)[0]["next_run_at"] == due + 86400
+
+
+def test_after_days_away_only_the_most_recent_occurrence_runs(setup):
+    store, bot = setup
+    due = stamp("2026-11-14T09:00:00+09:00")
+    schedule = store.save_schedule("alice", bot, daily(), now=due - 3600)
+    back = stamp("2026-11-17T11:00:00+09:00")
+    assert store.enqueue_due_schedules("alice", max_calls=10, now=back) == 1
+    runs = store.schedule_runs("alice", bot, schedule["id"])["runs"]
+    assert sorted((r["scheduled_for"], r["current_status"]) for r in runs) == [
+        (due, "missed"),
+        (stamp("2026-11-17T09:00:00+09:00"), "queued"),
+    ]
+
+
+def test_an_occurrence_older_than_the_catch_up_window_is_missed_not_run(setup):
+    store, bot = setup
+    due = stamp("2026-11-17T09:00:00+09:00")
+    schedule = store.save_schedule("alice", bot, daily(), now=due - 3600)
+    back = due + CATCH_UP_SECONDS + 60
+    assert store.enqueue_due_schedules("alice", max_calls=10, now=back) == 0
+    (run,) = store.schedule_runs("alice", bot, schedule["id"])["runs"]
+    assert (run["scheduled_for"], run["current_status"], run["task_id"]) == (due, "missed", None)
+    assert store.list_schedules("alice", bot)[0]["next_run_at"] == due + 86400
+
+
+def test_an_on_time_run_is_not_marked_late(setup):
+    store, bot = setup
+    schedule = store.save_schedule("alice", bot, data(), now=1000)
+    assert store.enqueue_due_schedules("alice", max_calls=10, now=1300 + ON_TIME_SECONDS) == 1
+    (run,) = store.schedule_runs("alice", bot, schedule["id"])["runs"]
+    assert run["scheduled_for"] == 1300
+    assert "started_late_minutes" not in store.schedule_context("alice", run["task_id"])
 
 
 def test_overlap_deferred_and_pause_does_not_cancel_existing_task(setup):
@@ -280,27 +346,34 @@ def test_drafts_require_user_action_and_are_isolated_from_other_bots(setup):
     assert store.decide_schedule("alice", bot, s["id"], "active", 1)["state"] == "active"
 
 
-@pytest.mark.parametrize("state", ["failed", "interrupted"])
-def test_failed_run_pauses_only_the_unchanged_schedule(setup, state):
+@pytest.mark.parametrize("kind", ["sign_in", "setting", "review"])
+def test_a_failure_only_the_person_can_fix_pauses_only_the_unchanged_schedule(setup, kind):
     store, bot = setup
     s = store.save_schedule("alice", bot, data(), now=1000)
     store.enqueue_due_schedules("alice", max_calls=10, now=1300)
     task = store.claim("alice")
-    store.finish("alice", task["id"], state, error="Test failure")
-    assert store.list_schedules("alice", bot)[0]["state"] == "paused"
+    store.finish(
+        "alice", task["id"], "failed", error="Test failure", routine_failure=RunFailure(kind)
+    )
+    paused = store.list_schedules("alice", bot)[0]
+    assert paused["state"] == "paused" and paused["pause_code"] == kind
+    assert paused["pause_reason"] == PAUSE_REASONS[kind]
     store.decide_schedule("alice", bot, s["id"], "active", 2, now=1600)
+    assert store.list_schedules("alice", bot)[0]["pause_code"] is None
     store.enqueue_due_schedules("alice", max_calls=10, now=1900)
     next_task = store.claim("alice")
     edited = store.save_schedule(
         "alice", bot, data(name="Updated", expected_revision=3), schedule_id=s["id"], now=1901
     )
-    store.finish("alice", next_task["id"], state, error="Old run failed")
+    store.finish(
+        "alice", next_task["id"], "failed", error="Old run failed", routine_failure=RunFailure(kind)
+    )
     current = store.list_schedules("alice", bot)[0]
     assert current["state"] == "active" and current["revision"] == edited["revision"]
     assert store.schedule_runs("alice", bot, s["id"])["runs"][0]["config"]["name"] == "Review"
 
 
-def test_restart_interrupts_active_run_and_pauses_schedule_without_replay(setup):
+def test_restart_interrupts_active_run_without_replay_and_the_next_run_goes_ahead(setup):
     store, bot = setup
     s = store.save_schedule("alice", bot, data(), now=1000)
     store.enqueue_due_schedules("alice", max_calls=10, now=1300)
@@ -308,9 +381,12 @@ def test_restart_interrupts_active_run_and_pauses_schedule_without_replay(setup)
     restarted = Store(store.path)
     restarted.recover("alice")
     assert restarted.task("alice", task["id"])["status"] == "interrupted"
-    assert restarted.list_schedules("alice", bot)[0]["state"] == "paused"
-    assert restarted.enqueue_due_schedules("alice", max_calls=10, now=1600) == 0
-    assert len(restarted.schedule_runs("alice", bot, s["id"])["runs"]) == 1
+    current = restarted.list_schedules("alice", bot)[0]
+    # It may have acted already, so it is not run again; the routine itself keeps going.
+    assert current["state"] == "active" and current["retry"] is None
+    assert restarted.enqueue_due_schedules("alice", max_calls=10, now=1600) == 1
+    runs = restarted.schedule_runs("alice", bot, s["id"])["runs"]
+    assert [r["scheduled_for"] for r in runs] == [1600, 1300]
 
 
 def test_one_time_completion_and_past_time_require_edit(setup):
@@ -465,7 +541,7 @@ def test_scheduler_keeps_ticking_while_provider_is_busy(setup, same_bot, monkeyp
         rt.stop()
 
 
-def test_provider_failure_does_not_retry_or_repeat_schedule(setup):
+def test_an_unexplained_failure_is_not_replayed_and_repeated_ones_pause_the_routine(setup):
     store, bot = setup
     s = store.save_schedule("alice", bot, data(), now=1000)
     store.enqueue_due_schedules("alice", max_calls=5, now=1300)
@@ -482,10 +558,18 @@ def test_provider_failure_does_not_retry_or_repeat_schedule(setup):
     rt = BotRuntime(store, "alice", lambda _: FailedFixture(), limits=RuntimeLimits(max_calls=5))
     rt.run(store.claim("alice"), EventCancellationToken(threading.Event()))
     assert len(calls) == 1
-    assert store.list_schedules("alice", bot)[0]["state"] == "paused"
+    current = store.list_schedules("alice", bot)[0]
+    assert current["state"] == "active" and current["retry"] is None
+    assert current["failed_runs"] == 1
     run = store.schedule_runs("alice", bot, s["id"])["runs"][0]
     assert "Sensitive" not in run["task_error"]
-    assert store.enqueue_due_schedules("alice", max_calls=5, now=1600) == 0
+    # The next scheduled run goes ahead; the third failure in a row pauses the routine.
+    for now in (1600, 1900):
+        assert store.enqueue_due_schedules("alice", max_calls=5, now=now) == 1
+        rt.run(store.claim("alice"), EventCancellationToken(threading.Event()))
+    paused = store.list_schedules("alice", bot)[0]
+    assert paused["state"] == "paused" and paused["pause_code"] == "repeated"
+    assert paused["next_run_at"] is None and len(calls) == 3
 
 
 def test_creation_retry_returns_original_even_after_one_time_due_date(setup):
@@ -593,3 +677,43 @@ def test_scheduled_brief_preserves_exact_request_and_user_edit_supersedes_it(set
     assert store.schedule_context("alice", task["id"])["original_request"] == original
     with pytest.raises(NotFound):
         store.schedule_context("bob", task["id"])
+
+
+@pytest.mark.parametrize(
+    "timing, due, now, expected",
+    [
+        ({"kind": "interval", "every_minutes": 60}, 0, 3 * 3600 + 5, 3 * 3600),
+        (
+            {"kind": "once", "at": "2026-11-17T09:00:00+00:00"},
+            "2026-11-17T09:00:00+00:00",
+            "2026-11-17T20:00:00+00:00",
+            "2026-11-17T09:00:00+00:00",
+        ),
+        (
+            {"kind": "once", "at": "2026-11-17T09:00:00+00:00"},
+            "2026-11-17T09:00:00+00:00",
+            "2026-11-17T21:00:01+00:00",
+            None,
+        ),
+        # A weekly routine on Monday and Friday, back on Friday afternoon: Friday's run.
+        (
+            {"kind": "weekly", "time": "08:30", "timezone": "Europe/Athens", "weekdays": [0, 4]},
+            "2026-11-16T08:30:00+02:00",
+            "2026-11-20T15:00:00+02:00",
+            "2026-11-20T08:30:00+02:00",
+        ),
+        # Back on Tuesday: Monday's run is more than the window ago.
+        (
+            {"kind": "weekly", "time": "08:30", "timezone": "Europe/Athens", "weekdays": [0, 4]},
+            "2026-11-16T08:30:00+02:00",
+            "2026-11-17T09:00:00+02:00",
+            None,
+        ),
+    ],
+)
+def test_latest_run_finds_the_most_recent_occurrence_inside_the_window(timing, due, now, expected):
+    def at(value):
+        return stamp(value) if isinstance(value, str) else value
+
+    timing = ScheduleInput.model_validate({"name": "R", "prompt": "P", "timing": timing}).timing
+    assert latest_run(timing, at(due), at(now), within=CATCH_UP_SECONDS) == at(expected)

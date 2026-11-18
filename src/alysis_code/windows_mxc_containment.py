@@ -1,8 +1,7 @@
 """What the MXC sandbox was measured to keep from a command, on a real machine.
 
 A command whose effects cannot be read from its text used to need a person in
-every mode. Inside this sandbox it follows the mode instead, as a sandboxed
-command does in Codex: the sandbox is the boundary, and what a command needs
+every mode. Inside this sandbox it follows the mode instead: the sandbox is the boundary, and what a command needs
 beyond it is requested and reviewed. This module records the measurement that
 rests on (``docs/windows-cli-sandbox.md``, "Commands in the sandbox follow the
 mode"). ``tests/test_windows_contained_probes.py`` repeats it against the real
@@ -18,8 +17,8 @@ PROBED_SECURITY_REVISION = 11
 
 # What a command in that sandbox still reaches with networking off and no
 # access granted. These are known limits, written down so that nobody has to
-# rediscover them. They do not keep the person decision: Codex on Windows, the
-# sandbox this one is held to, leaves each of them reachable too.
+# rediscover them. They do not keep the person decision: the reference sandbox this
+# one is held to (docs/windows-cli-sandbox.md) leaves each of them reachable too.
 REACHABLE_WHEN_CONTAINED: tuple[str, ...] = (
     # Crash handlers of browser-based apps accept every app container and
     # upload what a client hands them.

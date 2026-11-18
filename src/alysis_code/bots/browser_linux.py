@@ -27,7 +27,7 @@ from .human_input import HumanInput
 # Fits the computer link (4 MB per reply) with room for JSON framing.
 OWL_PAGE_SNAPSHOT_BYTES = 2 * 1024 * 1024
 
-# The browser screen looks like the owl's desktop (AL, 2026-11-13: "like Grok Bot's"): wallpaper
+# The browser screen looks like the owl's desktop (AL, 2026-11-13): wallpaper
 # and a bar with a Browser button, the open windows and the clock. The button asks this
 # controller to open a window of the owl's own managed browser; nothing on the screen can start
 # a browser of its own, which would skip the browser's network guard.

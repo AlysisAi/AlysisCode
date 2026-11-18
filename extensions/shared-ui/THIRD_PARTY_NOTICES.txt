@@ -11,8 +11,8 @@ styles/welcome.css, and their chat components.
 
 The adapted files are startView.css, startView.html and startView.js. Changes
 include Alysis branding, dependency-free DOM rendering, host message dispatch,
-personas, explicit permission modes, context tools, Forge navigation, and
-review behavior. Kilo's service integrations and branding are not included.
+personas, explicit permission modes, context tools, and review behavior.
+Kilo's service integrations and branding are not included.
 
 MIT License
 

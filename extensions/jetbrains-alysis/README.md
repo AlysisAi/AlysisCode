@@ -48,7 +48,7 @@ CLI affects future connections across projects; existing connections keep their 
 ## Limits and next work
 
 This is an explicitly selected development runtime, without managed-runtime verification/installation.
-JetBrains Forge and browser panels, history/resume, image/file attachments, editor selection, model
+JetBrains browser panels, history/resume, image/file attachments, editor selection, model
 and persona management, host Tasks/Debug actions and slash commands are not implemented. Their UI
 controls are hidden and unsupported native requests are rejected. CLI tools remain governed by the
 agent's selected permissions. Conversation state is in memory and does not survive project/IDE

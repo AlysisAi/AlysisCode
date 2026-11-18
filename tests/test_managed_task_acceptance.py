@@ -4,23 +4,8 @@ import pytest
 
 from alysis_code import agent_loop
 from alysis_code.config import AppConfig
-from alysis_code.execution_shared import build_task_acceptance_instruction
 from alysis_code.llm.types import LLMResponse, ToolCall
 from alysis_code.session_store import read_session_events
-
-
-def test_task_requirements_exclude_generated_plan_metadata() -> None:
-    requirements = build_task_acceptance_instruction(
-        {
-            "title": "Write the result",
-            "description": "Create `answer.txt`.",
-            "acceptance_criteria": ["The result must contain 42."],
-            "estimated_files": ["unrelated.txt"],
-            "write_scope": ["src/**"],
-            "branch": "feature/helper",
-        }
-    )
-    assert requirements == "Write the result\n\nCreate `answer.txt`.\n\nThe result must contain 42."
 
 
 def test_managed_completion_uses_task_requirements_and_keeps_model_context(

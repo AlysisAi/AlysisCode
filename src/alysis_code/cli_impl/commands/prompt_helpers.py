@@ -8,20 +8,10 @@ from ...cancellation import InteractiveCancellationToken
 from .cli_common import *
 
 
-def _chat_prompt_session_completion_count(mode: str) -> int:
-    from ..chat_slash_completer import max_completions_for_mode
+def _chat_prompt_completion_menu_height() -> int:
+    from ..chat_slash_completer import max_completions
 
-    # Chat keeps one PromptSession while the user can enter/leave Forge, so
-    # reserve enough room for the larger static command surface at creation.
-    return max(
-        max_completions_for_mode(mode),
-        max_completions_for_mode("chat"),
-        max_completions_for_mode("forge"),
-    )
-
-
-def _chat_prompt_completion_menu_height(mode: str) -> int:
-    completion_count = _chat_prompt_session_completion_count(mode)
+    completion_count = max_completions()
     terminal_lines = shutil.get_terminal_size((80, 24)).lines
     return min(completion_count, max(8, int(terminal_lines * 0.6)))
 
@@ -33,7 +23,6 @@ def _handle_chat_command(
     session: Any,
     pending_images: list[str],
     console: Console,
-    forge_state: _ForgeChatState,
     record_local_command: bool = True,
 ) -> str | _ChatExecutionRequest:
     from ..chat import _handle_chat_command_impl
@@ -45,7 +34,6 @@ def _handle_chat_command(
         session=session,
         pending_images=pending_images,
         console=console,
-        forge_state=forge_state,
         record_local_command=record_local_command,
     )
 
@@ -55,7 +43,6 @@ def _maybe_make_chat_prompt_session(
     console: Console,
     root: Path,
     pending_images: list[str],
-    forge_state: _ForgeChatState,
     session: Any | None = None,
 ) -> Any | None:
     if _patchable("_is_non_interactive_terminal", _is_non_interactive_terminal)():
@@ -117,11 +104,7 @@ def _maybe_make_chat_prompt_session(
     def _accept_suggestion_or_complete(event: Any) -> None:
         _accept_chat_suggestion_or_complete(event)
 
-    def _completion_mode() -> str:
-        return "forge" if _is_forge_ui_mode(forge_state.ui_mode) else "chat"
-
     completer = ChatSlashCompleter(
-        mode_provider=_completion_mode,
         skill_names_provider=lambda: sorted(
             str(name) for name in getattr(session, "skill_registry", {})
         ),
@@ -131,7 +114,7 @@ def _maybe_make_chat_prompt_session(
         "auto_suggest": AutoSuggestFromHistory(),
         "completer": completer,
         "complete_while_typing": True,
-        "reserve_space_for_menu": _chat_prompt_completion_menu_height(_completion_mode()),
+        "reserve_space_for_menu": _chat_prompt_completion_menu_height(),
         # Match the full-screen chat's dark panel and green selection. Without
         # an explicit style, the ordinary prompt uses prompt_toolkit's defaults.
         "style": Style.from_dict(

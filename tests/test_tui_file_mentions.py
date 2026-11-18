@@ -113,9 +113,7 @@ def drive(monkeypatch, root, scenario, *, workdir_provider=None):
             workdir_provider=workdir_provider,
             session_builder=lambda _: Session(),
             persona_cycle=lambda: personas.append("cycled"),
-            completer=ChatSlashCompleter(
-                mode_provider=lambda: "chat", skill_names_provider=lambda: ["demo"]
-            ),
+            completer=ChatSlashCompleter(skill_names_provider=lambda: ["demo"]),
         )
     if errors:
         raise errors[0]

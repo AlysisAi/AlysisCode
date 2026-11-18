@@ -40,10 +40,7 @@ posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX process-group beh
 
 _AUTONOMOUS_KINDS = (
     RuntimeKind.ONE_SHOT,
-    RuntimeKind.FORGE_EXEC,
-    RuntimeKind.SWARM_WORKER,
     RuntimeKind.SUBAGENT,
-    RuntimeKind.CONFLICT_AUTO_RESOLVE,
 )
 
 

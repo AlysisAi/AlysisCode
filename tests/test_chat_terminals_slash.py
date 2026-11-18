@@ -127,7 +127,6 @@ def _run_chat_command(session: Any, command: str) -> tuple[str | object, str]:
         session=session,
         pending_images=[],
         console=console,
-        forge_state=cli_mod._ForgeChatState(),
     )
     return result, buffer.getvalue()
 

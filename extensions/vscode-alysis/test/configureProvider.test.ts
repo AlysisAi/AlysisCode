@@ -299,11 +299,8 @@ function config(): any {
     provider: "",
     transport: "stdio",
     sandboxProfile: "default",
-    forgeExecuteMaxSteps: undefined,
-    forgeExecuteNoLog: false,
     showStatusBar: true,
     autoStartBridge: false,
-    enableForge: true,
     security: { isWorkspaceTrusted: workspaceTrusted }
   };
 }

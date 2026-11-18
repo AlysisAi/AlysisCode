@@ -187,9 +187,9 @@ test("activation keeps managed-runtime validation and preview cleanup off the cr
     source,
     /if \(getConfig\(\)\.runtimeSelection\?\.origin === "unavailable"\) \{\s*\n\s*await managedRuntime\.refresh\(/
   );
-  // Forge state must feed the cancel command's enablement key.
-  assert.match(source, /forgeController\.onDidChangeActivity\(syncCommandContexts\)/);
-  assert.match(source, /chatController\.hasActiveJob\(\) \|\| forgeController\.hasActiveJob\(\)/);
+  // Chat state must feed the cancel command's enablement key.
+  assert.match(source, /chatController\.onDidChangeState\(syncCommandContexts\)/);
+  assert.match(source, /const hasActiveJob = chatController\.hasActiveJob\(\);/);
   // Only runtime-affecting settings may re-run validation.
   assert.match(source, /RUNTIME_AFFECTING_SETTINGS\.some\(\(setting\) => event\.affectsConfiguration\(setting\)\)/);
 });

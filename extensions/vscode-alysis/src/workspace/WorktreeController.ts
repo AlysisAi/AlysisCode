@@ -15,8 +15,7 @@ export class WorktreeController implements vscode.Disposable {
   private readonly timer: ReturnType<typeof setInterval>;
 
   public constructor(private readonly chat: ChatController, private readonly changed: () => void,
-    private readonly globalState: vscode.Memento,
-    private readonly otherWorkActive: () => boolean = () => false) {
+    private readonly globalState: vscode.Memento) {
     this.listeners = [
       vscode.workspace.onDidSaveTextDocument(() => { void this.refresh(); }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
@@ -36,7 +35,7 @@ export class WorktreeController implements vscode.Disposable {
   private root(): string | undefined { return this.chat.activeSessionWorkspaceRoot() ?? activeWorkspaceFolder()?.uri.fsPath; }
 
   public snapshot(): GitWorkspaceState {
-    const blocked = this.busy || this.chat.workspaceTransitionBlocked() || this.otherWorkActive();
+    const blocked = this.busy || this.chat.workspaceTransitionBlocked();
     return { ...this.state, busy: blocked, canMove: this.chat.canMoveToWorktree() && !blocked };
   }
 
@@ -66,7 +65,6 @@ export class WorktreeController implements vscode.Disposable {
       if (vscode.env.remoteName) throw new Error("Worktree windows currently require a local repository.");
       const root = this.root();
       if (!root) throw new Error(workspaceScopeRequiredMessage("creating a worktree"));
-      if (this.otherWorkActive()) throw new Error("Finish or stop the active Forge task before changing worktrees.");
       if (moveConversation && !this.chat.canMoveToWorktree()) throw new Error("Start a conversation with the updated Alysis Code CLI before moving it.");
       await this.chat.withWorkspaceTransition(async () => {
         const repo = await inspectGitWorkspace(root);
@@ -85,7 +83,7 @@ export class WorktreeController implements vscode.Disposable {
           validateInput: (value) => !value.trim() || value.length > 150 || value.startsWith("-") ? "Enter a branch name (up to 150 characters)." : undefined });
         if (branch === undefined) return;
         assertNoDirtyWorkspaceDocuments(vscode, root, "creating a worktree");
-        if (this.root() !== root || this.otherWorkActive()) throw new Error("The active workspace changed. Try again when it is idle.");
+        if (this.root() !== root) throw new Error("The active workspace changed. Try again when it is idle.");
         await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
           title: moveConversation ? "Moving conversation to a worktree…" : "Creating a worktree…" }, async () => {
           const created = await createGitWorktree(root, branch.trim(), includeChanges);

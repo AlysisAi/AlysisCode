@@ -40,7 +40,6 @@ class RecordingClient(_Client):
         (RuntimeKind.INTERACTIVE_CHAT, True),
         (RuntimeKind.ONE_SHOT, True),
         (RuntimeKind.SUBAGENT, False),
-        (RuntimeKind.FORGE_EXEC, False),
     ],
 )
 def test_notes_entry_is_pinned_without_creating_files_or_changing_tools(

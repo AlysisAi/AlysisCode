@@ -4,7 +4,6 @@ import test from "node:test";
 
 import type { ChatSessionPersistence, ChatSessionReference } from "../src/chat/ChatController";
 import { CockpitRuntimeState } from "../src/chat/CockpitRuntimeState";
-import { SlashCommandRouter } from "../src/slash/SlashCommandRouter";
 
 let workspaceTrusted = false;
 let inputBoxValue: string | undefined;
@@ -433,11 +432,8 @@ test("ChatController blocks untrusted non-readonly submit before bridge start or
       provider: "",
       transport: "stdio",
       sandboxProfile: "default",
-      forgeExecuteMaxSteps: undefined,
-      forgeExecuteNoLog: false,
       showStatusBar: true,
       autoStartBridge: false,
-      enableForge: true,
       security: {
         isWorkspaceTrusted: false,
         ignoredWorkspaceSettings: [],
@@ -472,25 +468,6 @@ test("ChatController blocks untrusted non-readonly submit before bridge start or
   assert.equal(ensureStartedCalls, 0);
   assert.equal(secretReads, 0);
   assert.match(errors.join("\n"), /Workspace Trust.*readonly/);
-});
-
-test("ChatController ignores Forge session events when no chat session exists", () => {
-  const bridge = bridgeMock();
-  const controller = controllerForBridge(bridge);
-
-  bridge.emitEvent({
-    protocol_version: "1",
-    session_id: "forge-session",
-    run_id: null,
-    job_id: "forge-job",
-    sequence: 1,
-    timestamp: "2026-05-26T00:00:00.000Z",
-    type: "plan_node_updated",
-    payload: { node_id: "T01", state: "running", summary: "Forge event" }
-  });
-
-  assert.equal(controller.testState().sessionId, null);
-  assert.equal(bridge.respondApprovalCalls.length, 0);
 });
 
 test("ChatController routes unknown owned events to Output without creating conversation cards", () => {
@@ -562,32 +539,6 @@ test("ChatController enables semantic activity from the connected bridge event c
   assert.equal(items[0].title, "Read source file");
   assert.equal(JSON.stringify(items).includes("rs.read"), false);
   assert.equal(JSON.stringify(items).includes("raw arguments"), false);
-});
-
-test("ChatController does not auto-deny Forge approvals when chat panel is closed", async () => {
-  const bridge = bridgeMock();
-  const controller = controllerForBridge(bridge);
-
-  bridge.emitEvent({
-    protocol_version: "1",
-    session_id: "forge-session",
-    run_id: null,
-    job_id: "forge-job",
-    sequence: 2,
-    timestamp: "2026-05-26T00:00:00.000Z",
-    type: "prompt_for_input",
-    payload: {
-      kind: "approval",
-      approval_id: "forge-approval",
-      prompt_id: "forge-approval",
-      reason: "Forge approval",
-      preview: "write file"
-    }
-  });
-  await delay(20);
-
-  assert.equal(controller.testState().sessionId, null);
-  assert.equal(bridge.respondApprovalCalls.length, 0);
 });
 
 test("primary sidebar keeps chat approvals pending when the Details panel is closed", async () => {
@@ -720,15 +671,15 @@ test("ChatController routes slash commands before chat.send", async () => {
   controller.setSlashCommandRouter({
     execute: async (input: string) => {
       routed.push(input);
-      return { handled: true, command: "/forge plan", notice: "Started Forge Plan from /plan." };
+      return { handled: true, command: "/doctor", notice: "Ran setup checks from /doctor." };
     }
   } as any);
 
-  await (controller as any).sendUserMessage("/forge plan build from chat panel");
+  await (controller as any).sendUserMessage("/doctor");
 
-  assert.deepEqual(routed, ["/forge plan build from chat panel"]);
+  assert.deepEqual(routed, ["/doctor"]);
   assert.equal(sendChatCalls, 0);
-  assert.equal(controller.testState().items.some((item) => item.text.includes("Started Forge Plan")), true);
+  assert.equal(controller.testState().items.some((item) => item.text.includes("Ran setup checks")), true);
 });
 
 test("ChatController.ensureLiveSession creates a session without sending chat", async () => {
@@ -962,6 +913,27 @@ test("ChatController binds diagnostic verification to the active session workspa
 
   assert.equal(await controller.submitPrimaryMessage("explain diagnostics", "readonly"), true);
   assert.deepEqual(capturedScope, { workspaceRoot: "/workspace/project" });
+});
+
+test("a bridge exit and a bridge restart are both recorded on the Cockpit timeline", async () => {
+  workspaceTrusted = true;
+  const bridge = bridgeMock();
+  const runtime = new CockpitRuntimeState();
+  controllerForBridge(bridge, runtime);
+
+  bridge.emitExit(7);
+  bridge.emitReset("credentials_changed");
+
+  const events = runtime.snapshot().events;
+  assert.deepEqual(
+    events.map((event) => [event.source, event.title, event.severity]),
+    [
+      ["bridge", "Bridge restarting", "warning"],
+      ["bridge", "Bridge exited", "error"]
+    ]
+  );
+  assert.equal(events[1].message.includes("exited with code 7"), true);
+  assert.equal(events[1].exitCode, 7);
 });
 
 test("ChatController restores retained context after an unexpected bridge exit", async () => {
@@ -1652,83 +1624,6 @@ test("a session.create config error becomes a visible sidebar error after reload
   assert.equal(state.items.some((item) => item.kind === "error" && item.text.includes("config_error")), true);
 });
 
-test("/forge plan immediately adds a Timeline command-started item", async () => {
-  workspaceTrusted = true;
-  const bridge = bridgeMock();
-  const runtime = new CockpitRuntimeState();
-  const controller = controllerForBridge(bridge, runtime);
-  let resolvePlan: (() => void) | undefined;
-  controller.setSlashCommandRouter({
-    parse: (input: string) => ({ id: "plan", raw: input, command: "/forge plan", args: "build" }),
-    execute: async () => {
-      await new Promise<void>((resolve) => {
-        resolvePlan = resolve;
-      });
-      return { handled: true, command: "/forge plan", notice: "Routed /forge plan to Forge Plan.", severity: "info" };
-    }
-  } as any);
-
-  const pending = (controller as any).sendUserMessage("/forge plan build cockpit telemetry");
-  await delay(0);
-
-  assert.equal(
-    controller.testState().cockpit.status.runtime.events.some((event: any) => event.title === "Slash command started" && event.message.includes("/forge plan build")),
-    true
-  );
-  resolvePlan?.();
-  await pending;
-});
-
-test("/forge plan workspace-trust block appears in Timeline", async () => {
-  workspaceTrusted = false;
-  const bridge = bridgeMock();
-  const runtime = new CockpitRuntimeState();
-  const controller = controllerForBridge(bridge, runtime);
-  controller.setSlashCommandRouter(
-    new SlashCommandRouter({
-      isWorkspaceTrusted: () => false,
-      setMode: async () => undefined,
-      plan: async () => assert.fail("untrusted /forge plan must not call Forge Plan"),
-      executePlan: async () => undefined,
-      executePreview: async () => undefined,
-      listPlans: async () => undefined,
-      openPlan: async () => undefined,
-      openDiffs: async () => undefined,
-      refreshArtifacts: async () => undefined,
-      cancel: async () => undefined,
-      doctor: async () => undefined,
-      config: async () => undefined,
-      backendAction: async () => "ok"
-    })
-  );
-
-  await (controller as any).sendUserMessage("/forge plan build cockpit telemetry");
-
-  assert.equal(
-    controller.testState().cockpit.status.runtime.events.some((event: any) => event.severity === "warning" && event.message.includes("requires Workspace Trust")),
-    true
-  );
-});
-
-test("/forge plan handler errors appear in Timeline and Diagnostics state", async () => {
-  workspaceTrusted = true;
-  const bridge = bridgeMock();
-  const runtime = new CockpitRuntimeState();
-  const controller = controllerForBridge(bridge, runtime);
-  controller.setSlashCommandRouter({
-    parse: (input: string) => ({ id: "plan", raw: input, command: "/forge plan", args: "build" }),
-    execute: async () => {
-      throw new Error("protocol failed before Forge Plan completed");
-    }
-  } as any);
-
-  await (controller as any).sendUserMessage("/forge plan build cockpit telemetry");
-
-  const snapshot = controller.testState().cockpit.status.runtime;
-  assert.equal(snapshot.bridgeProcess.status, "error");
-  assert.equal(snapshot.events.some((event: any) => event.severity === "error" && event.message.includes("protocol failed")), true);
-});
-
 test("slash command arguments are redacted from runtime and transcript state", async () => {
   workspaceTrusted = true;
   const secret = "abcdefghijklmnop1234";
@@ -1752,16 +1647,7 @@ test("a rejected cockpit action is caught and redacted before it reaches the tra
   const secret = "abcdefghijklmnop1234";
   const controller = controllerForBridge(bridgeMock());
   controller.setCockpitActions({
-    cancel: async () => { throw new Error(`Authorization: Bearer ${secret}`); },
-    executePreview: async () => undefined,
-    executeReview: async () => undefined,
-    refreshForgeStatus: async () => undefined,
-    openDiff: async () => undefined,
-    openForgeArtifact: async () => undefined,
-    respondForgeApproval: async () => undefined,
-    reviewChanges: async () => undefined,
-    refreshAssets: async () => undefined,
-    openAsset: async () => undefined
+    cancel: async () => { throw new Error(`Authorization: Bearer ${secret}`); }
   });
   await controller.openChat();
 
@@ -1829,16 +1715,7 @@ test("ChatController webview cancel routes through central cockpit cancel action
   controller.setCockpitActions({
     cancel: async () => {
       centralCancelCalls += 1;
-    },
-    executePreview: async () => undefined,
-    executeReview: async () => undefined,
-    refreshForgeStatus: async () => undefined,
-    openDiff: async () => undefined,
-    openForgeArtifact: async () => undefined,
-    respondForgeApproval: async () => undefined,
-    reviewChanges: async () => undefined,
-    refreshAssets: async () => undefined,
-    openAsset: async () => undefined
+    }
   });
 
   await controller.handlePrimaryCockpitAction({ type: "cancel" });
@@ -1943,8 +1820,6 @@ test("FE-10: cockpit restart re-reads the live cliPath and re-runs detection (no
       sandboxProfile: "default",
       showStatusBar: true,
       autoStartBridge: false,
-      enableForge: true,
-      forgeExecuteNoLog: false,
       security: {
         isWorkspaceTrusted: true,
         ignoredWorkspaceSettings: [],
@@ -1961,15 +1836,6 @@ test("FE-10: cockpit restart re-reads the live cliPath and re-runs detection (no
   let reconnects = 0;
   controller.setCockpitActions({
     cancel: async () => undefined,
-    executePreview: async () => undefined,
-    executeReview: async () => undefined,
-    refreshForgeStatus: async () => undefined,
-    openDiff: async () => undefined,
-    openForgeArtifact: async () => undefined,
-    respondForgeApproval: async () => undefined,
-    reviewChanges: async () => undefined,
-    refreshAssets: async () => undefined,
-    openAsset: async () => undefined,
     reconnect: async () => {
       reconnects += 1;
     }
@@ -1981,20 +1847,6 @@ test("FE-10: cockpit restart re-reads the live cliPath and re-runs detection (no
 
   assert.deepEqual(restartConfigs, ["/opt/alysis/bin/alysis"], "restart spawns with the freshly-set cliPath");
   assert.equal(reconnects, 1, "restart re-runs health detection so stale recovery cards clear without a reload");
-});
-
-test("ChatController reflects the Chat|Forge composer mode toggle into cockpit state", async () => {
-  workspaceTrusted = true;
-  const bridge = bridgeMock();
-  const controller = controllerForBridge(bridge);
-
-  assert.equal(controller.testState().cockpit.status.composerMode, "chat");
-
-  await controller.handlePrimaryCockpitAction({ type: "composerMode.set", mode: "forge" });
-  assert.equal(controller.testState().cockpit.status.composerMode, "forge");
-
-  await controller.handlePrimaryCockpitAction({ type: "composerMode.set", mode: "chat" });
-  assert.equal(controller.testState().cockpit.status.composerMode, "chat");
 });
 
 test("ChatController declines fullaccess mode.set as a reserved (not-yet-wired) mode", async () => {
@@ -2078,18 +1930,18 @@ test("ChatController shutdown denies only chat-owned pending approvals", async (
   });
   bridge.emitEvent({
     protocol_version: "1",
-    session_id: "forge-session",
+    session_id: "other-session",
     run_id: null,
-    job_id: "forge-job",
+    job_id: "other-job",
     sequence: 4,
     timestamp: "2026-05-26T00:00:00.000Z",
     type: "prompt_for_input",
     payload: {
       kind: "approval",
       approval_kind: "fs_write",
-      approval_id: "forge-approval",
-      prompt_id: "forge-approval",
-      reason: "Forge approval",
+      approval_id: "other-approval",
+      prompt_id: "other-approval",
+      reason: "Approval owned by another session",
       preview: "write file"
     }
   });
@@ -2764,11 +2616,8 @@ function controllerForBridge(
       provider: "",
       transport: "stdio",
       sandboxProfile: "default",
-      forgeExecuteMaxSteps: undefined,
-      forgeExecuteNoLog: false,
       showStatusBar: true,
       autoStartBridge: false,
-      enableForge: true,
       security: {
         isWorkspaceTrusted: true,
         ignoredWorkspaceSettings: [],
@@ -2823,23 +2672,9 @@ function runtimeCockpit(runtime: CockpitRuntimeState): any {
       sandbox: "default",
       workspaceTrusted,
       bridgeStatus: { state: "idle", text: "Alysis Code: idle", tooltip: "Alysis Code is ready", visible: true },
-      enableForge: true,
       cliTrusted: true,
       cliReason: null,
       runtime: runtime.snapshot()
-    },
-    forge: {
-      sessionId: null,
-      planId: null,
-      activeJobId: null,
-      plan: null,
-      planning: null,
-      events: [],
-      diffs: [],
-      artifacts: [],
-      executePreview: null,
-      selectedTaskIds: [],
-      approvals: []
     }
   };
 }

@@ -14,7 +14,6 @@ from alysis_code.host_actions import (
     normalize_host_action_result,
 )
 from alysis_code.ide.health import capabilities_payload
-from alysis_code.remote_sync import create_pr_or_mr, find_existing_pr_or_mr, push_base, push_branch
 from alysis_code.surface import ApprovalDecision
 from tests.test_host_actions import _ApprovalSurface, _build_tools
 from tests.test_ide_host_actions import (
@@ -155,35 +154,6 @@ def test_github_results_bound_repository_urls_and_reject_credentials() -> None:
         normalize_host_action_result(
             "github.pr.list", {**BINDING, "pull_requests": [{}] * 31, "truncated": True}
         )
-
-
-@pytest.mark.parametrize("policy", ["linked-only", "disconnected", "", "unknown"])
-def test_desktop_remote_sync_never_runs_local_git_or_gh(
-    monkeypatch, tmp_path: Path, policy: str
-) -> None:
-    monkeypatch.setenv("ALYSIS_DESKTOP_GITHUB_POLICY", policy)
-    monkeypatch.setenv("ALYSIS_GITHUB_CLI", "/selected/absolute/gh")
-    monkeypatch.setenv("ALYSIS_DESKTOP_GITHUB_EXPECTED_LOGIN", "selected-user")
-    monkeypatch.setattr(
-        "alysis_code.remote_sync._run", lambda *_a, **_kw: pytest.fail("desktop fallback attempted")
-    )
-    monkeypatch.setattr(
-        "alysis_code.remote_sync.shutil.which", lambda *_a: pytest.fail("PATH gh attempted")
-    )
-    assert push_branch(tmp_path, remote="origin", branch="feat")[0] is False
-    assert push_base(tmp_path, remote="origin", base_branch="main")[0] is False
-    for provider in ("github", "gitlab"):
-        assert (
-            find_existing_pr_or_mr(
-                tmp_path, provider=provider, base_branch="main", head_branch="feat"
-            )[0]
-            is False
-        )
-        result = create_pr_or_mr(
-            tmp_path, provider=provider, base_branch="main", head_branch="feat", title="PR", body=""
-        )
-        assert result[0] is False
-        assert "host broker" in result[-1]
 
 
 def test_github_broker_round_trip_uses_existing_session_job_and_workspace_fences(

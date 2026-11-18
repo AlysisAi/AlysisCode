@@ -78,8 +78,10 @@ class ObjectRetention:
                 "JOIN bots b ON b.id=w.bot_id WHERE b.owner=? "
                 "UNION SELECT w.ref,b.id,b.owner FROM browser_states w "
                 "JOIN bots b ON b.id=w.bot_id WHERE b.owner=? "
+                "UNION SELECT w.ref,b.id,b.owner FROM browser_baselines w "
+                "JOIN bots b ON b.id=w.bot_id WHERE b.owner=? "
                 "EXCEPT SELECT ref,bot_id,owner FROM stored_objects WHERE owner=?",
-                (self.owner, self.owner, self.owner, self.owner),
+                (self.owner, self.owner, self.owner, self.owner, self.owner),
             ).fetchall()
             for row in references:
                 ref = ObjectRef.decode(row[0])
@@ -96,7 +98,8 @@ class ObjectRetention:
                 "WHERE owner=? AND state IN ('live','staged') AND unreferenced_at IS NULL "
                 "AND NOT EXISTS (SELECT 1 FROM file_objects f WHERE f.ref=stored_objects.ref) "
                 "AND NOT EXISTS (SELECT 1 FROM workspace_objects w WHERE w.ref=stored_objects.ref) "
-                "AND NOT EXISTS (SELECT 1 FROM browser_states w WHERE w.ref=stored_objects.ref)",
+                "AND NOT EXISTS (SELECT 1 FROM browser_states w WHERE w.ref=stored_objects.ref) "
+                "AND NOT EXISTS (SELECT 1 FROM browser_baselines w WHERE w.ref=stored_objects.ref)",
                 (now, self.owner),
             )
             db.execute(
@@ -104,7 +107,8 @@ class ObjectRetention:
                 "AND unreferenced_at IS NOT NULL "
                 "AND (EXISTS (SELECT 1 FROM file_objects f WHERE f.ref=stored_objects.ref) "
                 "OR EXISTS (SELECT 1 FROM workspace_objects w WHERE w.ref=stored_objects.ref) "
-                "OR EXISTS (SELECT 1 FROM browser_states w WHERE w.ref=stored_objects.ref))",
+                "OR EXISTS (SELECT 1 FROM browser_states w WHERE w.ref=stored_objects.ref) "
+                "OR EXISTS (SELECT 1 FROM browser_baselines w WHERE w.ref=stored_objects.ref))",
                 (self.owner,),
             )
             rows = db.execute(

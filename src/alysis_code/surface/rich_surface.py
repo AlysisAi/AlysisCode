@@ -48,11 +48,8 @@ from .events import (
     MessageEnd,
     ModeChanged,
     PersonaChanged,
-    PlanNodeUpdated,
     PromptForInput,
-    ReviewGateDecision,
     StatusUpdate,
-    SwarmWorkerStateChanged,
     ToolCallCompleted,
     ToolCallProgress,
     ToolCallStarted,
@@ -101,27 +98,6 @@ _STYLE_SUCCESS = STYLE_SUCCESS
 _STYLE_FAILURE = STYLE_ERROR
 _STYLE_WARNING = STYLE_WARN
 _THINKING_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-_TERMINAL_PROGRESS_MESSAGES = {
-    "Applied planner update to the Forge plan.",
-    "Planner response ready.",
-    "Planner update was a no-op.",
-}
-_TERMINAL_PROGRESS_PREFIXES = (
-    "Planner request recovered after",
-    "Planner returned an error",
-    "Swarm aborted:",
-    "Swarm completed with exit code",
-)
-
-
-def _strip_progress_scope_prefix(message: str) -> str:
-    clean = str(message or "").strip()
-    if not clean.startswith("["):
-        return clean
-    closing = clean.find("]")
-    if closing <= 1:
-        return clean
-    return clean[closing + 1 :].strip()
 
 
 def _redact(text: str) -> str:
@@ -280,13 +256,6 @@ def _format_turn_elapsed(elapsed_s: float) -> str | None:
     if seconds <= 0:
         return f"{minutes}m"
     return f"{minutes}m {seconds}s"
-
-
-def _progress_message_completes_activity(message: str) -> bool:
-    clean = _strip_progress_scope_prefix(message)
-    if clean in _TERMINAL_PROGRESS_MESSAGES:
-        return True
-    return any(clean.startswith(prefix) for prefix in _TERMINAL_PROGRESS_PREFIXES)
 
 
 class _ThinkingSpinnerRenderable:
@@ -737,9 +706,6 @@ class RichSurface:
         if self._trace_level == "off":
             return
         self._emit_thinking(message, style="dim")
-        if _progress_message_completes_activity(message):
-            self._stop_thinking_spinner()
-            return
         if not self._assistant_stream_open and not self._tool_start_info:
             self._start_thinking_spinner(label="Thinking...")
 
@@ -1077,31 +1043,6 @@ class RichSurface:
     def emit_persona_changed(self, persona: str, effective_mode: str, source: str = "user") -> None:
         self._emit_event_info(f"Persona: {persona} ({effective_mode}, {source})")
 
-    def emit_plan_node_updated(
-        self,
-        node_id: str,
-        state: str,
-        summary: str | None = None,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        # TODO: dedicated rendering for plan_node_updated.
-        prefix = self._event_scope_prefix(worker_id=worker_id, role=role)
-        detail = f" · {summary}" if summary else ""
-        self._emit_event_info(f"{prefix}Plan {node_id}: {state}{detail}")
-
-    def emit_swarm_worker_state_changed(
-        self,
-        worker_id: str,
-        state: str,
-        *,
-        role: str | None = None,
-    ) -> None:
-        # TODO: dedicated rendering for swarm_worker_state_changed.
-        suffix = f" · {role}" if role else ""
-        self._emit_event_info(f"Worker {worker_id}: {state}{suffix}")
-
     def emit_verify_gate_result(
         self,
         command: str,
@@ -1129,18 +1070,6 @@ class RichSurface:
     ) -> None:
         prefix = self._event_scope_prefix(worker_id=worker_id, role=role)
         self._emit_event_info(f"{prefix}{approval_review_line(outcome, subject, reason)}")
-
-    def emit_review_gate_decision(
-        self,
-        decision: str,
-        summary: str,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        # TODO: dedicated rendering for review_gate_decision.
-        prefix = self._event_scope_prefix(worker_id=worker_id, role=role)
-        self._emit_event_info(f"{prefix}Review {decision}: {summary}")
 
     def emit_error(
         self,
@@ -1228,16 +1157,6 @@ class RichSurface:
             self.emit_mode_changed(event.mode)
         elif event.type == PersonaChanged.type:
             self.emit_persona_changed(event.persona, event.effective_mode, event.source)
-        elif event.type == PlanNodeUpdated.type:
-            self.emit_plan_node_updated(
-                event.node_id,
-                event.state,
-                event.summary,
-                worker_id=event.worker_id,
-                role=event.role,
-            )
-        elif event.type == SwarmWorkerStateChanged.type:
-            self.emit_swarm_worker_state_changed(event.worker_id, event.state, role=event.role)
         elif event.type == VerifyGateResult.type:
             self.emit_verify_gate_result(
                 event.command,
@@ -1253,13 +1172,6 @@ class RichSurface:
                 event.reason,
                 risk=event.risk,
                 approval_kind=event.approval_kind,
-                worker_id=event.worker_id,
-                role=event.role,
-            )
-        elif event.type == ReviewGateDecision.type:
-            self.emit_review_gate_decision(
-                event.decision,
-                event.summary,
                 worker_id=event.worker_id,
                 role=event.role,
             )

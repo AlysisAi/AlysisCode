@@ -19,7 +19,6 @@ _GROUPS = {
     "profile": ("profile", "profile_app"),
     "update": ("update", "update_app"),
     "sessions": ("sessions", "sessions_app"),
-    "forge": ("forge", "forge_app"),
     "server": ("server", "server_app"),
     "ext": ("extensions", "ext_app"),
     "report": ("report", "report_app"),
@@ -34,7 +33,6 @@ _GROUPS = {
 }
 _EXPORTS = {attribute: (module, attribute) for module, attribute in _GROUPS.values()}
 _EXPORTS.update(
-    forge_assets_app=(".assets_cli", "assets_app"),
     mcp_auth_app=("mcp", "mcp_auth_app"),
     mcp_prompts_app=("mcp", "mcp_prompts_app"),
 )

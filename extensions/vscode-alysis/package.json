@@ -67,19 +67,11 @@
         "id": "alysisai.alysis",
         "name": "alysis",
         "fullName": "Alysis Code",
-        "description": "Chat with Alysis Code and use Forge, review, and diagnostics workflows.",
+        "description": "Chat with Alysis Code and use review and diagnostics workflows.",
         "commands": [
           {
             "name": "help",
             "description": "Show Alysis Code help and open the conversation."
-          },
-          {
-            "name": "forge",
-            "description": "Create a reviewable Forge plan for a task."
-          },
-          {
-            "name": "execute",
-            "description": "Open Alysis Code and review a plan before execution."
           },
           {
             "name": "doctor",
@@ -124,12 +116,6 @@
         "icon": "$(server-environment)"
       },
       {
-        "command": "alysis.showForge",
-        "title": "Open Forge",
-        "category": "Alysis Code",
-        "icon": "$(rocket)"
-      },
-      {
         "command": "alysis.showBrowser",
         "title": "Open Managed Browser",
         "category": "Alysis Code",
@@ -146,34 +132,6 @@
         "title": "Add Selection to Alysis Code",
         "category": "Alysis Code",
         "enablement": "isWorkspaceTrusted && editorHasSelection"
-      },
-      {
-        "command": "alysis.forgePlan",
-        "title": "Create a Plan",
-        "category": "Alysis Code",
-        "enablement": "isWorkspaceTrusted",
-        "icon": "$(checklist)"
-      },
-      {
-        "command": "alysis.forgeListPlans",
-        "title": "Browse Plans",
-        "category": "Alysis Code"
-      },
-      {
-        "command": "alysis.forgeOpenPlan",
-        "title": "Open a Plan",
-        "category": "Alysis Code"
-      },
-      {
-        "command": "alysis.forgeExecute",
-        "title": "Review and Run Plan",
-        "category": "Alysis Code"
-      },
-      {
-        "command": "alysis.runSwarm",
-        "title": "Run Plan in Parallel",
-        "category": "Alysis Code",
-        "enablement": "isWorkspaceTrusted"
       },
       {
         "command": "alysis.cancelCurrentRun",
@@ -232,11 +190,6 @@
       {
         "command": "alysis.healthDiagnostics",
         "title": "Troubleshooting",
-        "category": "Alysis Code"
-      },
-      {
-        "command": "alysis.manageForgeAssets",
-        "title": "Plan Files and References",
         "category": "Alysis Code"
       },
       {
@@ -367,9 +320,9 @@
           "enumDescriptions": [
             "Read-only: inspect and explain without changing files.",
             "Review: ask before important changes.",
-            "Auto: work independently within Alysis Code safeguards. Forge plan execution still runs in review mode and refuses to start in Auto."
+            "Auto: work independently within Alysis Code safeguards."
           ],
-          "markdownDescription": "Choose how much independence Alysis Code has when starting a task. Forge plan execution (`Alysis Code: Review and Run Plan`) supports review mode only — set this to `review` before running a plan."
+          "markdownDescription": "Choose how much independence Alysis Code has when starting a task."
         },
         "alysis.defaultModel": {
           "type": "string",
@@ -415,19 +368,7 @@
             "Request a permissive profile that warns instead of blocking.",
             "Request that sandboxing be disabled."
           ],
-          "markdownDescription": "Requested sandbox profile for new chat, task and worktree sessions, and Forge execution. Start a new session after changing this setting. The CLI environment policy takes precedence; Forge requires strict isolation for mutations."
-        },
-        "alysis.forgeExecuteMaxSteps": {
-          "type": "integer",
-          "default": 0,
-          "minimum": 0,
-          "maximum": 1000,
-          "markdownDescription": "Maximum number of plan steps a single Forge execution may run. Leave at `0` to use the CLI default."
-        },
-        "alysis.forgeExecuteNoLog": {
-          "type": "boolean",
-          "default": false,
-          "description": "Pass no_log=true for IDE Forge Execute Review jobs. Structured protocol events and bounded artifacts still remain available."
+          "markdownDescription": "Requested sandbox profile for new chat, task and worktree sessions. Start a new session after changing this setting. The CLI environment policy takes precedence."
         },
         "alysis.showStatusBar": {
           "type": "boolean",
@@ -438,11 +379,6 @@
           "type": "boolean",
           "default": false,
           "description": "Check the local engine's health as soon as the extension activates, instead of waiting for the first task. No task is ever started automatically."
-        },
-        "alysis.enableForge": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "Show Alysis Code Forge planning and execution commands. Forge Plan and non-mutating Execute Preview run when the IDE bridge supports them; real execution stays fail-closed unless the backend supports safe execution, and trusted-workspace gates always apply."
         }
       }
     },
@@ -479,11 +415,6 @@
           "command": "alysis.newSession",
           "when": "view == alysis.start",
           "group": "navigation@1"
-        },
-        {
-          "command": "alysis.showForge",
-          "when": "view == alysis.start",
-          "group": "navigation@2"
         },
         {
           "command": "alysis.showBrowser",
@@ -589,7 +520,7 @@
           {
             "id": "trustWorkspace",
             "title": "Trust this workspace",
-            "description": "Untrusted workspaces keep Alysis Code read-only: no write-capable Forge runs and no workspace-local CLI.",
+            "description": "Untrusted workspaces keep Alysis Code read-only: no write-capable runs and no workspace-local CLI.",
             "media": {
               "markdown": "media/walkthrough/trust-workspace.md"
             },
@@ -649,7 +580,7 @@
     },
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Bridge health, provider setup, doctor checks, readonly commands, and Forge Execute Preview are available when executable-origin guards pass. Forge execution and write-capable modes require Workspace Trust.",
+      "description": "Bridge health, provider setup, doctor checks, and readonly commands are available when executable-origin guards pass. Write-capable modes require Workspace Trust.",
       "restrictedConfigurations": [
         "alysis.cliPath",
         "alysis.defaultMode",
@@ -658,10 +589,7 @@
         "alysis.provider",
         "alysis.transport",
         "alysis.sandboxProfile",
-        "alysis.forgeExecuteMaxSteps",
-        "alysis.forgeExecuteNoLog",
         "alysis.autoStartBridge",
-        "alysis.enableForge",
         "alysis.extraCaCerts"
       ]
     }

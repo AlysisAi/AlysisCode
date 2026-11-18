@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import time
-from typing import Literal
+import unicodedata
+from typing import Annotated, Literal
 
-from pydantic import AnyHttpUrl, Field, field_validator
+from pydantic import AfterValidator, Field, field_validator, model_validator
 
-from .models import Input, TaskInput
-from .store import Conflict, LimitReached, NotFound, Store, uid
+from .models import BotInput, Input, TaskInput
+from .routine_access import website_origin
+from .scheduling import ScheduleInput, ScheduleRequest, next_run
+from .store import Conflict, LimitReached, NotFound, Store, encode, uid
 
 
 class ActionProposal(Input):
@@ -32,18 +36,8 @@ class ActionProposal(Input):
     @field_validator("browser_origin", mode="before")
     @classmethod
     def validate_origin(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or any(ord(char) < 33 for char in value):
-            raise ValueError("Use an HTTP(S) website origin without whitespace.")
-        url = AnyHttpUrl(value)
-        if "*" in url.host:
-            raise ValueError("Use one exact website origin, without wildcards.")
-        if url.username is not None or url.password is not None or url.path not in (None, "/"):
-            raise ValueError("Use a website origin without credentials or a page path.")
-        if url.query is not None or url.fragment is not None:
-            raise ValueError("Use a website origin without a query or fragment.")
-        return str(url).rstrip("/")
+        # One rule for every website origin a person approves, here and for routines.
+        return None if value is None else website_origin(value)
 
 
 class ActionRequest(ActionProposal):
@@ -442,3 +436,310 @@ class ProposalStore:
             return dict(
                 db.execute("SELECT * FROM action_proposals WHERE id=?", (proposal_id,)).fetchone()
             )
+
+
+def _one_line(value: str) -> str:
+    if any(char in value for char in "\r\n\u2028\u2029"):
+        raise ValueError("Write the purpose as one line.")
+    return value
+
+
+OneLine = Annotated[str, AfterValidator(_one_line)]
+
+
+class SetupProposal(Input):
+    """An owl's own setup, from the person's description of the job, for them to apply."""
+
+    purpose: OneLine = Field(
+        min_length=1,
+        max_length=300,
+        description="One line in the person's language: what this owl is for.",
+    )
+    instructions: str = Field(
+        min_length=1,
+        max_length=3000,
+        description="A few short lines in the person's language: how you do the job each time, "
+        "keeping every requirement, source, output and name the person gave.",
+    )
+    routine: ScheduleRequest | None = Field(
+        default=None,
+        description="Only when the job recurs on its own: when it runs and what each run does, as "
+        "for propose_schedule. A JSON object, not a JSON-encoded string. Omit it (or null) "
+        "otherwise.",
+    )
+
+
+class SetupDecision(Input):
+    """The person's answer to a setup card: Apply (with their own changes) or Not now."""
+
+    action: Literal["apply", "decline"]
+    expected_revision: int = Field(ge=1)
+    # Change…: the person's own wording, applied instead of the owl's.
+    purpose: OneLine | None = Field(default=None, min_length=1, max_length=1000)
+    instructions: str | None = Field(default=None, max_length=6000)
+    include_routine: bool = True
+    routine_prompt: str | None = Field(default=None, min_length=1, max_length=8000)
+
+    @model_validator(mode="after")
+    def _changes_only_apply(self) -> SetupDecision:
+        if self.action == "decline" and (
+            self.purpose is not None
+            or self.instructions is not None
+            or self.routine_prompt is not None
+            or not self.include_routine
+        ):
+            raise ValueError("Only Apply takes changes.")
+        return self
+
+
+# A proposal whose turn stopped never became a card the person could answer.
+_STOPPED = ("cancelled", "cancelling", "failed", "interrupted")
+
+
+def _comparable(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFC", text).casefold().split())
+
+
+def _same_setup(row, purpose: str, instructions: str, routine: dict | None) -> bool:
+    return (
+        _comparable(row["purpose"]) == _comparable(purpose)
+        and _comparable(row["instructions"]) == _comparable(instructions)
+        and (json.loads(row["routine"]) if row["routine"] else None) == routine
+    )
+
+
+def _card(row, bot_updated_at: float) -> dict:
+    """A setup proposal as its card shows it.
+
+    A pending card is out of date once the owl's setup changed after it was made (the person
+    edited it, or applied another), or once its turn stopped: applying it would overwrite newer
+    edits, so it can only be read.
+    """
+    status = row["status"]
+    if status == "pending" and (
+        row["bot_updated_at"] != bot_updated_at or row["source_status"] in _STOPPED
+    ):
+        status = "outdated"
+    return {
+        "id": row["id"],
+        "source_task_id": row["source_task_id"],
+        "revision": row["revision"],
+        "status": status,
+        "ready": row["source_status"] == "completed",
+        "purpose": row["purpose"],
+        "instructions": row["instructions"],
+        "routine": json.loads(row["routine"]) if row["routine"] else None,
+        "before": {"purpose": row["before_purpose"], "instructions": row["before_instructions"]},
+        "applied": json.loads(row["applied"]) if row["applied"] else None,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+_CARDS = (
+    "SELECT p.*,t.status AS source_status,b.updated_at AS current_bot_updated_at "
+    "FROM setup_proposals p JOIN tasks t ON t.id=p.source_task_id JOIN bots b ON b.id=p.bot_id "
+    "WHERE p.bot_id=?"
+)
+
+
+def setup_cards(db, bot_id: str, *, only=None) -> dict[str, dict]:
+    """Each turn's setup card by its task id, for the conversation's shared task decoration."""
+    scope, values = "", (bot_id,)
+    if only is not None:
+        if not only:
+            return {}
+        scope = f" AND p.source_task_id IN ({','.join('?' * len(only))})"
+        values = (bot_id, *only)
+    return {
+        row["source_task_id"]: _card(row, row["current_bot_updated_at"])
+        for row in db.execute(_CARDS + scope, values)
+    }
+
+
+class SetupProposals:
+    """An owl's own setup: proposed by the owl in its chat, changed only by the person's Apply."""
+
+    def __init__(self, store: Store, owner: str):
+        self.store, self.owner = store, owner
+
+    @staticmethod
+    def _read(db, bot_id: str, proposal_id: str) -> dict:
+        row = db.execute(_CARDS + " AND p.id=?", (bot_id, proposal_id)).fetchone()
+        return _card(row, row["current_bot_updated_at"])
+
+    def recent(self, bot_id: str, limit: int = 5) -> list[dict]:
+        """This owl's latest setup proposals and what the person did with them, newest first."""
+        with self.store.connect() as db:
+            self.store._bot(db, self.owner, bot_id)
+            rows = db.execute(
+                _CARDS + " ORDER BY p.created_at DESC,p.id DESC LIMIT ?", (bot_id, limit)
+            ).fetchall()
+            return [_card(row, row["current_bot_updated_at"]) for row in rows]
+
+    def propose(self, task: dict, data: SetupProposal) -> dict:
+        """Save the owl's setup as one card under its reply; nothing about the owl changes yet.
+
+        Only the person's own request in this chat can lead to one: never a routine run, an
+        activation, a first hello or a peer. A turn may correct its own card while it works.
+        A newer card replaces one still waiting, and a setup the person said Not now to is
+        never put in front of them again.
+        """
+        with self.store.connect(write=True) as db:
+            try:
+                source = self.store.direct_request(db, self.owner, task["bot_id"], task["id"])
+            except Conflict:
+                raise Conflict(
+                    "Only the person's own request in this chat, while you answer it, can lead "
+                    "to a setup suggestion."
+                ) from None
+            bot = self.store._bot(db, self.owner, source["bot_id"])
+            now = time.time()
+            routine = None
+            if data.routine is not None:
+                # A relative delay counts from the person's message, as for any routine.
+                timing = data.routine.absolute_timing(source["created_at"])
+                if next_run(timing, now) is None:
+                    raise Conflict("Choose a future time for this one-time routine.")
+                routine = {
+                    "name": data.routine.name,
+                    "prompt": data.routine.prompt,
+                    "timing": timing.model_dump(mode="json"),
+                }
+            if (
+                routine is None
+                and _comparable(data.purpose) == _comparable(bot["purpose"])
+                and _comparable(data.instructions) == _comparable(bot["instructions"])
+            ):
+                raise Conflict("This is already your setup, so there is nothing to apply.")
+            for declined in db.execute(
+                "SELECT purpose,instructions,routine FROM setup_proposals "
+                "WHERE bot_id=? AND status='declined'",
+                (bot["id"],),
+            ).fetchall():
+                if _same_setup(declined, data.purpose, data.instructions, routine):
+                    raise Conflict(
+                        "The person chose Not now for this same setup. Do not suggest it again; "
+                        "carry on with their request."
+                    )
+            values = (
+                data.purpose,
+                data.instructions,
+                encode(routine) if routine else None,
+                bot["purpose"],
+                bot["instructions"],
+                bot["updated_at"],
+                now,
+            )
+            old = db.execute(
+                "SELECT * FROM setup_proposals WHERE source_task_id=?", (source["id"],)
+            ).fetchone()
+            if old:
+                if old["status"] != "pending":
+                    raise Conflict(
+                        "This turn's setup card was already answered. Do not call propose_setup "
+                        "again in this turn."
+                    )
+                if not _same_setup(old, data.purpose, data.instructions, routine) or (
+                    old["bot_updated_at"] != bot["updated_at"]
+                ):
+                    # One card per turn: its revision moves, so a card read earlier can't apply.
+                    db.execute(
+                        "UPDATE setup_proposals SET purpose=?,instructions=?,routine=?,"
+                        "before_purpose=?,before_instructions=?,bot_updated_at=?,updated_at=?,"
+                        "revision=revision+1 WHERE id=?",
+                        (*values, old["id"]),
+                    )
+                    self.store._event(
+                        db, source["id"], "setup_proposal_corrected", {"proposal_id": old["id"]}
+                    )
+                return self._read(db, bot["id"], old["id"])
+            db.execute(
+                "UPDATE setup_proposals SET status='outdated',revision=revision+1,updated_at=? "
+                "WHERE bot_id=? AND status='pending'",
+                (now, bot["id"]),
+            )
+            proposal_id = uid()
+            db.execute(
+                "INSERT INTO setup_proposals(id,bot_id,source_task_id,purpose,instructions,routine,"
+                "before_purpose,before_instructions,bot_updated_at,created_at,status,revision,"
+                "applied,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'pending',1,NULL,?)",
+                (proposal_id, bot["id"], source["id"], *values, now),
+            )
+            self.store._event(db, source["id"], "setup_proposed", {"proposal_id": proposal_id})
+            return self._read(db, bot["id"], proposal_id)
+
+    def decide(self, bot_id: str, proposal_id: str, data: SetupDecision) -> dict:
+        """Apply the setup in one step, or set it aside, only from the card the person saw.
+
+        Apply changes the purpose and instructions through the owl's own update path and saves
+        the routine as a draft from that turn, which the person turns on as any routine the owl
+        suggests; all of it lands together or not at all. The same answer sent twice (a double
+        click, a second window) returns the change already made. A card whose revision moved, or
+        made before the owl's setup last changed, is refused, so it never overwrites newer edits.
+        """
+        with self.store.connect(write=True) as db:
+            bot = self.store._bot(db, self.owner, bot_id)
+            row = db.execute(_CARDS + " AND p.id=?", (bot_id, proposal_id)).fetchone()
+            if row is None:
+                raise NotFound("Setup suggestion not found.")
+            done = "applied" if data.action == "apply" else "declined"
+            if row["status"] == done:
+                return _card(row, bot["updated_at"])
+            if _card(row, bot["updated_at"])["status"] != "pending":
+                raise Conflict(
+                    "This setup suggestion is no longer current: the owl's setup changed since, "
+                    "or a newer suggestion replaced it."
+                )
+            if row["revision"] != data.expected_revision:
+                raise Conflict("This setup suggestion changed. Review it again before deciding.")
+            if row["source_status"] != "completed":
+                raise Conflict("Wait for the owl to finish its reply.")
+            now = time.time()
+            applied = None
+            if data.action == "apply":
+                purpose = row["purpose"] if data.purpose is None else data.purpose
+                instructions = (
+                    row["instructions"] if data.instructions is None else data.instructions
+                )
+                # Every other setting stays as it is, including ones added after this card.
+                current = {key: bot[key] for key in BotInput.model_fields if key in bot}
+                self.store.save_bot(
+                    self.owner,
+                    BotInput(**{**current, "purpose": purpose, "instructions": instructions}),
+                    bot_id,
+                    within=db,
+                )
+                schedule_id = None
+                routine = json.loads(row["routine"]) if row["routine"] else None
+                if routine and data.include_routine:
+                    schedule = self.store.save_schedule(
+                        self.owner,
+                        bot_id,
+                        ScheduleInput.model_validate(
+                            {
+                                **routine,
+                                "prompt": data.routine_prompt or routine["prompt"],
+                                "enabled": False,
+                            }
+                        ),
+                        source_task_id=row["source_task_id"],
+                        accepted_card=True,
+                        now=now,
+                        within=db,
+                    )
+                    schedule_id = schedule["id"]
+                applied = {
+                    "purpose": purpose,
+                    "instructions": instructions,
+                    "schedule_id": schedule_id,
+                }
+            db.execute(
+                "UPDATE setup_proposals SET status=?,applied=?,revision=revision+1,updated_at=? "
+                "WHERE id=?",
+                (done, encode(applied) if applied else None, now, proposal_id),
+            )
+            self.store._event(
+                db, row["source_task_id"], "setup_" + done, {"proposal_id": proposal_id}
+            )
+            return self._read(db, bot_id, proposal_id)

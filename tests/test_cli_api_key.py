@@ -3242,122 +3242,6 @@ def test_chat_compact_unavailable_when_compaction_disabled(tmp_path: Path, monke
     assert "Compaction unavailable for this session (disabled or not supported)." in result.output
 
 
-def test_chat_compact_blocked_in_forge_mode(tmp_path: Path, monkeypatch) -> None:
-    runner = CliRunner()
-    captured: dict[str, Any] = {}
-
-    class _DummyStore:
-        session_id = "sid"
-
-    class _DummyClient:
-        model = "test-model"
-        temperature = 1.0
-
-    class _DummyUsageSummary:
-        @staticmethod
-        def totals() -> dict[str, object]:
-            return {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "cost_usd": None,
-                "known_cost_calls": 0,
-                "unknown_cost_calls": 0,
-                "api_usage_calls": 0,
-                "estimate_usage_calls": 0,
-            }
-
-    class _DummyCompactorClient:
-        model = "compactor-model"
-
-    class _DummyCompactor:
-        compactor_client = _DummyCompactorClient()
-        state = SimpleNamespace(history_chunk_index=0, pins=[], pinned_prefix_len=1)
-
-        def compact_now(
-            self,
-            *,
-            messages: list[dict[str, Any]],
-            tool_list: list[dict[str, Any]] | None,
-            main_model: str,
-            cache_policy: dict[str, Any] | None = None,
-            focus: str | None = None,
-        ) -> tuple[list[dict[str, Any]], bool]:
-            captured["compact_called"] = True
-            _ = messages, tool_list, main_model, cache_policy, focus
-            return messages, False
-
-    class _DummyContext:
-        model_name = "test-model"
-        source = "fallback"
-        max_input_tokens = 8192
-        used_input_tokens = 10
-        remaining_tokens = 8182
-        percent_left = 99.8
-
-    class _DummySession:
-        store = _DummyStore()
-        client = _DummyClient()
-        usage_summary = _DummyUsageSummary()
-        conversation_compactor = _DummyCompactor()
-        root = tmp_path
-        cfg = AppConfig(model="test-model")
-        stream = False
-        mode = "review"
-        tool_list: list[dict[str, Any]] = []
-        messages: list[dict[str, Any]] = [{"role": "system", "content": "system"}]
-
-        @staticmethod
-        def context_left() -> _DummyContext:
-            return _DummyContext()
-
-        def close(self) -> None:
-            return None
-
-    def fake_create_session(**_kwargs) -> _DummySession:
-        return _DummySession()
-
-    def fake_enter_forge_mode(
-        *, root: Path, console: Console, forge_state: Any, **_kwargs: Any
-    ) -> bool:
-        _ = root, console
-        plan_dir = tmp_path / ".alysis" / "runs" / "wf" / "plan"
-        notes_dir = plan_dir / "notes"
-        notes_dir.mkdir(parents=True, exist_ok=True)
-        forge_state.ui_mode = "forge"
-        forge_state.paths = SimpleNamespace(
-            plan_json_path=plan_dir / "plan.json",
-            plan_md_path=plan_dir / "PLAN.md",
-            notes_dir=notes_dir,
-            notes_path=notes_dir / "user_notes.md",
-        )
-        forge_state.plan = {
-            "run_id": "wf",
-            "project_goal": "x",
-            "summary": "x",
-            "requirements": [],
-            "tasks": [],
-            "assets": [],
-        }
-        return True
-
-    monkeypatch.setattr(cli_mod, "create_session", fake_create_session)
-    monkeypatch.setattr(cli_mod, "_enter_forge_mode", fake_enter_forge_mode)
-    env = {
-        "ALYSIS_CONFIG_DIR": os.fspath(tmp_path),
-        "ALYSIS_DATA_DIR": os.fspath(tmp_path),
-    }
-    result = runner.invoke(
-        alysis_app,
-        ["chat", "--model", "test-model", "--api-key", "k", "--no-log"],
-        input="/forge\n/compact\n/back\nexit\n",
-        env=env,
-    )
-    assert result.exit_code == 0
-    assert "Compaction is disabled in Forge." in result.output
-    assert "compact_called" not in captured
-
-
 def test_chat_compact_nothing_to_compact_prints_message(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
 
@@ -4857,7 +4741,6 @@ def test_maybe_make_chat_prompt_session_sets_constructor_erase_when_done(
         console=Console(),
         root=Path("."),
         pending_images=[],
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert session is not None
@@ -4891,7 +4774,6 @@ def test_maybe_make_chat_prompt_session_uses_session_registries_for_completions(
         console=Console(),
         root=Path("."),
         pending_images=[],
-        forge_state=cli_mod._ForgeChatState(),
         session=SimpleNamespace(
             subagent_registry={"explorer": object()},
             skill_registry={"python": object()},
@@ -4938,7 +4820,6 @@ def test_maybe_make_chat_prompt_session_falls_back_when_constructor_unsupported(
         console=Console(),
         root=Path("."),
         pending_images=[],
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert session is not None
@@ -4968,7 +4849,6 @@ def test_maybe_make_chat_prompt_session_preserves_larger_escape_sequence_timeout
         console=Console(),
         root=Path("."),
         pending_images=[],
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert session is not None
@@ -5241,7 +5121,8 @@ def test_chat_shows_escape_hint_in_welcome_banner_when_interactive(
     )
     assert result.exit_code == 0
     assert "Alysis Code" in result.output
-    assert "/forge" in result.output
+    assert "/resume" in result.output
+    assert "/forge" not in result.output
     assert "/status" in result.output
     assert "/help" in result.output
     assert "Esc to stop  /help for commands" not in result.output

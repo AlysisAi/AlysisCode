@@ -1,7 +1,6 @@
 # ruff: noqa: F821
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -12,20 +11,9 @@ from rich.text import Text
 
 from ...agent.llm_calls import _request_messages_with_volatile_suffix
 from ...config import AppConfig, ConfigError
-from ...forge_completion import build_forge_completion_report
 from ...llm.base import effective_tools_for_client
 from ...personas import is_persona_name, normalize_persona, persona_modes_enabled
-from ...plan_repair import apply_plan_status
-from ...plan_validation import PlannerFailedError, raise_for_execution_ready_plan
-from ...surface.styles import (
-    STYLE_CHROME,
-    STYLE_EMPHASIS,
-    STYLE_SUCCESS,
-    STYLE_WARN,
-)
-from ...usage_tracker import UsageRecord, aggregate_usage_from_session_logs
-from .forge_visibility import command_visible
-from .state import _ChatExecutionRequest, _ForgeChatState
+from .state import _ChatExecutionRequest
 
 _PROTECTED_COMMAND_GLOBAL_NAMES: set[str] = set()
 _SYNCED_COMMAND_GLOBAL_VALUES: dict[str, Any] = {}
@@ -44,12 +32,6 @@ _TERMINALS_USAGE_LINES = (
     "       /terminals kill <process_id>",
     "       /terminals help",
 )
-
-
-def acquire_swarm_mutation_guard(*args: Any, **kwargs: Any) -> Any:
-    from ...swarm_orchestrator import acquire_swarm_mutation_guard as acquire
-
-    return acquire(*args, **kwargs)
 
 
 def _record_chat_local_command(*, session: Any, command_token: str, has_argument: bool) -> None:
@@ -75,8 +57,8 @@ def _record_chat_local_command(*, session: Any, command_token: str, has_argument
         )
 
 
-def _handle_unknown_chat_command(*, command: str, console: Console, ui_mode: str) -> str:
-    suggestion = _suggest_chat_command(command, ui_mode=ui_mode)
+def _handle_unknown_chat_command(*, command: str, console: Console) -> str:
+    suggestion = _suggest_chat_command(command)
     if suggestion:
         console.print(
             f"[yellow]Unknown command:[/yellow] {command}. Did you mean {suggestion}? Try /help."
@@ -84,95 +66,6 @@ def _handle_unknown_chat_command(*, command: str, console: Console, ui_mode: str
         return "handled"
     console.print(f"[yellow]Unknown command:[/yellow] {command}. Try /help.")
     return "handled"
-
-
-def _merge_usage_payloads_into_session(
-    *, session: Any, payloads: list[dict[str, Any]] | tuple[dict[str, Any], ...]
-) -> int:
-    summary = getattr(session, "usage_summary", None)
-    add_event_payload = getattr(summary, "add_event_payload", None)
-    store = getattr(session, "store", None)
-    append = getattr(store, "append", None)
-    merged = 0
-    for payload in payloads:
-        if not isinstance(payload, dict):
-            continue
-        if str(payload.get("event_type") or "") != "llm_usage":
-            continue
-        if callable(add_event_payload):
-            try:
-                add_event_payload(payload)
-            except Exception:
-                continue
-        if callable(append):
-            try:
-                append("llm_usage", dict(payload))
-            except Exception:
-                pass
-        merged += 1
-    return merged
-
-
-def _merge_usage_records_into_session(
-    *, session: Any, records: list[UsageRecord] | tuple[UsageRecord, ...]
-) -> int:
-    summary = getattr(session, "usage_summary", None)
-    add_record = getattr(summary, "add_record", None)
-    store = getattr(session, "store", None)
-    append = getattr(store, "append", None)
-    merged = 0
-    for record in records:
-        if not isinstance(record, UsageRecord):
-            continue
-        if callable(add_record):
-            try:
-                add_record(record)
-            except Exception:
-                continue
-        if callable(append):
-            try:
-                append("llm_usage", record.to_payload())
-            except Exception:
-                pass
-        merged += 1
-    return merged
-
-
-def _merge_forge_execution_usage_into_session(*, session: Any, paths: Any) -> int:
-    logs_dir = getattr(paths, "execution_logs_dir", None)
-    if logs_dir is None:
-        return 0
-    try:
-        imported = set(getattr(session, "_alysis_imported_forge_usage_logs", set()) or set())
-        log_paths = sorted(Path(logs_dir).glob("*.jsonl"))
-    except Exception:
-        return 0
-    selected: list[Path] = []
-    selected_keys: list[str] = []
-    for path in log_paths:
-        try:
-            key = os.fspath(path.resolve())
-        except Exception:
-            key = os.fspath(path)
-        if key in imported:
-            continue
-        selected.append(path)
-        selected_keys.append(key)
-    if not selected:
-        return 0
-    try:
-        summary = aggregate_usage_from_session_logs(selected)
-        records = summary.records()
-    except Exception:
-        return 0
-    merged = _merge_usage_records_into_session(session=session, records=records)
-    if merged:
-        imported.update(selected_keys)
-        try:
-            session._alysis_imported_forge_usage_logs = imported
-        except Exception:
-            pass
-    return merged
 
 
 def _print_alysis_trial_models(console: Console, session: Any, *, current: str) -> None:
@@ -210,16 +103,6 @@ def _print_alysis_trial_models(console: Console, session: Any, *, current: str) 
     console.print("[dim]Switch with: /model <name>[/dim]")
 
 
-def _print_forge_lock_wait_notice(console: Console, info: dict[str, Any]) -> None:
-    diagnostic = str(info.get("diagnostic") or "").strip()
-    warnings = ["Another Forge execution is mutating this workspace; queued and waiting."]
-    if diagnostic:
-        warnings.append(diagnostic)
-    _print_forge_warning_messages(
-        console=console, label="Forge execution queued", warnings=warnings
-    )
-
-
 def _sync_command_globals(source_globals: dict[str, Any]) -> None:
     module_globals = globals()
     if not _PROTECTED_COMMAND_GLOBAL_NAMES:
@@ -254,9 +137,6 @@ def _handle_idle_skill_invocation(
     session: Any,
     pending_images: list[str],
     console: Console,
-    forge_state: _ForgeChatState,
-    forge_planner_reply_sink: Any | None = None,
-    forge_execution_report_sink: Any | None = None,
 ) -> str | _ChatExecutionRequest | None:
     """Route an idle ``$name [task]`` submission through the existing skill flow."""
 
@@ -283,9 +163,6 @@ def _handle_idle_skill_invocation(
         session=session,
         pending_images=pending_images,
         console=console,
-        forge_state=forge_state,
-        forge_planner_reply_sink=forge_planner_reply_sink,
-        forge_execution_report_sink=forge_execution_report_sink,
     )
 
 
@@ -296,9 +173,6 @@ def _handle_chat_command(
     session: Any,
     pending_images: list[str],
     console: Console,
-    forge_state: _ForgeChatState,
-    forge_planner_reply_sink: Any | None = None,
-    forge_execution_report_sink: Any | None = None,
     record_local_command: bool = True,
 ) -> str | _ChatExecutionRequest:
     trimmed = input_text.strip()
@@ -315,69 +189,13 @@ def _handle_chat_command(
             has_argument=bool(arg),
         )
 
-    if not command_visible(cmd, ui_mode=forge_state.ui_mode):
-        return _handle_unknown_chat_command(
-            command=parts[0],
-            console=console,
-            ui_mode=forge_state.ui_mode,
-        )
-
-    if _is_forge_ui_mode(forge_state.ui_mode):
-        forge_action = _handle_forge_chat_command(
-            input_text=input_text,
-            forge_state=forge_state,
-            session=session,
-            console=console,
-            forge_planner_reply_sink=forge_planner_reply_sink,
-            forge_execution_report_sink=forge_execution_report_sink,
-        )
-        if forge_action != "unhandled":
-            return forge_action
-
-    parsed_forge_enter = _parse_forge_enter_command(cmd=cmd, arg=arg)
-
     if cmd in {"exit", "quit", "/exit", "/quit"}:
         return "exit"
-    if parsed_forge_enter is not None:
-        if parsed_forge_enter.usage_error is not None:
-            console.print(f"[red]{parsed_forge_enter.usage_error}[/red]")
-            for line in _forge_enter_usage_lines():
-                console.print(line)
-            return "handled"
-        if _is_forge_ui_mode(forge_state.ui_mode):
-            console.print("Forge is already active.")
-            return "handled"
-        forge_state.entry_request_mode = parsed_forge_enter.entry_mode
-        forge_state.entry_goal = parsed_forge_enter.initial_goal
-        try:
-            forge_root = _resolve_forge_entry_root(session=session, fallback_root=root)
-        except Exception as e:  # noqa: BLE001
-            console.print(f"[red]Failed to enter Forge:[/red] {e}")
-            return "handled"
-        forge_model = getattr(getattr(session, "client", None), "model", None)
-        forge_mode = getattr(session, "mode", None)
-        enter_kwargs = {
-            "root": forge_root,
-            "console": console,
-            "forge_state": forge_state,
-            "model": str(forge_model) if forge_model else None,
-            "mode": str(forge_mode) if forge_mode else None,
-        }
-        if parsed_forge_enter.planner_assistant_default is not None:
-            # Explicit choice from the TUI intro popup's "Use the planner?" prompt
-            # (or a direct ``/forge --planner`` / ``/forge --no-planner``) wins.
-            enter_kwargs["planner_assistant_default"] = parsed_forge_enter.planner_assistant_default
-        elif bool(getattr(session, "_alysis_tui_interactive", False)):
-            # Bare/goal/resume entry in the alt-screen TUI can't run the classic
-            # stdin plan-assistant prompt, so default it on (unchanged behavior).
-            enter_kwargs["planner_assistant_default"] = True
-        _enter_forge_mode(**enter_kwargs)
-        return "handled"
     if cmd == "/":
-        console.print(_chat_quick_commands_panel(ui_mode=forge_state.ui_mode))
+        console.print(_chat_quick_commands_panel())
         return "handled"
     if cmd == "/help":
-        console.print(_chat_help_panel(ui_mode=forge_state.ui_mode))
+        console.print(_chat_help_panel())
         return "handled"
     if cmd in {"/status"}:
         _print_chat_status(console=console, session=session, pending_images=pending_images)
@@ -714,9 +532,6 @@ def _handle_chat_command(
         console.print("[yellow]Usage:[/yellow] /toolbar [add|remove|reset|save]")
         return "handled"
     if cmd == "/skill":
-        if _is_forge_ui_mode(forge_state.ui_mode):
-            console.print("Skills are unavailable in Forge.")
-            return "handled"
         raw_skill_arg = arg.strip()
         enabled, ordered_skills, issues = _session_skill_listing(session)
         if not raw_skill_arg:
@@ -786,9 +601,6 @@ def _handle_chat_command(
                 feedback_text=arg or None,
                 cfg=cfg,
                 active_session=session,
-                active_run_paths=(
-                    forge_state.paths if _is_forge_ui_mode(forge_state.ui_mode) else None
-                ),
                 pending_images=list(pending_images),
             )
         except (ConfigError, FeedbackReportError) as exc:
@@ -809,9 +621,6 @@ def _handle_chat_command(
                 console.print(line)
         return "handled"
     if cmd in {"/compact"}:
-        if _is_forge_ui_mode(forge_state.ui_mode):
-            console.print("Compaction is disabled in Forge.")
-            return "handled"
         compactor = getattr(session, "conversation_compactor", None)
         if compactor is None:
             console.print("Compaction unavailable for this session (disabled or not supported).")
@@ -1147,16 +956,6 @@ def _handle_chat_command(
             "[yellow]Unknown /config action.[/yellow] Use /config, /config set, /config clear."
         )
         return "handled"
-    if cmd in {"/assets"}:
-        try:
-            run_paths = load_current_run_paths(Path(resolve_session_active_workdir_path(session)))
-        except ForgeError:
-            console.print(
-                "No forge run is active for this workspace. Use /forge plan to start one."
-            )
-            return "handled"
-        _open_assets_modal(session=session, console=console, run_paths=run_paths)
-        return "handled"
     if cmd in {"/permissions"}:
         active_mode = str(getattr(session, "mode", "review")).strip().lower()
         pending_mode = _pending_chat_permissions(session)
@@ -1321,9 +1120,6 @@ def _handle_chat_command(
         console.print(f"Reasoning trace set for this session: {applied}")
         return "handled"
     if cmd in {"/clear"}:
-        if _is_forge_ui_mode(forge_state.ui_mode):
-            console.print("Cannot /clear inside Forge. Use /back or /done first.")
-            return "handled"
         try:
             _clear_chat_conversation(session=session, pending_images=pending_images)
         except Exception as e:  # noqa: BLE001
@@ -1496,39 +1292,34 @@ def _handle_chat_command(
         return "handled"
 
     if cmd[:1] in "/:":
-        return _handle_unknown_chat_command(
-            command=parts[0],
-            console=console,
-            ui_mode=forge_state.ui_mode,
-        )
+        return _handle_unknown_chat_command(command=parts[0], console=console)
 
-    if not _is_forge_ui_mode(forge_state.ui_mode):
-        navigation_request = _parse_chat_workdir_navigation_request(
-            input_text=input_text,
-            session=session,
-        )
-        if navigation_request is not None:
-            if len(navigation_request) == 3:
-                _requested_path, _trailing_instruction, error_message = navigation_request
-                console.print(f"[red]Failed to change active workdir:[/red] {error_message}")
-                return "handled"
+    navigation_request = _parse_chat_workdir_navigation_request(
+        input_text=input_text,
+        session=session,
+    )
+    if navigation_request is not None:
+        if len(navigation_request) == 3:
+            _requested_path, _trailing_instruction, error_message = navigation_request
+            console.print(f"[red]Failed to change active workdir:[/red] {error_message}")
+            return "handled"
 
-            requested_path, trailing_instruction = navigation_request
-            try:
-                result = set_session_active_workdir(
-                    session,
-                    requested_path,
-                    source="natural_language_chat",
-                )
-            except Exception as e:  # noqa: BLE001
-                console.print(f"[red]Failed to change active workdir:[/red] {e}")
-                return "handled"
-            console.print(
-                f"Active workdir: {result['active_workdir']} ({result['active_workdir_relpath']})"
+        requested_path, trailing_instruction = navigation_request
+        try:
+            result = set_session_active_workdir(
+                session,
+                requested_path,
+                source="natural_language_chat",
             )
-            if not trailing_instruction:
-                return "handled"
-            return _ChatExecutionRequest(instruction=trailing_instruction)
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Failed to change active workdir:[/red] {e}")
+            return "handled"
+        console.print(
+            f"Active workdir: {result['active_workdir']} ({result['active_workdir_relpath']})"
+        )
+        if not trailing_instruction:
+            return "handled"
+        return _ChatExecutionRequest(instruction=trailing_instruction)
 
     return "send"
 
@@ -1688,885 +1479,3 @@ def _format_terminal_runtime_s(runtime_s: float) -> str:
     minutes = int(runtime_s // 60)
     seconds = int(runtime_s % 60)
     return f"{minutes}m{seconds:02d}s"
-
-
-def _handle_forge_chat_command(
-    *,
-    input_text: str,
-    forge_state: _ForgeChatState,
-    session: Any,
-    console: Console,
-    forge_planner_reply_sink: Any | None = None,
-    forge_execution_report_sink: Any | None = None,
-) -> str:
-    paths = forge_state.paths
-    plan = forge_state.plan
-    if paths is None or plan is None:
-        _print_forge_warning_messages(
-            console=console,
-            label="Forge",
-            warnings=["Forge state missing; returning to chat mode."],
-        )
-        forge_state.ui_mode = "chat"
-        return "handled"
-
-    trimmed = input_text.strip()
-    if not trimmed:
-        return "handled"
-
-    parts = trimmed.split(maxsplit=1)
-    cmd = parts[0].lower()
-    arg = parts[1].strip() if len(parts) > 1 else ""
-
-    if cmd in {"/back"}:
-        forge_state.ui_mode = "chat"
-        append_transcript_note(paths, role="system", message="Exited Forge with /back.")
-        _print_forge_meta(
-            console=console,
-            message="Left Forge without the final save/validate step. Back to chat.",
-        )
-        return "handled"
-
-    if cmd in {"/done", "done"}:
-        append_transcript_note(paths, role="user", message=trimmed)
-        append_transcript_note(paths, role="system", message="Forge finalized with /done.")
-        _finalize_forge_plan(
-            console=console,
-            paths=paths,
-            plan=plan,
-            transcript_tail=forge_state.planner_transcript,
-        )
-        forge_state.ui_mode = "chat"
-        _print_forge_meta(
-            console=console,
-            message="Saved and validated the plan. Back to chat.",
-        )
-        return "handled"
-
-    if cmd in {"/help"}:
-        console.print(_chat_help_panel(ui_mode="forge"))
-        return "handled"
-
-    if cmd in {"/show"}:
-        _show_forge_plan_summary(console=console, paths=paths, plan=plan)
-        return "handled"
-
-    if cmd in {"/assets"}:
-        _open_assets_modal(session=session, console=console, run_paths=paths)
-        return "handled"
-
-    if cmd in {"/plan"}:
-        append_transcript_note(paths, role="user", message=trimmed)
-        plan_cmd = arg.strip().lower()
-        if not plan_cmd:
-            plan_cmd, picker_available = _select_forge_plan_command_interactive(console=console)
-            if not picker_available:
-                _print_forge_warning_messages(
-                    console=console,
-                    label="Usage",
-                    warnings=["/plan tasks|table|markdown|md|edit"],
-                )
-                return "handled"
-            if plan_cmd is None:
-                return "handled"
-
-        if plan_cmd in {"view", "tasks", "table"}:
-            _show_forge_plan_summary(console=console, paths=paths, plan=plan)
-            return "handled"
-        if plan_cmd in {"markdown", "md"}:
-            _show_forge_plan_markdown(console=console, paths=paths, plan=plan)
-            return "handled"
-        if plan_cmd in {"edit", "edit-json"}:
-            _edit_forge_plan_json(console=console, paths=paths, forge_state=forge_state)
-            updated_plan = forge_state.plan
-            if isinstance(updated_plan, dict):
-                plan = updated_plan
-            return "handled"
-        append_transcript_note(
-            paths,
-            role="system",
-            message="Rejected invalid Forge /plan usage.",
-        )
-        _print_forge_plan_command_guidance(console=console)
-        return "handled"
-
-    if cmd in {"/execute"}:
-        forge_state.swarm_run_attempted = False
-        if arg.strip().lower() != "plan":
-            append_transcript_note(paths, role="user", message=trimmed)
-            append_transcript_note(
-                paths,
-                role="system",
-                message="Rejected invalid /execute usage.",
-            )
-            _print_forge_warning_messages(
-                console=console,
-                label="Usage",
-                warnings=["/execute plan"],
-            )
-            return "handled"
-
-        if not _forge_has_usable_plan_input(plan):
-            _print_forge_warning_messages(
-                console=console,
-                label="Forge",
-                warnings=[
-                    "Plan is empty. Add requirements or tasks first (paste text, /task, or /plan edit)."
-                ],
-            )
-            append_transcript_note(paths, role="user", message=trimmed)
-            append_transcript_note(
-                paths,
-                role="system",
-                message="Rejected /execute plan because plan had no requirements/tasks.",
-            )
-            return "handled"
-
-        try:
-            run_mutation_guard = acquire_swarm_mutation_guard(
-                paths,
-                mode="forge_swarm:chat",
-                on_wait=lambda info: _print_forge_lock_wait_notice(console, info),
-            )
-        except ForgeError as e:
-            _print_forge_error(
-                console=console,
-                message=f"Forge execution failed: {e}",
-            )
-            return "handled"
-
-        try:
-            append_transcript_note(paths, role="user", message=trimmed)
-
-            if bool(getattr(run_mutation_guard, "acquired_after_wait", False)):
-                plan.clear()
-                plan.update(load_plan(paths))
-            workspace_context = _workspace_context_payload_for_paths(
-                paths=paths,
-                refresh_if_stale=True,
-            )
-            finalize_plan(plan)
-            reconciliation_result, workspace_context = _reconcile_plan_for_paths(
-                paths=paths,
-                plan=plan,
-                refresh_if_stale=False,
-                transcript_tail=forge_state.planner_transcript,
-            )
-            save_plan(paths, plan)
-            validation_warnings = _validate_forge_plan_for_paths(paths, plan)
-            if reconciliation_result.warnings:
-                _print_forge_warning_messages(
-                    console=console,
-                    label="Plan reconciliation",
-                    warnings=list(reconciliation_result.warnings),
-                )
-                for warning in reconciliation_result.warnings:
-                    append_transcript_note(
-                        paths,
-                        role="system",
-                        message=f"Plan reconciliation warning: {warning}",
-                    )
-            _write_plan_validation_artifact(
-                paths=paths,
-                reconciliation_result=reconciliation_result,
-                validation_warnings=validation_warnings,
-            )
-            no_execution_ready_tasks_message = _forge_no_execution_ready_tasks_message(plan)
-            if no_execution_ready_tasks_message is not None:
-                _print_forge_error(
-                    console=console,
-                    message=no_execution_ready_tasks_message,
-                )
-                append_transcript_note(
-                    paths,
-                    role="system",
-                    message=f"Rejected /execute plan: {no_execution_ready_tasks_message}",
-                )
-                return "handled"
-
-            enrich_attempted = False
-            enrich_applied = False
-            enrich_summary = "enrichment not needed"
-            show_enrichment_details = _chat_trace_level(session) == "full"
-            if _forge_should_try_enrichment(validation_warnings):
-                if not _forge_enrich_plan_enabled():
-                    enrich_summary = "enrichment skipped: disabled"
-                else:
-                    planner_api_key = str(
-                        getattr(getattr(session, "client", None), "api_key", "") or ""
-                    ).strip()
-                    session_cfg = getattr(session, "cfg", None)
-                    if planner_api_key and isinstance(session_cfg, AppConfig):
-                        enrich_attempted = True
-                        enrichment_user_text = (
-                            "Enrich the existing plan for execution: do not ask questions; only fill "
-                            "missing acceptance_criteria and estimated_files via tasks_update; do not "
-                            "change project_goal, summary, requirements, tasks_add, or tasks_remove."
-                        )
-                        planner_knowledge = prepare_planner_knowledge(
-                            paths=paths,
-                            plan=plan,
-                            user_text=enrichment_user_text,
-                            selection_label="planner_enrichment",
-                        )
-                        planner_workspace_root = resolve_knowledge_workspace_root(paths)
-                        planner_result = run_planner_turn(
-                            cfg=clone_cfg(session_cfg),
-                            api_key_override=planner_api_key,
-                            plan=plan,
-                            transcript_tail=forge_state.planner_transcript,
-                            workspace_context=workspace_context,
-                            user_text=enrichment_user_text,
-                            relevant_knowledge_section=planner_knowledge.render_prompt_section(
-                                workspace_root=planner_workspace_root
-                            ),
-                            run_paths=paths,
-                        )
-                        _merge_usage_payloads_into_session(
-                            session=session,
-                            payloads=list(getattr(planner_result, "usage_events", []) or []),
-                        )
-                        request_retry_count = int(
-                            getattr(planner_result, "request_retry_count", 0) or 0
-                        )
-                        if request_retry_count > 0 and not planner_result.error:
-                            retry_word = "retry" if request_retry_count == 1 else "retries"
-                            retry_notice = (
-                                f"Planner request recovered after {request_retry_count} transient "
-                                f"{retry_word}."
-                            )
-                            if show_enrichment_details:
-                                _print_forge_warning_messages(
-                                    console=console,
-                                    label="Plan enrichment",
-                                    warnings=[retry_notice],
-                                )
-                            if show_enrichment_details:
-                                append_transcript_note(
-                                    paths,
-                                    role="system",
-                                    message=f"Plan enrichment warning: {retry_notice}",
-                                )
-                        if planner_result.error:
-                            retry_word = "retry" if request_retry_count == 1 else "retries"
-                            enrichment_error_summary = (
-                                f"enrichment skipped after {request_retry_count} transient "
-                                f"{retry_word}: {planner_result.error}"
-                                if request_retry_count > 0
-                                else f"enrichment skipped: {planner_result.error}"
-                            )
-                            enrichment_error_warnings = (
-                                [
-                                    f"Planner request failed after {request_retry_count} transient "
-                                    f"{retry_word}."
-                                ]
-                                if request_retry_count > 0
-                                else []
-                            )
-                            enrichment_error_warnings.append(
-                                f"Final planner error: {planner_result.error}"
-                            )
-                            _print_forge_warning_messages(
-                                console=console,
-                                label="Plan enrichment",
-                                warnings=enrichment_error_warnings,
-                            )
-                            append_transcript_note(
-                                paths,
-                                role="system",
-                                message=(
-                                    f"Plan enrichment error after {request_retry_count} transient "
-                                    f"{retry_word}: {planner_result.error}"
-                                    if request_retry_count > 0
-                                    else f"Plan enrichment error: {planner_result.error}"
-                                ),
-                            )
-                            enrich_summary = enrichment_error_summary
-                        elif planner_result.plan_update:
-                            sanitized_enrichment = _sanitize_forge_enrichment_plan_update(
-                                plan=plan,
-                                plan_update=planner_result.plan_update,
-                            )
-                            if sanitized_enrichment.warnings:
-                                if show_enrichment_details:
-                                    _print_forge_warning_messages(
-                                        console=console,
-                                        label="Plan enrichment",
-                                        warnings=list(sanitized_enrichment.warnings),
-                                    )
-                                if show_enrichment_details:
-                                    for warning in sanitized_enrichment.warnings:
-                                        append_transcript_note(
-                                            paths,
-                                            role="system",
-                                            message=f"Plan enrichment warning: {warning}",
-                                        )
-                            if sanitized_enrichment.plan_update is None:
-                                enrich_summary = "enrichment produced no applicable changes"
-                            else:
-                                apply_result = apply_guarded_planner_plan_update(
-                                    plan,
-                                    sanitized_enrichment.plan_update,
-                                    latest_user_text=enrichment_user_text,
-                                    workspace_context=workspace_context,
-                                )
-                                reconciliation_target_ids = list(
-                                    dict.fromkeys(
-                                        [
-                                            *apply_result.added_task_ids,
-                                            *apply_result.updated_task_ids,
-                                        ]
-                                    )
-                                )
-                                if apply_result.warnings:
-                                    if show_enrichment_details:
-                                        _print_forge_warning_messages(
-                                            console=console,
-                                            label="Plan enrichment",
-                                            warnings=list(apply_result.warnings),
-                                        )
-                                    if show_enrichment_details:
-                                        for warning in apply_result.warnings:
-                                            append_transcript_note(
-                                                paths,
-                                                role="system",
-                                                message=f"Plan enrichment warning: {warning}",
-                                            )
-                                if apply_result.changed:
-                                    enrich_applied = True
-                                    reconciliation_result, workspace_context = (
-                                        _reconcile_plan_for_paths(
-                                            paths=paths,
-                                            plan=plan,
-                                            refresh_if_stale=False,
-                                            transcript_tail=forge_state.planner_transcript,
-                                            target_task_ids=reconciliation_target_ids,
-                                        )
-                                    )
-                                    save_plan(paths, plan)
-                                    validation_warnings = _validate_forge_plan_for_paths(
-                                        paths, plan
-                                    )
-                                    _write_plan_validation_artifact(
-                                        paths=paths,
-                                        reconciliation_result=reconciliation_result,
-                                        validation_warnings=validation_warnings,
-                                    )
-                                    enrich_summary = (
-                                        f"enrichment applied: {summarize_plan_update(apply_result)}"
-                                    )
-                                else:
-                                    enrich_summary = "enrichment produced no applicable changes"
-                        else:
-                            enrich_summary = "enrichment produced no plan_update"
-                    else:
-                        enrich_summary = "enrichment skipped: missing planner api key/config"
-
-            append_planner_summary(paths, enrich_summary)
-            if enrich_applied:
-                _print_forge_meta(console=console, message="Refined plan.")
-
-            if validation_warnings:
-                _print_forge_warning_messages(
-                    console=console,
-                    label="Plan validation",
-                    warnings=validation_warnings,
-                )
-                for warning in validation_warnings:
-                    append_transcript_note(
-                        paths,
-                        role="system",
-                        message=f"Plan validation warning: {warning}",
-                    )
-            elif (
-                enrich_attempted
-                and enrich_applied
-                and not validation_warnings
-                and show_enrichment_details
-            ):
-                append_transcript_note(
-                    paths,
-                    role="system",
-                    message="Plan enrichment cleared the remaining validation warnings.",
-                )
-
-            # Stamp draft/execution_ready before the gate runs, so the plan on disk
-            # already says what the gate is about to decide.
-            status_assessment = apply_plan_status(plan, validation_warnings=validation_warnings)
-            save_plan(paths, plan)
-
-            try:
-                raise_for_execution_ready_plan(plan)
-            except PlannerFailedError as e:
-                block_message = str(e)
-                _print_forge_error(
-                    console=console,
-                    message=block_message,
-                )
-                _print_forge_meta(
-                    console=console,
-                    message=(
-                        "This plan is saved as a draft, not an execution-ready plan. "
-                        "Refine it with the planner or edit it, then run /execute plan again."
-                    ),
-                )
-                append_transcript_note(
-                    paths,
-                    role="system",
-                    message=(
-                        f"Rejected /execute plan (plan_status={status_assessment.status}): "
-                        f"{block_message}"
-                    ),
-                )
-                return "handled"
-
-            session_cfg = getattr(session, "cfg", None)
-            if not isinstance(session_cfg, AppConfig):
-                _print_forge_error(
-                    console=console,
-                    message="Forge execution failed: missing session config.",
-                )
-                return "handled"
-            swarm_cfg = clone_cfg(session_cfg)
-            client_obj = getattr(session, "client", None)
-            api_key_override = str(getattr(client_obj, "api_key", "") or "").strip() or None
-            store_obj = getattr(session, "store", None)
-            no_log = not bool(getattr(store_obj, "enabled", True))
-            yes_value = bool(getattr(session, "yes", False))
-            swarm_trace_level = _chat_trace_level(session)
-            swarm_trace_sink = _make_forge_swarm_trace_sink(
-                session=session,
-                paths=paths,
-                console=console,
-            )
-
-            # Swarm knobs: the TUI launch gate may have chosen non-default values
-            # (stored on ``forge_state.swarm_knobs``); the classic/non-TUI path
-            # leaves it empty so the historical defaults (parallel 2 · scope strict
-            # · verify warn · no review) apply unchanged. Every value is validated
-            # and clamped here so a malformed entry can never reach ``run_swarm``.
-            _knobs = getattr(forge_state, "swarm_knobs", None) or {}
-            try:
-                _parallel = int(_knobs.get("parallel", 2))
-            except (TypeError, ValueError):
-                _parallel = 2
-            _parallel = max(1, min(_parallel, 8))
-            _scope_mode = str(_knobs.get("scope_mode", "strict")).strip().lower()
-            if _scope_mode not in {"strict", "warn"}:
-                _scope_mode = "strict"
-            _verify_mode = str(_knobs.get("verify_mode", "warn")).strip().lower()
-            if _verify_mode not in {"warn", "strict", "off"}:
-                _verify_mode = "warn"
-            _review = bool(_knobs.get("review", False))
-
-            forge_state.swarm_run_attempted = True
-            try:
-                code = run_swarm(
-                    paths=paths,
-                    plan=plan,
-                    cfg=swarm_cfg,
-                    mode="auto",
-                    yes=yes_value,
-                    max_steps=None,
-                    api_key_override=api_key_override,
-                    no_log=no_log,
-                    parallel=_parallel,
-                    base_branch=None,
-                    max_tasks=None,
-                    max_attempts=None,
-                    dry_run=False,
-                    keep_worktrees=False,
-                    retry_failed=False,
-                    retry_changes_requested=False,
-                    only=None,
-                    retry_merge_conflicts=False,
-                    scope_mode=_scope_mode,
-                    verify_mode=_verify_mode,
-                    integration_mode=None,
-                    verify_cmd=None,
-                    review=_review,
-                    console=console,
-                    trace_level=swarm_trace_level,
-                    trace_sink=swarm_trace_sink,
-                    run_mutation_guard=run_mutation_guard,
-                )
-            except (ConfigError, ForgeError, GitOpsError) as e:
-                _print_forge_error(
-                    console=console,
-                    message=f"Forge execution failed: {e}",
-                )
-                append_transcript_note(
-                    paths,
-                    role="system",
-                    message=f"Forge /execute plan failed: {e}",
-                )
-                return "handled"
-            except Exception as e:  # noqa: BLE001
-                _print_forge_error(
-                    console=console,
-                    message=f"Forge execution failed: {e}",
-                )
-                append_transcript_note(
-                    paths,
-                    role="system",
-                    message=f"Forge /execute plan failed: {e}",
-                )
-                return "handled"
-
-            _merge_forge_execution_usage_into_session(session=session, paths=paths)
-            summary_path = paths.execution_dir / "swarm_summary.md"
-            summary_json_path = paths.execution_dir / "swarm_summary.json"
-            run_status = ""
-            run_clean: bool | None = None
-            if summary_json_path.exists():
-                try:
-                    summary_payload = json.loads(summary_json_path.read_text(encoding="utf-8"))
-                    run_status = str(summary_payload.get("status") or "").strip()
-                    raw_clean = summary_payload.get("clean")
-                    if isinstance(raw_clean, bool):
-                        run_clean = raw_clean
-                except Exception:  # noqa: BLE001
-                    run_status = ""
-            try:
-                plan_after_execution = load_plan(paths)
-            except Exception:  # noqa: BLE001
-                plan_after_execution = plan
-            total_tasks = len(plan_after_execution.get("tasks") or [])
-            done_tasks, failed_tasks, remaining_tasks = _forge_task_status_counts(
-                plan_after_execution
-            )
-            if total_tasks <= 0:
-                headline = "Execution finished."
-            elif run_clean is False and run_status:
-                headline = (
-                    f"Execution finished with verification status `{run_status}` · "
-                    f"{done_tasks} done · {failed_tasks} failed · {remaining_tasks} remaining."
-                )
-            elif failed_tasks == 0 and remaining_tasks == 0 and code == 0:
-                headline = f"Execution complete · {total_tasks} tasks finished."
-            elif failed_tasks == 0:
-                headline = (
-                    f"Execution finished · {done_tasks} done · {remaining_tasks} still in progress."
-                )
-            elif done_tasks > 0:
-                headline = (
-                    f"Execution finished with issues · {done_tasks} done · "
-                    f"{failed_tasks} failed · {remaining_tasks} remaining."
-                )
-            else:
-                headline = (
-                    f"Execution finished with issues · {failed_tasks} failed · "
-                    f"{remaining_tasks} remaining."
-                )
-            done_ok = total_tasks > 0 and failed_tasks == 0 and remaining_tasks == 0 and code == 0
-            console.print(
-                _forge_phase_rule(console=console, label="DONE"),
-                highlight=False,
-            )
-            dot = "●" if _forge_supports_unicode_glyphs(console) else "*"
-            console.print(
-                Text.assemble(
-                    ("│ ", STYLE_CHROME),
-                    (f"{dot} ", STYLE_SUCCESS if done_ok else STYLE_WARN),
-                    (headline, STYLE_EMPHASIS),
-                ),
-                highlight=False,
-            )
-            _print_forge_meta(
-                console=console,
-                message=(
-                    f"Tasks · {total_tasks} total · {done_tasks} done · "
-                    f"{failed_tasks} failed · {remaining_tasks} remaining"
-                ),
-            )
-            _print_forge_meta(console=console, message=f"Summary · {summary_path}")
-
-            # The run's actual answer: what each task did, where the files
-            # landed, whether the output is verified, and how to try it. Built
-            # deterministically from run artifacts (no model call). The TUI
-            # passes a sink so this renders as a real assistant block instead
-            # of joining the dim captured console text; classic chat prints it
-            # inline as markdown.
-            completion_report = ""
-            try:
-                completion_report = build_forge_completion_report(
-                    paths=paths,
-                    plan=plan_after_execution,
-                    run_status=run_status,
-                    run_clean=run_clean,
-                    exit_code=code,
-                )
-            except Exception:  # noqa: BLE001
-                completion_report = ""
-            if completion_report:
-                try:
-                    (paths.execution_dir / "completion_report.md").write_text(
-                        completion_report + "\n", encoding="utf-8"
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-                if forge_execution_report_sink is not None:
-                    try:
-                        forge_execution_report_sink(completion_report)
-                    except Exception:  # noqa: BLE001
-                        pass
-                else:
-                    from rich.markdown import Markdown
-
-                    console.print()
-                    console.print(Markdown(completion_report), highlight=False)
-
-            # The run just rewrote the workspace; drop the cached pre-execution
-            # scans so follow-up planner questions ("how do I run it?") are
-            # answered against what now actually exists on disk.
-            forge_state.workspace_context = None
-            if getattr(session, "planner_workspace_context", None) is not None:
-                try:
-                    session.planner_workspace_context = None
-                except Exception:  # noqa: BLE001
-                    pass
-
-            append_transcript_note(
-                paths,
-                role="system",
-                message=(
-                    "Forge /execute plan completed. "
-                    f"Tasks: total={total_tasks}, done={done_tasks}, "
-                    f"failed={failed_tasks}, remaining={remaining_tasks}."
-                ),
-            )
-            return "handled"
-        finally:
-            run_mutation_guard.release()
-
-    if cmd in {"/assistant"}:
-        assistant_cmd = arg.lower()
-        if not assistant_cmd:
-            assistant_cmd, picker_available = _select_forge_assistant_interactive(
-                enabled=forge_state.assistant_enabled,
-                console=console,
-            )
-            if not picker_available:
-                append_transcript_note(paths, role="user", message=trimmed)
-                append_transcript_note(
-                    paths,
-                    role="system",
-                    message="Rejected invalid /assistant usage.",
-                )
-                _print_forge_warning_messages(
-                    console=console,
-                    label="Usage",
-                    warnings=["/assistant on|off|status"],
-                )
-                return "handled"
-            if assistant_cmd is None:
-                return "handled"
-        if assistant_cmd == "on":
-            forge_state.assistant_enabled = True
-            append_transcript_note(paths, role="user", message=trimmed)
-            append_transcript_note(paths, role="system", message="Planner assistant enabled.")
-            _print_forge_meta(console=console, message="Planner assistant: ON")
-            return "handled"
-        if assistant_cmd == "off":
-            forge_state.assistant_enabled = False
-            forge_state.planner_awaiting_clarification = False
-            forge_state.planner_pending_questions = []
-            append_transcript_note(paths, role="user", message=trimmed)
-            append_transcript_note(paths, role="system", message="Planner assistant disabled.")
-            _print_forge_meta(console=console, message="Planner assistant: OFF")
-            return "handled"
-        if assistant_cmd == "status":
-            state = "ON" if forge_state.assistant_enabled else "OFF"
-            append_transcript_note(paths, role="user", message=trimmed)
-            append_transcript_note(
-                paths,
-                role="system",
-                message=f"Planner assistant status requested ({state}).",
-            )
-            _print_forge_meta(console=console, message=f"Planner assistant: {state}")
-            return "handled"
-        append_transcript_note(paths, role="user", message=trimmed)
-        append_transcript_note(paths, role="system", message="Rejected invalid /assistant usage.")
-        _print_forge_warning_messages(
-            console=console,
-            label="Usage",
-            warnings=["/assistant on|off|status"],
-        )
-        return "handled"
-
-    if cmd == "/goal":
-        append_transcript_note(paths, role="user", message=trimmed)
-        if not arg:
-            append_transcript_note(paths, role="system", message="Rejected empty /goal.")
-            _print_forge_warning_messages(
-                console=console,
-                label="Usage",
-                warnings=["/goal <text>"],
-            )
-            return "handled"
-        goal = arg
-        plan["project_goal"] = goal
-        if not str(plan.get("summary") or "").strip():
-            plan["summary"] = goal
-        save_plan(paths, plan)
-        append_transcript_note(paths, role="system", message="Updated project goal.")
-        _print_forge_meta(console=console, message="Project goal updated.")
-        return "handled"
-
-    if cmd == "/task":
-        append_transcript_note(paths, role="user", message=trimmed)
-        if not arg:
-            append_transcript_note(paths, role="system", message="Rejected empty /task.")
-            _print_forge_warning_messages(
-                console=console,
-                label="Usage",
-                warnings=["/task <title>"],
-            )
-            return "handled"
-        title = arg
-        try:
-            task = add_task(
-                plan,
-                title=title,
-                description=f"Manual planning chat task: {title}",
-            )
-        except ForgeError as e:
-            append_transcript_note(
-                paths,
-                role="system",
-                message=f"Rejected /task because it lacked runnable file scope: {e}",
-            )
-            _print_forge_warning_messages(
-                console=console,
-                label="Task rejected",
-                warnings=[str(e)],
-            )
-            return "handled"
-        save_plan(paths, plan)
-        append_transcript_note(paths, role="system", message=f"Added task {task['id']}.")
-        _print_forge_meta(
-            console=console,
-            message=f"Added task {task['id']} · {task['title']}",
-        )
-        return "handled"
-
-    if cmd[:1] in "/:":
-        return "unhandled"
-
-    # In the TUI the user line is already echoed (and the reply is routed to the
-    # assistant-markdown renderer via the sink), so skip the captured "You:" label
-    # that would otherwise double the echo as flat text.
-    if forge_planner_reply_sink is None:
-        _render_labeled_chat_message(console=console, label="You", message=trimmed)
-
-    append_transcript_note(paths, role="user", message=trimmed)
-
-    if forge_state.assistant_enabled:
-        planning_relevant = True
-        session_cfg = getattr(session, "cfg", None)
-        planner_api_key = str(
-            getattr(getattr(session, "client", None), "api_key", "") or ""
-        ).strip()
-        api_key_override = planner_api_key or None
-        session_stream = bool(getattr(session, "stream", False))
-        # With a reply sink (TUI) the reply is rendered as a single assistant block
-        # on completion, so suppress the token-delta trace that would otherwise
-        # spill the streaming text as separate trace lines.
-        on_text_delta = (
-            _make_forge_planner_delta_trace_callback(session=session)
-            if (session_stream and forge_planner_reply_sink is None)
-            else None
-        )
-        stream_planner = session_stream and on_text_delta is not None
-        _emit_forge_planner_trace(
-            session=session,
-            message="Planner assistant is analyzing your request.",
-        )
-        if stream_planner:
-            _emit_forge_planner_trace(
-                session=session,
-                message="Streaming planner response...",
-                full_only=True,
-            )
-        _run_forge_planner_turn_controller(
-            console=console,
-            paths=paths,
-            plan=plan,
-            planner_state=forge_state.planner_session,
-            user_text=trimmed,
-            cfg_loader=(
-                lambda: (
-                    clone_cfg(session_cfg)
-                    if isinstance(session_cfg, AppConfig)
-                    else (_ for _ in ()).throw(ConfigError("session config missing"))
-                )
-            ),
-            unavailable_message_builder=lambda _error: (
-                "Planner assistant is unavailable because session config is missing."
-            ),
-            emit_meta=lambda message: _print_forge_meta(console=console, message=message),
-            emit_warning_group=lambda label, warnings: _print_forge_warning_messages(
-                console=console,
-                label=label,
-                warnings=warnings,
-            ),
-            api_key_override=api_key_override,
-            render_reply=(
-                forge_planner_reply_sink
-                if forge_planner_reply_sink is not None
-                else (
-                    lambda message, questions: _render_planner_reply(
-                        console=console,
-                        message=message,
-                        questions=questions,
-                    )
-                )
-            ),
-            selection_label="planner",
-            planning_relevant=planning_relevant,
-            refresh_workspace_context=(
-                forge_state.workspace_context is None
-                and hasattr(paths, "root")
-                and hasattr(paths, "workspace_context_json_path")
-            ),
-            trace_callback=lambda message, full_only=False: _emit_forge_planner_trace(
-                session=session,
-                message=message,
-                full_only=full_only,
-            ),
-            stream=stream_planner,
-            on_text_delta=on_text_delta,
-            on_usage_events=lambda payloads: _merge_usage_payloads_into_session(
-                session=session,
-                payloads=payloads,
-            ),
-            error_fallback=lambda: _capture_forge_requirement_from_planner_fallback(
-                plan=plan,
-                paths=paths,
-                console=console,
-                user_text=trimmed,
-                planning_relevant=planning_relevant,
-            ),
-        )
-        return "handled"
-
-    goal_was_set = _set_forge_project_goal_if_empty(
-        plan=plan,
-        paths=paths,
-        console=console,
-        goal=trimmed,
-    )
-    if goal_was_set:
-        add_requirement(plan, trimmed)
-        save_plan(paths, plan)
-        append_transcript_note(
-            paths,
-            role="system",
-            message="Captured project goal as planning input.",
-        )
-    else:
-        add_requirement(plan, trimmed)
-        save_plan(paths, plan)
-        append_transcript_note(paths, role="system", message="Captured requirement note.")
-        _print_forge_meta(console=console, message="Captured requirement note.")
-    return "handled"

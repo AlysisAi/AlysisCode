@@ -7,7 +7,6 @@ from typing import Any
 # backwards-compatible configuration files.  The default ``autonomous`` policy
 # does not consume them.
 DEFAULT_CHAT_MAX_STEPS = 80
-DEFAULT_TASK_MAX_STEPS = 160
 DEFAULT_SUBAGENT_MAX_STEPS = 28
 
 AUTONOMOUS_STEP_BUDGET_POLICY = "autonomous"
@@ -78,15 +77,8 @@ class StepBudgetRequest:
     subagents_enabled: bool = False
     subagent_name: str | None = None
     parent_turn_budget: int | None = None
-    attempt_count: int = 1
     image_count: int = 0
     explicit_path_count: int = 0
-    acceptance_criteria_count: int = 0
-    estimated_files_count: int = 0
-    write_scope_count: int = 0
-    dependency_count: int = 0
-    asset_count: int = 0
-    conflict_file_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -129,8 +121,6 @@ class StepBudgetRuntime:
 def _default_cap(kind: str) -> int:
     return {
         "chat_turn": DEFAULT_CHAT_MAX_STEPS,
-        "managed_task": DEFAULT_TASK_MAX_STEPS,
-        "conflict_resolution": DEFAULT_TASK_MAX_STEPS,
         "subagent": DEFAULT_SUBAGENT_MAX_STEPS,
     }.get(kind, DEFAULT_CHAT_MAX_STEPS)
 
@@ -157,15 +147,8 @@ def _request_signals(request: StepBudgetRequest) -> dict[str, Any]:
         "subagents_enabled": bool(request.subagents_enabled),
         "subagent_name": request.subagent_name,
         "parent_turn_budget": request.parent_turn_budget,
-        "attempt_count": request.attempt_count,
         "image_count": request.image_count,
         "explicit_path_count": request.explicit_path_count,
-        "acceptance_criteria_count": request.acceptance_criteria_count,
-        "estimated_files_count": request.estimated_files_count,
-        "write_scope_count": request.write_scope_count,
-        "dependency_count": request.dependency_count,
-        "asset_count": request.asset_count,
-        "conflict_file_count": request.conflict_file_count,
     }
 
 

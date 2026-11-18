@@ -1,7 +1,7 @@
 """Recursive deletes aimed at the project itself, a folder above it, or the home folder.
 
-Full access runs commands without asking. Claude Code still asks before ``rm -rf`` on a
-critical path in that mode, and so does this engine: a delete whose target *is* the
+Full access runs commands without asking. This engine still asks before ``rm -rf`` on a
+critical path in that mode: a delete whose target *is* the
 workspace root, a folder that contains it, the home folder (or a folder that contains it) or
 a filesystem root is the kind of accident no model mistake should be able to cause
 silently. ``build``, ``node_modules`` or ``src/old`` are not critical; ``.``, ``..``, ``*``

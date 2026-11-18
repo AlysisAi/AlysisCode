@@ -537,7 +537,7 @@ def test_mcp_prompts_list_cli_supports_explicit_runtime_selection(tmp_path: Path
                 ]
             ],
         },
-        enabled_in=["forge_exec"],
+        enabled_in=["one_shot"],
     )
 
     default_result = CliRunner().invoke(
@@ -555,7 +555,7 @@ def test_mcp_prompts_list_cli_supports_explicit_runtime_selection(tmp_path: Path
             "--path",
             str(tmp_path),
             "--runtime",
-            "forge_exec",
+            "one_shot",
             "--limit",
             "5",
         ],

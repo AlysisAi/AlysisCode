@@ -7,7 +7,7 @@ from uuid import uuid4
 from test_bots_memory_changes import case  # noqa: F401
 
 from alysis_code.bots.models import BotInput, TaskInput
-from alysis_code.bots.scheduling import ScheduleInput
+from alysis_code.bots.scheduling import CATCH_UP_SECONDS, ScheduleInput
 
 
 def once(store, owner, bot, *, due=1100):
@@ -93,11 +93,16 @@ def test_full_queue_defers_and_admits_after_capacity_returns(case):  # noqa: F81
     assert store.enqueue_due_schedules(owner, max_calls=None, now=1120) == 1
 
 
-def test_busy_deadline_retains_existing_lateness_policy(case):  # noqa: F811
+def test_busy_deadline_waits_through_the_catch_up_window_then_is_missed(case):  # noqa: F811
     store, owner, bot, _ = case
     schedule = once(store, owner, bot)
     assert store.enqueue_due_schedules(owner, max_calls=None, now=1100) == 0
+    # Still busy well past the on-time window: the run keeps waiting, it is not dropped.
     assert store.enqueue_due_schedules(owner, max_calls=None, now=2001) == 0
+    assert not store.schedule_runs(owner, bot["id"], schedule["id"])["runs"]
+    assert store.list_schedules(owner, bot["id"])[0]["next_run_at"] == 1100
+    late = 1100 + CATCH_UP_SECONDS + 1
+    assert store.enqueue_due_schedules(owner, max_calls=None, now=late) == 0
     runs = store.schedule_runs(owner, bot["id"], schedule["id"])["runs"]
     assert len(runs) == 1 and runs[0]["current_status"] == "missed"
     assert store.list_schedules(owner, bot["id"])[0]["state"] == "ended"

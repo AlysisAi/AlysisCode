@@ -135,7 +135,6 @@ test("package.json contributes cockpit entry points and a getting-started walkth
       .map((entry) => entry.command),
     [
       "alysis.newSession",
-      "alysis.showForge",
       "alysis.showBrowser",
       "alysis.showHistory",
       "alysis.configureProvider",
@@ -373,7 +372,7 @@ test("package.json contributes optional native chat participant without Copilot 
   assert.equal(participant?.name, "alysis");
   assert.deepEqual(
     new Set((participant?.commands ?? []).map((command) => command.name)),
-    new Set(["help", "forge", "execute", "doctor"])
+    new Set(["help", "doctor"])
   );
   assert.equal(Boolean(packageJson.dependencies?.["@github/copilot"] || packageJson.devDependencies?.["@github/copilot"]), false);
 });
@@ -422,8 +421,7 @@ test("passive activation and status refresh do not call update.check", () => {
   for (const relative of [
     "src/extension.ts",
     "src/status/statusBar.ts",
-    "src/chat/CockpitRuntimeState.ts",
-    "src/forge/ForgeController.ts"
+    "src/chat/CockpitRuntimeState.ts"
   ]) {
     const source = readFileSync(resolve(packageRoot, relative), "utf8");
     assert.doesNotMatch(source, /\.updateCheck\(/, relative);
@@ -753,9 +751,6 @@ test("component candidate workflow cannot be mistaken for production or Marketpl
     /python -m pytest -q tests\/test_ide_cli_parity_matrix\.py tests\/test_ide_protocol\.py tests\/test_ide_stdio_bridge\.py tests\/test_ide_protocol_contract\.py/
   );
   assert.match(workflow, /tests\/test_surface_console_encoding\.py/);
-  assert.match(workflow, /tests\/test_forge_exec\.py/);
-  assert.match(workflow, /tests\/test_forge_swarm\.py/);
-  assert.match(workflow, /tests\/test_forge_review\.py/);
   assert.match(workflow, /npm audit --audit-level=high/);
   assert.match(workflow, /Package component pre-release VSIX/);
   assert.match(workflow, /npm run package:dev-vsix -- --pre-release/);

@@ -25,7 +25,7 @@ const output = path.resolve(__dirname, "../../resources/screenshots");
     });
     for (const [name, scenario, surface] of [
       ["conversation", "approved", "task"], ["setup", "setup", "task"],
-      ["plan", "forge-plan", "forge"], ["review", "chat", "task"],
+      ["review", "chat", "task"],
       ["settings", "settings", "settings"]
     ]) {
       await page.goto(`${base}/?scenario=${scenario}&theme=dark`);
@@ -34,6 +34,6 @@ const output = path.resolve(__dirname, "../../resources/screenshots");
       await page.screenshot({ path: path.join(output, `${name}.png`), animations: "disabled" });
     }
     if (errors.length) throw new Error(errors.join("\n"));
-    console.log("Captured five listing illustrations from the production renderer.");
+    console.log("Captured four listing illustrations from the production renderer.");
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

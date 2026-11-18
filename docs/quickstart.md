@@ -141,8 +141,8 @@ The [official Grok 4.7 release notes](https://docs.x.ai/developers/release-notes
 specify a 500,000-token shared context window. Catalog cost estimates use the
 base prices of $2 input, $0.50 cached input, and $6 output per million tokens;
 xAI doubles those rates above 200,000 prompt tokens, which Alysis's flat-price
-estimates do not yet account for. Grok 4.7 Fast is available only in Cursor and
-Grok Build and is not offered in the public-API picker.
+estimates do not yet account for. Grok 4.7 Fast is not available through the
+public xAI API, so it is not offered in the picker.
 
 Setup then asks for the workspace folder and checks the sandbox (see
 [Sandbox Setup](#sandbox-setup)). The classic prompt-based setup asks for the
@@ -217,7 +217,7 @@ alysis run --mode review "Fix the failing test and show me the diff."
 
 `alysis run` is a bounded one-shot flow. It includes guardrails for execution-style prompts, but
 it is still best for focused tasks that can be completed from one instruction. For exploratory or
-multi-step work, prefer `alysis chat` or Forge.
+multi-step work, prefer `alysis chat`.
 
 Use `chat` for an interactive session:
 
@@ -233,7 +233,6 @@ Useful chat commands:
 - `/permissions`: inspect or select execution permissions for the next message
 - `/persona architect`: plan and design, with Markdown-only writes
 - `/config`: open the inline configuration menu, including router model and limits
-- `/forge`: start the plan-driven workflow for larger tasks
 
 The same Alysis Code slash-command and tool surface remains available with a
 subscription-backed profile. `/model` cannot change a subscription model by
@@ -344,6 +343,5 @@ command, and asks before running it. Source or editable installs are left manual
 - [Credentials](credentials.md): API key precedence and persisted credentials.
 - [AI subscription connections](account-runtimes.md): use provider sign-in with Alysis Code's native agent and paired `/config` model/effort selection.
 - [Permissions](../README.md#permissions--personas): readonly, review, auto, and fullaccess.
-- [Forge](forge.md): plan, execute, verify, and review larger tasks.
 - [MCP](mcp.md): connect external MCP servers.
 - [Skills](skills.md): install and use reusable instruction bundles.

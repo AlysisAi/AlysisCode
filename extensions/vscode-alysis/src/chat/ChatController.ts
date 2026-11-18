@@ -141,25 +141,6 @@ export interface BridgeClientLike {
 
 export interface CockpitActions {
   cancel(): Promise<void>;
-  executePreview(auto?: boolean): Promise<void>;
-  executeReview(): Promise<void>;
-  refreshForgeStatus(): Promise<void>;
-  openDiff(diffId: string): Promise<void>;
-  openForgeArtifact(sessionId: string, artifactId: string): Promise<void>;
-  respondForgeApproval(sessionId: string, approvalId: string, decision: "allow_once" | "allow_for_session" | "deny"): Promise<void>;
-  reviewChanges(taskId?: string): Promise<void>;
-  refreshAssets(): Promise<void>;
-  openAsset(assetId: string): Promise<void>;
-  // Forge swarm console (SW6). Optional so older wirings still compile.
-  runSwarm?(parallel?: number): Promise<void>;
-  cancelSwarm?(): Promise<void>;
-  refreshSwarmRecovery?(): Promise<void>;
-  resumeSwarm?(jobId: string, revision: number): Promise<void>;
-  dismissSwarmRecovery?(jobId: string, revision: number): void;
-  refreshSwarmReview?(): Promise<void>;
-  applySwarmTask?(taskId: string): Promise<void>;
-  discardSwarmTask?(taskId: string): Promise<void>;
-  regenerateSwarmTask?(taskId: string, instruction: string): Promise<void>;
   // Re-run CLI/bridge health detection against the live config (re-resolving alysis.cliPath and
   // re-running discovery) and apply it to the cockpit. Optional so older wirings still compile.
   reconnect?(): Promise<void>;
@@ -285,7 +266,6 @@ export class ChatController implements vscode.Disposable {
   private slashRouter: SlashCommandRouter | undefined;
   private providerReadiness: (() => ChatProviderReadiness) | undefined;
   private cockpitProvider: (() => CockpitState["cockpit"]) | undefined;
-  private composerMode: "chat" | "forge" = "chat";
   private cockpitActions: CockpitActions | undefined;
   private primaryChatView: PrimaryChatView | undefined;
   private readonly stateListeners = new Set<(state: CockpitState) => void>();
@@ -314,7 +294,10 @@ export class ChatController implements vscode.Disposable {
   };
   private readonly onBridgeExit = (code: number | null): void => {
     if (!this.disposed) {
-      this.handleBridgeDisconnect(`Alysis Code IDE bridge exited with code ${code ?? "unknown"}.`);
+      const message = `Alysis Code IDE bridge exited with code ${code ?? "unknown"}.`;
+      // The Cockpit timeline keeps every bridge exit, whatever the chat was doing.
+      this.runtime?.recordEvent({ severity: "error", source: "bridge", title: "Bridge exited", message, exitCode: code });
+      this.handleBridgeDisconnect(message);
     }
   };
   private readonly onBridgeReset = (reason: string): void => {
@@ -326,6 +309,12 @@ export class ChatController implements vscode.Disposable {
       // carded; every other reset is worth a plain-language notice.
       const profileUpgrade = reason === "bridge_profile_upgrade";
       this.output.appendLine(`Bridge restart: ${reason}.`);
+      this.runtime?.recordEvent({
+        severity: "warning",
+        source: "bridge",
+        title: "Bridge restarting",
+        message: `The Alysis Code engine restarted (${humanizeReason(reason)}).`
+      });
       this.handleBridgeDisconnect(
         profileUpgrade
           ? undefined
@@ -1005,60 +994,6 @@ export class ChatController implements vscode.Disposable {
       case "artifact.open":
         await this.openArtifact(message.artifactId);
         return;
-      case "forge.executePreview":
-        await this.cockpitActions?.executePreview(message.auto);
-        return;
-      case "forge.executeReview":
-        await this.cockpitActions?.executeReview();
-        return;
-      case "forge.status.refresh":
-        await this.cockpitActions?.refreshForgeStatus();
-        return;
-      case "forge.diff.open":
-        await this.cockpitActions?.openDiff(message.diffId);
-        return;
-      case "forge.review":
-        await this.cockpitActions?.reviewChanges(message.taskId);
-        return;
-      case "forge.assets.refresh":
-        await this.cockpitActions?.refreshAssets();
-        return;
-      case "forge.assets.open":
-        await this.cockpitActions?.openAsset(message.assetId);
-        return;
-      case "forge.artifact.open":
-        await this.cockpitActions?.openForgeArtifact(message.sessionId, message.artifactId);
-        return;
-      case "forge.approval":
-        await this.cockpitActions?.respondForgeApproval(message.sessionId, message.approvalId, message.decision);
-        return;
-      case "swarm.start":
-        await this.cockpitActions?.runSwarm?.(message.parallel);
-        return;
-      case "swarm.cancel":
-        await this.cockpitActions?.cancelSwarm?.();
-        return;
-      case "swarm.recovery.refresh":
-        await this.cockpitActions?.refreshSwarmRecovery?.();
-        return;
-      case "swarm.recovery.resume":
-        await this.cockpitActions?.resumeSwarm?.(message.jobId, message.revision);
-        return;
-      case "swarm.recovery.dismiss":
-        this.cockpitActions?.dismissSwarmRecovery?.(message.jobId, message.revision);
-        return;
-      case "swarm.review":
-        await this.cockpitActions?.refreshSwarmReview?.();
-        return;
-      case "swarm.apply":
-        await this.cockpitActions?.applySwarmTask?.(message.taskId);
-        return;
-      case "swarm.discard":
-        await this.cockpitActions?.discardSwarmTask?.(message.taskId);
-        return;
-      case "swarm.regenerate":
-        await this.cockpitActions?.regenerateSwarmTask?.(message.taskId, message.instruction);
-        return;
       case "command.openSetupGuide":
         await vscode.commands.executeCommand(COMMANDS.openSetupGuide);
         return;
@@ -1070,10 +1005,6 @@ export class ChatController implements vscode.Disposable {
         return;
       case "cockpit.retryStatus":
         await vscode.commands.executeCommand(COMMANDS.showBridgeHealth);
-        return;
-      case "composerMode.set":
-        this.composerMode = message.mode;
-        this.publish();
         return;
       case "mode.set":
         await this.handleModeSet(message.mode);
@@ -2897,7 +2828,7 @@ export class ChatController implements vscode.Disposable {
   /**
    * Coalesce state publishes to roughly one animation frame with a trailing flush. A streaming turn
    * emits a delta per token, and each publish re-serializes the whole cockpit (up to 200 transcript
-   * items plus forge/swarm/runtime) across the IPC boundary — at frame cadence that cost is paid once
+   * items plus runtime state) across the IPC boundary — at frame cadence that cost is paid once
    * per frame instead of once per token. Terminal transitions call publishImmediately(), so the final
    * state of a turn is never left sitting in a pending timer.
    */
@@ -2944,7 +2875,7 @@ export class ChatController implements vscode.Disposable {
   /**
    * Project the published cockpit state. Memoized for the current synchronous turn only: one publish
    * fans out to the sidebar, the slash-command catalog, and the command-context sync, and rebuilding
-   * the forge/swarm/runtime/command surfaces once per reader was the other half of the streaming
+   * the runtime and command surfaces once per reader was the other half of the streaming
    * cost. The cache is dropped on the next microtask so no caller can ever observe stale state across
    * an await, and every mutation invalidates it eagerly through publish().
    */
@@ -2957,7 +2888,6 @@ export class ChatController implements vscode.Disposable {
     const model = this.sessionModel.model || cockpit.status.model;
     const status = {
       ...cockpit.status,
-      composerMode: this.composerMode,
       mode: this.currentSessionMode(),
       sandbox: this.sessionSandbox?.sessionId === this.sessionId
         ? this.sessionSandbox?.mode ?? cockpit.status.sandbox : cockpit.status.sandbox,
@@ -3380,7 +3310,7 @@ function isSessionStartSupersededError(error: unknown): boolean {
 
 function isCancellationUnsupportedError(error: unknown): boolean {
   if (error instanceof ProtocolClientError) {
-    return error.code === "cancel_not_supported" || error.code === "forge_cancel_unsupported";
+    return error.code === "cancel_not_supported";
   }
   return false;
 }

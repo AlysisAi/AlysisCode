@@ -20,7 +20,6 @@ configuration, operation, extension points, and security in more detail.
 - [Security model](security_model.md): trust boundaries and host-enforced controls.
 - [Shell sandbox](shell_sandbox.md): command isolation and backend configuration.
 - [Windows CLI sandbox](windows-cli-sandbox.md): installation, diagnostics and helper packaging.
-- [Forge](forge.md): plan and execute larger tasks.
 - [Background terminals](terminals.md): manage background commands and durable services.
 - [Subagents](subagents.md): delegate focused work with constrained permissions.
 - [Personas](personas.md): switch between implementation, planning, question, and debugging

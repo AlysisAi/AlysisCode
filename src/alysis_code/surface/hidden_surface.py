@@ -132,26 +132,6 @@ class HiddenApprovalSurface(NoopSurface):
     def emit_persona_changed(self, persona: str, effective_mode: str, source: str = "user") -> None:
         _ = (persona, effective_mode, source)
 
-    def emit_plan_node_updated(
-        self,
-        node_id: str,
-        state: str,
-        summary: str | None = None,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        _ = (node_id, state, summary, worker_id, role)
-
-    def emit_swarm_worker_state_changed(
-        self,
-        worker_id: str,
-        state: str,
-        *,
-        role: str | None = None,
-    ) -> None:
-        _ = (worker_id, state, role)
-
     def emit_verify_gate_result(
         self,
         command: str,
@@ -187,16 +167,6 @@ class HiddenApprovalSurface(NoopSurface):
                 worker_id=worker_id,
                 role=role,
             )
-
-    def emit_review_gate_decision(
-        self,
-        decision: str,
-        summary: str,
-        *,
-        worker_id: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        _ = (decision, summary, worker_id, role)
 
     def emit_error(
         self,

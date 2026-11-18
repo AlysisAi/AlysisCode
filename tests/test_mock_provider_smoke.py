@@ -3,9 +3,9 @@
 A fast (<2 min total), Windows + Linux, default-runnable regression net that drives a
 real tiny build -- create a file via the agent, applied to the working tree -- through
 the actual CLI (as a subprocess) against the local mock provider. It is the trustworthy
-"did I break a real build" signal an autonomous fix-loop needs: the four modes (simple
-``run``, ``forge exec``, ``forge swarm``) must each finish with a
-coherent terminal status and the deliverable on disk, with no raw error leaking.
+"did I break a real build" signal an autonomous fix-loop needs: chat delegation and a
+simple ``run`` must each finish with a coherent terminal status and the deliverable on
+disk, with no raw error leaking.
 
 The mock provider (scripts/qa/mock_llm.py) is pattern-driven: an instruction containing
 "write file" yields a single ``fs_write`` tool call (pure Python, no shell), so the build
@@ -24,7 +24,6 @@ from pathlib import Path
 
 import pytest
 
-from alysis_code.forge import add_task, create_plan_run, load_plan, save_plan
 from alysis_code.llm.openai_compat import OpenAICompatClient
 from scripts.qa.mock_llm import MockLLMServer
 
@@ -90,7 +89,6 @@ def _write_config(
         "skills_enabled": False,
         "update_check_enabled": False,
         "max_steps": 8,
-        "task_max_steps": 8,
         "subagent_max_steps": subagent_max_steps,
         # A real, assertive, always-passing verification so the completion gate is
         # satisfiable in the smoke (the seeded README always exists). The agent runs it
@@ -442,109 +440,5 @@ def test_smoke_run_simple_agent_writes_file(tmp_path: Path) -> None:
     # The build's deliverable (a real, verified, diff-reviewed change) is on disk.
     assert "forced diff marker" in (repo / "README.md").read_text(encoding="utf-8"), (
         "the build's deliverable was not applied to the working tree"
-    )
-    _assert_no_raw_error(result)
-
-
-def _prepare_forge_task(repo: Path, *, task_id: str, description: str) -> None:
-    paths = create_plan_run(repo)
-    plan = load_plan(paths)
-    task = add_task(
-        plan,
-        title=f"Smoke {task_id}",
-        description=description,
-        estimated_files=["README.md"],
-    )
-    task["id"] = task_id
-    task["write_scope"] = ["src/**", "tests/**", "docs/**", "README.md", "pyproject.toml"]
-    save_plan(paths, plan)
-
-
-def _forge_exec_args(task_id: str, *, repo: Path, base_url: str) -> list[str]:
-    args = [
-        "forge",
-        "exec",
-        task_id,
-        "--path",
-        os.fspath(repo.resolve()),
-        "--mode",
-        "fullaccess",
-        "--model",
-        QA_MODEL,
-        "--base-url",
-        base_url,
-        "--api-key",
-        "mock-key",
-        "--no-stream",
-        "--max-steps",
-        "8",
-        "--yes",
-    ]
-    return args
-
-
-@pytest.mark.smoke
-def test_smoke_forge_exec_builds_task(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _make_repo(repo)
-    with MockLLMServer() as server:
-        _write_config(tmp_path / "config", base_url=server.base_url, repo=repo)
-        _prepare_forge_task(repo, task_id="T01", description=_FULL_GATE_BUILD)
-        result = _run_cli(
-            _forge_exec_args("T01", repo=repo, base_url=server.base_url),
-            cwd=repo,
-            env=_env(tmp_path),
-            timeout=120.0,
-        )
-
-    assert result.returncode == 0, (
-        f"forge exec did not finish cleanly (exit {result.returncode})\n"
-        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-    )
-    _assert_no_raw_error(result)
-
-
-@pytest.mark.smoke
-def test_smoke_forge_swarm_runs_task(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _make_repo(repo)
-    with MockLLMServer() as server:
-        _write_config(tmp_path / "config", base_url=server.base_url, repo=repo)
-        _prepare_forge_task(repo, task_id="T01", description=_FULL_GATE_BUILD)
-        result = _run_cli(
-            [
-                "forge",
-                "swarm",
-                "--path",
-                os.fspath(repo.resolve()),
-                "--only",
-                "T01",
-                "--parallel",
-                "1",
-                "--scope",
-                "off",
-                "--verify",
-                "warn",
-                "--mode",
-                "auto",
-                "--model",
-                QA_MODEL,
-                "--base-url",
-                server.base_url,
-                "--api-key",
-                "mock-key",
-                "--no-stream",
-                "--max-steps",
-                "8",
-                "--yes",
-            ],
-            cwd=repo,
-            env=_env(tmp_path),
-            timeout=150.0,
-        )
-
-    assert result.returncode == 0, (
-        f"forge swarm did not finish cleanly (exit {result.returncode})\n"
-        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
     _assert_no_raw_error(result)

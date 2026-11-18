@@ -44,14 +44,11 @@ protocol_out.flush()
 """
 
 # Force the parent wrappers to use the Windows legacy code page even on macOS.
-# Exercise the real IDE request parser/writer and Forge Host v2's unescaped JSON
-# encoder through the claimed transport, without a provider or user session.
+# Exercise the real IDE request parser/writer through the claimed transport,
+# without a provider or user session.
 _UTF8_PROBE = """
-import json
 import sys
-from pathlib import Path
 
-from alysis_code.forge_host_protocol.codec import encode_envelope, validate_envelope
 from alysis_code.ide.stdio_bridge import StdioBridge, claim_protocol_streams
 
 assert sys.stdin.encoding.lower() == "cp1252"
@@ -60,20 +57,11 @@ protocol_in, protocol_out = claim_protocol_streams()
 assert protocol_in.encoding.lower() == protocol_out.encoding.lower() == "utf-8"
 assert protocol_in.errors == protocol_out.errors == "strict"
 line = protocol_in.readline()
-request = json.loads(line)
 bridge = StdioBridge(stdin=protocol_in, stdout=protocol_out)
 try:
     bridge.process_line(line)
 finally:
     bridge.close()
-
-fixture = Path(sys.argv[1]) / "tests/fixtures/forge_host_v2/valid/planner-input-request.json"
-envelope = json.loads(fixture.read_text(encoding="utf-8"))
-envelope["payload"]["input"]["text"] = request["id"]
-encoded = encode_envelope(validate_envelope(envelope))
-assert request["id"].encode("utf-8") in encoded
-protocol_out.write(encoded.decode("utf-8") + "\\n")
-protocol_out.flush()
 """
 
 
@@ -139,7 +127,7 @@ def test_private_protocol_preserves_unicode_with_cp1252_parent_stdio(tmp_path: P
         PYTHON_KEYRING_BACKEND="keyring.backends.null.Keyring",
     )
     probe = subprocess.run(
-        [sys.executable, "-c", _UTF8_PROBE, str(REPO_ROOT)],
+        [sys.executable, "-c", _UTF8_PROBE],
         input=(json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"),
         capture_output=True,
         env=env,
@@ -151,13 +139,11 @@ def test_private_protocol_preserves_unicode_with_cp1252_parent_stdio(tmp_path: P
     # Strict decoding rejects corrupted bytes; exact values also reject mojibake
     # and lone surrogates from decoding UTF-8 through a Windows code page.
     lines = probe.stdout.decode("utf-8", errors="strict").splitlines()
-    assert len(lines) == 2
-    ide_response, forge_response = map(json.loads, lines)
+    assert len(lines) == 1
+    ide_response = json.loads(lines[0])
     assert ide_response["id"] == text
     for method in ("computer.respond", "browser_start.respond", "task_budget.respond"):
         assert (method in ide_response["result"]["methods"]) is (sys.platform == "darwin")
-    assert forge_response["payload"]["input"]["text"] == text
-    assert text.encode("utf-8") in probe.stdout
 
 
 def test_private_protocol_rejects_invalid_utf8_instead_of_creating_surrogates() -> None:

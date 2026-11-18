@@ -13,7 +13,7 @@ TOOL = {
         "required": [],
     },
     "timeout_s": 10,
-    "enabled_in": ["interactive_chat", "one_shot", "forge_exec"],
+    "enabled_in": ["interactive_chat", "one_shot"],
     "isolation": "subprocess",
     "capabilities": {
         "read_only": True,

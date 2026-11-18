@@ -65,12 +65,6 @@ def main() -> None:
             run(str(root / "rust-probe"))
         if variant == "server":
             run("alysis", "--version")
-            run(
-                sys.executable,
-                "-c",
-                "from alysis_code.forge_host_protocol import load_schema; "
-                "assert load_schema()['$defs']['protocolVersion']['const'] == '2.0'",
-            )
     print(f"{variant}: offline runtime and native toolchain smoke passed")
 
 

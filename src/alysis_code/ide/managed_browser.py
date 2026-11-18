@@ -150,6 +150,8 @@ _SELECTOR_MAX_CHARS = 2_000
 _TYPE_MAX_CHARS = 100_000
 _URL_MAX_CHARS = 8_192
 _ACTIVE_PORT_MAX_BYTES = 1_024
+_MAX_SITE_COOKIES = 10_000
+_MAX_SITE_ORIGINS = 1_000
 _MAX_JSON_BYTES_HARD = 8 * 1024 * 1024
 _MAX_SCREENSHOT_BYTES_HARD = 20 * 1024 * 1024
 _MAX_DIAGNOSTIC_EVENTS_HARD = 2_000
@@ -1085,6 +1087,79 @@ class ManagedBrowserService:
         with self._operation(session, cancel=cancel) as generation:
             pages, _ = self._pages(session, self._config.operation_timeout_seconds, cancel)
             return {"pages": pages, "command_generation": generation}
+
+    def site_cookies(
+        self, owner_id: str, session_id: str, *, cancel: CancelCheck = None
+    ) -> list[dict[str, Any]]:
+        """Every cookie the browser holds, by identity only: domain, name, path and partition.
+
+        Values never leave the browser. The caller decides which belong to a site."""
+        session = self._owned_session(owner_id, session_id)
+        with self._operation(session, cancel=cancel):
+            result = session.transport.call(
+                "Storage.getCookies",
+                {},
+                timeout=self._config.operation_timeout_seconds,
+                cancel=cancel,
+            )
+        cookies = result.get("cookies")
+        if not isinstance(cookies, list) or len(cookies) > _MAX_SITE_COOKIES:
+            raise BrowserSecurityError("Browser cookie inventory was invalid or too large.")
+        found = []
+        for cookie in cookies:
+            if not isinstance(cookie, Mapping):
+                raise BrowserSecurityError("Browser cookie inventory was invalid.")
+            identity = _cookie_identity(cookie)
+            if identity is not None:
+                found.append(identity)
+        return found
+
+    def clear_site_data(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        cookies: Sequence[Mapping[str, Any]],
+        origins: Sequence[str],
+        cancel: CancelCheck = None,
+    ) -> dict[str, int]:
+        """Delete exactly these cookies and all storage of these origins in the running browser.
+
+        Its pages may change (a site signs out), so earlier observations of them expire."""
+        session = self._owned_session(owner_id, session_id)
+        if len(cookies) > _MAX_SITE_COOKIES or len(origins) > _MAX_SITE_ORIGINS:
+            raise BrowserValidationError("Too much site data was requested at once.")
+        doomed = [_cookie_identity(cookie) for cookie in cookies]
+        if any(cookie is None for cookie in doomed):
+            raise BrowserValidationError("A cookie to delete was invalid.")
+        checked = [_web_origin(origin) for origin in origins]
+        timeout = self._config.operation_timeout_seconds
+        # Not tied to an observed page: it needs no command generation of the caller's.
+        with self._operation(session, cancel=cancel):
+            for cookie in doomed:
+                session.transport.call(
+                    "Network.deleteCookies",
+                    {
+                        "name": cookie["name"],
+                        "domain": cookie["domain"],
+                        "path": cookie["path"],
+                        **({"partitionKey": cookie["partition"]} if cookie["partition"] else {}),
+                    },
+                    session_id=session.root_cdp_session_id,
+                    timeout=timeout,
+                    cancel=cancel,
+                )
+            for origin in checked:
+                session.transport.call(
+                    "Storage.clearDataForOrigin",
+                    {"origin": origin, "storageTypes": "all"},
+                    timeout=timeout,
+                    cancel=cancel,
+                )
+            if doomed or checked:
+                with session.control_lock:
+                    session.command_generation += 1
+        return {"cookies": len(doomed), "origins": len(checked)}
 
     def open_window(self, owner_id: str, session_id: str, *, cancel: CancelCheck = None) -> bool:
         """Open a blank browser window for the person at the computer screen.
@@ -3694,3 +3769,46 @@ def _is_within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _cookie_identity(cookie: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A cookie's identity as the browser reports it, bounded; never its value."""
+    name, domain, path = cookie.get("name"), cookie.get("domain"), cookie.get("path")
+    if not all(isinstance(item, str) for item in (name, domain, path)):
+        return None
+    if not domain or len(domain) > 256 or len(name) > 4_096 or len(path) > 4_096:
+        return None
+    partition = cookie.get("partition", cookie.get("partitionKey"))
+    if isinstance(partition, Mapping):
+        site = partition.get("topLevelSite")
+        ancestor = partition.get("hasCrossSiteAncestor", False)
+        if not isinstance(site, str) or len(site) > 2_048 or not isinstance(ancestor, bool):
+            return None
+        partition = {"topLevelSite": site, "hasCrossSiteAncestor": ancestor}
+    elif isinstance(partition, str):
+        # Earlier browser versions name the partition by its top-level site alone.
+        if len(partition) > 2_048:
+            return None
+    elif partition is not None:
+        return None
+    return {"name": name, "domain": domain, "path": path, "partition": partition or None}
+
+
+def _web_origin(value: Any) -> str:
+    """A plain http(s) origin: scheme and host, no path, credentials or port."""
+    if not isinstance(value, str) or len(value) > 300:
+        raise BrowserValidationError("A site origin was invalid.")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or f"{parsed.scheme}://{parsed.hostname}" != value
+    ):
+        raise BrowserValidationError("A site origin was invalid.")
+    return value

@@ -1945,7 +1945,6 @@ def test_resume_chat_session_replaces_current_session_state(tmp_path: Path, monk
                 "yes": False,
                 "max_steps": 11,
                 "step_budget_policy": "fixed",
-                "task_max_steps": 41,
                 "subagent_max_steps": 9,
                 "enable_chat_turn_step_budget": False,
                 "chat_turn_fixed_override": 7,
@@ -2006,7 +2005,6 @@ def test_resume_chat_session_replaces_current_session_state(tmp_path: Path, monk
         model="test-model",
         max_steps=37,
         step_budget_policy="adaptive",
-        task_max_steps=100,
         subagent_max_steps=16,
     )
     current.root = tmp_path
@@ -2051,7 +2049,6 @@ def test_resume_chat_session_replaces_current_session_state(tmp_path: Path, monk
         assert cfg.model == "resumed-model"
         assert cfg.max_steps == 11
         assert cfg.step_budget_policy == "limited"
-        assert cfg.task_max_steps == 41
         assert cfg.subagent_max_steps == 9
         assert cfg.temperature == 0.2
         assert cfg.stream is True
@@ -2286,7 +2283,6 @@ def test_resume_chat_session_uses_current_config_defaults_for_older_step_payload
         model="test-model",
         max_steps=37,
         step_budget_policy="fixed",
-        task_max_steps=91,
         subagent_max_steps=13,
     )
     current.root = tmp_path
@@ -2318,7 +2314,6 @@ def test_resume_chat_session_uses_current_config_defaults_for_older_step_payload
         assert cfg.model == "test-model"
         assert cfg.max_steps == 37
         assert cfg.step_budget_policy == "limited"
-        assert cfg.task_max_steps == 91
         assert cfg.subagent_max_steps == 13
         new_session = _FakeSession()
         new_session.cfg = kwargs["cfg"]
@@ -2777,7 +2772,6 @@ def test_classic_resume_explicit_id_survives_fully_filtered_candidates(
         session=session,
         pending_images=[],
         console=Console(file=out, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"

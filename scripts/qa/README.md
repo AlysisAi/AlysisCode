@@ -247,8 +247,7 @@ verifies their SHA-256 values, immutable release/candidate/host identity, target
 extension and artifact versions, pre-release marker, repository-pinned public key, signed
 managed-runtime record, and structured timestamped check receipts. The
 required checks cover provider setup through SecretStorage, normal chat, Run Task, `/doctor`,
-`/model-info`, `/subagent`, images, trace, managed terminals, Forge plan/show/status/edit/regenerate,
-Execute Preview, review-mode Execute, diffs/artifacts, Manage tree, missing-provider recovery,
+`/model-info`, `/subagent`, images, trace, managed terminals, artifacts, Manage tree, missing-provider recovery,
 broken-CLI recovery, and secret redaction.
 
 ## IDE/CLI parity
@@ -262,7 +261,7 @@ python scripts/qa/check_ide_cli_parity.py --list-extracted
 
 The contract lives in `docs/generated/ide_cli_parity_matrix.json`, with a readable summary in
 `docs/ide_cli_parity_matrix.md`. The validator statically extracts Python CLI command surfaces,
-CLI chat slash commands, Forge chat commands, IDE bridge methods, VS Code package commands, and the
+CLI chat slash commands, IDE bridge methods, VS Code package commands, and the
 extension slash registry. It fails when a new feature surface is missing from the JSON matrix, when
 an IDE method is missing from `docs/ide_protocol.md`, or when an extension slash command is missing
 from `docs/vscode_extension.md`. Package commands also need `extension_command_routes` metadata so

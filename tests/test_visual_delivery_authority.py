@@ -12,7 +12,6 @@ from alysis_code.config import AppConfig
 from alysis_code.llm.types import LLMError, LLMResponse, ToolCall
 from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.surface.types import ApprovalDecision
-from alysis_code.swarm_write_guard import SwarmWriteScopeGuard
 
 
 def _cfg() -> AppConfig:
@@ -105,12 +104,17 @@ class _Client:
         return LLMResponse(content="The visual inspection is complete.", tool_calls=[], raw={})
 
 
+class _RecordingGuard:
+    """A host dispatch guard that allows every call and records what it checked."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def check_tool_call(self, tool_name, arguments, *, resolve_rel_path=None):
+        self.calls.append(tool_name)
+
+
 def _session(tmp_path, *, guard, surface=None, stream=False):
-    dispatch_guard = (
-        SwarmWriteScopeGuard(worktree_root=tmp_path, allowed_patterns=[])
-        if guard == "swarm"
-        else None
-    )
     cfg = _cfg()
     cfg.stream = stream
     return create_session(
@@ -123,7 +127,7 @@ def _session(tmp_path, *, guard, surface=None, stream=False):
         api_key_override="test-key",
         session_log_dir_override=tmp_path / "sessions",
         enable_compaction=False,
-        tool_dispatch_guard=dispatch_guard,
+        tool_dispatch_guard=guard,
         surface=surface,
         crash_diagnostic_log_path=tmp_path / "diagnostics.jsonl",
     )
@@ -140,14 +144,15 @@ def _assert_clean_logs(session, client):
     return log
 
 
-@pytest.mark.parametrize("guard", ["swarm"])
-def test_real_dispatch_guards_preserve_visual_pixels_and_tool_batch_order(tmp_path, guard):
+def test_real_dispatch_guard_preserves_visual_pixels_and_tool_batch_order(tmp_path):
     Image.new("RGB", (4, 4), "green").save(tmp_path / "diagram.png")
+    guard = _RecordingGuard()
     session = _session(tmp_path, guard=guard)
     client = _Client()
     session.client = client
     try:
         assert session.run_turn("Inspect diagram.png as visual evidence.") == 0
+        assert guard.calls[:2] == ["asset_view", "capability_status"]
         assert client.image_counts == [0, 1, 1]
         rendered = Image.open(io.BytesIO(base64.b64decode(client.image_urls[0].split(",")[1])))
         assert rendered.getpixel((0, 0)) == (0, 128, 0)
@@ -166,11 +171,12 @@ def test_real_dispatch_guards_preserve_visual_pixels_and_tool_batch_order(tmp_pa
         session.close()
 
 
-@pytest.mark.parametrize("guard", [None, "swarm"])
-def test_approved_sensitive_pixels_are_visible_to_one_request_then_scrubbed(tmp_path, guard):
+@pytest.mark.parametrize("with_guard", [False, True])
+def test_approved_sensitive_pixels_are_visible_to_one_request_then_scrubbed(tmp_path, with_guard):
     (tmp_path / ".ssh").mkdir()
     Image.new("RGB", (4, 4), "green").save(tmp_path / ".ssh/diagram.png")
     surface = _Surface()
+    guard = _RecordingGuard() if with_guard else None
     session = _session(tmp_path, guard=guard, surface=surface)
     client = _Client(path=".ssh/diagram.png")
     session.client = client
@@ -201,7 +207,7 @@ def test_approved_sensitive_pixels_are_visible_to_one_request_then_scrubbed(tmp_
 def test_sensitive_pixels_are_scrubbed_after_provider_failure_or_cancellation(tmp_path, failure):
     (tmp_path / ".ssh").mkdir()
     Image.new("RGB", (4, 4), "green").save(tmp_path / ".ssh/diagram.png")
-    session = _session(tmp_path, guard="swarm", surface=_Surface())
+    session = _session(tmp_path, guard=_RecordingGuard(), surface=_Surface())
     error = (
         LLMError("LLM error 500: simulated failure")
         if failure == "provider"
@@ -230,7 +236,7 @@ def test_sensitive_pixels_are_discarded_when_cancelled_before_request(tmp_path):
     (tmp_path / ".ssh").mkdir()
     Image.new("RGB", (4, 4), "green").save(tmp_path / ".ssh/diagram.png")
     surface = _Surface(cancel_after_decode=True)
-    session = _session(tmp_path, guard="swarm", surface=surface)
+    session = _session(tmp_path, guard=_RecordingGuard(), surface=surface)
     client = _Client(path=".ssh/diagram.png")
     session.client = client
     try:
@@ -250,7 +256,7 @@ def test_sensitive_pixels_are_discarded_when_cancelled_before_request(tmp_path):
 def test_sensitive_pixels_are_not_replayed_in_provider_retry_request(tmp_path):
     (tmp_path / ".ssh").mkdir()
     Image.new("RGB", (4, 4), "green").save(tmp_path / ".ssh/diagram.png")
-    session = _session(tmp_path, guard="swarm", surface=_Surface(), stream=True)
+    session = _session(tmp_path, guard=_RecordingGuard(), surface=_Surface(), stream=True)
     client = _Client(
         path=".ssh/diagram.png", failure=LLMError("LLM error 400: stream not supported")
     )
@@ -272,7 +278,7 @@ def test_denied_sensitive_read_cannot_deliver_or_retain_pixels(tmp_path):
     (tmp_path / ".ssh").mkdir()
     Image.new("RGB", (4, 4), "green").save(tmp_path / ".ssh/diagram.png")
     surface = _Surface(allow=False)
-    session = _session(tmp_path, guard="swarm", surface=surface)
+    session = _session(tmp_path, guard=_RecordingGuard(), surface=surface)
     client = _Client(path=".ssh/diagram.png")
     session.client = client
     try:

@@ -23,7 +23,6 @@ from ...feedback_report import (
     open_feedback_github_issue_draft,
     sanitize_feedback_text,
 )
-from ...forge import RunPaths
 from .setup_flow import Mode, Row, Screen
 
 
@@ -83,7 +82,6 @@ class ReportFlow:
         workspace_root: Path,
         cfg: AppConfig,
         active_session: Any | None = None,
-        active_run_paths: RunPaths | None = None,
         feedback_text: str = "",
         exporter: Callable[..., FeedbackBundleResult] | None = None,
         issue_drafter: Callable[..., FeedbackGithubIssueResult] | None = None,
@@ -96,7 +94,6 @@ class ReportFlow:
         # A setup/subscription-blocked TUI has no live agent. Let it report
         # the problem without silently exporting an unrelated retained session.
         self.session = active_session or SimpleNamespace(root=workspace_root, messages=[])
-        self.run_paths = active_run_paths
         self.feedback = feedback_text.strip()
         self.stage = "review" if self.feedback else "description"
         self.index = 0
@@ -381,7 +378,6 @@ class ReportFlow:
                     cfg=self.cfg,
                     feedback_text=self.feedback,
                     active_session=self.session,
-                    active_run_paths=self.run_paths,
                     progress=self._progress.put,
                     cancelled=self._cancel.is_set,
                 )

@@ -43,16 +43,12 @@ export class AlysisChatParticipantRouter {
           stream.markdown(helpMarkdown());
           this.addCockpitButton(stream);
           return { metadata: { command: "help" } };
-        case "plan":
-          return await this.routeSlashCommand(stream, route.args ? "/forge plan " + route.args : "/forge plan", "plan");
-        case "execute":
-          return await this.routeSlashCommand(stream, route.previewOnly ? "/execute preview" : "/execute plan", "execute");
         case "doctor":
           return await this.routeSlashCommand(stream, "/doctor", "doctor");
         case "unknownSlash":
           stream.markdown(
             safeMarkdown(
-              "Unknown @alysis slash command. Supported commands: /help, /forge <task>, /execute, and /doctor."
+              "Unknown @alysis slash command. Supported commands: /help and /doctor."
             )
           );
           this.addCockpitButton(stream);
@@ -64,7 +60,7 @@ export class AlysisChatParticipantRouter {
           await this.openCockpit(stream);
           stream.markdown(
             safeMarkdown(
-              "Opened the Alysis Code conversation. Use the sidebar to chat; plans, diffs, artifacts, and diagnostics open as focused details when needed."
+              "Opened the Alysis Code conversation. Use the sidebar to chat; approvals, artifacts, and diagnostics open as focused details when needed."
             )
           );
           this.addCockpitButton(stream);
@@ -157,8 +153,6 @@ export function registerAlysisChatParticipant(
 
 function routeNativeChatRequest(request: NativeChatRequestLike):
   | { kind: "help" }
-  | { kind: "plan"; args: string }
-  | { kind: "execute"; previewOnly: boolean }
   | { kind: "doctor" }
   | { kind: "unknownSlash" }
   | { kind: "openCockpit" } {
@@ -166,12 +160,6 @@ function routeNativeChatRequest(request: NativeChatRequestLike):
   const prompt = (request.prompt || "").trim();
   if (command === "help") {
     return { kind: "help" };
-  }
-  if (command === "forge") {
-    return { kind: "plan", args: prompt };
-  }
-  if (command === "execute") {
-    return { kind: "execute", previewOnly: /\bpreview\b/i.test(prompt) };
   }
   if (command === "doctor") {
     return { kind: "doctor" };
@@ -187,8 +175,6 @@ function routeNativeChatRequest(request: NativeChatRequestLike):
 
 function routePromptSlash(prompt: string):
   | { kind: "help" }
-  | { kind: "plan"; args: string }
-  | { kind: "execute"; previewOnly: boolean }
   | { kind: "doctor" }
   | { kind: "unknownSlash" } {
   const normalized = prompt.replace(/\s+/g, " ").trim();
@@ -199,27 +185,16 @@ function routePromptSlash(prompt: string):
   if (lower === "/doctor") {
     return { kind: "doctor" };
   }
-  if (lower === "/execute" || lower === "/execute plan") {
-    return { kind: "execute", previewOnly: false };
-  }
-  if (lower === "/execute preview") {
-    return { kind: "execute", previewOnly: true };
-  }
-  if (lower.startsWith("/forge plan ")) {
-    return { kind: "plan", args: normalized.slice("/forge plan".length).trim() };
-  }
   return { kind: "unknownSlash" };
 }
 
 function helpMarkdown(): string {
   return [
-    "The Alysis Code sidebar is the primary conversation. Plans, approvals, diffs, artifacts, and diagnostics open as focused details when needed.",
+    "The Alysis Code sidebar is the primary conversation. Approvals, artifacts, and diagnostics open as focused details when needed.",
     "",
     "Native @alysis commands:",
     "",
     "- `/help` opens Alysis Code and shows this help.",
-    "- `/forge <task>` creates a reviewable Forge Plan.",
-    "- `/execute` reviews a plan before execution, starting with Preview and explicit confirmation.",
     "- `/doctor` checks the local Alysis Code setup.",
     "",
     "Native chat does not auto-approve actions or parse terminal output."

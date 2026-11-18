@@ -49,10 +49,9 @@ coverage. The runner removes its temporary workspace, user-data, and extensions 
 every pass.
 
 The mock bridge E2E suite does not call model providers or require API keys. It covers sidebar open,
-`/help`, `/forge plan` success and failure, `/doctor` failure surfacing in Timeline and Diagnostics,
-broken bridge health/missing-method chips, `/execute preview`, `/execute plan` review-mode
-verification/review events, Forge approval cards, native diff open, artifact open, unknown slash
-commands failing closed, and bridge exit reporting.
+`/help`, `/doctor` failure surfacing in Timeline and Diagnostics, broken bridge health/missing-method
+chips, native Tasks host actions, attached diagnostics, unknown slash commands failing closed, and
+bridge exit reporting.
 
 ## Packaging
 

@@ -17,6 +17,7 @@ from .config import ConfigError
 from .windows_mxc_contract import UPSTREAM_COMMIT as UPSTREAM_COMMIT
 from .windows_mxc_contract import WINDOWS_RUNTIME_DIRECTORIES, helper_contract
 from .windows_sandbox import (
+    FileWorkerCommand,
     WindowsNativeRunner,
     _helper_json,
     _local_path,
@@ -284,6 +285,17 @@ def _release_background_records(records) -> None:
 
 
 class WindowsMxcRunner(WindowsNativeRunner):
+    def run_file_worker(
+        self, *, root: Path, arguments: list[str], timeout_s: int, cancel_check=None
+    ):
+        return self.run(
+            root=root,
+            cwd=root,
+            cmd=FileWorkerCommand(tuple(arguments)),
+            timeout_s=timeout_s,
+            cancel_check=cancel_check,
+        )
+
     def _uses_native_lifecycle(self) -> bool:
         # MXC uses the engine's non-breakaway observer job and its own protocol.
         return False
@@ -350,7 +362,9 @@ class WindowsMxcRunner(WindowsNativeRunner):
             resources.callback(remove_scratch, scratch)
             scratch_token = _command_scratch.set(scratch)
             resources.callback(_command_scratch.reset, scratch_token)
-            person_token = _person_command.set(True)
+            # Prepared file mutations share write leases and scratch space with a
+            # shell command, but run the engine's fixed worker with its own grants.
+            person_token = _person_command.set(isinstance(cmd, str))
             resources.callback(_person_command.reset, person_token)
             return super().run(
                 root=root, cwd=cwd, cmd=cmd, timeout_s=timeout_s, cancel_check=cancel_check
@@ -460,7 +474,12 @@ class WindowsMxcRunner(WindowsNativeRunner):
         return replace(spawn, cleanup=cleanup)
 
     def _prepare(
-        self, *, root: Path, cwd: Path, cmd: str, env_overrides: dict[str, str] | None = None
+        self,
+        *,
+        root: Path,
+        cwd: Path,
+        cmd: str | FileWorkerCommand,
+        env_overrides: dict[str, str] | None = None,
     ) -> tuple[list[str], bytes]:
         helper = resolve_helper()
         python_root = _python_tool_root()
@@ -494,8 +513,7 @@ class WindowsMxcRunner(WindowsNativeRunner):
             # is decided where it lies (docs/windows-cli-sandbox.md).
             validate_trees=False,
             # With directory discovery PowerShell can stand in the folder
-            # itself. The fixed workers see nothing above their folders and
-            # keep the drive.
+            # itself. A directly launched worker uses the native cwd.
             real_location=settings.windows_directory_discovery,
         )
         location = request.pop("location", None)
@@ -584,27 +602,32 @@ class WindowsMxcRunner(WindowsNativeRunner):
         # the admitted locations inside the contained shell, before project
         # code starts. TMPDIR also survives child-process redirection. This
         # grants no new filesystem rights and changes no host environment.
-        temp_literal = powershell_literal(env["TEMP"])
-        restore = f"$env:TEMP='{temp_literal}'; $env:TMP=$env:TEMP; $env:TMPDIR=$env:TEMP; "
-        if scratch is not None:
-            restore += f"$env:LOCALAPPDATA='{powershell_literal(env['LOCALAPPDATA'])}'; "
-            # The Windows folder API does not read LOCALAPPDATA. For an app
-            # container it answers with a "Packages\<container>\AC" folder
-            # below the profile's local data, and with USERPROFILE moved to
-            # the scratch home that folder does not exist. A program that asks
-            # the API then gets an empty answer and writes relative to the
-            # working directory: PowerShell left its module cache in the
-            # project as "Microsoft\Windows\PowerShell". The container's name
-            # is only known inside it, so the API itself is asked to make the
-            # folders, which also replaces the empty answer this process has
-            # already been given. Making them with CreateDirectory does not:
-            # that was tried. No cmdlet is used: one would make PowerShell
-            # look for that cache first.
-            restore += (
-                "& { foreach ($n in 'LocalApplicationData','InternetCache') "
-                "{ try { [void][Environment]::GetFolderPath($n,'Create') } catch { } } }; "
-            )
-        request["argv"][-1] = restore + request["argv"][-1]
+        if isinstance(cmd, FileWorkerCommand):
+            # TMPDIR survives AppContainer creation. The fixed entry point
+            # restores TEMP/TMP and, for writes, its admitted scratch local data.
+            env["ALYSIS_MXC_FILE_WORKER_LOCALAPPDATA"] = env["LOCALAPPDATA"] if scratch else ""
+        else:
+            temp_literal = powershell_literal(env["TEMP"])
+            restore = f"$env:TEMP='{temp_literal}'; $env:TMP=$env:TEMP; $env:TMPDIR=$env:TEMP; "
+            if scratch is not None:
+                restore += f"$env:LOCALAPPDATA='{powershell_literal(env['LOCALAPPDATA'])}'; "
+                # The Windows folder API does not read LOCALAPPDATA. For an app
+                # container it answers with a "Packages\<container>\AC" folder
+                # below the profile's local data, and with USERPROFILE moved to
+                # the scratch home that folder does not exist. A program that asks
+                # the API then gets an empty answer and writes relative to the
+                # working directory: PowerShell left its module cache in the
+                # project as "Microsoft\Windows\PowerShell". The container's name
+                # is only known inside it, so the API itself is asked to make the
+                # folders, which also replaces the empty answer this process has
+                # already been given. Making them with CreateDirectory does not:
+                # that was tried. No cmdlet is used: one would make PowerShell
+                # look for that cache first.
+                restore += (
+                    "& { foreach ($n in 'LocalApplicationData','InternetCache') "
+                    "{ try { [void][Environment]::GetFolderPath($n,'Create') } catch { } } }; "
+                )
+            request["argv"][-1] = restore + request["argv"][-1]
         entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
         folders: list[Path] = []
         if _person_command.get():

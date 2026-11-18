@@ -655,3 +655,74 @@ def test_one_transient_error_in_the_check_is_retried_once(tmp_path, monkeypatch)
     assert final["status"] == "completed"
     assert [e["kind"] for e in final["events"]].count("provider_retry") == 1
     assert store.usage("owner")["calls"] == 3
+
+
+def test_work_left_undone_after_progress_is_carried_on_past_the_two_corrections(tmp_path):
+    names = ["α.txt", "β.txt", "γ.txt", "δ.txt"]
+
+    def save(name):
+        return response(calls=[ToolCall(name, "save_file", {"name": name, "content": "Γεια"})])
+
+    stopped_early = [
+        "Αποθήκευσα το α.txt. Τώρα θα αποθηκεύσω τα υπόλοιπα.",
+        "Αποθήκευσα το β.txt. Να συνεχίσω με τα άλλα δύο;",
+        "Έτοιμο το γ.txt. Μένει ένα ακόμα, το φτιάχνω τώρα.",
+    ]
+    done = "Αποθήκευσα και τις τέσσερις σημειώσεις."
+    script = []
+    for name, draft in zip(names, stopped_early, strict=False):
+        script += [
+            save(name),
+            response(draft),
+            verdict("repair", "Requested notes are still unsaved.", "omission"),
+        ]
+    script += [save(names[-1]), response(done), verdict("ready")]
+    store, task, model, runtime, token = study(
+        tmp_path,
+        script,
+        limit=20,
+        message="Αποθήκευσε τέσσερις σημειώσεις, α.txt, β.txt, γ.txt και δ.txt, με το κείμενο Γεια",
+    )
+    runtime.run(task, token)
+    final = store.task("owner", task["id"])
+    assert final["status"] == "completed" and final["output"] == done
+    assert sorted(f["name"] for f in store.list_files("owner", task["bot_id"])) == sorted(names)
+    # Three stops after new work, past the old limit of two, and never a plain status.
+    assert len(model.requests) == len(script)
+    assert all(request.get("tools") for request in model.requests[::3])
+    assert [
+        m["content"]
+        for m in store.conversation("owner", task["chat_id"])["messages"]
+        if m["role"] == "assistant"
+    ] == [done]
+
+
+def test_stopping_again_without_new_work_still_ends_in_a_plain_status(tmp_path):
+    from alysis_code.bots.runtime import REVIEW_STATUS_ONLY
+
+    status = "Δεν αποθήκευσα το 東京.txt: δεν γράφτηκε κανένα αρχείο."
+    store, task, model, runtime, token = study(
+        tmp_path,
+        [
+            response("Τώρα θα αποθηκεύσω το 東京.txt."),
+            verdict("repair", "The note is not saved yet.", "omission"),
+            response("Να συνεχίσω με την αποθήκευση;"),
+            verdict("repair", "The note is not saved yet.", "omission"),
+            response("Το αποθηκεύω αμέσως."),
+            verdict("repair", "The note is not saved yet.", "omission"),
+            response(status),
+            verdict("ready", "Status matches the receipts."),
+        ],
+    )
+    runtime.run(task, token)
+    final = store.task("owner", task["id"])
+    assert final["status"] == "completed" and final["output"] == status
+    status_request = model.requests[6]
+    assert not status_request.get("tools")
+    system = [m["content"] for m in status_request["messages"] if m["role"] == "system"]
+    assert any(REVIEW_STATUS_ONLY in text for text in system)
+    assert not store.list_files("owner", task["bot_id"])
+
+
+def test_the_reviewer_treats_stopping_partway_as_work_left_undone():
+    assert "stops partway through requested work" in REVIEW_INSTRUCTIONS

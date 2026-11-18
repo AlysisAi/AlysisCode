@@ -132,44 +132,6 @@ test("an unwired provider gate publishes as not-ready instead of an accidental g
   await controller.shutdown({ shutdownBridge: false });
 });
 
-test("swarm review rows keep their diff and untracked-file evidence in the published state", async () => {
-  const controller = controllerFor();
-  controller.setCockpitProvider(() => cockpitProvider({
-    swarm: {
-      ...emptySwarm(),
-      supported: true,
-      tasks: [{
-        taskId: "task-1",
-        title: "Add telemetry",
-        status: "completed",
-        state: "review",
-        writeScope: ["src/"],
-        reviewable: true,
-        diffAvailable: true,
-        diffArtifactId: "artifact-9",
-        untrackedFilesNotApplied: ["src/new-file.ts"],
-        untrackedNote: "1 new file will not be applied.",
-        applied: false,
-        discarded: false,
-        recovery: null
-      }]
-    }
-  }));
-  const states: CockpitState[] = [];
-  controller.onDidChangeState((state) => states.push(state));
-
-  controller.refreshCockpit();
-  await delay(40);
-
-  const [task] = states.at(-1)?.cockpit.swarm.tasks ?? [];
-  assert.ok(task, "swarm task published");
-  assert.equal(task.diffAvailable, true);
-  assert.equal(task.diffArtifactId, "artifact-9");
-  assert.deepEqual(task.untrackedFilesNotApplied, ["src/new-file.ts"]);
-  assert.equal(task.untrackedNote, "1 new file will not be applied.");
-  await controller.shutdown({ shutdownBridge: false });
-});
-
 test("streaming deltas coalesce to frame cadence and the turn's final state is never dropped", async () => {
   const bridge = bridgeMock();
   const controller = controllerFor(undefined, bridge);
@@ -527,11 +489,8 @@ function config(): never {
     provider: "",
     transport: "stdio",
     sandboxProfile: "default",
-    forgeExecuteMaxSteps: undefined,
-    forgeExecuteNoLog: false,
     showStatusBar: true,
     autoStartBridge: false,
-    enableForge: true,
     security: {
       isWorkspaceTrusted: true,
       ignoredWorkspaceSettings: [],
@@ -551,13 +510,11 @@ function cockpitProvider(overrides: Record<string, unknown>): never {
   return {
     status: {
       mode: "readonly",
-      composerMode: "chat",
       model: "default",
       provider: "default",
       sandbox: "default",
       workspaceTrusted,
       bridgeStatus: { state: "idle", text: "Alysis Code: idle", tooltip: "Alysis Code is ready", visible: true },
-      enableForge: true,
       cliTrusted: true,
       cliReason: null,
       providerProfile: { supported: false, activeProfile: "", profiles: [] },
@@ -574,47 +531,9 @@ function cockpitProvider(overrides: Record<string, unknown>): never {
       runtime: new CockpitRuntimeState().snapshot(),
       ...(overrides.runtime ? { runtime: overrides.runtime } : {})
     },
-    forge: {
-      sessionId: null,
-      planId: null,
-      activeJobId: null,
-      plan: null,
-      planning: null,
-      events: [],
-      diffs: [],
-      artifacts: [],
-      executePreview: null,
-      selectedTaskIds: [],
-      approvals: [],
-      review: null,
-      reviewBusy: false,
-      assets: [],
-      assetDetail: null,
-      assetsBusy: false
-    },
-    swarm: overrides.swarm ?? emptySwarm(),
     browser: { supported: false, reason: null, browsers: [], active: null, preview: null, busy: false },
     actionResults: []
   } as never;
-}
-
-function emptySwarm(): Record<string, unknown> {
-  return {
-    supported: false,
-    reason: null,
-    sessionId: null,
-    planId: null,
-    jobId: null,
-    status: "idle",
-    runStatus: null,
-    parallel: 2,
-    busy: false,
-    cancellable: false,
-    tasks: [],
-    pendingReviewTaskIds: [],
-    workingTreeUntouchedUntilApply: true,
-    recovery: { supported: false, status: "idle", reason: null, activeJobId: null, jobs: [] }
-  };
 }
 
 function bridgeMock() {

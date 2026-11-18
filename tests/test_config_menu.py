@@ -747,21 +747,6 @@ def test_commit_clears_role_override_when_emptied(
     assert "coding" not in load_config().extra_fields.get("role_models", {})
 
 
-def test_commit_persists_forge_role_override(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path))
-    state = ConfigMenuState.from_cfg(AppConfig(model="default"))
-    state.set_forge_role_model("planner", "anthropic/claude-opus-4-7")
-    cfg_to_save = load_config()
-
-    result = state.commit_to(cfg_to_save)
-    save_config(cfg_to_save)
-
-    assert result.saved is True
-    assert load_config().extra_fields["forge_role_models"]["planner"] == "anthropic/claude-opus-4-7"
-
-
 def test_commit_invalid_timeout_returns_validation_error() -> None:
     state = ConfigMenuState.from_cfg(AppConfig(model="default"))
     state.set_field("llm_timeout_s", "not-a-number")
@@ -1898,13 +1883,6 @@ def test_classic_config_reload_applies_routing_mode_change_without_closing(
         lambda: False,
         raising=False,
     )
-    monkeypatch.setattr(chat_loop, "_is_forge_ui_mode", lambda _mode: False, raising=False)
-    monkeypatch.setattr(
-        chat_loop,
-        "_parse_forge_enter_command",
-        lambda **_kwargs: None,
-        raising=False,
-    )
 
     result = chat_loop._handle_chat_command(
         input_text="/config",
@@ -1912,7 +1890,6 @@ def test_classic_config_reload_applies_routing_mode_change_without_closing(
         session=session,
         pending_images=[],
         console=console,
-        forge_state=chat_loop._ForgeChatState(),
     )
 
     rendered = "\n".join(output)

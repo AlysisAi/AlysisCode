@@ -193,6 +193,89 @@ def installed(tmp_path, monkeypatch):
     return root, settings, node
 
 
+@pytest.fixture
+def installed_file_worker(installed, monkeypatch):
+    from alysis_code.contained_read_tools import ContainedReadTools
+
+    root, settings, _ = installed
+    for name in ("LOCALAPPDATA", "ALYSIS_CONFIG_DIR", "ALYSIS_DATA_DIR", "ALYSIS_MEMORY_HOME"):
+        folder = root.parent / name
+        folder.mkdir()
+        monkeypatch.setenv(name, str(folder))
+    monkeypatch.setenv("PATH", str(Path(os.environ["SystemRoot"]) / "System32"))
+    return root, ContainedReadTools(settings, root)
+
+
+def test_fixed_file_workers_share_workspace_without_shell_policy_or_host_path(
+    installed_file_worker, monkeypatch
+):
+    from dataclasses import asdict
+
+    from alysis_code.tools.fs import capture_file_precondition, prepare_fs_edit
+
+    def unavailable(_shell):
+        raise ConfigError("host policy unavailable")
+
+    monkeypatch.setattr(native, "_powershell_execution_policy", unavailable)
+    monkeypatch.setattr(
+        "alysis_code.windows_path_tools.host_path_folders",
+        lambda *args, **kwargs: pytest.fail("fixed file worker requested host PATH grants"),
+    )
+    root, reader = installed_file_worker
+    original = root / "source.txt"
+    original.write_text("café", encoding="utf-8")
+    edited = root / "edit.txt"
+    edited.write_text("before", encoding="utf-8")
+    target = "νέο αρχείο.txt"
+    write = {
+        "path": target,
+        "content": "完成",
+        "precondition": asdict(capture_file_precondition(root=root, path=target)),
+    }
+    edit = asdict(
+        prepare_fs_edit(
+            root=root,
+            path=edited.name,
+            edits=[{"op": "replace_exact", "target": "before", "replacement": "μετά"}],
+        )
+    )
+    del edit["root_obj"], edit["path_obj"]
+    with ThreadPoolExecutor(4) as pool:
+        listing = pool.submit(reader.run, "fs_list", {})
+        reading = pool.submit(reader.run, "fs_read", {"path": original.name})
+        writing = pool.submit(reader.run_write, "fs_write_prepared", write)
+        editing = pool.submit(reader.run_write, "fs_edit_prepared", edit)
+        assert original.name in str(listing.result())
+        assert reading.result()["content"] == "café"
+        assert writing.result()["created"]
+        editing.result()
+    assert (root / target).read_bytes() == "完成".encode()
+    assert edited.read_bytes() == "μετά".encode()
+
+    outside = root.parent / "outside.txt"
+    outside.write_text("synthetic", encoding="utf-8")
+    with pytest.raises(ConfigError, match="refused"):
+        reader.run("fs_read", {"path": str(outside)})
+    with pytest.raises(ConfigError, match="refused"):
+        reader.run_write("fs_mkdir", {"path": str(root.parent / "outside-directory")})
+    assert not (root.parent / "outside-directory").exists()
+    with pytest.raises(ConfigError, match="host policy unavailable"):
+        mxc.WindowsMxcRunner(reader.settings).run(
+            root=root, cwd=root, cmd="Write-Output hello", timeout_s=30
+        )
+
+
+def test_missing_fixed_worker_cannot_fall_back_to_host_mutation(installed_file_worker, monkeypatch):
+    from alysis_code import contained_read_tools as contained
+
+    root, reader = installed_file_worker
+    monkeypatch.setattr(contained, "_worker_argv", lambda: [str(root.parent / "absent-worker.exe")])
+    with pytest.raises(ConfigError):
+        reader.run_write("fs_mkdir", {"path": "uncreated"})
+    assert not (root / "uncreated").exists()
+    assert not list(root.glob(".alysis-file-request-*"))
+
+
 def test_native_ssh_startup_and_exact_file_boundaries(installed, monkeypatch):
     from alysis_code import windows_toolchain
 

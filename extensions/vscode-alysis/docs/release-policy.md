@@ -23,7 +23,7 @@ those packages are never production release evidence.
   lint, unit tests, audit, package, Python IDE bridge smoke, and deterministic local mock dogfood.
   It is not Marketplace-visible.
 - **Public beta / Marketplace pre-release** — requires Windows/default-console encoding tests, full
-  Python Forge exec/swarm/review suites, Extension Host integration, a target-specific VSIX with a
+  Python tests, Extension Host integration, a target-specific VSIX with a
   signed managed runtime and passing isolated production install, completed manual real-provider
   dogfood in a disposable repo, no known P0/P1 blockers, and current known limitations.
 - **Stable Marketplace release** — requires all beta gates plus explicit release approval, support
@@ -58,7 +58,7 @@ enabled, maintainers need:
 - a schema-v2 production signoff approving `marketplace-beta` or `marketplace-stable`, and the rollback action
   `unpublish_affected_version`; prior pre-release approvals cannot authorize stable promotion
 - a checked README, CHANGELOG, SUPPORT file, and release checklist
-- full Python tests, including the Forge exec/swarm/review suites
+- full Python tests
 - VS Code `npm ci`, compile, lint, unit/bridge smoke tests, audit, package, and Extension Host tests
 - passing generic component dogfood with `component_valid: true`, `release_valid: false`, and
   `extension_host: passed`
@@ -67,8 +67,8 @@ enabled, maintainers need:
   passing native/release-signature, package-install, and bridge-health checks
 - verified final VSIX provenance and CycloneDX SBOM attestations bound to the immutable tag/commit
 - manual VSIX install verification
-- a completed `--mode manual-real-provider` checklist and a real Forge Execute v1 review-mode smoke
-  in a disposable repository
+- a completed `--mode manual-real-provider` checklist and a real review-mode chat smoke in a
+  disposable repository
 
 ## Promotion workflow
 

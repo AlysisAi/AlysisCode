@@ -17,11 +17,8 @@ from alysis_code.surface.events import (
     MessageDelta,
     MessageEnd,
     ModeChanged,
-    PlanNodeUpdated,
     PromptForInput,
-    ReviewGateDecision,
     StatusUpdate,
-    SwarmWorkerStateChanged,
     ToolCallCompleted,
     ToolCallProgress,
     ToolCallStarted,
@@ -64,10 +61,7 @@ def _sample_events() -> list[Event]:
             step_budget=4,
         ),
         ModeChanged(mode="auto"),
-        PlanNodeUpdated(node_id="T1", state="planned", summary="scope ready"),
-        SwarmWorkerStateChanged(worker_id="w1", state="running", role="coder"),
         VerifyGateResult(command="pytest -q", success=True, summary="passed"),
-        ReviewGateDecision(decision="approved", summary="looks good"),
         ApprovalReviewed(
             outcome="allow",
             subject="npm install",
@@ -120,28 +114,10 @@ def _call_all_emit_methods(surface: object) -> None:
         step_budget=4,
     )
     surface.emit_mode_changed("auto")  # type: ignore[attr-defined]
-    surface.emit_plan_node_updated(  # type: ignore[attr-defined]
-        "T1",
-        "planned",
-        "scope ready",
-        worker_id="w1",
-        role="coder",
-    )
-    surface.emit_swarm_worker_state_changed(  # type: ignore[attr-defined]
-        "w1",
-        "running",
-        role="coder",
-    )
     surface.emit_verify_gate_result(  # type: ignore[attr-defined]
         "pytest -q",
         True,
         "passed",
-        worker_id="w1",
-        role="coder",
-    )
-    surface.emit_review_gate_decision(  # type: ignore[attr-defined]
-        "approved",
-        "looks good",
         worker_id="w1",
         role="coder",
     )

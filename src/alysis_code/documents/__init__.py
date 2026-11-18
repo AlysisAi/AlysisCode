@@ -7,6 +7,11 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
+
+# PDFium is not thread-safe. Every in-process use (not the separate document commands)
+# holds this lock, so owls and web reads on different threads never use it at once.
+PDFIUM_LOCK = threading.Lock()
 
 
 def pdf_capability_status() -> dict:

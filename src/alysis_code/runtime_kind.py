@@ -8,13 +8,15 @@ from .config_errors import ConfigError
 class RuntimeKind(StrEnum):
     INTERACTIVE_CHAT = "interactive_chat"
     ONE_SHOT = "one_shot"
-    FORGE_EXEC = "forge_exec"
-    SWARM_WORKER = "swarm_worker"
     SUBAGENT = "subagent"
-    CONFLICT_AUTO_RESOLVE = "conflict_auto_resolve"
 
     def __str__(self) -> str:
         return self.value
+
+
+# Kinds that only Forge used. Saved configs may still name them,
+# for example an MCP server's `enabled_in`; readers skip them instead of failing.
+RETIRED_RUNTIME_KINDS = frozenset({"forge_exec", "swarm_worker", "conflict_auto_resolve"})
 
 
 def runtime_kind_values() -> tuple[str, ...]:

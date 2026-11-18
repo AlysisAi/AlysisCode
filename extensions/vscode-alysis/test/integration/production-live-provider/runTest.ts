@@ -161,8 +161,7 @@ async function main(): Promise<void> {
       "alysis.defaultMode": "readonly",
       "alysis.defaultModel": model,
       "alysis.baseUrl": providerEndpoint.baseUrl,
-      "alysis.provider": provider,
-      "alysis.enableForge": false
+      "alysis.provider": provider
     };
     writeFileSync(
       join(settingsDirectory, "settings.json"),

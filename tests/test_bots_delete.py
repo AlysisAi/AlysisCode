@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 import pytest
 
 from alysis_code.bots.models import BotInput, FileInput, MemoryInput, NoteInput, TaskInput
+from alysis_code.bots.routine_access import RoutineAccessDecision
 from alysis_code.bots.scheduling import ScheduleInput
 from alysis_code.bots.store import Conflict, NotFound, Store
 
@@ -33,6 +35,23 @@ def test_deleted_bot_leaves_the_account_with_its_files_memories_and_routines(sto
     store.save_file("alice", kept["id"], FileInput(name="other.md", content="Other bot"))
     store.save_memory("alice", bot["id"], MemoryInput(title="Tone", content="Short answers"))
     store.save_schedule("alice", bot["id"], schedule(), now=1000)
+    # A routine whose website the person allowed: the grant goes with the owl.
+    browsing = store.save_schedule(
+        "alice",
+        bot["id"],
+        ScheduleInput.model_validate(
+            {**schedule().model_dump(), "name": "Prices", "needs": {"sites": ["https://a.example"]}}
+        ),
+        now=1000,
+    )
+    store.allow_routine_access(
+        "alice",
+        bot["id"],
+        browsing["id"],
+        RoutineAccessDecision(
+            expected_revision=browsing["revision"], allow=browsing["access"]["to_allow"]
+        ),
+    )
     before = store.library_usage("alice")
 
     store.delete_bot("alice", bot["id"])
@@ -55,6 +74,7 @@ def test_deleted_bot_leaves_the_account_with_its_files_memories_and_routines(sto
             db.execute("SELECT count(*) FROM memories WHERE bot_id=?", (bot["id"],)).fetchone()[0]
             == 0
         )
+        assert db.execute("SELECT count(*) FROM routine_access").fetchone()[0] == 0
     assert store.enqueue_due_schedules("alice", max_calls=20, now=1301) == 0
     assert store.library_usage("alice")["file_count"] == before["file_count"] - 1
     assert [f["name"] for f in store.list_files("alice", kept["id"])] == ["other.md"]
@@ -122,7 +142,8 @@ def test_deleted_bot_leaves_no_content_behind(tmp_path):
     store.event(owner, task["id"], "progress_note", {"text": "Looking now."})
     store.finish(owner, task["id"], "completed", content="My private answer")
     store.save_note(owner, bot["id"], NoteInput(title="Plan", content="Private note"))
-    store.save_schedule(owner, bot["id"], schedule(), now=1000)
+    # Not due while the service runs below: a routine starting work would rightly hold the delete.
+    store.save_schedule(owner, bot["id"], schedule(), now=time.time())
     app.state.runtime.triggers.create(
         bot["id"], TriggerInput(name="On file", instructions="Review new files")
     )

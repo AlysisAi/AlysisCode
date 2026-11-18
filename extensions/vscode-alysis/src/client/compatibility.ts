@@ -14,7 +14,7 @@ export const SUPPORTED_IDE_PROTOCOL_VERSIONS = [PROTOCOL_VERSION] as const;
  * upgrade hint, while hard feature availability is decided per method by capability negotiation.
  * Bump it together with the extension release, and keep `docs/architecture.md` in step.
  */
-export const MIN_RECOMMENDED_ALYSIS_CLI_VERSION = "0.17.1";
+export const MIN_RECOMMENDED_ALYSIS_CLI_VERSION = "0.17.3";
 export const CLI_INSTALL_COMMAND = "pipx install alysis-code";
 export const CLI_UPGRADE_COMMAND = "pipx upgrade alysis-code";
 export const SETUP_GUIDE_URL = "https://github.com/AlysisAi/AlysisCode#install";
@@ -34,21 +34,6 @@ export const CHAT_RUN_METHODS = [
   "artifact.read"
 ] as const;
 
-export const FORGE_PLAN_SYNC_METHODS = ["forge.plan"] as const;
-export const FORGE_PLAN_ASYNC_METHODS = ["forge.plan.start", "forge.plan.result"] as const;
-export const FORGE_PLAN_PERSISTENCE_METHODS = ["forge.list", "forge.open", "forge.status"] as const;
-export const FORGE_EXECUTE_PREVIEW_METHODS = ["forge.executePreview"] as const;
-export const FORGE_EXECUTE_REVIEW_METHODS = [
-  "forge.execute",
-  "approval.respond",
-  "job.status",
-  "session.getEvents",
-  "artifact.list",
-  "artifact.read",
-  "diff.list",
-  "diff.get"
-] as const;
-export const DIFF_METHODS = ["diff.list", "diff.get"] as const;
 export const ARTIFACT_METHODS = ["artifact.list", "artifact.read"] as const;
 export const MANAGED_BROWSER_METHODS = [
   "browser.start",
@@ -121,41 +106,13 @@ export const REPORT_METHODS = ["report.create"] as const;
 // keep its promise, so the UI lights up only when the CLI advertises the complete pair.
 export const PERSONAS_METHODS = ["session.personas.list", "session.persona.set"] as const;
 
-// Reserved slots reconciled to the REAL bridge method names now that the backend ships them.
-export const FORGE_REVIEW_GATE_METHODS = ["forge.review"] as const;
-export const ASSETS_METHODS = ["forge.assets.list", "forge.assets.show"] as const;
-export const ASSETS_MUTATE_METHODS = ["forge.assets.add"] as const; // representative mutation (also Workspace-Trust gated)
 export const PROVIDERS_PROFILES_METHODS = ["config.get", "config.set", "profile.list", "profile.use"] as const;
 
-// Forge swarm is now wired into the IDE bridge as Workspace-Trust-gated jobs
-// with cooperative cancellation, a disjoint-write-scope scheduler invariant, a
-// swarm-layer write guard, and review-only merge (apply/discard per task). The
-// gate is method-driven: present when the CLI advertises the swarm job + review
-// methods, dimmed with a structured upgrade reason otherwise.
-export const FORGE_SWARM_METHODS = [
-  "forge.swarm.start",
-  "forge.swarm.resume",
-  "forge.swarm.list",
-  "forge.swarm.status",
-  "forge.swarm.result",
-  "forge.swarm.cancel",
-  "forge.swarm.review",
-  "forge.swarm.apply",
-  "forge.swarm.discard"
-] as const;
-// Permanently gated — no backend support exists, so these stay disabled with a clear reason.
-export const FORGE_PR_METHODS = ["forge.pr"] as const;
-export const DIFF_APPLY_DISCARD_METHODS = ["diff.apply", "diff.discard"] as const;
 export const FULLACCESS_MODE = "fullaccess";
 
 export type CompatibilityFeatureId =
   | "baselineCockpit"
   | "chatRun"
-  | "forgePlan"
-  | "forgePlanPersistence"
-  | "forgeExecutePreview"
-  | "forgeExecuteReview"
-  | "diffs"
   | "artifacts"
   | "managedBrowser"
   | "managedBrowserDirectLoopback"
@@ -174,16 +131,8 @@ export type CompatibilityFeatureId =
   | "update"
   | "report"
   | "personas"
-  // Reserved slots reconciled to real methods
-  | "forgeReviewGate"
-  | "assets"
-  | "assetsMutate"
   | "providersProfiles"
-  // Permanently gated (no backend)
-  | "forgePr"
-  | "forgeSwarm"
-  | "modesFullaccess"
-  | "diffApplyDiscard";
+  | "modesFullaccess";
 
 export type CompatibilityReasonCategory =
   | "version_gate"
@@ -468,30 +417,9 @@ function buildFeatures(
   modes: readonly string[] | undefined,
   features: unknown
 ): Record<CompatibilityFeatureId, FeatureCompatibility> {
-  const planExecution = planExecutionCompatibility(methods);
   return {
     baselineCockpit: requiredFeature("baselineCockpit", "Baseline Cockpit", BASELINE_COCKPIT_METHODS, methods),
     chatRun: requiredFeature("chatRun", "Chat and Run", CHAT_RUN_METHODS, methods),
-    forgePlan: {
-      id: "forgePlan",
-      label: "Forge Plan",
-      supported: planExecution.supported,
-      requiredMethods: planExecution.requiredMethods,
-      missingMethods: planExecution.missingMethods,
-      reason: planExecution.supported
-        ? null
-        : compatibilityReason("version_gate", {
-            detail: "Forge Plan requires forge.plan or the async forge.plan.start and forge.plan.result methods.",
-            missingMethods: planExecution.missingMethods
-          }),
-      disabledReason: planExecution.supported
-        ? null
-        : "Forge Plan requires forge.plan or the async forge.plan.start and forge.plan.result methods."
-    },
-    forgePlanPersistence: requiredFeature("forgePlanPersistence", "Forge Plan Persistence", FORGE_PLAN_PERSISTENCE_METHODS, methods),
-    forgeExecutePreview: requiredFeature("forgeExecutePreview", "Forge Execute Preview", FORGE_EXECUTE_PREVIEW_METHODS, methods),
-    forgeExecuteReview: requiredFeature("forgeExecuteReview", "Forge Execute Review", FORGE_EXECUTE_REVIEW_METHODS, methods),
-    diffs: requiredFeature("diffs", "Diffs", DIFF_METHODS, methods),
     artifacts: requiredFeature("artifacts", "Artifacts", ARTIFACT_METHODS, methods),
     managedBrowser: managedBrowserCompatibility(features, methods),
     managedBrowserDirectLoopback: managedBrowserDirectLoopbackCompatibility(features, methods),
@@ -510,32 +438,8 @@ function buildFeatures(
     update: requiredFeature("update", "Update Check", UPDATE_METHODS, methods),
     report: requiredFeature("report", "Reports", REPORT_METHODS, methods),
     personas: requiredFeature("personas", "Personas", PERSONAS_METHODS, methods),
-    // Reserved slots reconciled to real methods.
-    forgeReviewGate: requiredFeature("forgeReviewGate", "Review Gate", FORGE_REVIEW_GATE_METHODS, methods),
-    assets: forgeAssetsCompatibility(features, methods),
-    assetsMutate: requiredFeature("assetsMutate", "Asset Editing", ASSETS_MUTATE_METHODS, methods),
     providersProfiles: requiredFeature("providersProfiles", "Providers & Profiles", PROVIDERS_PROFILES_METHODS, methods),
-    // Permanently gated — no backend.
-    forgePr: permanentlyGated(
-      "forgePr",
-      "Open as PR",
-      FORGE_PR_METHODS,
-      compatibilityReason("not_applicable", {
-        detail: "Open-as-PR is not yet supported by the Alysis Code IDE bridge.",
-        missingMethods: FORGE_PR_METHODS
-      })
-    ),
-    forgeSwarm: requiredFeature("forgeSwarm", "Run Swarm", FORGE_SWARM_METHODS, methods),
-    modesFullaccess: modesFullaccessFeature(modes, features),
-    diffApplyDiscard: permanentlyGated(
-      "diffApplyDiscard",
-      "Keep / Discard",
-      DIFF_APPLY_DISCARD_METHODS,
-      compatibilityReason("not_applicable", {
-        detail: "Keep/Discard needs a commit/revert bridge capability that does not exist yet; use VS Code Source Control.",
-        missingMethods: DIFF_APPLY_DISCARD_METHODS
-      })
-    )
+    modesFullaccess: modesFullaccessFeature(modes, features)
   };
 }
 
@@ -604,25 +508,6 @@ function requiredFeature(
   };
 }
 
-function permanentlyGated(
-  id: CompatibilityFeatureId,
-  label: string,
-  requiredMethods: readonly string[],
-  reason: CompatibilityReason
-): FeatureCompatibility {
-  // Truly permanent: no backend exists, so this stays unsupported regardless of the advertised
-  // method set, with a clear reason. (Re-wire to a method-driven gate if the bridge ever ships it.)
-  return {
-    id,
-    label,
-    supported: false,
-    requiredMethods: [...requiredMethods],
-    missingMethods: [...requiredMethods],
-    reason,
-    disabledReason: reason.detail ?? reason.message
-  };
-}
-
 function modesFullaccessFeature(modes: readonly string[] | undefined, features: unknown): FeatureCompatibility {
   const list = modes ?? [];
   const blockedReason = unsafeModeSecurityReason(features, FULLACCESS_MODE);
@@ -638,43 +523,6 @@ function modesFullaccessFeature(modes: readonly string[] | undefined, features: 
       ? null
       : blockedReason ?? compatibilityReason("version_gate", { detail: disabledReason, missingMethods: [`capabilities.modes "${FULLACCESS_MODE}"`] }),
     disabledReason: supported ? null : blockedReason?.detail ?? disabledReason
-  };
-}
-
-function forgeAssetsCompatibility(features: unknown, methods: Set<string>): FeatureCompatibility {
-  // Prefer the bridge's explicit capability flag (features.forge.assets.supported) when present;
-  // fall back to method-presence (forge.assets.list + show) for CLIs that don't advertise the flag.
-  const explicitSupported = readBooleanFeature(features, ["forge", "assets", "supported"]);
-  if (explicitSupported !== undefined) {
-    return {
-      id: "assets",
-      label: "Assets",
-      supported: explicitSupported,
-      requiredMethods: ["features.forge.assets.supported"],
-      missingMethods: explicitSupported ? [] : ["features.forge.assets.supported"],
-      reason: explicitSupported
-        ? null
-        : compatibilityReason("version_gate", {
-            detail: "Assets are disabled because the Alysis Code CLI explicitly reports Forge assets as unsupported.",
-            missingMethods: ["features.forge.assets.supported"]
-          }),
-      disabledReason: explicitSupported
-        ? null
-        : "Assets are disabled because the Alysis Code CLI explicitly reports Forge assets as unsupported."
-    };
-  }
-  const compatibility = requiredFeature("assets", "Assets", ASSETS_METHODS, methods);
-  return {
-    ...compatibility,
-    reason: compatibility.supported
-      ? null
-      : compatibilityReason("version_gate", {
-          detail: "Assets are disabled because the installed Alysis Code CLI does not expose the Forge asset IDE bridge methods.",
-          missingMethods: compatibility.missingMethods
-        }),
-    disabledReason: compatibility.supported
-      ? null
-      : "Assets are disabled because the installed Alysis Code CLI does not expose the Forge asset IDE bridge methods."
   };
 }
 
@@ -746,10 +594,7 @@ function managedBrowserDirectLoopbackCompatibility(
 }
 
 function unsafeModeSecurityReason(features: unknown, mode: string): CompatibilityReason | undefined {
-  for (const path of [
-    ["forge", "unsafe_modes"],
-    ["unsafe_modes"]
-  ]) {
+  for (const path of [["unsafe_modes"]]) {
     const entry = readRecordFeature(features, path);
     if (!entry) {
       continue;
@@ -768,8 +613,7 @@ function unsafeModeSecurityReason(features: unknown, mode: string): Compatibilit
   }
   for (const path of [
     ["unsafe_modes", mode],
-    ["modes", mode],
-    ["forge", "modes", mode]
+    ["modes", mode]
   ]) {
     const entry = readRecordFeature(features, path);
     if (entry && isBlockedUntilSecurityModel(entry.status)) {
@@ -808,26 +652,4 @@ function isBlockedUntilSecurityModel(value: unknown): boolean {
 function statusDetail(entry: Record<string, unknown>): string | undefined {
   const detail = entry.rationale ?? entry.reason ?? entry.message;
   return typeof detail === "string" && detail.trim().length > 0 ? detail : undefined;
-}
-
-function planExecutionCompatibility(methods: Set<string>): Pick<FeatureCompatibility, "supported" | "requiredMethods" | "missingMethods"> {
-  if (methods.has("forge.plan") || (methods.has("forge.plan.start") && methods.has("forge.plan.result"))) {
-    return {
-      supported: true,
-      requiredMethods: ["forge.plan", "forge.plan.start", "forge.plan.result"],
-      missingMethods: []
-    };
-  }
-  const missingMethods = ["forge.plan"];
-  if (!methods.has("forge.plan.start")) {
-    missingMethods.push("forge.plan.start");
-  }
-  if (!methods.has("forge.plan.result")) {
-    missingMethods.push("forge.plan.result");
-  }
-  return {
-    supported: false,
-    requiredMethods: ["forge.plan", "forge.plan.start", "forge.plan.result"],
-    missingMethods
-  };
 }

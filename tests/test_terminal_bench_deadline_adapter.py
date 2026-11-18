@@ -51,7 +51,7 @@ def test_source_snapshot_retains_build_hook_and_protocol_resource(tmp_path, monk
         "pyproject.toml": '[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"\n',
         "hatch_build.py": "# custom build hook\n",
         "src/alysis_code/__init__.py": "",
-        "src/alysis_code/forge_host_protocol/alysis-code.schema.json": '{"type":"object"}',
+        "src/alysis_code/assets/owl/ascii/f-000.txt": "owl frame\n",
     }
     for name, content in files.items():
         path = source / name

@@ -117,20 +117,6 @@ def parse_failure_category(category: FailureCategory | str | None) -> FailureCat
         return None
 
 
-def empty_failure_category_counts() -> dict[str, int]:
-    return {category.value: 0 for category in FailureCategory}
-
-
-def increment_failure_category_count(
-    counts: dict[str, int],
-    category: FailureCategory | str | None,
-) -> None:
-    parsed = parse_failure_category(category)
-    if parsed is None:
-        return
-    counts[parsed.value] = int(counts.get(parsed.value, 0) or 0) + 1
-
-
 def is_provider_throttling_error(error: Any) -> bool:
     status_code = _extract_status_code_from_chain(error)
     if status_code == 429:
@@ -226,7 +212,7 @@ def classify_failure_category(error: Any) -> FailureCategory:
     """Map an arbitrary exception onto a :class:`FailureCategory`.
 
     Reuses the existing provider classifiers so the diagnostic vocabulary stays
-    consistent across the chat/run path, Forge workers.
+    consistent across the chat/run path.
     Ordering reflects specificity: throttling (HTTP 429 / rate-limit markers) and
     infra-unavailability are checked before generic provider-unavailability, and a
     readable-but-non-transient provider status (e.g. 400/401/403/404) is reported as

@@ -10,12 +10,10 @@ test("workspace trust allows safe setup and readonly placeholders in untrusted w
   assert.equal(evaluateWorkspaceTrust(false, "readonlyPlaceholder").allowed, true);
 });
 
-test("workspace trust blocks Forge and mutating actions in untrusted workspaces", () => {
-  assert.equal(evaluateWorkspaceTrust(false, "forgePlan").allowed, false);
-  assert.equal(evaluateWorkspaceTrust(false, "forgeExecute").allowed, false);
+test("workspace trust blocks mutating actions in untrusted workspaces", () => {
   assert.equal(evaluateWorkspaceTrust(false, "mutatingAction").allowed, false);
 });
 
 test("workspace trust allows all scaffold actions in trusted workspaces", () => {
-  assert.equal(evaluateWorkspaceTrust(true, "forgeExecute").allowed, true);
+  assert.equal(evaluateWorkspaceTrust(true, "mutatingAction").allowed, true);
 });

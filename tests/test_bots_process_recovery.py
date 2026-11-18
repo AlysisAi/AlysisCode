@@ -147,7 +147,9 @@ def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, 
         assert interrupted["usage"][-1]["status"] == "unknown"
         assert calls == ["Continue with new work"]
         if scheduled:
-            assert store.list_schedules("owner", bot["id"])[0]["state"] == "paused"
+            # The interrupted run may have acted, so nothing retries it: its only run stays.
+            routine = store.list_schedules("owner", bot["id"])[0]
+            assert routine["state"] == "ended" and routine["retry"] is None
             assert len(store.schedule_runs("owner", bot["id"], schedule["id"])["runs"]) == 1
         files = store.list_files("owner", bot["id"])
         assert len(files) == 1

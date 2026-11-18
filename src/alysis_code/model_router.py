@@ -15,7 +15,6 @@ ROLE_COMPACTOR = "compactor"
 ROLE_ROUTER = "router"
 # Answers approvals in "Approve for me" (auto) mode; defaults to the chat's own model.
 ROLE_APPROVAL_REVIEW = "approval_review"
-PREFER_CONTEXT_FORGE = "forge"
 
 ROLE_ENV_VARS: dict[str, str] = {
     ROLE_CODING: "ALYSIS_MODEL_CODING",
@@ -58,19 +57,6 @@ def _role_models_from_cfg(cfg: AppConfig) -> dict[str, str]:
     return out
 
 
-def _forge_role_models_from_cfg(cfg: AppConfig) -> dict[str, str]:
-    raw = cfg.extra_fields.get("forge_role_models") if isinstance(cfg.extra_fields, dict) else None
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[str, str] = {}
-    for key, value in raw.items():
-        role = str(key).strip().lower()
-        model = str(value).strip()
-        if role and model:
-            out[role] = model
-    return out
-
-
 def _allowed_model_for_active_profile(cfg: AppConfig, candidate: str) -> str:
     """Keep auth-profile role overrides inside the connected account catalog."""
 
@@ -100,7 +86,6 @@ def resolve_model_for_role(
     role: str,
     plan: dict[str, Any] | None = None,
     fallback_to_default: bool = True,
-    prefer_context: str = "default",
 ) -> str:
     role_key = role.strip().lower()
     if role_key not in ROLE_ENV_VARS:
@@ -116,15 +101,6 @@ def resolve_model_for_role(
     if plan_model:
         return plan_model
 
-    if prefer_context == PREFER_CONTEXT_FORGE:
-        forge_cfg_models = _forge_role_models_from_cfg(cfg)
-        forge_cfg_model = _allowed_model_for_active_profile(
-            cfg,
-            forge_cfg_models.get(role_key) or "",
-        )
-        if forge_cfg_model:
-            return forge_cfg_model
-
     cfg_models = _role_models_from_cfg(cfg)
     cfg_model = _allowed_model_for_active_profile(cfg, cfg_models.get(role_key) or "")
     if cfg_model:
@@ -136,7 +112,6 @@ def resolve_model_for_role(
             role=ROLE_CODING,
             plan=plan,
             fallback_to_default=fallback_to_default,
-            prefer_context=prefer_context,
         )
 
     if fallback_to_default:

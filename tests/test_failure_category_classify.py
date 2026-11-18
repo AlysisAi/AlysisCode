@@ -2,7 +2,7 @@
 
 These lock the observability-spine contract: an arbitrary exception is mapped onto
 exactly one real :class:`FailureCategory` (never the old ``"llm_error"`` literal), so
-the diagnostic vocabulary joins across the chat/run path and Forge workers.
+the diagnostic vocabulary joins across the chat/run path and subagents.
 A readable-but-permanent provider status (auth / bad-request / model) is
 reported as ``PROVIDER_ERROR`` and kept distinct from transient outages and from
 genuine agent-implementation failures.
@@ -84,8 +84,7 @@ def test_classify_failure_category(error: Exception, expected: FailureCategory) 
 
 
 def test_classify_missing_or_blank_signal_defaults_to_implementation_failed() -> None:
-    # The swarm worker resolves its generic failure default through this
-    # classifier; absent or content-free signals must stay implementation-side.
+    # Absent or content-free failure signals must stay implementation-side.
     assert classify_failure_category(None) is FailureCategory.IMPLEMENTATION_FAILED
     assert classify_failure_category("") is FailureCategory.IMPLEMENTATION_FAILED
     assert classify_failure_category("   ") is FailureCategory.IMPLEMENTATION_FAILED

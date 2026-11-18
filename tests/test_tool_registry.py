@@ -140,12 +140,9 @@ def test_report_blocker_is_exposed_only_to_eligible_top_level_runtimes(
 ) -> None:
     cases = (
         (RuntimeKind.ONE_SHOT, 0, True, True),
-        (RuntimeKind.FORGE_EXEC, 0, True, True),
         (RuntimeKind.INTERACTIVE_CHAT, 0, True, True),
         (RuntimeKind.ONE_SHOT, 0, False, False),
         (RuntimeKind.SUBAGENT, 1, True, False),
-        (RuntimeKind.SWARM_WORKER, 0, True, False),
-        (RuntimeKind.CONFLICT_AUTO_RESOLVE, 0, True, False),
     )
 
     for index, (runtime_kind, subagent_depth, enabled, expected) in enumerate(cases):
@@ -159,7 +156,7 @@ def test_report_blocker_is_exposed_only_to_eligible_top_level_runtimes(
             mode="auto",
             yes=True,
             non_interactive=True,
-            one_shot_execution=runtime_kind in {RuntimeKind.ONE_SHOT, RuntimeKind.FORGE_EXEC},
+            one_shot_execution=runtime_kind == RuntimeKind.ONE_SHOT,
             completion_gate_tools_enabled=enabled,
             subagent_depth=subagent_depth,
             runtime_kind=runtime_kind,

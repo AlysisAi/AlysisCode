@@ -518,9 +518,6 @@ def _resume_chat_session(
         resume_cfg.step_budget_policy = normalize_step_budget_policy(
             getattr(resume_cfg, "step_budget_policy", "autonomous")
         )
-    stored_task_max_steps = _resume_optional_positive_int(start_payload.get("task_max_steps"))
-    if stored_task_max_steps is not None:
-        resume_cfg.task_max_steps = stored_task_max_steps
     stored_subagent_max_steps = _resume_optional_positive_int(
         start_payload.get("subagent_max_steps")
     )

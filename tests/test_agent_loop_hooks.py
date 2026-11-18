@@ -974,7 +974,7 @@ def test_pre_tool_hook_runtime_kinds_filter_skips_mismatched_hook(
                             {
                                 "type": "command",
                                 "command": "pre-tool-hook",
-                                "runtimeKinds": ["swarm_worker"],
+                                "runtimeKinds": ["subagent"],
                             }
                         ],
                     }

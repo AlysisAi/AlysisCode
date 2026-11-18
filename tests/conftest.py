@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import faulthandler
-import io
 import json
 import os
-import subprocess
-import sys
 import tempfile
 import threading
-import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,9 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import httpx
 import pytest
 
-from alysis_code.error_text import redact_sensitive_error_text
 from alysis_code.mcp.oauth import build_pkce_challenge
-from alysis_code.mcp.transport_stdio import live_stdio_transport_diagnostics
 
 
 @pytest.fixture
@@ -43,21 +36,6 @@ def configured_hosted_api(monkeypatch: pytest.MonkeyPatch) -> str:
     for name in ("ALYSIS_GATEWAY_URL", "ALYSIS_SUPABASE_URL", "ALYSIS_CLOUD_PUBLIC_KEY"):
         monkeypatch.delenv(name, raising=False)
     return api_url
-
-
-_FORGE_EXECUTION_TEST_FILES = {
-    "test_forge_exec.py",
-    "test_forge_swarm.py",
-    "test_forge_review.py",
-}
-_DEFAULT_FORGE_TEST_TIMEOUT_S = 90.0
-_MCP_STDIO_THREAD_PREFIXES = ("mcp-stdout-", "mcp-stderr-")
-_MCP_STDIO_THREAD_CLEANUP_TIMEOUT_S = 2.0
-_FORGE_WATCHDOG_EXIT_CODE = 124
-_FORGE_WATCHDOG_LOCK_SCAN_LIMIT = 25
-_FORGE_WATCHDOG_WORKTREE_SCAN_LIMIT = 12
-_FORGE_WATCHDOG_CHILD_PROCESS_SCAN_LIMIT = 25
-_FORGE_WATCHDOG_GIT_PROBE_TIMEOUT_S = 0.2
 
 
 @pytest.fixture
@@ -264,240 +242,6 @@ class OAuthFixtureServer:
         }
 
 
-def _forge_test_timeout_seconds() -> float:
-    raw_value = os.environ.get("ALYSIS_FORGE_TEST_TIMEOUT_S")
-    if raw_value is None:
-        return _DEFAULT_FORGE_TEST_TIMEOUT_S
-    try:
-        return float(raw_value)
-    except ValueError:
-        return _DEFAULT_FORGE_TEST_TIMEOUT_S
-
-
-def _forge_test_timeout_file():
-    stream = sys.__stderr__
-    try:
-        stream.fileno()  # type: ignore[union-attr]
-    except (AttributeError, OSError, io.UnsupportedOperation):
-        return tempfile.TemporaryFile(mode="w+", encoding="utf-8")
-    return stream
-
-
-def _live_mcp_stdio_threads() -> list[threading.Thread]:
-    return [
-        thread
-        for thread in threading.enumerate()
-        if thread.is_alive() and thread.name.startswith(_MCP_STDIO_THREAD_PREFIXES)
-    ]
-
-
-def _mcp_thread_diagnostics(threads: list[threading.Thread]) -> str:
-    return ", ".join(
-        f"{thread.name}(ident={thread.ident}, daemon={thread.daemon}, alive={thread.is_alive()})"
-        for thread in threads
-    )
-
-
-def _active_thread_diagnostics() -> list[dict[str, Any]]:
-    return [
-        {
-            "name": thread.name,
-            "ident": thread.ident,
-            "daemon": thread.daemon,
-            "alive": thread.is_alive(),
-        }
-        for thread in threading.enumerate()
-    ]
-
-
-def _redact_watchdog_text(value: object) -> str:
-    return redact_sensitive_error_text(str(value or ""))
-
-
-def _forge_tmp_path(request: pytest.FixtureRequest) -> Path | None:
-    value = getattr(request.node, "funcargs", {}).get("tmp_path")
-    if isinstance(value, Path):
-        return value
-    return None
-
-
-def _forge_run_lock_diagnostics(request: pytest.FixtureRequest) -> list[dict[str, Any]]:
-    root = _forge_tmp_path(request)
-    if root is None or not root.exists():
-        return []
-    locks: list[dict[str, Any]] = []
-    for path in root.rglob("active_execution.lock.json"):
-        entry: dict[str, Any] = {"path": os.fspath(path)}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            entry["read_error"] = str(exc)
-        else:
-            if isinstance(payload, dict):
-                entry["run_id"] = payload.get("run_id")
-                entry["mode"] = payload.get("mode")
-                entry["kind"] = payload.get("kind")
-                entry["pid"] = payload.get("pid")
-                if payload.get("owner_token"):
-                    entry["owner_token"] = "[redacted]"
-        locks.append(entry)
-        if len(locks) >= _FORGE_WATCHDOG_LOCK_SCAN_LIMIT:
-            break
-    return locks
-
-
-def _git_worktree_probe(repo: Path) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "path": os.fspath(repo),
-        "exists": repo.exists(),
-        "git_marker": (repo / ".git").exists(),
-    }
-    if not repo.exists():
-        return entry
-    for key, args in (
-        ("branch", ["rev-parse", "--abbrev-ref", "HEAD"]),
-        ("head", ["rev-parse", "--short", "HEAD"]),
-        ("status", ["status", "--porcelain"]),
-    ):
-        try:
-            completed = subprocess.run(
-                ["git", "-C", os.fspath(repo), *args],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_FORGE_WATCHDOG_GIT_PROBE_TIMEOUT_S,
-            )
-        except Exception as exc:  # noqa: BLE001
-            entry[f"{key}_error"] = str(exc)
-            continue
-        if completed.returncode == 0:
-            entry[key] = _redact_watchdog_text(completed.stdout.strip())
-        else:
-            entry[f"{key}_error"] = _redact_watchdog_text(
-                (completed.stderr or completed.stdout).strip()
-            )
-    return entry
-
-
-def _forge_worktree_diagnostics(request: pytest.FixtureRequest) -> list[dict[str, Any]]:
-    root = _forge_tmp_path(request)
-    if root is None or not root.exists():
-        return []
-    diagnostics: list[dict[str, Any]] = []
-    for container_name in ("worktrees", "conflict_worktrees"):
-        for container in root.rglob(container_name):
-            if not container.is_dir():
-                continue
-            for task_dir in sorted(path for path in container.iterdir() if path.is_dir()):
-                repo = task_dir / "repo"
-                entry = _git_worktree_probe(repo)
-                entry["kind"] = container_name
-                entry["task_id"] = task_dir.name
-                marker = task_dir / "failed_cleanup.json"
-                if marker.exists():
-                    entry["failed_cleanup_marker"] = os.fspath(marker)
-                diagnostics.append(entry)
-                if len(diagnostics) >= _FORGE_WATCHDOG_WORKTREE_SCAN_LIMIT:
-                    return diagnostics
-    return diagnostics
-
-
-def _child_process_diagnostics() -> list[dict[str, Any]]:
-    proc_root = Path("/proc")
-    if not proc_root.exists():
-        return []
-    current_pid = os.getpid()
-    children: set[int] = set()
-    task_root = proc_root / str(current_pid) / "task"
-    try:
-        task_dirs = [path for path in task_root.iterdir() if path.is_dir()]
-    except OSError:
-        task_dirs = []
-    for task_dir in task_dirs:
-        children_file = task_dir / "children"
-        try:
-            raw_children = children_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        for raw_pid in raw_children.split():
-            try:
-                children.add(int(raw_pid))
-            except ValueError:
-                continue
-            if len(children) >= _FORGE_WATCHDOG_CHILD_PROCESS_SCAN_LIMIT:
-                break
-        if len(children) >= _FORGE_WATCHDOG_CHILD_PROCESS_SCAN_LIMIT:
-            break
-
-    diagnostics: list[dict[str, Any]] = []
-    for child_pid in sorted(children):
-        entry: dict[str, Any] = {"pid": child_pid}
-        status_path = proc_root / str(child_pid) / "status"
-        try:
-            for line in status_path.read_text(encoding="utf-8").splitlines():
-                if line.startswith(("Name:", "State:", "PPid:")):
-                    key, _, value = line.partition(":")
-                    entry[key.lower()] = value.strip()
-        except OSError as exc:
-            entry["status_error"] = str(exc)
-        try:
-            raw_cmdline = (proc_root / str(child_pid) / "cmdline").read_bytes()
-        except OSError as exc:
-            entry["cmdline_error"] = str(exc)
-        else:
-            entry["cmdline"] = " ".join(
-                part.decode("utf-8", errors="replace") for part in raw_cmdline.split(b"\0") if part
-            )
-            entry["cmdline"] = _redact_watchdog_text(entry["cmdline"])
-        diagnostics.append(entry)
-    return diagnostics
-
-
-def _write_forge_watchdog_diagnostics(
-    *,
-    request: pytest.FixtureRequest,
-    timeout_s: float,
-) -> None:
-    stream = sys.__stderr__
-    payload = {
-        "nodeid": request.node.nodeid,
-        "timeout_s": timeout_s,
-        "active_threads": _active_thread_diagnostics(),
-        "child_processes": _child_process_diagnostics(),
-        "live_mcp_stdio_transports": live_stdio_transport_diagnostics(),
-        "run_locks": _forge_run_lock_diagnostics(request),
-        "worktrees": _forge_worktree_diagnostics(request),
-    }
-    stream.write("\n=== Alysis Code Forge test watchdog timeout ===\n")
-    stream.write(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
-    stream.write("=== Python stack traces ===\n")
-    stream.flush()
-    faulthandler.dump_traceback(file=stream, all_threads=True)
-    stream.flush()
-
-
-def _start_forge_test_watchdog(
-    *,
-    request: pytest.FixtureRequest,
-    timeout_s: float,
-) -> threading.Event:
-    done = threading.Event()
-
-    def watchdog() -> None:
-        if done.wait(timeout_s):
-            return
-        _write_forge_watchdog_diagnostics(request=request, timeout_s=timeout_s)
-        os._exit(_FORGE_WATCHDOG_EXIT_CODE)
-
-    thread = threading.Thread(
-        target=watchdog,
-        name=f"forge-test-watchdog:{request.node.name}",
-        daemon=True,
-    )
-    thread.start()
-    return done
-
-
 @pytest.fixture(autouse=True)
 def block_live_ddgs_network(monkeypatch: pytest.MonkeyPatch):
     """Structural guard: the keyless ddgs web-search backend is ready by default,
@@ -530,59 +274,6 @@ def reset_keyring_observations():
     _reset()
     yield
     _reset()
-
-
-@pytest.fixture(autouse=True)
-def forge_execution_test_timeout(request: pytest.FixtureRequest):
-    path = getattr(request, "path", None)
-    if path is None or path.name not in _FORGE_EXECUTION_TEST_FILES:
-        yield
-        return
-    timeout_s = _forge_test_timeout_seconds()
-    if timeout_s <= 0:
-        yield
-        return
-    timeout_file = _forge_test_timeout_file()
-    watchdog_done = _start_forge_test_watchdog(request=request, timeout_s=timeout_s)
-    faulthandler.dump_traceback_later(timeout_s + 5, repeat=False, file=timeout_file, exit=True)
-    try:
-        yield
-    finally:
-        watchdog_done.set()
-        faulthandler.cancel_dump_traceback_later()
-        if timeout_file is not sys.__stderr__:
-            timeout_file.close()
-
-
-@pytest.fixture(autouse=True)
-def forge_mcp_stdio_thread_cleanup(request: pytest.FixtureRequest):
-    path = getattr(request, "path", None)
-    if path is None or path.name not in _FORGE_EXECUTION_TEST_FILES:
-        yield
-        return
-    before = {id(thread) for thread in _live_mcp_stdio_threads()}
-    before_transports = {int(item["transport_id"]) for item in live_stdio_transport_diagnostics()}
-    yield
-    deadline = time.monotonic() + _MCP_STDIO_THREAD_CLEANUP_TIMEOUT_S
-    leaked: list[threading.Thread] = []
-    leaked_transports: list[dict[str, Any]] = []
-    while True:
-        leaked = [thread for thread in _live_mcp_stdio_threads() if id(thread) not in before]
-        leaked_transports = [
-            item
-            for item in live_stdio_transport_diagnostics()
-            if int(item["transport_id"]) not in before_transports
-        ]
-        if (not leaked and not leaked_transports) or time.monotonic() >= deadline:
-            break
-        time.sleep(0.02)
-    assert not leaked, "Forge test leaked MCP stdio reader thread(s): " + _mcp_thread_diagnostics(
-        leaked
-    )
-    assert not leaked_transports, (
-        "Forge test leaked MCP stdio transport/process state: "
-        + json.dumps(leaked_transports, sort_keys=True)
-    )
 
 
 class _OAuthFixtureHandler(BaseHTTPRequestHandler):

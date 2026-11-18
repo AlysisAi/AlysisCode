@@ -2,16 +2,11 @@
 
 Use picker_spec() with the TUI's existing generic picker; selection never emits
 submit/prefill, edits a draft, creates a turn, or owns plan contents. Keep one
-controller per session. Normal-chat /plan can show this picker; Forge /plan must
-retain its existing tasks/markdown/edit picker. A separate return action may use
-this controller while Forge is active.
+controller per session. /plan and /planning show this picker.
 
 The injected dispatcher must reserve the chat's serialized idle boundary until
 work returns, then publish the returned outcome. A busy flag alone is unsafe.
 apply_persona must call _apply_chat_persona(permission_ceiling=...) at that boundary.
-forge_allowed is a mandatory conservative policy/approval decision: the existing
-_enter_forge_mode writes artifacts before any session write-approval check. Never
-supply True merely because a workspace exists or a session uses review/auto.
 """
 
 from __future__ import annotations
@@ -23,7 +18,7 @@ from typing import Literal
 
 from ...personas import clamp_persona_exec_mode
 
-Choice = Literal["architect", "forge", "return"]
+Choice = Literal["architect", "return"]
 
 
 @dataclass(frozen=True)
@@ -31,7 +26,6 @@ class PlanningState:
     owner: object = field(repr=False)
     persona: str = "code"
     mode: str = "review"
-    ui_mode: str = "chat"
     personas_enabled: bool = True
     # Explicit custom persona scopes (including an empty deny-all scope) cannot safely be widened by replacing them
     # with Architect's Markdown scope. User allow_write_globs stay backend-owned.
@@ -51,17 +45,9 @@ class PlanningController:
         read_state: Callable[[], PlanningState],
         dispatch: Callable[[Callable[[], PlanningOutcome]], None],
         apply_persona: Callable[..., None],
-        enter_forge: Callable[[], bool],
-        leave_forge: Callable[[], None],
-        forge_allowed: Callable[[], bool] = lambda: False,
     ) -> None:
         self.read_state, self.dispatch = read_state, dispatch
-        self.apply_persona, self.enter_forge, self.leave_forge = (
-            apply_persona,
-            enter_forge,
-            leave_forge,
-        )
-        self.forge_allowed = forge_allowed
+        self.apply_persona = apply_persona
         self._lock = RLock()
         self._prior: PlanningState | None = None
         self._applied: PlanningState | None = None
@@ -77,19 +63,12 @@ class PlanningController:
         if state.mode not in {"readonly", "review", "auto", "fullaccess"}:
             return "Current permissions are unknown; inspect Permissions before changing planning mode."
         if choice == "architect":
-            if state.ui_mode != "chat":
-                return "Leave Forge with Return or /back before switching persona."
             if not state.personas_enabled:
                 return "Persona modes are disabled."
             if state.persona == "architect":
                 return "Already planning in this chat."
             if state.persona_write_globs is not None:
                 return "Custom write scope active. Change it with /persona."
-        elif choice == "forge":
-            if state.ui_mode == "forge":
-                return "Already in Forge. Use /plan to view the plan."
-            if state.mode == "readonly":
-                return "Unavailable in readonly mode; Forge writes files."
         elif choice == "return":
             prior = self.return_state
             if prior is None:
@@ -119,20 +98,12 @@ class PlanningController:
                 "label": "Architect",
                 "value": "architect",
                 "description": "Plan in chat. Markdown edits only; permissions apply.",
-                "current": state.persona == "architect" and state.ui_mode == "chat",
-            },
-            {
-                "label": "Forge",
-                "value": "forge",
-                "description": "Open structured planning with write approval.",
-                "current": state.ui_mode == "forge",
+                "current": state.persona == "architect",
             },
             {
                 "label": f"Return to {prior.persona}" if prior else "Return",
                 "value": "return",
-                "description": "Leave Forge without final save or validation."
-                if state.ui_mode == "forge"
-                else "Keep saved plans and stricter permissions.",
+                "description": "Keep saved plans and stricter permissions.",
                 "current": False,
             },
         ]
@@ -166,30 +137,16 @@ class PlanningController:
                 reason = self._unavailable(choice, state)
                 if reason:
                     return PlanningOutcome("unavailable", reason)
-                if choice == "forge" and not self.forge_allowed():
-                    return PlanningOutcome(
-                        "unavailable",
-                        "Forge artifact writes were not authorized. Current mode and plan are unchanged.",
-                    )
                 prior = self.return_state
                 if choice == "architect":
                     self.apply_persona(persona="architect", permission_ceiling=state.mode)
-                elif choice == "forge":
-                    if not self.enter_forge():
-                        return PlanningOutcome(
-                            "failed",
-                            "Forge did not enter planning. Inspect its existing error output; no planner turn was started.",
-                        )
                 else:
                     assert prior is not None
-                    if state.ui_mode == "forge":
-                        self.leave_forge()  # Existing /back, not /done or /execute.
                     if state.persona != prior.persona or state.mode != prior.mode:
                         self.apply_persona(persona=prior.persona, permission_ceiling=prior.mode)
                     now = self.read_state()
                     if (
-                        now.ui_mode != "chat"
-                        or now.persona != prior.persona
+                        now.persona != prior.persona
                         or clamp_persona_exec_mode(now.mode, prior.mode) != now.mode
                     ):
                         return PlanningOutcome(
@@ -204,9 +161,7 @@ class PlanningController:
                         f"Returned to {now.persona} ({now.mode}). Existing plan content is retained.",
                     )
                 now = self.read_state()
-                if (
-                    choice == "architect" and (now.persona != "architect" or now.ui_mode != "chat")
-                ) or (choice == "forge" and now.ui_mode != "forge"):
+                if now.persona != "architect":
                     return PlanningOutcome(
                         "failed",
                         "Planning mode was not confirmed by the backend. Refresh current state before retrying.",
@@ -224,7 +179,7 @@ class PlanningController:
                     )
                 return PlanningOutcome(
                     "applied",
-                    f"Planning active: {now.ui_mode} / {now.persona} ({now.mode}). Your plan stays in this session. Select Return explicitly to leave planning.",
+                    f"Planning active: {now.persona} ({now.mode}). Your plan stays in this session. Select Return explicitly to leave planning.",
                 )
             except Exception:
                 return PlanningOutcome(

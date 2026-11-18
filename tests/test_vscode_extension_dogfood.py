@@ -296,14 +296,6 @@ def _health_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "session.create",
         "chat.send",
         "run.start",
-        "forge.plan",
-        "forge.executePreview",
-        "forge.swarm.start",
-        "forge.swarm.resume",
-        "forge.swarm.list",
-        "forge.swarm.status",
-        "forge.swarm.result",
-        "forge.swarm.cancel",
         "mcp.auth.login.start",
         "mcp.auth.login.status",
         "mcp.auth.login.cancel",
@@ -327,20 +319,6 @@ def _health_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "capabilities": {
             "methods": methods,
             "features": {
-                "forge": {
-                    "swarm": {
-                        "supported": True,
-                        "cancellation": "cooperative_checkpoint_cancellation",
-                        "merge_behavior": "review_only_per_task_apply_discard",
-                        "workspace_trust_required": True,
-                        "approvals": {"yes_auto_approval": False},
-                    },
-                    "cancel": {"supported": False},
-                    "execute": {
-                        "supported_modes": ["review"],
-                        "unsafe_modes": {"supported": False},
-                    },
-                },
                 "management": {
                     "methods": {
                         "mcp.auth.login.start": {"supported": True},
@@ -364,16 +342,6 @@ def _health_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
                         }
                     },
                     "hooks": {"watch": {"supported": False}},
-                },
-                "resumable_swarm": {
-                    "supported": True,
-                    "durable": True,
-                    "explicit_resume": True,
-                    "fresh_permission_fingerprint_required": True,
-                    "fenced_worker_leases": True,
-                    "restart_recovery": True,
-                    "atomic_cancellation": True,
-                    "exactly_once_usage_events": True,
                 },
                 "managed_browser": {
                     "supported": True,
@@ -484,7 +452,9 @@ def test_validate_bridge_health_rejects_unsafe_advertised_features(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = _health_payload()
-    payload["capabilities"]["features"]["forge"]["swarm"]["cancellation"] = "hard"
+    payload["capabilities"]["features"]["management"]["mcp"]["auth_login"][
+        "authorization_code_in_protocol"
+    ] = True
     raw = json.dumps(payload)
 
     def fake_run_command(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -500,7 +470,7 @@ def test_validate_bridge_health_rejects_unsafe_advertised_features(
 
     monkeypatch.setattr(dogfood, "run_command", fake_run_command)
 
-    with pytest.raises(dogfood.DogfoodError, match="forge\\.swarm"):
+    with pytest.raises(dogfood.DogfoodError, match="authorization codes"):
         dogfood.validate_bridge_health(["alysis"], {})
 
 
@@ -1063,17 +1033,8 @@ def test_manual_real_provider_report_has_stable_required_checks(tmp_path: Path) 
     assert "paste_image" in required_ids
     assert "trace_lifecycle" in required_ids
     assert "terminals_lifecycle" in required_ids
-    assert "slash_plan" in required_ids
-    assert "forge_show_status" in required_ids
-    assert "assistant_show_update" in required_ids
-    assert "goal_show_update" in required_ids
-    assert "task_show_update" in required_ids
-    assert "execute_preview" in required_ids
-    assert "execute_plan_review_mode" in required_ids
     assert "diffs_artifacts" in required_ids
     assert "manage_tree_domains" in required_ids
-    assert "forge_exec_unsupported_warning" in required_ids
-    assert "forge_plan_regenerate" in required_ids
     assert "mcp_oauth_local_lifecycle" in required_ids
     assert "hooks_watch_not_advertised" in required_ids
     assert "active_cancellation_cooperative" in required_ids
@@ -1104,7 +1065,7 @@ def test_manual_real_provider_report_has_stable_required_checks(tmp_path: Path) 
     assert "`managed_runtime_clean_install`" in checklist
     assert "`normal_chat`" in checklist
     assert "`run_task`" in checklist
-    assert "`forge_show_status`" in checklist
+    assert "`diffs_artifacts`" in checklist
     assert "`trace_lifecycle`" in checklist
     assert "manual_steps_written" in checklist
     assert "<production-dogfood.json>" in checklist
@@ -1151,10 +1112,7 @@ def test_manual_provider_check_waiver_policy_partitions_every_required_check() -
     assert (
         manual_validator.NON_WAIVABLE_CHECK_IDS | manual_validator.WAIVABLE_CHECK_IDS
     ) == required_ids
-    assert manual_validator.WAIVABLE_CHECK_IDS == {
-        "mcp_oauth_local_lifecycle",
-        "run_swarm_capability_gate",
-    }
+    assert manual_validator.WAIVABLE_CHECK_IDS == {"mcp_oauth_local_lifecycle"}
 
 
 def test_manual_provider_report_rejects_all_checks_not_applicable() -> None:

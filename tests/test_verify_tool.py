@@ -1948,7 +1948,7 @@ def test_verify_run_rejects_divergent_override_in_managed_session(
 
     with pytest.raises(
         verify_gate_mod.VerifyError,
-        match="Managed verification commands are locked to the authoritative Forge command set.",
+        match="Managed verification commands are locked to the authoritative command set.",
     ):
         tools["verify_run"].run({"commands": [requested_command]})
 

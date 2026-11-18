@@ -294,22 +294,25 @@ def _pdf_text(body: bytes, *, truncated: bool) -> str:
         import pypdfium2 as pdfium
     except ImportError as e:  # the documents extra is not installed
         raise WebFetchError("Reading PDFs is not available here.", recoverable=True) from e
-    try:
-        document = pdfium.PdfDocument(body)
-    except Exception as e:  # noqa: BLE001 - any parser failure is this file's problem
-        raise WebFetchError("This PDF could not be opened.", recoverable=True) from e
-    pages: list[str] = []
-    try:
-        for index in range(min(len(document), _PDF_MAX_PAGES)):
-            page = document[index]
-            text_page = page.get_textpage()
-            try:
-                pages.append(text_page.get_text_range())
-            finally:
-                text_page.close()
-                page.close()
-    finally:
-        document.close()
+    from ..documents import PDFIUM_LOCK
+
+    with PDFIUM_LOCK:
+        try:
+            document = pdfium.PdfDocument(body)
+        except Exception as e:  # noqa: BLE001 - any parser failure is this file's problem
+            raise WebFetchError("This PDF could not be opened.", recoverable=True) from e
+        pages: list[str] = []
+        try:
+            for index in range(min(len(document), _PDF_MAX_PAGES)):
+                page = document[index]
+                text_page = page.get_textpage()
+                try:
+                    pages.append(text_page.get_text_range())
+                finally:
+                    text_page.close()
+                    page.close()
+        finally:
+            document.close()
     return "\n\n".join(text.strip() for text in pages if text.strip())
 
 

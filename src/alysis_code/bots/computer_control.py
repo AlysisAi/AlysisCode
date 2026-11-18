@@ -31,6 +31,11 @@ class ControlRequest(Input):
 
 
 class ControlHandoff(Input):
+    kind: Literal["human_check", "code", "sign_in", "permission", "other"] = Field(
+        description="What the person must do: human_check (a CAPTCHA or are-you-human check), "
+        "code (a one-time code sent to them), sign_in (signing in to a site), permission (a "
+        "permission prompt only they may answer), other (another step only they can do)."
+    )
     reason: str = Field(min_length=1, max_length=300)
 
 
@@ -705,8 +710,11 @@ class ComputerControls:
             )
         return {"state": "controlling", "sequence": grant.sequence}
 
-    def offer(self, task, reason):
-        """A Bot can request a handoff, but cannot grant itself human input."""
+    def offer(self, task, reason, help=None):
+        """A Bot can request a handoff, but cannot grant itself human input.
+
+        ``help`` says what the person is asked for ({kind, site, site_name}), from the owl's
+        tool call and its browser's page; the app words the card from it."""
         with self._operations.hold(task["bot_id"]):
             view, claimed, _ = self.views.current(self.owner, task["bot_id"])
             if not view or not view.human_input or not view.alive() or claimed != task["id"]:
@@ -731,7 +739,10 @@ class ComputerControls:
                             ),
                         )
                         self.store._event(
-                            db, task["id"], "computer_control_requested", {"message": reason}
+                            db,
+                            task["id"],
+                            "computer_control_requested",
+                            {"message": reason, **({"help": help} if help else {})},
                         )
                 except BaseException:
                     self.views.fence(self.owner, task["bot_id"], False)

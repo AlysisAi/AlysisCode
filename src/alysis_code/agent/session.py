@@ -132,7 +132,7 @@ from ..llm.provider_limits import provider_retry_snapshot_values
 from ..llm.types import LLMUsage, UsageConfidence, UsageSource
 from ..mcp import github_repository_policy as github_policy
 from ..mcp.config import load_resolved_mcp_config
-from ..mcp.manager import ForgeTaskScopedMcpManager, McpManager, create_mcp_manager
+from ..mcp.manager import McpManager, create_mcp_manager
 from ..memory_evidence import strip_memory_metadata
 from ..model_metadata_policy import ActiveModelRef, evaluate_active_model_metadata_policy
 from ..model_registry import ModelRegistry, resolve_model_provider_key
@@ -1084,7 +1084,7 @@ class AgentSession:
     memory_managed_externally: bool = field(default=False, init=False, repr=False)
     runtime_kind: RuntimeKind = RuntimeKind.INTERACTIVE_CHAT
     prompt_cache_stream_key: str | None = None
-    mcp_manager: McpManager | ForgeTaskScopedMcpManager | None = None
+    mcp_manager: McpManager | None = None
     terminal_manager: TerminalManager | None = None
     durable_service_manager: DurableServiceManager | None = None
     persistent_service_registry: PersistentServiceRegistry | None = None
@@ -2860,7 +2860,7 @@ class AgentSession:
             except Exception as exc:
                 _terminal_evidence("unknown", "failed")
                 # Single authoritative terminal-failure boundary: every caller (one-shot
-                # run, interactive chat, Forge workers, subagents) routes turns through
+                # run, interactive chat, subagents) routes turns through
                 # here, so one durable, redacted record makes a crashed build
                 # reconstructable from artifacts alone. Re-raise unchanged afterwards.
                 if (
@@ -3322,7 +3322,7 @@ def create_session(
     workspace_binding: WorkspaceBinding | None = None,
     active_workdir_relpath_override: str | None = None,
     runtime_kind: RuntimeKind | str | None = None,
-    mcp_manager: McpManager | ForgeTaskScopedMcpManager | None = None,
+    mcp_manager: McpManager | None = None,
     session_source: str = "startup",
     session_source_metadata: dict[str, Any] | None = None,
     execution_deadline: ExecutionDeadline | None = None,
@@ -3809,13 +3809,12 @@ def create_session(
 
     tool_output_offloader: ToolOutputOffloader | None = None
     if tool_output_offload_enabled:
-        workspace_artifacts_enabled = resolved_runtime_kind != RuntimeKind.SWARM_WORKER
         tool_output_offloader = ToolOutputOffloader(
             artifact_layout=store.session_artifact_layout,
             workspace_root=root,
             threshold_chars=compaction_settings.tool_output_offload_threshold_chars,
             preview_chars=compaction_settings.tool_output_preview_chars,
-            workspace_artifacts_enabled=workspace_artifacts_enabled,
+            workspace_artifacts_enabled=True,
         )
     system_prompt = prompt_context.system_prompt
     system_prompt_sha256 = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
@@ -3977,7 +3976,6 @@ def create_session(
             "runtime_kind": resolved_runtime_kind.value,
             "max_steps": max_steps,
             "step_budget_policy": session_cfg.step_budget_policy,
-            "task_max_steps": session_cfg.task_max_steps,
             "subagent_max_steps": session_cfg.subagent_max_steps,
             "model": session_cfg.model,
             "prompt_guidance_profile": prompt_context.prompt_guidance_profile,

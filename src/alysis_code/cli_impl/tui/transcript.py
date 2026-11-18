@@ -15,8 +15,6 @@ import threading
 import time
 from collections.abc import Callable
 
-from .forge_status import forge_status_bucket, forge_status_is_terminal
-
 # (role, text) — role drives styling in the app: "user" | "assistant" | "reasoning"
 # | "trace" | "patch" | "peer_message" (structured JSON) | "tool_output"
 # | "error" | "warn" | "info" | "system".
@@ -46,19 +44,6 @@ class TuiTranscript:
         self._reasoning_block_ids: dict[int, str] = {}
         self._reasoning_secs: dict[int, int] = {}
         self._trace_level = "compact"
-        # Live Forge execution view: a task table + phase/spinner rendered at the
-        # bottom of the transcript while ``/execute plan`` runs the swarm on a
-        # worker thread. ``None`` when no run is active. Shape:
-        #   {"run_id", "tasks": [{"id","title","status"}], "active": str|None,
-        #    "active_map": {task_id: {"started": float, "phase": str,
-        #                             "message": str}},
-        #    "phase": str, "message": str, "started": float, "done": bool}
-        # ``active`` is the MOST-RECENT task the swarm touched (drives the single
-        # bottom phase line, kept for back-compat); ``active_map`` tracks EVERY
-        # currently-running task so the renderer can spin them all and show a
-        # per-task elapsed timer. A task is pruned from ``active_map`` the moment
-        # its status turns terminal (done/failed/obsolete).
-        self._forge: dict[str, object] | None = None
         self._invalidate: Callable[[], None] = invalidate or (lambda: None)
 
     def set_invalidate(self, fn: Callable[[], None]) -> None:
@@ -192,7 +177,7 @@ class TuiTranscript:
     def append_trace(self, line: str) -> None:
         """Append a trace line, coalescing into the previous trace block.
 
-        Consecutive trace lines (e.g. a stream of swarm-progress events) join into
+        Consecutive trace lines (e.g. a stream of progress events) join into
         one multi-line entry instead of becoming separate blocks — the renderer
         puts a blank spacer *between* entries, so without coalescing a busy run
         would be sprayed across the pane."""
@@ -212,9 +197,6 @@ class TuiTranscript:
             self.entries.append(("user", text))
             self._assistant_index = None
             self._response_assistant_indices.clear()
-            # A fresh submission ends the prior live Forge view (its final table
-            # stays in scrollback only while it is the latest thing shown).
-            self._forge = None
         self._touch()
 
     # ---- streaming assistant block ----
@@ -407,169 +389,6 @@ class TuiTranscript:
         with self._lock:
             return self._status
 
-    # ---- live Forge execution view ----
-    def forge_begin(self, run_id: str, tasks: list[tuple[str, str, str]]) -> None:
-        """Open the live Forge execution view with the initial task list.
-
-        ``tasks`` is a list of ``(id, title, status)``; statuses then refresh as
-        the swarm runs (``forge_update_statuses``) and on completion
-        (``forge_finish``)."""
-        with self._lock:
-            self._forge = {
-                "run_id": str(run_id or ""),
-                "tasks": [
-                    {"id": str(tid), "title": str(title), "status": str(status or "planned")}
-                    for tid, title, status in tasks
-                ],
-                "active": None,
-                "active_map": {},
-                "phase": "execute",
-                "message": "Starting…",
-                "started": time.monotonic(),
-                "done": False,
-                "ok": True,
-            }
-        self._touch()
-
-    def _forge_reconcile_active_map_locked(self) -> None:
-        """Keep ``active_map`` in step with the current task statuses.
-
-        Adds a per-task start stamp when a task enters a running state (so a
-        status-driven run — not just an event-driven one — gets a live timer),
-        and prunes any task whose status has turned terminal so a finished row
-        stops spinning. Caller holds the lock."""
-        if self._forge is None:
-            return
-        active_map: dict = self._forge["active_map"]  # type: ignore[assignment]
-        for task in self._forge["tasks"]:  # type: ignore[index]
-            tid = task["id"]
-            status = str(task.get("status") or "")
-            if forge_status_is_terminal(status):
-                active_map.pop(tid, None)
-            elif forge_status_bucket(status) == "running" and tid not in active_map:
-                active_map[tid] = {"started": time.monotonic(), "phase": "", "message": ""}
-
-    def forge_update_statuses(self, statuses: dict[str, str]) -> None:
-        """Update task statuses (keyed by task id) from the latest plan snapshot."""
-        with self._lock:
-            if self._forge is None:
-                return
-            for task in self._forge["tasks"]:  # type: ignore[index]
-                new_status = statuses.get(task["id"])
-                if new_status:
-                    task["status"] = str(new_status)
-            self._forge_reconcile_active_map_locked()
-        self._touch()
-
-    def forge_sync_tasks(self, tasks: list[tuple[str, str, str]]) -> None:
-        """Reconcile the live view with the plan on disk: update existing task
-        statuses AND append any new tasks (e.g. ones plan enrichment added mid-run),
-        preserving order so the table never silently drops a real task."""
-        with self._lock:
-            if self._forge is None:
-                return
-            existing = {task["id"]: task for task in self._forge["tasks"]}  # type: ignore[index]
-            for tid, title, status in tasks:
-                row = existing.get(str(tid))
-                if row is not None:
-                    if status:
-                        row["status"] = str(status)
-                else:
-                    new_row = {
-                        "id": str(tid),
-                        "title": str(title),
-                        "status": str(status or "planned"),
-                    }
-                    self._forge["tasks"].append(new_row)  # type: ignore[union-attr]
-                    existing[str(tid)] = new_row
-            self._forge_reconcile_active_map_locked()
-        self._touch()
-
-    def forge_set_active(self, task_id: str | None, phase: str = "", message: str = "") -> None:
-        """Mark the task the swarm is currently working on, plus the phase/message
-        shown on the live status line."""
-        with self._lock:
-            if self._forge is None:
-                return
-            if task_id is not None:
-                tid = str(task_id)
-                self._forge["active"] = tid
-                # Upsert into the live worker set: a first sighting stamps its
-                # start (for the per-task timer); later events only refresh the
-                # phase/message. A terminal task is never (re)added — a late event
-                # after completion must not resurrect a finished row.
-                active_map: dict = self._forge["active_map"]  # type: ignore[assignment]
-                if not forge_status_is_terminal(self._forge_task_status_locked(tid)):
-                    entry = active_map.get(tid)
-                    if entry is None:
-                        entry = {"started": time.monotonic(), "phase": "", "message": ""}
-                        active_map[tid] = entry
-                    if phase:
-                        entry["phase"] = str(phase)
-                    if message:
-                        entry["message"] = str(message)
-            if phase:
-                self._forge["phase"] = str(phase)
-            if message:
-                self._forge["message"] = str(message)
-        self._touch()
-
-    def _forge_task_status_locked(self, task_id: str) -> str:
-        """Current status of ``task_id`` in the live view (''  if unknown).
-        Caller holds the lock."""
-        if self._forge is None:
-            return ""
-        for task in self._forge["tasks"]:  # type: ignore[index]
-            if task["id"] == task_id:
-                return str(task.get("status") or "")
-        return ""
-
-    def forge_finish(self, statuses: dict[str, str], summary: str = "", ok: bool = True) -> None:
-        """Apply final task statuses and mark the run done (table stays visible).
-
-        ``ok`` is the overall outcome (no failed/remaining tasks) — it colours the
-        summary line green vs red so it never contradicts the per-task glyphs."""
-        with self._lock:
-            if self._forge is None:
-                return
-            for task in self._forge["tasks"]:  # type: ignore[index]
-                new_status = statuses.get(task["id"])
-                if new_status:
-                    task["status"] = str(new_status)
-            self._forge["active"] = None
-            self._forge["active_map"] = {}  # run over: no live workers
-            self._forge["done"] = True
-            self._forge["ok"] = bool(ok)
-            self._forge["phase"] = "done"
-            if summary:
-                self._forge["message"] = str(summary)
-        self._touch()
-
-    def forge_clear(self) -> None:
-        with self._lock:
-            self._forge = None
-        self._touch()
-
-    def forge_snapshot(self) -> dict[str, object] | None:
-        """Return a copy of the live Forge view, or ``None`` when inactive."""
-        with self._lock:
-            if self._forge is None:
-                return None
-            return {
-                "run_id": self._forge["run_id"],
-                "tasks": [dict(task) for task in self._forge["tasks"]],  # type: ignore[union-attr]
-                "active": self._forge["active"],
-                "active_map": {
-                    tid: dict(info)
-                    for tid, info in self._forge["active_map"].items()  # type: ignore[union-attr]
-                },
-                "phase": self._forge["phase"],
-                "message": self._forge["message"],
-                "started": self._forge["started"],
-                "done": self._forge["done"],
-                "ok": self._forge.get("ok", True),
-            }
-
     def clear(self) -> None:
         with self._lock:
             self.entries.clear()
@@ -583,7 +402,6 @@ class TuiTranscript:
             self._reasoning_block_ids.clear()
             self._reasoning_secs.clear()
             self._status = None
-            self._forge = None
         self._touch()
 
     def load_history(self, messages: list[dict[str, object]]) -> None:
@@ -609,7 +427,6 @@ class TuiTranscript:
             self._reasoning_block_ids.clear()
             self._reasoning_secs.clear()
             self._status = None
-            self._forge = None
             for message in messages or []:
                 if not isinstance(message, dict):
                     continue

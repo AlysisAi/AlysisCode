@@ -32,10 +32,7 @@ export const SENSITIVE_ALYSIS_SETTINGS = [
   "provider",
   "transport",
   "sandboxProfile",
-  "forgeExecuteMaxSteps",
-  "forgeExecuteNoLog",
   "autoStartBridge",
-  "enableForge",
   "extraCaCerts"
 ] as const;
 
@@ -70,11 +67,8 @@ export interface AlysisConfig {
   provider: string;
   transport: AlysisTransport;
   sandboxProfile: "default" | "strict" | "warn" | "off";
-  forgeExecuteMaxSteps?: number;
-  forgeExecuteNoLog: boolean;
   showStatusBar: boolean;
   autoStartBridge: boolean;
-  enableForge: boolean;
   /** Validated `alysis.extraCaCerts`; empty when unset or rejected. */
   extraCaCerts?: string;
   /**
@@ -190,7 +184,6 @@ export function getAlysisConfig(
   const defaultMode = normalizeMode(read("defaultMode", "review").value);
   const transport = read("transport", "stdio").value === "stdio" ? "stdio" : "stdio";
   const sandboxProfile = normalizeSandboxProfile(read("sandboxProfile", "default").value);
-  const forgeExecuteMaxSteps = normalizePositiveIntegerOverride(read("forgeExecuteMaxSteps", 0).value);
   const provider = String(read("provider", "").value ?? "").trim();
   const parsedConfig: AlysisConfig = {
     cliPath: String(cliPathRead.value ?? "").trim(),
@@ -200,11 +193,8 @@ export function getAlysisConfig(
     provider,
     transport,
     sandboxProfile,
-    forgeExecuteMaxSteps,
-    forgeExecuteNoLog: normalizeBoolean(read("forgeExecuteNoLog", false).value, false),
     showStatusBar: normalizeBoolean(config.get("showStatusBar", true), true),
-    autoStartBridge: normalizeBoolean(read("autoStartBridge", false).value, false),
-    enableForge: normalizeBoolean(read("enableForge", true).value, true)
+    autoStartBridge: normalizeBoolean(read("autoStartBridge", false).value, false)
   };
   // extraCaCerts is read unconditionally so the untrusted-workspace guard applies to it like every
   // other sensitive setting; the http.* half is whatever the host supplied (nothing, standalone).
@@ -550,15 +540,6 @@ function isLoopbackHostname(hostname: string): boolean {
 
 function normalizeBoolean(value: unknown, defaultValue: boolean): boolean {
   return typeof value === "boolean" ? value : defaultValue;
-}
-
-function normalizePositiveIntegerOverride(value: unknown): number | undefined {
-  const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return undefined;
-  }
-  const integer = Math.floor(parsed);
-  return Number.isSafeInteger(integer) ? integer : undefined;
 }
 
 interface SettingRead<T> {

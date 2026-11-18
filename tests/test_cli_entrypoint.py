@@ -195,7 +195,7 @@ from typer.testing import CliRunner
 from alysis_code import cli
 from alysis_code.cli_impl.commands import root
 assert cli.app is root.app
-for args in (["--help"], ["--version"], ["ide-bridge", "--help"], ["forge", "--help"]):
+for args in (["--help"], ["--version"], ["ide-bridge", "--help"]):
     result = CliRunner().invoke(cli.app, args)
     assert result.exit_code == 0, result.output
     assert "alysis_code.cli_impl.commands.cli_surface" not in sys.modules
@@ -232,9 +232,8 @@ import sys
 from typer.testing import CliRunner
 from typer.main import get_group
 from alysis_code.cli_impl.commands import root, ide_bridge
-for name in ("extensions", "mcp", "forge", "sessions", "skills"):
+for name in ("extensions", "mcp", "sessions", "skills"):
     assert "alysis_code.cli_impl.commands." + name not in sys.modules, name
-assert "alysis_code.cli_impl.assets_cli" not in sys.modules
 runner = CliRunner()
 result = runner.invoke(root.app, ["ide-bridge", "--help"])
 assert result.exit_code == 0, result.output
@@ -259,20 +258,19 @@ assert result.exit_code == 17, result.output
 assert calls == ["root", "ide"]
 
 # All existing groups remain discoverable. Single-command groups must remain
-# groups, and nested MCP/Forge commands retain their original paths.
-expected = {"auth", "config", "profile", "update", "sessions", "forge", "server",
+# groups, and nested MCP commands retain their original paths.
+expected = {"auth", "config", "profile", "update", "sessions", "server",
             "ext", "report", "mcp", "skill", "agents", "conventions", "tool",
             "hooks", "sandbox", "ide-bridge"}
-assert expected <= set(get_group(root.app).list_commands(None))
+commands = set(get_group(root.app).list_commands(None))
+assert expected <= commands
+assert "forge" not in commands
 for path in ([name] for name in sorted(expected)):
     result = runner.invoke(root.app, [*path, "--help"])
     assert result.exit_code == 0, (path, result.output, result.exception)
-for path in (["forge", "assets"], ["mcp", "auth"], ["mcp", "prompts"]):
+for path in (["mcp", "auth"], ["mcp", "prompts"]):
     result = runner.invoke(root.app, [*path, "--help"])
     assert result.exit_code == 0, (path, result.output, result.exception)
-from alysis_code.cli_impl.commands.forge import forge_app
-assert root.forge_app is forge_app
-assert len([item for item in forge_app.registered_groups if item.name == "assets"]) == 1
 """
     proc = subprocess.run(
         [sys.executable, "-c", code],
@@ -285,25 +283,10 @@ assert len([item for item in forge_app.registered_groups if item.name == "assets
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def test_cold_host_executor_materializes_complete_canonical_dependencies() -> None:
+def test_cold_cli_keeps_run_agent_and_defers_image_decoding() -> None:
     code = """
 import sys
 from alysis_code import cli
-from alysis_code.cli_impl.forge import build_forge_host_dependency_factory, build_host_task_executor
-from types import ModuleType
-assert "alysis_code.cli_impl.commands.cli_surface" not in sys.modules
-factory = build_forge_host_dependency_factory(cli, runtime_binding_for=lambda request: None)
-assert callable(factory)
-assert "alysis_code.cli_impl.commands.cli_surface" not in sys.modules
-try:
-    build_forge_host_dependency_factory(ModuleType("alysis_code.cli"), runtime_binding_for=lambda request: None)
-except RuntimeError:
-    pass
-else:
-    raise AssertionError("a lookalike module cannot supply execution authority")
-executor = build_host_task_executor(cli)
-assert callable(executor)
-assert build_host_task_executor(cli) is executor
 from alysis_code.cli_impl.chat import _sync_cli_globals
 _sync_cli_globals(cli)
 from alysis_code.cli_impl.chat import loop
@@ -331,19 +314,17 @@ assert "PIL.Image" in sys.modules
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def test_ide_registration_defers_session_and_swarm_execution() -> None:
+def test_ide_registration_defers_session_execution() -> None:
     code = """
 import io, sys
 from alysis_code.ide import stdio_bridge
 bridge = stdio_bridge.StdioBridge(stdin=io.StringIO(), stdout=io.StringIO())
 assert "alysis_code.agent.session" not in sys.modules
-assert "alysis_code.swarm_orchestrator" not in sys.modules
 assert "alysis_code.agent.tools_assembly" not in sys.modules
 
 # First use delegates to the real module, including the injected dependency
 # boundary used by embedders. Arguments, return values and errors are preserved.
 from alysis_code.agent import session
-from alysis_code import swarm_orchestrator
 from alysis_code.agent import browser_start, computer_use_tools, tool_definition, tools_assembly
 from typing import get_type_hints
 assert tool_definition.ToolDef is tools_assembly.ToolDef
@@ -355,9 +336,6 @@ calls = []
 session.create_session = lambda **kwargs: (calls.append(kwargs), sentinel)[1]
 assert bridge._create_session(root=sentinel) is sentinel
 assert calls == [{"root": sentinel}]
-swarm_orchestrator.run_swarm = lambda **kwargs: (calls.append(kwargs), 17)[1]
-assert stdio_bridge.run_swarm(root=sentinel) == 17
-assert calls[-1] == {"root": sentinel}
 def fail(**kwargs):
     raise RuntimeError("execution refused")
 session.create_session = fail
@@ -367,39 +345,6 @@ except RuntimeError as exc:
     assert str(exc) == "execution refused"
 else:
     raise AssertionError("execution errors must propagate")
-
-# Stop arriving during a cold import must prevent entry into the worker,
-# whose setup can mutate a workspace before its own cancellation checkpoint.
-import builtins, threading
-from unittest.mock import patch
-cancelled = threading.Event()
-original_import = builtins.__import__
-imports = []
-def stop_during_import(name, *args, **kwargs):
-    result = original_import(name, *args, **kwargs)
-    if name == "swarm_orchestrator":
-        imports.append(name)
-        cancelled.set()
-    return result
-before = list(calls)
-with patch("builtins.__import__", stop_during_import):
-    try:
-        stdio_bridge.run_swarm(root=sentinel, cancellation_event=cancelled)
-    except stdio_bridge.BridgeCancellationError:
-        pass
-    else:
-        raise AssertionError("Stop during import must prevent worker entry")
-assert imports == ["swarm_orchestrator"]
-assert calls == before
-
-# An already-cancelled request should not even load execution dependencies.
-with patch("builtins.__import__", side_effect=AssertionError("unexpected import")):
-    try:
-        stdio_bridge.run_swarm(root=sentinel, cancellation_event=cancelled)
-    except stdio_bridge.BridgeCancellationError:
-        pass
-    else:
-        raise AssertionError("Stop before import must prevent worker entry")
 """
     proc = subprocess.run(
         [sys.executable, "-c", code],
@@ -421,7 +366,7 @@ assert 'rich.markdown' not in sys.modules
 for module in ('alysis_code.agent_loop', 'alysis_code.agent.session',
                'alysis_code.agent.tools_assembly',
                'alysis_code.ide.health',
-               'alysis_code.ide.stdio_bridge', 'alysis_code.swarm_orchestrator',
+               'alysis_code.ide.stdio_bridge',
                'alysis_code.llm.anthropic_messages',
                'alysis_code.llm.gemini_generate_content'):
     assert module not in sys.modules, module

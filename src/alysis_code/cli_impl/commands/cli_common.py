@@ -28,7 +28,6 @@ from click.core import ParameterSource
 from platformdirs import user_data_dir
 
 from ... import __version__
-from ...assets.index import AssetIndex
 from ...branding import env_get
 from ...clipboard import ClipboardError, paste_clipboard_image
 from ...config import (
@@ -56,12 +55,6 @@ from ...config import (
     save_persisted_profile_key,
     set_config_value,
 )
-from ...conflict_auto_resolver import (
-    attempt_auto_resolve_conflict,
-    bump_conflict_attempt,
-    can_attempt_conflict_auto_resolve,
-    load_conflict_auto_resolve_settings,
-)
 from ...custom_tools import (
     CustomToolCatalogEntry,
     build_custom_tool_session_state,
@@ -69,75 +62,6 @@ from ...custom_tools import (
     project_custom_tools_root,
     trust_project_tool,
     untrust_project_tool,
-)
-from ...execution_shared import (
-    build_execution_reporting_diff as _shared_build_execution_reporting_diff,
-)
-from ...execution_shared import (
-    build_execution_reporting_diff_with_commit_range as _shared_build_execution_reporting_diff_with_commit_range,
-)
-from ...execution_shared import (
-    build_task_execution_instruction as _shared_build_task_execution_instruction,
-)
-from ...execution_shared import (
-    build_task_execution_instruction_bundle as _shared_build_task_execution_instruction_bundle,
-)
-from ...execution_shared import (
-    build_task_local_workspace_reporting_diff as _shared_build_task_local_workspace_reporting_diff,
-)
-from ...execution_shared import (
-    build_workspace_snapshot_reporting_diff as _shared_build_workspace_snapshot_reporting_diff,
-)
-from ...execution_shared import (
-    capture_task_local_workspace_baseline as _shared_capture_task_local_workspace_baseline,
-)
-from ...execution_shared import (
-    cleanup_execution_private_sessions_dir as _shared_cleanup_execution_private_sessions_dir,
-)
-from ...execution_shared import (
-    cleanup_task_local_workspace_baseline as _shared_cleanup_task_local_workspace_baseline,
-)
-from ...execution_shared import (
-    execution_private_sessions_dir as _shared_execution_private_sessions_dir,
-)
-from ...execution_shared import (
-    git_changed_files as _shared_git_changed_files,
-)
-from ...execution_shared import (
-    mirror_selected_knowledge_into_worktree as _shared_mirror_selected_knowledge_into_worktree,
-)
-from ...execution_shared import (
-    prepare_task_execution_knowledge as _shared_prepare_task_execution_knowledge,
-)
-from ...execution_shared import (
-    resolve_managed_task_step_budget as _shared_resolve_managed_task_step_budget,
-)
-from ...execution_shared import (
-    safe_task_file_component as _shared_safe_task_file_component,
-)
-from ...execution_shared import (
-    select_task_image_paths_for_execution as _shared_select_task_image_paths_for_execution,
-)
-from ...execution_shared import (
-    snapshot_runtime_tree as _shared_snapshot_runtime_tree,
-)
-from ...execution_shared import (
-    snapshot_session_logs as _shared_snapshot_session_logs,
-)
-from ...execution_shared import (
-    snapshot_workspace_tree as _shared_snapshot_workspace_tree,
-)
-from ...execution_shared import (
-    write_exec_log_artifacts as _shared_write_exec_log_artifacts,
-)
-from ...execution_shared import (
-    write_execution_budget_artifact as _shared_write_execution_budget_artifact,
-)
-from ...execution_shared import (
-    write_execution_context_artifact as _shared_write_execution_context_artifact,
-)
-from ...execution_shared import (
-    write_patch_from_diff as _shared_write_patch_from_diff,
 )
 from ...extensions.install import (
     EnableResult,
@@ -182,54 +106,9 @@ from ...feedback_report import (
 )
 from ...git_ops import (
     GitOpsError,
-    added_files_since,
-    changed_files_between,
-    checkout_branch,
-    commit_all,
     current_branch,
-    delete_branch,
-    ensure_clean_for_pr,
-    ensure_git_available,
     ensure_git_repo,
-    ensure_not_staged_paths,
-    ensure_not_staged_prefixes,
-    ensure_not_staged_runtime_artifacts,
-    format_patch_stdout,
-    generate_task_branch_name,
-    head_commit,
-    merge_no_ff,
-    stage_all,
     staged_files,
-    unstage_staged_paths,
-    unstage_staged_prefixes,
-    unstage_staged_runtime_artifacts,
-)
-from ...forge import (
-    ForgeError,
-    RunPaths,
-    add_requirement,
-    add_task,
-    append_planner_chat,
-    append_planner_summary,
-    append_transcript_note,
-    attach_asset,
-    create_plan_run,
-    ensure_execution_dirs,
-    ensure_workspace_context_artifacts,
-    finalize_plan,
-    find_task,
-    format_workspace_context_summary_lines,
-    load_current_run_paths,
-    load_plan,
-    now_iso,
-    rebind_run_paths_to_workspace_binding,
-    refresh_current_run_pointer_if_tracking_same_run,
-    refresh_workspace_context_artifacts,
-    requirement_is_execution_ready,
-    requirement_text,
-    save_plan,
-    set_task_status,
-    write_task_report,
 )
 from ...hooks import (
     HookDispatcher,
@@ -250,35 +129,14 @@ from ...interactive_input_guard import (
     is_interactive_prompt_active,
     is_interactive_prompt_terminal_owner,
 )
-from ...knowledge_base import rebuild_knowledge_index, write_issue_entry, write_task_attempt_entry
-from ...knowledge_capture import (
-    RecordingSurface,
-    mark_knowledge_capture_promotion_skipped,
-    persist_execution_knowledge_capture,
-    promote_validated_knowledge_capture,
-)
-from ...knowledge_librarian import (
-    prepare_planner_knowledge as _prepare_planner_knowledge,
-)
-from ...knowledge_librarian import (
-    resolve_knowledge_workspace_root as _resolve_knowledge_workspace_root,
-)
 from ...litellm_static_provider import (
     BUNDLED_MODEL_CATALOG_SOURCE,
     get_bundled_model_catalog_provenance,
 )
 from ...llm_error_display import classify_llm_error_display
 from ...mcp.config import load_resolved_mcp_config
-from ...mcp.forge_scope import (
-    ForgeTaskMcpScope,
-    describe_task_mcp_scope,
-    normalize_task_mcp_scope,
-)
 from ...mcp.manager import (
-    ForgeTaskScopedMcpManager,
     McpManager,
-    build_mcp_execution_context_summary,
-    create_forge_task_scoped_mcp_manager,
     create_mcp_manager,
 )
 from ...mcp.models import ResolvedMcpServer
@@ -295,41 +153,10 @@ from ...mcp.oauth_store import (
     delete_oauth_token_record,
     load_oauth_token_record,
 )
-from ...merge_conflict_reviewer import (
-    capture_merge_conflict_context,
-    list_unmerged_files,
-    review_merge_conflict,
-    try_abort_merge,
-    write_conflict_artifacts,
-)
 from ...model_metadata_utils import parse_non_negative_float, parse_positive_int
 from ...model_router import ROLE_CODING, resolve_model_for_role
-from ...plan_repair import (
-    PlannerRepairReport,
-    apply_plan_status,
-    clarification_goal_key,
-    plan_repair_event_payload,
-    plan_status,
-    record_plan_repair,
-    resolve_plan_repair_policy,
-)
-from ...plan_validation import validate_plan, validate_plan_against_assets
-from ...remote_sync import (
-    RemoteSyncError,
-    ensure_pr_or_mr,
-    get_remote_url,
-    init_remote_record,
-    load_remote_settings_from_env,
-    push_base,
-    push_branch,
-    resolve_provider,
-    truncate_output,
-    write_remote_record,
-)
 from ...repo_scan import scan_workspace
 from ...request_estimation import estimate_request_token_breakdown
-from ...review_gate import ReviewError, review_task
-from ...runtime_artifacts import has_grounded_rust_target_runtime_artifacts
 from ...runtime_kind import RuntimeKind, normalize_runtime_kind
 from ...sandbox_doctor import (
     SandboxDiagnostic,
@@ -373,14 +200,8 @@ from ...skills import (
     validate_skill_bundle,
 )
 from ...step_budget import DEFAULT_CHAT_MAX_STEPS
-from ...swarm_trace import SerializedSwarmTraceSink
-from ...task_readiness import EXECUTION_UNREADY_SCOPE_WARNING
 from ...task_scope import (
-    check_scope,
     is_non_material_untracked_path,
-    list_changed_files_including_untracked,
-    list_untracked_packaging_metadata_paths,
-    normalize_scope_patterns,
 )
 from ...token_budget import compute_input_budget, estimate_tokens
 from ...tools.availability import get_tool_availability, is_tool_unavailable_result
@@ -391,11 +212,8 @@ from ...tools.registry import (
 )
 from ...tools.web_search_runtime import resolve_web_search_runtime_status
 from ...usage_tracker import aggregate_usage_from_session_logs, format_context_percent, format_usd
-from ...verification_repair import TASK_STATUS_COMPLETED_UNVERIFIED
 from ...verify_gate import (
     VerifyError,
-    normalize_verify_mode,
-    resolve_authoritative_task_verify_command_selection,
     resolve_verify_commands,
     run_task_verification,
     verify_run_result_to_payload,
@@ -417,7 +235,6 @@ from ...workspace_binding_ui import (
     resolve_startup_workspace_binding as _resolve_startup_workspace_binding_impl,
 )
 from ...workspace_context import resolve_workspace_context
-from ..assets_cli import assets_app as forge_assets_app
 from . import _patchable
 from ._shared import (
     Mode,
@@ -449,16 +266,6 @@ from .extensions import (
     ext_list,
     ext_search,
     ext_uninstall,
-)
-from .forge import (
-    forge_attach,
-    forge_exec,
-    forge_plan,
-    forge_review,
-    forge_run,
-    forge_show,
-    forge_status,
-    forge_swarm,
 )
 from .hooks import (
     _HOOK_SESSION_SOURCES,
@@ -510,7 +317,6 @@ from .root import (
     conventions_app,
     doctor,
     ext_app,
-    forge_app,
     hooks_app,
     main,
     mcp_app,
@@ -602,233 +408,6 @@ def _table_grid(*args: Any, **kwargs: Any) -> Any:
     return Table.grid(*args, **kwargs)
 
 
-def _forge_bar_text(
-    *,
-    text: str,
-    style: str = "dim",
-    bar_style: str = "bright_black",
-) -> Any:
-    from rich.text import Text
-
-    return Text.assemble(("│ ", bar_style), (str(text or ""), style))
-
-
-def _print_forge_meta(*, console: Console, message: str, style: str = "dim") -> None:
-    console.print(_forge_bar_text(text=message, style=style), highlight=False)
-
-
-def _forge_supports_unicode_glyphs(console: Console) -> bool:
-    # Legacy Windows consoles cannot render box-drawing/bullet glyphs; everything
-    # else is UTF-capable (the CLI reconfigures stdout to UTF-8 on startup), so we
-    # fall back to ASCII only when Rich flags a legacy console or a non-UTF encoding.
-    if bool(getattr(console, "legacy_windows", False)):
-        return False
-    encoding = str(getattr(console, "encoding", "") or "").lower()
-    return "utf" in encoding
-
-
-def _forge_phase_rule(*, console: Console, label: str) -> Any:
-    from rich.rule import Rule
-
-    rule_char = "─" if _forge_supports_unicode_glyphs(console) else "-"
-    title = str(label or "").strip()
-    return Rule(title=title, characters=rule_char, style="bright_black", align="left")
-
-
-def _print_forge_warning_messages(
-    *,
-    console: Console,
-    label: str,
-    warnings: list[str],
-) -> None:
-    for warning in warnings:
-        console.print(
-            _forge_bar_text(
-                text=f"{label}: {warning}",
-                style="yellow",
-                bar_style="yellow",
-            ),
-            highlight=False,
-        )
-
-
-def _print_forge_error(*, console: Console, message: str) -> None:
-    console.print(
-        _forge_bar_text(
-            text=message,
-            style="red",
-            bar_style="red",
-        ),
-        highlight=False,
-    )
-
-
-def _forge_task_status_counts(plan: dict[str, Any]) -> tuple[int, int, int]:
-    from ...swarm_scheduler import canonical_task_status
-
-    tasks = plan.get("tasks") or []
-    if not isinstance(tasks, list):
-        return 0, 0, 0
-
-    done = 0
-    failed = 0
-    remaining = 0
-    done_states = {"done", "already_satisfied", TASK_STATUS_COMPLETED_UNVERIFIED}
-    failure_states = {
-        "failed",
-        "verify_failed",
-        "candidate_rejected",
-        "changes_requested",
-        "merge_conflict",
-        "blocked_integration",
-        "blocked",
-        "interrupted",
-        "cancelled",
-    }
-    non_executable_obsolete_states = {"superseded", "invalidated"}
-    for task in tasks:
-        if not isinstance(task, dict):
-            remaining += 1
-            continue
-        status = canonical_task_status(str(task.get("status") or ""))
-        if status in done_states:
-            done += 1
-        elif status in failure_states:
-            failed += 1
-        elif status in non_executable_obsolete_states:
-            continue
-        else:
-            remaining += 1
-    return done, failed, remaining
-
-
-def _forge_task_status_markup(status: str) -> str:
-    from ...swarm_scheduler import canonical_task_status
-
-    raw = str(status or "").strip()
-    canonical = canonical_task_status(raw)
-    display = raw or canonical or "planned"
-    if canonical in {"done", "completed", "already_satisfied"}:
-        return f"[bold]{display}[/bold]"
-    if canonical == TASK_STATUS_COMPLETED_UNVERIFIED:
-        # Completed, but nothing authoritative checked it — bold like the other
-        # completions, dimmed so the table still shows it is a weaker result.
-        return f"[bold bright_black]{display}[/bold bright_black]"
-    if canonical in {
-        "failed",
-        "verify_failed",
-        "candidate_rejected",
-        "changes_requested",
-        "merge_conflict",
-        "blocked_integration",
-        "blocked",
-        "interrupted",
-        "cancelled",
-    }:
-        return f"[red]{display}[/red]"
-    if canonical in {"in_progress", "running"}:
-        return display
-    if canonical in {"superseded", "invalidated"}:
-        return f"[bright_black]{display}[/bright_black]"
-    return f"[dim]{display}[/dim]"
-
-
-def _forge_task_table(*, title: str = "Forge Tasks") -> Any:
-    from rich import box as rich_box
-
-    return _Table(
-        title=title,
-        box=rich_box.SIMPLE,
-        border_style=STYLE_CHROME,
-        header_style=STYLE_EMPHASIS,
-        title_style="dim",
-        expand=True,
-        padding=(0, 1),
-    )
-
-
-def _forge_task_mcp_scope(task: dict[str, Any]) -> ForgeTaskMcpScope | None:
-    return normalize_task_mcp_scope(
-        task.get("mcp_scope"),
-        warning_prefix=f"Task {str(task.get('id') or '(unknown)')}",
-    )[0]
-
-
-def _forge_task_mcp_summary_label(task: dict[str, Any]) -> str:
-    scope = _forge_task_mcp_scope(task)
-    if scope is None:
-        return "off"
-    if scope.allow_resources and scope.allowed_tools:
-        return "resources+tools"
-    if scope.allow_resources:
-        return "resources"
-    return f"{len(scope.allowed_tools)} tool(s)"
-
-
-def _build_forge_task_scoped_mcp_manager(
-    *,
-    workspace_root: Path,
-    session_id: str,
-    task_scope: ForgeTaskMcpScope | None,
-) -> McpManager | ForgeTaskScopedMcpManager:
-    return create_forge_task_scoped_mcp_manager(
-        workspace_root=workspace_root,
-        session_id=session_id,
-        task_scope=task_scope,
-    )
-
-
-def _build_forge_mcp_execution_context_section(
-    *,
-    task_scope: ForgeTaskMcpScope | None,
-    mcp_manager: McpManager | ForgeTaskScopedMcpManager,
-) -> str:
-    summary = mcp_manager.execution_context_summary()
-    lines = [
-        "## MCP Execution Context",
-        "",
-        f"- Task MCP Scope: {describe_task_mcp_scope(task_scope)}",
-        "- write_scope governs local file mutation. mcp_scope governs remote MCP actions.",
-    ]
-    servers = summary.get("servers")
-    if isinstance(servers, list) and servers:
-        lines.append("- Available MCP Servers:")
-        for raw_entry in servers:
-            if not isinstance(raw_entry, dict):
-                continue
-            server_id = str(raw_entry.get("server_id") or "").strip()
-            if not server_id:
-                continue
-            tool_names = [
-                str(name).strip() for name in raw_entry.get("tool_names") or [] if str(name).strip()
-            ]
-            tool_label = ", ".join(tool_names) if tool_names else "(none)"
-            resources_label = "yes" if raw_entry.get("resources_available") else "no"
-            lines.append(
-                f"- {server_id}: live_tools={tool_label}; generic_resources_available={resources_label}"
-            )
-    else:
-        lines.append("- Available MCP Servers: (none)")
-    return "\n".join(lines)
-
-
-def _augment_workspace_context_with_mcp_execution_context(
-    *,
-    workspace_context: dict[str, Any] | None,
-    workspace_root: Path,
-) -> dict[str, Any] | None:
-    if workspace_context is None:
-        return None
-    payload = dict(workspace_context)
-    mcp_execution_context = build_mcp_execution_context_summary(
-        workspace_root=workspace_root,
-        runtime_kind=RuntimeKind.FORGE_EXEC,
-    )
-    if mcp_execution_context is not None:
-        payload["mcp_execution_context"] = mcp_execution_context
-    return payload
-
-
 def _prompt_ask(*args: Any, **kwargs: Any) -> Any:
     from rich.prompt import Prompt
 
@@ -849,12 +428,6 @@ def _agent_loop_module() -> Any:
     from ... import agent_loop
 
     return agent_loop
-
-
-def run_swarm(*args: Any, **kwargs: Any) -> Any:
-    from ...swarm_orchestrator import run_swarm as run_impl
-
-    return run_impl(*args, **kwargs)
 
 
 def build_tools(*args: Any, **kwargs: Any) -> Any:
@@ -899,50 +472,6 @@ def run_agent(*args: Any, **kwargs: Any) -> Any:
     return _agent_loop_module().run_agent(*args, **kwargs)
 
 
-def _plan_assistant_module() -> Any:
-    from ... import plan_assistant
-
-    return plan_assistant
-
-
-def run_planner_turn(*args: Any, **kwargs: Any) -> Any:
-    return _plan_assistant_module().run_planner_turn(*args, **kwargs)
-
-
-def prepare_planner_knowledge(*args: Any, **kwargs: Any) -> Any:
-    return _prepare_planner_knowledge(*args, **kwargs)
-
-
-def resolve_knowledge_workspace_root(*args: Any, **kwargs: Any) -> Any:
-    return _resolve_knowledge_workspace_root(*args, **kwargs)
-
-
-def apply_plan_update(*args: Any, **kwargs: Any) -> Any:
-    return _plan_assistant_module().apply_plan_update(*args, **kwargs)
-
-
-def apply_guarded_planner_plan_update(*args: Any, **kwargs: Any) -> Any:
-    return _plan_assistant_module().apply_guarded_planner_plan_update(*args, **kwargs)
-
-
-def summarize_plan_update(*args: Any, **kwargs: Any) -> Any:
-    return _plan_assistant_module().summarize_plan_update(*args, **kwargs)
-
-
-def _plan_reconciliation_module() -> Any:
-    from ... import plan_reconciliation
-
-    return plan_reconciliation
-
-
-def reconcile_plan_with_workspace(*args: Any, **kwargs: Any) -> Any:
-    return _plan_reconciliation_module().reconcile_plan_with_workspace(*args, **kwargs)
-
-
-def summarize_plan_reconciliation(*args: Any, **kwargs: Any) -> Any:
-    return _plan_reconciliation_module().summarize_plan_reconciliation(*args, **kwargs)
-
-
 def _compaction_conversation_module() -> Any:
     from ...compaction import conversation_compactor
 
@@ -977,7 +506,6 @@ def _make_rich_surface(*, console: Console, show_status_line: bool = True) -> An
     return RichSurface(console=console, show_status_line=show_status_line)
 
 
-_SCOPE_MODES = {"off", "warn", "strict"}
 _CHAT_MODES = {m.value for m in Mode}
 _CHAT_TRACE_LEVELS = {"off", "compact", "full"}
 _CHAT_RESUME_MAX_CANDIDATES = 50
@@ -1022,8 +550,7 @@ _HOME_ACTION_ALIASES = {
     "2": "run",
     "3": "setup",
     "4": "doctor",
-    "5": "plan",
-    "6": "quit",
+    "5": "quit",
 }
 
 
@@ -1059,95 +586,22 @@ _CHAT_GLOBAL_VISIBLE_COMMANDS = [
     "/trace",
     "/config",
     "/toolbar",
-    "/assets",
-    "/image",
-    "/forge",
-    "/report",
-    "/feedback",
-    "/skill",
-    "/exit",
-]
-_FORGE_COMMAND_TOKENS = [
-    "/assistant",
-    "/execute",
-    "/goal",
-    "/task",
-    "/show",
-    "/plan",
-    "/done",
-    "/back",
-]
-_FORGE_VISIBLE_COMMAND_TOKENS = [
-    "/execute",
-    "/goal",
-    "/task",
-    "/show",
-    "/plan",
-    "/done",
-    "/back",
-]
-_FORGE_SHARED_CHAT_COMMANDS = [
-    "/help",
-    "/login",
-    "/permissions",
-    "/status",
-    "/subagents",
-    "/terminals",
-    "/pwd",
-    "/usage",
-    "/context",
-    "/compact",
-    "/resume",
-    "/stream",
-    "/trace",
-    "/config",
-    "/toolbar",
-    "/assets",
     "/image",
     "/report",
     "/feedback",
     "/skill",
     "/exit",
 ]
-_FORGE_SUGGESTION_COMMANDS = _ordered_unique_strings(
-    _FORGE_SHARED_CHAT_COMMANDS + _FORGE_VISIBLE_COMMAND_TOKENS
-)
-_FORGE_COMPLETER_COMMANDS = _ordered_unique_strings(
-    _FORGE_SHARED_CHAT_COMMANDS
-    + [
-        "/usage hud",
-        "/usage hud on",
-        "/usage hud off",
-        "/usage hud status",
-        "/terminals list",
-        "/terminals show",
-        "/terminals kill",
-        "/terminals help",
-        "/execute plan",
-        "/goal",
-        "/task",
-        "/show",
-        "/done",
-        "/back",
-        "/plan tasks",
-        "/plan markdown",
-        "/plan md",
-        "/plan edit",
-    ]
-)
 _CHAT_COMMANDS = _ordered_unique_strings(
     _CHAT_GLOBAL_VISIBLE_COMMANDS
-    + _FORGE_COMMAND_TOKENS
     + [
         "/",
         "/cd",
-        "/forge",
         "/ctx",
         "/terminals list",
         "/terminals show",
         "/terminals kill",
         "/terminals help",
-        "/forge resume",
         "/model-info",
         "/model",
         "/stream on",
@@ -1181,7 +635,6 @@ _CHAT_TOOLBAR_ITEM_ORDER = [
     "subagents",
     "tokens",
     "cost",
-    "forge",
 ]
 _CHAT_LLM_ERROR_MAX_CHARS = 520
 _CHAT_LLM_ERROR_REDACT_PATTERNS = [

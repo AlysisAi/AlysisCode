@@ -2,7 +2,19 @@
 
 # 39 fences older workers whose reconciliation deletes every retained VM.
 # Sleeping allocation records must never be opened by those workers.
-SCHEMA_VERSION = 39
+# 40 adds task_files: the Library files a person attached to a message.
+# 41 adds bot_time_zone_settings (the person's IANA time zone), tasks.failure (why a turn
+# stopped, as a closed kind), bot_create_requests (a retried create returns the owl it already
+# made), routine retries (schedule_health), Run now requests and schedule_runs.origin.
+# 42 adds bot_about_me (what the person wrote about themselves, shared by all their owls),
+# about_me_suggestions (facts owls offered to add to it, and what the person chose),
+# setup_proposals (an owl's own setup for the person to apply), bot_plugin_grants (which
+# connected apps each owl may use), bot_app_needs (an app a turn needed that was off for the
+# owl or not connected), routine_access (what a routine's runs need and what the person
+# allowed for it), browser_baselines (an owl's saved browser storage that belongs to no task:
+# a person signing in while only viewing its computer, or signing it out of a site) and
+# bots.color and bots.background (the look the person picked for an owl's face).
+SCHEMA_VERSION = 42
 
 
 def schema(*, postgres=False):
@@ -32,9 +44,19 @@ _DDL = """
                     created_at {real} NOT NULL, updated_at {real} NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS bots_owner ON bots(owner);
+                CREATE TABLE IF NOT EXISTS bot_create_requests (
+                    owner TEXT NOT NULL, request_id TEXT NOT NULL,
+                    bot_id TEXT NOT NULL REFERENCES bots(id), setup_hash TEXT NOT NULL,
+                    created_at {real} NOT NULL, PRIMARY KEY(owner, request_id)
+                );
                 CREATE TABLE IF NOT EXISTS bot_reply_review_settings (
                     owner TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL CHECK(enabled IN (0,1))
+                );
+                -- The person's IANA time zone, sent by their app. No row: not known yet (UTC).
+                CREATE TABLE IF NOT EXISTS bot_time_zone_settings (
+                    owner TEXT PRIMARY KEY, time_zone TEXT NOT NULL,
+                    updated_at {real} NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS bot_review_settings (
                     bot_id TEXT PRIMARY KEY REFERENCES bots(id), mode TEXT NOT NULL
@@ -219,6 +241,9 @@ _DDL = """
                     chat_id TEXT PRIMARY KEY REFERENCES chats(id), event_seq INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS events_task ON events(task_id,seq);
+                -- An owl's tasks, and each task's last event of a kind, without reading its events.
+                CREATE INDEX IF NOT EXISTS tasks_bot ON tasks(bot_id,created_at,id);
+                CREATE INDEX IF NOT EXISTS events_task_kind ON events(task_id,kind,seq);
                 CREATE TABLE IF NOT EXISTS coding_workspaces (
                     id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL,
                     worker_id TEXT NOT NULL, heartbeat {real} NOT NULL,
@@ -322,6 +347,10 @@ _DDL = """
                     settled INTEGER NOT NULL DEFAULT 0 CHECK(settled IN (0,1))
                 );
                 CREATE INDEX IF NOT EXISTS browser_states_bot ON browser_states(bot_id,created_at);
+                CREATE TABLE IF NOT EXISTS browser_baselines (
+                    bot_id TEXT PRIMARY KEY REFERENCES bots(id), ref TEXT NOT NULL,
+                    created_at {real} NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS stored_objects (
                     key TEXT PRIMARY KEY, owner TEXT NOT NULL, bot_id TEXT NOT NULL,
                     ref TEXT NOT NULL, state TEXT NOT NULL,
@@ -354,5 +383,84 @@ CREATE TABLE IF NOT EXISTS library_reservations (
 CREATE INDEX IF NOT EXISTS library_reservations_owner ON library_reservations(owner,expires);
 CREATE TABLE IF NOT EXISTS computer_capacity (
  scope TEXT PRIMARY KEY, max_active INTEGER CHECK(max_active > 0)
+);
+-- The Library files a person attached to a message, in their order. Name, type and size are
+-- kept as sent: file_id has no foreign key, so deleting the file later leaves the message
+-- readable and shows that file as no longer available.
+CREATE TABLE IF NOT EXISTS task_files (
+ task_id TEXT NOT NULL REFERENCES tasks(id), ordinal INTEGER NOT NULL,
+ file_id TEXT NOT NULL, name TEXT NOT NULL, media_type TEXT NOT NULL,
+ size_bytes BIGINT NOT NULL, PRIMARY KEY(task_id,ordinal)
+);
+-- A routine's failed runs for one schedule revision (an edit or resume starts afresh):
+-- scheduled runs that failed in a row, the retry waiting to run and the occurrence it
+-- retries, and why the routine paused, as a code the app explains in the person's language.
+CREATE TABLE IF NOT EXISTS schedule_health (
+ schedule_id TEXT PRIMARY KEY REFERENCES schedules(id), revision INTEGER NOT NULL,
+ failures INTEGER NOT NULL, retry_at {real}, retry_for {real}, attempts INTEGER NOT NULL,
+ retry_reason TEXT, pause_code TEXT, updated_at {real} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS schedule_health_retry ON schedule_health(retry_at);
+-- Run now requests by request ID, so a double click or a resent request starts one run.
+CREATE TABLE IF NOT EXISTS schedule_run_requests (
+ bot_id TEXT NOT NULL REFERENCES bots(id), request_id TEXT NOT NULL,
+ schedule_id TEXT NOT NULL REFERENCES schedules(id), task_id TEXT REFERENCES tasks(id),
+ created_at {real} NOT NULL, PRIMARY KEY(bot_id,request_id)
+);
+-- About me, as the person's app last wrote it (facts in their order), shared by all their owls.
+-- version is the app's name for that content (NULL once a fact was added here); added lists the
+-- facts accepted here that the app has not written back yet.
+CREATE TABLE IF NOT EXISTS bot_about_me (
+ owner TEXT PRIMARY KEY, facts TEXT NOT NULL, version TEXT, revision INTEGER NOT NULL,
+ added TEXT NOT NULL, updated_at {real} NOT NULL
+);
+-- A fact an owl offered to add to About me, under the reply that offered it.
+CREATE TABLE IF NOT EXISTS about_me_suggestions (
+ id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id),
+ source_task_id TEXT NOT NULL REFERENCES tasks(id), fact TEXT NOT NULL, fact_key TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','accepted','declined')),
+ created_at {real} NOT NULL, decided_at {real}
+);
+CREATE INDEX IF NOT EXISTS about_me_suggestions_task ON about_me_suggestions(source_task_id);
+CREATE INDEX IF NOT EXISTS about_me_suggestions_bot ON about_me_suggestions(bot_id,status);
+CREATE INDEX IF NOT EXISTS about_me_suggestions_fact ON about_me_suggestions(fact_key);
+-- An owl's own setup, proposed from the person's words: its purpose, working instructions and
+-- an optional routine (JSON: name, prompt, timing). before_* is the setup it was proposed
+-- against (bot_updated_at pins that version); applied is what the person applied (JSON:
+-- purpose, instructions, schedule_id), after their own changes.
+CREATE TABLE IF NOT EXISTS setup_proposals (
+ id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id),
+ source_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+ purpose TEXT NOT NULL, instructions TEXT NOT NULL, routine TEXT,
+ before_purpose TEXT NOT NULL, before_instructions TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','applied','declined','outdated')),
+ revision INTEGER NOT NULL, bot_updated_at {real} NOT NULL, applied TEXT,
+ created_at {real} NOT NULL, updated_at {real} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS setup_proposals_bot ON setup_proposals(bot_id,status);
+-- The person's choice of which connected apps an owl may use (desktop_connectors.py). No row:
+-- on, as every connected app was for every owl before these choices existed.
+CREATE TABLE IF NOT EXISTS bot_plugin_grants (
+ bot_id TEXT NOT NULL REFERENCES bots(id), plugin_id TEXT NOT NULL,
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), revision INTEGER NOT NULL,
+ updated_at {real} NOT NULL, PRIMARY KEY(bot_id,plugin_id)
+);
+-- An app an owl's turn asked for that was off for the owl or not connected: the chat shows a
+-- card, and turning it on or connecting it carries the request on (resume_task_id).
+CREATE TABLE IF NOT EXISTS bot_app_needs (
+ id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id),
+ source_task_id TEXT NOT NULL REFERENCES tasks(id), plugin_id TEXT NOT NULL,
+ name TEXT NOT NULL, reason TEXT NOT NULL, state TEXT NOT NULL, status TEXT NOT NULL,
+ revision INTEGER NOT NULL, resume_task_id TEXT REFERENCES tasks(id),
+ created_at {real} NOT NULL, updated_at {real} NOT NULL, UNIQUE(source_task_id,plugin_id)
+);
+CREATE INDEX IF NOT EXISTS bot_app_needs_bot ON bot_app_needs(bot_id,status);
+-- What a routine's runs use beyond chat (routine_access.RoutineNeeds as JSON): needs as the owl
+-- declared them, what the person allowed for this routine (NULL: nothing yet, or revoked), and
+-- what a run asked for beyond that, which paused the routine. A changed job or needs clears
+-- both; each run keeps a copy of what was allowed when it was queued (schedule_runs.config).
+CREATE TABLE IF NOT EXISTS routine_access (
+ schedule_id TEXT PRIMARY KEY REFERENCES schedules(id), needs TEXT NOT NULL,
+ allowed TEXT, allowed_at {real}, requested TEXT, updated_at {real} NOT NULL
 );
 """

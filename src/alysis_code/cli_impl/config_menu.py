@@ -101,13 +101,9 @@ ROLE_ORDER: tuple[str, ...] = (
     "planner",
     "review",
     "compactor",
-    "conflict_review",
-    "conflict_resolve",
     "approval_review",
 )
 ROLE_MODEL_ORDER: tuple[str, ...] = ROLE_ORDER
-# Forge runs never ask for approvals, so the approval reviewer has no Forge override.
-FORGE_ROLE_ORDER: tuple[str, ...] = tuple(r for r in ROLE_MODEL_ORDER if r != "approval_review")
 SECTION_VALUES: tuple[tuple[str, str], ...] = (
     ("profile", "Provider Profile"),
     ("api_key", "API Key"),
@@ -116,7 +112,6 @@ SECTION_VALUES: tuple[tuple[str, str], ...] = (
     ("cache", "Context & Cache"),
     ("request_timeout", "Request timeout (advanced)"),
     ("subagents", "Subagent model overrides"),
-    ("forge", "Forge model overrides"),
     ("sandbox", "Sandbox"),
     ("personas", "Personas"),
     ("execution", "Model Access"),
@@ -150,13 +145,10 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
     "planner": "high-level task planning",
     "review": "reviewing diffs and changes",
     "compactor": "summarizing long conversations",
-    "conflict_review": "reviewing merge conflicts",
-    "conflict_resolve": "resolving merge conflicts",
     "approval_review": "approving actions in Approve for me (empty = the chat's model)",
 }
 _FIELD_LABELS: dict[str, str] = {
     "max_steps": "Max steps per response",
-    "task_max_steps": "Max steps per task",
     "subagent_max_steps": "Max steps per subagent run",
     "subagent_timeout_s": "Subagent timeout (seconds or unlimited)",
 }
@@ -215,7 +207,6 @@ class ConfigMenuState:
     fields: dict[str, str]
     thinking_label: str
     role_models: dict[str, str]
-    forge_role_models: dict[str, str]
     role_temperatures: dict[str, str]
     profiles: dict[str, dict[str, Any]]
     active_profile: str
@@ -299,11 +290,6 @@ class ConfigMenuState:
             cfg.extra_fields.get("role_models") if isinstance(cfg.extra_fields, dict) else None
         )
         raw_compaction = _raw_compaction_extra_fields(cfg)
-        forge_role_models = _normalized_role_model_values(
-            cfg.extra_fields.get("forge_role_models")
-            if isinstance(cfg.extra_fields, dict)
-            else None
-        )
         role_temperatures: dict[str, str] = {}
         default_temperature = _finite_float(getattr(cfg, "temperature", 0.2), fallback=0.2)
         for role in ROLE_ORDER:
@@ -325,7 +311,6 @@ class ConfigMenuState:
                     getattr(cfg, "step_budget_policy", "autonomous") or "autonomous"
                 ),
                 "max_steps": _format_integer(getattr(cfg, "max_steps", 25)),
-                "task_max_steps": _format_integer(getattr(cfg, "task_max_steps", 100)),
                 "subagent_max_steps": _format_integer(getattr(cfg, "subagent_max_steps", 16)),
                 "subagent_timeout_s": _format_optional_limit(
                     getattr(cfg, "subagent_timeout_s", DEFAULT_SUBAGENT_TIMEOUT_S)
@@ -360,7 +345,6 @@ class ConfigMenuState:
             },
             thinking_label=thinking_label,
             role_models=role_models,
-            forge_role_models=forge_role_models,
             role_temperatures=role_temperatures,
             profiles=profiles,
             active_profile=active_profile,
@@ -389,9 +373,6 @@ class ConfigMenuState:
             "fields": {key: str(value) for key, value in sorted(self.fields.items())},
             "thinking_label": self.thinking_label,
             "role_models": {role: str(self.role_models.get(role, "")) for role in ROLE_MODEL_ORDER},
-            "forge_role_models": {
-                role: str(self.forge_role_models.get(role, "")) for role in FORGE_ROLE_ORDER
-            },
             "role_temperatures": {
                 role: str(self.role_temperatures.get(role, ""))
                 for role in ROLE_ORDER
@@ -422,9 +403,6 @@ class ConfigMenuState:
             self._original.get("subscription_selection_required", False)
         )
         self.role_models = _role_text_map_from_snapshot(self._original.get("role_models"))
-        self.forge_role_models = _role_text_map_from_snapshot(
-            self._original.get("forge_role_models")
-        )
         self.role_temperatures = _role_text_map_from_snapshot(
             self._original.get("role_temperatures")
         )
@@ -477,7 +455,6 @@ class ConfigMenuState:
             "llm_timeout_s",
             "step_budget_policy",
             "max_steps",
-            "task_max_steps",
             "subagent_max_steps",
             "subagent_timeout_s",
             "prompt_cache_mode",
@@ -541,9 +518,6 @@ class ConfigMenuState:
     def set_max_steps(self, value: str) -> None:
         self.fields["max_steps"] = str(value)
 
-    def set_task_max_steps(self, value: str) -> None:
-        self.fields["task_max_steps"] = str(value)
-
     def set_subagent_max_steps(self, value: str) -> None:
         self.fields["subagent_max_steps"] = str(value)
 
@@ -553,10 +527,6 @@ class ConfigMenuState:
     def set_role_model(self, role: str, model: str) -> None:
         role_key = _normalize_role(role)
         self.role_models[role_key] = str(model)
-
-    def set_forge_role_model(self, role: str, model: str) -> None:
-        role_key = _normalize_role(role)
-        self.forge_role_models[role_key] = str(model)
 
     def set_role_temperature(self, role: str, value: str) -> None:
         role_key = _normalize_role(role)
@@ -942,7 +912,7 @@ class ConfigMenuState:
             set_config_value(cfg, "step_budget_policy", desired_step_budget_policy)
             changes["step_budget_policy"] = desired_step_budget_policy
 
-        for key in ("max_steps", "task_max_steps", "subagent_max_steps"):
+        for key in ("max_steps", "subagent_max_steps"):
             desired_int = int(str(self.fields.get(key, "")).strip())
             current_int = _finite_int(getattr(cfg, key, None), fallback=None)
             if current_int != desired_int:
@@ -1110,22 +1080,6 @@ class ConfigMenuState:
                 cfg.extra_fields.pop("role_models", None)
             changes["role_models"] = dict(role_models)
 
-        raw_forge_role_models = cfg.extra_fields.get("forge_role_models")
-        forge_role_models = _role_model_storage_values(
-            raw_forge_role_models,
-            self.forge_role_models,
-        )
-        current_forge_role_models = _role_model_storage_values(
-            raw_forge_role_models,
-            _normalized_role_model_values(raw_forge_role_models),
-        )
-        if current_forge_role_models != forge_role_models:
-            if forge_role_models:
-                cfg.extra_fields["forge_role_models"] = dict(sorted(forge_role_models.items()))
-            else:
-                cfg.extra_fields.pop("forge_role_models", None)
-            changes["forge_role_models"] = dict(forge_role_models)
-
         default_temperature = _finite_float(getattr(cfg, "temperature", 0.2), fallback=0.2)
         for role in ROLE_ORDER:
             field_name = _ROLE_TEMPERATURE_FIELDS.get(role)
@@ -1251,7 +1205,7 @@ class ConfigMenuState:
             _normalize_step_budget_policy(self.fields.get("step_budget_policy", "autonomous"))
         except ValueError as exc:
             return str(exc)
-        for key in ("max_steps", "task_max_steps", "subagent_max_steps"):
+        for key in ("max_steps", "subagent_max_steps"):
             text = str(self.fields.get(key, "")).strip()
             label = _FIELD_LABELS.get(key, key)
             try:
@@ -1362,8 +1316,6 @@ def run_config_menu(
             _run_request_timeout_section(state, console)
         elif action == "subagents":
             _run_subagent_section(state, console)
-        elif action == "forge":
-            _run_forge_section(state, console)
         elif action == "personas":
             _run_personas_section(state, console)
         elif action == "sandbox":
@@ -1740,11 +1692,6 @@ def _top_level_menu_rows(state: ConfigMenuState) -> list[tuple[str, str, str]]:
             f"{state.fields['llm_timeout_s']} seconds",
         ),
         ("subagents", "Subagent model overrides", _override_summary_text(subagent_values)),
-        (
-            "forge",
-            "Forge model overrides",
-            _override_summary_text(state.forge_role_models),
-        ),
         ("sandbox", "Sandbox", _sandbox_summary_text(state)),
         ("personas", "Personas", _persona_summary_text(state)),
         ("execution", "Model Access", _execution_summary_text(state)),
@@ -2999,7 +2946,7 @@ def _run_default_section(state: ConfigMenuState, console: Console) -> None:
             "[yellow]This API-key model is preserved but inactive while an AI subscription is selected.[/yellow]"
         )
     console.print(
-        "[dim]Used when you chat with the agent. Subagents and Forge roles fall back "
+        "[dim]Used when you chat with the agent. Subagents and roles fall back "
         "to this model unless overridden in the sections below.[/dim]"
     )
     try:
@@ -3508,35 +3455,6 @@ def _run_subagent_section(state: ConfigMenuState, console: Console) -> None:
         console.print("[dim]No subagent model overrides set.[/dim]")
 
 
-def _run_forge_section(state: ConfigMenuState, console: Console) -> None:
-    console.print()
-    console.rule("[bold]Forge model overrides[/bold]")
-    console.print(
-        "[dim]Override the model used by Forge swarm roles. Leave empty to inherit the "
-        "subagent override, then the default model.[/dim]"
-    )
-    _print_role_explainer(console, roles=FORGE_ROLE_ORDER)
-    role_model_snapshot = dict(state.forge_role_models)
-    try:
-        for role in FORGE_ROLE_ORDER:
-            model = _prompt_override_text(
-                f"  {_role_label(role)} model (Enter to skip)",
-                state.forge_role_models.get(role, ""),
-            )
-            state.set_forge_role_model(role, model)
-    except (Abort, EOFError, KeyboardInterrupt):
-        state.forge_role_models = dict(role_model_snapshot)
-        console.print("")
-        _print_section_cancelled(console, "Forge model overrides")
-        return
-
-    overrides = _non_empty_role_values(state.forge_role_models, roles=FORGE_ROLE_ORDER)
-    if overrides:
-        console.print(f"[dim]{_pluralize(len(overrides), 'override')} set.[/dim]")
-    else:
-        console.print("[dim]No forge model overrides set.[/dim]")
-
-
 def _save_and_exit(
     state: ConfigMenuState,
     cfg: AppConfig,
@@ -3855,7 +3773,6 @@ def _pending_change_count(state: ConfigMenuState) -> int:
     for key in (
         "fields",
         "role_models",
-        "forge_role_models",
         "role_temperatures",
         "profiles",
         "agent_runtimes",

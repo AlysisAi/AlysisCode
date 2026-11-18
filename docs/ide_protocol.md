@@ -62,14 +62,6 @@ The health command prints a single JSON object with:
   operations without arbitrary shell execution or PTY streaming. The
   `session.images.*` methods advertise workspace-scoped path validation, paste-image fallback
   support, and `binary_jsonl: false`.
-- Forge and diff capability flags. Protocol v1 currently implements synchronous compatibility
-  `forge.plan`, async `forge.plan.start`/`forge.plan.result`, durable
-  `forge.list`/`forge.open`/`forge.resume`, `forge.status`, `forge.show`,
-  typed plan-edit methods `forge.plan.getState`, `forge.plan.setAssistant`,
-  `forge.plan.setGoal`, `forge.plan.updateTask`, `forge.plan.validate`, and
-  `forge.plan.regenerate`, `forge.review`, `forge.attach`, safe `forge.assets.*` methods, non-mutating `forge.executePreview`,
-  review-mode `forge.execute`, `diff.list`, and `diff.get`; `forge.cancel` is advertised only when
-  cooperative checkpoint cancellation is available through `features.forge.cancel.supported: true`.
 - `features.managed_browser` advertises the owned-browser security boundary: loopback-only CDP,
   private profiles outside workspaces, persistent interception across child targets, and a
   validating loopback egress proxy that pins DNS answers to numeric connects with no direct network
@@ -109,7 +101,7 @@ The approval capability is advertised as:
 
 IDE clients should separate baseline protocol viability from feature availability. For the VS Code
 extension, baseline Cockpit compatibility requires only `initialize`, `health`, and
-`getCapabilities`. Chat/run, Forge Plan, Forge Execute Preview/Review, diffs, and artifacts each
+`getCapabilities`. Chat/run, management domains, and artifacts each
 have their own required method sets and should degrade independently when an older CLI omits a
 feature method. A missing `ide-bridge` command is an incompatible CLI, not a trusted healthy CLI.
 Clients must not forward API keys or start a credentialed bridge after detecting an incompatible or
@@ -206,8 +198,7 @@ The bridge emits structured event envelopes derived from the existing `surface.e
 
 Supported event types are the existing surface event types, including `message_delta`,
 `message_end`, `tool_call_started`, `tool_call_completed`, `status_update`,
-`plan_node_updated`, `swarm_worker_state_changed`, `subagent_state_changed`, `verify_gate_result`,
-`review_gate_decision`, `approval_reviewed`, `error_raised`, `prompt_for_input`,
+`subagent_state_changed`, `verify_gate_result`, `approval_reviewed`, `error_raised`, `prompt_for_input`,
 `config_form_request`, and the opt-in reasoning events below.
 
 `reasoning_started {block_id}`, `reasoning_delta {block_id, text}` and `reasoning_ended
@@ -235,7 +226,7 @@ sequence `1` even if an older session previously reached a higher sequence, so c
 replay cursors per `session_id` or reset sequence state on session replacement. Clients should treat
 event payloads as protocol data, not rendered terminal text.
 
-IDE clients with multiple surfaces, such as chat and Forge views, should route events by explicit
+IDE clients with multiple surfaces, such as chat and code review views, should route events by explicit
 owned `session_id` and `job_id`. A controller must not attach to an arbitrary event stream just
 because it has no current session, and unowned approval events must not be auto-approved or denied
 by the wrong surface.
@@ -372,7 +363,7 @@ same way Enter does in the TUI. The turn reads it at its next step boundary, add
 waiting), `dropped` (older waiting messages this call pushed out; at most 16 wait) and `truncated`
 (messages longer than 4000 characters are shortened). Without a running turn the call fails with
 `session_idle`; send the message with `chat.send` instead. While a job that is not a chat turn runs
-(Forge, code review) it fails with `session_busy`.
+(such as code review) it fails with `session_busy`.
 
 A turn can end before it reads a message. The bridge then holds the message for the session, so
 the next turn (for example a queued `chat.send`) never reads it. `chat.steer.take` (`session_id`)
@@ -591,8 +582,8 @@ Returns status-only subagent metadata for the live session: whether subagents ar
 subsequent turns, available subagent names when the session exposes a registry, and an explicit
 `explicit_execution_supported: false` policy. It also declares
 `execution_lifecycle: in_turn_parent_owned`, `cancellation: parent_job`,
-`independently_resumable: false`, the `subagent_state_changed` lifecycle event, and
-`background_worker_surface: forge.swarm`. It does not run a subagent.
+`independently_resumable: false`, and the `subagent_state_changed` lifecycle event. It does not
+run a subagent.
 
 ```json
 {"protocol_version":"1","id":"subagents-1","method":"session.subagents.status","params":{"session_id":"20260519T100000Z_abcd1234"}}
@@ -601,8 +592,7 @@ subsequent turns, available subagent names when the session exposes a registry, 
 ### session.subagents.setEnabled
 
 Toggles the live session `subagents_enabled` setting for subsequent turns. It requires
-`workspace_trusted: true`, returns audit metadata without secret values, and does not change Forge
-Execute behavior; IDE Forge Execute v1 still advertises subagents as unsupported.
+`workspace_trusted: true` and returns audit metadata without secret values.
 
 ```json
 {"protocol_version":"1","id":"subagents-toggle-1","method":"session.subagents.setEnabled","params":{"session_id":"20260519T100000Z_abcd1234","enabled":true,"workspace_trusted":true}}
@@ -614,9 +604,7 @@ inside the owning chat job. Start and terminal state are emitted as correlated
 error text, mode, elapsed time, step count, and child session id when available. Nested tool events
 carry `worker_id` and `role`. The existing parent `session.cancel` token stops these delegates, and
 their approvals continue through the parent session's host-managed approval channel. The protocol
-does not offer a misleading independent resume or cancel method for them. Long-lived recoverable
-parallel work uses `forge.swarm.*`, whose durable coordinator refreshes permission fingerprints on
-resume and fences leases, revisions, cancellation, results, and usage.
+does not offer a misleading independent resume or cancel method for them.
 
 ### session.trace.status
 
@@ -1110,7 +1098,6 @@ Examples:
 {"protocol_version":"1","id":"update","method":"update.check","params":{"allow_network":true}}
 {"protocol_version":"1","id":"ext-review","method":"ext.install","params":{"workspace":"/path/to/project","workspace_trusted":true,"source":"publisher.plugin"}}
 {"protocol_version":"1","id":"ext-install","method":"ext.install","params":{"workspace":"/path/to/project","workspace_trusted":true,"source":"publisher.plugin","yes":true,"trust_approval":{"approved":true,"plugin_id":"publisher.plugin","commit":"<reviewed commit>","manifest_sha256":"<reviewed manifest sha256>","approval_fingerprint":"<review fingerprint>"}}}
-{"protocol_version":"1","id":"forge-show","method":"forge.show","params":{"session_id":"<session_id>","plan_id":"<plan_id>"}}
 ```
 
 ### approval.respond
@@ -1265,7 +1252,7 @@ The bridge emits this result event for every resolved path, including timeout an
 not include command text, file paths, reasons, previews, scope details, or warnings in the
 `approval_result` payload.
 
-Clients with separate chat and Forge UI controllers must answer only approvals for sessions/jobs
+Clients with separate UI controllers must answer only approvals for sessions/jobs
 they own. If the owning UI cannot present an approval, it should deny fail-closed with a clear
 surface-specific reason. No approval should be granted silently.
 
@@ -1818,599 +1805,11 @@ unreachable private screenshot directories behind. IDE session close and `bridge
 the same exact owned cleanup for every remaining browser, including partial launch failures; they
 do not kill an arbitrary Chrome process, and cleanup failures remain visible and retryable.
 
-### forge.plan
-
-Creates or reuses an IDE bridge session and records a Forge plan artifact. If `session_id` is not
-provided, the bridge first applies normal `session.create` validation and workspace binding rules.
-
-```json
-{
-  "protocol_version": "1",
-  "id": "forge-plan-1",
-  "method": "forge.plan",
-  "params": {
-    "workspace": "/path/to/project",
-    "instruction": "Prepare the diff review backend.",
-    "mode": "readonly",
-    "model": "gpt-4o-mini",
-    "base_url": "http://127.0.0.1:9/v1",
-    "max_steps": 4
-  }
-}
-```
-
-The result is a stable IDE schema:
-
-- `plan_id`
-- `session_id`
-- `job_id` (`null` for the synchronous compatibility call; async planning returns a job id)
-- `status`
-- `source` (`active_memory` for a live plan, `loaded_persisted` when reopened)
-- `created_session`
-- `project_goal`
-- `summary`
-- `warnings`
-- `incomplete`
-- `tasks[]`
-- `plan_artifact_id`
-- `plan_markdown_artifact_id`
-
-Each task includes `task_id`, `title`, `objective`, `file_scope`, `acceptance_criteria`,
-`verification_commands`, `risk_notes`, `dependencies`, `order`, `scope_unknown_reason`, `warnings`,
-and `status`. `forge.plan` uses the real Forge planner path. If the planner/model/API key cannot
-run, the bridge returns a clear protocol error such as `forge_plan_failed` or
-`forge_plan_incomplete`; it does not return a fake single-task shallow plan. Production plan quality
-validation marks incomplete plans with warnings when execution-ready tasks lack acceptance criteria,
-verification commands, or concrete file scope without an explicit unknown-scope reason.
-
-The adapter maps host-owned Forge `plan.json` data into this schema and does not parse terminal
-output. Current protocol planning persists a normal Forge run under `.alysis/runs/<plan_id>/`
-and exposes `plan/plan.json` and `plan/PLAN.md` as protocol artifacts.
-
-The bridge emits `status_update`, `plan_node_updated`, and `info_emitted` events while recording the
-plan when those events are available from the structured event surface. New clients should prefer
-the async methods below; `forge.plan` remains a backward-compatible method for older clients.
-
-### forge.plan.start / forge.plan.result
-
-`forge.plan.start` accepts the same params as `forge.plan` plus an optional client-generated
-`idempotency_key`, creates or reuses the same scoped bridge session, and starts planning in a
-background bridge job instead of blocking the request until the model-backed planner completes.
-Production IDE clients should always send a stable, opaque key for one user submission and preserve
-it across lost responses, webview reloads, extension-host restarts, and bridge restarts.
-
-```json
-{
-  "protocol_version": "1",
-  "id": "forge-plan-start",
-  "method": "forge.plan.start",
-  "params": {
-    "workspace": "/path/to/project",
-    "instruction": "Prepare the diff review backend.",
-    "mode": "readonly",
-    "idempotency_key": "forge-request-018f2d1f",
-    "model": "gpt-4o-mini"
-  }
-}
-```
-
-The immediate response is:
-
-```json
-{"session_id":"20260519T100000Z_abcd1234","job_id":"job_20260519T100001Z_aaaabbbb","status":"started","durably_accepted":true,"duplicate":false}
-```
-
-The response is written only after a private SQLite request ledger outside the workspace has
-committed acceptance. The ledger stores hashes of the idempotency key and semantic request payload,
-not the key or instruction. Repeating the same key and payload returns the same stable `job_id` with
-`duplicate: true`; reusing the key for a different payload fails with `idempotency_conflict` and
-does not start a planner. The legacy synchronous `forge.plan` compatibility method does not provide
-this exactly-once acceptance contract.
-
-`job.status` reports `queued`, `running`, `cancellation_requested`, `cancelled`, `completed`, or
-`failed` for that job. Forge Plan jobs include `kind: "forge_plan"` and, after completion, the
-resulting `plan_id`. While the job runs, the bridge records and replays structured planning events
-through `session.getEvents`; clients should use those events for progress instead of terminal output.
-
-After `job.status` is `completed`, clients call:
-
-```json
-{"protocol_version":"1","id":"forge-plan-result","method":"forge.plan.result","params":{"job_id":"job_20260519T100001Z_aaaabbbb"}}
-```
-
-The result is the same stable Forge Plan schema returned by `forge.plan`, with `job_id` populated.
-`job.status` and `forge.plan.result` consult the durable ledger when the in-memory job registry is
-empty. A completed retry after a bridge restart reconstructs the result from the persisted Forge
-plan and attaches it to a live inspection or caller session; clients do not need to start the
-planner again.
-
-Workers transition from a fenced dispatch lease to a renewable running lease before calling the
-planner. A stale queued dispatch can be safely reclaimed because an expired worker cannot claim it.
-An expired running lease is different: the durable state becomes indeterminate, protocol status is
-terminal `failed`, and `forge.plan.result` returns `forge_plan_indeterminate`. The bridge never
-automatically re-executes indeterminate work. Clients must ask the user to review workspace
-artifacts before submitting a new request with a new idempotency key.
-
-If the planner fails, `job.status` reports `failed` with a redacted error and `forge.plan.result`
-returns `forge_plan_failed`. Active cancellation remains honest: `session.cancel` may return
-`cancellation_requested` for cancellable Forge Plan work, but clients must keep rendering the job as
-in progress until `job.status`, `session.status`, or `session.list` reports a terminal state. A
-backend that cannot cancel the current work returns `non_cancellable` or a structured unsupported
-error rather than a fake cancelled result.
-
-### forge.list
-
-Lists persisted Forge plans for a scoped workspace or active session. The registry scans only the
-workspace's `.alysis/runs/<plan_id>/plan/plan.json` entries using opaque plan ids; it does not
-accept arbitrary file paths. The bridge rejects symlinked `.alysis`, `runs`, run, `plan`,
-`execution`, and `execution/patches` registry components before reading persisted plans or exposing
-Forge artifact roots.
-
-```json
-{"protocol_version":"1","id":"forge-list","method":"forge.list","params":{"workspace":"/path/to/project","max_items":50}}
-```
-
-Each item includes `plan_id`, optional `session_id`, `workspace_root`, `status`, `source`,
-`project_goal`, `summary`, `task_count`, timestamps, and plan artifact ids.
-
-### forge.open / forge.resume
-
-Opens a persisted Forge plan from the scoped workspace registry. If `session_id` is omitted, the
-bridge creates a readonly inspection session so the plan and artifacts can be viewed after the
-original session closed or after the bridge restarted.
-
-```json
-{"protocol_version":"1","id":"forge-open","method":"forge.open","params":{"workspace":"/path/to/project","plan_id":"20260519T100002Z_aaaabbbb"}}
-```
-
-`forge.resume` is an alias for `forge.open`. Invalid, unknown, path-like, or rejected registry paths
-return stable protocol errors (`invalid_plan_id`, `forge_plan_not_found`, or
-`forge_registry_rejected`). Opening a plan adds only a validated non-symlink Forge run root to the
-inspection session.
-
-### forge.status
-
-Returns the current IDE schema for a recorded Forge plan. It normally takes `session_id` and
-`plan_id`; for async planning clients may pass `session_id` and `job_id` to retrieve a running
-status object or the completed plan result once available.
-
-```json
-{"protocol_version":"1","id":"forge-status","method":"forge.status","params":{"session_id":"20260519T100000Z_abcd1234","plan_id":"20260519T100002Z_aaaabbbb"}}
-```
-
-### forge.show
-
-`forge.show` returns the same scoped plan schema as `forge.status` plus first-class asset entries,
-legacy asset metadata, and an artifact count. It is read-only, uses `session_id` and `plan_id`, and
-does not scrape terminal output.
-
-### forge.plan.getState
-
-Returns the active persisted Forge plan state with `ide_revision`, assistant instruction metadata,
-goal, validation metadata, tasks, artifacts, and assets. It is read-only and is the typed route for
-showing Forge-context `/assistant`, `/goal`, `/task`, and `/forge plan state` data.
-
-### forge.plan.setAssistant
-
-Updates the plan assistant/persona instruction. The VS Code `/assistant` route is dual-mode:
-`/assistant show` reads through `forge.plan.getState`, while `/assistant <instruction>` calls this
-mutating method. Updates require `workspace_trusted: true`, accept an optional
-`expected_revision`, persist the plan, increment `ide_revision` on change, and return audit
-metadata without secret values.
-
-### forge.plan.setGoal
-
-Updates the plan goal. The VS Code `/goal` route is dual-mode: `/goal show` reads through
-`forge.plan.getState`, while `/goal <goal>` calls this mutating method. Updates require
-`workspace_trusted: true`, reject empty goals, accept an optional `expected_revision`, mark
-validation metadata stale with `goal_changed`, persist the plan, and return the same bounded
-plan-state shape as `forge.plan.getState`.
-
-### forge.plan.updateTask
-
-Shows or updates one existing task by opaque `task_id`. Without `title`, `body`, or `status` it is
-read-only. Updates require `workspace_trusted: true`, validate task ids as non-path identifiers,
-allow only safe task statuses, accept an optional `expected_revision`, and persist changes to the
-plan store without mutating workspace files. VS Code records `/task <id> show` as read-only and
-records `/task <id> status|title|body ...` as mutating after parsing the params.
-
-### forge.plan.validate
-
-Returns backend validation metadata for a plan without mutating it. The method is used by the
-extension to keep typed Forge plan-edit routes honest without terminal Forge chat scraping.
-
-### forge.plan.regenerate
-
-Regenerates the active persisted Forge plan through the typed planner adapter. It requires
-`session_id`, `plan_id`, and `workspace_trusted: true`; accepts optional `expected_revision`,
-`instruction`, and `focus`; and returns `plan_id`, `session_id`, `old_revision`, `new_revision`,
-`changed`, redacted `summary`, `warnings`, validation metadata, `redacted: true`, and
-`secret_values_included: false`. A stale `expected_revision` returns a structured
-`stale_plan_revision` error instead of overwriting newer plan state. This is the IDE route for
-Forge-context plan regeneration via `/forge plan regenerate`;
-`/forge plan <instruction>` remains new plan creation. The method does not expose Forge swarm, broad
-execution, auto/fullaccess execution, terminal scraping, or arbitrary shell execution.
-
-The bridge runs the planner outside its dispatch state lock (snapshot → compute → commit): other
-methods, event emission, and cancellation stay responsive while a regeneration is in flight. At
-commit time the bridge re-checks the persisted plan revision; if a concurrent edit (for example
-`forge.plan.setGoal` or `forge.plan.updateTask`) landed while the planner ran, the regeneration
-fails closed with the same `stale_plan_revision` error and persists nothing.
-
-### forge.plan.regenerate.start / forge.plan.regenerate.result
-
-Async job form of `forge.plan.regenerate` on the shared bridge job registry, mirroring
-`forge.plan.start`/`forge.plan.result`. `forge.plan.regenerate.start` takes the same params as the
-sync method (Workspace Trust gated, optional `expected_revision` validated up front), returns
-`{session_id, plan_id, job_id, status: "started"}`, and occupies the session's single job slot. The
-job honors cooperative checkpoint cancellation around the planner provider call via `forge.cancel`
-(or `session.cancel`); a cancelled regeneration commits nothing. `forge.plan.regenerate.result`
-returns a progress payload while the job is active, a cancelled payload after cancellation, the
-full sync-shaped regenerate result on success, and re-raises the structured failure code (for
-example `stale_plan_revision` from the commit-time conflict check) on failure. The sync
-`forge.plan.regenerate` remains supported for back-compat.
-
-```json
-{"protocol_version":"1","id":"regen-start","method":"forge.plan.regenerate.start","params":{"session_id":"20260519T100000Z_abcd1234","plan_id":"20260519T100002Z_run","workspace_trusted":true,"focus":"demo.py"}}
-{"protocol_version":"1","id":"regen-result","method":"forge.plan.regenerate.result","params":{"job_id":"job_20260519T100003Z_ccccdddd"}}
-```
-
-### forge.review
-
-`forge.review` runs the existing Forge review engine for one task and returns structured review
-data. Params are `session_id`, `plan_id`, `task_id`, `workspace_trusted: true`, and optional safe
-model overrides (`model`, `base_url`, `temperature`). Inline `api_key`, `token`, `password`,
-`secret`, or credential params are rejected by the global protocol secret policy. The method writes
-review artifacts under the validated Forge run, so it is Workspace Trust gated.
-
-The result includes `approved`, `confidence`, `summary`, issue counts, redacted `review_json`,
-`review_markdown`, artifact ids, and a structured `action` such as `review_needed` when approval is
-not granted. It never prompts in the terminal.
-
-### forge.review.start / forge.review.result
-
-Async job form of `forge.review` on the shared bridge job registry. The review provider call runs
-in a job thread, so it no longer blocks the stdio dispatch loop for its duration; the sync
-`forge.review` remains for back-compat. `forge.review.start` takes the same params as the sync
-method plus nothing new, occupies the session's single job slot, and returns
-`{session_id, plan_id, task_id, job_id, status: "started"}`. Review jobs honor `forge.cancel`
-(and `session.cancel`) with cooperative checkpoints before and after the provider call — the
-review engine itself is a single blocking request, so a cancel that arrives mid-call takes effect
-at the post-call checkpoint and the result is discarded. `forge.review.result` returns a progress
-payload while active, a cancelled payload after cancellation, the sync-shaped review result on
-success, and re-raises the structured failure code on failure.
-
-### forge.attach
-
-`forge.attach` is the IDE-safe attach equivalent. It accepts `session_id`, `plan_id`,
-`workspace_trusted: true`, `source_path` or `source`, and optional `title`/`description`. The bridge
-resolves the source inside the plan workspace, rejects symlinks and path escapes, requires a regular
-file under the size limit, then stores it through the first-class asset surface. It returns the same
-mutation shape as `forge.assets.add`.
-
-### forge.assets.list
-
-Lists first-class Forge assets for `session_id` and `plan_id`. Optional `include_deleted` controls
-tombstones. Read-only.
-
-### forge.assets.show
-
-Shows one asset by opaque `asset_id`. Asset ids are validated as opaque identifiers; path-like ids
-are rejected. Read-only.
-
-### forge.assets.add
-
-Adds a workspace-scoped asset using `source_path` or `source`, optional `title`, `description`,
-`pinned`, `wait`, and `link`. Requires `workspace_trusted: true`. The bridge rejects symlinks,
-workspace escapes, missing/non-regular files, unsupported file types, and sources larger than the
-advertised limit. Binary payloads are never serialized through JSONL.
-
-### forge.assets.delete
-
-Deletes an asset tombstone by opaque `asset_id`. Requires `workspace_trusted: true` and explicit
-`yes: true` or `confirm: true`.
-
-### forge.assets.edit
-
-Updates asset metadata with `title`, `description`, `pinned`, and optional synchronous
-`refresh: true`. Requires `workspace_trusted: true`; empty edits are rejected.
-
-### forge.assets.refresh
-
-Refreshes asset comprehension synchronously for a single `asset_id`. Requires
-`workspace_trusted: true`. Protocol v1 does not start unmanaged background refresh jobs.
-
-### forge.assets.cancelPending
-
-Requests cancellation of any in-process asset comprehension owned by the current bridge instance.
-There is no persistent background CLI job to scrape; idle responses are structured.
-
-### forge.assets.checkPlan
-
-Checks plan asset references and returns `deleted_referenced`, `missing_referenced`, `pinned_added`,
-and `ok`. Read-only.
-
-### forge.assets.pruneLegacy
-
-Prunes verified legacy asset files after migration. Requires `workspace_trusted: true`; when files
-would be deleted, callers must pass `yes: true`. The bridge refuses unverified legacy files and
-validates legacy paths under the Forge run before deletion.
-
-### forge.executePreview
-
-`forge.executePreview` is a non-mutating execution-readiness check. It validates the scoped
-`session_id`, `plan_id`, optional `task_ids`, requested `mode`, Workspace Trust status, sandbox
-profile label, plan completeness, verification commands, and approval scope safety. It must not
-write files, run shell commands, start workers, execute tools, or auto-approve any action.
-
-```json
-{
-  "protocol_version": "1",
-  "id": "forge-execute-preview",
-  "method": "forge.executePreview",
-  "params": {
-    "session_id": "20260519T100000Z_abcd1234",
-    "plan_id": "20260519T100002Z_aaaabbbb",
-    "task_ids": ["T01"],
-    "mode": "review",
-    "workspace_trusted": true,
-    "sandbox_profile": "default"
-  }
-}
-```
-
-The result includes `selected_task_ids`, `execution_mode_requested`, Workspace Trust requirement and
-status, estimated file scopes, verification commands, required approvals with exact safe session
-scopes, runtime approval requirements for dynamic shell/custom/MCP-like tool requests, sandbox
-profile `supported`/`available`/`diagnostic` fields, known risks, missing prerequisites,
-`preview_ready`, `real_execution_supported`, `unsupported_reason`, active cancellation support, and
-the parsed execution policy fields `max_steps`, `no_log`, `subagents_supported`,
-`subagents_enabled`, `subagents_policy`, and `next_recommended_action`. Preview validates
-`max_steps` and `no_log` the same way real execution does. `subagents_enabled` is not accepted for
-IDE Forge Execute v1; callers must use `features.forge.execute.subagents_supported` instead of
-probing with params. `mode: "readonly"` can preview without requiring Workspace Trust when the
-executable origin is trusted by the host. `review` previews require Workspace Trust and a verified
-sandbox profile before execution can start. `auto` previews remain non-mutating and report real
-execution as unsupported. The preview itself does not write files, run tools, run verification
-commands, or auto-approve anything.
-
-### forge.execute
-
-`forge.execute` validates `session_id`, `plan_id`, explicit `task_ids`, `mode`, Workspace Trust
-status, sandbox readiness, plan completeness, optional `max_steps`, optional `no_log`, and exact
-approval-scope readiness. When
-`dry_run: true` is supplied it returns the same non-mutating preview schema as
-`forge.executePreview`.
-
-Real execution in protocol v1 is deliberately narrow:
-
-- `mode` must be `review`; `auto` and `fullaccess` fail closed.
-- `task_ids` are required and execution is limited to those selected tasks.
-- Execution is sequential review execution for the selected tasks. Protocol v1 does not expose the
-  full CLI `forge swarm` contract: parallel swarm workers, integration-gate merge batches,
-  replanning, and merge/push orchestration are not part of IDE Forge Execute v1.
-- Workspace Trust must be reported by the host.
-- A strict sandbox profile must be available; `warn` and `off` are not accepted for mutating IDE
-  execution because they can permit host fallback or no sandbox.
-- Each selected task must have acceptance criteria, verification commands, and scoped files.
-- `max_steps` is a positive integer override for the selected task execution budget. When omitted,
-  the loaded CLI config budget is used. The VS Code extension sends this only from a positive
-  `alysis.forgeExecuteMaxSteps` setting.
-- `no_log: true` disables JSONL session logging for the managed execution runner. It does not
-  suppress structured protocol events, bounded artifacts, or redacted errors. The VS Code
-  extension forwards `alysis.forgeExecuteNoLog` explicitly as `no_log`.
-- IDE Forge Execute v1 advertises `features.forge.execute.subagents_supported: false`, rejects
-  `subagents_enabled` request params, and keeps subagents disabled until worker lifecycle, sandbox,
-  approval, and cancellation semantics are strong enough.
-- File writes, shell commands, custom/MCP tools, and verification commands remain host-approved
-  through scoped approval requests. No action is auto-approved.
-- Dependent selected tasks only run after their dependencies have actually completed. If a selected
-  prerequisite fails verification or is blocked, downstream selected tasks are marked blocked and do
-  not start.
-- Execution is job-based. `job.status` becomes `completed` for successful review-mode execution and
-  `failed` for verification failure, blocked dependencies, agent failure, out-of-scope changes, or
-  protocol errors.
-- Execution emits structured status, task, worker, verification, review, warning, info, and error
-  events. Clients must not parse terminal output.
-- The terminal `forge_execute_completed` or `forge_execute_failed` info event is emitted only after
-  the bridge has recorded terminal `job.status`, `completed_at`, and `exit_code`; `session.list`
-  observes the same terminal active-job summary after that event.
-- Generated reports, context packs, verification artifacts, and patch diffs are exposed only through
-  scoped artifact/diff APIs.
-- Active runtime cancellation is cooperative checkpoint cancellation. Failed `forge.cancel` or
-  `session.cancel` must not be rendered as successful cancellation, and `cancellation_requested`
-  must not be rendered as terminal `cancelled`.
-
-```json
-{
-  "protocol_version": "1",
-  "id": "forge-execute",
-  "method": "forge.execute",
-  "params": {
-    "session_id": "20260519T100000Z_abcd1234",
-    "plan_id": "20260519T100002Z_aaaabbbb",
-    "task_ids": ["T01"],
-    "mode": "review",
-    "workspace_trusted": true,
-    "sandbox_profile": "strict",
-    "max_steps": 3,
-    "no_log": true
-  }
-}
-```
-
-### forge.cancel
-
-`forge.cancel` requests cooperative checkpoint cancellation for the active Forge job matching the
-given `session_id` and `plan_id`. It returns `status: "cancellation_requested"` when the request is
-accepted, `status: "no_active_job"` when no matching Forge job is running, or `status:
-"non_cancellable"` when the active job cannot observe cancellation. Pending Forge approvals are
-resolved as cancelled so review-mode execution can stop without terminal prompts.
-
-This method is capability-gated by `features.forge.cancel.supported`; method presence alone is not a
-promise of active cancellation. It is not a hard interrupt. Covered job kinds are advertised in
-`features.forge.cancel.covered_job_kinds` and include plan, plan-regeneration, review, execute, and
-swarm jobs. Session/job status uses `active_job` only for queued,
-running, or `cancellation_requested` jobs; completed, failed, and cancelled jobs move to `last_job`
-so status views do not show stale active Forge jobs after terminal events.
-
-### Durable Forge swarm lifecycle
-
-Workspace-Trust-gated swarm execution is both a live bridge job and a durable, restart-safe job.
-`forge.swarm.start` params: `session_id`, `plan_id`, `workspace_trusted: true`, optional bounded
-`parallel` (1–8, default 2), optional `idempotency_key`, and `approval_scope_grants` — launch-time
-pre-grants shaped as `[{kind, scope}]` using the exact
-allow-for-session scope payloads the IDE already receives in approval prompts; they are recorded
-into the session's approved scopes so matching dangerous actions never prompt. The job runs the
-real swarm engine in strict write-scope mode with the swarm-layer dispatch guard and the scheduler
-invariant that concurrent workers always hold disjoint (case-insensitively compared) write scopes.
-
-Supplying an `idempotency_key` makes start retry-safe: repeating the same request returns the same
-durable job instead of creating duplicate provider work. Reusing a key with a changed execution
-specification or permission fingerprint fails closed. If the key is omitted, the bridge generates
-one for that call. Durable records live outside the workspace but are scoped by bridge owner,
-canonical workspace, and session. Execution specifications and results are bounded and redacted.
-Worker lease tokens, permission fingerprints, and internal execution specifications are never
-returned through the IDE protocol.
-
-`forge.swarm.list` (required `session_id`, optional `limit`, default 100 and maximum 200) returns
-the bounded durable job history for that live session. Before list/status/result operations, an
-expired running lease is atomically recovered to `interrupted`; recovery never silently restarts
-provider work. Public durable state includes `job_id`, `state`, `revision`, `attempts`,
-`resume_count`, lifecycle timestamps, `result_available`, bounded error metadata, aggregate usage,
-and `resumable`.
-
-`forge.swarm.resume` is the only operation that restarts an interrupted or failed durable run. It
-requires `session_id`, `plan_id`, `job_id`, and `workspace_trusted: true`; it accepts optional
-fresh `approval_scope_grants`, `expected_revision`, bounded `parallel`, and normal model overrides.
-Omitting grants represents a fresh empty scope. Resume fails closed unless that fresh permission-
-scope fingerprint exactly matches the original start, and a stale revision is rejected rather
-than overwriting newer state. A claimed
-worker receives a private, renewable, generation-fenced lease. Expired, cancelled, or superseded
-workers cannot publish usage or terminal results. Usage events are attempt-idempotent, so retries do
-not double count calls or tokens.
-
-**Approvals replace `--yes`:** IDE swarm workers never run with `--yes`-style auto-approval.
-Dangerous actions (sensitive shell commands and every other gate the agent layer routes through
-approvals) raise approvals through the existing per-session system with task attribution
-(`forge_swarm_task_id`/`worker` in the prompt metadata, `swarm_approval_requested`/`_resolved`
-info events, and a `swarm_worker_state_changed` `approval_pending` state). The requesting worker
-pauses at that checkpoint — before the dangerous action runs — while sibling workers continue;
-`approval.respond` resumes it. Swarm approvals are persistent: a timeout re-emits
-`approval_pending` and leaves the task paused; it is never auto-denied and never killed
-mid-mutation. Cancelling the run resolves pending approvals as cancelled and the workers stop
-cooperatively. Terminal `forge swarm` keeps `--yes` as a terminal-only convenience.
-
-**Merge is review:** under IDE swarm nothing merges. The engine runs the review merge strategy —
-completed tasks stay `ready_for_merge` with preserved worktrees, and the bridge harvests one
-review diff per task (`execution/harvest/<task>.diff` + an untracked-files sidecar). The run
-result and `forge.swarm.result` carry a `review` payload listing the pending items.
-
-`forge.swarm.cancel` (params `session_id`, `job_id`, optional `reason` and
-`expected_revision`) first atomically marks the durable job cancelled and fences the active worker,
-then sets the live job's cancellation event, which is the same cooperative signal the swarm engine
-checkpoints on: running workers stop at their next checkpoint with task status `interrupted` and
-preserved worktrees,
-queued tasks never start, and nothing merges after the cancel. `forge.cancel` with the plan id
-covers swarm jobs too. `forge.swarm.status` returns the job summary plus live
-`task_status_counts` and durable status when available. `forge.swarm.result` accepts `job_id` and an
-optional `session_id`; `session_id` is required after a bridge restart when the job is no longer in
-the process-local registry. It returns a progress payload while active, a cancelled
-payload (with the partial run summary) after cooperative cancellation, and otherwise the run
-summary: `exit_code`, `run_status`, `clean`, `interrupted`, `interrupted_task_ids`,
-`verification_status`, `reason_codes`, and `task_status_counts`.
-
-`getCapabilities.features.resumable_swarm` is the compatibility gate for this lifecycle. It
-advertises durable external storage, workspace/session scoping, idempotent start, explicit resume,
-fresh permission fingerprints, fenced leases, restart recovery, atomic cancellation, exactly-once
-usage events, and the six lifecycle methods. Clients must not infer these guarantees from the
-presence of `forge.swarm.start` alone.
-
-Swarm progress streams as typed, bounded, backend-redacted events through the session surface and
-the bounded replay ring (`session.getEvents` replays them after reconnect): task lifecycle on
-`swarm_worker_state_changed` (worker_id = task id; states `scheduled`, `started`, `progress`,
-`interrupted`, `failed`, `merged`, with `approval_pending` reserved for approval routing),
-scope-violation and worker warnings on `warning_emitted`, and run lifecycle
-(`swarm_started`/`swarm_completed`/`swarm_cancelled`) on `info_emitted`/`warning_emitted`.
-
-### forge.swarm.review / forge.swarm.apply / forge.swarm.discard
-
-The per-task review surface for the review merge strategy (the same review semantics as the
-Execute v1 surface: diffs land in the working tree only on explicit apply; nothing auto-applies;
-nothing ever commits). `forge.swarm.review` (read-only) lists per-task items: state
-(`ready_for_merge`, `applied`, `discarded`, `failed`, `interrupted`, ...), the harvested
-`diff_artifact_id` (readable via `artifact.read`), and — mandatorily surfaced — the
-untracked-files sidecar (`untracked_files` plus a human-readable `untracked_files_note`,
-"untracked files created: …"), because untracked file contents are not part of the diff and must
-never land silently. Failed/interrupted items carry a structured `recovery` offer
-(`regenerate_subtree` via `forge.plan.regenerate.start`, with suggested instruction/focus;
-interrupted items also point at `forge.swarm.reconcile` harvest).
-
-`forge.swarm.apply` (Workspace Trust gated; explicit `task_ids`, batch-capable) applies each
-task's harvested diff to the canonical working tree with `git apply --check` first — per-task
-atomic, sequential in plan order, no staging, no commit (`working_tree_committed: false`); the
-applied task is marked `done` and an apply marker makes the call idempotent. The response repeats
-`untracked_files_not_applied` per task. `forge.swarm.discard` (Trust + `yes`/`confirm`; explicit
-`task_ids`) drops a task's preserved worktree, marks it `candidate_rejected`, and keeps harvest
-artifacts for audit; already-applied tasks refuse discard (revert through source control instead).
-Both refuse while a swarm job is active on the session.
-
-### forge.swarm.reconcile
-
-Post-crash/reload reconciliation over a run's persisted artifacts and preserved task worktrees.
-The default `action: "report"` is strictly read-only: it enumerates per-task state — `merged`,
-`interrupted` (with `diff_available`), `unstarted`, or the raw task status — plus worktree
-presence, patch/harvest artifact presence, and merge commit hashes, without touching the backend
-worktree ensure/reuse lifecycle. Explicit actions: `harvest` (Workspace Trust gated) writes
-per-task diff artifacts under `execution/harvest/` (working-tree diff against the base branch plus
-an untracked-file listing sidecar) for later review; `discard` (Trust + `yes`/`confirm` gated)
-drops preserved worktrees safely, refusing anything outside the run's `worktrees/` directory.
-Both actions are idempotent — harvesting twice rewrites the same artifacts, discarding twice
-reports `already_absent` — and nothing mutates without an explicit `action` param. Optional
-`task_ids` filters the scope; unknown ids fail closed with `task_not_found`.
-
-### diff.list
-
-Lists protocol-known diff review artifacts for a session and optional plan. The bridge only exposes
-diffs created under recorded Forge run artifact roots and returns opaque ids; callers cannot pass
-file paths for listing or reading. Reopened persisted plans work after `forge.open` because the
-bridge attaches that run's validated artifact root to the readonly inspection session. Symlinked
-patch directories are rejected, and symlinked diff files are not exposed.
-
-```json
-{"protocol_version":"1","id":"diffs","method":"diff.list","params":{"session_id":"20260519T100000Z_abcd1234","plan_id":"20260519T100002Z_aaaabbbb"}}
-```
-
-Each item includes `diff_id`, `session_id`, `plan_id`, `job_id`, `file_path`, `status`,
-`old_label`, `new_label`, and `size_bytes`. When the scoped plan has no diff artifacts yet, the
-response returns an empty `diffs` array with `empty_reason`.
-
-### diff.get
-
-Reads a diff by opaque `diff_id` with a byte cap. `session_id` and `plan_id` are required so the
-lookup is scoped to a single recorded Forge plan. The bridge resolves ids only from that plan's
-validated diff registry; `diff_id` is not a path and cannot be used for arbitrary file reads.
-Symlinked patch directories are rejected with `forge_registry_rejected`; symlinked or missing diff
-files resolve as `diff_not_found` without exposing external paths.
-
-```json
-{"protocol_version":"1","id":"diff","method":"diff.get","params":{"session_id":"20260519T100000Z_abcd1234","plan_id":"20260519T100002Z_aaaabbbb","diff_id":"diff_abc123","max_bytes":65536}}
-```
-
-The result includes `diff_id`, `session_id`, `plan_id`, `job_id`, `file_path`, `old_text`,
-`new_text`, `old_artifact_id`, `new_artifact_id`, `unified_diff`, `truncated`, `size_bytes`, and
-`max_bytes`. Current Forge execution patch artifacts are returned as `unified_diff`; old/new file
-snapshots are `null` until a runtime path records them as explicit artifacts.
-
-Diff protocol payloads are review previews, so the bridge applies the same protocol secret
-redaction used for other responses and events. The underlying Forge artifact on disk is not modified
-by preview redaction.
-
 ## Composer catalog and explicit skills
 
 `commands.list` is a read-only management method. With `mode: "chat"` (default)
 it returns `commands: [{name, usage, description}]` from the CLI slash command
-catalog. `mode: "forge"` additionally includes Forge commands. Hosts must expose
+catalog; `chat` is the only supported mode. Hosts must expose
 only entries they can execute or map to a native UI action; this endpoint does
 not execute terminal commands.
 
@@ -2420,8 +1819,7 @@ the built-ins and the user's `agents/` folder. It returns `subagents_enabled`,
 `user_agents_dir`, `agents: [{name, builtin, description, mode,
 allow_workspace_writes, model_role, model, profile, enabled, available, unavailable,
 effective_model, effective_profile, problem, user_file, settable,
-not_settable_reason}]`, `roles: [{role, description, model, effective_model,
-forge, forge_model, forge_effective_model}]` and `profiles: [{name, active, usable,
+not_settable_reason}]`, `roles: [{role, description, model, effective_model}]` and `profiles: [{name, active, usable,
 reason}]`: whether a subagent can run on each saved provider profile (another
 profile needs its own base URL and key or account). `effective_model` and
 `effective_profile` are what a run would use now, resolved as a run resolves them;

@@ -177,3 +177,96 @@ def test_change_timing_is_relative_to_the_last_published_answer(case):
     assert "Changes since the previous published reply" in task_state(runtime._context(current))
     disabled = {**current, "config": {**current["config"], "memory_enabled": False}}
     assert memory["id"] not in encode(runtime._context(disabled))
+
+
+def _saved(
+    store, owner, bot, task, *, title="Ώρα συνάντησης", content="Πρωινά, πριν τις 10", target=None
+):
+    return store.save_memory(
+        owner,
+        bot["id"],
+        MemoryInput(title=title, content=content),
+        source_task_id=task["id"],
+        replaces_memory_id=target,
+        saved_by_owl=True,
+    )
+
+
+def _listed(store, owner, bot):
+    return {m["id"]: (m["status"], m["content"]) for m in store.list_memories(owner, bot["id"])}
+
+
+def test_what_an_owl_saves_is_kept_at_once_and_undo_forgets_it(case):
+    store, owner, bot, task = case
+    memory = _saved(store, owner, bot, task)
+    assert memory["status"] == "active"
+    own = store.save_memory(owner, bot["id"], MemoryInput(title="Mine", content="Typed by me"))
+    undo = {m["id"]: m["can_undo"] for m in store.list_memories(owner, bot["id"], for_person=True)}
+    assert undo == {memory["id"]: True, own["id"]: False}
+    assert "can_undo" not in store.list_memories(owner, bot["id"])[0]  # the owl never sees it
+    store.delete_item(owner, bot["id"], own["id"], kind="memories")
+    assert _listed(store, owner, bot) == {memory["id"]: ("active", "Πρωινά, πριν τις 10")}
+    assert store.undo_memory(owner, bot["id"], memory["id"]) == {
+        "id": memory["id"],
+        "restored_memory_id": None,
+    }
+    assert _listed(store, owner, bot) == {}
+    # Newest first; the receipts hold no preference text.
+    events = store.memory_changes(owner, bot["id"])["events"]
+    assert [e["action"] for e in events if e["memory_id"] == memory["id"]] == ["undone", "saved"]
+    assert "Πρωινά" not in encode(events)
+    with pytest.raises(Conflict):
+        store.undo_memory(owner, bot["id"], memory["id"])
+
+
+def test_an_owls_correction_replaces_at_once_and_undo_brings_the_old_one_back(case):
+    store, owner, bot, task = case
+    old = store.save_memory(owner, bot["id"], MemoryInput(title="City", content="Lives in Lisbon"))
+    new = _saved(store, owner, bot, task, title="City", content="Lives in Porto", target=old["id"])
+    # The old one is no longer listed or used, but is kept for Undo.
+    assert _listed(store, owner, bot) == {new["id"]: ("active", "Lives in Porto")}
+    with pytest.raises(Conflict):
+        store.decide_memory(owner, bot["id"], old["id"], "active")
+    result = store.undo_memory(owner, bot["id"], new["id"])
+    assert result == {"id": new["id"], "restored_memory_id": old["id"]}
+    assert _listed(store, owner, bot) == {old["id"]: ("active", "Lives in Lisbon")}
+
+
+@pytest.mark.parametrize("change", ["delete", "reject", "edit"])
+def test_when_a_replacement_goes_or_becomes_the_persons_the_old_words_are_erased(case, change):
+    store, owner, bot, task = case
+    old = store.save_memory(owner, bot["id"], MemoryInput(title="City", content="Lives in Lisbon"))
+    new = _saved(store, owner, bot, task, title="City", content="Lives in Porto", target=old["id"])
+    if change == "delete":
+        store.delete_item(owner, bot["id"], new["id"], kind="memories")
+    elif change == "reject":
+        store.decide_memory(owner, bot["id"], new["id"], "rejected")
+    else:
+        store.save_memory(
+            owner,
+            bot["id"],
+            MemoryInput(title="City", content="Lives in Porto, Foz"),
+            memory_id=new["id"],
+        )
+        # The person's edit makes it theirs: nothing is left to undo.
+        with pytest.raises(Conflict):
+            store.undo_memory(owner, bot["id"], new["id"])
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT status,title,content FROM memories WHERE id=?", (old["id"],)
+        ).fetchone()
+    assert (row["status"], row["title"], row["content"]) == ("rejected", "", "")
+
+
+def test_only_what_an_owl_saved_by_itself_can_be_undone(case):
+    store, owner, bot, task = case
+    own = store.save_memory(owner, bot["id"], MemoryInput(title="Mine", content="Typed by me"))
+    suggestion = store.save_memory(
+        owner, bot["id"], MemoryInput(title="Idea", content="Suggested"), source_task_id=task["id"]
+    )
+    for memory in (own, suggestion):
+        with pytest.raises(Conflict):
+            store.undo_memory(owner, bot["id"], memory["id"])
+    with pytest.raises(NotFound):
+        store.undo_memory(owner, bot["id"], "missing")
+    assert suggestion["status"] == "pending"

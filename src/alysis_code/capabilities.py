@@ -84,13 +84,9 @@ _CAPABILITY_DEFINITIONS: tuple[CapabilityDefinition, ...] = (
 _CAPABILITY_BY_NAME = {definition.name: definition for definition in _CAPABILITY_DEFINITIONS}
 
 
-# Credential-free build support used by the App and IDE runtime gates.  Forge Host v2 is the
-# only advertised planning authority; the legacy desktop planner protocol is deliberately absent.
-DESKTOP_PROTOCOLS: tuple[tuple[str, int], ...] = (
-    ("forge-host", 2),
-    ("forge-contract-v2", 2),
-    ("forge-status", 1),
-)
+# Credential-free build support used by the App and IDE runtime gates. No versioned protocol
+# is advertised; hosts still receive an empty `protocols` object (contract version 1).
+DESKTOP_PROTOCOLS: tuple[tuple[str, int], ...] = ()
 
 DESKTOP_FEATURES: tuple[str, ...] = (
     "ide.bridge",
@@ -112,16 +108,6 @@ DESKTOP_FEATURES: tuple[str, ...] = (
     "shell.additional-workspace-roots-v1",
     "shell.desktop-runtime-roots-v1",
     "host.file-policy-v1",
-    "forge.host-v2",
-    "forge.host-authoritative-verification-v1",
-    "forge.planning-profiles-v1",
-    "forge.workspace-check",
-    "forge.verification-check",
-    "forge.swarm.failure-diagnostics",
-    "forge.contract-v2",
-    "forge.preflight",
-    "forge.status-channel",
-    "forge.provider-budgets",
     "run.instruction-stdin",
     "run.session-resume",
     "settings.web-tools-config",
@@ -210,6 +196,8 @@ def _detected_sandbox_backends() -> list[str]:
 def build_capabilities_payload() -> dict[str, Any]:
     """Return credential-free build support for local surface negotiation."""
 
+    from .cli_impl.chat_slash_catalog import command_rows
+
     return {
         "ok": True,
         "contract": "alysis.capabilities",
@@ -217,6 +205,7 @@ def build_capabilities_payload() -> dict[str, Any]:
         "name": "alysis",
         "version": __version__,
         "protocols": dict(DESKTOP_PROTOCOLS),
+        "chat_commands": command_rows(),
         "features": {
             feature: True
             for feature in DESKTOP_FEATURES

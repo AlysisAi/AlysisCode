@@ -37,7 +37,6 @@ Not salvaged (router-only — behavior is deleted with the router):
   router's advisory one-shot gate bypass; unified one-shot turns derive
   execute intent and are governed by the one-shot completion gate
   (tests/test_agent_loop_one_shot_follow_through.py).
-- test_forge_exec_mcp_write_task_uses_semantic_repo_route — route semantics.
 - All router-fallback/arbitration/posture-contract tests
   (test_repo_backed_*, test_failed_router_model_*, test_router_exception_*,
   test_malformed_router_*, test_router_failure_*,
@@ -68,9 +67,7 @@ Already covered elsewhere (not duplicated here):
 - /chat continuity: tests/test_ask_and_chat_turns.py.
 - First-repo-turn grounding retry (test_first_repo_turn_*):
   tests/test_agent_loop_interactive_execution_posture.py.
-- Custom-tool stdout/stderr session artifacts
-  (test_forge_custom_tool_streams_use_session_artifacts):
-  tests/test_custom_tools_runtime.py.
+- Custom-tool stdout/stderr session artifacts: tests/test_custom_tools_runtime.py.
 """
 
 from __future__ import annotations

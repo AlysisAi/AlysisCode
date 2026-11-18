@@ -35,7 +35,7 @@ opaque IDE task/debug launches) are unavailable while a persona write scope is a
 - The model can *propose* a switch with the `switch_mode` tool. You approve or decline
   through a normal approval prompt; an approved switch applies when the turn ends, declining
   is not an error, and a repeated identical proposal is auto-declined. The tool exists only
-  in top-level interactive chat — one-shot runs, Forge, swarm workers, and subagents never
+  in top-level interactive chat — one-shot runs and subagents never
   see it, so automation cannot switch personas silently.
 - `/permissions` is the execution-permissions command. An explicit
   `/permissions <exec-mode>` always wins:
@@ -43,11 +43,9 @@ opaque IDE task/debug launches) are unavailable while a persona write scope is a
 - Permission selections apply to the next user message; repeated selections replace
   the pending choice without changing a running turn's tools. Persona changes
   during a running turn apply after it finishes.
-- Persona switches are inert inside a Forge session.
 - Chat plan mode is gone: the former `/plan mode` overlay and the `/plan <task>`
   draft → review → approve → execute loop were both removed, and `/plan` is not a chat
-  command any more. Architect is the planning posture; Forge keeps its own
-  `/plan tasks|markdown|edit`.
+  command any more. Architect is the planning posture.
 - The active persona survives `/resume`: the base mode is restored from the session start and
   the last applied persona is re-applied on top, reproducing the narrowed mode, scope, and
   model exactly.

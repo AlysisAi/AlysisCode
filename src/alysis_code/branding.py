@@ -90,10 +90,5 @@ def canonical_server_data_dir() -> Path:
     return Path(user_data_dir(CANONICAL_SERVER_APP_NAME, CANONICAL_APP_NAME))
 
 
-def resolve_project_dir(root: Path) -> Path:
-    """Return the canonical per-repository agent directory without moving data."""
-    return root / PROJECT_DIR_NAME
-
-
 def plugin_manifest_candidates() -> tuple[str, ...]:
     return (PLUGIN_MANIFEST_NAME,)

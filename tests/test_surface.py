@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +12,10 @@ from alysis_code.agent_loop import AgentSession, ToolDef
 from alysis_code.approval_scope import exact_file_set_scope
 from alysis_code.config import AppConfig
 from alysis_code.interactive_input_guard import is_interactive_prompt_active
-from alysis_code.knowledge_capture import RecordingSurface
 from alysis_code.llm.openai_compat import LLMResponse, ToolCall
 from alysis_code.model_registry import ModelMeta
 from alysis_code.session_store import SessionStore
 from alysis_code.surface import rich_surface as rich_surface_mod
-from alysis_code.surface.noop_surface import NoopSurface
 from alysis_code.surface.rich_surface import RichSurface
 from alysis_code.surface.types import (
     ApprovalDecision,
@@ -312,44 +309,6 @@ def test_rich_surface_renders_tool_transcript_error_guidance() -> None:
         in out
     )
     assert "Check base URL, API key, and network connectivity." not in out
-
-
-def test_recording_surface_falls_back_to_python_warning_for_noop_delegate() -> None:
-    delegate = NoopSurface()
-    error_calls: list[str] = []
-    delegate.on_error = lambda err: error_calls.append(err)  # type: ignore[method-assign]
-    surface = RecordingSurface(delegate)
-
-    with warnings.catch_warnings(record=True) as seen:
-        warnings.simplefilter("always")
-        surface.on_warning("Model metadata warning for unknown-model-xyz")
-
-    assert error_calls == []
-    assert any("unknown-model-xyz" in str(item.message) for item in seen)
-
-
-def test_recording_surface_forwards_delegate_warning_without_duplicate_fallback() -> None:
-    class _WarningDelegate(NoopSurface):
-        def __init__(self) -> None:
-            self.warnings: list[str] = []
-            self.errors: list[str] = []
-
-        def on_warning(self, warning: str) -> None:
-            self.warnings.append(warning)
-
-        def on_error(self, err: str) -> None:
-            self.errors.append(err)
-
-    delegate = _WarningDelegate()
-    surface = RecordingSurface(delegate)
-
-    with warnings.catch_warnings(record=True) as seen:
-        warnings.simplefilter("always")
-        surface.on_warning("Model metadata warning for unknown-model-xyz")
-
-    assert delegate.warnings == ["Model metadata warning for unknown-model-xyz"]
-    assert delegate.errors == []
-    assert seen == []
 
 
 def test_rich_surface_can_hide_status_line() -> None:
@@ -1110,50 +1069,6 @@ def test_rich_surface_uses_permissions_label_for_execution_mode_changes() -> Non
     out = buffer.getvalue()
     assert "Permissions: auto" in out
     assert "Mode: auto" not in out
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "Applied planner update to the Forge plan.",
-        "Planner response ready.",
-        "Planner update was a no-op.",
-        "Planner returned an error; using fallback handling.",
-        "Planner request recovered after 1 transient retry.",
-        "Swarm completed with exit code 1. Summary: summary.md.",
-        "[None] Swarm completed with exit code 1. Summary: summary.md.",
-        "[T01] Swarm aborted: worker failed before completion.",
-    ],
-)
-def test_rich_surface_terminal_progress_does_not_restart_spinner(
-    monkeypatch: pytest.MonkeyPatch,
-    message: str,
-) -> None:
-    buffer = io.StringIO()
-    surface = RichSurface(console=Console(file=buffer, force_terminal=False))
-    started: list[str] = []
-    stopped: list[None] = []
-    monkeypatch.setattr(
-        surface,
-        "_start_thinking_spinner",
-        lambda *, label: started.append(label),
-    )
-    monkeypatch.setattr(
-        surface,
-        "_stop_thinking_spinner",
-        lambda: stopped.append(None),
-    )
-
-    surface.on_progress_update("Receiving planner output...")
-    assert started == ["Thinking..."]
-
-    started.clear()
-    stopped.clear()
-    surface.on_progress_update(message)
-
-    assert started == []
-    assert stopped
-    assert message in buffer.getvalue()
 
 
 def test_rich_surface_trace_off_hides_reasoning_lines() -> None:

@@ -21,7 +21,7 @@ def _status() -> dict[str, object]:
     return {
         "run_id": "run-2",
         "subagent": "implementer",
-        "label": "forge-persist",
+        "label": "notes-persist",
         "state": "running",
         "elapsed_ms": 24_800,
         "steps_completed": 6,
@@ -39,7 +39,7 @@ def test_subagents_picker_selects_an_active_run_for_the_panel() -> None:
                     {
                         "run_id": "run-live",
                         "subagent": "explorer",
-                        "label": "forge-plan",
+                        "label": "draft-plan",
                         "state": "running",
                         "workspace_view": "shared",
                         "elapsed_ms": 1500,
@@ -73,7 +73,7 @@ def test_subagents_picker_selects_an_active_run_for_the_panel() -> None:
     assert spec is not None
     assert spec["title"] == "Active Subagents"
     assert [row["value"] for row in spec["rows"]] == ["run-live"]
-    assert spec["rows"][0]["label"] == "explorer \u00b7 forge-plan"
+    assert spec["rows"][0]["label"] == "explorer \u00b7 draft-plan"
     assert "running" in spec["rows"][0]["description"]
     spec["on_select"]("run-live")
     assert panel_state["selected_run_id"] == "run-live"
@@ -97,7 +97,7 @@ def test_panel_renders_status_body_and_rotation_hint() -> None:
     )
 
     assert _text(rows[0]) == (
-        "implementer \u00b7 forge-persist \u00b7 running \u00b7 24s \u00b7 6 steps "
+        "implementer \u00b7 notes-persist \u00b7 running \u00b7 24s \u00b7 6 steps "
         "\u00b7 isolated    view 2/3"
     )
     body = "\n".join(_text(row) for row in rows[1:-1])
@@ -335,15 +335,15 @@ def test_surface_reports_child_run_ids_in_start_order() -> None:
                 name="implementer",
                 mode="review",
                 subagent_run_id=run_id,
-                label=f"forge-{run_id[-1]}",
+                label=f"batch-{run_id[-1]}",
             )
         )
 
     assert seen == ["run-1", "run-2"]
     rendered = [text for kind, text in transcript.entries if kind == "subagent"]
     assert rendered == [
-        "\u21aa implementer \u00b7 forge-1 \u00b7 review",
-        "\u21aa implementer \u00b7 forge-2 \u00b7 review",
+        "\u21aa implementer \u00b7 batch-1 \u00b7 review",
+        "\u21aa implementer \u00b7 batch-2 \u00b7 review",
     ]
 
 

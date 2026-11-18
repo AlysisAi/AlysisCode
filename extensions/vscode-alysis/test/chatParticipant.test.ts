@@ -76,64 +76,28 @@ test("@alysis /help opens the primary sidebar conversation", async () => {
   assert.deepEqual(response.buttons.map((button) => button.command), ["alysis.openChat"]);
 });
 
-test("@alysis /forge plan routes to Cockpit slash router without model fallback", async () => {
-  const executed: string[] = [];
+test("@alysis retired plan commands are unknown and never reach the slash router", async () => {
+  let executed = 0;
   const router = new AlysisChatParticipantRouter({
     openCockpit: async () => undefined,
     slashRouter: {
-      execute: async (input: string) => {
-        executed.push(input);
-        return slashResult("Routed /forge plan to Forge Plan.");
-      }
-    }
-  });
-  const response = createResponseStream();
-
-  const result = await router.handle({ command: "forge", prompt: "implement fixture cleanup" }, response.stream);
-
-  assert.deepEqual(executed, ["/forge plan implement fixture cleanup"]);
-  assert.equal(result.metadata?.command, "plan");
-  assert.equal(result.metadata?.slashCommand, "/forge plan implement fixture cleanup");
-  assert.match(response.markdown.join("\n"), /Alysis Code command routed/);
-});
-
-test("@alysis /forge plan without arguments returns shared slash usage instead of unknown command", async () => {
-  const executed: string[] = [];
-  const router = new AlysisChatParticipantRouter({
-    openCockpit: async () => undefined,
-    slashRouter: {
-      execute: async (input: string) => {
-        executed.push(input);
-        return slashResult("Usage: /forge plan <instruction>", "warning");
-      }
-    }
-  });
-  const response = createResponseStream();
-
-  const result = await router.handle({ command: "forge", prompt: "" }, response.stream);
-
-  assert.deepEqual(executed, ["/forge plan"]);
-  assert.equal(result.metadata?.command, "plan");
-  assert.match(response.markdown.join("\n"), /Usage: \/forge plan \\?<instruction\\?>/);
-  assert.doesNotMatch(response.markdown.join("\n"), /Unknown @alysis/);
-});
-
-test("@alysis /execute routes preview and review commands explicitly", async () => {
-  const executed: string[] = [];
-  const router = new AlysisChatParticipantRouter({
-    openCockpit: async () => undefined,
-    slashRouter: {
-      execute: async (input: string) => {
-        executed.push(input);
-        return slashResult(`Routed ${input}.`);
+      execute: async () => {
+        executed += 1;
+        return slashResult("must not run");
       }
     }
   });
 
-  await router.handle({ command: "execute", prompt: "" }, createResponseStream().stream);
-  await router.handle({ command: "execute", prompt: "preview first" }, createResponseStream().stream);
-
-  assert.deepEqual(executed, ["/execute plan", "/execute preview"]);
+  for (const request of [
+    { command: "forge", prompt: "implement fixture cleanup" },
+    { command: "execute", prompt: "" },
+    { prompt: "/forge plan implement fixture cleanup" },
+    { prompt: "/execute preview" }
+  ]) {
+    const result = await router.handle(request, createResponseStream().stream);
+    assert.equal(result.metadata?.command, "unknown", JSON.stringify(request));
+  }
+  assert.equal(executed, 0);
 });
 
 test("@alysis /doctor routes through Cockpit doctor", async () => {
@@ -203,12 +167,12 @@ test("@alysis surfaces Workspace Trust blocks from slash router", async () => {
   const router = new AlysisChatParticipantRouter({
     openCockpit: async () => undefined,
     slashRouter: {
-      execute: async () => slashResult("/forge plan requires Workspace Trust.", "warning")
+      execute: async () => slashResult("/doctor requires Workspace Trust.", "warning")
     }
   });
   const response = createResponseStream();
 
-  const result = await router.handle({ command: "forge", prompt: "modify files" }, response.stream);
+  const result = await router.handle({ command: "doctor", prompt: "" }, response.stream);
 
   assert.equal(result.errorDetails, undefined);
   assert.match(response.markdown.join("\n"), /Workspace Trust/);

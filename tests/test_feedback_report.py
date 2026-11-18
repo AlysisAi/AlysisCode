@@ -16,7 +16,6 @@ from typer.testing import CliRunner
 from alysis_code import cli as cli_mod
 from alysis_code.cli import app as alysis_app
 from alysis_code.config import AppConfig, ConfigError
-from alysis_code.failure_category import FailureCategory
 from alysis_code.feedback_report import (
     FeedbackBundleResult,
     FeedbackGithubIssueResult,
@@ -24,7 +23,6 @@ from alysis_code.feedback_report import (
     create_feedback_bundle,
     create_feedback_github_issue_draft,
 )
-from alysis_code.forge import attach_asset, create_plan_run
 from alysis_code.session_store import SessionStore
 from alysis_code.web_research import build_web_research_artifact_from_events
 
@@ -105,7 +103,7 @@ def _write_retained_session(
     return log_path, artifact_root
 
 
-def test_create_feedback_bundle_collects_retained_session_and_current_run(tmp_path: Path) -> None:
+def test_create_feedback_bundle_collects_retained_session(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "src").mkdir()
@@ -118,76 +116,6 @@ def test_create_feedback_bundle_collects_retained_session_and_current_run(tmp_pa
     )
     cfg = AppConfig(session_log_dir=os.fspath(sessions_dir))
 
-    paths = create_plan_run(workspace)
-    paths.execution_reports_dir.mkdir(parents=True, exist_ok=True)
-    paths.execution_logs_dir.mkdir(parents=True, exist_ok=True)
-    paths.execution_sessions_dir.mkdir(parents=True, exist_ok=True)
-    paths.execution_verify_dir.mkdir(parents=True, exist_ok=True)
-    (paths.execution_dir / "trace").mkdir(parents=True, exist_ok=True)
-    (paths.execution_dir / "worker_results").mkdir(parents=True, exist_ok=True)
-    (paths.execution_integration_dir / "batch_001").mkdir(parents=True, exist_ok=True)
-    (paths.knowledge_selected_dir).mkdir(parents=True, exist_ok=True)
-    (paths.execution_reports_dir / "T01.md").write_text("report\n", encoding="utf-8")
-    (paths.execution_logs_dir / "run.log").write_text(
-        f"error at {workspace / 'src' / 'app.py'}\n",
-        encoding="utf-8",
-    )
-    (paths.execution_sessions_dir / "worker_01").mkdir(parents=True, exist_ok=True)
-    (paths.execution_sessions_dir / "worker_01" / "artifact.txt").write_text(
-        "session artifact\n",
-        encoding="utf-8",
-    )
-    (paths.execution_verify_dir / "verify.txt").write_text("verify\n", encoding="utf-8")
-    (paths.execution_dir / "trace" / "swarm_trace.jsonl").write_text("{}\n", encoding="utf-8")
-    category_payloads = {
-        "implementation": FailureCategory.IMPLEMENTATION_FAILED.value,
-        "provider": FailureCategory.PROVIDER_THROTTLED.value,
-        "planner": FailureCategory.PLANNER_FAILED.value,
-    }
-    for name, category in category_payloads.items():
-        (paths.execution_dir / "worker_results" / f"{name}.json").write_text(
-            json.dumps(
-                {
-                    "task_id": name,
-                    "success": False,
-                    "verify_failed": False,
-                    "failure_reason": "failed",
-                    "result_kind": "failure",
-                    "failure_category": category,
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-    (paths.execution_integration_dir / "batch_001" / "result.json").write_text(
-        json.dumps(
-            {
-                "passed": False,
-                "summary": "integration verify failed",
-                "failure_category": FailureCategory.VERIFICATION_FAILED.value,
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    (paths.execution_integration_dir / "batch_001" / "infra.json").write_text(
-        json.dumps(
-            {
-                "passed": False,
-                "summary": "docker socket missing",
-                "failure_category": FailureCategory.INFRA_UNAVAILABLE.value,
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    (paths.knowledge_selected_dir / "fact.md").write_text("fact\n", encoding="utf-8")
-    (paths.run_dir / "worktrees" / "task_01").mkdir(parents=True, exist_ok=True)
-    (paths.run_dir / "worktrees" / "task_01" / "ignored.txt").write_text(
-        "ignore me\n",
-        encoding="utf-8",
-    )
-
     result = create_feedback_bundle(
         workspace_root=workspace,
         cfg=cfg,
@@ -199,7 +127,6 @@ def test_create_feedback_bundle_collects_retained_session_and_current_run(tmp_pa
     assert result.bundle_dir.exists()
     assert result.zip_path.exists()
     assert result.session_id == "sess_demo"
-    assert result.run_id == paths.run_id
 
     assert (result.bundle_dir / "manifest.json").exists()
     assert (result.bundle_dir / "feedback.md").exists()
@@ -209,44 +136,12 @@ def test_create_feedback_bundle_collects_retained_session_and_current_run(tmp_pa
     assert (result.bundle_dir / "session" / "artifacts" / "tool_outputs" / "latest.txt").read_text(
         encoding="utf-8"
     ) == (artifact_root / "tool_outputs" / "latest.txt").read_text(encoding="utf-8")
-    assert (result.bundle_dir / "forge" / "current_run.json").exists()
-    assert (result.bundle_dir / "forge" / "run" / "plan" / "PLAN.md").exists()
-    assert (result.bundle_dir / "forge" / "run" / "execution" / "reports" / "T01.md").exists()
-    assert (result.bundle_dir / "forge" / "run" / "execution" / "logs" / "run.log").exists()
-    assert (
-        result.bundle_dir
-        / "forge"
-        / "run"
-        / "execution"
-        / "sessions"
-        / "worker_01"
-        / "artifact.txt"
-    ).exists()
-    assert (
-        result.bundle_dir / "forge" / "run" / "execution" / "trace" / "swarm_trace.jsonl"
-    ).exists()
-    assert (result.bundle_dir / "forge" / "run" / "knowledge" / "selected" / "fact.md").exists()
-    assert not (result.bundle_dir / "forge" / "run" / "worktrees").exists()
 
     manifest = json.loads((result.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
-    copied_pointer = json.loads(
-        (result.bundle_dir / "forge" / "current_run.json").read_text(encoding="utf-8")
-    )
     assert manifest["session"]["included_log"] is True
     assert manifest["session"]["included_artifacts"] is True
     assert manifest["session"]["included_snapshot"] is False
-    assert manifest["run"]["included_execution"] is True
-    assert manifest["run"]["included_knowledge"] is True
-    assert manifest["run"]["failure_category_counts"] == {
-        FailureCategory.INFRA_UNAVAILABLE.value: 1,
-        FailureCategory.PROVIDER_UNAVAILABLE.value: 0,
-        FailureCategory.PROVIDER_THROTTLED.value: 1,
-        FailureCategory.PROVIDER_ERROR.value: 0,
-        FailureCategory.PLANNER_FAILED.value: 1,
-        FailureCategory.IMPLEMENTATION_FAILED.value: 1,
-        FailureCategory.VERIFICATION_FAILED.value: 1,
-    }
-    assert manifest["run"]["excluded_worktrees"] is True
+    assert "run" not in manifest
     assert manifest["workspace_root"] == "<workspace-root>"
     assert (
         manifest["bundle_dir"]
@@ -258,13 +153,6 @@ def test_create_feedback_bundle_collects_retained_session_and_current_run(tmp_pa
     )
     assert manifest["session"]["log_path"] == "[redacted host path: sess_demo.jsonl]"
     assert manifest["session"]["artifact_root"] == "[redacted host path: sess_demo]"
-    assert (
-        manifest["run"]["run_dir"]
-        == paths.run_dir.resolve().relative_to(workspace.resolve()).as_posix()
-    )
-    assert manifest["run"]["current_run_pointer_path"] == ".alysis/current_run.json"
-    assert copied_pointer["workspace_root"] == "<workspace-root>"
-    assert copied_pointer["focus_path"] == "."
 
     session_score = json.loads(
         (result.bundle_dir / "session_score.json").read_text(encoding="utf-8")
@@ -278,27 +166,14 @@ def test_create_feedback_bundle_collects_retained_session_and_current_run(tmp_pa
     assert session_score["last_verification_failure_kind"] == "non_authoritative"
 
     summary_md = (result.bundle_dir / "summary.md").read_text(encoding="utf-8")
-    workspace_summary_md = (
-        result.bundle_dir / "forge" / "run" / "plan" / "context" / "workspace_summary.md"
-    ).read_text(encoding="utf-8")
-    exported_run_log = (
-        result.bundle_dir / "forge" / "run" / "execution" / "logs" / "run.log"
-    ).read_text(encoding="utf-8")
     assert "- Output Root: `alysis-feedback`" in summary_md
     assert "- Included Session Log: `session/log.jsonl`" in summary_md
-    assert "- Included Current Run Pointer: `forge/current_run.json`" in summary_md
     assert "- Verification Selection Source: `config.verify_commands_fallback`" in summary_md
     assert "- Verification Contract Type: `generic_fallback`" in summary_md
     assert "- Verification Authoritative: no" in summary_md
     assert "- Verification Failure Kind: `non_authoritative`" in summary_md
-    assert "- Workspace Root: `.`" in workspace_summary_md
-    assert "- Git Root: `(none)`" in workspace_summary_md
-    assert "error at src/app.py" in exported_run_log
     assert os.fspath(tmp_path) not in json.dumps(manifest, sort_keys=True)
-    assert os.fspath(tmp_path) not in json.dumps(copied_pointer, sort_keys=True)
     assert os.fspath(tmp_path) not in summary_md
-    assert os.fspath(tmp_path) not in workspace_summary_md
-    assert os.fspath(tmp_path) not in exported_run_log
 
     with zipfile.ZipFile(result.zip_path) as zf:
         names = set(zf.namelist())
@@ -308,9 +183,7 @@ def test_create_feedback_bundle_collects_retained_session_and_current_run(tmp_pa
     assert "session/log.jsonl" in names
     assert "session/artifacts/tool_outputs/latest.txt" in names
     assert "session/web_research_sources.json" not in names
-    assert "forge/current_run.json" in names
-    assert "forge/run/execution/trace/swarm_trace.jsonl" in names
-    assert "forge/run/worktrees/task_01/ignored.txt" not in names
+    assert not any(name.startswith("forge/") for name in names)
 
 
 def test_create_feedback_bundle_includes_canonical_web_research_artifact(
@@ -788,13 +661,6 @@ def test_create_feedback_bundle_redacts_secrets_in_exported_files(tmp_path: Path
     )
     cfg = AppConfig(session_log_dir=os.fspath(sessions_dir))
 
-    paths = create_plan_run(workspace)
-    paths.execution_reports_dir.mkdir(parents=True, exist_ok=True)
-    (paths.execution_reports_dir / "T01.md").write_text(
-        "OPENAI_API_KEY=super-secret-value\n",
-        encoding="utf-8",
-    )
-
     result = create_feedback_bundle(
         workspace_root=workspace,
         cfg=cfg,
@@ -806,18 +672,13 @@ def test_create_feedback_bundle_redacts_secrets_in_exported_files(tmp_path: Path
     exported_artifact = (
         result.bundle_dir / "session" / "artifacts" / "tool_outputs" / "payload.txt"
     ).read_text(encoding="utf-8")
-    exported_report = (
-        result.bundle_dir / "forge" / "run" / "execution" / "reports" / "T01.md"
-    ).read_text(encoding="utf-8")
     feedback_md = (result.bundle_dir / "feedback.md").read_text(encoding="utf-8")
 
     assert "sk-secret-1234567890abcdef" not in exported_log
     assert "secret-token-12345678" not in exported_artifact
-    assert "super-secret-value" not in exported_report
     assert "sk-secret-1234567890abcdef" not in feedback_md
     assert "[REDACTED]" in exported_log
     assert "[REDACTED]" in exported_artifact
-    assert "[REDACTED]" in exported_report
     assert "[REDACTED]" in feedback_md
 
 
@@ -1351,34 +1212,6 @@ def test_create_feedback_bundle_sanitizes_windows_freeform_paths_in_copied_json_
     )
 
 
-def test_create_feedback_bundle_sanitizes_exported_asset_original_paths(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    sessions_dir = tmp_path / "sessions"
-    _write_retained_session(sessions_dir=sessions_dir, session_id="sess_assets")
-    cfg = AppConfig(session_log_dir=os.fspath(sessions_dir))
-
-    create_plan_run(workspace)
-    asset_source = workspace / "brief.txt"
-    asset_source.write_text("brief\n", encoding="utf-8")
-    attach_asset(workspace, asset_source)
-
-    result = create_feedback_bundle(
-        workspace_root=workspace,
-        cfg=cfg,
-        latest=True,
-    )
-
-    exported_plan = json.loads(
-        (result.bundle_dir / "forge" / "run" / "plan" / "plan.json").read_text(encoding="utf-8")
-    )
-    asset = exported_plan["assets"][0]
-
-    assert asset["original_path"] == "brief.txt"
-    assert asset["stored_path"].startswith(".alysis/runs/")
-    assert os.fspath(tmp_path) not in json.dumps(exported_plan, sort_keys=True)
-
-
 def test_create_feedback_bundle_redacts_foreign_session_workspace_metadata(
     tmp_path: Path,
 ) -> None:
@@ -1403,8 +1236,6 @@ def test_create_feedback_bundle_redacts_foreign_session_workspace_metadata(
         encoding="utf-8",
     )
     cfg = AppConfig(session_log_dir=os.fspath(sessions_dir))
-
-    create_plan_run(workspace)
 
     result = create_feedback_bundle(
         workspace_root=workspace,
@@ -1505,17 +1336,6 @@ def test_create_feedback_bundle_rejects_unsafe_explicit_session_id(tmp_path: Pat
         )
 
 
-def test_create_feedback_bundle_rejects_unsafe_explicit_run_id(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    with pytest.raises(FeedbackReportError, match="Invalid run id"):
-        create_feedback_bundle(
-            workspace_root=workspace,
-            run_id="../../src",
-        )
-
-
 def test_create_feedback_github_issue_draft_builds_sanitized_prefill(
     tmp_path: Path,
 ) -> None:
@@ -1574,7 +1394,6 @@ def test_create_feedback_github_issue_draft_can_be_disabled_or_not_opened(
         output_root=workspace / "alysis-feedback",
         workspace_root=workspace,
         session_id="sid",
-        run_id=None,
     )
     opened_urls: list[str] = []
 
@@ -1638,7 +1457,6 @@ def test_chat_report_command_creates_bundle_host_side(monkeypatch, tmp_path: Pat
             output_root=tmp_path / "alysis-feedback",
             workspace_root=tmp_path,
             session_id="sid",
-            run_id=None,
         )
 
     def fake_create_feedback_github_issue_draft(**kwargs: Any) -> FeedbackGithubIssueResult:
@@ -1671,7 +1489,6 @@ def test_chat_report_command_creates_bundle_host_side(monkeypatch, tmp_path: Pat
         session=session,
         pending_images=["queued.png"],
         console=console,
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"
@@ -1679,7 +1496,6 @@ def test_chat_report_command_creates_bundle_host_side(monkeypatch, tmp_path: Pat
     assert calls[0]["workspace_root"] == tmp_path
     assert calls[0]["feedback_text"] == "weird behavior"
     assert calls[0]["active_session"] is session
-    assert calls[0]["active_run_paths"] is None
     assert calls[0]["pending_images"] == ["queued.png"]
     assert issue_calls[0]["bundle_result"] == FeedbackBundleResult(
         bundle_dir=tmp_path / "alysis-feedback" / "bundle",
@@ -1687,7 +1503,6 @@ def test_chat_report_command_creates_bundle_host_side(monkeypatch, tmp_path: Pat
         output_root=tmp_path / "alysis-feedback",
         workspace_root=tmp_path,
         session_id="sid",
-        run_id=None,
     )
     assert issue_calls[0]["feedback_text"] == "weird behavior"
     rendered = stream.getvalue()
@@ -1707,7 +1522,6 @@ def test_chat_report_still_reports_bundle_when_github_draft_fails(
             output_root=tmp_path / "alysis-feedback",
             workspace_root=tmp_path,
             session_id="sid",
-            run_id=None,
         )
 
     def fail_create_feedback_github_issue_draft(**_kwargs: Any) -> FeedbackGithubIssueResult:
@@ -1732,7 +1546,6 @@ def test_chat_report_still_reports_bundle_when_github_draft_fails(
         session=session,
         pending_images=[],
         console=Console(file=stream, force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     rendered = stream.getvalue()
@@ -1741,66 +1554,6 @@ def test_chat_report_still_reports_bundle_when_github_draft_fails(
     assert "Feedback bundle archive:" in rendered
     assert "GitHub issue draft skipped:" in rendered
     assert "Feedback report failed" not in rendered
-
-
-def test_chat_report_command_in_forge_includes_active_run_paths(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    calls: list[dict[str, Any]] = []
-    issue_calls: list[dict[str, Any]] = []
-
-    def fake_create_feedback_bundle(**kwargs: Any) -> FeedbackBundleResult:
-        calls.append(dict(kwargs))
-        return FeedbackBundleResult(
-            bundle_dir=tmp_path / "alysis-feedback" / "bundle",
-            zip_path=tmp_path / "alysis-feedback" / "bundle.zip",
-            output_root=tmp_path / "alysis-feedback",
-            workspace_root=tmp_path,
-            session_id="sid",
-            run_id="run_01",
-        )
-
-    def fake_create_feedback_github_issue_draft(**kwargs: Any) -> FeedbackGithubIssueResult:
-        issue_calls.append(dict(kwargs))
-        return FeedbackGithubIssueResult(
-            repo="AlysisAi/AlysisCode",
-            issue_url="https://github.com/AlysisAi/AlysisCode/issues/new?title=x",
-            opened=True,
-            open_attempted=True,
-        )
-
-    monkeypatch.setattr(cli_mod, "create_feedback_bundle", fake_create_feedback_bundle)
-    monkeypatch.setattr(
-        cli_mod,
-        "create_feedback_github_issue_draft",
-        fake_create_feedback_github_issue_draft,
-    )
-
-    run_paths = SimpleNamespace(root=tmp_path, run_id="run_01")
-    forge_state = cli_mod._ForgeChatState(ui_mode="forge", paths=run_paths, plan={})
-    session = SimpleNamespace(
-        cfg=AppConfig(model="test-model"),
-        store=SimpleNamespace(session_id="sid"),
-        mode="review",
-    )
-    console = Console(file=io.StringIO(), force_terminal=False)
-
-    result = cli_mod._handle_chat_command(
-        input_text="/report odd planner output",
-        root=tmp_path,
-        session=session,
-        pending_images=[],
-        console=console,
-        forge_state=forge_state,
-    )
-
-    assert result == "handled"
-    assert calls
-    assert calls[0]["active_run_paths"] is run_paths
-    assert calls[0]["feedback_text"] == "odd planner output"
-    assert issue_calls
-    assert issue_calls[0]["feedback_text"] == "odd planner output"
 
 
 def test_chat_feedback_alias_uses_report_flow(monkeypatch, tmp_path: Path) -> None:
@@ -1814,7 +1567,6 @@ def test_chat_feedback_alias_uses_report_flow(monkeypatch, tmp_path: Path) -> No
             output_root=tmp_path / "alysis-feedback",
             workspace_root=tmp_path,
             session_id="sid",
-            run_id=None,
         )
 
     def fake_create_feedback_github_issue_draft(**_kwargs: Any) -> FeedbackGithubIssueResult:
@@ -1844,7 +1596,6 @@ def test_chat_feedback_alias_uses_report_flow(monkeypatch, tmp_path: Path) -> No
         session=session,
         pending_images=[],
         console=Console(file=io.StringIO(), force_terminal=False),
-        forge_state=cli_mod._ForgeChatState(),
     )
 
     assert result == "handled"

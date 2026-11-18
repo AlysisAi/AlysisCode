@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 import threading
 import types
@@ -71,34 +70,6 @@ from alysis_code.surface.types import (
     ToolStartEvent,
 )
 from alysis_code.usage_tracker import UsageRecord, UsageSummary
-
-
-def test_interactive_subagent_modules_do_not_import_swarm() -> None:
-    package_root = Path(agent_loop.__file__).parent
-    module_paths = (
-        package_root / "agent_loop.py",
-        package_root / "agent" / "session.py",
-        package_root / "agent" / "subagent_execution.py",
-        package_root / "agent" / "subagent_workspace.py",
-        package_root / "agent" / "tools_assembly.py",
-    )
-
-    for module_path in module_paths:
-        tree = ast.parse(module_path.read_text(encoding="utf-8"))
-        imported_modules: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                module_name = node.module or ""
-                imported_modules.add(module_name)
-                imported_modules.update(
-                    f"{module_name}.{alias.name}" if module_name else alias.name
-                    for alias in node.names
-                )
-            elif isinstance(node, ast.Import):
-                imported_modules.update(alias.name for alias in node.names)
-        assert not any("swarm_" in module_name for module_name in imported_modules), (
-            f"{module_path.name} crosses a subsystem import boundary"
-        )
 
 
 class _RecordingStore:
@@ -2706,8 +2677,6 @@ def test_background_spawn_rejects_non_readonly_mode_with_sync_direction(
         (RuntimeKind.INTERACTIVE_CHAT, 0, True),
         (RuntimeKind.ONE_SHOT, 0, True),
         (RuntimeKind.SUBAGENT, 1, False),
-        (RuntimeKind.FORGE_EXEC, 0, False),
-        (RuntimeKind.SWARM_WORKER, 0, False),
     ],
 )
 def test_background_tools_respect_runtime_boundaries(

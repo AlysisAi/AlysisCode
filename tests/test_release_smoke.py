@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import site
 import subprocess
 import sys
-import textwrap
 import tomllib
 from dataclasses import dataclass
 from importlib.util import find_spec
@@ -242,7 +242,6 @@ def _smoke_runtime_env(state_root: Path) -> dict[str, str]:
         {
             "ALYSIS_CONFIG_DIR": os.fspath(config_dir),
             "ALYSIS_DATA_DIR": os.fspath(data_dir),
-            "ALYSIS_FORGE_PLAN_ASSISTANT": "0",
         }
     )
     runtime_pythonpath = _runtime_dependency_pythonpath()
@@ -278,7 +277,7 @@ def test_installed_cli_entrypoint_smoke_from_outside_source_tree(
     help_text = help_proc.stdout + help_proc.stderr
     assert "Usage:" in help_text
     assert "chat" in help_text
-    assert "forge" in help_text
+    assert re.search(r"\bforge\b", help_text) is None
 
     version_proc = _run_subprocess(
         [os.fspath(installed_cli.entrypoint), "--version"],
@@ -320,178 +319,7 @@ def test_installed_cli_entrypoint_smoke_from_outside_source_tree(
     assert "fs_read" in tools_text
     assert "verify_run" in tools_text
 
-    forge_help_proc = _run_subprocess(
-        [os.fspath(installed_cli.entrypoint), "forge", "--help"],
-        cwd=workspace,
-        env=runtime_env,
-    )
-    _assert_completed_ok(forge_help_proc, label="installed forge --help")
-    assert "exec" in (forge_help_proc.stdout + forge_help_proc.stderr)
-
     config_payload = json.loads(
         (Path(runtime_env["ALYSIS_CONFIG_DIR"]) / "config.json").read_text(encoding="utf-8")
     )
     assert config_payload["model"] == SMOKE_MODEL
-
-
-def test_installed_wheel_cli_release_smoke_forge_journey_writes_expected_artifacts(
-    installed_wheel_cli: _InstalledCli,
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("# release smoke\n", encoding="utf-8")
-
-    runtime_env = _smoke_runtime_env(tmp_path / "state")
-    config_set_proc = _run_subprocess(
-        [os.fspath(installed_wheel_cli.entrypoint), "config", "set", "model", SMOKE_MODEL],
-        cwd=workspace,
-        env=runtime_env,
-    )
-    _assert_completed_ok(config_set_proc, label="pre-smoke config set")
-
-    result_json = tmp_path / "release_smoke_result.json"
-    harness_script = tmp_path / "release_smoke.py"
-    harness_script.write_text(
-        textwrap.dedent(
-            """
-            from __future__ import annotations
-
-            import json
-            import os
-            from pathlib import Path
-
-            from typer.testing import CliRunner
-
-            from alysis_code import cli as cli_mod
-            from alysis_code.cli import app
-            from alysis_code.config import AppConfig
-            from alysis_code.forge import load_plan, save_plan
-
-            workspace = Path(os.environ["ALYSIS_SMOKE_WORKSPACE"])
-            result_path = Path(os.environ["ALYSIS_SMOKE_RESULT_JSON"])
-            calls: list[dict[str, object]] = []
-
-            cli_mod._prompt_forge_entry_plan_assistant = lambda *, console: False
-
-            def fake_run_swarm(**kwargs):
-                calls.append(
-                    {
-                        "mode": kwargs.get("mode"),
-                        "scope_mode": kwargs.get("scope_mode"),
-                        "verify_mode": kwargs.get("verify_mode"),
-                        "parallel": kwargs.get("parallel"),
-                        "no_log": kwargs.get("no_log"),
-                    }
-                )
-                paths = kwargs["paths"]
-                plan = load_plan(paths)
-                for task in plan.get("tasks") or []:
-                    task["status"] = "done"
-                save_plan(paths, plan)
-                (paths.execution_dir / "trace").mkdir(parents=True, exist_ok=True)
-                (paths.execution_dir / "worker_results").mkdir(parents=True, exist_ok=True)
-                (paths.execution_dir / "swarm_summary.md").write_text(
-                    "# Swarm Summary\\n\\n- Release smoke completed successfully.\\n",
-                    encoding="utf-8",
-                )
-                (paths.execution_dir / "trace" / "swarm_trace.jsonl").write_text(
-                    '{"phase":"worker.lifecycle","message":"release smoke"}\\n',
-                    encoding="utf-8",
-                )
-                (paths.execution_dir / "worker_results" / "T01.json").write_text(
-                    json.dumps({"task_id": "T01", "status": "done"}, indent=2) + "\\n",
-                    encoding="utf-8",
-                )
-                return 0
-
-            cli_mod.run_swarm = fake_run_swarm
-
-            env = {
-                "ALYSIS_CONFIG_DIR": os.environ["ALYSIS_CONFIG_DIR"],
-                "ALYSIS_DATA_DIR": os.environ["ALYSIS_DATA_DIR"],
-                "ALYSIS_FORGE_PLAN_ASSISTANT": "0",
-            }
-            result = CliRunner().invoke(
-                    app,
-                    ["chat", "--api-key", "k", "--path", os.fspath(workspace)],
-                    input=(
-                        "/forge\\n"
-                        "/goal Validate installed release smoke\\n"
-                        "/task Update src/smoke.py with a packaging smoke note\\n"
-                        "/execute plan\\n"
-                        "/back\\n"
-                        "exit\\n"
-                    ),
-                env=env,
-                terminal_width=120,
-            )
-
-            current_run_path = workspace / ".alysis" / "current_run.json"
-            pointer = json.loads(current_run_path.read_text(encoding="utf-8"))
-            run_dir = workspace / ".alysis" / "runs" / pointer["run_id"]
-            sessions_dir = Path(os.environ["ALYSIS_DATA_DIR"]) / "sessions"
-            plan = load_plan(cli_mod.load_current_run_paths(workspace))
-
-            payload = {
-                "exit_code": result.exit_code,
-                "output": result.output,
-                "swarm_calls": calls,
-                "artifacts": {
-                    "current_run_exists": current_run_path.exists(),
-                    "plan_json_exists": (run_dir / "plan" / "plan.json").exists(),
-                    "plan_md_exists": (run_dir / "plan" / "PLAN.md").exists(),
-                    "plan_validation_exists": (
-                        run_dir / "plan" / "notes" / "plan_validation.md"
-                    ).exists(),
-                    "swarm_summary_exists": (run_dir / "execution" / "swarm_summary.md").exists(),
-                    "swarm_trace_exists": (
-                        run_dir / "execution" / "trace" / "swarm_trace.jsonl"
-                    ).exists(),
-                    "worker_result_exists": (
-                        run_dir / "execution" / "worker_results" / "T01.json"
-                    ).exists(),
-                },
-                "session_logs": sorted(path.name for path in sessions_dir.glob("*.jsonl")),
-                "task_statuses": [str(task.get("status") or "") for task in plan.get("tasks") or []],
-            }
-            result_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            """
-        ).strip()
-        + "\n",
-        encoding="utf-8",
-    )
-
-    proc = _run_subprocess(
-        [os.fspath(installed_wheel_cli.python), os.fspath(harness_script)],
-        cwd=tmp_path,
-        env={
-            **runtime_env,
-            "ALYSIS_SMOKE_WORKSPACE": os.fspath(workspace),
-            "ALYSIS_SMOKE_RESULT_JSON": os.fspath(result_json),
-        },
-    )
-    _assert_completed_ok(proc, label="installed wheel release smoke harness")
-
-    payload = json.loads(result_json.read_text(encoding="utf-8"))
-    assert payload["exit_code"] == 0
-    assert "Execution complete" in payload["output"]
-    assert len(payload["swarm_calls"]) == 1
-    assert payload["swarm_calls"][0] == {
-        "mode": "auto",
-        "scope_mode": "strict",
-        "verify_mode": "warn",
-        "parallel": 2,
-        "no_log": False,
-    }
-    assert payload["artifacts"] == {
-        "current_run_exists": True,
-        "plan_json_exists": True,
-        "plan_md_exists": True,
-        "plan_validation_exists": True,
-        "swarm_summary_exists": True,
-        "swarm_trace_exists": True,
-        "worker_result_exists": True,
-    }
-    assert payload["session_logs"]
-    assert payload["task_statuses"] == ["done"]

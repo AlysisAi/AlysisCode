@@ -191,9 +191,9 @@ def test_tool_list_and_info_cli_do_not_mark_supported_runtime_specific_tools_dis
     _init_git_repo(workspace)
     _write_tool(
         cfg_dir,
-        "tools/forge_echo.py",
-        name="forge_echo",
-        extra_manifest_lines=['"enabled_in": ["forge_exec"],'],
+        "tools/one_shot_echo.py",
+        name="one_shot_echo",
+        extra_manifest_lines=['"enabled_in": ["one_shot"],'],
     )
 
     env = {"ALYSIS_CONFIG_DIR": os.fspath(cfg_dir)}
@@ -205,7 +205,7 @@ def test_tool_list_and_info_cli_do_not_mark_supported_runtime_specific_tools_dis
     )
     info_result = runner.invoke(
         cli_mod.app,
-        ["tool", "info", "forge_echo", "--path", str(workspace)],
+        ["tool", "info", "one_shot_echo", "--path", str(workspace)],
         env=env,
         terminal_width=200,
     )
@@ -216,7 +216,7 @@ def test_tool_list_and_info_cli_do_not_mark_supported_runtime_specific_tools_dis
     assert "CustomTools(1)" in normalized_list_output
     assert "disabled" not in normalized_list_output
     assert info_result.exit_code == 0
-    assert "forge_echo" in normalized_info_output
+    assert "one_shot_echo" in normalized_info_output
     assert "status" in normalized_info_output
     assert "available" in normalized_info_output
 

@@ -557,7 +557,6 @@ def _run_chat_command(
     from rich.console import Console
 
     from alysis_code.cli_impl import chat as chat_facade
-    from alysis_code.cli_impl.chat.state import _ForgeChatState
 
     persona_calls: list[str] = []
 
@@ -587,7 +586,6 @@ def _run_chat_command(
         session=session,
         pending_images=[],
         console=console,
-        forge_state=_ForgeChatState(),
     )
     assert result == "handled"
     session._persona_calls = persona_calls  # type: ignore[attr-defined]
@@ -820,7 +818,6 @@ def test_chat_command_retired_with_pointer(monkeypatch: pytest.MonkeyPatch) -> N
 
     from alysis_code import cli as cli_mod
     from alysis_code.cli_impl import chat as chat_facade
-    from alysis_code.cli_impl.chat.state import _ForgeChatState
 
     chat_facade._sync_cli_globals(cli_mod)
     buffer = io.StringIO()
@@ -831,7 +828,6 @@ def test_chat_command_retired_with_pointer(monkeypatch: pytest.MonkeyPatch) -> N
         session=_FakeChatSession(),
         pending_images=[],
         console=console,
-        forge_state=_ForgeChatState(),
     )
     assert result == "handled"
     output = buffer.getvalue()
@@ -1445,35 +1441,6 @@ def test_load_resumed_persona_none_without_switches(tmp_path: Path) -> None:
         assert loop_module._load_resumed_persona(session) is None
     finally:
         session.close()
-
-
-def test_persona_command_ignored_in_forge_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Forge chat owns the command surface while active; /persona must not
-    # half-apply a persona underneath a forge session.
-    monkeypatch.delenv("ALYSIS_PERSONA_MODES", raising=False)
-    import io
-
-    from rich.console import Console
-
-    from alysis_code import cli as cli_mod
-    from alysis_code.cli_impl import chat as chat_facade
-    from alysis_code.cli_impl.chat.state import _ForgeChatState
-
-    chat_facade._sync_cli_globals(cli_mod)
-    session = _FakeChatSession()
-    forge_state = _ForgeChatState()
-    forge_state.ui_mode = "forge"
-    console = Console(file=io.StringIO(), force_terminal=False, width=200)
-    result = chat_facade._handle_chat_command(
-        input_text="/persona ask",
-        root=Path("."),
-        session=session,
-        pending_images=[],
-        console=console,
-        forge_state=forge_state,
-    )
-    assert result == "handled"
-    assert session.persona == "code"
 
 
 def test_architect_intersects_user_and_persona_scopes_end_to_end(tmp_path: Path) -> None:

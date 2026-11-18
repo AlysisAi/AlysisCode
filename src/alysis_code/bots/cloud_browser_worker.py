@@ -16,6 +16,10 @@ from .compute import transfer_chunks
 from .files import MAX_FILE_BYTES
 from .models import FileInput
 
+# Declared to the host when the browser starts. "site_data": the browser lists its cookies by
+# identity and clears one site's data while it runs (sign-ins).
+FEATURES = ("site_data",)
+
 
 class BrowserBridge:
     def __init__(
@@ -86,6 +90,12 @@ class BrowserBridge:
         if method in METHODS:
             result = getattr(browser, method)(owner, sid, *args["args"], **args["kwargs"])
             return result if isinstance(result, dict) else {"dispatched": True}
+        if method == "site_cookies":
+            return {"cookies": browser.site_cookies(owner, sid)}
+        if method == "clear_site_data":
+            return browser.clear_site_data(
+                owner, sid, cookies=args["cookies"], origins=args["origins"]
+            )
         if method == "status":
             status = browser.status(owner, sid)
             return {"state": status.state, "command_generation": status.command_generation}

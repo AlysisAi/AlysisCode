@@ -79,10 +79,7 @@ status until the listing visuals are complete and reviewed. Use packaged
 
 Capture from a disposable workspace after running the sidebar through:
 
-- `/forge plan <instruction>` so the plan task cards and task detail are populated
-- `/execute preview` so readiness, blockers, sandbox state, verification commands, and required
-  approvals are visible
-- a mock or real Forge approval prompt so the persistent approval card and scoped actions are shown
+- a review-mode task with an approval prompt so the approval card and scoped actions are shown
 - native diff and artifact open actions so reviewers can verify backend-scoped outputs
 - **Check Setup** so Runtime Details shows a real sandbox smoke result
 - the Managed Browser start/navigation/snapshot/screenshot/diagnostics/close lifecycle, including

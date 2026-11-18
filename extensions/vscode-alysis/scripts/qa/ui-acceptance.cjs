@@ -6,7 +6,7 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 const base = process.env.ALYSIS_UI_URL || "http://127.0.0.1:4317";
 const output = path.resolve(__dirname, "../../../../qa_reports/vscode_ui_finish");
-const scenarios = ["welcome", "setup", "chat", "running", "streaming", "thinking-start", "stopping", "error", "approved", "denied", "expired", "models", "settings", "history", "history-empty", "forge", "forge-plan", "browser"];
+const scenarios = ["welcome", "setup", "chat", "running", "streaming", "thinking-start", "stopping", "error", "approved", "denied", "expired", "models", "settings", "history", "history-empty", "browser"];
 const sizes = [{ width: 260, height: 620 }, { width: 360, height: 800 }, { width: 900, height: 700 }, { width: 360, height: 420 }];
 
 (async () => {
@@ -18,8 +18,8 @@ const sizes = [{ width: 260, height: 620 }, { width: 360, height: 800 }, { width
   page.on("pageerror", (error) => errors.push(error.message));
   async function open(scenario, theme = "dark") {
     await page.goto(`${base}/?scenario=${scenario}&theme=${theme}`);
-    const surface = scenario === "forge-plan" ? "forge" : scenario === "history-empty" ? "history"
-      : ["models", "settings", "history", "forge", "browser"].includes(scenario) ? scenario : "task";
+    const surface = scenario === "history-empty" ? "history"
+      : ["models", "settings", "history", "browser"].includes(scenario) ? scenario : "task";
     await page.locator(`#${surface}Surface`).waitFor({ state: "visible" });
     if (surface === "task") await page.locator(["welcome", "setup"].includes(scenario) ? "#welcome" : "#conversation").waitFor({ state: "visible" });
   }
@@ -81,20 +81,14 @@ const sizes = [{ width: 260, height: 620 }, { width: 360, height: 800 }, { width
     assert.equal(await page.evaluate(() => document.activeElement.textContent), "Remove key");
     await page.keyboard.press("Escape");
     assert.equal(await page.locator(".connection-more").evaluate((node) => node === document.activeElement), true);
-    await open("forge-plan");
-    await page.locator('[data-forge-tab="plan"]').focus();
-    await page.keyboard.press("End");
-    assert.equal(await page.locator("#forgeActivityPanel").isVisible(), true);
-    await page.keyboard.press("Home");
-    assert.equal(await page.locator("#forgePlanPanel").isVisible(), true);
-    for (const scenario of ["welcome", "chat", "models", "settings", "forge-plan", "browser"]) {
+    for (const scenario of ["welcome", "chat", "models", "settings", "browser"]) {
       await open(scenario);
       await page.evaluate(() => document.documentElement.style.setProperty("--vscode-font-size", "20px"));
       await geometry(`larger font/${scenario}`);
     }
     assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(output, "acceptance.json"), JSON.stringify({ passed: true, checks, errors }, null, 2));
-    console.log(`UI acceptance passed: ${checks.length} layout checks, short-window menus, settings, provider and Forge keyboard journeys.`);
+    console.log(`UI acceptance passed: ${checks.length} layout checks, short-window menus, settings and provider keyboard journeys.`);
   } finally {
     await browser.close();
   }

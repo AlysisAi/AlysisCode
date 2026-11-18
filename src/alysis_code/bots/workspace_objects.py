@@ -99,6 +99,11 @@ class WorkspaceObjects:
             for table, ref in (("workspace_objects", workspace), ("browser_states", browser)):
                 if ref is None:
                     continue
+                if table == "browser_states" and task_id is None:
+                    # A person used the browser while only viewing the computer (signing in to
+                    # sites, say): what they did is kept for the owl's next browser.
+                    browser_states.stage_baseline(db, owner, bot_id, ref)
+                    continue
                 self.store.publish_object(db, owner, bot_id, ref)
                 db.execute(
                     f"INSERT INTO {table}(id,task_id,bot_id,ref,created_at,settled) VALUES(?,?,?,?,?,1) "

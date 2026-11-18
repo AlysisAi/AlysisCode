@@ -370,7 +370,7 @@ def test_hooks_test_reports_runtime_kind_mismatch(
             "--event",
             "SessionStart",
             "--runtime-kind",
-            "swarm_worker",
+            "subagent",
             "--session-source",
             "startup",
         ],

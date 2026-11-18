@@ -16,7 +16,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -279,6 +279,44 @@ class CloudDesktopFactory:
                         self._condition.notify_all()
                     self._update_capacity()
 
+    def computer_open(self, bot_id):
+        """Whether a computer of this owl runs, or sleeps with its browser kept in memory: then
+        its browser's storage is newer than the saved one."""
+        with self._condition:
+            if bot_id in self._instances or bot_id in self._starting:
+                return True
+        if self.spec.suspend_mode == "Memory" and getattr(self.store, "shared", False):
+            from .allocation_ledger import AllocationLedger
+
+            record = AllocationLedger(self.store, self.owner).get(bot_id)
+            return bool(record) and record.get("state") != "deleted"
+        return False
+
+    def live_browser(self, bot_id):
+        """The owl's running computer when its browser can clear site data as it runs; else None.
+        Call while holding ``closed_computer``, so the computer cannot close meanwhile."""
+        with self._condition:
+            entry = self._instances.get(bot_id)
+        computer = entry[0] if entry else None
+        if (
+            computer is None
+            or computer._closed
+            or not computer._browser_started
+            or "site_data" not in computer.browser_features
+        ):
+            return None
+        return computer
+
+    @contextmanager
+    def closed_computer(self, bot_id):
+        """Keep this owl's computer from starting while its saved browser storage changes.
+
+        Yields whether one is open anyway (``computer_open``); then the saved storage is not
+        what its browser holds, and changing it alone would not last.
+        """
+        with self._operations.hold(bot_id):
+            yield self.computer_open(bot_id)
+
     def capacity(self):
         # A snapshot never waits for provisioning, checkpointing or deletion.
         result = dict(self._capacity_snapshot)
@@ -474,6 +512,8 @@ class CloudDesktop:
         self._task_id = None
         self._browser_states = factory.browser_states
         self._browser_started = False
+        # What its browser declared at start (cloud_browser_worker.FEATURES); none for older images.
+        self.browser_features = frozenset()
         self._unified_desktop = True
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -835,7 +875,9 @@ class CloudDesktop:
             with self._store.connect() as db:
                 self._store._bot(db, self._account, self.owner)
                 saved = db.execute(
-                    "SELECT 1 FROM browser_states WHERE bot_id=? LIMIT 1", (self.owner,)
+                    "SELECT 1 FROM browser_states WHERE bot_id=? "
+                    "UNION ALL SELECT 1 FROM browser_baselines WHERE bot_id=? LIMIT 1",
+                    (self.owner, self.owner),
                 ).fetchone()
             if saved:
                 raise DesktopError(
@@ -860,10 +902,14 @@ class CloudDesktop:
                 self._request(
                     "browser_restore", {"transfer_id": prepared["transfer_id"]}, cancel=cancel
                 )
-        self._request(
+        started = self._request(
             "browser_start",
             {"preview_urls": list(previews), "persistent": self._browser_states is not None},
             cancel=cancel,
+        )
+        features = started.get("features") if isinstance(started, dict) else None
+        self.browser_features = frozenset(
+            item for item in features or () if isinstance(item, str) and len(item) <= 64
         )
         self._browser_started = True
 
@@ -1498,6 +1544,12 @@ class CloudDesktop:
                     )
             finally:
                 temporary.unlink(missing_ok=True)
+
+    def site_data(self, arguments, *, cancel=lambda: False):
+        """Read or clear site data in this computer's running browser (sign-ins)."""
+        if not self._browser_started or "site_data" not in self.browser_features:
+            raise DesktopError("This computer's browser cannot change its sign-ins while it runs.")
+        return self._request("browser_site_data", arguments, cancel=cancel)
 
     def finish(self, *, cancel=lambda: False, pause_session=None):
         # A quiescent human pause can commit a checkpoint without completing the

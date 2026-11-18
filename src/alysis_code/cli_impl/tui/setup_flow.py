@@ -326,7 +326,7 @@ class SetupFlow:
         )
 
     def _screen_connect_provider(self) -> Screen:
-        # One merged list (Kilo-style): subscription sign-ins first, then
+        # One merged list: subscription sign-ins first, then
         # API-key providers, with local/custom endpoints behind the advanced
         # row. The description column carries the auth method so no upfront
         # method choice is needed.

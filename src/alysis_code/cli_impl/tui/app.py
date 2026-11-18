@@ -90,7 +90,6 @@ from ...surface.styles import TerminalTheme
 from ...surface.theme import detect_terminal_theme
 from ...surface.types import ApprovalDecision, SubagentStartEvent
 from ..chat.commands import _record_chat_local_command
-from ..chat.forge_visibility import command_visible
 from ..chat.mid_turn_policy import (
     EXIT_WORDS,
     MidTurnAction,
@@ -116,11 +115,6 @@ from .attachments import token_before as _attachment_token_before
 from .composer import COMPOSER_PROMPT, ComposerWrapProcessor, vertical_move
 from .diff_view import DiffViewer
 from .footer import footer_fragments
-from .forge_status import (
-    forge_status_bucket,
-    forge_status_counts,
-    forge_status_glyph,
-)
 from .integration_modal import IntegrationModal
 from .links import (
     browser_url,
@@ -134,12 +128,6 @@ from .local_mode_host import ReservedIntegrationDispatcher, integration_controll
 from .markdown import render_markdown_rows
 from .navigation_ui import SessionSearchModal, TranscriptSearchModal
 from .owl import load_owl_animation
-from .plan_meta import (
-    PLAN_META_ROW_ROLES,
-    plan_meta_rows_with_kinds,
-    strip_plan_meta_copy_chrome,
-)
-from .plan_meta import plan_meta_rows as render_plan_meta_rows
 from .planning_chooser import PlanningController
 from .prompt_history import PromptEntry, PromptHistory
 from .review import ReviewModal
@@ -382,8 +370,6 @@ _COPYABLE_TRANSCRIPT_ROLES = frozenset(
         "info",
         "system",
         "spacer",
-        "planmeta",
-        "planmetacont",
     }
 )
 
@@ -416,12 +402,9 @@ _STYLE = Style.from_dict(
         "tui.footer.workspace": "#8a8a8a",
         "tui.footer.branch": "#56b6c2",
         "tui.footer.context": "#8a8a8a",
-        # Forge-session badge: a distinct bold violet chip so the planning mode is
-        # unmistakable (green stays the chat accent, cyan the brand/branch).
-        "tui.footer.forge": "bold #bc8cff",
         # Active-subagent badge base style; the footer overlays each agent's own
         # accent (see tui.subagent_identity), so blue is only the fallback
-        # (distinct from green chat accent, violet forge, cyan brand).
+        # (distinct from green chat accent and cyan brand).
         "tui.footer.subagent": "bold #58a6ff",
         # User's own message: a full-width highlighted band (the "> " in accent).
         "tui.transcript.userband": f"bold bg:{_BAND_BG}",
@@ -528,38 +511,6 @@ _STYLE = Style.from_dict(
         # the unguarded fullaccess mode so the danger state is glanceable.
         "tui.footer.mode": f"bold {_ACCENT}",
         "tui.footer.mode.warn": "bold #d19a66",
-        # Live Forge execution view (the task table + phase line shown while
-        # /execute plan runs). Violet ties it to the FORGE badge; done=green,
-        # failed=red so task outcomes are glanceable.
-        "tui.forge.head": "bold #bc8cff",
-        "tui.forge.rule": "#6e7681",
-        "tui.forge.done": f"bold {_ACCENT}",
-        "tui.forge.fail": "bold #e06c75",
-        "tui.forge.run": "bold #bc8cff",
-        "tui.forge.idle": "#6c6c6c",
-        "tui.forge.id": "#8a8a8a",
-        "tui.forge.title": "#c9d1d9",
-        # Live header progress gauge: X/Y count (violet, ties to the header), a
-        # violet "done" bar segment, a red "failed" segment, and a dim empty
-        # track — so run progress is glanceable without reading every row.
-        "tui.forge.count": "bold #bc8cff",
-        "tui.forge.meter": "#bc8cff",
-        "tui.forge.meterfail": "#e06c75",
-        "tui.forge.meterempty": "#3a3a3a",
-        # Per-task elapsed timer on a running row (dim so it never competes with
-        # the title).
-        "tui.forge.timer": "#6e7681",
-        # Forge planner plan-update aside ("▸ plan updated · N notes"): violet
-        # chevrons/glyphs tie it to the Forge identity, touched-task titles read
-        # bright like the forge table, planner warnings get an amber ⚠, and the
-        # rest stays dim so the aside never competes with the reply above it.
-        "tui.planmeta.mark": "#bc8cff",
-        "tui.planmeta.head": "#8b949e",
-        "tui.planmeta.dim": "#6c6c6c",
-        "tui.planmeta.subject": "#c9d1d9",
-        "tui.planmeta.tag": "italic #8a8a8a",
-        "tui.planmeta.warn": "#d19a66",
-        "tui.planmeta.hint": "italic #6e7681",
         # Live subagent tail: blue identity chrome with quiet body text. The
         # frame sits in the root HSplit, so it takes space from the transcript.
         "tui.subpanel": "",
@@ -580,13 +531,6 @@ _STYLE = Style.from_dict(
         "tui.pending-messages.head": "bold #79c0ff bg:#161b22",
         "tui.pending-messages.row": "#e6edf3 bg:#161b22",
         "tui.pending-messages.hint": "italic #8b949e bg:#161b22",
-        # Violet frame border for Forge popups (/show, /plan, the launch gate),
-        # applied by wrapping the shared help frame in a container that adds the
-        # ``tui.forgeframe`` ancestor class. MUST be declared AFTER
-        # ``tui.help.frame frame.border`` above: both selectors have equal
-        # specificity, so the later declaration wins the tie and repaints the
-        # border violet only while a Forge panel is open.
-        "tui.forgeframe frame.border": "#bc8cff",
         # In-TUI editor float (e.g. /plan edit): dark panel + a status bar that
         # turns red when a save is rejected (invalid JSON / shape).
         "tui.editor": "bg:#0d1117 #c9d1d9",
@@ -919,7 +863,7 @@ def _selected_text(
 
     ``row_roles`` is supplied by the live TUI and makes clipboard copies
     semantic: only conversation/diagnostic rows are eligible, while provider
-    reasoning summaries, tool traces, Forge activity, and other UI chrome are
+    reasoning summaries, tool traces, and other UI chrome are
     omitted. The optional default preserves the helper's plain-row behaviour for
     callers that do not have transcript role metadata.
     """
@@ -946,24 +890,12 @@ def _selected_text(
             pieces.append("")
             continue
         piece = row[span[0] : span[1]].rstrip()
-        pieces.append(_strip_transcript_copy_chrome(piece, role=role, starts_row=span[0] == 0))
+        pieces.append(_strip_transcript_copy_chrome(piece, role=role))
     return "\n".join(pieces).strip("\n")
 
 
-def _strip_transcript_copy_chrome(
-    text: str, *, role: str | None = None, starts_row: bool = True
-) -> str:
+def _strip_transcript_copy_chrome(text: str, *, role: str | None = None) -> str:
     """Remove Alysis Code-only prefixes from copied transcript rows."""
-    if role == "planmeta":
-        # Plan-aside lead rows: drop the chevron/bullet/⚠ glyph and the expand
-        # hint, keep the indentation (it carries the note hierarchy). A sweep
-        # that starts mid-row begins with note content, so only the hint goes.
-        return strip_plan_meta_copy_chrome(text, starts_row=starts_row)
-    if role == "planmetacont":
-        # A wrap continuation of a plan-aside note: its first character is
-        # note CONTENT (which may legitimately be '+', '~', or '·') — never
-        # strip anything from it.
-        return text
     prefixes = (
         "› ",
         f"{_ASSIST_MARK} ",
@@ -982,22 +914,6 @@ def _strip_transcript_copy_chrome(
     if role == "warn" and text.startswith("⚠ "):
         return text[2:]
     return text
-
-
-def _plan_meta_press_hit(row_roles: list[str], y: int) -> bool:
-    """True when a mouse press at row ``y`` lands on the plan-update aside
-    (any of its rows, including wrap continuations)."""
-    return 0 <= y < len(row_roles) and row_roles[y] in PLAN_META_ROW_ROLES
-
-
-def _plan_meta_click_toggles(
-    *, pressed_planmeta: bool, anchor: Point | None, release: Point, selected: str
-) -> bool:
-    """The press+release was a plain CLICK on the aside — the pointer never
-    moved and nothing was swept — so the release toggles it. Any drag, even
-    one whose sweep strips to empty text (e.g. out over the blank margin or
-    chrome rows), is a selection gesture and must never toggle."""
-    return bool(pressed_planmeta) and not selected and anchor == release
 
 
 def _highlight_selection_in_row(
@@ -1271,18 +1187,6 @@ def _activity_elapsed_seconds(
     return max(0, int(float(now) - float(started))) if started else 0
 
 
-def _plan_meta_rows(text: str, width: int, *, expanded: bool) -> list[list[tuple[str, str]]]:
-    """Render captured Forge planner meta / plan-reconciliation notes as a
-    collapsible aside beneath the reply.
-
-    Collapsed (default): one ``▸`` summary line (an honest headline plus note /
-    task counts) so the assistant answer stays uncluttered. Expanded (Ctrl+O or
-    click): a ``▾`` header and the notes grouped per touched task — parsing,
-    grouping, and styling live in ``plan_meta`` (see that module's docstring).
-    Every row is ``<= width`` (the cursor-pin scroll math depends on it)."""
-    return render_plan_meta_rows(text, width, expanded=expanded)
-
-
 def _subagent_panel_container(
     panel_state: dict[str, Any], *, hint_provider: Callable[[], str] | None = None
 ) -> ConditionalContainer:
@@ -1536,189 +1440,6 @@ def _poll_selected_subagent(
         if key not in {"transcript_tail", "next_cursor"}
     }
     return True
-
-
-# --------------------------------------------------------- live Forge view
-# The status→bucket/glyph authority lives in ``forge_status`` (imported above), so
-# a row's glyph can never contradict the header's "N done · N failed" count.
-
-
-def _forge_task_visual(status: str, active: bool, spinner: str) -> tuple[str, str]:
-    """Return ``(glyph, style_class)`` for one forge task row given its status and
-    whether the swarm is currently working it. Done=✓ green, failed=✗ red, the
-    in-flight task spins (violet), everything else is a dim ``○``."""
-    glyph = forge_status_glyph(status, active=active, spinner=spinner)
-    bucket = forge_status_bucket(status)
-    if bucket == "done":
-        return glyph, "class:tui.forge.done"
-    if bucket == "failed":
-        return glyph, "class:tui.forge.fail"
-    if bucket == "running" or active:
-        # A running task — or one the swarm just picked up (event arrived before
-        # its on-disk status flipped) — spins in violet.
-        return glyph, "class:tui.forge.run"
-    return glyph, "class:tui.forge.idle"
-
-
-def _forge_fmt_elapsed(seconds: int) -> str:
-    """Compact elapsed like ``12s`` / ``1m04s`` — bounded to AT MOST 6 chars so it
-    always fits the reserved timer column (the row width invariant depends on it)."""
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, secs = divmod(seconds, 60)
-    if minutes < 100:
-        return f"{minutes}m{secs:02d}s"
-    if minutes < 100000:
-        return f"{minutes}m"  # "100m".."99999m" — still <= 6 chars
-    return "99999m"  # clamp an absurd/stuck elapsed so the 6-char contract holds
-
-
-def _forge_header_fragments(
-    width: int, run_id: str, done_n: int, failed_n: int, total: int
-) -> list[tuple[str, str]]:
-    """Build the live header — ``FORGE · run-xxx  ███░░  5/9`` — as styled
-    fragments that sum to EXACTLY ``width`` columns (falling back to a dim rule
-    when the panel is too narrow for a bar). Only narrow, single-column glyphs
-    are used (block/▓/░/─) so the char count matches the display width and the
-    cursor-pin scroll math stays exact."""
-    width = max(1, int(width))
-    run_label = f"FORGE · {run_id}" if run_id else "FORGE"
-    count = f"{done_n}/{total}" if total else ""
-    # Right block is " <count>" (a leading space), clipped so it can never exceed
-    # the row on an ultra-narrow panel.
-    right = (" " + count) if count else ""
-    right = right[:width]
-    left_avail = width - len(right)
-    label = run_label[: max(0, left_avail)]
-    mid_w = left_avail - len(label)  # columns between the label and the count
-
-    frags: list[tuple[str, str]] = [("class:tui.forge.head", label)]
-    if total > 0 and mid_w >= 6:
-        # " " + bar(mid_w-2) + " "
-        bar_w = mid_w - 2
-        done_seg = min(bar_w, round(bar_w * done_n / total))
-        fail_seg = min(bar_w - done_seg, round(bar_w * failed_n / total))
-        empty_seg = bar_w - done_seg - fail_seg
-        frags.append(("class:tui.forge.rule", " "))
-        if done_seg:
-            frags.append(("class:tui.forge.meter", "█" * done_seg))
-        if fail_seg:
-            frags.append(("class:tui.forge.meterfail", "█" * fail_seg))
-        if empty_seg:
-            frags.append(("class:tui.forge.meterempty", "░" * empty_seg))
-        frags.append(("class:tui.forge.rule", " "))
-    elif mid_w >= 2:
-        frags.append(("class:tui.forge.rule", " " + "─" * (mid_w - 1)))
-    elif mid_w == 1:
-        frags.append(("class:tui.forge.rule", " "))
-    if right:
-        frags.append(("class:tui.forge.count", right))
-    return frags
-
-
-def _forge_view_rows(
-    view: dict[str, Any],
-    width: int,
-    spinner: str,
-    elapsed: int,
-    task_elapsed: dict[str, int] | None = None,
-) -> list[list[tuple[str, str]]]:
-    """Render the live Forge execution block: a violet header with a progress
-    gauge, a per-task status table (glyph · id · status · title · timer) and a
-    phase/spinner line. ``task_elapsed`` maps a running task id to its elapsed
-    seconds (from the transcript's per-task ``active_map``); when omitted, no
-    per-row timers are drawn. Every row is ``<= width`` so the transcript's
-    cursor-pin scroll math stays exact."""
-    width = max(20, int(width))
-    rows: list[list[tuple[str, str]]] = []
-    run_id = str(view.get("run_id") or "")
-    done = bool(view.get("done"))
-    tasks = list(view.get("tasks") or [])
-    active = view.get("active")
-    active_map = view.get("active_map") or {}
-    timers = dict(task_elapsed or {})
-
-    # Header: "FORGE · run-xxx  ███░░  5/9" — a live progress gauge (done in
-    # violet, failed in red, the rest a dim track) so run progress is glanceable.
-    done_n, failed_n, _remaining_n = forge_status_counts(
-        str(t.get("status", "") or "planned") for t in tasks
-    )
-    rows.append(_forge_header_fragments(width, run_id, done_n, failed_n, len(tasks)))
-
-    # Task table — aligned id + status columns, title fills the rest, and a
-    # right-aligned elapsed timer on each running row. Column widths are capped
-    # RELATIVE to the width so the fixed prefix can never exceed the panel (which
-    # would silently wrap the row and break the scroll math).
-    if tasks:
-        id_w = min(
-            max((len(str(t.get("id", ""))) for t in tasks), default=2), 8, max(2, width // 6)
-        )
-        status_w = min(
-            max((len(str(t.get("status", ""))) for t in tasks), default=7), 16, max(4, width // 4)
-        )
-        prefix = 2 + 2 + id_w + 2 + status_w + 2  # indent+glyph+id+gap+status+gap
-        # Reserve a right-hand timer column only when a running task actually has
-        # a timer AND the panel is wide enough to spare it.
-        timer_strs = {tid: _forge_fmt_elapsed(sec) for tid, sec in timers.items()}
-        timer_w = min(6, max((len(s) for s in timer_strs.values()), default=0))
-        reserve = (timer_w + 1) if (timer_w and width - prefix > timer_w + 4) else 0
-        title_w = max(0, width - prefix - reserve)
-        for task in tasks:
-            tid = str(task.get("id", ""))
-            status = str(task.get("status", "") or "planned")
-            title = str(task.get("title", "") or "")
-            is_active = tid in active_map or (active is not None and tid == active)
-            glyph, gstyle = _forge_task_visual(status, is_active, spinner)
-            id_cell = tid[:id_w].ljust(id_w)
-            status_cell = status[:status_w].ljust(status_w)
-            row = [
-                ("class:tui.forge.idle", "  "),
-                (gstyle, f"{glyph} "),
-                ("class:tui.forge.id", f"{id_cell}  "),
-                (gstyle, f"{status_cell}  "),
-                (
-                    "class:tui.forge.title",
-                    title[:title_w].ljust(title_w) if reserve else title[:title_w],
-                ),
-            ]
-            if reserve:
-                ts = timer_strs.get(tid, "")
-                # Blank (spaces) for a non-running row keeps the row within width
-                # without misaligning the running rows' timers. The timer is clipped
-                # to the reserved column so an over-long value can never overflow.
-                row.append(
-                    (
-                        "class:tui.forge.timer",
-                        " " + ts[:timer_w].rjust(timer_w) if ts else " " * (timer_w + 1),
-                    )
-                )
-            rows.append(row)
-    else:
-        rows.append([("class:tui.forge.idle", "  (no execution-ready tasks)"[: max(0, width)])])
-
-    # Phase / spinner status line.
-    message = str(view.get("message") or "")
-    if done:
-        # Colour the summary by the run outcome so a green ✓ never sits next to a
-        # failed task: green ✓ on a clean run, red ✗ when anything failed/remains.
-        ok = bool(view.get("ok", True))
-        glyph = "✓" if ok else "✗"
-        gstyle = "class:tui.forge.done" if ok else "class:tui.forge.fail"
-        line = (message or ("Done." if ok else "Finished with issues."))[: max(0, width - 2)]
-        rows.append([(gstyle, f"{glyph} "), ("class:tui.transcript.system", line)])
-    else:
-        phase = str(view.get("phase") or "execute")
-        running = len(active_map)
-        lead = f"{running} running · " if running > 1 else ""
-        text = f"{lead}{phase}" if not message else f"{lead}{phase} · {message}"
-        if elapsed:
-            text = f"{text} · {elapsed}s"
-        text = text[: max(0, width - 2)]
-        rows.append(
-            [("class:tui.forge.run", f"{spinner} "), ("class:tui.transcript.reasoning", text)]
-        )
-    return rows
 
 
 # ------------------------------------------------------------- float geometry
@@ -2687,7 +2408,7 @@ def run_tui(
     # time; ``reasoning_expanded`` is a local expansion override (Alt+R).
     run_box: dict[str, float] = {"started": 0.0, "cancellation_started": 0.0}
     subagent_started_at: dict[str, float] = {}
-    view: dict[str, bool] = {"reasoning_expanded": False, "planmeta_expanded": False}
+    view: dict[str, bool] = {"reasoning_expanded": False}
     subagent_panel: dict[str, Any] = {
         "selected_run_id": "",
         "run_order": [],
@@ -2706,18 +2427,14 @@ def run_tui(
     # ``builder`` is the active row-builder (``width -> rows``) so /help, /status and
     # every future panel share one overlay. ``n`` caches the rendered row count.
     # ``confirm`` (when set) is a command string a panel runs on Enter — the popup
-    # then acts as a confirm dialog (e.g. the /forge intro: Enter enters Forge, Esc
-    # cancels). It is None for ordinary read-only panels, where Enter just closes.
+    # then acts as a confirm dialog (Enter runs it, Esc cancels). It is None for
+    # ordinary read-only panels, where Enter just closes.
     help_box: dict[str, Any] = {
         "on": False,
         "offset": 0,
         "title": "Commands",
         "builder": None,
         "confirm": None,
-        # Optional accent for the panel frame border: "forge" repaints it violet
-        # (ties /show, /plan, the launch gate to the FORGE identity); None/"" is
-        # the default green chrome shared by /help, /status, …
-        "accent": None,
     }
     # ``rows`` keeps the last rendered popup rows so a click can find its link.
     help_rows: dict[str, Any] = {"n": 0, "rows": []}
@@ -2950,7 +2667,6 @@ def run_tui(
             "subagent.previous": "alt+left",
             "subagent.next": "alt+right",
             "subagent.close": "esc",
-            "planmeta.toggle": "ctrl+o",
         }.get(action_id, "")
 
     def _register_subagent_run(event: SubagentStartEvent) -> None:
@@ -3134,9 +2850,6 @@ def run_tui(
         "fragment_rows": [],
         "row_roles": [],
         "width": None,
-        # True while a press that began on the plan-meta aside is in flight
-        # (click on release = toggle; drag = select its text).
-        "planmeta_press": False,
     }
     selection_notice: dict[str, Any] = {"text": "", "generation": 0}
     _role_styles = {
@@ -3179,9 +2892,6 @@ def run_tui(
                 # A re-emitted verbatim copy of the same answer (multi-step turn):
                 # render it once, drop the repeats.
                 continue
-            # A block builder may stamp per-row roles (planmeta lead vs wrap
-            # continuation); everything else uses the entry role for all rows.
-            block_roles: list[str] | None = None
             if role == "user":
                 block = _user_band_rows(text, width)  # full-width highlighted band
             elif role == "assistant":
@@ -3209,14 +2919,6 @@ def run_tui(
                 from .tool_trace import trace_rows
 
                 block = trace_rows(text, width)
-            elif role == "planmeta":
-                # Collapsible Forge planner meta / plan-reconciliation notes.
-                # Rows carry per-row kinds: lead rows ("planmeta") own a
-                # strippable glyph; wrap continuations ("planmetacont") start
-                # with note content the copy path must keep verbatim.
-                pairs = plan_meta_rows_with_kinds(text, width, expanded=view["planmeta_expanded"])
-                block = [row for row, _kind in pairs]
-                block_roles = [kind for _row, kind in pairs]
             elif role == "reasoning":
                 is_live = reasoning_index == index
                 expanded = view["reasoning_expanded"] or transcript.trace_level == "full"
@@ -3233,9 +2935,7 @@ def run_tui(
                 style = _role_styles.get(role, "")
                 block = _plain_role_rows(style, text, width)
             rendered_rows.extend(block)
-            rendered_row_roles.extend(
-                block_roles if block_roles is not None else [role] * len(block)
-            )
+            rendered_row_roles.extend([role] * len(block))
             # Blank spacer between blocks for readability (so the thinking aside
             # is not glued to the highlighted question box above it).
             if index != len(entries) - 1:
@@ -3248,42 +2948,12 @@ def run_tui(
                     if role in _COPYABLE_TRANSCRIPT_ROLES and future_copyable_entries[index]
                     else "chrome"
                 )
-        # Live Forge execution view (the task table + phase/spinner line) while
-        # /execute plan runs the swarm — and it stays frozen as the final table once
-        # the run completes (until the next submission clears it). It replaces the
-        # generic activity indicator for the duration of a forge run.
-        forge_view = transcript.forge_snapshot()
-        if forge_view is not None:
-            frame = _SPINNER_FRAMES[spinner["i"] % len(_SPINNER_FRAMES)]
-            now_mono = time.monotonic()
-            try:
-                forge_elapsed = int(max(0, now_mono - float(forge_view["started"])))
-            except Exception:
-                forge_elapsed = 0
-            # Per-task elapsed for the running rows (from the transcript's
-            # active_map, stamped on the same monotonic clock the UI reads here).
-            forge_task_elapsed: dict[str, int] = {}
-            for _tid, _info in (forge_view.get("active_map") or {}).items():
-                _started = _info.get("started") if isinstance(_info, dict) else None
-                if _started is not None:
-                    try:
-                        forge_task_elapsed[str(_tid)] = int(max(0, now_mono - float(_started)))
-                    except (TypeError, ValueError):
-                        continue
-            if entries:
-                rendered_rows.append([])
-                rendered_row_roles.append("chrome")
-            forge_rows = _forge_view_rows(
-                forge_view, width, frame, forge_elapsed, forge_task_elapsed
-            )
-            rendered_rows.extend(forge_rows)
-            rendered_row_roles.extend(["forge"] * len(forge_rows))
         # Single live activity indicator under the content while the turn runs:
         # the model's current step — "thinking…" or the running tool name — with a
         # spinner + elapsed. Hidden while a reasoning block is itself live (it
-        # carries its own header), while the answer streams, or while the forge view
-        # is showing (it carries its own spinner). A blank line above gives it room.
-        elif running["on"] and reasoning_index is None and streaming_index is None:
+        # carries its own header) or while the answer streams. A blank line above
+        # gives it room.
+        if running["on"] and reasoning_index is None and streaming_index is None:
             frame = _SPINNER_FRAMES[spinner["i"] % len(_SPINNER_FRAMES)]
             label = status or "thinking…"
             if entries:
@@ -3452,15 +3122,6 @@ def run_tui(
         event_type = mouse_event.event_type
         point = Point(x=max(0, mouse_event.position.x), y=max(0, mouse_event.position.y))
         if event_type == MouseEventType.MOUSE_DOWN and mouse_event.button == MouseButton.LEFT:
-            # Remember whether the press began on the collapsible plan-meta
-            # aside: a plain click (press+release without moving) toggles it
-            # on release, same as Ctrl+O, while a DRAG selects its text like
-            # any other transcript block. The row_roles list is indexed by the
-            # same coordinate the selection code uses, so this is
-            # click-accurate wherever the block is scrolled to.
-            selection["planmeta_press"] = _plan_meta_press_hit(
-                selection.get("row_roles") or [], point.y
-            )
             # A press on a link opens it on release — unless it turns into a
             # drag, which selects the text like anywhere else.
             url = _transcript_link_at(point)
@@ -3489,18 +3150,10 @@ def run_tui(
             selection["dragging"] = False
             _stop_drag_capture()
             selected = _current_transcript_selection()
-            if _plan_meta_click_toggles(
-                pressed_planmeta=bool(selection.get("planmeta_press")),
-                anchor=selection["anchor"],
-                release=point,
-                selected=selected,
-            ):
-                view["planmeta_expanded"] = not view["planmeta_expanded"]
             if not selected:
                 selection.update({"anchor": None, "active": None})
                 if press is not None and press[1] == point:
                     _open_link(press[0])
-            selection["planmeta_press"] = False
             _safe_invalidate()
             return None
         return NotImplemented
@@ -3770,9 +3423,6 @@ def run_tui(
         return max(1, _current_width() - 2)
 
     def _placeholder_text() -> str:
-        # Inside a Forge session the input is a plan editor — nudge the verbs.
-        if getattr(state, "forge_mode", False):
-            return " " + _content.INPUT_PLACEHOLDER_FORGE
         # Long greeting on the welcome screen; short follow-up once chatting.
         # (The Tab persona shortcut is advertised in the welcome HINT_TEXT,
         # outside the input box — a placeholder suffix wraps on narrow panes.)
@@ -4365,13 +4015,6 @@ def run_tui(
         if pending is not None:
             approval_box["decision"] = ApprovalDecision(allow=False)
             pending.set()
-        surface = getattr(session, "surface", None)
-        interrupt_forge = getattr(surface, "interrupt_forge", None)
-        if callable(interrupt_forge):
-            try:
-                interrupt_forge()
-            except Exception:
-                pass
         rescued = _drain_undelivered_steers()
         pending_turns.extend(rescued)
         with pending_messages_lock:
@@ -4416,8 +4059,7 @@ def run_tui(
         This is the real path of :func:`_submit` (echo the user line, run the
         command handler, then exit / begin a turn / show captured output). It is
         factored out so a confirm popup can run its command on Enter — bypassing
-        the /help, panel and picker interceptions — e.g. the /forge intro popup
-        whose Enter enters the Forge session. No-ops without a session + runner.
+        the /help, panel and picker interceptions. No-ops without a session + runner.
         """
         if session is None or command_runner is None:
             return _DispatchOutcome.CONTINUE
@@ -4781,7 +4423,7 @@ def run_tui(
             else:
                 _open_integrations(local_name[1:])
             return
-        if local_name == "/planning" or (local_name == "/plan" and not state.forge_mode):
+        if local_name in {"/planning", "/plan"}:
             if len(command_parts) > 1:
                 transcript.append(
                     "system", "Use /plan without arguments to choose a planning workflow."
@@ -4895,12 +4537,8 @@ def run_tui(
             return
         if running["on"]:
             command = stripped.split(maxsplit=1)[0].lower()
-            ui_mode = "forge" if getattr(state, "forge_mode", False) else "chat"
             if command.startswith("/"):
                 recalled_pending["queue"] = None
-            if command.startswith("/") and not command_visible(command, ui_mode=ui_mode):
-                _dispatch_command(text, display_text=display_text, allow_run=False)
-                return
             if config_overlay is not None and stripped.lower() == "/config":
                 buff.reset()
                 config_overlay.open()
@@ -5030,8 +4668,7 @@ def run_tui(
         if panel_providers:
             parts = stripped.split(maxsplit=1)
             name = parts[0].lower()
-            ui_mode = "forge" if getattr(state, "forge_mode", False) else "chat"
-            provider = panel_providers.get(name) if command_visible(name, ui_mode=ui_mode) else None
+            provider = panel_providers.get(name)
             if provider is not None:
                 cmd_arg = parts[1].strip() if len(parts) > 1 else ""
                 try:
@@ -5049,15 +4686,13 @@ def run_tui(
                     picker_spec = spec.get("picker")
                     body = spec.get("body")
                     # An optional confirm command turns the panel into a confirm
-                    # dialog: Enter runs it (e.g. the /forge intro enters Forge),
-                    # Esc/q cancels. None for ordinary read-only panels.
+                    # dialog: Enter runs it, Esc/q cancels. None for ordinary
+                    # read-only panels.
                     confirm = spec.get("confirm")
                     on_confirm = spec.get("on_confirm")
-                    # Optional violet frame accent for Forge panels (default None).
-                    accent = spec.get("accent")
                     if picker_spec is not None:
-                        # A command that opens a selectable popup directly (e.g. the
-                        # forge /execute launch gate). Distinct from picker_providers
+                        # A command that opens a selectable popup directly.
+                        # Distinct from picker_providers
                         # (which only fire for the bare, no-argument form).
                         _open_picker(picker_spec)
                         return
@@ -5079,7 +4714,6 @@ def run_tui(
                             ),
                             confirm=confirm,
                             on_confirm=on_confirm,
-                            accent=accent,
                         )
                     else:
                         sections = spec.get("sections") or []
@@ -5090,7 +4724,6 @@ def run_tui(
                             ),
                             confirm=confirm,
                             on_confirm=on_confirm,
-                            accent=accent,
                         )
                     return
                 # spec is None → not a panel for this argument; fall through below.
@@ -5101,12 +4734,7 @@ def run_tui(
         if picker_providers:
             parts = stripped.split()
             name = parts[0].lower()
-            ui_mode = "forge" if getattr(state, "forge_mode", False) else "chat"
-            if (
-                len(parts) == 1
-                and name in picker_providers
-                and command_visible(name, ui_mode=ui_mode)
-            ):
+            if len(parts) == 1 and name in picker_providers:
                 try:
                     spec = picker_providers[name]()
                 except Exception as exc:  # noqa: BLE001 - never crash the UI on a picker
@@ -5285,8 +4913,7 @@ def run_tui(
             try:
                 from ..commands.welcome import _chat_command_sections
 
-                ui_mode = "forge" if getattr(state, "forge_mode", False) else "chat"
-                sections = list(_chat_command_sections(ui_mode=ui_mode) or [])
+                sections = list(_chat_command_sections() or [])
             except Exception:
                 sections = []
             if not sections:
@@ -5312,7 +4939,7 @@ def run_tui(
             discovery.append(
                 (
                     "/plan · /planning",
-                    "Choose Architect or Forge; /planning also returns to the prior mode",
+                    "Plan with Architect; /planning also returns to the prior mode",
                 )
             )
         if review_engine_factory is not None:
@@ -5421,18 +5048,8 @@ def run_tui(
     )
     help_frame = Frame(help_window, title="Commands", style="class:tui.help.frame")
 
-    def _panel_frame_accent_style() -> str:
-        # A container style callable: while a Forge panel is open it adds the
-        # ``tui.forgeframe`` ancestor class, which (declared after the green
-        # ``tui.help.frame frame.border`` rule) repaints the frame border violet.
-        # Empty string for every other panel keeps the default green chrome.
-        return "class:tui.forgeframe" if help_box.get("accent") == "forge" else ""
-
-    # Wrap the shared frame so the accent class can be toggled per open panel
-    # without rebuilding the Frame (whose style is baked in at construction).
-    help_frame_wrapper = HSplit([help_frame], style=_panel_frame_accent_style)
     help_float = Float(
-        content=ConditionalContainer(help_frame_wrapper, filter=_help_open),
+        content=ConditionalContainer(help_frame, filter=_help_open),
         width=_help_panel_width,
         height=_help_panel_height,
     )
@@ -5443,7 +5060,6 @@ def run_tui(
         *,
         confirm: str | None = None,
         on_confirm: Callable[[], list[tuple[str, str]] | None] | None = None,
-        accent: str | None = None,
     ) -> None:
         # Open the centered popup with an arbitrary title + row-builder. /help and
         # every panel command (/status, …) route through here so there is one
@@ -5457,7 +5073,6 @@ def run_tui(
         help_box["builder"] = builder
         help_box["confirm"] = confirm
         help_box["on_confirm"] = on_confirm
-        help_box["accent"] = accent
         try:
             help_frame.title = title
         except Exception:
@@ -5480,7 +5095,6 @@ def run_tui(
         help_box["on"] = False
         help_box["confirm"] = None
         help_box["on_confirm"] = None
-        help_box["accent"] = None
         try:
             get_app().layout.focus(input_area)
         except Exception:
@@ -5701,9 +5315,6 @@ def run_tui(
             read_state=planning_backend.state,
             dispatch=_dispatch_planning,
             apply_persona=planning_backend.apply_persona,
-            enter_forge=planning_backend.enter_forge,
-            leave_forge=planning_backend.leave_forge,
-            forge_allowed=planning_backend.forge_allowed,
         )
         if planning_backend is not None
         else None
@@ -6048,7 +5659,7 @@ def run_tui(
         #   · ``prefill`` drops text into the input box (cursor at end, focused)
         #     so a picked option can be finished by typing.
         #   · ``submit`` runs text straight through the submit pipeline as if typed —
-        #     e.g. a forge /plan option immediately opens its panel (no extra Enter).
+        #     so a picked option applies with no extra Enter.
         messages = result
         prefill: str | None = None
         submit: str | None = None
@@ -6063,8 +5674,7 @@ def run_tui(
         for role, text in messages or []:
             transcript.append(role, text)
         if next_picker is not None:
-            # Re-open a (freshly rebuilt) picker — e.g. the launch gate cycles a
-            # swarm knob and re-presents the menu with the updated value.
+            # Re-open a (freshly rebuilt) picker that presents an updated menu.
             _open_picker(next_picker)
             _safe_invalidate()
             return
@@ -6486,7 +6096,6 @@ def run_tui(
             return False
         link_press["transcript"] = None
         selection.update({"anchor": None, "active": None, "dragging": False})
-        selection["planmeta_press"] = False
         _stop_drag_capture()
         _open_link(url)
         return True
@@ -6975,11 +6584,10 @@ def run_tui(
     def _help_confirm(event: Any) -> None:
         # Enter closes the panel; for a confirm panel it also acts. The callback
         # form (on_confirm) takes
-        # precedence; otherwise the stored command runs (e.g. the /forge intro).
-        # Esc/q cancel. on_confirm returns either a list of (role, text) rows to
-        # echo, or a dict {"messages"?: [...], "picker"?: {...}} whose ``picker``
-        # chains a follow-up selection popup (e.g. the /forge intro → "Use the
-        # planner?" prompt before entering Forge).
+        # precedence; otherwise the stored command runs. Esc/q cancel. on_confirm
+        # returns either a list of (role, text) rows to echo, or a dict
+        # {"messages"?: [...], "picker"?: {...}} whose ``picker`` chains a
+        # follow-up selection popup.
         confirm = help_box.get("confirm")
         on_confirm = help_box.get("on_confirm")
         _close_help()
@@ -7128,11 +6736,6 @@ def run_tui(
         view["reasoning_expanded"] = not view["reasoning_expanded"]
         event.app.invalidate()
 
-    def _toggle_plan_meta(event: Any) -> None:
-        # Expand/collapse Forge planner meta / plan-reconciliation note blocks.
-        view["planmeta_expanded"] = not view["planmeta_expanded"]
-        event.app.invalidate()
-
     # ---- scrollback (works while the input keeps focus) ----
     @kb.add("pageup", filter=_help_open, eager=True)
     def _help_pageup(event: Any) -> None:
@@ -7185,7 +6788,6 @@ def run_tui(
         ("escape p", lambda event: _open_paste_editor()),
         ("escape left", _previous_subagent),
         ("escape right", _next_subagent),
-        ("c-o", _toggle_plan_meta),
     ]:
         kb.add(*keys.split(), filter=_input_focused & ~_small_modal_open & ~_config_open)(handler)
     tui_input, owned_tui_input = _resolve_tui_input(input)

@@ -128,7 +128,7 @@ def test_rich_surface_warning_and_status_render_ascii_safe_on_cp1252_stream() ->
     assert "[REDACTED]" in rendered
 
 
-def test_rich_surface_tool_and_forge_renderables_ascii_safe_on_cp1252_stream(
+def test_rich_surface_tool_and_subagent_renderables_ascii_safe_on_cp1252_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stream = _EncodedTextStream(encoding="cp1252", tty=True)

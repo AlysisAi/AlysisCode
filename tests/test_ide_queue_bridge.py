@@ -17,6 +17,9 @@ from alysis_code.ide.change_ledger import ChangeLedger, ChangeLedgerError
 from alysis_code.ide.prompt_queue import DurablePromptQueue
 from alysis_code.ide.stdio_bridge import StdioBridge
 
+# Real Git snapshots can outlast the short waits used by in-memory queue tests.
+GIT_CHECKPOINT_TIMEOUT_SECONDS = 30.0
+
 
 def _request(method: str, params: dict[str, Any], request_id: str) -> str:
     return (
@@ -180,7 +183,7 @@ def test_checkpoint_failure_lets_edits_go_ahead_with_a_warning_and_next_turn_rec
         )
         recovered = bridge._jobs[_response(output, "retry")["result"]["job_id"]]
         assert recovered.thread is not None
-        recovered.thread.join(timeout=10)
+        recovered.thread.join(timeout=GIT_CHECKPOINT_TIMEOUT_SECONDS)
         assert not recovered.thread.is_alive()
         assert recovered.status == outcome
         assert messages == ["blocked edit", "retry with checkpoints"]
@@ -524,6 +527,7 @@ def test_chat_turn_checkpoint_revert_and_redo(configured_workspace: Path, tmp_pa
             item.get("type") == "info_emitted"
             and f"job_completed {job_id}" in str(item.get("payload", {}).get("message"))
         ),
+        timeout=GIT_CHECKPOINT_TIMEOUT_SECONDS,
     )
     bridge.process_line(_request("job.status", {"job_id": job_id}, "job"))
     checkpoint_id = _response(output, "job")["result"]["result"]["checkpoint_id"]

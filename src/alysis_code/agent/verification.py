@@ -3914,7 +3914,7 @@ def maybe_bootstrap_agent_verification_contract(
     if not bool(getattr(session, "verification_enabled", True)):
         return
     if bool(getattr(session, "one_shot_execution", False)):
-        # One-shot/Forge runs resolve their contracts up front and manage their
+        # One-shot runs resolve their contracts up front and manage their
         # own verification lifecycle; mid-run contract swaps are interactive-only
         # (same scoping as the zero-activity downgrade).
         return

@@ -96,30 +96,27 @@ are complete. A generic component VSIX is never eligible for this signoff.
 - Closed production signoff/rollback receipt path (`vscode-alysis-production-signoff.json`):
 - OS smoke evidence:
   - [ ] Windows:
-    CLI discovery / bridge startup / SecretStorage / chat-run / image paths / Forge plan-execute / artifacts-diffs / extension reload / Workspace Trust:
+    CLI discovery / bridge startup / SecretStorage / chat-run / image paths / artifacts / extension reload / Workspace Trust:
   - [ ] macOS:
-    CLI discovery / bridge startup / SecretStorage / chat-run / image paths / Forge plan-execute / artifacts-diffs / extension reload / Workspace Trust:
+    CLI discovery / bridge startup / SecretStorage / chat-run / image paths / artifacts / extension reload / Workspace Trust:
   - [ ] Linux:
-    CLI discovery / bridge startup / SecretStorage / chat-run / image paths / Forge plan-execute / artifacts-diffs / extension reload / Workspace Trust:
+    CLI discovery / bridge startup / SecretStorage / chat-run / image paths / artifacts / extension reload / Workspace Trust:
   - [ ] WSL:
-    Host+distro / remote CLI origin / bridge startup / chat-run / Forge review / artifacts-diffs / extension reload / Workspace Trust:
+    Host+distro / remote CLI origin / bridge startup / chat-run / artifacts / extension reload / Workspace Trust:
   - [ ] Remote-SSH:
-    Local+remote hosts / remote CLI origin / bridge startup / chat-run / Forge review / artifacts-diffs / extension reload / OAuth limit:
+    Local+remote hosts / remote CLI origin / bridge startup / chat-run / artifacts / extension reload / OAuth limit:
   - [ ] Untrusted workspace:
     Workspace-local executable/settings ignored / secrets never forwarded to unsafe origins /
     signed managed-runtime readonly inspection available where supported / file, shell, browser,
-    credential, and Forge mutation paths trust-gated:
+    and credential mutation paths trust-gated:
   - [ ] VS Code Extension Host report:
 
 ## Known Limitations Accepted
 
 Confirm release notes and Marketplace copy do not overclaim these IDE v1 limits:
 
-- [ ] Forge swarm is review-only (per-task Keep/Discard, never auto-merged), capability- and Workspace-Trust-gated, with cooperative checkpoint cancellation. Broad auto/fullaccess swarm execution and merge-to-base stay blocked.
-- [ ] Broad Forge exec unavailable; IDE exposes selected-task review-mode execute and the review-only Run Swarm console only.
-- [ ] Forge auto/fullaccess execution unavailable.
+- [ ] Auto/fullaccess execution unavailable in the IDE.
 - [ ] Active runtime cancellation is cooperative checkpoint only; no hard interrupt is claimed.
-- [ ] Native durable Forge recovery is exercised: bounded interrupted/failed rows, exact revision revalidation, explicit Resume confirmation, fresh zero-grant permission scope, Stop, usage, and review ownership all pass without silently reusing prior grants.
 - [ ] MCP OAuth is supported on local extension hosts; Remote-SSH OAuth is unavailable until a URI-handler or device-code callback flow exists.
 - [ ] Managed-browser agent tools and the native Browser Cockpit are top-level, agent-shared,
   public-only, and owner-scoped for normal starts. Start/Navigate/Click/Type are Workspace-Trust

@@ -550,7 +550,7 @@ def test_bot_can_request_takeover_without_granting_itself_input(study, monkeypat
             response(name="computer_run", arguments={"command": "inspect"}),
             response(
                 name="request_computer_control",
-                arguments={"reason": "Complete this step in the computer."},
+                arguments={"kind": "other", "reason": "Complete this step in the computer."},
             ),
         ]
     )

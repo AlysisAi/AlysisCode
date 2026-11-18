@@ -123,70 +123,8 @@ MANUAL_REAL_PROVIDER_REQUIRED_CHECKS: tuple[dict[str, str], ...] = (
         "step": "Run `/terminals list` and `/terminals show <id>` or verify structured unavailable behavior; kill only with trust and confirmation.",
     },
     {
-        "id": "slash_plan",
-        "step": "Run `/plan` for the fixture task and inspect the generated Forge plan.",
-    },
-    {
-        "id": "forge_show_status",
-        "step": "Run `/forge show` or `/plan show` and refresh Forge plan status; verify show/status are structured, active-plan scoped, and bounded.",
-    },
-    {
-        "id": "forge_plan_state",
-        "step": "Run `/forge plan state` and verify active plan state is structured and bounded.",
-    },
-    {
-        "id": "forge_plan_validate",
-        "step": "Run `/forge plan validate` and verify validation/review metadata.",
-    },
-    {
-        "id": "forge_plan_regenerate",
-        "step": "Run `/plan regenerate focus <text>` or `/forge plan regenerate focus <text>` and verify Workspace Trust plus optimistic revision behavior.",
-    },
-    {
-        "id": "assistant_show_update",
-        "step": "Run `/assistant show` and one trusted `/assistant <instruction>` update; verify persistence and audit metadata.",
-    },
-    {
-        "id": "goal_show_update",
-        "step": "Run `/goal show` and one trusted `/goal <goal>` update; verify non-empty validation and persistence.",
-    },
-    {
-        "id": "task_show_update",
-        "step": "Run `/task <task_id> show`, status, title, and body safe updates; verify task-id validation and no path traversal.",
-    },
-    {
-        "id": "execute_preview",
-        "step": "Run `/execute preview` and verify it is non-mutating and reports readiness, blockers, sandbox, risks, and checks.",
-    },
-    {
-        "id": "execute_plan_review_mode",
-        "step": "Run `/execute plan` and verify Preview plus explicit Execute Review confirmation before mutation.",
-    },
-    {
-        "id": "run_swarm_review_flow",
-        "step": (
-            "Run Swarm from the cockpit (alysis.runSwarm) against a multi-task plan; verify the task "
-            "grid shows parallel workers by glyph, at least one worker raises a NON-MODAL task-attributed "
-            "approval (Allow once / Deny), cancel shows cooperative-checkpoint copy, and per-task review "
-            "cards offer Keep/Discard with the untracked-files-not-applied list shown. Confirm the working "
-            "tree stays unchanged until you Keep, that Keep applies one task's diff without committing, and "
-            "that a failed/interrupted task offers an editable regenerate-subtree instruction."
-        ),
-    },
-    {
-        "id": "run_swarm_capability_gate",
-        "step": (
-            "On a CLI without forge.swarm support, verify Run Swarm is dimmed with a structured "
-            "'needs a newer Alysis Code CLI' reason (never a working control)."
-        ),
-    },
-    {
-        "id": "forge_exec_unsupported_warning",
-        "step": "Run broad `/forge exec` and `/forge execute` aliases; verify IDE v1 unsupported warnings for broad/unsafe modes.",
-    },
-    {
         "id": "diffs_artifacts",
-        "step": "Open diffs and artifacts from the Cockpit/Activity Bar; verify they are scoped to the current session/job/plan.",
+        "step": "Open artifacts from the Cockpit; verify they are scoped to the current session and job.",
     },
     {
         "id": "manage_tree_domains",
@@ -590,10 +528,6 @@ def validate_bridge_health(cli_command: list[str], env: dict[str, str]) -> dict[
         "session.create",
         "chat.send",
         "run.start",
-        "forge.plan",
-        "forge.executePreview",
-        "forge.swarm.resume",
-        "forge.swarm.list",
         "mcp.auth.login.start",
         "mcp.auth.login.status",
         "mcp.auth.login.cancel",
@@ -643,75 +577,6 @@ def _validate_unsafe_features_not_advertised(methods: list[Any], features: dict[
             "ide-bridge health must not advertise hooks.watch lifecycle methods without "
             f"subscription support: {', '.join(advertised_hook_watch_lifecycle)}"
         )
-    forge = _nested_mapping(features, ("forge",))
-    # SW6: Forge swarm IS now supported in the IDE — but only as a review-only,
-    # cooperatively-cancellable, approval-routed workflow. Validate the honest
-    # contract rather than asserting it is unavailable.
-    swarm = _nested_mapping(forge, ("swarm",))
-    if swarm.get("supported") is True:
-        if swarm.get("cancellation") != "cooperative_checkpoint_cancellation":
-            raise DogfoodError(
-                "ide-bridge health advertises forge.swarm without cooperative checkpoint cancellation"
-            )
-        if swarm.get("merge_behavior") != "review_only_per_task_apply_discard":
-            raise DogfoodError("ide-bridge health advertises Forge swarm without review-only merge")
-        if swarm.get("workspace_trust_required") is not True:
-            raise DogfoodError(
-                "ide-bridge health advertises Forge swarm without Workspace Trust gating"
-            )
-        swarm_approvals = _nested_mapping(swarm, ("approvals",))
-        if swarm_approvals.get("yes_auto_approval") is not False:
-            raise DogfoodError("ide-bridge health advertises Forge swarm with --yes auto-approval")
-    resumable_swarm = _nested_mapping(features, ("resumable_swarm",))
-    if resumable_swarm.get("supported") is True:
-        required_swarm_methods = {
-            "forge.swarm.start",
-            "forge.swarm.resume",
-            "forge.swarm.list",
-            "forge.swarm.status",
-            "forge.swarm.result",
-            "forge.swarm.cancel",
-        }
-        if not required_swarm_methods <= method_names:
-            raise DogfoodError("ide-bridge durable Forge swarm lifecycle is incomplete")
-        for guarantee in (
-            "durable",
-            "explicit_resume",
-            "fresh_permission_fingerprint_required",
-            "fenced_worker_leases",
-            "restart_recovery",
-            "atomic_cancellation",
-            "exactly_once_usage_events",
-        ):
-            if resumable_swarm.get(guarantee) is not True:
-                raise DogfoodError(f"ide-bridge durable Forge swarm is missing {guarantee}")
-    forge_cancel = _nested_mapping(forge, ("cancel",))
-    if _supported_flag(features, ("forge", "cancel")) is True:
-        if forge_cancel.get("behavior") != "cooperative_checkpoint_cancellation":
-            raise DogfoodError(
-                "ide-bridge health advertises Forge cancellation without cooperative checkpoint behavior"
-            )
-        if forge_cancel.get("hard_interrupt") is True:
-            raise DogfoodError(
-                "ide-bridge health falsely advertises hard-interrupt Forge cancellation"
-            )
-        lifecycle_states = set(
-            str(item) for item in forge_cancel.get("lifecycle_states", []) if item
-        )
-        if not {"cancellation_requested", "cancelled", "completed", "failed"} <= lifecycle_states:
-            raise DogfoodError(
-                "ide-bridge health omits required Forge cancellation lifecycle states"
-            )
-    execute = _nested_mapping(forge, ("execute",))
-    unsafe_modes = _nested_mapping(execute, ("unsafe_modes",))
-    if unsafe_modes.get("supported") is True:
-        raise DogfoodError("ide-bridge health falsely advertises Forge unsafe execution modes")
-    supported_modes = execute.get("supported_modes")
-    if isinstance(supported_modes, list) and any(
-        str(mode).casefold() in {"auto", "fullaccess"} for mode in supported_modes
-    ):
-        raise DogfoodError("ide-bridge health falsely advertises Forge auto/fullaccess execution")
-
     management_methods = _nested_mapping(features, ("management", "methods"))
     mcp_login_feature = _nested_mapping(features, ("management", "mcp", "auth_login"))
     advertised_mcp_login_lifecycle = {
@@ -1332,10 +1197,10 @@ def manual_steps() -> list[str]:
     task = "Add a pure clamp(value, lower, upper) function to src/simple_math.py and cover it with tests."
     steps = [check["step"] for check in MANUAL_REAL_PROVIDER_REQUIRED_CHECKS]
     steps.append(
-        "Confirm the Timeline shows command started, validation, bridge start/reuse, planning started, and planning completed."
+        f"Ask the agent in review mode: {task!r}. Review each approval before allowing it."
     )
     steps.append(
-        "Inspect Forge Plan cards, selected task detail, file scope, acceptance criteria, dependencies, and verification commands."
+        "Confirm the Timeline shows command started, validation, bridge start/reuse, and completion."
     )
     steps.append("Run the fixture verification command: `python -m unittest discover -s tests`.")
     steps.append(
@@ -1344,7 +1209,7 @@ def manual_steps() -> list[str]:
     steps.append(
         "Uninstall the VSIX or reset the Extension Development Host profile after testing."
     )
-    return [step.replace("Run `/plan`", f"Run `/plan {task}`") for step in steps]
+    return steps
 
 
 def manual_required_checks() -> list[dict[str, str]]:

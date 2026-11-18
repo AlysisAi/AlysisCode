@@ -1,7 +1,5 @@
 """Planning-only transitions preserve newer independent write restrictions."""
 
-from types import SimpleNamespace
-
 import pytest
 from test_persona_modes import _FakeChatSession, _interactive_session
 
@@ -14,10 +12,8 @@ from alysis_code.cli_impl.tui.state import TuiState
 def backend_for(session):
     return ChatPlanningBackend(
         lambda: session,
-        SimpleNamespace(ui_mode="chat"),
         TuiState(),
         apply_persona=loop._apply_chat_persona,
-        enter_forge=lambda **_: False,
     )
 
 
@@ -28,8 +24,6 @@ def controller_for(session):
         read_state=backend.state,
         dispatch=lambda fn: outcomes.append(fn()),
         apply_persona=backend.apply_persona,
-        enter_forge=backend.enter_forge,
-        leave_forge=backend.leave_forge,
     )
     return controller, outcomes
 

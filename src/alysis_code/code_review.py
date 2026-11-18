@@ -239,7 +239,7 @@ class CodeReviewResult:
 
 @runtime_checkable
 class ReviewerClient(Protocol):
-    """Injectable structured reviewer, deliberately independent of Forge."""
+    """Injectable structured reviewer."""
 
     def review(
         self,

@@ -65,7 +65,7 @@ before any process starts — switch to `readonly` or grant trust.
 
 In Restricted Mode the extension ignores workspace or workspace-folder values for
 execution-sensitive settings, including `alysis.cliPath`, mode, model, provider URL, sandbox
-profile, auto-start, and Forge enablement.
+profile, and auto-start.
 
 ### API keys
 

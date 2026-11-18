@@ -24,7 +24,6 @@ from alysis_code.agent import empty_response_stall
 from alysis_code.agent import session as session_mod
 from alysis_code.agent.turn import core as turn_core
 from alysis_code.cli_impl.chat.loop import _handle_chat_command_impl
-from alysis_code.cli_impl.chat.state import _ForgeChatState
 from alysis_code.config import AppConfig
 from alysis_code.llm.openai_compat import LLMError
 from alysis_code.llm.types import LLMResponse
@@ -98,7 +97,6 @@ def test_actual_manual_compaction_retires_only_successful_history_boundaries(
                 session=session,
                 pending_images=[],
                 console=Console(file=io.StringIO(), force_terminal=False),
-                forge_state=_ForgeChatState(),
             )
             == "handled"
         )

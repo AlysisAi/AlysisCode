@@ -70,10 +70,6 @@ class TuiState:
     # Active persona (code|architect|ask|debug); "" or "code" renders no
     # persona badge — the execution-mode badge alone stays authoritative.
     persona: str = ""
-    # Forge: True while the user is inside a Forge planning session (ui_mode ==
-    # "forge"); drives the footer FORGE badge + the forge-specific placeholder.
-    forge_mode: bool = False
-    forge_run_id: str = ""  # short run id shown in the FORGE badge, e.g. "run-1a2b"
     # Name of the subagent currently running through auto-delegation; drives
     # the footer badge so the user knows nested work is active. Empty otherwise.
     active_subagent: str = ""

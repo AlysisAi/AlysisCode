@@ -19,19 +19,6 @@ test("SlashCommandRouter parses every supported command", () => {
     ["/permissions auto", "mode"],
     ["/persona", "persona"],
     ["/persona architect", "persona"],
-    ["/forge plan", "plan"],
-    ["/forge plan build a thing", "plan"],
-    ["/execute plan", "executePlan"],
-    ["/execute", "executePlan"],
-    ["/forge exec", "executePlan"],
-    ["/forge execute", "executePlan"],
-    ["/execute auto", "executeUnsupported"],
-    ["/execute preview", "executePreview"],
-    ["/plans", "plans"],
-    ["/open plan", "openPlan"],
-    ["/open plan plan-123", "openPlan"],
-    ["/diffs", "diffs"],
-    ["/artifacts", "artifacts"],
     ["/cancel", "cancel"],
     ["/doctor", "doctor"],
     ["/config", "config"],
@@ -74,29 +61,6 @@ test("SlashCommandRouter parses every supported command", () => {
     ["/tools", "backendAction"],
     ["/hooks", "backendAction"],
     ["/mcp", "backendAction"],
-    ["/assets", "backendAction"],
-    ["/asset add docs/spec.md", "backendAction"],
-    ["/asset show asset-1", "backendAction"],
-    ["/asset list", "backendAction"],
-    ["/asset delete asset-1", "backendAction"],
-    ["/asset edit asset-1", "backendAction"],
-    ["/asset refresh asset-1", "backendAction"],
-    ["/asset cancel-pending", "backendAction"],
-    ["/asset check", "backendAction"],
-    ["/asset prune", "backendAction"],
-    ["/forge show", "backendAction"],
-    ["/forge show plan-1", "backendAction"],
-    ["/forge plan state", "backendAction"],
-    ["/forge plan validate", "backendAction"],
-    ["/forge plan regenerate", "backendAction"],
-    ["/forge plan regenerate", "backendAction"],
-    ["/forge plan show plan-1", "backendAction"],
-    ["/assistant", "backendAction"],
-    ["/assistant Use concise edits", "backendAction"],
-    ["/goal Ship typed routes", "backendAction"],
-    ["/task T01 show", "backendAction"],
-    ["/forge review T01", "backendAction"],
-    ["/review T01", "backendAction"],
     ["/profiles", "backendAction"],
     ["/profile use demo", "backendAction"],
     ["/report", "backendAction"],
@@ -105,6 +69,10 @@ test("SlashCommandRouter parses every supported command", () => {
 
   for (const [input, id] of cases) {
     assert.equal(parseSlashCommand(input).id, id, input);
+  }
+  // The retired plan-and-execute commands are no longer part of the catalog.
+  for (const input of ["/forge plan build a thing", "/execute", "/plans", "/open plan", "/diffs", "/asset list", "/review T01"]) {
+    assert.equal(parseSlashCommand(input).id, "unknown", input);
   }
 });
 
@@ -128,22 +96,6 @@ test("new backend slash commands route to backend action handler with args", asy
   await router.execute("/paste-image screenshots/paste.png");
   await router.execute("/images");
   await router.execute("/clear-images");
-  await router.execute("/asset add docs/spec.md");
-  await router.execute("/asset show asset-1");
-  await router.execute("/asset edit asset-1");
-  await router.execute("/asset refresh asset-1");
-  await router.execute("/asset cancel-pending");
-  await router.execute("/asset check");
-  await router.execute("/asset delete asset-1");
-  await router.execute("/asset prune");
-  await router.execute("/forge show plan-1");
-  await router.execute("/forge plan state");
-  await router.execute("/forge plan validate");
-  await router.execute("/forge plan regenerate focus demo.py");
-  await router.execute("/forge plan regenerate Refresh current plan");
-  await router.execute("/assistant Use scoped IDE edits");
-  await router.execute("/goal Ship typed Forge routes");
-  await router.execute("/task T01 status blocked");
   await router.execute("/model-info gpt-5");
   await router.execute("/subagents on");
   await router.execute("/trace full");
@@ -151,7 +103,6 @@ test("new backend slash commands route to backend action handler with args", asy
   await router.execute("/terminals kill proc-1");
   await router.execute("/update online");
   await router.execute("/config set default_model=gpt-5");
-  await router.execute("/forge review T01");
   await router.execute("/profile use demo");
   await router.execute("/feedback follow-up");
 
@@ -165,22 +116,6 @@ test("new backend slash commands route to backend action handler with args", asy
     { actionId: "session.images.add", args: "screenshots/paste.png" },
     { actionId: "session.images.list", args: "" },
     { actionId: "session.images.clear", args: "" },
-    { actionId: "forge.assets.add", args: "docs/spec.md" },
-    { actionId: "forge.assets.show", args: "asset-1" },
-    { actionId: "forge.assets.edit", args: "asset-1" },
-    { actionId: "forge.assets.refresh", args: "asset-1" },
-    { actionId: "forge.assets.cancelPending", args: "" },
-    { actionId: "forge.assets.checkPlan", args: "" },
-    { actionId: "forge.assets.delete", args: "asset-1" },
-    { actionId: "forge.assets.pruneLegacy", args: "" },
-    { actionId: "forge.show", args: "plan-1" },
-    { actionId: "forge.plan.getState", args: "" },
-    { actionId: "forge.plan.validate", args: "" },
-    { actionId: "forge.plan.regenerate", args: "focus demo.py" },
-    { actionId: "forge.plan.regenerate", args: "Refresh current plan" },
-    { actionId: "forge.plan.setAssistant", args: "Use scoped IDE edits" },
-    { actionId: "forge.plan.setGoal", args: "Ship typed Forge routes" },
-    { actionId: "forge.plan.updateTask", args: "T01 status blocked" },
     { actionId: "session.modelInfo", args: "gpt-5" },
     { actionId: "session.subagents.status", args: "on" },
     { actionId: "session.trace.status", args: "full" },
@@ -188,7 +123,6 @@ test("new backend slash commands route to backend action handler with args", asy
     { actionId: "session.terminals.list", args: "kill proc-1" },
     { actionId: "update.check", args: "online" },
     { actionId: "config.set", args: "default_model=gpt-5" },
-    { actionId: "forge.review", args: "T01" },
     { actionId: "profile.use", args: "demo" },
     { actionId: "report.create", args: "follow-up" }
   ]);
@@ -300,25 +234,13 @@ test("normal-agent slash commands route to native handlers or typed backend acti
   ]);
 });
 
-test("/forge plan routes to Forge plan handler and never needs chat.send", async () => {
-  const calls: string[] = [];
-  const router = new SlashCommandRouter(handlers({ plan: async (instruction) => { calls.push(instruction); } }));
-
-  const result = await router.execute("/forge plan implement slash commands");
-
-  assert.equal(result.command, "/forge plan");
-  assert.deepEqual(calls, ["implement slash commands"]);
-});
-
 test("bare argument-taking commands return usage without calling handlers", async () => {
   const router = new SlashCommandRouter(
     handlers({
-      plan: async () => assert.fail("bare /forge plan must not call Forge Plan"),
       setMode: async () => assert.fail("bare /permissions must not mutate settings")
     })
   );
 
-  assert.match((await router.execute("/forge plan")).notice, /Usage: \/forge plan <instruction>/);
   assert.match((await router.execute("/permissions")).notice, /Usage: \/permissions readonly, \/permissions review, or \/permissions auto/);
 });
 
@@ -395,65 +317,27 @@ test("routeSlashModeChange updates default config when no session exists", async
   assert.deepEqual(defaults, ["readonly"]);
 });
 
-test("/execute, /plans, /cancel, /doctor, and /config route to controller commands", async () => {
+test("/cancel, /doctor, and /config route to controller commands", async () => {
   const calls: string[] = [];
   const router = new SlashCommandRouter(
     handlers({
-      executePlan: async () => { calls.push("executePlan"); },
-      executePreview: async () => { calls.push("executePreview"); },
-      listPlans: async () => { calls.push("plans"); },
       cancel: async () => { calls.push("cancel"); },
       doctor: async () => { calls.push("doctor"); },
       config: async () => { calls.push("config"); }
     })
   );
 
-  await router.execute("/execute plan");
-  await router.execute("/execute");
-  await router.execute("/forge exec");
-  await router.execute("/forge execute");
-  await router.execute("/execute preview");
-  await router.execute("/plans");
   await router.execute("/cancel");
   await router.execute("/doctor");
   await router.execute("/config");
 
-  assert.deepEqual(calls, [
-    "executePlan",
-    "executePlan",
-    "executePlan",
-    "executePlan",
-    "executePreview",
-    "plans",
-    "cancel",
-    "doctor",
-    "config"
-  ]);
-});
-
-test("broad Forge execute aliases return a structured IDE v1 warning", async () => {
-  const calls: string[] = [];
-  const router = new SlashCommandRouter(
-    handlers({
-      executePlan: async () => { calls.push("executePlan"); }
-    })
-  );
-
-  const execute = await router.execute("/execute auto");
-  const forgeExec = await router.execute("/forge exec T01 --fullaccess");
-  const forgeExecute = await router.execute("/forge execute auto");
-
-  assert.equal(execute.severity, "warning");
-  assert.match(execute.notice, /review-mode selected-task execution/);
-  assert.match(forgeExec.notice, /auto, and fullaccess modes are unavailable/);
-  assert.match(forgeExecute.notice, /IDE v1 only supports/);
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, ["cancel", "doctor", "config"]);
 });
 
 test("unknown slash commands fail closed with suggestions", async () => {
   const router = new SlashCommandRouter(
     handlers({
-      plan: async () => assert.fail("unknown command must not call handlers")
+      backendAction: async () => assert.fail("unknown command must not call handlers")
     })
   );
 
@@ -468,52 +352,30 @@ test("slash commands are blocked appropriately in untrusted workspaces", async (
   const router = new SlashCommandRouter(
     handlers({
       trusted: false,
-      plan: async () => { calls.push("plan"); },
-      executePlan: async () => { calls.push("executePlan"); }
+      backendAction: async (actionId) => { calls.push(actionId); return ""; }
     })
   );
 
-  assert.match((await router.execute("/forge plan build")).notice, /requires Workspace Trust/);
-  assert.match((await router.execute("/execute plan")).notice, /requires Workspace Trust/);
   assert.match((await router.execute("/permissions review")).notice, /Workspace Trust is required/);
   assert.deepEqual(calls, []);
 });
 
-test("mode and open plan commands route typed arguments", async () => {
-  const calls: string[] = [];
-  const router = new SlashCommandRouter(
-    handlers({
-      setMode: async (mode) => { calls.push(`mode:${mode}`); },
-      openPlan: async (planId) => { calls.push(`open:${planId ?? "picker"}`); }
-    })
-  );
-
-  await router.execute("/permissions readonly");
-  await router.execute("/open plan plan-abc");
-  await router.execute("/open plan");
-
-  assert.deepEqual(calls, ["mode:readonly", "open:plan-abc", "open:picker"]);
-});
-
 test("slash suggestions filter command and alias text", () => {
-  assert.equal(slashCommandSuggestions("/forge pla").some((item) => item.command === "/forge plan"), true);
-  assert.equal(slashCommandSuggestions("/forge").some((item) => item.command === "/forge plan"), true);
-  assert.equal(slashCommandSuggestions("/execute").some((item) => item.command === "/execute preview"), true);
+  assert.equal(slashCommandSuggestions("/perm").some((item) => item.command === "/permissions"), true);
+  assert.equal(slashCommandSuggestions("/cont").some((item) => item.command === "/context"), true);
+  assert.equal(slashCommandSuggestions("/forge").length, 0);
 });
 
 test("slash catalogs contain one owner per token and only dispatchable context routes", async () => {
   const catalog = availableSlashCommands({
     workspaceTrusted: false,
     activeSession: false,
-    activePlan: false,
     activeRun: false,
     isBackendActionSupported: (actionId) => actionId !== "session.status"
   });
   const tokens = catalog.flatMap((definition) => [definition.command, ...(definition.aliases ?? [])]);
   assert.equal(new Set(tokens.map((token) => token.toLowerCase())).size, tokens.length);
   assert.equal(SLASH_COMMANDS.filter((definition) => definition.command === "/permissions").length, 1);
-  assert.equal(catalog.some((definition) => definition.command === "/forge plan"), false);
-  assert.equal(catalog.some((definition) => definition.command === "/diffs"), false);
   assert.equal(catalog.some((definition) => definition.backendActionId === "session.status"), false);
   assert.equal(catalog.some((definition) => definition.backendActionId === "session.modelInfo"), false);
 
@@ -585,7 +447,6 @@ test("/persona is in the registry catalog and the slash suggestions", () => {
   const available = availableSlashCommands({
     workspaceTrusted: false,
     activeSession: false,
-    activePlan: false,
     activeRun: false,
     isBackendActionSupported: () => false
   });
@@ -603,13 +464,6 @@ function handlers(overrides: Partial<SlashCommandHandlers> & { trusted?: boolean
     setMode: overrides.setMode ?? (async () => undefined),
     pickPermissions: overrides.pickPermissions,
     persona: overrides.persona,
-    plan: overrides.plan ?? (async () => undefined),
-    executePlan: overrides.executePlan ?? (async () => undefined),
-    executePreview: overrides.executePreview ?? (async () => undefined),
-    listPlans: overrides.listPlans ?? (async () => undefined),
-    openPlan: overrides.openPlan ?? (async () => undefined),
-    openDiffs: overrides.openDiffs ?? (async () => undefined),
-    refreshArtifacts: overrides.refreshArtifacts ?? (async () => undefined),
     cancel: overrides.cancel ?? (async () => undefined),
     doctor: overrides.doctor ?? (async () => undefined),
     config: overrides.config ?? (async () => undefined),
@@ -621,12 +475,11 @@ function handlers(overrides: Partial<SlashCommandHandlers> & { trusted?: boolean
 
 test("retired commands give migration guidance without starting an agent workflow", async () => {
   const router = new SlashCommandRouter(handlers({
-    plan: async () => assert.fail("retired chat planning must not create a Forge plan"),
     setMode: async () => assert.fail("retired mode commands must not change permissions"),
     backendAction: async () => assert.fail("retired aliases must not invoke backend actions")
   }));
   for (const [command, guidance] of [
-    ["/plan on", /\/persona architect/], ["/plan off", /\/forge plan/],
+    ["/plan on", /\/persona architect/], ["/plan off", /\/persona architect/],
     ["/mode auto", /\/permissions/], ["/subagent on", /\/subagents/],
     ["/ask explain this", /CLI.only/i], ["/chat hello", /retired/i]
   ] as const) {
@@ -655,22 +508,20 @@ test("permissions accept current CLI choices, open a picker, and reject CLI-only
 });
 
 test("disabled or unsupported core workflows cannot be reached through stale slash input", async () => {
-  const context = { workspaceTrusted: true, activeSession: true, activePlan: true, activeRun: false,
-    forgeEnabled: false, personasAvailable: false, isBackendActionSupported: () => true };
+  const context = { workspaceTrusted: true, activeSession: true, activeRun: false,
+    personasAvailable: false, isBackendActionSupported: () => true };
   const catalog = availableSlashCommands(context);
   const router = new SlashCommandRouter(handlers({
     commandCatalog: () => catalog,
-    plan: async () => assert.fail("disabled Forge must not start"),
-    executePlan: async () => assert.fail("disabled Forge must not execute"),
     persona: async () => assert.fail("disabled personas must not open"),
-    backendAction: async () => assert.fail("disabled Forge management must not dispatch")
+    backendAction: async () => assert.fail("retired commands must not dispatch")
   }));
-  for (const command of ["/forge plan fix this", "/forge exec", "/forge plan state", "/persona ask"]) {
+  for (const command of ["/forge plan fix this", "/execute", "/persona ask"]) {
     assert.equal((await router.execute(command)).severity, "warning", command);
   }
-  const unsupported = availableSlashCommands({ ...context, forgeEnabled: true, personasAvailable: true,
+  const unsupported = availableSlashCommands({ ...context, personasAvailable: true,
     compatibility: { protocol: { compatible: true }, features: {} } as any });
-  assert.equal(unsupported.some((item) => ["plan", "persona", "executePreview", "plans"].includes(item.id)), false);
-  const running = availableSlashCommands({ ...context, forgeEnabled: true, personasAvailable: true, activeRun: true });
-  assert.equal(running.some((item) => ["mode", "persona", "plan", "executePlan"].includes(item.id)), false);
+  assert.equal(unsupported.some((item) => item.id === "persona"), false);
+  const running = availableSlashCommands({ ...context, personasAvailable: true, activeRun: true });
+  assert.equal(running.some((item) => ["mode", "persona"].includes(item.id)), false);
 });

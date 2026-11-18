@@ -13,6 +13,7 @@ from alysis_code.mcp.config import (
     user_mcp_config_path,
 )
 from alysis_code.mcp.errors import McpConfigError
+from alysis_code.runtime_kind import RuntimeKind
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -665,7 +666,7 @@ def test_project_mcp_config_can_narrow_enabled_in_from_all_runtimes(
         {
             "servers": {
                 "alpha": {
-                    "enabled_in": ["one_shot", "forge_exec"],
+                    "enabled_in": ["one_shot", "subagent"],
                 }
             }
         },
@@ -674,7 +675,33 @@ def test_project_mcp_config_can_narrow_enabled_in_from_all_runtimes(
     resolved = load_resolved_mcp_config(workspace_root=tmp_path)
 
     [server] = resolved.servers
-    assert [kind.value for kind in server.enabled_in or ()] == ["one_shot", "forge_exec"]
+    assert [kind.value for kind in server.enabled_in or ()] == ["one_shot", "subagent"]
+
+
+def test_mcp_enabled_in_skips_retired_runtimes_without_widening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_dir = tmp_path / "cfg"
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(cfg_dir))
+    _write_json(
+        user_mcp_config_path(),
+        {
+            "servers": {
+                "mixed": _base_stdio_server(enabled_in=["interactive_chat", "forge_exec"]),
+                "retired": _base_stdio_server(enabled_in=["swarm_worker"]),
+            }
+        },
+    )
+
+    servers = {
+        server.id: server for server in load_resolved_mcp_config(workspace_root=tmp_path).servers
+    }
+
+    assert [kind.value for kind in servers["mixed"].enabled_in or ()] == ["interactive_chat"]
+    # A server scoped only to runtimes that no longer exist runs nowhere; it is not widened.
+    assert servers["retired"].enabled_in == ()
+    assert not any(servers["retired"].enabled_for(kind) for kind in RuntimeKind)
+    assert servers["retired"].redacted_connection_payload()["enabled_in"] == []
 
 
 def test_project_mcp_config_rejects_broader_enabled_in(

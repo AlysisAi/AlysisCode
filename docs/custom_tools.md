@@ -52,7 +52,7 @@ TOOL = {
     },
     "timeout_s": 15,
     "required_env": ["JIRA_BASE_URL", "JIRA_TOKEN"],
-    "enabled_in": ["interactive_chat", "one_shot", "forge_exec"],
+    "enabled_in": ["interactive_chat", "one_shot"],
     "isolation": "subprocess",
     "capabilities": {
         "read_only": True,
@@ -148,14 +148,15 @@ Custom tools can be exposed in:
 
 - `interactive_chat`
 - `one_shot`
-- `forge_exec`
 
 They are not exposed in:
 
 - `readonly`
 - `subagent`
-- `swarm_worker`
-- `conflict_auto_resolve`
+
+Older manifests may still list `forge_exec`, `swarm_worker`, or `conflict_auto_resolve`.
+Those runtimes no longer exist, so they are skipped; a manifest that lists only retired
+runtimes is reported as invalid instead of being exposed everywhere.
 
 Mode behavior:
 

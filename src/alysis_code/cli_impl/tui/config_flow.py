@@ -5,7 +5,7 @@ Rich ``Live`` + ``create_input().raw_mode()`` flow. It cannot run inside the cha
 alt-screen, so when ``ALYSIS_TUI`` is on bare ``/config`` previously degraded to a
 read-only panel. This module re-expresses the *same* menu — Provider Profile · API
 Key · Default Model · Context & Cache · Execution Limits · Subagent overrides ·
-Forge overrides · Sandbox — as a step machine that holds state and renders a small :class:`Screen`
+Sandbox — as a step machine that holds state and renders a small :class:`Screen`
 description. The prompt_toolkit overlay in :mod:`cli_impl.tui.config_overlay` reads
 that description and routes key events back into the flow; nothing here imports
 prompt_toolkit, so the whole thing is unit testable by driving the public methods.
@@ -70,7 +70,6 @@ from ..config_menu import (
     _MISSING_REQUIRED,
     _ROLE_TEMPERATURE_FIELDS,
     ANTHROPIC_PROMPT_CACHE_TTLS,
-    FORGE_ROLE_ORDER,
     PROMPT_CACHE_MODES,
     ROLE_ORDER,
     ConfigMenuResult,
@@ -273,7 +272,6 @@ _STAGE_MODE: dict[str, Mode] = {
     "subscription_disconnecting": "busy",
     "advanced": "list",
     "subagent_roles": "list",
-    "forge_roles": "list",
     "workspace": "list",
     "workspace_path": "input",
     "workspace_action": "list",
@@ -295,7 +293,6 @@ _STAGE_MODE: dict[str, Mode] = {
     "cache_compaction_enabled": "list",
     "cache_compaction_min_trigger": "input",
     "subagent_field": "input",
-    "forge_field": "input",
     "api_key": "input",
     "api_key_clear_confirm": "confirm",
     "provider": "list",
@@ -388,7 +385,6 @@ _BREADCRUMB: dict[str, str] = {
     "cache_compaction_enabled": "context & cache",
     "cache_compaction_min_trigger": "context & cache",
     "subagent_field": "subagent overrides",
-    "forge_field": "forge overrides",
     "api_key": "api key",
     "api_key_clear_confirm": "api key",
     "saving": "saving",
@@ -488,11 +484,8 @@ class ConfigFlow:
         self._resume_stage = "menu"
         self._sub_steps: list[tuple[str, str]] = []
         self._sub_i = 0
-        self._forge_role = ""
         self._sub_model_snapshot: dict[str, str] = {}
         self._sub_temp_snapshot: dict[str, str] = {}
-        self._forge_i = 0
-        self._forge_snapshot: dict[str, str] = {}
         self._pending_preset: Any = None
         self._pending_preset_profile: ProfileSpec | None = None
         self._preset_setup_chain = False
@@ -532,13 +525,11 @@ class ConfigFlow:
         """A key that changes whenever the active input field changes.
 
         The overlay seeds/clears its input box when this changes, so a single
-        ``input`` stage that walks several fields (subagent/forge/edit sequences)
+        ``input`` stage that walks several fields (subagent/edit sequences)
         re-seeds correctly between fields.
         """
         if self.stage == "subagent_field":
             return f"subagent_field:{self._sub_i}"
-        if self.stage == "forge_field":
-            return f"forge_field:{self._forge_role or '0'}"
         if self.stage == "provider_edit":
             return f"provider_edit:{self._edit_i}"
         return self.stage
@@ -606,8 +597,8 @@ class ConfigFlow:
 
     def _screen_menu(self) -> Screen:
         # Grouped, breathing layout: one short fact per row — the full detail
-        # lives inside each section screen. Per-role model overrides (subagent +
-        # forge) stay tucked under a single "Advanced" entry.
+        # lives inside each section screen. Per-role model overrides stay tucked
+        # under a single "Advanced" entry.
         st = self.state
         delegated = st.execution_backend == "delegated" and not _is_direct_subscription_id(
             st.execution_runtime
@@ -752,10 +743,9 @@ class ConfigFlow:
 
     def _short_advanced(self) -> str:
         sub = self._subagent_override_summary()
-        forge = _override_summary_text(self.state.forge_role_models)
-        if sub == "none" and forge == "none":
+        if sub == "none":
             return "model overrides · request timeout"
-        return f"subagents {sub} · forge {forge}"
+        return f"subagents {sub}"
 
     def _screen_execution_backend(self) -> Screen:
         hosted_account = _active_alysis_profile(self.state) is not None
@@ -921,10 +911,9 @@ class ConfigFlow:
 
     def _advanced_summary(self) -> str:
         sub = self._subagent_override_summary()
-        forge = _override_summary_text(self.state.forge_role_models)
-        if sub == "none" and forge == "none":
+        if sub == "none":
             return "per-role model overrides (none set)"
-        return f"subagents {sub} · forge {forge}"
+        return f"subagents {sub}"
 
     def _workspace_summary(self) -> str:
         cur = Path(self.current_workspace).name if self.current_workspace else "—"
@@ -955,11 +944,6 @@ class ConfigFlow:
                 label="Subagent model overrides",
                 description=self._subagent_override_summary(),
                 value="subagents",
-            ),
-            Row(
-                label="Forge model overrides",
-                description=_override_summary_text(self.state.forge_role_models),
-                value="forge",
             ),
             Row(label="Back", description="Return to the menu", value="back"),
         ]
@@ -992,23 +976,6 @@ class ConfigFlow:
             stage="subagent_roles",
             mode="list",
             title="Subagent model overrides",
-            subtitle="Pick a role to edit; roles without an override inherit the default model.",
-            rows=rows,
-            hint="",
-        )
-
-    def _screen_forge_roles(self) -> Screen:
-        rows = [
-            self._role_override_row(
-                role, model=str(self.state.forge_role_models.get(role, "") or "")
-            )
-            for role in FORGE_ROLE_ORDER
-        ]
-        rows.append(Row(label="Back", description="Return to Advanced", value="back"))
-        return Screen(
-            stage="forge_roles",
-            mode="list",
-            title="Forge model overrides",
             subtitle="Pick a role to edit; roles without an override inherit the default model.",
             rows=rows,
             hint="",
@@ -1516,18 +1483,6 @@ class ConfigFlow:
             hint="Enter next · Esc cancel section",
         )
 
-    def _screen_forge_field(self) -> Screen:
-        role = self._forge_role or FORGE_ROLE_ORDER[0]
-        return Screen(
-            stage="forge_field",
-            mode="input",
-            title="Forge model overrides",
-            subtitle=_role_description(role),
-            input_label=f'{_role_label(role)} model (blank keeps · "clear" inherits)',
-            input_default=self.state.forge_role_models.get(role, ""),
-            hint="Enter save · Esc cancel",
-        )
-
     def _screen_api_key(self) -> Screen:
         subtitle = (
             f"Stored: {self.state.masked_api_key} · {_pretty_key_source(self.state.api_key_source)}"
@@ -1803,7 +1758,6 @@ class ConfigFlow:
             "subscription_account": self._choose_subscription_account,
             "advanced": self._choose_advanced,
             "subagent_roles": self._choose_subagent_roles,
-            "forge_roles": self._choose_forge_roles,
             "workspace": self._choose_workspace,
             "workspace_action": self._choose_workspace_action,
             "sandbox": self._choose_sandbox,
@@ -1872,11 +1826,7 @@ class ConfigFlow:
             self.state.role_temperatures = dict(self._sub_temp_snapshot)
             self._goto("subagent_roles")
             return
-        if self.stage == "forge_field":
-            self.state.forge_role_models = dict(self._forge_snapshot)
-            self._goto("forge_roles")
-            return
-        if self.stage in {"subagent_roles", "forge_roles"}:
+        if self.stage == "subagent_roles":
             self._goto("advanced")
             return
         if self.stage == "cancel_confirm":
@@ -2038,8 +1988,6 @@ class ConfigFlow:
             self._goto("menu")
         elif value == "subagents":
             self._goto("subagent_roles")
-        elif value == "forge":
-            self._goto("forge_roles")
         elif value == "request_timeout":
             self._goto("request_timeout")
 
@@ -2057,14 +2005,6 @@ class ConfigFlow:
         self._sub_steps = steps
         self._sub_i = 0
         self._goto("subagent_field")
-
-    def _choose_forge_roles(self, value: str) -> None:
-        if value == "back":
-            self._goto("advanced")
-            return
-        self._forge_snapshot = dict(self.state.forge_role_models)
-        self._forge_role = value
-        self._goto("forge_field")
 
     # ----------------------------------------------------- project / workspace
 
@@ -2397,18 +2337,6 @@ class ConfigFlow:
         else:
             self.status = ""
             self.status_tone = "dim"
-
-    # -------------------------------------------------------- forge overrides
-
-    def _submit_forge_field(self, text: str) -> None:
-        role = self._forge_role or FORGE_ROLE_ORDER[0]
-        value = text.strip()
-        if value.casefold() == "clear":
-            self.state.set_forge_role_model(role, "")
-        elif value:
-            self.state.set_forge_role_model(role, value)
-        self._goto("forge_roles")
-        self._set_status(f"{_role_label(role)} override updated. Save to apply.", "ok")
 
     # ----------------------------------------------------------- api key
 

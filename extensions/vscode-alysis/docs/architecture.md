@@ -33,8 +33,8 @@ diffs, artifacts, and diagnostics opening as focused details on the right when t
   credentials in untrusted workspaces.
 - Calls `alysis --version` and `alysis ide-bridge health`.
 - Validates protocol version, transport, and baseline IDE bridge methods, then evaluates a formal
-  feature compatibility contract before enabling chat, Forge Plan, Forge Execute Preview/Review,
-  diffs, and artifacts independently. Old CLIs can open the sidebar when baseline methods exist,
+  feature compatibility contract before enabling chat, artifacts, and management features
+  independently. Old CLIs can open the sidebar when baseline methods exist,
   while unsupported workflows show upgrade/setup guidance instead of failing ambiguously.
 - Starts `alysis ide-bridge --stdio` and exchanges newline-delimited JSON requests/events.
 - Negotiates native host actions for VS Code Tasks and Debug. The backend can request exact
@@ -45,8 +45,7 @@ diffs, artifacts, and diagnostics opening as focused details on the right when t
   mutation.
 - Serializes bridge startup and the initialize handshake, fails process/stdio errors closed,
   rejects pending requests on bridge exit, and invalidates every controller when the shared bridge
-  restarts. Chat restores bounded retained context into a new live session; Forge reopens the
-  persisted plan and refreshes its artifacts/diffs. Late responses and poll results from an older
+  restarts. Chat restores bounded retained context into a new live session. Late responses and poll results from an older
   session are ignored, so **New Session** and reconnects cannot be undone by a slow backend reply.
 - Opens a secure sidebar conversation, creates a protocol session, sends user messages, and streams
   structured events. The webview uses a crypto-backed nonce, strict CSP, packaged local assets
@@ -56,21 +55,14 @@ diffs, artifacts, and diagnostics opening as focused details on the right when t
   hue. The Details surface shows a compact health row (mode · model · trust) with a disclosure for
   the Mode/Model/CLI Health/Bridge/Sandbox runtime rows, plus a clickable session-mode pill
   (readonly / review / auto; `fullaccess` reserved and gated unless the bridge advertises it and the
-  workspace is trusted). The only composer stays pinned to the bottom of the sidebar. When a plan
-  exists, the plan card folds in a "What Execute Plan will do" readiness panel (write scope vs
-  estimated files, required vs runtime approvals, verification, trust/sandbox gates) and an
-  "Execute Plan" action that stays review-only and writes only to your working tree (never commits).
-  After execution a diff-review card opens each changed file in the native VS Code diff; Keep/Discard
-  (commit/revert) is gated to VS Code Source Control until a bridge apply/discard capability exists.
-  Idle states are welcoming (a "Welcome to Alysis Code" onboarding card and tone-glyph setup/recovery
+  workspace is trusted). The only composer stays pinned to the bottom of the sidebar. Idle states are welcoming (a "Welcome to Alysis Code" onboarding card and tone-glyph setup/recovery
   cards), and the surface is keyboard-accessible with ARIA roles (tablist mode switch, tabs,
   disclosures), visible focus rings in both mono themes, and a reduced-motion guard.
 - Adds production slash commands routed by an extension-side command router to typed controllers and
   command-palette handlers instead of being sent to the model as chat text. See
   [slash-commands.md](slash-commands.md) for the full contract.
-- Routes chat and Forge events by explicit `session_id`/`job_id` ownership. Chat does not attach to
-  arbitrary bridge events when no chat session exists, and Forge owns the sessions/jobs returned by
-  Forge Plan, List/Open, and Execute flows.
+- Routes chat events by explicit `session_id`/`job_id` ownership. Chat does not attach to
+  arbitrary bridge events when no chat session exists.
 - Exposes typed backend run/chat parity methods for session status, usage, history, context,
   model info, safe subagent status/toggle, compaction, resume, image basket list/add/clear,
   mode/model/stream changes, active workdir changes, clear, and safe workspace-scoped image paths.
@@ -88,10 +80,9 @@ diffs, artifacts, and diagnostics opening as focused details on the right when t
   by itself.
 - Exposes grouped command-palette workflows through a central backend action registry:
   **Current Task Tools**, **Model and Provider Settings**, **Manage Tools and Skills**,
-  **Manage MCP, Hooks, and Conventions**, **Manage Alysis Code Extensions**, **Troubleshooting**, and
-  **Plan Files and References**. These routes cover safe config/profile/session/tool/skill/
-  doctor/sandbox/update/report/MCP/hooks/conventions/extension-package surfaces plus
-  `forge.show`/`forge.attach`/`forge.assets.*` without terminal scraping. Mutating calls carry
+  **Manage MCP, Hooks, and Conventions**, **Manage Alysis Code Extensions**, and **Troubleshooting**.
+  These routes cover safe config/profile/session/tool/skill/doctor/sandbox/update/report/MCP/hooks/
+  conventions/extension-package surfaces without terminal scraping. Mutating calls carry
   `workspace_trusted`, advertise trust/mutation metadata, require Workspace Trust and confirmation
   where appropriate, and fail closed in the backend; config/profile payloads report secret status
   only and never return raw secret values. Retained session logs and rendered conventions are
@@ -111,77 +102,21 @@ diffs, artifacts, and diagnostics opening as focused details on the right when t
   artifacts without unsafe HTML insertion.
 - Renders correlated `subagent_state_changed` lifecycle as calm helper activity rather than raw
   protocol chatter. Model-managed delegates stay owned by the active chat job and stop with its
-  cancellation token; independently resumable background work remains the Forge swarm surface,
-  whose recovery cards expose revision, attempts, usage, explicit Resume, and Stop without reusing
-  previous permission grants.
+  cancellation token.
 - Sends approval decisions through `approval.respond`; no approval is granted silently. Approval
   result events, timeout denial, and scoped allow-for-session decisions are rendered as terminal UI
   states. "Allow for session" appears only when the backend marks the approval as scoped and
   supported: shell/custom/MCP-like approvals require exact command scope and file approvals require
   an exact file set or equivalent backend-owned exact scope.
-- Handles Forge approvals in the Forge controller through a modal prompt and persistent approval
-  cards showing kind, reason, command/preview, files, session scope, and fail-closed status. Closing
-  the chat panel cannot deny or consume Forge-owned approvals; unavailable Forge approval UI denies
-  fail-closed.
 - Uses `session.getEvents` for short-gap replay when reopening the panel. Event sequence tracking is
   per session, so a new session starting again at sequence `1` is not hidden by an older session's
   higher sequence number. The bridge bounds closed-session and terminal-job history, resets volatile
   replay/job state when a closed id is reused, and keeps incidental provider/library stdout away
   from the JSONL protocol transport.
 - Calls `artifact.list` and `artifact.read` for backend-exposed artifacts only.
-- Runs Forge Plan through a real command that prompts for an instruction, starts the bridge after
-  trust/process validation, uses async `forge.plan.start` plus `job.status` and `forge.plan.result`
-  when the bridge advertises them, falls back to planner-backed synchronous `forge.plan` for older
-  compatible bridges, and renders progress and final plans. Planner/model/API-key failures return
-  clear protocol errors instead of a fake shallow plan.
-- Shows plan tasks with task id, title, objective, file scope, acceptance criteria, verification
-  commands, dependencies, risk notes, incomplete-plan warnings, plan source, and status. Structured
-  Forge events update the view without terminal-output parsing.
-- **Browse Plans** and **Open a Plan** reopen persisted Forge plans through scoped
-  `forge.list`/`forge.open` without reading SecretStorage. The backend rejects symlinked Forge
-  registry components before exposing persisted plan artifacts.
-- Adds typed backend bindings for safe Forge parity. `forge.attach` and Forge asset operations are
-  reachable through **Plan Files and References** and `/assets` / `/asset ...` slash routes:
-  `forge.assets.list`, `forge.assets.show`, `forge.assets.add`, `forge.assets.delete`,
-  `forge.assets.edit`, `forge.assets.refresh`, `forge.assets.cancelPending`,
-  `forge.assets.checkPlan`, and `forge.assets.pruneLegacy`. `forge.show` is exposed through the
-  grouped command and `/forge show` / `/forge plan show` slash routes; `forge.review` is exposed through
-  the same grouped command and `/forge review` / `/review` slash routes. Mutating asset/review
-  operations require Workspace Trust, reject path traversal and symlink escapes, and never parse
-  terminal output.
-- Adds typed Forge plan-edit parity for `/assistant`, `/goal`, `/task`, `/forge plan state`,
-  `/forge plan validate`, `/forge plan regenerate`, and `/forge plan regenerate`. Read routes use
-  `forge.plan.getState`/`forge.plan.updateTask` without mutation. Edits call
-  `forge.plan.setAssistant`, `forge.plan.setGoal`, `forge.plan.updateTask`, or
-  `forge.plan.regenerate`, require Workspace Trust, persist to the plan store, and use optimistic
-  plan revisions. Global `/forge plan <instruction>` still creates a new plan; Forge-context regeneration
-  is explicit and typed.
-- Runs Forge Execute Preview through `forge.executePreview` on a bridge start path that strips
-  SecretStorage and inherited `ALYSIS_API_KEY`, rendering readiness, file scope, verification
-  commands, sandbox/trust state, required approvals, blockers, and known risks. Preview does not
-  mutate files, run shell commands, start workers, execute tools, auto-approve actions, or fake job
-  state.
-- Starts real `forge.execute` only after Preview reports `real_execution_supported` and
-  `preview_ready`, the requested mode is `review`, and the user confirms explicitly. The first
-  execution path is selected-task, review-mode-only, sequential, Workspace Trust gated,
-  sandbox-aware, and approval-gated. `alysis.forgeExecuteMaxSteps` and
-  `alysis.forgeExecuteNoLog` are forwarded as explicit protocol params; when the bridge must
-  restart for credential-capable execution, the controller reopens the persisted plan and refreshes
-  backend-scoped artifacts and diffs before starting the job.
-- Dispatches the swarm console across parallel workers (disjoint write scopes by a scheduler
-  invariant), surfacing a task grid, a non-modal task-attributed approvals inbox (workers run
-  without `--yes` auto-approval), cooperative checkpoint cancellation, and a per-task review surface
-  where you Keep (apply to the working tree, never committed) or Discard each task's diff. Merge is
-  review-only, and broad auto/fullaccess swarm execution remains unavailable in the IDE.
-- Uses `diff.list` and `diff.get` for backend-provided diff records. Old/new text snapshots open in
-  VS Code's native diff editor through readonly virtual documents; unified diff previews are opened
-  read-only when side-by-side content is not available. Truncated diffs are labeled clearly, and
-  symlinked patch directories or diff files are not exposed as review artifacts.
-- Routes **Cancel Current Run** to the active chat or Forge controller. Forge cancellation is
-  attempted only when `features.forge.cancel.supported` is true; method presence alone is not
-  enough. Protocol v1 uses cooperative checkpoint cancellation: `cancellation_requested` remains
+- Routes **Cancel Current Run** to the active chat. Protocol v1 uses cooperative checkpoint cancellation: `cancellation_requested` remains
   active until the backend reports terminal `cancelled`, `completed`, or `failed`. Deactivate denies
-  pending chat and Forge approvals in their owning controllers, closes idle sessions, requests
+  pending chat approvals, closes idle sessions, requests
   cooperative cancellation for advertised active jobs, and reports jobs as interrupted rather than
   cancelled when shutdown cannot reach backend terminal status.
 - Runs `alysis sandbox doctor --smoke` with output redaction. `/doctor` and the command palette
@@ -195,12 +130,12 @@ diffs, artifacts, and diagnostics opening as focused details on the right when t
   child process environment, not command-line arguments or plaintext settings. SecretStorage is not
   read for untrusted non-readonly starts or for workflows blocked by missing/incompatible required
   bridge methods.
-- Applies Workspace Trust gates for Forge, CLI execution, workspace-scoped execution settings, and
-  future mutating actions. See [security-model.md](security-model.md).
+- Applies Workspace Trust gates for CLI execution, workspace-scoped execution settings, and
+  mutating actions. See [security-model.md](security-model.md).
 - Shows an Alysis Code status bar item and registers the Alysis Code Activity Bar container.
 - Adds an optional native VS Code `@alysis` Chat Participant using the stable VS Code 1.90
-  `vscode.chat.createChatParticipant` API. The participant is a thin router for `/help`,
-  `/forge plan <task>`, `/execute`, and `/doctor`; it opens the sidebar and delegates to the same
+  `vscode.chat.createChatParticipant` API. The participant is a thin router for `/help` and
+  `/doctor`; it opens the sidebar and delegates to the same
   extension controllers instead of replacing it or depending on GitHub Copilot.
 
 ## Runtime status model
@@ -251,7 +186,7 @@ by `.github/workflows/managed-cli-vsix-release.yml`; see
 
 ## CLI compatibility and recovery
 
-The extension requires a local Alysis Code CLI. This build is tested against `alysis-code` `0.17.1`
+The extension requires a local Alysis Code CLI. This build is tested against `alysis-code` `0.17.3`
 (`MIN_RECOMMENDED_ALYSIS_CLI_VERSION`, kept equal to the monorepo `pyproject.toml` version by a unit
 test), with IDE Protocol v1 over stdio. The version is a soft gate; hard availability is decided per
 feature by capability negotiation, so an older CLI that still advertises the required methods works
@@ -299,21 +234,6 @@ Feature availability is evaluated separately from baseline health:
   existing managed background terminals plus Workspace-Trust/confirmation-gated kill/clear when the
   active session has a terminal manager. Arbitrary shell start, interactive PTY streaming, and raw
   unredacted trace output are not IDE v1 features.
-- Forge Plan requires `forge.plan` or the async pair `forge.plan.start` and `forge.plan.result`.
-- Persisted Forge plans require `forge.list`, `forge.open`, `forge.status`, and can use
-  `forge.show`.
-- Forge plan-edit parity requires `forge.plan.getState`, `forge.plan.setAssistant`,
-  `forge.plan.setGoal`, `forge.plan.updateTask`, `forge.plan.validate`, and
-  `forge.plan.regenerate`.
-- Forge asset command/slash workflows use `forge.attach`, `forge.assets.list`, `forge.assets.show`,
-  `forge.assets.add`, `forge.assets.delete`, `forge.assets.edit`, `forge.assets.refresh`,
-  `forge.assets.cancelPending`, `forge.assets.checkPlan`, and `forge.assets.pruneLegacy`.
-  `forge.review` is routed through the grouped Forge assets command and `/forge review` / `/review`
-  slash actions. Compatibility uses `features.forge.assets.supported` when available and otherwise
-  falls back only to the real `forge.assets.*` method set, not the old `assets.list` name.
-- Forge Execute Preview requires `forge.executePreview`.
-- Forge Execute Review requires `forge.execute`, host approvals, job/event replay, artifacts, and
-  diff methods.
 
 If `alysis ide-bridge health` is missing, the CLI is treated as incompatible and the extension
 does not start the bridge or forward SecretStorage API keys. If `alysis sandbox doctor --smoke`
@@ -336,9 +256,7 @@ pipx upgrade alysis-code
 Backend parity with the CLI is tracked in the repo-level
 [`docs/generated/ide_cli_parity_matrix.json`](../../../docs/generated/ide_cli_parity_matrix.json)
 contract. The generated final burn-down report lives in
-[`docs/generated/ide_cli_parity_burndown.md`](../../../docs/generated/ide_cli_parity_burndown.md),
-and the Forge-specific release-review projection lives in
-[`docs/generated/ide_forge_parity_burndown.md`](../../../docs/generated/ide_forge_parity_burndown.md).
+[`docs/generated/ide_cli_parity_burndown.md`](../../../docs/generated/ide_cli_parity_burndown.md).
 Run `python scripts/qa/check_ide_cli_parity.py` from the repository root after changing CLI
 commands, IDE methods, package command registrations, or slash command registrations. The contract
 documents which CLI features are implemented in the extension, planned for typed protocol support,
