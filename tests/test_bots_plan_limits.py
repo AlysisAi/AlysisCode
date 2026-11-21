@@ -158,7 +158,7 @@ def test_other_failures_keep_their_previous_wording(tmp_path):
         429,
         "rate_limit_exceeded",
         "Your account has reached its hosted request limit.",
-        retry_after=120,
+        retry_after=600,
     )
     _, task = run_owl(tmp_path, [busy] * 4)
     assert task["error"] == PROVIDER_INTERRUPTED

@@ -30,7 +30,7 @@ class ActionProposal(Input):
     browser_origin: str | None = Field(
         default=None,
         max_length=2048,
-        description="Exact website origin (scheme://host[:port], no path/query) only when website interaction is needed. Otherwise omit this field or use JSON null, never a string or invented website. User approval permits interaction on this site for this task only.",
+        description="Exact website origin (scheme://host[:port], no path/query) only when website input is needed and the task state says the person's request does not allow it (for example a routine run). Otherwise omit this field or use JSON null, never a string or invented website. User approval permits input on this site for this task only.",
     )
 
     @field_validator("browser_origin", mode="before")
@@ -59,22 +59,33 @@ class ProposalStore:
     def __init__(self, store: Store, owner: str):
         self.store, self.owner = store, owner
 
-    @staticmethod
-    def _latest_user_task(db, bot_id: str):
+    # The owl's latest turn the person started, in the conversation of the turn ``s``: its own
+    # chat, or the room ``s`` was taken in (rooms.py). A newer one there outdates a suggestion.
+    _LATEST_USER_TASK = (
+        "SELECT x.id FROM tasks x WHERE x.bot_id=s.bot_id "
+        "AND ((s.chat_id IN (SELECT id FROM rooms) AND x.chat_id=s.chat_id) OR "
+        "(s.chat_id NOT IN (SELECT id FROM rooms) AND x.chat_id NOT IN (SELECT id FROM rooms))) "
+        "AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.task_id=x.id) "
+        "AND NOT EXISTS (SELECT 1 FROM trigger_deliveries d WHERE d.task_id=x.id) "
+        "ORDER BY x.created_at DESC,x.id DESC LIMIT 1"
+    )
+
+    @classmethod
+    def _latest_user_task(cls, db, source_id: str):
         row = db.execute(
-            "SELECT id FROM tasks t WHERE bot_id=? AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.task_id=t.id) AND NOT EXISTS (SELECT 1 FROM trigger_deliveries d WHERE d.task_id=t.id) ORDER BY created_at DESC,id DESC LIMIT 1",
-            (bot_id,),
+            f"SELECT ({cls._LATEST_USER_TASK}) FROM tasks s WHERE s.id=?", (source_id,)
         ).fetchone()
         return row[0] if row else None
 
     def _refresh(self, db, bot: dict):
-        latest = self._latest_user_task(db, bot["id"])
         db.execute(
-            """UPDATE action_proposals SET status='outdated',revision=revision+1
+            f"""UPDATE action_proposals SET status='outdated',revision=revision+1
             WHERE bot_id=? AND status='pending' AND
-            (anchor_task_id IS DISTINCT FROM ? OR bot_updated_at!=? OR source_task_id IN
+            (anchor_task_id IS DISTINCT FROM (SELECT ({self._LATEST_USER_TASK}) FROM tasks s
+              WHERE s.id=action_proposals.source_task_id)
+             OR bot_updated_at!=? OR source_task_id IN
              (SELECT id FROM tasks WHERE status IN ('cancelled','failed','interrupted')))""",
-            (bot["id"], latest, bot["updated_at"]),
+            (bot["id"], bot["updated_at"]),
         )
 
     def list(self, bot_id: str) -> list[dict]:
@@ -108,7 +119,7 @@ class ProposalStore:
                 restore = (
                     old["status"] == "outdated"
                     and source["status"] == "running"
-                    and old["anchor_task_id"] == self._latest_user_task(db, bot["id"])
+                    and old["anchor_task_id"] == self._latest_user_task(db, source["id"])
                     and old["bot_updated_at"] == bot["updated_at"]
                     and db.execute(
                         "SELECT 1 FROM events WHERE task_id=? AND kind='action_proposal_withdrawn' LIMIT 1",
@@ -193,7 +204,7 @@ class ProposalStore:
                     proposal_id,
                     bot["id"],
                     source["id"],
-                    self._latest_user_task(db, bot["id"]),
+                    self._latest_user_task(db, source["id"]),
                     data.question,
                     data.instructions,
                     bot["updated_at"],
@@ -284,11 +295,12 @@ class ProposalStore:
         """Let the person's own request approve the owl's private offline computer for it.
 
         A request the person makes in this owl's chat is their permission for the work it needs
-        inside the owl's private, offline computer: no internet, personal accounts or messages to
-        anyone. Asking again with a Do it card adds a step without adding safety. Only a current
+        inside the owl's private, offline computer: no internet (only package installs from the
+        package indexes it declares), personal accounts or messages to anyone. Asking again with a Do it card adds a step without adding safety. Only a current
         direct request qualifies, including while it continues in the background
         (``Store.direct_request``: not a routine run, activation, peer exchange or a turn waiting
-        for an answer); website input still needs a card, because it acts outside.
+        for an answer). The same request permits ordinary website input without a card; its steps
+        with effects ask the person one by one (BotRuntime._website_input_by_request).
 
         The grant is an accepted proposal bound to this same task, so ``offline_computer_allowed``,
         Stop and task end apply unchanged, and the chat keeps a record of what the owl used.
@@ -330,7 +342,7 @@ class ProposalStore:
                         proposal_id,
                         bot["id"],
                         source["id"],
-                        self._latest_user_task(db, bot["id"]),
+                        self._latest_user_task(db, source["id"]),
                         data.question,
                         data.instructions,
                         bot["updated_at"],
@@ -414,12 +426,13 @@ class ProposalStore:
             status = "pending"
             visible_after = row["visible_after"]
             if data.action == "accept":
-                chat = self.store._ensure_chat(db, self.owner, bot_id, bot["name"])
+                # It carries on where it was suggested: in the room, or the owl's own chat.
                 task = self.store._enqueue(
                     db,
                     self.owner,
-                    chat["id"],
+                    self.store._reply_chat(db, self.owner, source),
                     TaskInput(message=row["instructions"], request_id="proposal_" + proposal_id),
+                    bot_id=bot_id,
                 )
                 task_id, status = task["id"], "accepted"
             elif data.action == "dismiss":

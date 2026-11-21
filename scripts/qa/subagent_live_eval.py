@@ -381,9 +381,10 @@ def observed_token_bound(directory: Path, remaining: dict[str, float]) -> str | 
 
 def stop_process(process: subprocess.Popen) -> None:
     if not hasattr(os, "killpg"):
-        from alysis_code.agent_runtimes.codex_cli import _terminate_process_tree
+        from alysis_code.terminal_manager import _kill_windows_process_tree
 
-        _terminate_process_tree(process)
+        if process.poll() is None:
+            _kill_windows_process_tree(process)
         return
     for sig, wait in PROCESS_STOP_STAGES:
         if process.poll() is not None:

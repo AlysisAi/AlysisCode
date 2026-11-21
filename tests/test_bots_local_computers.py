@@ -1,5 +1,6 @@
 """Scripted durable admission/recovery evidence, not native/model qualification."""
 
+import functools
 import json
 from dataclasses import replace
 
@@ -166,6 +167,57 @@ def test_native_device_does_not_remove_real_private_computer_access_proposals(st
         desktop.close()
 
 
+@functools.cache
+def offerable_tool_lists() -> frozenset[tuple[str, ...]]:
+    """The tool lists a turn can be offered, over every combination of its kind and features."""
+    import itertools
+
+    from alysis_code.bots.owl_images import IMAGE_TOOLS
+    from alysis_code.bots.owl_toolset import Turn, offer, tool_names
+    from alysis_code.bots.runtime import TOOL_DEFINITIONS, tool_schema
+
+    kinds = (
+        {"answers_person": True},
+        {"answers_person": False, "background": True},
+        {"answers_person": False, "activation": True},
+        {"answers_person": False, "scheduled": True},
+        {"answers_person": True, "room": True},
+        {"answers_person": True, "first_hello": True},
+    )
+    features = (
+        "files",
+        "documents",
+        "images",
+        "memory",
+        "coding",
+        "web_lookup",
+        "tool_calling",
+        "browser",
+        "computer_handoff",
+        "other_owls",
+        "about_me",
+        "playbooks",
+        "reply_checked",
+    )
+    offered = set()
+    for kind in kinds:
+        for values in itertools.product((False, True), repeat=len(features)):
+            turn = Turn(**kind, **dict(zip(features, values, strict=True)))
+            names = tuple(tool_names(turn))
+            assert set(names) <= set(TOOL_DEFINITIONS), names
+            if set(IMAGE_TOOLS) & set(names):
+                assert turn.files and turn.images and not turn.activation, turn
+            offered.add(names)
+    assert any(set(IMAGE_TOOLS) <= set(names) for names in offered)
+    schemas = {name: tool_schema(name) for name in TOOL_DEFINITIONS}
+    for names in offered:
+        for schema in offer([schemas[name] for name in names], context_window=1).schemas:
+            parameters = schema["function"]["parameters"]
+            assert parameters.get("type") == "object", schema["function"]["name"]
+            assert not {"anyOf", "oneOf", "allOf"} & set(parameters), schema["function"]["name"]
+    return frozenset(offered)
+
+
 @pytest.mark.parametrize("native_approval", [True, False])
 @pytest.mark.parametrize("browser", [True, False])
 @pytest.mark.parametrize("offline_computer", [True, False])
@@ -183,6 +235,100 @@ def test_no_tool_schema_has_a_top_level_combinator(offline_computer, browser, na
         )["function"]["parameters"]
         assert parameters.get("type") == "object", name
         assert not {"anyOf", "oneOf", "allOf"} & set(parameters), name
+    # Every tool a turn can be offered, in every combination of its kind and features (pictures
+    # among them), is one of those, and a small model's two call-through tools stay plain
+    # objects whatever they reach (checked once, in offerable_tool_lists).
+    assert all(set(names) <= set(TOOL_DEFINITIONS) for names in offerable_tool_lists())
+    if offline_computer:
+        # The private computer's tools too: with or without images and files, before a computer
+        # runs, and with one whose desktop declares nothing (an older image) or window elements.
+        from types import SimpleNamespace
+
+        from alysis_code.bots.computer import ComputerViews
+        from alysis_code.bots.desktop import DEFINITIONS as DESKTOP_TOOLS
+        from alysis_code.bots.desktop import ELEMENT_TOOLS, HANDS, LEGACY, DesktopComputers
+        from alysis_code.bots.desktop import _Computer as DesktopComputer
+
+        seen = set()
+        task = {"id": "task", "bot_id": "bot", "config": {"files_enabled": True}}
+        hands = ("long_commands", "process_output", "pointer", "windows", "clipboard")
+        for image_input in (False, True):
+            for files in (None, object()):
+                for declared in (
+                    None,
+                    (),
+                    ("elements",),
+                    hands,
+                    ("elements", *hands),
+                    ("elements", "pointer"),
+                ):
+                    desktops = DesktopComputers("owner", ComputerViews(), store=files)
+                    if declared is not None:
+                        executor = SimpleNamespace(desktop_features=frozenset(declared))
+                        desktops._computers["bot"] = DesktopComputer(executor, None, "task")
+                    schemas = desktops.offered(
+                        task,
+                        desktops.schemas(task, True, approved=True, image_input=image_input),
+                        image_input=image_input,
+                    )
+                    for schema in schemas:
+                        name = schema["function"]["name"]
+                        seen.add(name)
+                        parameters = schema["function"]["parameters"]
+                        assert parameters.get("type") == "object", name
+                        assert not {"anyOf", "oneOf", "allOf"} & set(parameters), name
+                        if name in ELEMENT_TOOLS:
+                            assert "elements" in (declared or ()), name
+                        if name in HANDS:
+                            assert HANDS[name] in (declared or ()), name
+                        if name in LEGACY and LEGACY[name][0] not in (declared or ()):
+                            assert schema["function"]["description"] == LEGACY[name][1], name
+                        if name == "computer_pointer":
+                            assert parameters["properties"].keys() >= {"source_id", "action"}
+        assert seen == set(DESKTOP_TOOLS)
+    if not browser:
+        return
+    # The browser's tools too, in every combination a step can be offered them: with or without
+    # images, website approval, files, and a running browser that declares none, some or all of
+    # its newer operations.
+    from types import SimpleNamespace
+
+    from alysis_code.bots.browser import BrowserComputers, _Computer
+    from alysis_code.bots.browser_tools import DEFINITIONS, PARAMETER_OPERATIONS, TOOL_OPERATIONS
+    from alysis_code.bots.cloud_browser import OPERATIONS
+    from alysis_code.bots.computer import ComputerViews
+
+    seen = set()
+    task = {"id": "task", "bot_id": "bot", "config": {"files_enabled": True}}
+    for image_input in (False, True):
+        for approved in ((), ("https://example.org",)):
+            for files in (None, object()):
+                for declared in (None, (), OPERATIONS[:3], OPERATIONS):
+                    browsers = BrowserComputers(
+                        "owner", ComputerViews(), lambda *_: None, store=files
+                    )
+                    if declared is not None:
+                        executor = SimpleNamespace(browser_features=frozenset(declared))
+                        browsers._computers["bot"] = _Computer(executor, None, "task", 0)
+                    schemas = browsers.offered(
+                        task,
+                        browsers.schemas(
+                            task, True, approved_origins=approved, image_input=image_input
+                        ),
+                    )
+                    for schema in schemas:
+                        name = schema["function"]["name"]
+                        seen.add(name)
+                        parameters = schema["function"]["parameters"]
+                        assert parameters.get("type") == "object", name
+                        assert not {"anyOf", "oneOf", "allOf"} & set(parameters), name
+                        operation = TOOL_OPERATIONS.get(name)
+                        assert operation is None or operation in (declared or ()), name
+                        # A tool's newer options only where the browser declares them.
+                        for key, needed in PARAMETER_OPERATIONS.get(name, {}).items():
+                            offered = key in parameters["properties"]
+                            assert offered == (needed in (declared or ())), (name, key)
+    assert seen == set(DEFINITIONS)
 
 
 def test_runtime_facts_say_whether_pages_can_be_seen_as_images(study):

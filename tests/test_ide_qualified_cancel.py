@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -65,6 +66,42 @@ def harness(tmp_path):
         ][-1]
 
     return bridge, session, closed, call, wire
+
+
+@pytest.mark.parametrize("publish_private", [False, True])
+def test_event_sequence_follows_publication_order(tmp_path, monkeypatch, publish_private):
+    bridge, session, _, _, _ = harness(tmp_path)
+    preparing = threading.Event()
+    release = threading.Event()
+
+    class WorkerOutput:
+        def to_dict(self):
+            preparing.set()
+            assert release.wait(5)
+            return {"type": "info_emitted", "message": "Praca zakończona."}
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        pending = worker.submit(session.surface._emit_event, WorkerOutput())
+        try:
+            assert preparing.wait(5)
+            if publish_private:
+                from alysis_code.ide.event_stream import ProtocolPayloadEvent
+
+                monkeypatch.setattr(sb, "refuse_computer_use", lambda: None)
+                private = session.surface.transient_envelope(
+                    ProtocolPayloadEvent("task_budget_request", {"request_id": "private"})
+                )
+                bridge._write_transient_computer_use_request(private)
+            session.surface.emit_warning("Cancellation requested.")
+        finally:
+            release.set()
+        pending.result(timeout=5)
+
+    events = [json.loads(line) for line in bridge.stdout.getvalue().splitlines()]
+    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assert [event["type"] for event in events[-2:]] == ["warning_emitted", "info_emitted"]
+    assert events[-1]["payload"]["message"] == "Praca zakończona."
+    assert list(bridge._event_buffers[session.session_id]) == events[-2:]
 
 
 def job(bridge, session, name="A", status="running", *, active=True):

@@ -15,11 +15,11 @@ interface AlysisHost {
 ```
 
 The host sends state and action results through `window` message events. The fallback transport
-uses `acquireVsCodeApi`, preserving the VS Code and Cursor message contract. Host implementations
+uses `acquireVsCodeApi`, preserving the VS Code message contract. Host implementations
 must validate requests and enforce project trust, ownership and permissions independently of UI
 state. Template fields are host-owned, escaped values; user/agent content uses DOM text nodes.
 
-VS Code and Cursor use their native view title and toolbar. The inline navigation starts hidden
+VS Code and editors built on it use their native view title and toolbar. The inline navigation starts hidden
 and is shown only for portable hosts that inject `window.alysisHost`.
 
 `portable-chat.js` implements the initial non-VS-Code chat controller. Its injected RPC interface

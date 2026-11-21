@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from functools import wraps
 from time import perf_counter
 
+from .computer_use_platform_policy import computer_use_blocked
+
 N = 1_000_000
 D = 86_400_000
 SUM = 86_400_000_000
@@ -751,6 +753,20 @@ class Collector:
 
 def current():
     return _current.get()
+
+
+@_safe
+def management_rpc_collector(request):
+    context = request.computer_use_attribution
+    if (
+        request.method == "config.get"
+        and context is not None
+        and context["producerRole"] == "management"
+        and valid_identity(request.id, numeric=True)
+        and not computer_use_blocked()
+    ):
+        return Collector(context)
+    return None
 
 
 @contextmanager

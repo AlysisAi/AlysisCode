@@ -142,6 +142,19 @@ class FakeTransport:
             }
         if method == "Accessibility.getFullAXTree":
             return {"nodes": [{"role": {"value": "button"}}]}
+        # Checks the service runs before input: the page's frames, an isolated world, and a
+        # visible element there.
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": "main-frame", "url": "https://example.test/"}}}
+        if method == "Page.createIsolatedWorld":
+            return {"executionContextId": 7}
+        if method == "DOM.resolveNode":
+            return {"object": {"objectId": "element-object"}}
+        if (
+            method == "Runtime.callFunctionOn"
+            and values.get("functionDeclaration") == managed_browser_module._PROBE_FUNCTION
+        ):
+            return {"result": {"value": {"attached": True, "element": True, "visible": True}}}
         if method == "DOMSnapshot.captureSnapshot":
             return {"documents": [{"nodes": [1, 2, 3]}]}
         if method == "Page.captureScreenshot":
@@ -257,6 +270,8 @@ def make_service(tmp_path: Path, **overrides: Any):
         max_sessions_per_owner=overrides.pop("max_sessions_per_owner", 2),
         max_snapshot_bytes=overrides.pop("max_snapshot_bytes", 2 * 1024 * 1024),
         linux_display=overrides.pop("linux_display", None),
+        # A control that never becomes ready is refused after this wait; keep it short here.
+        actionable_wait_seconds=overrides.pop("actionable_wait_seconds", 0.2),
     )
     launcher = FakeLauncher(
         active_port=overrides.pop("active_port", "9223\n/devtools/browser/id-1\n")
@@ -1677,7 +1692,10 @@ class ControlsTransport(FakeTransport):
         result = super().call(method, params, **kwargs)
         if method == "DOM.resolveNode":
             return {"object": {"objectId": "resolved-control"}}
-        if method == "Runtime.callFunctionOn":
+        if (
+            method == "Runtime.callFunctionOn"
+            and params["functionDeclaration"] == managed_browser_module._SELECT_OPTION_FUNCTION
+        ):
             return {"result": {"value": {"dispatched": not self.reject_selection}}}
         if method == "Page.getLayoutMetrics":
             return {"cssLayoutViewport": {"clientWidth": 1280, "clientHeight": 800}}

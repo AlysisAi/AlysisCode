@@ -383,6 +383,9 @@ class BoundConnections:
                             "plugin_id": plugin.plugin_id,
                             "plugin_name": plugin.name,
                             "tool_name": tool.name,
+                            # The app's own words for the tool, without the notes above that
+                            # all of its tools share (an owl's tool look-up lists it by these).
+                            "tool_description": tool.description[:1500],
                             "effect": tool.effect,
                             "read_only": tool.effect == "read",
                         },

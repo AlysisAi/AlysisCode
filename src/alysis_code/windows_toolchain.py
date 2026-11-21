@@ -40,25 +40,49 @@ def program_files() -> Path | None:
     return known_folder(0x26)
 
 
-def installed_tools() -> dict[str, tuple[Path, Path]]:
-    """Return executable and exact read-only installation root for each tool."""
+def _verify_bundled_git_files(root: Path, files: dict[str, str]) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .windows_sandbox import _local_path
+
+    def verify(relative: str) -> None:
+        path = _local_path(root / relative, directory=False)
+        with path.open("rb") as binary:
+            actual = hashlib.file_digest(binary, "sha256").hexdigest()
+        if actual != files[relative]:
+            raise ValueError("Bundled Git file integrity check failed: " + relative)
+
+    # The pinned manifest has independent files. Finish all checks before granting the tool.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(verify, files))
+
+
+def tool_installation_roots() -> dict[str, Path]:
+    """Known installation slots, including absent ones. These paths alone grant no access."""
     parent = program_files()
     if parent is None:
         return {}
+    assets = Path(__file__).parent / "assets"
+    return {
+        "node": parent / "nodejs",
+        "git": assets / "windows-git",
+        "git-sign": assets / "git-sign",
+    }
+
+
+def installed_tools(*, only: set[str] | None = None) -> dict[str, tuple[Path, Path]]:
+    """Admit the selected installations with the same live checks as a shell request."""
     from .windows_sandbox import _local_path
 
+    roots = tool_installation_roots()
+    if only is not None:
+        roots = {name: root for name, root in roots.items() if name in only}
     result = {}
-    for name, folder, binary in (("node", "nodejs", "node.exe"),):
-        root = parent / folder
-        executable = root / binary
-        if not executable.is_file():
-            continue
-        # Reject junctions, symbolic links and ambiguous installation paths.
-        root = _local_path(root)
-        executable = _local_path(executable, directory=False)
-        result[name] = (executable, root)
-    bundled = Path(__file__).parent / "assets/windows-git"
-    if bundled.exists():
+    node = roots.get("node")
+    if node is not None and (node / "node.exe").is_file():
+        result["node"] = (_local_path(node / "node.exe", directory=False), _local_path(node))
+    bundled = roots.get("git")
+    if bundled is not None and bundled.exists():
         root = _local_path(bundled)
         raw = (root / "bundle-manifest.json").read_bytes()
         if (
@@ -70,16 +94,11 @@ def installed_tools() -> dict[str, tuple[Path, Path]]:
         actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
         if actual != set(manifest["files"]) | {"bundle-manifest.json"}:
             raise ValueError("Bundled Git file inventory changed")
-        for relative, digest in manifest["files"].items():
-            path = _local_path(root / relative, directory=False)
-            with path.open("rb") as binary:
-                actual_digest = hashlib.file_digest(binary, "sha256").hexdigest()
-            if actual_digest != digest:
-                raise ValueError("Bundled Git file integrity check failed: " + relative)
+        _verify_bundled_git_files(root, manifest["files"])
         result["git"] = (root / "cmd/git.exe", root)
-    signer_root = Path(__file__).parent / "assets/git-sign"
-    signer = signer_root / "alysis-git-ssh-sign.exe"
-    if signer_root.exists():
+    signer_root = roots.get("git-sign")
+    if signer_root is not None and signer_root.exists():
+        signer = signer_root / "alysis-git-ssh-sign.exe"
         _local_path(signer_root)
         _local_path(signer, directory=False)
         if (

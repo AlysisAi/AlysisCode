@@ -1,6 +1,7 @@
 ---
 name: presentations
 description: Create or edit PowerPoint decks with source-grounded content, editable elements, and rendered slide review.
+uses_tools: [document_operation, capability_status, artifact_check, asset_view]
 ---
 
 Use when: The user requests a PPTX deck or edits to an existing presentation.
@@ -15,6 +16,8 @@ Build a coherent argument with clear slide titles, meaningful visual hierarchy a
 
 Render the deck when a renderer is available and inspect every slide with `asset_view`. Check overflow, overlap, alignment, contrast, labels and image quality, then revise and rerender affected slides. Character-count estimates cannot prove text fits with the selected fonts. If rendering is unavailable, perform structural checks and explicitly leave visual review unverified.
 
-Deliver the actual PPTX and any requested exports, with a brief description and material limitations. Keep scratch images and authoring scripts outside the deliverable folder.
+When the task adds, edits or preserves speaker notes, read them back from the final saved deck in slide order. For each slide, compare its linked notes with the slide content and the requested or original notes. State any associations you could not confirm.
+
+Deliver the actual PPTX and any requested exports, with a brief description and material limitations. When reporting a repaired deck as part of the result, save the checked revision as a deliverable alongside any export. Keep scratch images and authoring scripts outside the deliverable folder.
 
 Before delivery, call `artifact_check` on each final DOCX, XLSX, PPTX or PDF. It binds observed structural, calculation and rendering checks to that exact file version. Inspect every returned page image with `asset_view`; repair failed checks and recheck the changed file. These checks supplement source and task-specific validation; they do not prove the content is correct.

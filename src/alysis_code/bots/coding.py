@@ -65,6 +65,9 @@ class CodingModelRequest(WorkerRequest):
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]] | None = Field(default=None, max_length=100)
     max_tokens: int = Field(default=3000, ge=1)
+    # How many times in a row this step was already sent again after a temporary provider
+    # error. Workers from before retries never send it: their first attempt is the same.
+    provider_retries: int = Field(default=0, ge=0)
 
 
 class CodingStore:
@@ -573,7 +576,9 @@ class CodingStore:
             raise Conflict("The reporting phase cannot use tools.")
         request_hash = hashlib.sha256(
             json.dumps(
-                data.model_dump(exclude={"worker_id", "request_id"}),
+                # The retry count says how the step is sent, not what it asks: a request keeps
+                # the identity it had before retries existed.
+                data.model_dump(exclude={"worker_id", "request_id", "provider_retries"}),
                 sort_keys=True,
                 ensure_ascii=False,
             ).encode()

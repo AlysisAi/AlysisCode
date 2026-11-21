@@ -32,7 +32,7 @@ from .approval_binding import (
 )
 from .context_blocks import context_capabilities
 from .management_protocol import MANAGEMENT_FEATURES
-from .protocol import PROTOCOL_VERSION
+from .protocol import EXPLICIT_SKILL_INVOCATION, PROTOCOL_VERSION
 
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300
 
@@ -251,7 +251,7 @@ def capabilities_payload() -> dict[str, Any]:
             "computer_use_attribution_v1": {"supported": True, "version": 1},
             "project_folders": {"version": 1, "field": "project_folders", "scope": "turn"},
             "local_memory": {"version": 1, "field": "memory_scope", "scope": "turn"},
-            "explicit_skill_invocation": {"version": 1, "field": "skill", "scope": "turn"},
+            "explicit_skill_invocation": dict(EXPLICIT_SKILL_INVOCATION),
             "structured_surface_events": True,
             "graceful_shutdown": {
                 "supported": True,
@@ -579,6 +579,7 @@ def capabilities_payload() -> dict[str, Any]:
             "run_chat_options": {
                 "temperature": True,
                 "stream": True,
+                "stream_reset": True,
                 "verify_commands": True,
                 "image_paths": True,
                 "image_binary_jsonl": False,

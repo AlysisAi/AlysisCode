@@ -154,7 +154,7 @@ class ClarificationStore:
 
     def decide(self, bot_id, question_id, data: QuestionDecision, *, answering_task=None):
         with self.store.connect(write=True) as db:
-            bot = self.store._bot(db, self.owner, bot_id)
+            self.store._bot(db, self.owner, bot_id)
             self.refresh(db, bot_id)
             row = db.execute(
                 "SELECT * FROM clarifications WHERE id=? AND bot_id=?", (question_id, bot_id)
@@ -182,15 +182,17 @@ class ClarificationStore:
                     if task_id == source["id"]:
                         raise Conflict("A bot cannot answer its own pending question.")
                 else:
-                    chat = self.store._ensure_chat(db, self.owner, bot_id, bot["name"])
+                    # The answer carries on where the question was asked: in the room, or the
+                    # owl's own chat (rooms.py).
                     task_id = self.store._enqueue(
                         db,
                         self.owner,
-                        chat["id"],
+                        self.store._reply_chat(db, self.owner, source),
                         TaskInput(
                             message=data.answer,
                             request_id="clarification_" + question_id,
                         ),
+                        bot_id=bot_id,
                     )["id"]
             elif not delivered:
                 # Skipping the question a finished turn ended on carries its request on without

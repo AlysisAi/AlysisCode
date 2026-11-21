@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -25,10 +26,16 @@ class SkillBundle:
     ancestor_distance: int | None = None
     aliases: tuple[str, ...] = ()
     metadata: dict[str, str] = field(default_factory=dict)
+    #: Tools the skill's instructions tell the model to call (``uses_tools`` in SKILL.md).
+    uses_tools: tuple[str, ...] = ()
 
     @property
     def source_label(self) -> str:
         return f"{self.source_scope}/{self.source_kind}"
+
+    def usable_with(self, tool_names: Collection[str]) -> bool:
+        """Whether a session with these tools can follow this skill: it has every declared one."""
+        return all(name in tool_names for name in self.uses_tools)
 
     def lookup_keys(self) -> tuple[str, ...]:
         keys: list[str] = []

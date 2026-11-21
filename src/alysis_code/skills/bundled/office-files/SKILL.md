@@ -1,6 +1,7 @@
 ---
 name: office-files
 description: Read, create, or edit named DOCX, XLSX, and PPTX files directly; preserve originals, verify structure, and disclose fidelity limits.
+uses_tools: [capability_status, shell_run, asset_view]
 ---
 
 Use when: The requested result is reading, creating, or editing a named saved Word, Excel, or PowerPoint file, in any language.

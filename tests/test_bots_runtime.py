@@ -283,6 +283,8 @@ def test_budget_survives_restart_and_prevents_next_provider_call(store):
 def test_restart_marks_running_interrupted_and_does_not_replay(store):
     _, _, first = setup_task(store)
     store.claim("alice")
+    # A step that may have changed something was under way: the turn is never replayed.
+    store.event("alice", first["id"], "tool_started", {"name": "local_command"})
     call_id = store.reserve_call("alice", first["id"], "model", 100)
     assert call_id
     _, _, queued = setup_task(store)

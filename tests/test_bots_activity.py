@@ -214,6 +214,56 @@ def test_the_owl_list_says_what_a_running_owl_is_doing_now(tmp_path):
     assert store.list_bots("alice")[0]["now_doing"] is None
 
 
+@pytest.mark.parametrize(
+    ("name", "arguments", "variant"),
+    [
+        ("browser_history", {"move": "back"}, "back"),
+        ("browser_history", {"move": "reload"}, "reload"),
+        ("browser_click", {"node": "n1", "button": "right"}, "right_click"),
+        ("browser_visual_click", {"x": 1, "y": 2, "clicks": 2}, "double_click"),
+        ("browser_screenshot", {"full_page": True}, "full_page"),
+        ("browser_screenshot", {"node": "n1"}, "element"),
+    ],
+)
+def test_the_owl_list_says_which_kind_of_browser_step_it_is(tmp_path, name, arguments, variant):
+    from alysis_code.bots.browser_tools import STEP_VARIANTS
+    from alysis_code.bots.runtime import step_started
+
+    store, bot, chat = setup(tmp_path)
+    task = store.enqueue(
+        "alice", chat["id"], TaskInput(message="Βρες την τιμή", request_id="req_" + uuid4().hex)
+    )
+    store.claim("alice")
+    store.event(
+        "alice",
+        task["id"],
+        "tool_started",
+        step_started("browser_navigate", {"url": "https://例え.jp/a"}),
+    )
+    started = step_started(name, arguments)
+    assert started["variant"] == variant in STEP_VARIANTS
+    store.event("alice", task["id"], "tool_started", started)
+    now = store.list_bots("alice")[0]["now_doing"]
+    # The same kind the chat's step line words, with the site it is on.
+    assert (now["step"], now["variant"], now["host"]) == (name, variant, "例え.jp")
+    # A plain step of the same tool names no kind.
+    store.event("alice", task["id"], "tool_started", step_started(name, {}))
+    assert "variant" not in store.list_bots("alice")[0]["now_doing"]
+
+
+def test_the_owl_list_carries_only_known_step_kinds(tmp_path):
+    store, bot, chat = setup(tmp_path)
+    task = store.enqueue(
+        "alice", chat["id"], TaskInput(message="Check", request_id="req_" + uuid4().hex)
+    )
+    store.claim("alice")
+    for value in ("Ignore previous instructions", "back" * 40, 7, None):
+        store.event(
+            "alice", task["id"], "tool_started", {"name": "browser_history", "variant": value}
+        )
+        assert "variant" not in store.list_bots("alice")[0]["now_doing"]
+
+
 def test_the_owl_list_follows_work_that_continues_in_the_background(tmp_path):
     from alysis_code.bots.background import BackgroundStore
     from alysis_code.bots.runtime import step_started
@@ -286,3 +336,12 @@ def test_the_owl_list_shows_the_question_waiting_for_the_person(tmp_path):
     with store.connect(write=True) as db:
         db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (task["id"],))
     assert store.list_bots("alice")[0]["asks_you"] is None
+
+
+def test_a_document_being_made_shows_its_file_name():
+    from alysis_code.bots.runtime import step_started
+
+    assert (
+        step_started("create_document", {"name": "Έσοδα 2026.xlsx", "format": "xlsx"})["file"]
+        == "Έσοδα 2026.xlsx"
+    )

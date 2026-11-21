@@ -474,3 +474,86 @@ def test_idle_without_a_task_is_scoped_to_one_bot_across_both_surfaces(tmp_path)
     finally:
         browser.close()
         desktop.close()
+
+
+def deletion_app(tmp_path, provider):
+    from fastapi.testclient import TestClient
+
+    from alysis_code.bots.app import Settings, create_app
+    from alysis_code.bots.browser import BrowserComputers
+    from alysis_code.bots.computer import ComputerViews
+    from alysis_code.bots.desktop import DesktopComputers
+    from alysis_code.bots.store import Store
+
+    settings = Settings(
+        tmp_path / "db", "t" * 40, "fixture", "https://example.invalid", "fixture", owner="owner"
+    )
+    store = Store(settings.database)
+    computers, views = factory(tmp_path, provider), ComputerViews()
+    desktop = DesktopComputers("owner", views, factory=computers, store=store)
+    browser = BrowserComputers("owner", views, lambda *_: None)
+    app = create_app(
+        settings,
+        client_factory=lambda _: pytest.fail("No model call"),
+        computer_views=views,
+        browser_computers=browser,
+        desktop_computers=desktop,
+        task_store=store,
+    )
+    client = TestClient(app)
+    client.headers["Authorization"] = "Bearer " + settings.token
+    return client, computers, views, desktop, browser
+
+
+def test_deleting_an_owl_ends_its_awake_computer_and_both_its_surfaces(tmp_path, monkeypatch):
+    import time
+
+    from alysis_code.bots.browser import _Computer
+
+    provider = MemoryProvider()
+    client, computers, views, desktop, browser = deletion_app(tmp_path, provider)
+    discarded = []
+
+    def recover(bot_id, *, deleting=False):
+        # The computer service refuses to discard a computer a session still holds.
+        with computers._condition:
+            assert bot_id not in computers._instances and bot_id not in computers._starting
+        discarded.append((bot_id, deleting))
+
+    monkeypatch.setattr(computers, "recover", recover)
+    with client:
+        bot = client.post("/v1/bots", json={"name": "Κουκουβάγια", "purpose": "Delete"}).json()
+        bot = bot["id"]
+        assert client.post(f"/v1/bots/{bot}/computer/open").status_code == 202
+        deadline = time.monotonic() + 10
+        while client.get(f"/v1/bots/{bot}/computer/status").json()["state"] != "live":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        # Its browser holds the same awake computer between turns.
+        surface = computers._acquire(bot, "browser", lambda: False)
+        generation = views.bind(
+            "owner", bot, surface="browser", capture=lambda: b"", alive=surface.alive
+        )
+        browser._computers[bot] = _Computer(surface, generation, None, browser.clock())
+        ref = desktop._computers[bot].executor.ref
+        assert client.delete(f"/v1/bots/{bot}").status_code == 204
+        assert discarded == [(bot, True)]
+        assert provider.status(ref).state != "running"
+        assert bot not in desktop._computers and bot not in browser._computers
+        assert all(item["id"] != bot for item in client.get("/v1/bots").json())
+
+
+def test_an_owl_whose_computer_is_still_settling_is_kept_with_a_clear_reason(tmp_path, monkeypatch):
+    provider = MemoryProvider()
+    client, computers, *_ = deletion_app(tmp_path, provider)
+
+    def settling(bot_id, *, deleting=False):
+        raise DesktopError("Computer recovery is waiting for its state to settle.")
+
+    monkeypatch.setattr(computers, "recover", settling)
+    with client:
+        bot = client.post("/v1/bots", json={"name": "猫头鹰", "purpose": "Delete"}).json()["id"]
+        refused = client.delete(f"/v1/bots/{bot}")
+        assert refused.status_code == 409
+        assert "still shutting down" in refused.json()["detail"]
+        assert any(item["id"] == bot for item in client.get("/v1/bots").json())

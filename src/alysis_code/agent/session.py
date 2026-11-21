@@ -195,7 +195,13 @@ from ..session_store import (
     make_session_id,
     resolve_sessions_dir,
 )
-from ..skills import ConventionDocument, SkillBundle, SkillCatalogEntry
+from ..skills import (
+    ConventionDocument,
+    SkillBundle,
+    SkillCatalogEntry,
+    build_skill_advertise_block,
+    offer_skills_for_tools,
+)
 from ..step_budget import StepBudgetRuntime, normalize_step_budget_policy
 from ..subagents import SubagentDefinition, unavailable_builtin_subagents
 from ..surface import ApprovalRequest, NoopSurface, StatusEvent
@@ -284,6 +290,8 @@ from .tools_assembly import (
     _filter_custom_tool_session_state_for_plugins,
     _filter_mcp_config_for_plugins,
     build_tools,
+    builtin_tool_def,
+    skill_read_runner,
 )
 from .turn import (
     _FORCED_FINAL_SUMMARY_SYSTEM_PROMPT_TEMPLATE,
@@ -1778,6 +1786,10 @@ class AgentSession:
                 payload = {"content": text}
                 payload.update(extra_payload)
                 self.store.append("assistant_message", payload)
+            # A repeated response can already have delivered its own deltas. Close
+            # that response before the next one starts writing to the live buffer.
+            if streamed_text_emitted:
+                _emit_assistant_message_events(self.surface, text, streamed_text_emitted=True)
             return normalized_text
         payload = {"content": text}
         if extra_payload:
@@ -2622,6 +2634,7 @@ class AgentSession:
         reason: str,
         terminal: bool = True,
         trusted_entry_blocked: bool = False,
+        provider_diagnostic: str | None = None,
     ) -> dict[str, Any]:
         state = self._turn_execution_state
         task_id = getattr(self._task_evidence_state, "task_id", "")
@@ -2642,6 +2655,12 @@ class AgentSession:
             terminal=terminal,
             trusted_entry_blocked=trusted_entry_blocked,
         )
+        if (
+            provider_diagnostic
+            and record["outcome"] == "provider_failure"
+            and not self.sensitive_media
+        ):
+            record["provider_diagnostic"] = provider_diagnostic
         record["session_id"] = self.store.session_id
         record["runtime_kind"] = self.runtime_kind.value
         checkpoint = getattr(self._anytime_checkpoints, "best", None)
@@ -4358,6 +4377,16 @@ def create_session(
         def _capture_artifact_output_access(access: Callable[[str, bool], bool]) -> None:
             artifact_output_access_holder["access"] = access
 
+        # The session's tools, once every one is in place (see offered_skills below).
+        session_tool_names_holder: dict[str, frozenset[str]] = {}
+
+        def _capture_mode_withheld_tool_names(names: frozenset[str]) -> None:
+            session_tool_names_holder["mode_withheld"] = names
+
+        def _skill_offered(skill: SkillBundle) -> bool:
+            names = session_tool_names_holder.get("all")
+            return names is None or skill.usable_with(names)
+
         def build_session_tools(**kwargs):
             if tools_override is not None:
                 return dict(tools_override)
@@ -4424,6 +4453,7 @@ def create_session(
                 completion_gate_tools_enabled=completion_gate_tools_enabled,
                 skills_enabled=resolved_skills_enabled,
                 skill_registry=discovered_skills.skills,
+                skill_offered=_skill_offered,
                 plugin_skills=prompt_context.plugin_skills,
                 subagents_enabled=resolved_subagents_enabled,
                 helper_subagents_enabled=helper_subagents_enabled,
@@ -4453,6 +4483,7 @@ def create_session(
                 subagent_coordinator_sink=_capture_subagent_coordinator,
                 child_scheduler_sink=_capture_child_scheduler,
                 tool_availability_sink=_capture_tool_availability,
+                mode_withheld_tool_names_sink=_capture_mode_withheld_tool_names,
                 parent_steer_inbox=parent_steer_inbox,
                 read_ledger_sink=_capture_read_ledger,
                 artifact_output_access_sink=_capture_artifact_output_access,
@@ -4485,6 +4516,34 @@ def create_session(
                     getattr(client, "prefers_deferred_tool_schemas", False) is True
                 ),
             )
+        # A skill that declares the tools it uses is offered only when this session has every
+        # one of them. A tool the permission mode holds back for now (Plan) still counts: the
+        # person can switch modes within this session, and its skill list stays the same.
+        session_tool_names_holder["all"] = frozenset(tools) | session_tool_names_holder.get(
+            "mode_withheld", frozenset()
+        )
+        offered_skills = (
+            offer_skills_for_tools(discovered_skills, session_tool_names_holder["all"])
+            if resolved_skills_enabled
+            else discovered_skills
+        )
+        if (
+            tools_override is not None
+            and resolved_skills_enabled
+            and (offered_skills.skills or prompt_context.plugin_skills)
+        ):
+            # An exclusive host surface gets no repository tools; a host that turns skills on
+            # gets the one read-only tool that reads them.
+            if "skill_read" in tools:
+                raise ConfigError("A host tool surface with skills on cannot supply skill_read.")
+            tools["skill_read"] = builtin_tool_def(
+                "skill_read",
+                run=skill_read_runner(
+                    root=root,
+                    skill_registry=offered_skills.skills,
+                    plugin_skills=prompt_context.plugin_skills,
+                ),
+            )
         tool_list = [tool.as_openai_tool() for tool in tools.values() if model_visible(tool)]
         messages: list[dict[str, Any]] = list(prompt_context.messages)
         if active_workdir_relpath_override is not None:
@@ -4512,6 +4571,23 @@ def create_session(
                 messages[index] = {**message, "content": binding_context}
                 break
         pinned_prefix_len = prompt_context.pinned_prefix_len
+        if offered_skills is not discovered_skills:
+            # The skill list names only the skills this session offers.
+            listed = build_skill_advertise_block(
+                skills=discovered_skills.ordered, skills_auto_invoke=skills_auto_invoke
+            )
+            offered_list = build_skill_advertise_block(
+                skills=offered_skills.ordered, skills_auto_invoke=skills_auto_invoke
+            )
+            for index, message in enumerate(messages):
+                if message.get("role") != "user" or message.get("content") != listed:
+                    continue
+                if offered_list:
+                    messages[index] = {**message, "content": offered_list}
+                else:
+                    del messages[index]
+                    pinned_prefix_len -= 1
+                break
         if not sensitive_media:
             from ..mcp.untrusted_content import server_instructions_context
 
@@ -4837,8 +4913,8 @@ def create_session(
             session_log_dir_override=session_log_dir_override,
             skills_enabled=resolved_skills_enabled,
             skills_auto_invoke=skills_auto_invoke,
-            skill_registry=dict(discovered_skills.skills),
-            skills_ordered=tuple(discovered_skills.ordered),
+            skill_registry=dict(offered_skills.skills),
+            skills_ordered=tuple(offered_skills.ordered),
             skill_discovery_issues=tuple(discovered_skills.issues),
             skill_catalog_entries=tuple(prompt_context.skill_catalog_entries),
             plugin_skills=prompt_context.plugin_skills,

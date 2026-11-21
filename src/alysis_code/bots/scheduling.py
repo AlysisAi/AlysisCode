@@ -158,10 +158,31 @@ class ScheduleProposal(Input):
     )
 
 
+# The model a routine's runs think with (capability "routine_models"): the id of one of the models
+# the owl's place offers (GET /v1/models), bounded like the owl's own (models.BotInput.model).
+RoutineModelId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")]
+
+ROUTINE_MODEL_DESCRIPTION = (
+    "The model each run thinks with: one id from models.offered in list_schedules. Leave it out "
+    "for your own model (in an edit, to keep the routine's); null sets an edited routine back to "
+    "your own. Give one only when the person asks this routine to use a particular model."
+)
+
+
 class ScheduleInput(ScheduleProposal):
     request_id: str | None = Field(default=None, min_length=8, max_length=100)
     enabled: bool = True
     expected_revision: int = Field(default=0, ge=0)
+    # The model its runs think with. Null: the owl's own, as for routines made before. Left out
+    # of an edit, it stays as it was.
+    model: RoutineModelId | None = None
+
+
+class ScheduleModelChoice(Input):
+    """The person picks the model a routine's runs think with; null: the owl's own."""
+
+    model: RoutineModelId | None
+    expected_revision: int = Field(ge=1)
 
 
 class DelayTiming(Input):
@@ -193,7 +214,13 @@ class ScheduleRequest(ScheduleProposal):
         return self.timing
 
 
-class ScheduleEdit(ScheduleRequest):
+class RoutineRequest(ScheduleRequest):
+    """create_schedule and propose_schedule: a routine, and the model its runs think with."""
+
+    model: RoutineModelId | None = Field(default=None, description=ROUTINE_MODEL_DESCRIPTION)
+
+
+class ScheduleEdit(RoutineRequest):
     schedule_id: str = Field(min_length=1, max_length=100)
     expected_revision: int = Field(ge=1)
     enabled: bool
@@ -218,6 +245,20 @@ class ScheduleRunNow(Input):
     """Run a routine once now; the same request_id never starts a second run."""
 
     request_id: str = Field(min_length=8, max_length=100)
+
+
+class NothingToReport(Input):
+    """A routine's run ends without a reply: it checked and found nothing to tell the person."""
+
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class NothingNew(Exception):
+    """Raised by the nothing_to_report step that ends a routine's run quietly (BotRuntime)."""
+
+    def __init__(self, reason: str):
+        super().__init__("This routine run found nothing new to report.")
+        self.reason = reason
 
 
 def _civil(day: date, minutes: int, zone: ZoneInfo, *, shift_gap: bool = False) -> float | None:

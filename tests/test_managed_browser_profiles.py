@@ -1,6 +1,8 @@
 """Profile lifecycle fixtures; real Chromium evidence is a separate Linux study."""
 
+import os
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from test_ide_managed_browser import make_service
@@ -112,3 +114,27 @@ def test_profile_owner_cannot_be_substituted(tmp_path):
         assert not launcher.specs
     finally:
         lease.release()
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="Lasting browser profiles are POSIX-only.")
+def test_a_lasting_profile_keeps_website_storage_and_its_caches_go_with_the_session(
+    tmp_path, monkeypatch
+):
+    # Chromium keeps its disk caches inside a --user-data-dir outside the usual config folder:
+    # in a lasting profile they would grow the saved storage with every site visited.
+    service, session, lease, launcher, _ = rig(tmp_path, monkeypatch)
+    arguments = launcher.specs[-1].arguments
+    caches = [arg for arg in arguments if arg.startswith("--disk-cache-dir=")]
+    assert len(caches) == 1
+    cache = Path(caches[0].removeprefix("--disk-cache-dir="))
+    artifacts = service._sessions[session.session_id].artifact_dir
+    assert cache == artifacts / "browser-cache" and not cache.is_relative_to(lease.path)
+    service.close("bot", session.session_id)
+    assert not artifacts.exists()
+    lease.release()
+    # A session with no lasting profile throws its whole profile away: no separate cache.
+    (tmp_path / "temporary").mkdir()
+    temporary, executable, launcher, *_ = make_service(tmp_path / "temporary")
+    temporary.start("bot", executable_path=executable)
+    assert not any(arg.startswith("--disk-cache-dir=") for arg in launcher.specs[-1].arguments)
+    temporary.close_all()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import threading
 from contextlib import closing
 from types import SimpleNamespace
@@ -17,20 +18,28 @@ from uuid import uuid4
 
 from ..ide.managed_browser import (
     BrowserCancelledError,
+    BrowserDialogOpenError,
     BrowserDownloadRequiredError,
     BrowserError,
+    BrowserInputUnconfirmedError,
     BrowserLimitError,
+    BrowserNoDialogError,
     BrowserNotFoundError,
     BrowserPageUnavailableError,
     BrowserPageUnreachableError,
     BrowserSecurityError,
     BrowserStaleFrameError,
+    BrowserTargetHiddenError,
+    BrowserTargetNotReadyError,
     BrowserTargetObscuredError,
+    BrowserTargetUnstableError,
     BrowserTimeoutError,
     BrowserValidationError,
+    BrowserWaitTimeoutError,
 )
 from .cloud_desktop import CloudDesktopFiles, worker_argv
 from .compute import transfer_chunks
+from .desktop_linux import ComputerReplyTooLarge
 
 # Explicit RPC interface, not arbitrary reflection or model-selected methods.
 METHODS = frozenset(
@@ -45,25 +54,106 @@ METHODS = frozenset(
         "select_option",
         "press_key",
         "scroll",
+        "fill",
+        "hover",
+        "set_checked",
+        "drag",
+        "wait_for",
+        "read_value",
+        "handle_dialog",
+        "page_report",
+        "history",
+        "select_options",
+        "capture_image",
     }
+)
+# What this version's browser does beyond the first images', by the names its computer declares
+# when the browser starts (cloud_browser_worker.FEATURES; LinuxBrowserComputer for the in-process
+# lab). A host offers a tool only for what the running browser declared, so an older image keeps
+# today's tools. "element_identity": an element is addressed by its observed identity in any
+# frame (same- and out-of-process iframes) and in open shadow roots, and is verified there, and
+# the hit test and focus checks keep input on it. "key_chord": press_key takes held modifiers.
+# "frame_snapshots": snapshot(kind="dom", frames=True) also returns each out-of-process frame's
+# documents (another site's frame), with the frame's id, address and origin. "step_dialog": an
+# acting operation's dialog answer accepts only the one dialog the step itself opens in a frame
+# of the origin it acts in, and a dialog the page opened before the step refuses the step before
+# anything is sent. "dialog_frames": a dialog is reported with the frame that shows it (address
+# and frame id), and handle_dialog(frame_id=...) answers only that frame's dialog.
+# "page_reported": page_report says what the page reported during the last acting step: its
+# own requests that failed or answered with an error status, and its uncaught script errors.
+# "history": history(move=...) goes back, forward or reloads without sending a form again.
+# "click_options": click and visual_click take a button (right, middle) and a click count
+# (double, triple). "select_options": select_options chooses several options of a multiple
+# select. "page_images": capture_image shows one element or the full page as an image.
+# "file_chooser": a step that opens a file chooser holds it and reports its file input, which
+# upload_file answers.
+OPERATIONS = (
+    "element_identity",
+    "fill",
+    "key_chord",
+    "hover",
+    "set_checked",
+    "drag",
+    "wait_for",
+    "read_value",
+    "handle_dialog",
+    "frame_snapshots",
+    "step_dialog",
+    "dialog_frames",
+    "page_reported",
+    "history",
+    "click_options",
+    "select_options",
+    "page_images",
+    "file_chooser",
 )
 ERRORS = {
     cls.__name__: cls
     for cls in (
         BrowserError,
         BrowserCancelledError,
+        BrowserDialogOpenError,
         BrowserDownloadRequiredError,
+        BrowserInputUnconfirmedError,
         BrowserLimitError,
+        BrowserNoDialogError,
         BrowserNotFoundError,
         BrowserPageUnavailableError,
         BrowserPageUnreachableError,
         BrowserSecurityError,
         BrowserStaleFrameError,
+        BrowserTargetHiddenError,
+        BrowserTargetNotReadyError,
         BrowserTargetObscuredError,
+        BrowserTargetUnstableError,
         BrowserTimeoutError,
         BrowserValidationError,
+        BrowserWaitTimeoutError,
     )
 }
+
+
+def remote_error(reply: dict) -> BrowserError:
+    """The typed browser error a computer reported, rebuilt from its reply.
+
+    Only the error's type and fixed details cross: never the guest's own message. A dialog's
+    type, message and frame address are the page's text (the guest bounds them), kept as page
+    data, with the frame's id (checked again by the error itself); a network error is
+    Chromium's identifier, validated again by the error itself."""
+    error = ERRORS.get(reply.get("error_type"), BrowserError)
+    if error is BrowserDialogOpenError:
+        dialog = reply.get("dialog")
+        dialog = dialog if isinstance(dialog, dict) else {}
+        return BrowserDialogOpenError(
+            str(dialog.get("type") or "alert"),
+            str(dialog.get("message") or ""),
+            dialog.get("url"),
+            dialog.get("frame_id"),
+        )
+    if error is BrowserPageUnreachableError:
+        found = re.search(r"net::ERR_[A-Z0-9_]{1,64}", str(reply.get("error_detail") or ""))
+        return BrowserPageUnreachableError(found.group(0) if found else None)
+    return error("Cloud browser rejected the operation; inspect before retrying.")
 
 
 class CloudBrowser:
@@ -92,6 +182,11 @@ class CloudBrowser:
 
     def alive(self):
         return self._surface.alive()
+
+    @property
+    def browser_features(self):
+        """What this computer's browser declared it can do when it started (OPERATIONS)."""
+        return self._surface.browser_features
 
     def bind_task(self, task_id):
         self._surface.bind_task(task_id)
@@ -165,9 +260,17 @@ class RemoteBrowser:
             raise BrowserError("Cloud browser ownership does not match.")
 
     def _rpc(self, method, arguments, cancel=None):
-        return self.executor._surface._request(
-            "browser_call", {"method": method, **arguments}, cancel=cancel or (lambda: False)
-        )
+        try:
+            return self.executor._surface._request(
+                "browser_call", {"method": method, **arguments}, cancel=cancel or (lambda: False)
+            )
+        except ComputerReplyTooLarge:
+            # Only a read can end here (cloud_desktop.reads_only); the browser and page are as
+            # they were, so the reader falls back to less (the page as text, its parts).
+            raise BrowserLimitError(
+                "This page is too large to read in one step. Read its text in parts with "
+                "browser_source."
+            ) from None
 
     def __getattr__(self, name):
         if name not in METHODS:
@@ -189,9 +292,19 @@ class RemoteBrowser:
         result["png"] = base64.b64decode(result["png"], validate=True)
         return SimpleNamespace(**result)
 
-    def click_visual_frame(self, owner, sid, frame, x, y, *, cancel=None):
+    def click_visual_frame(self, owner, sid, frame, x, y, *, cancel=None, **options):
         self._owned(owner, sid)
-        return self._rpc("visual_click", {"frame_id": frame.frame_id, "x": x, "y": y}, cancel)
+        # Options (button, click count) are sent only to a computer that declares them.
+        return self._rpc(
+            "visual_click",
+            {
+                "frame_id": frame.frame_id,
+                "x": x,
+                "y": y,
+                **({"options": options} if options else {}),
+            },
+            cancel,
+        )
 
     def upload_file(
         self, owner, sid, selector, *, name, size, chunks, expected_sha256, cancel=None, **options

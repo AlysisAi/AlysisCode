@@ -11,6 +11,11 @@ This protocol is used by the initial VS Code extension scaffold and is intended 
 hosts. It is not a terminal output scraping interface. IDE clients must consume structured JSON
 responses and events.
 
+When `alysis capabilities` advertises `ide.management-bridge-v1`, a host can launch
+`alysis ide-bridge --stdio --role management` for settings and workspace skill discovery.
+The process advertises its supported methods through `getCapabilities`. A host can
+reuse it across project changes by passing the current workspace to each skill request.
+
 ## Health
 
 `provider.auth.status` is an optional read method for native subscription connections. It takes
@@ -201,6 +206,19 @@ Supported event types are the existing surface event types, including `message_d
 `subagent_state_changed`, `verify_gate_result`, `approval_reviewed`, `error_raised`, `prompt_for_input`,
 `config_form_request`, and the opt-in reasoning events below.
 
+Hosts can opt in to `session.create.stream_reset` if `features.run_chat_options.stream_reset` is true.
+When a provider restarts an unfinished streamed response, a `message_delta` with
+`{"text": "", "reset": true}` clears the current partial message for that session and job.
+Completed messages remain in the transcript. Subsequent deltas belong to the new attempt.
+
+A normal chat job can emit `file_edit_committed` after a successful structured write,
+edit or delete in its primary workspace. The payload contains a replay-stable `id`,
+the absolute `workspace`, a relative `path`, and the exact SHA-256 hashes `before` and
+`after`. A null hash means that version was absent. Small UTF-8 edits may include
+`added` and `removed` line counts. Clients can show these records while the full
+workspace review is pending. Shell commands, external writes and other operations
+require independent workspace capture. A missing event conveys no change information.
+
 `reasoning_started {block_id}`, `reasoning_delta {block_id, text}` and `reasoning_ended
 {block_id}` stream the provider's reasoning display text: a safe summary (OpenAI Responses,
 Anthropic, Gemini, OpenRouter) or the provider-returned reasoning text (DeepSeek, Qwen/DashScope,
@@ -221,10 +239,11 @@ instead of a person: `outcome` is `allow`, `deny` or `ask_person` (a normal appr
 (`low`/`medium`/`high`) and `approval_kind`. The decision is already final when the event
 arrives; it is for display, not for answering.
 
-Sequence numbers are monotonically increasing per bridge session surface. A new session may start at
-sequence `1` even if an older session previously reached a higher sequence, so clients must track
-replay cursors per `session_id` or reset sequence state on session replacement. Clients should treat
-event payloads as protocol data, not rendered terminal text.
+Sequence numbers increase in publication order for each bridge session. Live events and retained
+replay carry the same numbers. Events sent only on the live pipe may leave gaps in replay. A new
+session may start at sequence `1` even if an older session reached a higher sequence. Clients must
+track replay cursors per `session_id` or reset sequence state on session replacement, and treat
+event payloads as protocol data rather than rendered terminal text.
 
 IDE clients with multiple surfaces, such as chat and code review views, should route events by explicit
 owned `session_id` and `job_id`. A controller must not attach to an arbitrary event stream just
@@ -1600,7 +1619,15 @@ Returns current status for a job.
 ```
 
 The result includes `job_id`, `session_id`, `status`, `created_at`, `started_at`, `completed_at`,
-`exit_code`, and `error`.
+`exit_code`, and `error`. When an ordinary chat saves partial work after a provider failure,
+the job can complete with exit code zero and `result.task_outcome.outcome` set to
+`provider_failure`. Its optional `result.task_outcome.provider_diagnostic` holds bounded,
+redacted details for the failed request. The saved answer remains available for recovery.
+
+When the task has unresolved verification failures, `result.task_outcome.verification_failures`
+reports the required and observed failure counts. When available, `last_observed_tool_call_id`
+references the most recent still-unresolved observed check in the same job's tool activity.
+The reference carries no command or output. Older peers may omit this object.
 
 ### session.list
 

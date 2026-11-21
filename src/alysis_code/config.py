@@ -610,6 +610,13 @@ class AppConfig(BaseModel):
     subagents_enabled: bool = True
     skills_enabled: bool = True
     bundled_skills_enabled: bool = True
+    user_skills_enabled: bool = Field(
+        default=True,
+        description=(
+            "Discover skills in the user-wide skill folders. A host turns this off for a "
+            "session that runs away from the person's own files."
+        ),
+    )
     skills_auto_invoke: bool = Field(
         default=True,
         description=(
@@ -1087,32 +1094,42 @@ def _migrate_serialized_provider_retry_defaults(cfg: AppConfig) -> None:
         cfg.provider_retry_max_delay_seconds = DEFAULT_PROVIDER_RETRY_MAX_DELAY_SECONDS
 
 
+_RETIRED_RUNTIME_ADAPTERS = frozenset({"codex-cli"})
+
+
 def _migrate_delegated_codex_subscription(
     cfg: AppConfig,
     *,
     had_non_default_profile: bool,
 ) -> bool:
-    """Move the original Codex subscription choice onto the native transport.
+    """Move configurations of the retired subscription runtime onto the native agent.
 
-    The first implementation used ``execution.backend=delegated`` and therefore
-    replaced the Alysis Code agent with ``codex exec``. Preserve those runtime
-    settings as an inactive fallback, but make the user-facing subscription
-    selection a native profile so existing installations receive the corrected
-    behavior without repeating setup.
+    Alysis once handed whole turns for this subscription to an external
+    command-line agent. That runtime is no longer part of Alysis Code: its
+    settings are dropped wherever they appear, and a selection of it becomes the
+    native subscription profile, so the person keeps the same subscription and
+    model through Alysis Code's own agent.
     """
 
     _ = had_non_default_profile  # Retained for callers from the first migration draft.
+    retired = {
+        runtime_id
+        for runtime_id, runtime in cfg.agent_runtimes.items()
+        if str(runtime.adapter or "").strip() in _RETIRED_RUNTIME_ADAPTERS
+    }
+    if not retired:
+        return False
+    selected = str(cfg.execution.runtime or "").strip()
+    settings = cfg.agent_runtimes.get(selected) if selected in retired else None
+    for runtime_id in retired:
+        cfg.agent_runtimes.pop(runtime_id, None)
+    cfg.extra_fields.pop("preserve_delegated_runtime", None)
+    if settings is None or cfg.execution.backend != "delegated":
+        return True
+    cfg.execution.backend = "native"
+    cfg.execution.runtime = None
     if cfg.extra_fields.get("onboarded") is not True:
-        return False
-    if cfg.extra_fields.get("preserve_delegated_runtime") is True:
-        return False
-    if cfg.execution.backend != "delegated" or cfg.execution.runtime != "openai-codex":
-        return False
-    settings = cfg.agent_runtimes.get("openai-codex")
-    if settings is None or str(settings.adapter or "").strip() != "codex-cli":
-        return False
-    if str(settings.executable or "").strip() not in {"", "codex"}:
-        return False
+        return True
     from .profiles import (
         SUBSCRIPTION_SELECTION_REQUIRED_KEY,
         ProfileSpec,
@@ -1123,7 +1140,7 @@ def _migrate_delegated_codex_subscription(
 
     connection = provider_auth_connection("openai-codex")
     if connection is None:
-        return False
+        return True
     model = str(settings.model or "").strip()
     reasoning_effort = str(settings.reasoning_effort or "").strip() or None
     profile = ProfileSpec(
@@ -1133,20 +1150,15 @@ def _migrate_delegated_codex_subscription(
         auth_provider="openai-codex",
         default_model=model,
         reasoning_effort=reasoning_effort,
-        notes=(
-            "ChatGPT Codex subscription compatibility transport. "
-            "Migrated from the delegated Codex runtime."
-        ),
+        notes="ChatGPT subscription through Alysis Code's own agent.",
     )
     add_profile(cfg, profile, allow_auth_profile_update=True)
     set_active_profile(cfg, profile.name)
-    cfg.execution.backend = "native"
-    cfg.execution.runtime = None
     cfg.model = model
     effective_effort = None if reasoning_effort in {None, "auto"} else reasoning_effort
     cfg.llm_reasoning_effort = effective_effort
     cfg.llm_enable_thinking = None if effective_effort is None else effective_effort != "none"
-    # The delegated CLI owned credentials, so native Alysis Code must explicitly
+    # The retired runtime kept its own credentials, so native Alysis Code must explicitly
     # connect its own encrypted provider vault before chat starts.
     cfg.extra_fields["onboarded"] = False
     cfg.extra_fields["subscription_reconnect_required"] = True

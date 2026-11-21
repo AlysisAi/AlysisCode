@@ -26,7 +26,11 @@ def test_main_runs_past_old_call_limits_and_keeps_durable_accounting(tmp_path):
     _, _, queued = setup_task(store)
     client = ScriptedClient(
         [
-            *[main_response(calls=[ToolCall(str(i), "list_files", {})]) for i in range(105)],
+            # Different steps: the same call again and again is a stuck model, and stops.
+            *[
+                main_response(calls=[ToolCall(str(i), "list_files", {"query": f"page {i}"})])
+                for i in range(105)
+            ],
             main_response("Inspected the library."),
         ]
     )

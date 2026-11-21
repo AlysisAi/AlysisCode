@@ -19,8 +19,10 @@ from pathlib import Path, PurePosixPath
 from .compute import (
     TRANSFER_CHUNK_BYTES,
     TRANSFER_SECONDS,
+    WORKER_REPLY_BYTES,
     CommandReceipt,
     ComputeError,
+    ComputeReplyTooLarge,
     ComputerIdentity,
     ComputerRef,
     ComputerSpec,
@@ -93,11 +95,12 @@ class DockerComputers:
                                         raise error("Docker file stream exceeded its allowance.")
                                     output_file.write(chunk)
                                     continue
+                                # The worker prints its reply as it is, unescaped.
                                 if (
                                     sum(len(b) for b in buffers.values()) + len(chunk)
-                                    > 2 * 1024 * 1024
+                                    > WORKER_REPLY_BYTES
                                 ):
-                                    raise error(
+                                    raise (ComputeReplyTooLarge if mutation else error)(
                                         "Docker receipt exceeded its allowance; outcome not confirmed."
                                     )
                                 buffers[key.fileobj].extend(chunk)

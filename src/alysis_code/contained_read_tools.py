@@ -12,8 +12,15 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+from . import committed_edits
 from .config import ConfigError
-from .host_read_worker import MAX_REQUEST_BYTES, MAX_RESULT_BYTES, READ_TOOLS, WRITE_TOOLS
+from .host_read_worker import (
+    FILESYSTEM_ONLY_TOOLS,
+    MAX_REQUEST_BYTES,
+    MAX_RESULT_BYTES,
+    READ_TOOLS,
+    WRITE_TOOLS,
+)
 from .host_tool_packet import stage_packet
 from .macos_access import FileIdentity
 from .project_folders import allowed_roots
@@ -104,7 +111,9 @@ class ContainedReadTools:
         if len(raw) > MAX_REQUEST_BYTES:
             raise ConfigError("Contained read request is too large; narrow the request")
         encoded = base64.b64encode(raw).decode("ascii")
-        return self._invoke([encoded], write=False, cancel_check=cancel_check, timeout_s=timeout_s)
+        return self._invoke(
+            [encoded], tool=name, write=False, cancel_check=cancel_check, timeout_s=timeout_s
+        )
 
     def run_write(
         self,
@@ -118,11 +127,19 @@ class ContainedReadTools:
             raise ConfigError("Contained mutations are disabled by the read-only filesystem policy")
         if name not in WRITE_TOOLS:
             raise ConfigError("This tool cannot run in the contained mutation worker")
+        expected = committed_edits.expected_worker_edit(self.root, name, arguments)
         raw = self._request(name, arguments)
         with stage_packet(self.root, raw) as packet:
             # Use cwd-relative names: bubblewrap's primary root is /workspace.
             args = ["--request-file", packet.name, hashlib.sha256(raw).hexdigest()]
-            return self._invoke(args, write=True, cancel_check=cancel_check, timeout_s=timeout_s)
+            return self._invoke(
+                args,
+                tool=name,
+                write=True,
+                cancel_check=cancel_check,
+                timeout_s=timeout_s,
+                expected_edit=expected,
+            )
 
     def _request(self, name: str, arguments: dict[str, Any]) -> bytes:
         request: dict[str, Any] = {"tool": name, "arguments": arguments}
@@ -136,7 +153,14 @@ class ContainedReadTools:
         return json.dumps(request, ensure_ascii=True).encode()
 
     def _invoke(
-        self, arguments: list[str], *, write: bool, cancel_check, timeout_s: int
+        self,
+        arguments: list[str],
+        *,
+        tool: str,
+        write: bool,
+        cancel_check,
+        timeout_s: int,
+        expected_edit: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         choice = select_shell_sandbox_backend(self.settings)
         if choice.backend not in {"windows-mxc", "windows-native", "bwrap", "seatbelt"}:
@@ -159,7 +183,11 @@ class ContainedReadTools:
             if run_worker is None:
                 raise ConfigError("The selected sandbox cannot directly launch the file worker.")
             completed = run_worker(
-                root=self.root, arguments=arguments, timeout_s=budget, cancel_check=cancel_check
+                root=self.root,
+                arguments=arguments,
+                tool=tool,
+                timeout_s=budget,
+                cancel_check=cancel_check,
             )
         else:
             argv = [*_worker_argv(), *arguments]
@@ -176,6 +204,11 @@ class ContainedReadTools:
                 cmd=command,
                 timeout_s=budget,
                 cancel_check=cancel_check,
+                **(
+                    {"system_path_only": True}
+                    if choice.backend == "bwrap" and tool in FILESYSTEM_ONLY_TOOLS
+                    else {}
+                ),
             )
         if len(completed.stdout) > MAX_RESULT_BYTES + 256:
             raise ConfigError("Contained read returned an oversized result")
@@ -209,4 +242,6 @@ class ContainedReadTools:
             ):
                 raise ContainedGitDirectoryError(str(detail)[:2000])
             raise ConfigError(f"Contained read refused: {str(detail)[:2000]}")
+        if expected_edit is not None:
+            committed_edits.relay_worker(self.root, expected_edit, envelope.get("committed_edit"))
         return envelope["result"]

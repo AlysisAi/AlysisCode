@@ -123,14 +123,11 @@ def test_alysis_prompt_declares_product_identity_and_provenance() -> None:
             "If asked what Alysis AI is",
             "alysiscode.com",
             "canonical source for Alysis Code-specific product information",
-            "affordable AI tools and Gen AI services",
-            "decentralized compute network",
-            (
-                "do not invent team, legal, funding, roadmap, tokenomics, pricing, customer, "
-                "or launch details."
-            ),
-            "Do not claim to be Claude, Anthropic, OpenAI, ChatGPT, Codex",
-            "made by Anthropic/OpenAI",
+            "an AI lab that builds agents",
+            "Alysis Work, Alysis Code and Alysis Owls",
+            "Do not invent team, legal, funding, roadmap, pricing, customer, or launch details.",
+            "Do not claim to be another company's model or assistant",
+            "made by the company behind the configured model or API provider",
             "underlying model/provider is unknown in trusted session context",
             "distinguish it from Alysis Code's product identity",
         ],
