@@ -17,6 +17,8 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from . import charts
+
 MAX_SHEETS = 16
 MAX_CELLS = 50_000
 MAX_ROWS = 10_000
@@ -90,6 +92,32 @@ GUIDE = {
     "format": "bold/italic/wrap booleans; font_color/fill #RRGGBB; number_format text; align left/center/right",
     "table": "{range: 'A1:B3', name: 'Revenue', style?: 'Table Style Medium 2'}; first row must be distinct literal text headers",
     "page_setup": "{orientation?: 'portrait'|'landscape', fit_to_pages?: [width, height], print_area?: 'A1:J20'}; 0 means unlimited pages on that axis, 1..10 limits pages. Wrap long notes and inspect rendered pages; scaling alone does not prove legibility.",
+    "chart": {
+        "shape": "A sheet's charts: [chart, ...]; each chart may add anchor: 'H2' (its top-left "
+        "cell; by default charts sit beside the sheet's data). "
+        + charts.SHAPE
+        + " In a workbook, categories and every series' values may instead be cell ranges such "
+        "as 'A2:A9' or \"'Other sheet'!B2:B9\" (one row or column; value cells hold numbers or "
+        "formulas). Listed values are written beside the sheet's data and the chart refers to "
+        "those cells. Unless page_setup sets fit_to_pages or print_area, a sheet with charts "
+        "prints landscape (or its orientation), scaled to the page width, and no page cuts a "
+        "chart.",
+        "example": {
+            "name": "Αιτήματα",
+            "rows": [["Εβδομάδα", "Δίκτυο", "Email"], ["Εβδ. 1", 12, 5], ["Εβδ. 2", 9, 7]],
+            "charts": [
+                {
+                    "chart": "line",
+                    "title": "Αιτήματα ανά εβδομάδα",
+                    "categories": "A2:A3",
+                    "series": [
+                        {"name": "Δίκτυο", "values": "B2:B3"},
+                        {"name": "Email", "values": "C2:C3"},
+                    ],
+                }
+            ],
+        },
+    },
     "edit": "{expected_source_sha256: inspect.source_sha256, changes: [{sheet, cell: 'B2', value OR formula, format?}]}",
     "limits": {
         "sheets": MAX_SHEETS,
@@ -104,7 +132,7 @@ GUIDE = {
     "limitations": [
         "Use the separate recalculate command for real calculation when LibreOffice is available. Inspection alone does not trust caches. No macros or external workbook references.",
         "Formula references use local A1 ranges and English functions; named/structured/array formulas are unsupported.",
-        "Edit only simple XLSX workbooks. Unsupported parts, rich text, protected sheets, validation and conditional formatting are rejected.",
+        "Edit only simple XLSX workbooks. Unsupported parts, charts, rich text, protected sheets, validation and conditional formatting are rejected; create a workbook with charts again to change its data.",
         "Edits change existing sheet cells; no row/column insertion, renaming or formula-reference rewriting.",
         "Inspection returns bounded cell text previews, complete counts and an editability report; caches are not returned.",
     ],
@@ -314,7 +342,7 @@ def _create_spec(spec: dict) -> list[dict]:
     if not isinstance(sheets, list) or not 1 <= len(sheets) <= MAX_SHEETS:
         raise ValueError(f"sheets must contain between 1 and {MAX_SHEETS} worksheets")
     result, names, table_names = [], set(), set()
-    total_area = total_text = 0
+    total_area = total_text = chart_count = 0
     for sheet in sheets:
         _object(
             sheet,
@@ -327,6 +355,7 @@ def _create_spec(spec: dict) -> list[dict]:
                 "freeze_panes",
                 "tables",
                 "page_setup",
+                "charts",
             },
             "sheet",
         )
@@ -351,16 +380,6 @@ def _create_spec(spec: dict) -> list[dict]:
             if pos in cells:
                 raise ValueError("cells must not overlap rows; specify each cell once")
             cells[pos] = _cell(value)
-        area = _bounded(cells)
-        total_area += area[0] * area[1]
-        total_text += sum(
-            len(v.encode("utf-8")) for v, _, _ in cells.values() if isinstance(v, str)
-        )
-        if total_area > MAX_CELLS or total_text > MAX_TEXT:
-            raise ValueError("Workbook exceeds total cell/text limits")
-        header = sheet.get("header_row", False)
-        if not isinstance(header, bool):
-            raise ValueError("header_row must be boolean")
         widths = sheet.get("column_widths", [])
         if (
             not isinstance(widths, list)
@@ -371,6 +390,61 @@ def _create_spec(spec: dict) -> list[dict]:
             )
         ):
             raise ValueError("column_widths must be a list of widths from 1 to 100")
+        area = _bounded(cells)
+        raw_charts = sheet.get("charts", [])
+        if not isinstance(raw_charts, list):
+            raise ValueError("charts must be a list of chart objects")
+        sheet_charts, chart_widths = [], {}
+        # Listed chart values go beside the sheet's cells, one blank column apart.
+        next_column = area[1] + 2 if area[1] else 1
+        for number, item in enumerate(raw_charts, 1):
+            chart_count += 1
+            if chart_count > charts.MAX_CHARTS:
+                raise ValueError(f"A workbook can hold at most {charts.MAX_CHARTS} charts")
+            where = f"Sheet {name!r} chart {number}"
+            if not isinstance(item, dict):
+                raise ValueError(f"{where} must be an object")
+            chart = charts.parse(
+                {key: value for key, value in item.items() if key != "anchor"}, where, ranges=True
+            )
+            anchor = _position(item["anchor"]) if "anchor" in item else None
+            data = None
+            if chart.inline:
+                last_row = 1 + len(chart.categories)
+                last_column = next_column + len(chart.series)
+                if last_column > MAX_COLUMNS:
+                    raise ValueError(
+                        f"{where}: its values do not fit beside the sheet's cells; put them in "
+                        "the sheet and give cell ranges"
+                    )
+                data = (1, next_column)
+                if next_column > len(widths):
+                    longest = max(
+                        len(str(item)) for item in (chart.x_title or "", *chart.categories)
+                    )
+                    chart_widths[next_column] = min(40, max(10, longest + 2))
+                next_column = last_column + 2
+                area = (max(area[0], last_row), max(area[1], last_column))
+                total_text += sum(
+                    len(text.encode("utf-8"))
+                    for text in (
+                        chart.x_title or "",
+                        *(item.name for item in chart.series),
+                        *(c for c in chart.categories if isinstance(c, str)),
+                    )
+                )
+            sheet_charts.append({"chart": chart, "anchor": anchor, "data": data, "where": where})
+        if area[0] * area[1] > MAX_CELLS:
+            raise ValueError(f"Sheet bounding area exceeds {MAX_CELLS} cells")
+        total_area += area[0] * area[1]
+        total_text += sum(
+            len(v.encode("utf-8")) for v, _, _ in cells.values() if isinstance(v, str)
+        )
+        if total_area > MAX_CELLS or total_text > MAX_TEXT:
+            raise ValueError("Workbook exceeds total cell/text limits")
+        header = sheet.get("header_row", False)
+        if not isinstance(header, bool):
+            raise ValueError("header_row must be boolean")
         freeze = _position(sheet["freeze_panes"]) if "freeze_panes" in sheet else None
         page_setup = _object(
             sheet.get("page_setup", {}), {"orientation", "fit_to_pages", "print_area"}, "page_setup"
@@ -447,13 +521,195 @@ def _create_spec(spec: dict) -> list[dict]:
                 "header": header,
                 "tables": normalized_tables,
                 "page_setup": page_setup,
+                "charts": sheet_charts,
+                "chart_column": next_column,
+                "chart_widths": chart_widths,
             }
         )
     for sheet in result:
         for value, formula, _ in sheet["cells"].values():
             if formula:
                 _formula_sheets(value, names)
+    _chart_ranges(result)
     return result
+
+
+def _chart_range(cell_range, sheet: dict, lookup: dict, where: str, what: str):
+    """A chart range's sheet and its cells, in order; one row or one column."""
+    target = lookup.get((cell_range.sheet or sheet["name"]).casefold())
+    if target is None:
+        raise ValueError(f"{where}: {what} {cell_range.text} names a sheet the workbook lacks")
+    try:
+        (r1, c1), (r2, c2) = _position(cell_range.first), _position(cell_range.last)
+    except ValueError as error:
+        raise ValueError(f"{where}: {what} {cell_range.text}: {error}") from None
+    (r1, r2), (c1, c2) = sorted((r1, r2)), sorted((c1, c2))
+    if r1 != r2 and c1 != c2:
+        raise ValueError(f"{where}: {what} {cell_range.text} must be a single row or column")
+    cells = [(r, c) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)]
+    if len(cells) > charts.MAX_POINTS:
+        raise ValueError(
+            f"{where}: {what} {cell_range.text} has more than {charts.MAX_POINTS} cells"
+        )
+    return target, (r1, c1, r2, c2), cells
+
+
+def _chart_numbers(target: dict, cells: list, where: str, what: str, *, pie: bool) -> None:
+    """Cells a chart plots as numbers hold numbers or formulas (blank cells are gaps)."""
+    from xlsxwriter.utility import xl_rowcol_to_cell
+
+    for r, c in cells:
+        value, formula, _ = target["cells"].get((r, c), (None, False, {}))
+        if formula or value is None:
+            continue
+        reference = xl_rowcol_to_cell(r - 1, c - 1)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"{where}: {what} cell {reference} is not a number; the cells a chart plots "
+                "must hold numbers or formulas"
+            )
+        if pie and value < 0:
+            raise ValueError(
+                f"{where}: a pie chart's values must not be negative ({reference} is {value})"
+            )
+
+
+def _chart_ranges(sheets: list[dict]) -> None:
+    """Resolve each ranged chart's cells, and place every chart and size it."""
+    lookup = {sheet["name"].casefold(): sheet for sheet in sheets}
+    for sheet in sheets:
+        for entry in sheet["charts"]:
+            chart, where = entry["chart"], entry["where"]
+            if chart.inline:
+                points = len(chart.categories)
+            else:
+                target, bounds, cells = _chart_range(
+                    chart.categories, sheet, lookup, where, "categories"
+                )
+                if chart.chart == "scatter":
+                    _chart_numbers(target, cells, where, "categories", pie=False)
+                entry["categories"] = (target["name"], bounds)
+                points = len(cells)
+                entry["values"] = []
+                for item in chart.series:
+                    target, bounds, cells = _chart_range(
+                        item.values, sheet, lookup, where, f"series {item.name!r} values"
+                    )
+                    if len(cells) != points:
+                        raise ValueError(
+                            f"{where}: series {item.name!r} has {len(cells)} values for "
+                            f"{points} categories; give ranges of the same length"
+                        )
+                    _chart_numbers(
+                        target,
+                        cells,
+                        where,
+                        f"series {item.name!r} value",
+                        pie=chart.chart == "pie",
+                    )
+                    entry["values"].append((target["name"], bounds))
+                if points * len(chart.series) > charts.MAX_VALUES:
+                    raise ValueError(
+                        f"{where}: a chart holds at most {charts.MAX_VALUES} values in all its "
+                        "series"
+                    )
+            # 600 x 360 pixels; horizontal bars get about 24 pixels per category.
+            height = 360
+            if chart.chart == "bar":
+                height = max(height, 100 + 24 * points)
+            entry["size"] = (CHART_WIDTH, height)
+        if sheet["charts"]:
+            _print_layout(sheet)
+
+
+# Default column width and row height in pixels, and the printable area of a page at 96
+# pixels per inch: the smaller of A4 and Letter, less the default margins (0.7 inch at the
+# sides, 0.75 inch at the top and bottom).
+COLUMN_PIXELS = 64
+ROW_PIXELS = 20
+CHART_WIDTH = 600
+PRINTABLE = {"landscape": (921, 650), "portrait": (659, 912)}
+# A column width counts characters of the workbook font's widest digit: 7 pixels for its
+# 11 point Calibri in Excel. A renderer without that font draws every column with the font it
+# substitutes, whose digits can be up to 0.64 em wide (DejaVu Sans, Verdana): about 9.4 pixels.
+EXCEL_DIGIT = 7
+WIDEST_DIGIT = 0.64 * 11 * 96 / 72
+DEFAULT_COLUMN_CHARACTERS = 8.43
+
+
+def _column_pixels(sheet: dict, column: int, digit: float = EXCEL_DIGIT) -> int:
+    """A column's width in pixels, as a renderer whose font has digits `digit` pixels wide
+    sizes a width given in characters (Excel's own: 7)."""
+    width = sheet["chart_widths"].get(column)
+    if width is None and column <= len(sheet["widths"]):
+        width = sheet["widths"][column - 1]
+    if width is None:
+        width = DEFAULT_COLUMN_CHARACTERS
+    return int(width * (digit + 5) + 0.5) if width < 1 else int(width * digit + 0.5) + 5
+
+
+def _chart_edge(sheet: dict, column: int, width: int, digit: float = EXCEL_DIGIT) -> int:
+    """Where the last column a chart covers ends, in pixels from the sheet's left edge, as a
+    renderer whose font has digits `digit` pixels wide draws the sheet: printing breaks pages
+    between whole columns, and a chart keeps the columns Excel's widths give it."""
+    left = sum(_column_pixels(sheet, c) for c in range(1, column))
+    edge = left
+    drawn = sum(_column_pixels(sheet, c, digit) for c in range(1, column))
+    while edge < left + width:
+        edge += _column_pixels(sheet, column)
+        drawn += _column_pixels(sheet, column, digit)
+        column += 1
+    return drawn
+
+
+def _print_layout(sheet: dict) -> None:
+    """Place the sheet's charts so that none is cut by a page when printed.
+
+    Charts stack beside the data. Unless the sheet sets its own fit or print area, the page
+    is scaled so the sheet's width fits it, and a chart that would cross a page starts the
+    next one (with a page break there, which a scaled page honours).
+    """
+    setup = sheet["page_setup"]
+    own_layout = "fit_to_pages" in setup or "print_area" in setup
+    orientation = setup.get("orientation", "landscape")
+    # The page is scaled for the widest columns a renderer may draw, so no font it uses in
+    # place of the workbook's pushes a chart past the page's edge.
+    right = _chart_edge(sheet, sheet["chart_column"], CHART_WIDTH, WIDEST_DIGIT)
+    for entry in sheet["charts"]:
+        if entry["anchor"] is not None:
+            right = max(
+                right, _chart_edge(sheet, entry["anchor"][1], entry["size"][0], WIDEST_DIGIT)
+            )
+    page_rows = None
+    if not own_layout:
+        # A small reserve keeps a page's content inside what a renderer fits on it.
+        width, height = (size * 0.95 for size in PRINTABLE[orientation])
+        scale = max(10, min(100, int(100 * width / right)))
+        page_rows = int(height * 100 / scale) // ROW_PIXELS
+        sheet["print"] = {"orientation": orientation, "scale": scale, "breaks": []}
+    row = 1
+    for entry in sheet["charts"]:
+        if page_rows:
+            # Never taller than a page, with a free row at either edge.
+            entry["size"] = (
+                entry["size"][0],
+                min(entry["size"][1], (page_rows - 3) * ROW_PIXELS),
+            )
+        if entry["anchor"] is not None:
+            continue
+        rows = math.ceil(entry["size"][1] / ROW_PIXELS) + 1
+        if page_rows:
+            offset = (row - 1) % page_rows
+            if offset + rows > page_rows:
+                row, offset = row + page_rows - offset, 0
+            if offset == 0 and row > 1:
+                # A row below the page's top edge: a renderer also draws an object that
+                # touches a page edge on the page before it.
+                row += 1
+        entry["anchor"] = (row, sheet["chart_column"])
+        row += rows + 1
+    if page_rows:
+        sheet["print"]["breaks"] = list(range(page_rows, row - 1, page_rows))
 
 
 def _formula_sheets(value: str, names: set[str]) -> None:
@@ -521,6 +777,14 @@ def create(spec: dict, output: Path, workspace: Path) -> dict:
                         ws.write_blank(r - 1, c - 1, None, fmt)
                     else:
                         ws.write(r - 1, c - 1, value, fmt)
+                for entry in sheet["charts"]:
+                    _write_chart(book, ws, sheet, entry)
+                if "print" in sheet:
+                    if sheet["print"]["orientation"] == "landscape":
+                        ws.set_landscape()
+                    ws.set_print_scale(sheet["print"]["scale"])
+                    if sheet["print"]["breaks"]:
+                        ws.set_h_pagebreaks(sheet["print"]["breaks"])
                 for table in sheet["tables"]:
                     r1, c1, r2, c2 = table["bounds"]
                     ws.add_table(
@@ -535,6 +799,80 @@ def create(spec: dict, output: Path, workspace: Path) -> dict:
                         },
                     )
     return {**inspect(output), "status": "created"}
+
+
+def _literal_text(chart) -> None:
+    """Keep chart text literal: XlsxWriter otherwise reads text like 'Q1!A1' as a cell."""
+    resolve = chart._process_names
+    chart._process_names = lambda name, formula: (
+        (name, formula) if isinstance(name, str) else resolve(name, formula)
+    )
+
+
+def _write_chart(book, ws, sheet: dict, entry: dict) -> None:
+    """A native Excel chart; listed values are written to cells first so it refers to them."""
+    chart, name = entry["chart"], sheet["name"]
+    number_format = (
+        book.add_format({"num_format": chart.number_format}) if chart.number_format else None
+    )
+    if chart.inline:
+        top, left = entry["data"][0] - 1, entry["data"][1] - 1
+        bold = book.add_format({"bold": True})
+        count = len(chart.categories)
+        if chart.x_title:
+            ws.write_string(top, left, chart.x_title, bold)
+        for row, category in enumerate(chart.categories, top + 1):
+            if isinstance(category, str):
+                ws.write_string(row, left, category)
+            else:
+                ws.write_number(row, left, category)
+        names, values = [], []
+        for column, item in enumerate(chart.series, left + 1):
+            ws.write_string(top, column, item.name, bold)
+            for row, value in enumerate(item.values, top + 1):
+                ws.write_number(row, column, value, number_format)
+            names.append([name, top, column])
+            values.append([name, top + 1, column, top + count, column])
+        categories = [name, top + 1, left, top + count, left]
+        if left + 1 in sheet["chart_widths"]:
+            ws.set_column(left, left, sheet["chart_widths"][left + 1])
+    else:
+
+        def cells(reference):
+            target, (r1, c1, r2, c2) = reference
+            return [target, r1 - 1, c1 - 1, r2 - 1, c2 - 1]
+
+        categories = cells(entry["categories"])
+        values = [cells(reference) for reference in entry["values"]]
+        names = [item.name for item in chart.series]
+    plot = book.add_chart({"type": chart.chart})
+    _literal_text(plot)
+    for series_name, series_values in zip(names, values, strict=True):
+        options = {"name": series_name, "categories": categories, "values": series_values}
+        if chart.chart == "line":
+            options["marker"] = {"type": "automatic"}
+        elif chart.chart == "scatter":
+            options["marker"] = {"type": "circle", "size": 7}
+        elif chart.chart == "pie":
+            options["data_labels"] = {"percentage": True}
+        plot.add_series(options)
+    plot.set_title({"name": chart.title} if chart.title else {"none": True})
+    plot.set_legend({"position": "bottom"} if chart.legend else {"none": True})
+    if chart.chart != "pie":
+        category_axis = {"name": chart.x_title} if chart.x_title else {}
+        value_axis = {"name": chart.y_title} if chart.y_title else {}
+        if chart.number_format:
+            value_axis["num_format"] = chart.number_format
+        if chart.chart == "bar":
+            # XlsxWriter's y axis is the vertical one: here the categories, read from the top.
+            plot.set_y_axis({**category_axis, "reverse": True})
+            plot.set_x_axis(value_axis)
+        else:
+            plot.set_x_axis(category_axis)
+            plot.set_y_axis(value_axis)
+    plot.set_size({"width": entry["size"][0], "height": entry["size"][1]})
+    row, column = entry["anchor"]
+    ws.insert_chart(row - 1, column - 1, plot, {"description": chart.title} if chart.title else {})
 
 
 def _snapshot(source: Path) -> bytes:
@@ -561,6 +899,11 @@ def _package(data: bytes) -> list[str]:
                 if info.flag_bits & 1:
                     raise ValueError("Encrypted workbook parts are unsupported")
                 name = info.filename
+                if re.fullmatch(r"xl/charts/chart[0-9]+\.xml", name):
+                    blockers.add(
+                        "Charts are not kept by cell edits; create the workbook again with the "
+                        "changed values"
+                    )
                 if not _PARTS.fullmatch(name):
                     blockers.add(f"Unsupported package part: {name}")
                 if not name.endswith((".xml", ".rels")):
@@ -704,6 +1047,7 @@ def _json_value(value):
 def _inspection(data: bytes, book, blockers: list[str]) -> dict:
     preview_left, text_left = MAX_PREVIEW_CELLS, MAX_PREVIEW_TEXT
     sheets, total_cells, formula_count = [], 0, 0
+    sheet_charts = charts.xlsx_charts(data)
     for ws in book.worksheets:
         # Preflight bounded both dimensions and area; iter_rows cannot expand an
         # adversarial A1:XFD1048576 worksheet here.
@@ -742,6 +1086,7 @@ def _inspection(data: bytes, book, blockers: list[str]) -> dict:
                 "cells": cells,
                 "cells_truncated": len(cells) < count,
                 "tables": [{"name": t.name, "range": t.ref} for t in ws.tables.values()],
+                "charts": sheet_charts.get(ws.title, []),
             }
         )
         total_cells += count

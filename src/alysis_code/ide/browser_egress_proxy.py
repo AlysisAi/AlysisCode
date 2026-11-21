@@ -5,6 +5,8 @@ requests to a loopback listener; this module resolves each destination, rejects
 the entire answer set when any address is non-public, and connects to a captured
 numeric address.  The hostname is never passed to the dialer, closing the DNS
 validation-to-connect race that URL-only request interception cannot close.
+Other owned callers (an owl computer's package installs) may instead listen on a
+private Unix socket and admit only TLS tunnels whose server name is the admitted host.
 """
 
 from __future__ import annotations
@@ -12,10 +14,12 @@ from __future__ import annotations
 import base64
 import hmac
 import ipaddress
+import os
 import re
 import secrets
 import select
 import socket
+import stat
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -63,6 +67,9 @@ _NAT64_NETWORKS = (
     ipaddress.ip_network("64:ff9b:1::/48"),
 )
 _RELAY_CHUNK_BYTES = 64 * 1024
+# A TLS ClientHello, post-quantum key shares included, is a few KiB; refuse anything far larger.
+_MAX_CLIENT_HELLO_BYTES = 64 * 1024
+_MAX_TLS_RECORD_BYTES = 16 * 1024
 _POLL_SECONDS = 0.1
 
 
@@ -176,9 +183,41 @@ class BrowserEgressProxy:
         allowed_hosts: frozenset[str] | None = None,
         allowed_private_endpoints: frozenset[tuple[str, int]] = frozenset(),
         require_authentication: bool = False,
+        tunnel_ports: frozenset[int] | None = None,
+        require_tunnel_sni: bool = False,
+        unix_socket_path: str | None = None,
     ) -> None:
         if not isinstance(require_authentication, bool):
             raise BrowserEgressProxySecurityError("Invalid proxy authentication policy.")
+        # tunnel_ports admits only CONNECT tunnels to these ports (no plain-HTTP forwarding).
+        # require_tunnel_sni: a tunnel's first bytes must be a TLS ClientHello naming exactly
+        # the CONNECT host, so a tunnel to an admitted host cannot ask its server for another.
+        if tunnel_ports is not None and (
+            not isinstance(tunnel_ports, frozenset)
+            or not tunnel_ports
+            or any(
+                isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
+                for port in tunnel_ports
+            )
+        ):
+            raise BrowserEgressProxySecurityError("Invalid proxy tunnel port policy.")
+        if not isinstance(require_tunnel_sni, bool) or (
+            require_tunnel_sni and tunnel_ports is None
+        ):
+            raise BrowserEgressProxySecurityError("Invalid proxy tunnel name policy.")
+        # An owned Unix socket instead of a loopback port: only processes that can reach the
+        # socket file (its private directory, or a namespace it is bound into) can connect.
+        if unix_socket_path is not None and (
+            not isinstance(unix_socket_path, str)
+            or not unix_socket_path.startswith("/")
+            or not 1 < len(unix_socket_path.encode()) <= 100
+            or "\0" in unix_socket_path
+        ):
+            raise BrowserEgressProxySecurityError("Invalid proxy socket path.")
+        self._tunnel_ports = tunnel_ports
+        self._require_tunnel_sni = require_tunnel_sni
+        self._unix_socket_path = unix_socket_path
+        self._unix_socket_identity: tuple[int, int] | None = None
         # A loopback port is reachable by other commands with local-preview
         # permission. Bind access to this invocation with an in-memory secret.
         self._credential = "alysis:" + secrets.token_urlsafe(32) if require_authentication else None
@@ -261,7 +300,13 @@ class BrowserEgressProxy:
             return self._port
 
     @property
+    def unix_socket_path(self) -> str | None:
+        return self._unix_socket_path
+
+    @property
     def proxy_url(self) -> str:
+        if self._unix_socket_path is not None:
+            raise BrowserEgressProxyError("This proxy listens on a Unix socket, not a URL.")
         userinfo = self._credential + "@" if self._credential is not None else ""
         return f"http://{userinfo}{self.host}:{self.port}"
 
@@ -288,24 +333,32 @@ class BrowserEgressProxy:
                 raise BrowserEgressProxyError("Browser egress proxy is already closed.")
             if self._started:
                 return self
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                    listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-                listener.bind((self.host, 0))
-                listener.listen(self._limits.max_connections)
-                listener.settimeout(_POLL_SECONDS)
-                port = listener.getsockname()[1]
-                if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-                    raise OSError("invalid listener port")
-            except BaseException as exc:
-                listener.close()
-                raise BrowserEgressProxyError(
-                    "Browser egress proxy could not bind its loopback listener."
-                ) from exc
+            if self._unix_socket_path is not None:
+                listener = self._bind_unix_socket(self._unix_socket_path)
+                port = 0
+            else:
+                listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                        listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    listener.bind((self.host, 0))
+                    listener.listen(self._limits.max_connections)
+                    listener.settimeout(_POLL_SECONDS)
+                    port = listener.getsockname()[1]
+                    if (
+                        isinstance(port, bool)
+                        or not isinstance(port, int)
+                        or not 1 <= port <= 65535
+                    ):
+                        raise OSError("invalid listener port")
+                except BaseException as exc:
+                    listener.close()
+                    raise BrowserEgressProxyError(
+                        "Browser egress proxy could not bind its loopback listener."
+                    ) from exc
+                self._denied_endpoints.add((self.host, port))
             self._listener = listener
             self._port = port
-            self._denied_endpoints.add((self.host, port))
             self._started = True
             thread = threading.Thread(
                 target=self._accept_loop,
@@ -319,6 +372,7 @@ class BrowserEgressProxy:
                 self._started = False
                 self._listener = None
                 listener.close()
+                self._remove_unix_socket()
                 raise BrowserEgressProxyError(
                     "Browser egress proxy listener could not start."
                 ) from exc
@@ -335,6 +389,36 @@ class BrowserEgressProxy:
             ) from exc
         with self._lock:
             self._denied_endpoints.add((normalized_host, normalized_port))
+
+    def _bind_unix_socket(self, path: str) -> socket.socket:
+        if not hasattr(socket, "AF_UNIX"):
+            raise BrowserEgressProxyError("This system has no Unix sockets for the proxy.")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            # A new name in an existing directory: never replace or follow another file.
+            listener.bind(path)
+            os.chmod(path, 0o600)
+            info = os.lstat(path)
+            if not stat.S_ISSOCK(info.st_mode):
+                raise OSError("proxy socket was replaced")
+            self._unix_socket_identity = (info.st_dev, info.st_ino)
+            listener.listen(self._limits.max_connections)
+            listener.settimeout(_POLL_SECONDS)
+        except BaseException as exc:
+            listener.close()
+            raise BrowserEgressProxyError(
+                "Browser egress proxy could not bind its socket listener."
+            ) from exc
+        return listener
+
+    def _remove_unix_socket(self) -> None:
+        identity = self._unix_socket_identity
+        if self._unix_socket_path is None or identity is None:
+            return
+        with suppress(OSError):
+            info = os.lstat(self._unix_socket_path)
+            if (info.st_dev, info.st_ino) == identity:
+                os.unlink(self._unix_socket_path)
 
     def close(self, *, timeout: float = 2.0) -> None:
         if (
@@ -353,6 +437,7 @@ class BrowserEgressProxy:
                 sockets = tuple(self._active_sockets)
                 listener_thread = self._listener_thread
             _close_socket(listener)
+            self._remove_unix_socket()
             for item in sockets:
                 _close_socket(item)
             current = threading.current_thread()
@@ -410,7 +495,8 @@ class BrowserEgressProxy:
                 self._fail_proxy("Browser egress proxy listener failed.")
                 return
             peer_host = peer[0] if isinstance(peer, tuple) and peer else None
-            if peer_host != self.host:
+            # A Unix socket's peers are whoever can reach its file; a TCP peer must be loopback.
+            if self._unix_socket_path is None and peer_host != self.host:
                 _close_socket(client)
                 continue
             client.settimeout(_POLL_SECONDS)
@@ -458,6 +544,10 @@ class BrowserEgressProxy:
                 and (parsed.host, parsed.port) not in self._allowed_private_endpoints
             ):
                 raise _RequestFailure(403)
+            if self._tunnel_ports is not None and (
+                not parsed.connect_tunnel or parsed.port not in self._tunnel_ports
+            ):
+                raise _RequestFailure(403)
             addresses = self._resolve_public(
                 parsed.host,
                 parsed.port,
@@ -470,13 +560,19 @@ class BrowserEgressProxy:
                 self._active_sockets.add(upstream)
             upstream.settimeout(_POLL_SECONDS)
             transferred = 0
+            buffered = parsed.buffered_body
             if parsed.connect_tunnel:
                 response = b"HTTP/1.1 200 Connection Established\r\n\r\n"
                 transferred = self._send_counted(client, response, transferred)
+                if self._require_tunnel_sni:
+                    # Nothing reaches the server until the client names the admitted host.
+                    buffered = self._read_client_hello(client, buffered)
+                    if _client_hello_server_name(buffered) != parsed.host:
+                        raise _RequestFailure(403)
             elif parsed.upstream_header is not None:
                 transferred = self._send_counted(upstream, parsed.upstream_header, transferred)
-            if parsed.buffered_body:
-                transferred = self._send_counted(upstream, parsed.buffered_body, transferred)
+            if buffered:
+                transferred = self._send_counted(upstream, buffered, transferred)
             self._relay(client, upstream, transferred=transferred)
         except _RequestFailure as exc:
             if upstream is None:
@@ -516,6 +612,29 @@ class BrowserEgressProxy:
                 self._helpers.discard(helper)
             raise
         return helper
+
+    def _read_client_hello(self, client: socket.socket, initial: bytes) -> bytes:
+        """The client's first bytes in a tunnel, up to its complete first TLS handshake message."""
+
+        deadline = time.monotonic() + self._limits.header_timeout_seconds
+        data = bytearray(initial)
+        while _client_hello_message(bytes(data)) is None:
+            if len(data) > _MAX_CLIENT_HELLO_BYTES + 4096:
+                raise _RequestFailure(403)
+            if self._stop.is_set():
+                raise _RequestFailure(503)
+            if time.monotonic() >= deadline:
+                raise _RequestFailure(408)
+            try:
+                chunk = client.recv(4096)
+            except TimeoutError:
+                continue
+            except OSError as exc:
+                raise _RequestFailure(400) from exc
+            if not chunk:
+                raise _RequestFailure(400)
+            data.extend(chunk)
+        return bytes(data)
 
     def _read_header(self, client: socket.socket) -> tuple[bytes, bytes]:
         deadline = time.monotonic() + self._limits.header_timeout_seconds
@@ -953,6 +1072,97 @@ def _parse_request(
         False,
         authorization,
     )
+
+
+def _client_hello_message(data: bytes) -> bytes | None:
+    """The body of the first TLS handshake message in ``data``, None while it is incomplete.
+
+    Anything other than handshake records carrying a ClientHello is refused."""
+
+    payload = bytearray()
+    offset = 0
+    while True:
+        if len(payload) >= 4:
+            size = int.from_bytes(payload[1:4], "big")
+            if payload[0] != 1 or size > _MAX_CLIENT_HELLO_BYTES:
+                raise _RequestFailure(403)
+            if len(payload) >= 4 + size:
+                return bytes(payload[4 : 4 + size])
+        if len(data) < offset + 5:
+            return None
+        length = int.from_bytes(data[offset + 3 : offset + 5], "big")
+        if data[offset] != 0x16 or data[offset + 1] != 3 or not 0 < length <= _MAX_TLS_RECORD_BYTES:
+            raise _RequestFailure(403)
+        if len(data) < offset + 5 + length:
+            return None
+        payload.extend(data[offset + 5 : offset + 5 + length])
+        offset += 5 + length
+
+
+def _client_hello_server_name(data: bytes) -> str | None:
+    """The one host name a complete ClientHello asks for (RFC 6066 server_name), normalized
+    like a CONNECT host; None when it names none, several, or is malformed."""
+
+    try:
+        message = _client_hello_message(data)
+    except _RequestFailure:
+        return None
+    if message is None:
+        return None
+
+    class Reader:
+        def __init__(self, value: bytes) -> None:
+            self.value, self.offset = value, 0
+
+        def take(self, size: int) -> bytes:
+            if size < 0 or self.offset + size > len(self.value):
+                raise ValueError("truncated")
+            item = self.value[self.offset : self.offset + size]
+            self.offset += size
+            return item
+
+        def number(self, size: int) -> int:
+            return int.from_bytes(self.take(size), "big")
+
+        def vector(self, size: int) -> bytes:
+            return self.take(self.number(size))
+
+        @property
+        def done(self) -> bool:
+            return self.offset == len(self.value)
+
+    try:
+        hello = Reader(message)
+        hello.take(2 + 32)  # legacy version and random
+        hello.vector(1)  # session id
+        hello.vector(2)  # cipher suites
+        hello.vector(1)  # compression methods
+        extensions = Reader(hello.vector(2))
+        if not hello.done:
+            return None
+        names: list[bytes] = []
+        seen: set[int] = set()
+        while not extensions.done:
+            kind = extensions.number(2)
+            body = Reader(extensions.vector(2))
+            if kind in seen:
+                return None
+            seen.add(kind)
+            if kind != 0:
+                continue
+            entries = Reader(body.vector(2))
+            if not body.done:
+                return None
+            while not entries.done:
+                name_type = entries.number(1)
+                name = entries.vector(2)
+                if name_type == 0:
+                    names.append(name)
+        if len(names) != 1:
+            return None
+        return _normalize_host_port(names[0].decode("ascii"), 443)[0]
+    except (ValueError, UnicodeError, _RequestFailure):
+        return None
 
 
 def _connection_tokens(values: list[bytes] | tuple[bytes, ...]) -> set[bytes]:

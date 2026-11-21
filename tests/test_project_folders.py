@@ -242,6 +242,7 @@ def test_contained_worker_receives_scoped_roots_and_cannot_expand_them(
         return code, json.loads(capsys.readouterr().out)
 
     with folder_scope(main, [str(extra)]):
+        assert relative_path(main, main / "nested" / "data.txt") == "nested/data.txt"
         assert relative_path(main, extra / "data.txt") == str(extra / "data.txt")
         read = worker._request("fs_list", {"root_path": str(extra)})
         write = worker._request(

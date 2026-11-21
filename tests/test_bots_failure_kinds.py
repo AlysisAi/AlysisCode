@@ -166,11 +166,15 @@ def test_a_restart_under_a_running_turn_is_a_service_cause(tmp_path):
     chat = store.create_chat("alice", bot["id"], "Συζήτηση")
     store.enqueue("alice", chat["id"], TaskInput(message=GREEK, request_id="request_1"))
     running = store.claim("alice")
+    # It ran a command on the person's computer, so a restart does not start it again.
+    store.event("alice", running["id"], "tool_started", {"name": "local_command"})
+    store.event("alice", running["id"], "tool_completed", {"name": "local_command"})
     assert store.recover("alice") == 1
     task = store.task("alice", running["id"])
     assert task["status"] == "interrupted"
-    assert task["failure"] == {"kind": "service"}
-    assert task["events"][-1]["data"]["failure"] == {"kind": "service"}
+    cause = {"kind": "service", "not_rerun": "acted", "step": "local_command"}
+    assert task["failure"] == cause
+    assert task["events"][-1]["data"]["failure"] == cause
 
 
 def test_classification_reads_structure_never_wording():

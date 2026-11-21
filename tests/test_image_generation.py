@@ -11,6 +11,7 @@ from PIL import Image
 
 from alysis_code.config import AppConfig, ConfigError, set_config_value
 from alysis_code.tools.image_generation import (
+    ImageEndpoint,
     ImageGenerationError,
     _bounded_response,
     generate_images,
@@ -236,6 +237,105 @@ def test_generate_images_redacts_provider_errors(tmp_path: Path) -> None:
 
     assert leaked not in str(raised.value)
     assert "[REDACTED]" in str(raised.value)
+
+
+def test_an_edit_sends_the_picture_to_the_edit_endpoint_of_the_connection(tmp_path: Path) -> None:
+    source = _png_bytes(size=(6, 6))
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request.read()
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        seen["extra"] = request.headers.get("x-connection-header")
+        seen["content_type"] = request.headers.get("content-type")
+        seen["body"] = request.content
+        edited = _png_bytes(size=(9, 9))
+        return httpx.Response(
+            200, json={"data": [{"b64_json": base64.b64encode(edited).decode("ascii")}]}
+        )
+
+    prompt = "Κάνε το φόντο μπλε · 把背景改成蓝色"
+    result = generate_images(
+        root=tmp_path,
+        # No image-specific endpoint or key: the connection's own are used.
+        cfg=_enabled_config(base_url=None),
+        fallback_api_key=None,
+        prompt=prompt,
+        output_path="edited.webp",
+        connection=ImageEndpoint(
+            base_url="https://connection.example.test/v1/",
+            api_key="connection-key",
+            extra_headers={"X-Connection-Header": "kept"},
+        ),
+        source_image=source,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert seen["url"] == "https://connection.example.test/v1/images/edits"
+    assert seen["authorization"] == "Bearer connection-key"
+    assert seen["extra"] == "kept"
+    assert str(seen["content_type"]).startswith("multipart/form-data")
+    body = bytes(seen["body"])  # type: ignore[arg-type]
+    assert source in body and prompt.encode("utf-8") in body
+    assert b'filename="image.png"' in body and b"image/png" in body
+    assert result["images"][0]["format"] == "webp"
+    assert (tmp_path / "edited.webp").is_file()
+
+
+def test_an_edit_refuses_a_source_that_is_not_a_picture_before_any_request(
+    tmp_path: Path,
+) -> None:
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(500)
+
+    with pytest.raises(ImageGenerationError, match="not a readable image"):
+        generate_images(
+            root=tmp_path,
+            cfg=_enabled_config(),
+            fallback_api_key="fixture-only",
+            prompt="Anything",
+            output_path="edited.png",
+            source_image=b"plain text, not a picture",
+            transport=httpx.MockTransport(handler),
+        )
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "code"),
+    [
+        (
+            429,
+            {"error": {"message": "Quota exceeded.", "code": "Insufficient_Quota"}},
+            "insufficient_quota",
+        ),
+        (402, {"error": {"message": "Out of credits.", "code": "plan credits"}}, None),
+        (503, "<html>busy</html>", None),
+    ],
+)
+def test_a_refusal_carries_the_status_and_the_providers_own_code(tmp_path, status, body, code):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        if isinstance(body, dict):
+            return httpx.Response(status, json=body)
+        return httpx.Response(status, text=body)
+
+    with pytest.raises(ImageGenerationError) as raised:
+        generate_images(
+            root=tmp_path,
+            cfg=_enabled_config(),
+            fallback_api_key="fixture-only",
+            prompt="Anything",
+            output_path="refused.png",
+            transport=httpx.MockTransport(handler),
+        )
+    assert raised.value.status_code == status
+    assert raised.value.provider_error_code == code
+    assert f"HTTP {status}" in str(raised.value)
+    assert not (tmp_path / "refused.png").exists()
 
 
 def test_provider_response_body_is_bounded_before_json_parsing() -> None:

@@ -378,6 +378,12 @@ class FileWorkerCommand:
     """A bounded request for the built-in worker. Only the engine selects the program."""
 
     arguments: tuple[str, ...] = field(repr=False)
+    tool: str | None = None
+
+    def uses_only_filesystem(self) -> bool:
+        from .host_read_worker import FILESYSTEM_ONLY_TOOLS
+
+        return self.tool in FILESYSTEM_ONLY_TOOLS
 
     def argv(self) -> list[str]:
         from .contained_read_tools import _worker_argv
@@ -389,6 +395,31 @@ class FileWorkerCommand:
 
     def __str__(self) -> str:
         return "contained file worker"
+
+
+def _filesystem_worker_tools(
+    workspaces: list[Path], configured: list[Path]
+) -> tuple[dict[str, tuple[Path, Path]], list[Path]]:
+    from .windows_toolchain import installed_tools, tool_installation_roots
+
+    required: set[str] = set()
+    excluded: list[Path] = []
+    for name, path in tool_installation_roots().items():
+        # A grant for a tool (or a project containing it) still needs live admission.
+        if any(
+            root.is_relative_to(path) or path.is_relative_to(root) for root in workspaces
+        ) or any(root.is_relative_to(path) for root in configured):
+            required.add(name)
+        elif not path.exists():
+            # A native denial needs an existing object. Preserve ordinary admission
+            # whenever a broader read would cover a slot we cannot explicitly deny.
+            if any(path.is_relative_to(root) for root in configured):
+                return installed_tools(), []
+        else:
+            # An interpreter grant often contains the bundled Git installation. An
+            # explicit read denial keeps its bytes out of this worker's grants.
+            excluded.append(_local_path(path))
+    return installed_tools(only=required) if required else {}, excluded
 
 
 def _powershell_workload(
@@ -535,11 +566,20 @@ def build_request(
             runtime_roots.append(_local_path(runtime))
     from .windows_toolchain import installed_tools, search_directories
 
-    tools = installed_tools()
+    configured = [_local_path(Path(p)) for p in settings.windows_read_roots]
+    excluded_tools: list[Path] = []
+    if (
+        isinstance(cmd, FileWorkerCommand)
+        and cmd.uses_only_filesystem()
+        and not settings.additional_read_files
+    ):
+        tools, excluded_tools = _filesystem_worker_tools(roots, configured)
+    else:
+        tools = installed_tools()
     tool_roots = list(
         dict.fromkeys(
             [
-                *[_local_path(Path(p)) for p in settings.windows_read_roots],
+                *configured,
                 *[directory for _, directory in tools.values()],
             ]
         )
@@ -595,7 +635,9 @@ def build_request(
     permitted_paths = [
         p
         for p in configured_paths
-        if p.is_absolute() and any(p.is_relative_to(r) for r in tool_roots)
+        if p.is_absolute()
+        and any(p.is_relative_to(r) for r in tool_roots)
+        and not any(p.is_relative_to(r) for r in excluded_tools)
     ]
     env["PATH"] = os.pathsep.join(
         map(
@@ -664,6 +706,7 @@ def build_request(
         *protected_files,
         helper_root,
         Path(__file__).parent.resolve(),
+        *(directory for _, directory in tools.values()),
         *runtime_roots,
     ]
     if getattr(sys, "frozen", False):
@@ -694,6 +737,7 @@ def build_request(
                     "Replace it with a copy."
                 )
     deny_write += [str(path) for path in tool_roots if path not in roots]
+    deny_write.extend(map(str, excluded_tools))
     # Protect the trusted engine and helper even when developing their own repository.
     deny_write += [str(helper_root), str(Path(__file__).parent)]
     # The sandbox must not replace dependencies later imported by its host.
@@ -707,6 +751,7 @@ def build_request(
         for name in (".ssh", ".aws", ".azure", ".gnupg", ".alysis", ".sylliptor")
         if (Path.home() / name).exists()
     ]
+    deny_read.extend(map(str, excluded_tools))
     return {
         **workload,
         "protocol": PROTOCOL_VERSION,
@@ -772,6 +817,24 @@ def _parent_identity() -> dict[str, int]:
 def helper_status() -> dict[str, Any]:
     helper = resolve_helper()
     return _helper_json(helper, "status")
+
+
+class _FileWorkerTimeout(subprocess.TimeoutExpired):
+    def __init__(self, expired: subprocess.TimeoutExpired, counts: tuple[int, int] | None):
+        super().__init__(expired.cmd, expired.timeout, output=expired.stdout, stderr=expired.stderr)
+        self.job_counts = counts
+
+    def __str__(self) -> str:
+        message = f"Contained file worker exceeded its {self.timeout}-second timeout."
+        if self.job_counts is not None:
+            total, active = self.job_counts
+            message += (
+                f" Helper job process counts before cleanup were {active} active of {total} total."
+            )
+        output = "present" if self.stdout else "empty"
+        return (
+            f"{message} Worker stdout was {output} after cleanup. File operation outcome unknown."
+        )
 
 
 @dataclass(frozen=True)
@@ -889,6 +952,12 @@ class WindowsNativeRunner:
                         )
                 except BaseException as exc:
                     drain_error = None
+                    job_counts = None
+                    file_timeout = (
+                        job is not None
+                        and isinstance(cmd, FileWorkerCommand)
+                        and isinstance(exc, subprocess.TimeoutExpired)
+                    )
                     try:
                         if lifecycle is not None:
                             if request_may_have_started:
@@ -901,7 +970,13 @@ class WindowsNativeRunner:
                                 # so no execution authority was delivered.
                                 child.kill()
                         elif job is not None:
-                            job.terminate_and_drain()
+                            try:
+                                if file_timeout:
+                                    job_counts = job.process_counts()
+                            except OSError:
+                                pass  # Accounting is diagnostic only.
+                            finally:
+                                job.terminate_and_drain()
                         else:
                             child.kill()
                     except BaseException as error:
@@ -925,6 +1000,8 @@ class WindowsNativeRunner:
                             stdout=stdout.decode("utf-8", errors="replace"),
                             stderr=stderr.decode("utf-8", errors="replace"),
                         ) from drain_error
+                    if file_timeout:
+                        raise _FileWorkerTimeout(exc, job_counts) from exc
                     raise
                 if job is not None:
                     job.wait_empty()

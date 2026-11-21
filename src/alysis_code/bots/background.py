@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 
 from pydantic import Field
 
@@ -72,7 +73,9 @@ class BackgroundStore:
             )
             self.store._event(db, task["id"], "background_started", {"message": summary})
 
-    def claim(self) -> dict | None:
+    def claim(self, *, admit: Callable[[], bool] | None = None) -> dict | None:
+        """The next work off the reply loop to run. ``admit`` is asked once one is found, inside
+        the claim's transaction: False leaves it queued (Store.claim)."""
         from .hosted_maintenance import MaintenanceLease
 
         with self.store.connect(write=True) as db:
@@ -82,7 +85,7 @@ class BackgroundStore:
                 "SELECT j.task_id FROM background_turns j JOIN tasks t ON t.id=j.task_id WHERE t.owner=? AND t.status='waiting' AND j.state='queued' ORDER BY t.created_at LIMIT 1",
                 (self.owner,),
             ).fetchone()
-            if row is None:
+            if row is None or (admit is not None and not admit()):
                 return None
             db.execute("UPDATE background_turns SET state='running' WHERE task_id=?", (row[0],))
             return self.store._task(db, self.owner, row[0])

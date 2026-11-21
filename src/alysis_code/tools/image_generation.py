@@ -11,6 +11,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -24,13 +25,50 @@ from ..host_file_handles import guard_host_mutation, mkdir_host_path, rename_hos
 from ..profiles import get_active_profile, resolve_effective_base_url
 
 _OUTPUT_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
-_SIZES = frozenset({"auto", "1024x1024", "1536x1024", "1024x1536"})
+# The sizes the image request takes: square, landscape and portrait, or the provider's choice.
+SIZES = ("auto", "1024x1024", "1536x1024", "1024x1536")
+_SIZES = frozenset(SIZES)
 _QUALITIES = frozenset({"auto", "low", "medium", "high"})
 _BACKGROUNDS = frozenset({"auto", "opaque", "transparent"})
+# Source pictures an edit request can send, by the format their bytes decode as.
+_SOURCE_FORMATS = {
+    "PNG": ("png", "image/png"),
+    "JPEG": ("jpg", "image/jpeg"),
+    "WEBP": ("webp", "image/webp"),
+}
+_PROVIDER_CODE_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_.-")
 
 
 class ImageGenerationError(RuntimeError):
-    pass
+    """A refused or failed image request.
+
+    ``status_code`` and ``provider_error_code`` are set when the image provider answered with an
+    error: its HTTP status and its own short error code (a closed token, never its text), so a
+    caller can tell a usage limit from other refusals without reading the message.
+    """
+
+    def __init__(
+        self,
+        message: object = "",
+        *,
+        status_code: int | None = None,
+        provider_error_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.provider_error_code = provider_error_code
+
+
+@dataclass(frozen=True)
+class ImageEndpoint:
+    """A model connection the image request may reuse: its endpoint, key and headers.
+
+    Without one, the active profile is used, as for the agent's own session.
+    """
+
+    base_url: str
+    api_key: str = field(repr=False)
+    extra_headers: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 def _load_image_decoder() -> tuple[Any, type[OSError]]:
@@ -91,7 +129,16 @@ def generate_images(
     timeout_s: float | None = None,
     transport: httpx.BaseTransport | None = None,
     publish: Callable[[Path, bytes], None] | None = None,
+    connection: ImageEndpoint | None = None,
+    source_image: bytes | None = None,
 ) -> dict[str, Any]:
+    """Make ``count`` new images from ``prompt``, or, with ``source_image``, change that picture.
+
+    ``connection``: the model connection whose endpoint and key the request reuses when no
+    image-specific endpoint or key is configured (the active profile's otherwise). A source
+    picture is sent with the prompt to the provider's edit endpoint; the result is a new image,
+    validated and written like a generated one.
+    """
     settings = cfg.image_generation
     if not settings.enabled:
         raise ImageGenerationError(
@@ -128,11 +175,19 @@ def generate_images(
     # Text-only startup does not need image codecs. An enabled image request
     # must still discover missing codecs before contacting the provider.
     _load_image_decoder()
+    source = (
+        None
+        if source_image is None
+        else _source_image(
+            source_image, max_bytes=settings.max_image_bytes, max_pixels=settings.max_pixels
+        )
+    )
     base_url, api_key, extra_headers = _resolve_runtime(
         cfg=cfg,
         fallback_api_key=fallback_api_key,
+        connection=connection,
     )
-    endpoint = _generation_endpoint(base_url)
+    endpoint = _images_endpoint(base_url, "edits" if source else "generations")
     payload: dict[str, Any] = {
         "model": settings.model,
         "prompt": clean_prompt,
@@ -156,10 +211,19 @@ def generate_images(
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
         "User-Agent": "alysis-code/image-generation",
         **safe_extra_headers,
     }
+    if source is None:
+        headers["Content-Type"] = "application/json"
+        body: dict[str, Any] = {"json": payload}
+    else:
+        # The edit endpoint takes a multipart form: the picture as a file, the rest as fields.
+        extension, mime_type, source_bytes = source
+        body = {
+            "data": {name: str(value) for name, value in payload.items()},
+            "files": {"image": (f"image.{extension}", source_bytes, mime_type)},
+        }
     effective_timeout = float(timeout_s or settings.timeout_s)
     max_response_bytes = min(
         count * (((settings.max_image_bytes + 2) // 3) * 4) + 1_000_000,
@@ -172,7 +236,7 @@ def generate_images(
             follow_redirects=False,
             transport=transport,
         ) as client:
-            with client.stream("POST", endpoint, headers=headers, json=payload) as streamed:
+            with client.stream("POST", endpoint, headers=headers, **body) as streamed:
                 response = _bounded_response(
                     streamed,
                     max_bytes=max_response_bytes,
@@ -182,10 +246,18 @@ def generate_images(
         raise ImageGenerationError(
             "Image provider request failed: " + sanitize_error_summary(str(exc))
         ) from exc
-    response_payload = _response_json(response)
     if response.status_code < 200 or response.status_code >= 300:
-        detail = _provider_error_detail(response_payload, response.text)
-        raise ImageGenerationError(f"Image provider returned HTTP {response.status_code}: {detail}")
+        try:
+            error_payload = _response_json(response)
+        except ImageGenerationError:
+            error_payload = {}
+        detail = _provider_error_detail(error_payload, response.text)
+        raise ImageGenerationError(
+            f"Image provider returned HTTP {response.status_code}: {detail}",
+            status_code=response.status_code,
+            provider_error_code=_provider_error_code(error_payload),
+        )
+    response_payload = _response_json(response)
 
     data = response_payload.get("data")
     if not isinstance(data, list) or len(data) < count:
@@ -268,12 +340,17 @@ def _resolve_runtime(
     *,
     cfg: AppConfig,
     fallback_api_key: str | None,
+    connection: ImageEndpoint | None = None,
 ) -> tuple[str, str, dict[str, str]]:
     settings = cfg.image_generation
     explicit_base_url = str(settings.base_url or "").strip()
     if explicit_base_url:
         base_url = explicit_base_url
         extra_headers: dict[str, str] = {}
+    elif connection is not None:
+        base_url = connection.base_url
+        extra_headers = dict(connection.extra_headers)
+        fallback_api_key = connection.api_key
     else:
         profile = get_active_profile(cfg)
         base_url = resolve_effective_base_url(cfg=cfg, profile=profile)
@@ -296,16 +373,48 @@ def _resolve_runtime(
     return base_url, api_key, extra_headers
 
 
-def _generation_endpoint(base_url: str) -> str:
+def _images_endpoint(base_url: str, operation: str = "generations") -> str:
+    """The provider's images endpoint for ``operation`` ("generations" or "edits").
+
+    A base URL may name either endpoint itself; the other one is its sibling.
+    """
     clean = str(base_url or "").strip().rstrip("/")
     parts = urlsplit(clean)
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         raise ImageGenerationError("Image generation base URL must be HTTP(S)")
     if parts.username or parts.password or parts.query or parts.fragment:
         raise ImageGenerationError("Image generation base URL cannot contain credentials or query")
-    if parts.path.rstrip("/").endswith("/images/generations"):
-        return clean
-    return clean + "/images/generations"
+    for named in ("/images/generations", "/images/edits"):
+        if parts.path.rstrip("/").endswith(named):
+            clean = clean[: -len(named)]
+            break
+    return f"{clean}/images/{operation}"
+
+
+def _source_image(data: bytes, *, max_bytes: int, max_pixels: int) -> tuple[str, str, bytes]:
+    """A picture to edit, checked by decoding it: its extension, media type and bytes."""
+    if not isinstance(data, bytes) or not data:
+        raise ImageGenerationError("The picture to edit is empty")
+    if len(data) > max_bytes:
+        raise ImageGenerationError("The picture to edit exceeds configured max_image_bytes")
+    Image, UnidentifiedImageError = _load_image_decoder()
+    try:
+        with Image.open(io.BytesIO(data)) as opened:
+            width, height = opened.size
+            image_format = str(opened.format or "").upper()
+            if width < 1 or height < 1 or width * height > max_pixels:
+                raise ImageGenerationError(
+                    f"The picture to edit is {width}x{height}, beyond configured max_pixels"
+                )
+            opened.load()
+    except ImageGenerationError:
+        raise
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ImageGenerationError("The picture to edit is not a readable image") from exc
+    if image_format not in _SOURCE_FORMATS:
+        raise ImageGenerationError("The picture to edit must be a PNG, JPEG or WebP image")
+    extension, mime_type = _SOURCE_FORMATS[image_format]
+    return extension, mime_type, data
 
 
 def _response_json(response: httpx.Response) -> dict[str, Any]:
@@ -346,6 +455,18 @@ def _bounded_response(
         request=response.request,
         extensions=dict(response.extensions),
     )
+
+
+def _provider_error_code(payload: dict[str, Any]) -> str | None:
+    """The provider's own short error code, only when it is a plain token."""
+    error = payload.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    if not isinstance(code, str):
+        return None
+    code = code.strip().casefold()
+    if not code or len(code) > 64 or set(code) - _PROVIDER_CODE_CHARACTERS:
+        return None
+    return code
 
 
 def _provider_error_detail(payload: dict[str, Any], fallback: str) -> str:

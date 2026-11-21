@@ -11,8 +11,9 @@ from pathlib import Path
 
 from .files import FILE_CHUNK_BYTES
 from .object_storage import ObjectStorageError
-from .schema import SCHEMA_VERSION, schema
+from .schema import SCHEMA_VERSION, STEER_COLUMNS, STEER_INDEX, schema
 from .store import Store
+from .task_events import TaskSignals
 
 # Stable application lock, scoped to the connected database by PostgreSQL.
 WRITE_LOCK = 0x414C59534953424F
@@ -87,6 +88,8 @@ def rows(cursor):
 class Connection:
     def __init__(self, connection):
         self.raw = connection
+        # The tasks this transaction wrote events for, woken once it commits (task_events.py).
+        self.event_tasks = set()
 
     def execute(self, sql, args=None):
         # Boolean fields use the shared INTEGER schema on both backends.
@@ -101,6 +104,7 @@ class PostgresStore(Store):
         if objects is None:
             raise ObjectStorageError("Shared bot state requires configured object storage.")
         self._dsn, self.objects = dsn, objects
+        self.task_signals = TaskSignals()
         # This directory is scratch/connection configuration only, never bot state.
         state_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = state_directory / "shared-bots"
@@ -191,8 +195,19 @@ class PostgresStore(Store):
                 "ALTER TABLE action_proposals ADD COLUMN IF NOT EXISTS offline_computer INTEGER NOT NULL DEFAULT 0"
             )
             db.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS failure TEXT")
+            db.execute(
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS restarts INTEGER NOT NULL DEFAULT 0"
+            )
+            db.execute("ALTER TABLE bot_action_reviews ADD COLUMN IF NOT EXISTS effect TEXT")
             db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS color TEXT")
             db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS background TEXT")
+            db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS pinned_at DOUBLE PRECISION")
+            db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS archived_at DOUBLE PRECISION")
+            db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS model TEXT")
+            db.execute("ALTER TABLE schedules ADD COLUMN IF NOT EXISTS model TEXT")
+            for part, kind in STEER_COLUMNS:
+                db.execute(f"ALTER TABLE queued_messages ADD COLUMN IF NOT EXISTS {part} {kind}")
+            db.execute(STEER_INDEX)
             db.execute("""CREATE TABLE IF NOT EXISTS upload_parts (
                 upload_id TEXT NOT NULL REFERENCES file_uploads(id) ON DELETE CASCADE,
                 start_offset INTEGER NOT NULL, data BYTEA NOT NULL,
@@ -239,6 +254,7 @@ class PostgresStore(Store):
                 yield db
                 if self._fence is not None and write:
                     self._fence.check(db)
+            self.task_signals.notify(db.event_tasks)
         except psycopg.Error:
             raise SharedDatabaseError(
                 "Shared bot database operation failed; no success was confirmed."

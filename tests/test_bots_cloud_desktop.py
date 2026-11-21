@@ -10,6 +10,7 @@ from alysis_code.bots.cloud_desktop import CloudDesktopFactory
 from alysis_code.bots.cloud_desktop_worker import Transfers
 from alysis_code.bots.compute import (
     CommandReceipt,
+    ComputeReplyTooLarge,
     ComputerRef,
     ComputerSpec,
     ComputerStatus,
@@ -17,6 +18,7 @@ from alysis_code.bots.compute import (
 )
 from alysis_code.bots.desktop_linux import (
     ComputerActionUncertain,
+    ComputerReplyTooLarge,
     DesktopError,
     DesktopStartupCleanupError,
 )
@@ -80,6 +82,8 @@ class Provider:
             assert self.stopped.wait(3)
         if self.mode == "lost-reply":
             raise ComputeUncertain("Lost command receipt")
+        if self.mode == "too-large":
+            raise ComputeReplyTooLarge("Receipt exceeded its allowance")
         if self.mode == "wrong-session":
             request["session"] = "foreign"
         result = {"exit_code": 0, "stdout": "Ω 日本語", "stderr": ""}
@@ -187,6 +191,47 @@ def test_uncertain_commands_retire_without_replay(setup, tmp_path, failure):
     with pytest.raises(ComputerActionUncertain):
         computer.call("bot", "run", {"command": "one-write"})
     assert len(provider.actions) == 2  # startup and a single dispatched action
+    assert provider.status(computer.ref).state == "missing"
+
+
+@pytest.mark.parametrize(
+    "operation,arguments",
+    [
+        ("observe", {}),
+        ("browser_call", {"method": "snapshot", "args": [], "kwargs": {"kind": "accessibility"}}),
+        ("browser_call", {"method": "page_report", "args": [], "kwargs": {}}),
+    ],
+)
+def test_a_read_too_large_to_receive_keeps_the_computer(setup, tmp_path, operation, arguments):
+    provider, factory = setup
+    computer = factory("bot", tmp_path, cancel=lambda: False)
+    provider.mode = "too-large"
+    with pytest.raises(ComputerReplyTooLarge):
+        computer._request(operation, arguments, cancel=lambda: False)
+    assert computer.alive()
+    assert provider.status(computer.ref).state == "running"
+    provider.mode = None
+    assert computer.call("bot", "run", {"command": "next"})["stdout"] == "Ω 日本語"
+    computer.close()
+
+
+@pytest.mark.parametrize(
+    "operation,arguments",
+    [
+        ("run", {"command": "one-write"}),
+        ("browser_call", {"method": "click", "args": [], "kwargs": {}}),
+        ("browser_call", {"method": "navigate", "args": ["https://example.org"], "kwargs": {}}),
+    ],
+)
+def test_a_change_whose_reply_is_too_large_retires_the_computer_without_replay(
+    setup, tmp_path, operation, arguments
+):
+    provider, factory = setup
+    computer = factory("bot", tmp_path, cancel=lambda: False)
+    provider.mode = "too-large"
+    with pytest.raises(ComputerActionUncertain):
+        computer._request(operation, arguments, cancel=lambda: False)
+    assert len(provider.actions) == 2  # startup and a single dispatched request
     assert provider.status(computer.ref).state == "missing"
 
 

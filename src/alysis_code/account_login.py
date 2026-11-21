@@ -503,13 +503,14 @@ def _account_billing(value: object) -> dict[str, Any] | None:
     return result
 
 
-def fetch_trial_status(cfg: AppConfig) -> TrialStatus | None:
+def fetch_trial_status(cfg: AppConfig, *, key: str | None = None) -> TrialStatus | None:
     """Read live billing for the saved Alysis account, regardless of active provider.
 
     The historical name remains for CLI callers. Offline, revoked, undeployed and
     malformed responses return None; the stored sign-in itself is left untouched.
+    ``key``: the account key to read it for; the saved account key by default.
     """
-    key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+    key = key or load_persisted_profile_keys().get(cloud.PROFILE_KEY)
     if not key:
         return None
     try:
@@ -977,37 +978,8 @@ def billing_with_model_availability(
     paid = billing["paid"]
     if paid.get("credit_unit_version") != "paid-base-display-v1":
         return billing
-    ids: set[str] | None = None
-    try:
-        key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
-        if key:
-            request = urllib.request.Request(
-                cloud.models_url(),
-                method="GET",
-                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
-            )
-            with urllib.request.build_opener(_AccountNoRedirect()).open(
-                request, timeout=_MODELS_TIMEOUT_S
-            ) as response:
-                raw = response.read(65_537)
-            if len(raw) <= 65_536:
-                body = json.loads(raw)
-                rows = body.get("data") if isinstance(body, dict) else None
-                if (
-                    isinstance(rows, list)
-                    and len(rows) <= 100
-                    and all(isinstance(row, dict) and _account_text(row.get("id")) for row in rows)
-                ):
-                    ids = {str(row["id"]).strip() for row in rows}
-    except (
-        cloud.AlysisCloudConfigError,
-        urllib.error.URLError,
-        TimeoutError,
-        OSError,
-        ValueError,
-        UnicodeDecodeError,
-    ):
-        pass
+    served = gateway_models()
+    ids = set(served) if served is not None else None
     models = []
     for model in paid["models"]:
         current = dict(model)
@@ -1024,6 +996,88 @@ def billing_with_model_availability(
             )
         models.append(current)
     return {**billing, "paid": {**paid, "models": models}}
+
+
+def gateway_models(key: str | None = None) -> list[str] | None:
+    """The model ids the account gateway serves ``key``, in its order, from its authenticated
+    listing; None when they couldn't be read. ``key``: the saved account key by default."""
+    key = key or load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+    if not key:
+        return None
+    try:
+        request = urllib.request.Request(
+            cloud.models_url(),
+            method="GET",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+        )
+        with urllib.request.build_opener(_AccountNoRedirect()).open(
+            request, timeout=_MODELS_TIMEOUT_S
+        ) as response:
+            raw = response.read(65_537)
+        if len(raw) > 65_536:
+            return None
+        body = json.loads(raw)
+    except (
+        cloud.AlysisCloudConfigError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        UnicodeDecodeError,
+    ):
+        return None
+    rows = body.get("data") if isinstance(body, dict) else None
+    if (
+        not isinstance(rows, list)
+        or len(rows) > 100
+        or not all(isinstance(row, dict) and _account_text(row.get("id")) for row in rows)
+    ):
+        return None
+    return list(dict.fromkeys(str(row["id"]).strip() for row in rows))
+
+
+def account_model_catalog(key: str) -> list[dict[str, Any]] | None:
+    """The models the account behind ``key`` can think with through the gateway, in its
+    catalog's order: each ``model``, its ``label`` and ``unavailable``: None when the account can
+    use it now, "pending" when its plan lists it but it isn't open to this account yet, and
+    "unchecked" when that couldn't be checked just now.
+
+    A paid plan's catalog names the models, each open when the gateway serves it to this key
+    (the rule of billing_with_model_availability). Without one (Free, or the plan couldn't be
+    read) the gateway's own listing for this key is the catalog. None when neither was read.
+    """
+    from .profile_presets import model_display_name
+
+    served = gateway_models(key)
+    status = fetch_trial_status(AppConfig(), key=key)
+    paid = (status.billing or {}).get("paid") if status is not None else None
+    if isinstance(paid, dict) and paid.get("models"):
+        # Older plan catalogs predate the gateway check: their models are open unless they say.
+        checked = paid.get("credit_unit_version") == "paid-base-display-v1"
+        rows = []
+        for row in paid["models"]:
+            if row.get("available") is False:
+                unavailable = "pending"
+            elif not checked:
+                unavailable = None
+            elif served is None:
+                unavailable = "unchecked"
+            else:
+                unavailable = None if row["model"] in served else "pending"
+            rows.append(
+                {
+                    "model": row["model"],
+                    "label": row.get("label") or model_display_name(row["model"]),
+                    "unavailable": unavailable,
+                }
+            )
+        return rows
+    if served is None:
+        return None
+    return [
+        {"model": model, "label": model_display_name(model), "unavailable": None}
+        for model in served
+    ]
 
 
 def format_paid_plan_details(status: TrialStatus, *, detailed: bool = False) -> list[str]:

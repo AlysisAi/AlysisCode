@@ -360,15 +360,15 @@ def test_login_activates_native_execution_after_delegated_runtime(
                     reasoning_effort="high",
                 ),
             )
-        cfg.execution = ExecutionConfig(backend="delegated", runtime="openai-codex")
+        cfg.execution = ExecutionConfig(backend="delegated", runtime="sample-agent")
         runtime = AgentRuntimeSettings(
-            adapter="codex-cli",
-            executable="codex",
+            adapter="sample-cli",
+            executable="sample-agent",
             model="gpt-5.6-sol",
             reasoning_effort="high",
             timeout_seconds=90,
         )
-        cfg.agent_runtimes["openai-codex"] = runtime
+        cfg.agent_runtimes["sample-agent"] = runtime
         save_config(cfg)
 
         result = account_login.login(load_config(), browser_opener=_noop_browser([]), timeout_s=10)
@@ -382,7 +382,7 @@ def test_login_activates_native_execution_after_delegated_runtime(
         assert result.model == reloaded.model
         assert result.base_url == gateway_url
         assert get_profile(reloaded, byok.name) == byok
-        assert reloaded.agent_runtimes["openai-codex"] == runtime
+        assert reloaded.agent_runtimes["sample-agent"] == runtime
         assert resolve_api_key(reloaded, profile_name="alysis").key == _GATEWAY_KEY
         if existing_hosted_profile:
             assert get_profile(reloaded, "alysis").reasoning_effort == "high"

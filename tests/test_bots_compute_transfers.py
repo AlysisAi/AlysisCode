@@ -286,7 +286,7 @@ def test_azure_receipt_size_and_total_deadline_are_bounded(monkeypatch):
     from alysis_code.bots import compute_azure
 
     wire = FileWire()
-    wire.chunks = [bytes(2 * 1024 * 1024 + 1)]
+    wire.chunks = [bytes(compute_azure.MAX_RESPONSE_BYTES + 1)]
     with pytest.raises(ComputeUncertain, match="allowance"):
         wire.provider.upload(wire.ref, "/tmp/file", [], size=0)
     assert wire.response.closed

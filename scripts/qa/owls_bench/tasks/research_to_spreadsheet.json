@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "research-el-athens-museums",
+      "category": "research_to_spreadsheet",
+      "language": "el",
+      "split": "dev",
+      "prompt": "Βρες 8 μουσεία στην Αθήνα που είναι ανοιχτά για το κοινό. Για το καθένα γράψε το όνομα, τη διεύθυνση, το ωράριο λειτουργίας, την τιμή του γενικού εισιτηρίου και έναν σύνδεσμο προς την πηγή από όπου πήρες τις πληροφορίες (κατά προτίμηση τον επίσημο ιστότοπο του μουσείου). Αποθήκευσε τον πίνακα ως αρχείο .xlsx και απάντησέ μου στα ελληνικά με μια σύντομη περίληψη.",
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 8,
+        "columns": [
+          "museum name",
+          "address",
+          "opening hours",
+          "general admission price",
+          "link to the source of that museum's information"
+        ],
+        "min_sources": 8,
+        "source_unit": "url",
+        "reply_language": "el"
+      }
+    },
+    {
+      "id": "research-en-static-site-generators",
+      "category": "research_to_spreadsheet",
+      "language": "en",
+      "split": "heldout",
+      "prompt": "Find 10 actively maintained open-source static site generators. For each one, give the name, the main programming language it is written in, its license, the date of its latest release, and a link to the source you used for that release date (the project's releases page or official site). Save the table as an .xlsx file and reply with a short summary.",
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 10,
+        "columns": [
+          "project name",
+          "main programming language",
+          "license",
+          "latest release date",
+          "link to the source of the release date"
+        ],
+        "min_sources": 10,
+        "source_unit": "url",
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "research-es-spain-national-parks",
+      "category": "research_to_spreadsheet",
+      "language": "es",
+      "split": "dev",
+      "prompt": "Encuentra 8 parques nacionales de España. Para cada uno indica el nombre, la comunidad autónoma, la superficie en km², el año de declaración y un enlace a la fuente que usaste (preferiblemente una página oficial). Guarda la tabla en un archivo .xlsx y respóndeme en español con un breve resumen.",
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 8,
+        "columns": [
+          "national park name",
+          "autonomous community",
+          "area in square kilometres",
+          "year it was declared a national park",
+          "link to the source used"
+        ],
+        "min_sources": 8,
+        "source_unit": "url",
+        "reply_language": "es"
+      }
+    }
+  ]
+}

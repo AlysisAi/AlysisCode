@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import os
 import socket
+import stat
+import tempfile
 import threading
 import time
 from collections.abc import Iterable
@@ -12,6 +15,7 @@ import pytest
 from alysis_code.ide.browser_egress_proxy import (
     BrowserEgressProxy,
     BrowserEgressProxyCleanupError,
+    BrowserEgressProxyError,
     BrowserEgressProxyLimits,
     BrowserEgressProxySecurityError,
 )
@@ -671,3 +675,65 @@ def test_private_exception_is_one_numeric_endpoint_not_general_private_dns_acces
             client.sendall(b"arbitrary TCP data")
             assert dialer.peers[-1].recv(4096) == b"arbitrary TCP data"
     assert [(ip, port) for ip, port, _ in dialer.calls] == [("127.0.0.1", 8080)]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"tunnel_ports": frozenset()},
+        {"tunnel_ports": frozenset({0})},
+        {"tunnel_ports": frozenset({True})},
+        {"tunnel_ports": {443}},
+        {"require_tunnel_sni": True},
+        {"require_tunnel_sni": 1, "tunnel_ports": frozenset({443})},
+        {"unix_socket_path": "relative.sock"},
+        {"unix_socket_path": "/" + "x" * 200},
+    ],
+)
+def test_invalid_tunnel_and_socket_policies_are_refused(options) -> None:
+    with pytest.raises(BrowserEgressProxySecurityError):
+        BrowserEgressProxy(**options)
+
+
+def test_tunnel_ports_admit_only_connect_to_those_ports() -> None:
+    dialer = RecordingDialer()
+    with BrowserEgressProxy(
+        resolver=_public_resolver, dialer=dialer, tunnel_ports=frozenset({443})
+    ) as proxy:
+        for request in (
+            b"GET http://example.test/ HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"CONNECT example.test:22 HTTP/1.1\r\nHost: example.test:22\r\n\r\n",
+        ):
+            assert _request(proxy, request).startswith(b"HTTP/1.1 403")
+        assert not dialer.calls
+        with _connect(proxy) as client:
+            client.sendall(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
+            assert _receive_until(client, b"\r\n\r\n").startswith(b"HTTP/1.1 200")
+            # Without a name requirement the tunnel carries any bytes, as before.
+            client.sendall(b"opaque")
+            assert dialer.called.wait(1.0) and dialer.peers[0].recv(16) == b"opaque"
+
+
+def test_unix_socket_listener_has_no_loopback_port() -> None:
+    # Unix socket paths are short; pytest's temporary paths can exceed the limit.
+    with tempfile.TemporaryDirectory(prefix="proxy-", dir="/tmp") as directory:
+        path = directory + "/proxy.sock"
+        dialer = RecordingDialer()
+        proxy = BrowserEgressProxy(resolver=_public_resolver, dialer=dialer, unix_socket_path=path)
+        try:
+            proxy.start()
+            assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+            with pytest.raises(BrowserEgressProxyError, match="has not started"):
+                _ = proxy.port
+            with pytest.raises(BrowserEgressProxyError, match="Unix socket"):
+                _ = proxy.proxy_url
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(1.0)
+                client.connect(path)
+                client.sendall(
+                    b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n"
+                )
+                assert _receive_until(client, b"\r\n\r\n").startswith(b"HTTP/1.1 200")
+        finally:
+            proxy.close()
+        assert not os.path.exists(path)

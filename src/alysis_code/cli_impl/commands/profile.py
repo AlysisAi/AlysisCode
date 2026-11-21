@@ -180,23 +180,24 @@ def profile_add(
     from ...profiles import ProfileSpec, add_profile
 
     console = _console()
-    cfg = _patchable("load_config", load_config)()
     try:
-        _ensure_generic_profile_mutation_allowed(cfg, name, operation="overwritten")
-        profile = ProfileSpec(
-            name=name,
-            protocol=protocol,
-            base_url=base_url,
-            api_key_env=api_key_env,
-            extra_headers=_parse_profile_headers(header),
-            default_model=default_model,
-            reasoning_trace_adapter=reasoning_trace_adapter,
-            web_search_adapter=web_search_adapter,
-            web_search_model=web_search_model,
-            notes=notes,
-        )
-        add_profile(cfg, profile)
-        save_config(cfg)
+        with config_transaction(
+            loader=_patchable("load_config", load_config), saver=save_config
+        ) as cfg:
+            _ensure_generic_profile_mutation_allowed(cfg, name, operation="overwritten")
+            profile = ProfileSpec(
+                name=name,
+                protocol=protocol,
+                base_url=base_url,
+                api_key_env=api_key_env,
+                extra_headers=_parse_profile_headers(header),
+                default_model=default_model,
+                reasoning_trace_adapter=reasoning_trace_adapter,
+                web_search_adapter=web_search_adapter,
+                web_search_model=web_search_model,
+                notes=notes,
+            )
+            add_profile(cfg, profile)
     except ConfigError as exc:
         console.print(f"[red]Profile error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
@@ -215,11 +216,12 @@ def profile_remove(
     if not yes and not typer.confirm(f"Remove profile {name}?", default=False):
         console.print("Cancelled.")
         return
-    cfg = _patchable("load_config", load_config)()
     try:
-        remove_profile(cfg, name)
-        clear_persisted_profile_key(name)
-        save_config(cfg)
+        with config_transaction(
+            loader=_patchable("load_config", load_config), saver=save_config
+        ) as cfg:
+            remove_profile(cfg, name)
+            clear_persisted_profile_key(name)
     except ConfigError as exc:
         console.print(f"[red]Profile error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
@@ -232,10 +234,11 @@ def profile_use(name: str = typer.Argument(..., help="Profile name.")) -> None:
     from ...profiles import set_active_profile
 
     console = _console()
-    cfg = _patchable("load_config", load_config)()
     try:
-        set_active_profile(cfg, name)
-        save_config(cfg)
+        with config_transaction(
+            loader=_patchable("load_config", load_config), saver=save_config
+        ) as cfg:
+            set_active_profile(cfg, name)
     except ConfigError as exc:
         console.print(f"[red]Profile error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
@@ -390,30 +393,34 @@ def profile_preset(
     if preset is None:
         console.print(f"[red]Unknown preset:[/red] {preset_key}")
         raise typer.Exit(code=2)
-    cfg = _patchable("load_config", load_config)()
+    loader = _patchable("load_config", load_config)
     name = str(profile_name_as or preset.key).strip().lower()
-    existing = get_profile(cfg, name)
+    base_url = preset.base_url
     try:
-        _ensure_generic_profile_mutation_allowed(cfg, name, operation="overwritten")
-    except ConfigError as exc:
-        console.print(f"[red]Profile error:[/red] {exc}")
-        raise typer.Exit(code=2) from exc
-    if existing is not None and not yes:
-        if not typer.confirm(f"Overwrite profile {name}?", default=False):
+        existing = None
+        if not yes or not base_url:
+            preview = loader()
+            _ensure_generic_profile_mutation_allowed(preview, name, operation="overwritten")
+            existing = get_profile(preview, name)
+        if (
+            existing is not None
+            and not yes
+            and not typer.confirm(f"Overwrite profile {name}?", default=False)
+        ):
             console.print("Cancelled.")
             return
-    base_url = preset.base_url
-    if not base_url:
-        base_url = str(typer.prompt("Base URL", default="", show_default=False)).strip()
-    try:
+        if not base_url:
+            base_url = str(typer.prompt("Base URL", default="", show_default=False)).strip()
         profile = make_profile_from_preset(preset, name=name)
-        if base_url != profile.base_url:
-            profile = make_profile_from_preset(preset, name=name)
+        with config_transaction(loader=loader, saver=save_config) as cfg:
+            _ensure_generic_profile_mutation_allowed(cfg, name, operation="overwritten")
+            if not yes and get_profile(cfg, name) != existing:
+                raise ConfigError(
+                    f"Profile {name!r} changed while you were editing it. Run the command again."
+                )
             add_profile(cfg, profile)
-            update_profile(cfg, profile.name, base_url=base_url)
-        else:
-            add_profile(cfg, profile)
-        save_config(cfg)
+            if base_url != profile.base_url:
+                update_profile(cfg, profile.name, base_url=base_url)
         key_value = ""
         if api_key_stdin:
             key_value = sys.stdin.read().strip()

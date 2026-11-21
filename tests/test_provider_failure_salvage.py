@@ -140,11 +140,18 @@ def test_provider_failure_with_material_work_salvages_exit_zero(tmp_path: Path) 
         )
     ]
 
-    exit_code, events = _run_failing_turn(tmp_path, session_id="salvage-ok", prefix=prefix)
+    exit_code, events = _run_failing_turn(
+        tmp_path,
+        session_id="salvage-ok",
+        prefix=prefix,
+        error_message=_PROVIDER_DOWN_MESSAGE + " api_key=synthetic-private-value",
+    )
 
     assert exit_code == 0
     outcome = _payloads(events, "turn_outcome")[-1]
     assert outcome["outcome"] == "provider_failure"
+    assert _PROVIDER_DOWN_MESSAGE in outcome["provider_diagnostic"]
+    assert "synthetic-private-value" not in outcome["provider_diagnostic"]
     assert outcome["verified_success"] is False
     salvages = _payloads(events, "provider_failure_salvage")
     assert salvages, "expected a provider_failure_salvage event"

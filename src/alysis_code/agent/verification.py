@@ -458,6 +458,7 @@ class _ObservedVerificationFailure:
     provenance: str = ""
     requirement: str = ""
     host_launcher_unavailable: bool = False
+    tool_call_id: str | None = None
 
 
 @dataclass
@@ -1200,6 +1201,7 @@ class TurnExecutionState:
             self.completion_gate_blast_radius_repair_attempts += 1
 
     def as_payload(self) -> dict[str, Any]:
+        last_observed_failure = next(reversed(self.observed_verification_failures.values()), None)
         return {
             "execution_requested": self.execution_requested,
             "verification_expected": self.verification_expected,
@@ -1221,6 +1223,9 @@ class TurnExecutionState:
             "last_verification_failure_snippet": self.last_verification_failure_snippet,
             "last_verification_failure_category": self.last_verification_failure_category,
             "unresolved_observed_verification_failures": len(self.observed_verification_failures),
+            "last_observed_verification_failure_tool_call_id": (
+                last_observed_failure.tool_call_id if last_observed_failure is not None else None
+            ),
             "failed_verification_commands": sorted(self.failed_verification_commands()),
             "verification_relevant_edit_generation": self.verification_relevant_edit_generation,
             "last_successful_verification_generation": self.last_successful_verification_generation,
@@ -1902,6 +1907,7 @@ def _record_observed_verification_outcomes(
     observations: list[_ObservedVerificationEvidence],
     attempt_passed: bool,
     environment_known: bool,
+    tool_call_id: str | None,
 ) -> bool:
     """Retire only a failed execution that a later comparable pass supersedes."""
     resolved = False
@@ -2027,6 +2033,7 @@ def _record_observed_verification_outcomes(
                 generation=state.verification_relevant_edit_generation,
                 provenance=provenance,
                 requirement=requirement,
+                tool_call_id=tool_call_id,
                 host_launcher_unavailable=(
                     item.get("host_launcher_unavailable") is True
                     and evidence.real_execution is False
@@ -2772,6 +2779,7 @@ def _record_tool_effect(
     evidence_v2: bool = True,
     elapsed_ms: int | None = None,
     scope_environment_known: bool = True,
+    tool_call_id: str | None = None,
 ) -> None:
     if is_tool_unavailable_result(result):
         return
@@ -3173,6 +3181,7 @@ def _record_tool_effect(
         observations=evidence_observations,
         attempt_passed=attempt_physically_passed,
         environment_known=scope_environment_known,
+        tool_call_id=tool_call_id,
     )
     complete_execution_observations = bool(evidence_observations) and all(
         observation.evidence.real_execution is True

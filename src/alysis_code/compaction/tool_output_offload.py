@@ -81,6 +81,82 @@ class ToolOutputOffloader:
 
         return self._storage_layout().filesystem_root.resolve()
 
+    def project_completed_artifact_reads(
+        self, messages: list[dict[str, Any]], *, current_user_message: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Keep replayable range references in model history after a turn ends."""
+        boundary = next(
+            (index for index, message in enumerate(messages) if message is current_user_message),
+            None,
+        )
+        if boundary is None:
+            return messages
+
+        projected = list(messages)
+        artifact_calls: set[str] = set()
+        for index, message in enumerate(messages[:boundary]):
+            if message.get("role") == "assistant":
+                calls = message.get("tool_calls")
+                artifact_calls = (
+                    {
+                        call["id"]
+                        for call in calls
+                        if isinstance(call, dict)
+                        and isinstance(call.get("id"), str)
+                        and isinstance(call.get("function"), dict)
+                        and call["function"].get("name") == "session_artifact_read"
+                    }
+                    if isinstance(calls, list)
+                    else set()
+                )
+                continue
+            call_id = message.get("tool_call_id")
+            if (
+                message.get("role") == "tool"
+                and isinstance(call_id, str)
+                and call_id in artifact_calls
+            ):
+                artifact_calls.discard(call_id)
+                content = message.get("content")
+                if isinstance(content, str) and len(content) >= self._threshold_chars:
+                    brief = self._artifact_read_reference(content)
+                    if brief is not None:
+                        projected[index] = {**message, "content": brief}
+        return projected
+
+    def _artifact_read_reference(self, content: str) -> str | None:
+        try:
+            page = json.loads(content)
+        except ValueError:
+            return None
+        if not isinstance(page, dict) or page.get("encoding") != "utf-8-replace":
+            return None
+        body, locator = page.get("content"), page.get("locator")
+        offset, read_limit = page.get("offset"), page.get("max_bytes")
+        if (
+            not isinstance(body, str)
+            or len(body) <= self._preview_chars
+            or not isinstance(locator, str)
+            or type(offset) is not int
+            or offset < 0
+            or type(read_limit) is not int
+            or read_limit <= 0
+        ):
+            return None
+        try:
+            if not self._artifact_layout.resolve_locator(locator).is_file():
+                return None
+        except (OSError, RuntimeError, ValueError):
+            return None
+        page.pop("content")
+        page["content_preview"] = body[: self._preview_chars]
+        page["artifact_read"] = {"locator": locator, "offset": offset, "max_bytes": read_limit}
+        page["content_note"] = (
+            "Use session_artifact_read with artifact_read to reopen the full range."
+        )
+        reference = json.dumps(page, ensure_ascii=False)
+        return reference if len(reference) < len(content) else None
+
     @staticmethod
     def _full_output_guidance(
         *,

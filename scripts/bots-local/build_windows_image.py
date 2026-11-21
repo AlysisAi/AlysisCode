@@ -228,6 +228,12 @@ def cloud_config(agent: str, service: str, setup: str, inventory: dict) -> dict:
             "fonts-noto-core",
             "fonts-noto-cjk",
             "fonts-noto-color-emoji",
+            # Window elements for owls (bots/desktop_accessibility.py): the AT-SPI bus and its
+            # registry, GLib's Python bindings that read them, and LibreOffice's GTK 3 toolkit,
+            # which publishes its windows there (its plain X11 toolkit does not).
+            "at-spi2-core",
+            "python3-gi",
+            "libreoffice-gtk3",
             "chromium",
             "chromium-sandbox",
             "dbus-x11",

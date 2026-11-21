@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..approval_scope import approval_request_is_destructive
+from ..surface.types import ManagedBrowserApproval
 from .protocol import redact_secrets
 
 APPROVAL_BINDING_CONTRACT = "alysis.approval-binding"
@@ -124,6 +125,8 @@ def normalize_approval_action(
     }
     from ..agent.artifact_output_observation import FileMetadataApproval
 
+    if isinstance(request, ManagedBrowserApproval) and request.display_origin:
+        action["url"] = request.display_origin
     if isinstance(request, FileMetadataApproval):
         action["access"] = "read"
         action["risk_level"] = "unknown"

@@ -7044,38 +7044,38 @@ def test_retired_test_strategist_invocation_returns_clean_unknown_role_error(
     assert "test-strategist" not in result["available_subagents"]
 
 
-def test_subagent_loader_supports_claude_style_tool_aliases(tmp_path: Path) -> None:
+def test_subagent_loader_reads_tool_lists_from_frontmatter_aliases(tmp_path: Path) -> None:
     project_agents = tmp_path / ".alysis_agents"
     project_agents.mkdir(parents=True, exist_ok=True)
-    (project_agents / "claude_alias.md").write_text(
+    (project_agents / "alias_tools.md").write_text(
         "---\n"
-        "name: claude-alias\n"
+        "name: alias-tools\n"
         "tools:\n"
         "  - fs_read\n"
         "  - search_rg\n"
         "disallowedTools:\n"
         "  - search_rg\n"
         "---\n"
-        "You are a claude-style custom agent.\n",
+        "You are a custom agent whose tools come from frontmatter aliases.\n",
         encoding="utf-8",
     )
 
     registry = load_subagent_registry(root=tmp_path)
-    alias_agent = registry["claude-alias"]
+    alias_agent = registry["alias-tools"]
 
     assert alias_agent.allow_tools == ("fs_read", "search_rg")
     assert alias_agent.deny_tools == ("search_rg",)
 
 
-def test_custom_claude_style_allowlist_and_tool_aliases_launch(
+def test_custom_frontmatter_allowlist_and_tool_aliases_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_agents = tmp_path / ".alysis_agents"
     project_agents.mkdir(parents=True, exist_ok=True)
-    (project_agents / "claude_alias_runtime.md").write_text(
+    (project_agents / "alias_tools_runtime.md").write_text(
         "---\n"
-        "name: claude-alias-runtime\n"
+        "name: alias-tools-runtime\n"
         "tools:\n"
         "  - read_file\n"
         "  - search_rg\n"
@@ -7114,7 +7114,7 @@ def test_custom_claude_style_allowlist_and_tool_aliases_launch(
     )
 
     result = tools["subagent_run"].run(
-        {"name": "claude-alias-runtime", "task": "Inspect the repository"}
+        {"name": "alias-tools-runtime", "task": "Inspect the repository"}
     )
 
     assert "error" not in result, result

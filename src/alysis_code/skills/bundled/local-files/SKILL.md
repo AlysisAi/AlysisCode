@@ -1,6 +1,7 @@
 ---
 name: local-files
 description: List, find, copy, rename, move, and organize explicitly scoped local files with filesystem tools instead of Finder clicks.
+uses_tools: [fs_list, search_rg, fs_copy, fs_move, fs_mkdir, capability_status, shell_run]
 ---
 
 Use when: The user asks for a concrete operation on named files or an explicitly scoped folder, in any language.

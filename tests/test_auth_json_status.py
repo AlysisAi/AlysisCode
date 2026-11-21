@@ -279,8 +279,8 @@ def test_auth_status_json_turns_a_provider_error_into_data(
 
 def test_auth_status_json_reports_a_delegated_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = AppConfig(
-        execution={"backend": "delegated", "runtime": "openai-codex"},
-        agent_runtimes={"openai-codex": {"adapter": "codex-cli", "executable": "codex"}},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
+        agent_runtimes={"sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"}},
     )
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
 
@@ -288,13 +288,13 @@ def test_auth_status_json_reports_a_delegated_runtime(monkeypatch: pytest.Monkey
         option = type(
             "_Option",
             (),
-            {"id": "openai-codex", "label": "Codex CLI", "adapter": "codex-cli"},
+            {"id": "sample-agent", "label": "Sample agent", "adapter": "sample-cli"},
         )()
-        settings = type("_Settings", (), {"executable": "codex"})()
+        settings = type("_Settings", (), {"executable": "sample-agent"})()
         probe = type(
             "_Probe",
             (),
-            {"available": True, "executable": "/usr/bin/codex", "version": "1.2.3"},
+            {"available": True, "executable": "/usr/bin/sample-agent", "version": "1.2.3"},
         )()
         account = RuntimeAccountStatus(
             authenticated=True,
@@ -311,7 +311,7 @@ def test_auth_status_json_reports_a_delegated_runtime(monkeypatch: pytest.Monkey
     payload = _sole_json_object(result.stdout)
     assert payload["authenticated"] is True
     assert payload["method"] == "browser"
-    assert payload["transport"] == "delegated runtime (codex-cli)"
+    assert payload["transport"] == "delegated runtime (sample-cli)"
     assert payload["installed"] is True
     assert payload["version"] == "1.2.3"
 

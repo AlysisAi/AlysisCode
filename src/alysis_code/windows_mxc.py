@@ -286,12 +286,18 @@ def _release_background_records(records) -> None:
 
 class WindowsMxcRunner(WindowsNativeRunner):
     def run_file_worker(
-        self, *, root: Path, arguments: list[str], timeout_s: int, cancel_check=None
+        self,
+        *,
+        root: Path,
+        arguments: list[str],
+        timeout_s: int,
+        cancel_check=None,
+        tool: str | None = None,
     ):
         return self.run(
             root=root,
             cwd=root,
-            cmd=FileWorkerCommand(tuple(arguments)),
+            cmd=FileWorkerCommand(tuple(arguments), tool=tool),
             timeout_s=timeout_s,
             cancel_check=cancel_check,
         )

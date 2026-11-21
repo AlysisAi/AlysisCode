@@ -189,6 +189,11 @@ class ComputerControls:
                     else:
                         db.execute("DELETE FROM bot_computer_control WHERE bot_id=?", (bot_id,))
 
+    def forget(self, bot_id):
+        """Its owl is being deleted: no viewer, input grant or paused state outlives it."""
+        with self._operations.hold(bot_id):
+            self._delete(bot_id)
+
     def _delete(self, bot_id):
         self._grants.pop(bot_id, None)
         with self.store.connect(write=True) as db:

@@ -74,6 +74,15 @@ def task_outcome_record(
     observed_failure = type(unresolved_failures) is int and unresolved_failures > 0
     if (failed or observed_failure) and "verification_failed" not in problems:
         problems.append("verification_failed")
+    verification_failures: dict[str, Any] = {}
+    if failed or observed_failure:
+        verification_failures = {
+            "required_count": len(failed),
+            "observed_count": unresolved_failures if observed_failure else 0,
+        }
+        call_id = state.get("last_observed_verification_failure_tool_call_id")
+        if observed_failure and isinstance(call_id, str) and call_id:
+            verification_failures["last_observed_tool_call_id"] = call_id
     if unresolved and "acceptance_criteria_unverified" not in problems:
         problems.append("acceptance_criteria_unverified")
     if verification_expected and state.get("verification_coverage_stale"):
@@ -139,6 +148,7 @@ def task_outcome_record(
         "exit_code": exit_code,
         "reason": reason,
         "problems": list(dict.fromkeys(problems)),
+        "verification_failures": verification_failures,
         "unresolved_criterion_ids": unresolved,
         "material_paths": sorted(
             set(state.get("touched_repo_paths") or []).union(
@@ -190,7 +200,7 @@ def task_outcome_notice(record: dict[str, Any]) -> str:
     if not problems or set(problems) == {"no_material_edits"}:
         return ""
     # A passing check never cancels contradictory evidence from another check.
-    if set(problems).intersection(
+    failure_problems = set(problems).intersection(
         {
             "verification_failed",
             "acceptance_criteria_failed",
@@ -199,11 +209,26 @@ def task_outcome_notice(record: dict[str, Any]) -> str:
             "repro_failing_after_fix",
             "blast_radius_regressions",
         }
-    ):
-        return "\n\nNot verified: required or observed checks failed." + (
-            " Link availability has not been verified."
-            if "connector_links_unverified" in problems
-            else ""
+    )
+    if failure_problems:
+        message = "Not verified: required or observed checks failed."
+        failures = record.get("verification_failures")
+        if failure_problems == {"verification_failed"} and isinstance(failures, dict):
+            observed = failures.get("observed_count")
+            if type(observed) is int and observed > 0 and failures.get("required_count") == 0:
+                message = (
+                    "The result is unverified. One observed check failed and remains unresolved."
+                    if observed == 1
+                    else f"The result is unverified. {observed} observed checks failed and remain unresolved."
+                )
+        return (
+            "\n\n"
+            + message
+            + (
+                " Link availability has not been verified."
+                if "connector_links_unverified" in problems
+                else ""
+            )
         )
     if "connector_links_unverified" in problems:
         other_problems = [

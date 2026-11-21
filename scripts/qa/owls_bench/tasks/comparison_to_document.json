@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "compare-de-password-managers",
+      "category": "comparison_to_document",
+      "language": "de",
+      "split": "heldout",
+      "prompt": "Vergleiche drei quelloffene Passwortmanager: Bitwarden, KeePassXC und Passbolt. Berücksichtige die Lizenz, die unterstützten Plattformen, wie die Daten synchronisiert werden, die Möglichkeiten zum Selbsthosten und die Kosten für Privatpersonen. Schreibe den Vergleich als .docx-Dokument mit einer Vergleichstabelle, einer kurzen Empfehlung für eine Familie und Quellenangaben mit Links. Antworte auf Deutsch.",
+      "expect": {
+        "deliverable": "docx",
+        "min_rows": 3,
+        "columns": [
+          "password manager",
+          "license",
+          "supported platforms",
+          "how data is synchronised",
+          "self-hosting options",
+          "cost for individuals"
+        ],
+        "min_sources": 3,
+        "source_unit": "host",
+        "reply_language": "de"
+      }
+    },
+    {
+      "id": "compare-en-lisbon-airport-transfer",
+      "category": "comparison_to_document",
+      "language": "en",
+      "split": "dev",
+      "prompt": "Compare the ways to get from Lisbon Airport to the city centre (the Rossio area): metro, airport or city buses, taxi, and ride-hailing. For each, give the typical cost for one adult, the typical travel time, the operating hours, and how practical it is with luggage. Write it up as a .docx document with a comparison table, a recommendation for a traveller arriving at 23:30 with one large suitcase, and links to the sources you used.",
+      "expect": {
+        "deliverable": "docx",
+        "min_rows": 4,
+        "columns": [
+          "way of travelling",
+          "typical cost for one adult",
+          "typical travel time",
+          "operating hours",
+          "practicality with luggage"
+        ],
+        "min_sources": 3,
+        "source_unit": "url",
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "compare-fr-teaching-languages",
+      "category": "comparison_to_document",
+      "language": "fr",
+      "split": "heldout",
+      "prompt": "Compare trois langages de programmation pour initier des lycéens à la programmation : Python, Scratch et JavaScript. Pour chacun, présente la facilité de prise en main, les outils gratuits disponibles en français, les usages possibles après le lycée et les limites. Rédige le comparatif dans un document .docx avec un tableau comparatif, une recommandation argumentée et des sources avec leurs liens. Réponds en français.",
+      "expect": {
+        "deliverable": "docx",
+        "min_rows": 3,
+        "columns": [
+          "programming language",
+          "ease of getting started",
+          "free tools available in French",
+          "uses after secondary school",
+          "limitations"
+        ],
+        "min_sources": 3,
+        "source_unit": "url",
+        "reply_language": "fr"
+      }
+    }
+  ]
+}

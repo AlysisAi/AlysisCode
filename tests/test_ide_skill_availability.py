@@ -12,7 +12,7 @@ from alysis_code.extensions.models import ExtensionState, InstalledExtensionStat
 from alysis_code.extensions.paths import project_extensions_path
 from alysis_code.extensions.state import save_global_state
 from alysis_code.extensions.workspace_trust import grant_workspace_trust
-from alysis_code.ide import management_protocol
+from alysis_code.ide import management_protocol, management_settings
 from alysis_code.ide.protocol import ProtocolError
 from alysis_code.ide.skill_invocation import validate_skill_invocation
 from alysis_code.skills.state import SkillLifecycleState, save_project_skill_state
@@ -33,7 +33,7 @@ def test_alysis_docs_available_in_app_catalog_and_cli_session(
         skills_enabled=skills_enabled,
         bundled_skills_enabled=bundled_enabled,
     )
-    monkeypatch.setattr(management_protocol, "load_config", lambda: cfg)
+    monkeypatch.setattr(management_settings, "load_config", lambda: cfg)
     catalog = management_protocol.handle_management_method(
         "skill.list", {"workspace": str(tmp_path)}, request_id="list"
     )
@@ -137,7 +137,7 @@ def test_catalog_availability_matches_real_session(
         skills_enabled=skills_enabled,
         bundled_skills_enabled=False,
     )
-    monkeypatch.setattr(management_protocol, "load_config", lambda: cfg)
+    monkeypatch.setattr(management_settings, "load_config", lambda: cfg)
     params = {"workspace": str(workspace)}
     catalog = management_protocol.handle_management_method("skill.list", params, request_id="list")
     entries = {entry["name"]: entry for entry in catalog["skills"]}

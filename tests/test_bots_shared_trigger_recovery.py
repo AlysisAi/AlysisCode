@@ -75,7 +75,7 @@ def child(config):
                     ],
                     {},
                 )
-            assert "Invalid tool arguments" in kwargs["messages"][-1]["content"]
+            assert "save_file is not offered now" in kwargs["messages"][-1]["content"]
             if config["block"]:
                 token = kwargs["cancellation_token"]
                 while not token.wait(0.1):

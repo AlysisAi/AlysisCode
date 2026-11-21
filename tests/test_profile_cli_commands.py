@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from alysis_code import cli as cli_mod
@@ -16,7 +17,7 @@ from alysis_code.config import (
     load_persisted_profile_keys,
     save_config,
 )
-from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
+from alysis_code.profiles import ProfileSpec, add_profile, get_profile, set_active_profile
 from alysis_code.provider_auth.openai_codex import OpenAICodexSubscriptionAuth
 
 
@@ -68,6 +69,35 @@ def test_profile_list_shows_profiles_with_active_marker(monkeypatch, tmp_path: P
     assert "✓" in result.output
 
 
+@pytest.mark.parametrize("edited_profile", ["another-connection", "openai"])
+def test_profile_preset_preserves_changes_during_confirmation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, edited_profile: str
+) -> None:
+    _seed_profiles(tmp_path, monkeypatch)
+    changed = ProfileSpec(name=edited_profile, base_url="https://models.example.test/v1")
+
+    def confirm(_message: str, *, default: bool) -> bool:
+        assert default is False
+        cfg = load_config()
+        add_profile(cfg, changed)
+        save_config(cfg)
+        return True
+
+    monkeypatch.setattr(typer, "confirm", confirm)
+    result = CliRunner().invoke(
+        alysis_app, ["profile", "preset", "deepseek", "--as", "openai"], env=_env(tmp_path)
+    )
+
+    if edited_profile == "openai":
+        assert result.exit_code == 2, result.output
+        assert "changed while" in result.output
+    else:
+        assert result.exit_code == 0, result.output
+    persisted = get_profile(load_config(), edited_profile)
+    assert persisted is not None
+    assert persisted.base_url == changed.base_url
+
+
 def test_profile_list_json_is_machine_readable_without_secret_values(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -104,9 +134,9 @@ def test_profile_select_model_atomically_activates_provider_and_model(
     monkeypatch.setenv("PROFILE_SELECTION_API_KEY", secret)
     cfg = AppConfig(
         model="subscription-model",
-        execution={"backend": "delegated", "runtime": "openai-codex"},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
         agent_runtimes={
-            "openai-codex": {"adapter": "codex-cli", "executable": "codex"},
+            "sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"},
         },
     )
     cfg.extra_fields = {
@@ -180,9 +210,9 @@ def test_profile_select_model_rejects_hosted_profile_without_key_before_mutation
     monkeypatch.setenv("OPENAI_API_KEY", "")
     cfg = AppConfig(
         model="subscription-model",
-        execution={"backend": "delegated", "runtime": "openai-codex"},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
         agent_runtimes={
-            "openai-codex": {"adapter": "codex-cli", "executable": "codex"},
+            "sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"},
         },
     )
     cfg.extra_fields = {
@@ -236,9 +266,9 @@ def test_profile_select_model_allows_keyless_local_profile_and_resets_subscripti
     monkeypatch.setenv("OPENAI_API_KEY", "")
     cfg = AppConfig(
         model="subscription-model",
-        execution={"backend": "delegated", "runtime": "openai-codex"},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
         agent_runtimes={
-            "openai-codex": {"adapter": "codex-cli", "executable": "codex"},
+            "sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"},
         },
     )
     cfg.extra_fields = {

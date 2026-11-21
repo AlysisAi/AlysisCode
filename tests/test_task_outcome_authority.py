@@ -82,16 +82,29 @@ def test_outstanding_observed_check_failure_survives_required_checks_and_other_p
         **_sufficient_check_state(),
         "failed_verification_commands": [],
         "unresolved_observed_verification_failures": 1,
+        "last_observed_verification_failure_tool_call_id": "failed-check",
     }
     record = task_outcome_record(exit_code=0, reason="completed", state=state)
     assert record["outcome"] == "completed_unverified"
     assert record["verified_success"] is False
     assert record["problems"] == ["verification_failed"]
-    assert "checks failed" in task_outcome_notice(record)
+    assert record["verification_failures"] == {
+        "required_count": 0,
+        "observed_count": 1,
+        "last_observed_tool_call_id": "failed-check",
+    }
+    assert task_outcome_notice(record) == (
+        "\n\nThe result is unverified. One observed check failed and remains unresolved."
+    )
+    state["unresolved_observed_verification_failures"] = 2
+    assert "2 observed checks failed" in task_outcome_notice(
+        task_outcome_record(exit_code=0, reason="completed", state=state)
+    )
     # Only the execution ledger's successful resolution removes this failure.
     state["unresolved_observed_verification_failures"] = 0
     cleared = task_outcome_record(exit_code=0, reason="completed", state=state)
     assert cleared["verified_success"] is True
+    assert cleared["verification_failures"] == {}
     assert task_outcome_notice(cleared) == ""
 
 

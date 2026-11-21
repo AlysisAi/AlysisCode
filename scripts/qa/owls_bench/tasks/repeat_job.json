@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "repeat-en-ecb-rates",
+      "category": "repeat_job",
+      "language": "en",
+      "split": "heldout",
+      "prompt": "Get today's euro foreign exchange reference rates published by the European Central Bank for USD, GBP, JPY, CHF and CNY. Save them in a .csv file with the currency code, the rate per euro, the reference date, and the link to the ECB page you used. Reply with the five rates.",
+      "expect": {
+        "deliverable": "csv",
+        "min_rows": 5,
+        "columns": [
+          "currency code",
+          "rate per euro",
+          "reference date",
+          "link to the page used"
+        ],
+        "min_sources": 1,
+        "source_unit": "url",
+        "repeat": 2,
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "repeat-el-weather-forecast",
+      "category": "repeat_job",
+      "language": "el",
+      "split": "dev",
+      "prompt": "Βρες την πρόγνωση του καιρού για τις επόμενες τρεις ημέρες για την Αθήνα, τη Θεσσαλονίκη και το Ηράκλειο από έναν ελληνικό μετεωρολογικό ιστότοπο (για παράδειγμα το meteo.gr ή την ΕΜΥ). Αποθήκευσέ την σε αρχείο .xlsx με πόλη, ημερομηνία, μέγιστη και ελάχιστη θερμοκρασία, γενική περιγραφή του καιρού και τον σύνδεσμο της πηγής. Απάντησέ μου στα ελληνικά με μια σύντομη σύνοψη.",
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 9,
+        "columns": [
+          "city",
+          "date",
+          "maximum temperature",
+          "minimum temperature",
+          "general description of the weather",
+          "link to the source"
+        ],
+        "min_sources": 1,
+        "source_unit": "url",
+        "repeat": 2,
+        "reply_language": "el"
+      }
+    },
+    {
+      "id": "repeat-fr-paris-museums",
+      "category": "repeat_job",
+      "language": "fr",
+      "split": "heldout",
+      "prompt": "Relève, sur leurs sites officiels, les horaires d'ouverture du jour et le prix du billet plein tarif de cinq musées parisiens : le Louvre, le musée d'Orsay, le musée de l'Orangerie, le musée du quai Branly et le musée Rodin. Enregistre-les dans un fichier .csv avec le musée, les horaires, le prix en euros et le lien vers la page utilisée. Ne réserve rien et ne crée aucun compte. Réponds en français avec un résumé.",
+      "expect": {
+        "deliverable": "csv",
+        "min_rows": 5,
+        "columns": [
+          "museum",
+          "today's opening hours",
+          "full-price ticket in euros",
+          "link to the page used"
+        ],
+        "min_sources": 5,
+        "source_unit": "host",
+        "repeat": 2,
+        "reply_language": "fr"
+      }
+    }
+  ]
+}

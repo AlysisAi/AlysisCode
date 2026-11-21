@@ -85,7 +85,7 @@ class OriginBrowser(BrowserFixture):
         super().__init__(**kwargs)
         self.approved = []
 
-    def schemas(self, task, eligible, *, approved_origins=(), image_input=False):
+    def schemas(self, task, eligible, *, approved_origins=(), image_input=False, **_):
         self.approved.append(("schemas", tuple(approved_origins)))
         return super().schemas(task, eligible, approved_origins=approved_origins)
 

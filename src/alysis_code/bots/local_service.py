@@ -25,9 +25,36 @@ from ..profiles import (
 )
 
 
-def profiles() -> dict:
+def _usable(cfg, item) -> bool:
+    """A saved model connection owls on this computer can think with."""
     from .app import MODEL_PROTOCOLS
 
+    return (
+        not item.auth_provider
+        and item.protocol in MODEL_PROTOCOLS
+        and bool(resolve_profile_api_key(cfg, item.name).key)
+    )
+
+
+def _connection(cfg, profile) -> dict:
+    """The service settings that reach one saved model connection, with the image generation
+    it declares: the person's own image generation settings, for a connection the image request
+    can reach (owl_images.for_connection)."""
+    from .owl_images import for_connection
+
+    return {
+        "api_key": resolve_profile_api_key(cfg, profile.name).key,
+        "base_url": resolve_effective_base_url(cfg=cfg, profile=profile),
+        "model": profile.default_model or cfg.model,
+        "protocol": profile.protocol,
+        "provider_key": profile.name,
+        "reasoning_effort": profile.reasoning_effort,
+        "extra_headers": profile.extra_headers,
+        "image_generation": for_connection(cfg.image_generation, profile.protocol),
+    }
+
+
+def profiles() -> dict:
     cfg = load_config()
     active = get_active_profile(cfg)
     return {
@@ -37,13 +64,88 @@ def profiles() -> dict:
             {
                 "name": item.name,
                 "model": item.default_model or cfg.model,
-                "available": not item.auth_provider
-                and item.protocol in MODEL_PROTOCOLS
-                and bool(resolve_profile_api_key(cfg, item.name).key),
+                "available": _usable(cfg, item),
             }
             for item in list_profiles(cfg)
         ],
     }
+
+
+def _account_catalog(rows: list[dict] | None):
+    """The account's catalog (account_login.account_model_catalog) as catalog models."""
+    from .owl_models import CatalogModel
+
+    if rows is None:
+        return None
+    return [CatalogModel(row["model"], row["label"], row["unavailable"]) for row in rows]
+
+
+def saved_connections(settings, *, account_catalog=None):
+    """The models owls on this computer can pick: the connection the service started with (the
+    default) and the person's other saved model connections that are set up, read again each
+    time, so a key removed or added in the app counts from the next turn. Image generation
+    turned on or off in the app counts from the next turn too, for the default as well.
+
+    Each connection also offers the models its provider lists for the person (owl_models.py): a
+    connection to the account gateway the account's catalog (``account_catalog``, by default
+    account_login.account_model_catalog, read at most once a minute per key), any other the
+    reviewed models of the provider preset it was made from, as the model pickers list them.
+    """
+    import hashlib
+    from dataclasses import replace
+
+    from ..account_login import account_model_catalog
+    from ..profile_presets import find_preset_for_profile, model_options_for_preset
+    from ..provider_url import is_alysis_gateway_url
+    from .owl_images import for_connection
+    from .owl_models import CachedCatalog, CatalogModel, ModelCatalog, ModelConnection
+
+    read_account = account_catalog or account_model_catalog
+    accounts: dict[str, CachedCatalog] = {}
+
+    def catalog(profile, connection):
+        if is_alysis_gateway_url(connection.base_url):
+            key = connection.api_key
+            slot = hashlib.sha256(f"{connection.base_url}\0{key}".encode()).hexdigest()
+            return accounts.setdefault(
+                slot, CachedCatalog(lambda: _account_catalog(read_account(key)))
+            )
+        if profile is None:
+            return None
+        try:
+            preset = find_preset_for_profile(replace(profile, base_url=connection.base_url))
+        except ValueError:
+            return None
+        rows = model_options_for_preset(preset) if preset is not None else ()
+        reviewed = ModelCatalog(tuple(CatalogModel(model, label) for model, label, _ in rows))
+        return (lambda: reviewed) if reviewed.models else None
+
+    def listed() -> list:
+        cfg = load_config()
+        default = settings.provider_key
+        profiles = list_profiles(cfg)
+        own = next((item for item in profiles if item.name == default), None)
+        current = replace(
+            settings, image_generation=for_connection(cfg.image_generation, settings.protocol)
+        )
+        connections = [
+            ModelConnection(default, default, current, default=True, catalog=catalog(own, current))
+        ]
+        for item in profiles:
+            if item.name == default or not _usable(cfg, item):
+                continue
+            try:
+                connection = replace(settings, **_connection(cfg, item))
+            except ValueError:
+                # The service could not start with this connection either (for example a
+                # plain-HTTP endpoint), so owls can't pick it.
+                continue
+            connections.append(
+                ModelConnection(item.name, item.name, connection, catalog=catalog(item, connection))
+            )
+        return connections
+
+    return listed
 
 
 def settings_from_bootstrap(value: object):
@@ -69,8 +171,7 @@ def settings_from_bootstrap(value: object):
     profile = get_active_profile(cfg)
     if profile.auth_provider:
         raise ValueError("Choose a saved API profile for local Bots.")
-    key = resolve_profile_api_key(cfg, profile.name).key
-    if not key:
+    if not resolve_profile_api_key(cfg, profile.name).key:
         raise ValueError("Sign in or save a model connection in Alysis first.")
     desktop_enabled = value.get("desktop", False)
     if type(desktop_enabled) is not bool:
@@ -82,15 +183,9 @@ def settings_from_bootstrap(value: object):
     return Settings(
         database=directory / "bots.sqlite3",
         token=value["token"],
-        api_key=key,
-        base_url=resolve_effective_base_url(cfg=cfg, profile=profile),
-        model=profile.default_model or cfg.model,
-        protocol=profile.protocol,
-        provider_key=profile.name,
-        reasoning_effort=profile.reasoning_effort,
+        **_connection(cfg, profile),
         owner="local",
         desktop_enabled=desktop_enabled,
-        extra_headers=profile.extra_headers,
         service_mode="local",
     )
 
@@ -207,7 +302,12 @@ async def _serve(announce) -> None:
     listener.bind(("127.0.0.1", 0))
     listener.listen(128)
     listener.setblocking(False)
-    app = create_app(settings, task_store=store, cloud_computers=factory)
+    app = create_app(
+        settings,
+        task_store=store,
+        cloud_computers=factory,
+        model_connections=saved_connections(settings),
+    )
     server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False, lifespan="on"))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:

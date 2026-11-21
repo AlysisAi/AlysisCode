@@ -151,6 +151,54 @@ def test_callback_exception_reaps_the_original_helper(runner, processes, tmp_pat
     assert len(processes) == 1 and processes[0].poll() is not None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows job accounting")
+@pytest.mark.parametrize(
+    "descendant,counts_available", [(False, True), (True, True), (True, False)]
+)
+def test_file_worker_timeout_observes_owned_job_before_drain(
+    tmp_path, processes, monkeypatch, descendant, counts_available
+):
+    from alysis_code._windows_sandbox_job import WindowsSandboxJob
+
+    executable = getattr(sys, "_base_executable", None) or sys.executable
+    script = "import subprocess, sys, time\nsys.stdin.buffer.read()\n"
+    if descendant:
+        script += (
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+            "print('private fixture output', flush=True)\n"
+        )
+    script += "time.sleep(30)"
+    runner = WindowsMxcRunner(ShellSandboxSettings(filesystem_access="read-only"))
+    argv = [executable, "-u", "-c", script]
+    monkeypatch.setattr(runner, "_prepare", lambda **kwargs: (argv, b"{}"))
+    if not counts_available:
+        original = WindowsSandboxJob.process_counts
+        calls = 0
+
+        def counts(job):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("accounting unavailable")
+            return original(job)
+
+        monkeypatch.setattr(WindowsSandboxJob, "process_counts", counts)
+
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        runner.run_file_worker(
+            root=tmp_path, arguments=["private request"], timeout_s=3, cancel_check=lambda: False
+        )
+    error = caught.value
+    assert error.cmd == argv and error.timeout == 3
+    assert error.stdout == ("private fixture output\r\n" if descendant else "")
+    assert "private" not in str(error)
+    assert "File operation outcome unknown" in str(error)
+    assert ("before cleanup" in str(error)) is counts_available
+    if counts_available:
+        assert error.job_counts == ((2, 2) if descendant else (1, 1))
+    assert len(processes) == 1 and processes[0].poll() is not None
+
+
 def test_cancellation_before_first_request_write_never_starts_work(runner, processes, tmp_path):
     checks = 0
 

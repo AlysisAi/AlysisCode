@@ -5755,7 +5755,11 @@ def test_one_shot_completion_gate_failed_verification_accepts_after_checklist(
     assert verify_results[-1].get("all_passed") is False
     assert not surface.errors
     assert not any(event.get("type") == "forced_final_summary_requested" for event in events)
-    assert surface.final_messages[-1].startswith(latest_final_text + "\n\nNot verified:")
+    # One observed check failed and nothing required failed: the notice says so from the record.
+    assert surface.final_messages[-1] == (
+        latest_final_text
+        + "\n\nThe result is unverified. One observed check failed and remains unresolved."
+    )
     # A failed observed check remains visible even if it was not one of the
     # preconfigured required command strings.
     final = next(event["payload"] for event in reversed(events) if event["type"] == "final")

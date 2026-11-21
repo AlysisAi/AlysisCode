@@ -51,6 +51,7 @@ def load_skill_bundle(
                 for key, value in validation.metadata.items()
                 if key in {"name", "description"} and str(value).strip()
             },
+            uses_tools=tuple(dict.fromkeys(validation.metadata.get("uses_tools") or ())),
         ),
         None,
     )

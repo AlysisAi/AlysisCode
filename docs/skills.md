@@ -35,6 +35,16 @@ Supported frontmatter:
 
 - `name`
 - `description`
+- `uses_tools` (optional list of tool names)
+
+`uses_tools` lists the tools the skill's instructions tell the agent to call, for example
+`uses_tools: [document_operation, artifact_check]`. A session offers the skill only when it has
+every listed tool: otherwise the skill is left out of its catalog, `skill_read` reports it as
+unknown, and choosing it explicitly is refused. A tool the current permission mode holds back
+(Plan) still counts, because the session has it. Leave `uses_tools` out when the skill names no
+tool or works with whichever tools are present; such a skill is offered in every session. Each
+name starts with a letter and has at most 64 letters, digits, `_` or `-`; anything else makes
+the skill invalid.
 
 Unknown frontmatter keys are ignored for interoperability.
 
@@ -249,7 +259,8 @@ also suppresses bundled skills even when `bundled_skills_enabled=true`; subagent
 when enabled because delegation and skills are independent capabilities. Set
 `skills_auto_invoke=false` for manual discovery and explicit `/skill` or `$` usage. Set
 `bundled_skills_enabled=false` to hide only the packaged starter pack while other skill roots remain
-enabled. Automatic skill choice happens in the working model's normal request, without an
+enabled. A host that runs a session away from the person's own files sets `user_skills_enabled=false`
+to leave out the user-global roots. Automatic skill choice happens in the working model's normal request, without an
 additional selector request or a separate reasoning setting.
 
 ## Bundled Pack Evaluation

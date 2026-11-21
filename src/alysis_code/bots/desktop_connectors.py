@@ -546,6 +546,10 @@ class OwlApps:
                 raise LimitReached("The task queue is full. Wait for tasks to finish.")
             bot = self.store._bot(db, self.owner, source["bot_id"])
             task_id, now = uid(), time.time()
+            # The person carried its request on: an archived owl comes back (Store._bring_back).
+            if bot["archived_at"] is not None:
+                self.store._bring_back(db, bot["id"], now)
+                bot = self.store._bot(db, self.owner, bot["id"])
             db.execute(
                 "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,"
                 "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",

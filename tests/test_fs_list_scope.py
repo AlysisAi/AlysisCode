@@ -101,6 +101,27 @@ def test_scope_exposes_exact_ignore_components_and_fixed_exclusions(tmp_path: Pa
     assert glob_ignore["scope"]["ignored_path_components"] == ["cache/**"]
 
 
+def test_plain_listing_resolves_visible_paths_and_stops_after_the_first_extra_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = ["build/ignored.txt", "first.txt", "extra.txt", "later.txt"]
+    for name in names:
+        _write(tmp_path, name)
+    resolved = []
+    original = Path.resolve
+
+    def observe(path, *args, **kwargs):
+        if path.suffix == ".txt":
+            resolved.append(path.name)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", observe)
+    result = fs_list(root=tmp_path, globs=names, max_results=1)
+    assert _paths(result) == ["first.txt"]
+    assert result["truncated"] is True
+    assert resolved == ["first.txt", "extra.txt"]
+
+
 def test_authoritative_git_negative_does_not_fall_back_to_fnmatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

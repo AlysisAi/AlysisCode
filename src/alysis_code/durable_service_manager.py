@@ -532,6 +532,21 @@ class DurableServiceManager:
         payload["stopped"] = True
         return payload
 
+    def recorded_preview_urls(self) -> tuple[str, ...]:
+        """Read registered preview origins without probing or changing any service."""
+        urls: list[str] = []
+        for path in self.state_dir.glob(f"*/{SERVICE_METADATA}"):
+            metadata = self._read_metadata(path.parent.name)
+            if not metadata or metadata.get("backend") != "host-preview":
+                continue
+            registered = metadata.get("preview_urls")
+            if not isinstance(registered, list):
+                continue
+            alive, identity_valid = self._metadata_process_alive(metadata)
+            if alive and identity_valid:
+                urls.extend(url for url in registered if isinstance(url, str))
+        return tuple(urls)
+
     def list_active(self) -> list[dict[str, Any]]:
         if not self.state_dir.exists():
             return []

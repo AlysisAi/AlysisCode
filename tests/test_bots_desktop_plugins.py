@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import replace
 
@@ -17,6 +18,13 @@ from alysis_code.bots.desktop_connectors import (
     ResultInput,
 )
 from alysis_code.bots.models import BotInput, TaskInput
+from alysis_code.bots.owl_toolset import (
+    APPS_BY_LOOKUP,
+    CALL_THROUGH_TOOL,
+    FULL,
+    LOOKUP_TOOL,
+    MAX_DIRECT_TOOLS,
+)
 from alysis_code.bots.runtime import BotRuntime
 from alysis_code.bots.store import Conflict, NotFound, Store
 from alysis_code.cloud_connections import BoundConnections, ConnectionStore, ConnectionUnavailable
@@ -61,9 +69,9 @@ READ, OWN, ASKS = (
 class App:
     """The desktop app: polls the hub and answers every call it claims."""
 
-    def __init__(self, hub: DesktopConnectors, *, answer: bool = True):
+    def __init__(self, hub: DesktopConnectors, *, answer: bool = True, catalog=CATALOG):
         self.hub, self.answer, self.calls, self.stop = hub, answer, [], threading.Event()
-        hub.publish(CatalogInput(**CATALOG))
+        hub.publish(CatalogInput(**catalog))
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -299,3 +307,165 @@ def test_a_change_that_reaches_people_asks_the_person_every_time(tmp_path, hub):
         app.close()
     assert store.task("owner", task["id"])["status"] == "completed"
     assert [c["approval"] for c in app.calls] == ["person"]
+
+
+# --- Many apps: their tools by look-up, with every check of a direct call ----------------------
+
+# A second app whose tools take the turn's list past what one request may carry directly.
+MANY = {
+    **CATALOG,
+    "plugins": [
+        *CATALOG["plugins"],
+        {
+            "plugin_id": "alysis.notes",
+            "name": "Σημειώσεις",
+            "tools": [
+                {
+                    "name": f"find-{n}",
+                    "description": f"Βρίσκει τη σημείωση {n}.",
+                    "input_schema": SCHEMA,
+                    "effect": "read",
+                }
+                for n in range(90)
+            ],
+        },
+    ],
+}
+
+
+def _call(name, arguments, *, by_lookup):
+    if by_lookup:
+        return response(name=CALL_THROUGH_TOOL, arguments={"name": name, "arguments": arguments})
+    return response(name=name, arguments=arguments)
+
+
+def _offered(request):
+    return [schema["function"]["name"] for schema in request["tools"] or []]
+
+
+def _receipts(store, task_id, client):
+    """What a turn left behind, as the person, the app and the next model step see it."""
+    events = store.task("owner", task_id)["events"]
+    results = [
+        json.loads(message["content"])
+        for message in client.requests[-1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    return {
+        "status": store.task("owner", task_id)["status"],
+        "started": [e["data"]["name"] for e in events if e["kind"] == "tool_started"],
+        "completed": [
+            (e["data"]["name"], e["data"].get("effect"))
+            for e in events
+            if e["kind"] == "tool_completed"
+        ],
+        "results": results,
+    }
+
+
+def _asks(tmp_path, *, by_lookup: bool):
+    """A change that reaches people, asked for directly or through use_tool: its card, the
+    person's approval, the call the app gets and the turn's receipts."""
+    hub = DesktopConnectors()
+    store = Store(tmp_path / "bots.sqlite3")
+    task = _task(store)
+    app = App(hub, catalog=MANY if by_lookup else CATALOG)
+    arguments = {"content": "Τελείωσε"}
+    try:
+        runtime, client = _runtime(
+            store, tmp_path, hub, [_call(ASKS, arguments, by_lookup=by_lookup)]
+        )
+        runtime.run(store.claim("owner"), runtime.task_token(task["id"]))
+        assert store.task("owner", task["id"])["status"] == "waiting"
+        assert app.calls == [] and len(client.requests) == 1
+        offered = _offered(client.requests[0])
+        (review,) = runtime.action_reviews.list(task["bot_id"])
+        with pytest.raises(Conflict):
+            runtime.action_reviews.decide(
+                task["bot_id"],
+                review["id"],
+                ApprovalDecision(action="always_allow", expected_revision=review["revision"]),
+            )
+        runtime.action_reviews.decide(
+            task["bot_id"],
+            review["id"],
+            ApprovalDecision(action="allow", expected_revision=review["revision"]),
+        )
+        resumed, resumed_client = _runtime(
+            store,
+            tmp_path,
+            hub,
+            [_call(ASKS, arguments, by_lookup=by_lookup), response("Σχολιάστηκε")],
+        )
+        resumed.run(resumed.background.claim(), resumed.task_token(task["id"]), background=True)
+    finally:
+        app.close()
+    modes = [
+        e["data"]["mode"]
+        for e in store.task("owner", task["id"])["events"]
+        if e["kind"] == "tools_offered"
+    ]
+    return {
+        "offered": offered,
+        "modes": modes,
+        "card": {key: review["action"][key] for key in ("tool", "arguments", "observed_context")},
+        "app_calls": [(c["name"], c["arguments"], c["approval"]) for c in app.calls],
+        **_receipts(store, task["id"], resumed_client),
+    }
+
+
+def test_a_change_reached_through_use_tool_asks_and_records_as_a_direct_one(tmp_path):
+    direct = _asks(tmp_path / "direct", by_lookup=False)
+    looked_up = _asks(tmp_path / "lookup", by_lookup=True)
+    assert ASKS in direct["offered"] and set(direct["modes"]) == {FULL}
+    # The many apps' tools are reached through look-up; the owl's own tools stay listed.
+    assert ASKS not in looked_up["offered"] and READ not in looked_up["offered"]
+    assert {LOOKUP_TOOL, CALL_THROUGH_TOOL, "ask_clarification"} <= set(looked_up["offered"])
+    assert len(looked_up["offered"]) <= MAX_DIRECT_TOOLS
+    assert set(looked_up["modes"]) == {APPS_BY_LOOKUP}
+    # Everything else is the same: the card (always asks, for the app's own tool), the person's
+    # approval reaching the app, the steps, the effect receipts and the result the model reads.
+    for key in ("card", "app_calls", "status", "started", "completed", "results"):
+        assert looked_up[key] == direct[key], key
+    assert direct["card"]["tool"] == ASKS and direct["card"]["observed_context"]["always_ask"]
+    assert direct["app_calls"] == [("add-comments", {"content": "Τελείωσε"}, "person")]
+    assert direct["status"] == "completed" and direct["completed"] == [(ASKS, "asks")]
+    assert direct["results"][-1]["plugin"] == "Todoist"
+
+
+@pytest.mark.parametrize("window", [None, 1_000_000])
+def test_reads_and_own_changes_through_use_tool_follow_their_effect(tmp_path, monkeypatch, window):
+    if window:
+        monkeypatch.setenv("ALYSIS_CONTEXT_WINDOW", str(window))
+    hub = DesktopConnectors()
+    store = Store(tmp_path / "bots.sqlite3")
+    task = _task(store)
+    app = App(hub, catalog=MANY)
+    try:
+        runtime, client = _runtime(
+            store,
+            tmp_path,
+            hub,
+            [
+                response(name=LOOKUP_TOOL, arguments={"name": OWN}),
+                _call(READ, {"content": "γάλα"}, by_lookup=True),
+                _call(OWN, {"content": "Αγόρασε γάλα"}, by_lookup=True),
+                _review("allow"),
+                response("Προστέθηκε"),
+            ],
+        )
+        runtime.run(store.claim("owner"), runtime.task_token(task["id"]))
+    finally:
+        app.close()
+    receipts = _receipts(store, task["id"], client)
+    assert receipts["status"] == "completed"
+    # The read runs without asking; the own change goes to the automatic reviewer once.
+    assert [(c["name"], c["approval"]) for c in app.calls] == [
+        ("find-tasks", "none"),
+        ("add-tasks", "automatic"),
+    ]
+    assert receipts["started"] == [LOOKUP_TOOL, READ, OWN]
+    assert receipts["completed"] == [(LOOKUP_TOOL, None), (READ, "read"), (OWN, "own_change")]
+    looked = receipts["results"][0]
+    assert "approval setting" in looked["description"]  # the tool's own effect note
+    assert all(OWN not in _offered(request) for request in client.requests if request["tools"])

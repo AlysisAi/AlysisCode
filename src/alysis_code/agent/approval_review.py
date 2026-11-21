@@ -110,6 +110,8 @@ class ReviewVerdict:
     error: str = ""
     user_authorization: str = "unknown"
     failure: str = ""
+    # The effect class the reviewer named, when the host asked for one (``person_effects``).
+    effect: str = ""
 
 
 class ApprovalReviewer:
@@ -255,6 +257,7 @@ class ApprovalReviewer:
         verdict = parse_verdict(
             str(getattr(response, "content", "") or ""),
             rules=request.metadata.get("approval_rules"),
+            effects=request.metadata.get("person_effects"),
         )
         verdict = replace(verdict, model=model, elapsed_ms=elapsed)
         with self._lock:
@@ -444,6 +447,11 @@ class ApprovalReviewer:
         if rules:
             payload["approval_rules"] = rules
         prompt = REVIEWER_SYSTEM_PROMPT + ("\n\n" + REVIEWER_RULES_PROMPT if rules else "")
+        # A host's policy for its kind of action (for example website input), written by the
+        # host that built this request, never taken from the action or observed content.
+        policy = request.metadata.get("review_policy")
+        if isinstance(policy, str) and policy:
+            prompt += "\n\n" + policy
         if not self._local_inspection:
             prompt += "\nThis action runs on a separate computer. Local inspection is unavailable; judge only the supplied evidence and ask_person if essential evidence is missing."
         content = json.dumps(payload, ensure_ascii=False)
@@ -603,8 +611,18 @@ class ApprovalReviewer:
             pass
 
 
-def parse_verdict(text: str, *, rules: list[dict[str, Any]] | None = None) -> ReviewVerdict:
-    """An incomplete assessment is a review failure, never an implicit allow."""
+def parse_verdict(
+    text: str,
+    *,
+    rules: list[dict[str, Any]] | None = None,
+    effects: list[str] | tuple[str, ...] | None = None,
+) -> ReviewVerdict:
+    """An incomplete assessment is a review failure, never an implicit allow.
+
+    ``effects``: the effect classes that need a person, when the host asked the reviewer to name
+    the action's effect ("none" or one of them). An action with a named effect is never allowed
+    automatically: the person decides it, unless the reviewer denies it.
+    """
     data = _json_object(text)
     if data is None:
         return ReviewVerdict(
@@ -630,6 +648,16 @@ def parse_verdict(text: str, *, rules: list[dict[str, Any]] | None = None) -> Re
             error="The reviewer returned an incomplete assessment.",
             failure="invalid_response",
         )
+    effect = ""
+    if effects is not None:
+        effect = data.get("effect")
+        if effect != "none" and effect not in effects:
+            return ReviewVerdict(
+                "ask_person",
+                "",
+                error="The reviewer did not name the action's effect.",
+                failure="invalid_response",
+            )
     reason = _short(" ".join(safe_text(reason).split()), _MAX_REASON_CHARS)
     if rules:
         matches = data.get("rule_matches")
@@ -660,7 +688,12 @@ def parse_verdict(text: str, *, rules: list[dict[str, Any]] | None = None) -> Re
             risk=risk,
             user_authorization=authorization,
         )
-    return ReviewVerdict(decision, reason, risk=risk, user_authorization=authorization)
+    if decision == "allow" and effect not in ("", "none"):
+        # The person decides an effect that reaches others or can't be undone.
+        decision = "ask_person"
+    return ReviewVerdict(
+        decision, reason, risk=risk, user_authorization=authorization, effect=effect or ""
+    )
 
 
 def _json_object(text: str) -> dict[str, Any] | None:

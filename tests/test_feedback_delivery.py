@@ -94,6 +94,99 @@ def test_diagnostics_bounded_to_recent_messages_and_large_messages_omitted(tmp_p
     assert "Message exceeds" in report.preview() and len(report.body) < delivery.MAX_REQUEST_BYTES
 
 
+def _event(kind, payload, ts=1.0):
+    return {"type": kind, "ts": ts, "payload": payload, "cwd": "/private/cwd", "pid": 4242}
+
+
+@pytest.mark.parametrize("source", ["live", "retained"])
+def test_logs_carry_the_recent_failure_records_redacted_and_in_order(tmp_path, source):
+    events = [
+        _event("user_message", {"content": "PRIVATE PROMPT"}),
+        _event(
+            "llm_call_retry",
+            {"provider": "alysis", "attempt": 1, "reason": "http_503", "elapsed_ms": 900},
+        ),
+        _event("assistant_message", {"content": "PRIVATE ANSWER"}),
+        _event(
+            "terminal_error",
+            {
+                "error_type": "APIStatusError",
+                "error_summary": "request refused password=synthetic123",
+                "failure_category": "provider_unavailable",
+                "api_key": "other-secret",
+            },
+        ),
+        _event("turn_outcome", {"reason": "provider_failure", "exit_code": 1}),
+    ]
+    messages = [{"role": "user", "content": "hola, nada funciona"}]
+    session = (
+        SimpleNamespace(messages=messages, store=SimpleNamespace(events_snapshot=lambda: events))
+        if source == "live"
+        else SimpleNamespace(messages=messages, events=events)
+    )
+    report = delivery.prepare_feedback(
+        workspace_root=tmp_path,
+        feedback_text="Nada funciona desde ayer",
+        include_diagnostics=True,
+        active_session=session,
+    )
+    errors = json.loads(report.body)["diagnostics"]["recent_errors"]
+    assert [e["type"] for e in errors] == ["llm_call_retry", "terminal_error", "turn_outcome"]
+    assert errors[0]["payload"]["reason"] == "http_503"
+    assert errors[1]["payload"]["failure_category"] == "provider_unavailable"
+    assert errors[2]["payload"] == {"reason": "provider_failure", "exit_code": 1}
+    for private in ["PRIVATE PROMPT", "PRIVATE ANSWER", "synthetic123", "other-secret"]:
+        assert private not in report.preview()
+    assert all(set(e) == {"type", "ts", "payload"} for e in errors), "no host fields like cwd"
+    without_logs = prepared(tmp_path, active_session=session)
+    assert json.loads(without_logs.body)["diagnostics"] is None
+
+
+def test_recent_errors_are_bounded_and_an_oversized_record_keeps_its_plain_fields(tmp_path):
+    oversized = _event(
+        "turn_outcome",
+        {
+            "reason": "max_steps_exceeded",
+            "exit_code": 1,
+            "touched_repo_paths": [f"module_{i}.py" for i in range(2000)],
+        },
+    )
+    warnings = [_event("warning", {"message": "w" * 600, "n": i}) for i in range(200)]
+    session = SimpleNamespace(messages=[], events=[*warnings, oversized])
+    report = delivery.prepare_feedback(
+        workspace_root=tmp_path,
+        feedback_text="repro",
+        include_diagnostics=True,
+        active_session=session,
+    )
+    errors = json.loads(report.body)["diagnostics"]["recent_errors"]
+    assert 0 < len(errors) <= delivery.MAX_RECENT_ERRORS
+    sizes = [len(json.dumps(e, ensure_ascii=False).encode("utf-8")) for e in errors]
+    assert sum(sizes) <= delivery.MAX_RECENT_ERROR_BYTES
+    assert max(sizes) <= delivery.MAX_RECENT_ERROR_EVENT_BYTES
+    assert errors[-1]["trimmed"] is True
+    assert errors[-1]["payload"] == {"reason": "max_steps_exceeded", "exit_code": 1}
+    assert errors[-2]["payload"]["n"] == 199, "the newest records are the ones kept"
+
+
+def test_a_report_at_both_limits_fits_the_hosted_intake(tmp_path):
+    # The hosted feedback intake accepts diagnostics up to 210,000 bytes.
+    session = SimpleNamespace(
+        messages=[{"role": "user", "content": "x" * 31000} for _ in range(20)],
+        events=[_event("error", {"message": "y" * 1800}) for _ in range(100)],
+    )
+    report = delivery.prepare_feedback(
+        workspace_root=tmp_path,
+        feedback_text="repro",
+        include_diagnostics=True,
+        active_session=session,
+    )
+    diagnostics = json.loads(report.body)["diagnostics"]
+    assert diagnostics["recent_errors"] and diagnostics["messages"]
+    assert len(json.dumps(diagnostics, ensure_ascii=False).encode("utf-8")) <= 210000
+    assert len(report.body) < delivery.MAX_REQUEST_BYTES
+
+
 @pytest.mark.parametrize("text", ["", " ", "x" * 8001])
 def test_send_requires_bounded_description(tmp_path, text):
     with pytest.raises(FeedbackReportError):

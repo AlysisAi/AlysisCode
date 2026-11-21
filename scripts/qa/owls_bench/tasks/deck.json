@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "deck-en-water-cycle",
+      "category": "deck",
+      "language": "en",
+      "split": "heldout",
+      "prompt": "Make a 6-slide .pptx deck that explains the water cycle to 10-year-old pupils: a title slide, four content slides (evaporation, condensation, precipitation, collection) and a final slide with a short quiz question and at least two sources with links.",
+      "expect": {
+        "deliverable": "pptx",
+        "min_slides": 6,
+        "max_slides": 6,
+        "min_sources": 2,
+        "source_unit": "url",
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "deck-zh-solar-terms",
+      "category": "deck",
+      "language": "zh",
+      "split": "dev",
+      "prompt": "请制作一份正好5页的.pptx演示文稿，向外国朋友介绍中国的二十四节气：第1页为标题页，第2至4页分别介绍节气的由来、四季中有代表性的节气及其习俗，第5页为总结，并列出至少两个带链接的资料来源。请用中文回复，简要说明演示文稿的内容。",
+      "expect": {
+        "deliverable": "pptx",
+        "min_slides": 5,
+        "max_slides": 5,
+        "min_sources": 2,
+        "source_unit": "url",
+        "reply_language": "zh"
+      }
+    },
+    {
+      "id": "deck-it-recycling-milan",
+      "category": "deck",
+      "language": "it",
+      "split": "dev",
+      "prompt": "Prepara una presentazione .pptx di 7 diapositive per i nuovi residenti di Milano sulla raccolta differenziata: come si separano carta, plastica e metalli, vetro, umido e indifferenziato, quali sono i giorni di raccolta e dove portare i rifiuti ingombranti. L'ultima diapositiva deve elencare almeno tre fonti con i loro link. Rispondi in italiano.",
+      "expect": {
+        "deliverable": "pptx",
+        "min_slides": 7,
+        "max_slides": 7,
+        "min_sources": 3,
+        "source_unit": "url",
+        "reply_language": "it"
+      }
+    }
+  ]
+}
