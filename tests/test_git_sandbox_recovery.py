@@ -222,7 +222,13 @@ def test_transport_rejects_wrong_phase_backend_and_malformed_envelopes(
     reader = contained.ContainedReadTools(SETTINGS, tmp_path)
     reader.runner = reader.write_runner = Runner()
     with pytest.raises(ConfigError) as caught:
-        reader._invoke(["unused"], write=write, cancel_check=None, timeout_s=5)
+        reader._invoke(
+            ["unused"],
+            tool="fs_write" if write else "fs_read",
+            write=write,
+            cancel_check=None,
+            timeout_s=5,
+        )
     assert isinstance(caught.value, contained.ContainedGitDirectoryError) is typed
 
 

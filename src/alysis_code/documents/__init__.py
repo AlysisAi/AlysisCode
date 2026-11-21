@@ -25,6 +25,8 @@ def pdf_capability_status() -> dict:
             "missing_modules": missing,
             "guidance": "Do not repeatedly probe system PDF converters. Report the missing capability or use another explicitly available document tool.",
         }
+    from ..office.charts import SHAPE as CHART_SHAPE
+
     argv = [sys.executable, "-m", "alysis_code.documents"]
     command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     return {
@@ -46,7 +48,18 @@ def pdf_capability_status() -> dict:
             "tables",
             "links",
             "code blocks",
+            "charts (a ```chart block, see chart)",
             "Latin/Greek/Cyrillic text",
+            "Chinese/Japanese/Korean text",
         ],
-        "limits": "Text-led Markdown only; no images, raw HTML layout, Word conversion, complex-script shaping or CJK fonts. Unsupported glyphs fail explicitly. Maximum 50 pages and 1 MiB Markdown. Rendering is not visual approval.",
+        "chart": {
+            "shape": "A fenced code block whose info string is chart holds one JSON chart "
+            "object, drawn as a vector chart at the full text width. " + CHART_SHAPE,
+            "example": "```chart\n"
+            '{"chart": "column", "title": "Αιτήματα ανά εβδομάδα", '
+            '"categories": ["Εβδ. 1", "Εβδ. 2", "Εβδ. 3"], '
+            '"series": [{"name": "Δίκτυο", "values": [12, 9, 14]}, '
+            '{"name": "Email", "values": [5, 7, 4]}], "y_title": "Αιτήματα"}\n```',
+        },
+        "limits": "Text-led Markdown only; no images (charts come from ```chart blocks), raw HTML layout, Word conversion or complex-script shaping. Chinese, Japanese and Korean characters have a single regular weight: bold, italic and headings do not change them. Unsupported glyphs fail explicitly. Maximum 50 pages and 1 MiB Markdown. Rendering is not visual approval.",
     }

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -296,10 +296,13 @@ def test_a_routine_without_a_named_zone_follows_the_person(chat):
     )
     saved = {item["id"]: item for item in store.list_schedules("owner", bot["id"])}
     assert saved[proposed["id"]]["timing"]["timezone"] == "Asia/Tokyo"
-    # Timings that carry no zone are left as they are.
+    # Timings that carry no zone are left as they are. A one-time routine must lie ahead.
+    ahead = (datetime.now(timezone(timedelta(hours=2))) + timedelta(days=30)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
     once = request(
-        "Στις 20 Νοεμβρίου στις 9",
-        schedule_args(kind="once", at="2026-11-20T09:00:00+02:00") | {"name": "Once"},
+        "Μία φορά, τον άλλο μήνα στις 9",
+        schedule_args(kind="once", at=ahead.isoformat()) | {"name": "Once"},
     )
     assert "timezone" not in once["timing"]
 

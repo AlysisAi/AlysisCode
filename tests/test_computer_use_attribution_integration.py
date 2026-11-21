@@ -19,6 +19,7 @@ from alysis_code import computer_use_attribution as a
 from alysis_code import token_budget
 from alysis_code.agent.browser_start import BrowserStartHandoff
 from alysis_code.ide import stdio_bridge
+from alysis_code.ide.management_bridge import ManagementBridge
 from alysis_code.ide.protocol import ProtocolError, ProtocolRequest
 from alysis_code.llm.cancellable_http import _transport_entry
 
@@ -49,9 +50,10 @@ def records(out):
 
 
 @pytest.mark.parametrize("opt_in", [False, True])
-def test_management_real_rpc_config_boundary(monkeypatch, opt_in):
+@pytest.mark.parametrize("bridge_type", [stdio_bridge.StdioBridge, ManagementBridge])
+def test_management_real_rpc_config_boundary(bridge_type, opt_in):
     out = io.StringIO()
-    bridge = stdio_bridge.StdioBridge(stdout=out)
+    bridge = bridge_type(stdin=io.StringIO(), stdout=out)
     result = send(bridge, out, "config.get", B["managementContext"] if opt_in else None)
     assert result["ok"] is True
     assert ("computer_use_attribution" in result) is opt_in

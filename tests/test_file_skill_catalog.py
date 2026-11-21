@@ -39,7 +39,8 @@ def test_bundled_skills_and_references_are_selected_for_wheel_and_sdist():
     assert names == BUNDLED and NAMES <= names
     for builder, prefix in ((WheelBuilder, ""), (SdistBuilder, "src/")):
         included = {
-            f.distribution_path: f.path for f in builder(str(root)).recurse_included_files()
+            Path(f.distribution_path).as_posix(): f.path
+            for f in builder(str(root)).recurse_included_files()
         }
         for name in names:
             validation = validate_skill_bundle(bundled / name)
@@ -48,7 +49,7 @@ def test_bundled_skills_and_references_are_selected_for_wheel_and_sdist():
                 assert len(validation.description) <= 140
                 assert len(validation.instructions) < 3000
             for resource in (bundled / name).rglob("*.md"):
-                key = prefix + str(resource.relative_to(root / "src"))
+                key = prefix + resource.relative_to(root / "src").as_posix()
                 assert Path(included[key]).read_bytes() == resource.read_bytes()
         assert prefix + "alysis_code/file_staging.py" in included
 

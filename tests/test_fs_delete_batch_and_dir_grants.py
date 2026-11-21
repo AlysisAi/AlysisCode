@@ -342,6 +342,20 @@ def test_a_folder_is_refused_with_what_to_do_instead(tmp_path: Path) -> None:
     assert len(list((tmp_path / "pkg" / "__pycache__").iterdir())) == 2
 
 
+def test_partial_batch_emits_only_successfully_deleted_files(tmp_path, monkeypatch):
+    from alysis_code.committed_edits import observe
+
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "off")
+    (tmp_path / "deleted.txt").write_text("ordinary fixture")
+    (tmp_path / "folder").mkdir()
+    tools = _build_tools(tmp_path, surface=_RecordingSurface(), yes=False)
+    edits = []
+    with observe(tmp_path, edits.append):
+        result = tools["fs_delete"].run({"paths": ["folder", "deleted.txt"]})
+    assert result["deleted_count"] == 1 and not result["ok"]
+    assert [(e["path"], e["after"]) for e in edits] == [("deleted.txt", None)]
+
+
 def test_a_folder_among_files_is_not_shown_for_approval(tmp_path: Path) -> None:
     """The file beside it is approved and removed; the folder is that entry's error."""
     paths = _make_pyc_files(tmp_path, 2)

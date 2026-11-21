@@ -17,6 +17,11 @@ def health_payload() -> dict[str, Any]:
 
 def run_stdio_bridge(*, role: str = "runtime") -> int:
     # Registering the CLI must not construct the IDE's execution dependency graph.
+    if role == "management":
+        from ...ide.management_bridge import run_management_bridge
+
+        return run_management_bridge()
+
     from ...ide.stdio_bridge import run_stdio_bridge as run
 
     return run() if role == "runtime" else run(role=role)
@@ -32,6 +37,7 @@ ide_bridge_app = typer.Typer(
 class BridgeRole(str, Enum):
     runtime = "runtime"
     projection = "plugin-projection"
+    management = "management"
 
 
 @ide_bridge_app.callback(invoke_without_command=True)
@@ -48,7 +54,7 @@ def ide_bridge(
         raise typer.Exit(
             code=run_stdio_bridge()
             if role == BridgeRole.runtime
-            else run_stdio_bridge(role="plugin_projection")
+            else run_stdio_bridge(role=role.value.replace("-", "_"))
         )
     typer.echo(ctx.get_help())
 

@@ -27,7 +27,7 @@ from alysis_code.bots.scheduling import ScheduleInput
 from alysis_code.bots.store import Store
 from alysis_code.cancellation import CooperativeCancellationError, EventCancellationToken
 from alysis_code.llm.openai_compat import OpenAICompatClient
-from alysis_code.llm.types import LLMError, LLMOutputLimitError, LLMResponse, LLMUsage, ToolCall
+from alysis_code.llm.types import LLMError, LLMResponse, LLMUsage, ToolCall
 
 
 @pytest.fixture(autouse=True)
@@ -171,7 +171,8 @@ def test_a_throttled_call_is_retried_a_few_times_then_fails_the_turn(tmp_path):
 @pytest.mark.parametrize(
     ("error", "busy"),
     [
-        (lambda: http_error(429, retry_after=120), True),
+        # Longer than any single wait a turn honours (PROVIDER_ASKED_WAIT_SECONDS).
+        (lambda: http_error(429, retry_after=600), True),
         (lambda: http_error(400), False),
         (lambda: http_error(401), False),
         (lambda: TimeoutError("a tool timed out"), False),
@@ -208,12 +209,13 @@ def test_each_model_call_gets_its_own_retry_and_tools_never_run_twice(tmp_path):
         lambda: RuntimeError("Authorization: Bearer PRIVATE_TEST_SECRET"),
         lambda: http_error(401),
         lambda: http_error(400),
-        lambda: http_error(429, retry_after=120),
-        lambda: LLMOutputLimitError(response("Partial reply")),
+        lambda: http_error(429, retry_after=600),
     ],
-    ids=["unknown", "401", "400", "429_long_wait", "output_limit"],
+    ids=["unknown", "401", "400", "429_long_wait"],
 )
-def test_rejections_and_partial_output_are_not_retried(tmp_path, error):
+def test_rejections_are_not_retried(tmp_path, error):
+    # A reply the output limit cut off is not sent again either: the owl is told and writes a
+    # shorter one (test_bots_cut_off_replies.py).
     store, _, task, client = run_task(tmp_path, [error(), response("Should not run")])
     assert task["status"] == "failed"
     assert len(client.requests) == 1
@@ -235,8 +237,8 @@ def test_exhausted_quota_is_not_retried(tmp_path):
     [
         (429, {"code": "insufficient_quota"}, {}),
         (429, {"type": "billing_hard_limit_reached"}, {}),
-        (429, {"code": "rate_limit_exceeded"}, {"Retry-After": "120"}),
-        (503, {"code": "server_error"}, {"Retry-After": "120"}),
+        (429, {"code": "rate_limit_exceeded"}, {"Retry-After": "600"}),
+        (503, {"code": "server_error"}, {"Retry-After": "600"}),
     ],
 )
 def test_adapter_metadata_reaches_bots_retry_owner(tmp_path, status, detail, headers):
@@ -273,9 +275,9 @@ def test_stop_before_the_retry_decision_records_cancellation(tmp_path, monkeypat
     cancel = threading.Event()
     retry_wait = runtime_module.provider_retry_wait
 
-    def stop_before_deciding(exc, attempts, token):
+    def stop_before_deciding(exc, attempts, token, **kwargs):
         cancel.set()
-        return retry_wait(exc, attempts, token)
+        return retry_wait(exc, attempts, token, **kwargs)
 
     monkeypatch.setattr(runtime_module, "provider_retry_wait", stop_before_deciding)
     store = Store(tmp_path / "bots.sqlite3")
@@ -295,9 +297,9 @@ def test_stop_does_not_replace_fatal_provider_control_flow(tmp_path, monkeypatch
     cancel = threading.Event()
     retry_wait = runtime_module.provider_retry_wait
 
-    def stop_before_deciding(exc, attempts, token):
+    def stop_before_deciding(exc, attempts, token, **kwargs):
         cancel.set()
-        return retry_wait(exc, attempts, token)
+        return retry_wait(exc, attempts, token, **kwargs)
 
     monkeypatch.setattr(runtime_module, "provider_retry_wait", stop_before_deciding)
     store = Store(tmp_path / "bots.sqlite3")
@@ -443,7 +445,7 @@ def test_one_bot_still_answers_one_message_at_a_time(tmp_path):
         runtime.stop()
 
 
-def test_cancel_stops_only_its_own_task_and_stop_interrupts_every_task(tmp_path):
+def test_cancel_stops_only_its_own_task_and_stop_settles_every_task(tmp_path):
     store = Store(tmp_path / "bots.sqlite3")
     first_chat, second_chat = two_bots(store)
     _, third_chat = setup_chat(store, "Third")
@@ -475,7 +477,10 @@ def test_cancel_stops_only_its_own_task_and_stop_interrupts_every_task(tmp_path)
         assert [store.task("alice", t["id"])["status"] for t in tasks[1:]] == ["running"] * 2
     finally:
         runtime.stop()
-    assert [store.task("alice", t["id"])["status"] for t in tasks[1:]] == ["interrupted"] * 2
+    # Each was still thinking, with nothing done outside its owl: it starts again once after
+    # the restart (Store.restart_cut).
+    stopped = [store.task("alice", t["id"]) for t in tasks[1:]]
+    assert [(t["status"], t["restarts"]) for t in stopped] == [("queued", 1)] * 2
     assert runtime._thread is None and runtime._workers == []
 
 

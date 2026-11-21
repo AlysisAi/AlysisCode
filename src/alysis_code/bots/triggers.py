@@ -45,7 +45,13 @@ def file_added(db, bot_id: str, file_id: str, name: str, now: float) -> None:
         "INSERT INTO activation_events VALUES(?,?,?, ?,?,?) ON CONFLICT DO NOTHING",
         (event_id, bot_id, "file_added", file_id, encode({"file_id": file_id, "name": name}), now),
     ).rowcount
-    if not inserted:
+    # An archived owl's file events rest: a file added meanwhile never starts it later.
+    if (
+        not inserted
+        or db.execute(
+            "SELECT 1 FROM bots WHERE id=? AND archived_at IS NOT NULL", (bot_id,)
+        ).fetchone()
+    ):
         return
     for rule in db.execute(
         "SELECT id,revision FROM bot_triggers WHERE bot_id=? AND kind='file_added' AND state='active'",
@@ -242,7 +248,7 @@ class TriggerStore:
         with self.store.connect(write=True) as db:
             rules = db.execute(
                 """SELECT r.* FROM bot_triggers r JOIN bots b ON b.id=r.bot_id
-                WHERE b.owner=? AND r.state='active'
+                WHERE b.owner=? AND b.archived_at IS NULL AND r.state='active'
                 ORDER BY CASE WHEN r.last_run_at IS NULL THEN 0 ELSE 1 END,
                 r.last_run_at,r.created_at,r.id""",
                 (self.owner,),

@@ -7,18 +7,12 @@ import re
 import shutil
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from .. import __version__
 from ..atomic_io import atomic_write_text
-from ..cli_impl.commands.auth import (
-    native_provider_status_payload,
-    native_reasoning_capabilities,
-    select_native_subscription_model,
-)
 from ..cli_impl.commands.hooks import (
     _HOOK_SESSION_SOURCES,
     _HOOKS_INIT_TEMPLATE,
@@ -36,18 +30,14 @@ from ..cli_impl.commands.mcp import (
     _require_http_oauth_server_for_auth,
     _resolve_mcp_server_by_id,
 )
-from ..cli_impl.commands.profile import select_api_profile_model
-from ..computer_use_attribution import phase
 from ..config import (
     AppConfig,
     ConfigError,
     clear_persisted_profile_key,
     config_path,
-    credentials_path,
     load_config,
     rename_persisted_profile_key,
     resolve_api_key,
-    resolve_profile_api_key,
     save_config,
     set_config_value,
 )
@@ -62,7 +52,6 @@ from ..extensions.activation import resolve_active_plugins
 from ..extensions.bundled import bundled_manifest, parse_bundled_manifest, same_bundled_access
 from ..extensions.component_activation import (
     build_plugin_activation_index,
-    filter_discovered_skills_for_plugins,
 )
 from ..extensions.install import (
     PluginInstallError,
@@ -82,13 +71,6 @@ from ..extensions.state import (
     load_project_state,
 )
 from ..extensions.workspace_trust import is_workspace_trusted as extension_workspace_trusted
-from ..feedback_report import (
-    FeedbackReportError,
-    create_feedback_bundle,
-    create_feedback_github_issue_draft,
-    feedback_github_issue_status_lines,
-    resolve_feedback_workspace_root,
-)
 from ..hooks import (
     canonicalize_hook_event_name,
     hook_audit_artifact_path,
@@ -100,7 +82,6 @@ from ..hooks import (
     trust_project_hooks_config,
     untrust_project_hooks_config,
 )
-from ..llm.metadata import credential_scope_fingerprint
 from ..mcp.oauth_store import delete_oauth_token_record
 from ..profile_presets import (
     PROFILE_PRESETS,
@@ -119,7 +100,6 @@ from ..profiles import (
     add_profile,
     get_active_profile,
     get_profile,
-    list_profiles,
     remove_profile,
     rename_profile,
     set_active_profile,
@@ -140,7 +120,6 @@ from ..sandbox_doctor import (
     diagnose_sandbox,
     format_sandbox_problem_message,
     pull_sandbox_images,
-    sandbox_env_summary,
 )
 from ..session_metrics import score_session_log
 from ..session_store import (
@@ -151,15 +130,12 @@ from ..session_store import (
 )
 from ..skills import (
     SkillLifecycleError,
-    discover_skills,
     install_skill_bundle,
     load_global_skill_state,
     load_project_skill_state,
     load_repo_conventions,
     remove_managed_skill,
     render_repo_conventions_context,
-    render_skill_info_text,
-    resolve_skill_catalog,
     resolve_skill_catalog_entry,
     save_global_skill_state,
     save_project_skill_state,
@@ -174,9 +150,27 @@ from ..tools.registry import iter_builtin_tool_metadata
 from ..tools.web_search_runtime import resolve_web_search_runtime_status
 from ..updates import check_for_updates, status_from_cache
 from ..usage_tracker import aggregate_usage_from_session_logs
-from ..workspace_binding import WorkspaceAction, WorkspaceBindingError
-from ..workspace_binding_ui import resolve_startup_workspace_binding
-from ..workspace_context import WorkspaceContextError
+from .management_common import (
+    MUTATING_MANAGEMENT_METHODS,
+    WORKSPACE_REQUIRED_MANAGEMENT_METHODS,
+    _dataclass_payload,
+    _json_safe,
+    _optional_bool,
+    _optional_str,
+    _redact_payload,
+    _required_str,
+    _workspace_root_from_params,
+    dispatch_management_handler,
+)
+from .management_settings import (
+    SETTINGS_HANDLERS,
+    _api_key_status,
+    _profile_payload,
+    _safe_config_payload,
+    _skill_catalog,
+    _url_host,
+)
+from .management_settings import _commands_list as _commands_list
 from .mcp_oauth_coordinator import McpOAuthLoginRequest
 from .protocol import ProtocolError, RequestId, redact_secrets
 
@@ -188,12 +182,6 @@ _CONVENTIONS_RENDER_DEFAULT_MAX_CHARS = 4_000
 _CONVENTIONS_RENDER_MAX_CHARS = 100_000
 _CONVENTIONS_RENDER_DEFAULT_MAX_BYTES = 64 * 1024
 _CONVENTIONS_RENDER_MAX_BYTES = 256 * 1024
-_SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)\b([A-Z0-9_.-]*(?:api[_-]?key|token|secret|password|credential)[A-Z0-9_.-]*\s*[:=]\s*)([^\s,;&]+)"
-)
-_URL_USERINFO_PATTERN = re.compile(
-    r"(?i)\b((?:git\+)?https?://)([^/@\s]+)@([A-Za-z0-9.-]+(?::\d+)?)"
-)
 _EXTENSION_REGISTRY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_-]*$")
 
 MANAGEMENT_METHODS = (
@@ -281,103 +269,6 @@ MANAGEMENT_METHODS = (
     "ext.disable",
 )
 
-MUTATING_MANAGEMENT_METHODS = frozenset(
-    {
-        "skill.import.package",
-        "skill.import.preview",
-        "skill.import.install",
-        "skill.import.discard",
-        "skill.document.save",
-        "skill.update.preview",
-        "hooks.document.save",
-        "config.set",
-        "profile.add",
-        "profile.remove",
-        "profile.use",
-        "profile.selectModel",
-        "provider.auth.selectModel",
-        "profile.rename",
-        "profile.preset",
-        "profile.convert",
-        "tool.trust",
-        "tool.untrust",
-        "skill.init",
-        "skill.install",
-        "skill.enable",
-        "skill.disable",
-        "skill.remove",
-        "sandbox.setup",
-        "sandbox.pull",
-        "report.create",
-        "mcp.auth.login.start",
-        "mcp.auth.login.cancel",
-        "mcp.auth.logout",
-        "hooks.trust",
-        "hooks.untrust",
-        "hooks.init",
-        "hooks.enable",
-        "hooks.disable",
-        "ext.install",
-        "ext.custom.save",
-        "ext.uninstall",
-        "ext.enable",
-        "ext.disable",
-    }
-)
-
-WORKSPACE_REQUIRED_MANAGEMENT_METHODS = frozenset(
-    {
-        "skill.import.describe",
-        "skill.import.package",
-        "skill.import.preview",
-        "skill.import.install",
-        "skill.import.discard",
-        "skill.document.read",
-        "skill.document.save",
-        "skill.update.preview",
-        "hooks.document.read",
-        "hooks.document.save",
-        "tool.list",
-        "tool.info",
-        "tool.trust",
-        "tool.untrust",
-        "skill.list",
-        "skill.info",
-        "skill.init",
-        "skill.validate",
-        "skill.install",
-        "skill.enable",
-        "skill.disable",
-        "skill.remove",
-        "report.create",
-        "mcp.status",
-        "mcp.prompts.list",
-        "mcp.prompts.get",
-        "mcp.auth.status",
-        "mcp.auth.login.start",
-        "mcp.auth.login.status",
-        "mcp.auth.login.cancel",
-        "mcp.auth.logout",
-        "hooks.list",
-        "hooks.doctor",
-        "hooks.test",
-        "hooks.trust",
-        "hooks.untrust",
-        "hooks.init",
-        "hooks.effective",
-        "hooks.enable",
-        "hooks.disable",
-        "conventions.list",
-        "conventions.render",
-        "ext.info",
-        "ext.list",
-        "ext.install",
-        "ext.custom.save",
-        "ext.uninstall",
-        "ext.enable",
-        "ext.disable",
-    }
-)
 
 MANAGEMENT_METHOD_CAPABILITIES: dict[str, dict[str, Any]] = {
     method: {
@@ -574,41 +465,7 @@ def handle_management_method(
     | None = None,
 ) -> dict[str, Any]:
     handler = (stateful_handlers or {}).get(method) or _HANDLERS.get(method)
-    if handler is None:
-        raise ProtocolError(
-            "method_not_found",
-            f"Unsupported method: {method}",
-            request_id=request_id,
-        )
-    if method in MUTATING_MANAGEMENT_METHODS:
-        _require_workspace_trust(params, method=method, request_id=request_id)
-    if method in WORKSPACE_REQUIRED_MANAGEMENT_METHODS:
-        _require_workspace_binding_param(params, method=method, request_id=request_id)
-    try:
-        return _redact_payload(handler(params, request_id))
-    except ProtocolError as exc:
-        raise ProtocolError(
-            exc.code,
-            _redact_management_error_message(exc.message),
-            request_id=exc.request_id if exc.request_id is not None else request_id,
-        ) from exc
-    except ConfigError as exc:
-        raise ProtocolError(
-            "config_error", _redact_management_error_message(str(exc)), request_id=request_id
-        ) from exc
-    except (
-        WorkspaceContextError,
-        FeedbackReportError,
-        SkillLifecycleError,
-        PluginInstallError,
-    ) as exc:
-        raise ProtocolError(
-            "management_error", _redact_management_error_message(str(exc)), request_id=request_id
-        ) from exc
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ProtocolError(
-            "management_error", _redact_management_error_message(str(exc)), request_id=request_id
-        ) from exc
+    return dispatch_management_handler(method, params, request_id, handler)
 
 
 def retained_session_usage(
@@ -617,78 +474,6 @@ def retained_session_usage(
     request_id: RequestId,
 ) -> dict[str, Any]:
     return _session_usage(params, request_id)
-
-
-def _provider_auth_status(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    provider_id = _required_str(params, "provider_id", request_id=request_id)
-    status = native_provider_status_payload(provider_id)
-    # Only the validated route fingerprint crosses the bridge, never credential material.
-    # Its wire name avoids weakening the general credential-field redactor.
-    return {
-        **{
-            key: status.get(key)
-            for key in (
-                "connection",
-                "authenticated",
-                "verified",
-                "detail",
-                "transport",
-                "display_name",
-                "error",
-            )
-        },
-        "route_scope": status.get("credential_scope"),
-        "secret_values_included": False,
-    }
-
-
-def _provider_auth_select_model(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    # ``alysis auth select-model`` without a new process (one shared implementation).
-    payload = select_native_subscription_model(
-        _required_str(params, "provider_id", request_id=request_id),
-        _required_str(params, "model", request_id=request_id),
-        _optional_str(params, "reasoning_effort", default="auto"),
-    )
-    return {**payload, "changed": True, "secret_values_included": False}
-
-
-def _provider_auth_reasoning(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    # ``alysis auth reasoning MODEL --profile PROFILE``: the model's effort choices, saving nothing.
-    capabilities = native_reasoning_capabilities(
-        _required_str(params, "model", request_id=request_id),
-        _required_str(params, "profile", request_id=request_id),
-    )
-    return {"models": [capabilities], "secret_values_included": False}
-
-
-def _config_get(_params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    with phase("config"):
-        cfg = load_config()
-        api_key = resolve_api_key(cfg)
-        return {
-            "config": _safe_config_payload(cfg),
-            "active_profile": str((cfg.extra_fields or {}).get("active_profile") or ""),
-            "api_key": _api_key_status(api_key),
-            # `config show`'s credential_id: the one-way route fingerprint of the key in use
-            # (empty without one), never the key. With it the desktop app reads the account
-            # here instead of starting a CLI process for every account read. As with
-            # provider.auth.status, its wire name keeps clear of the credential-field
-            # redactor, which hides any `credential*` field.
-            "route_scope": credential_scope_fingerprint(api_key.key),
-            "config_path": str(config_path()),
-            "credentials_path": str(credentials_path()),
-            # The saved-keys file (`credentials_path` above is hidden by that redactor): the
-            # app watches it for key changes. A file location, not credential material.
-            "saved_keys_path": str(credentials_path()),
-            "secret_values_included": False,
-        }
-
-
-def _config_schema(_params: dict[str, Any], _request_id: RequestId) -> dict[str, Any]:
-    return {
-        "schema": AppConfig.model_json_schema(),
-        "secret_values_included": False,
-    }
 
 
 def _config_validate(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
@@ -819,16 +604,6 @@ def _select_subscription_model_default(
     return reasoning_effort
 
 
-def _profile_list(_params: dict[str, Any], _request_id: RequestId) -> dict[str, Any]:
-    cfg = load_config()
-    active = str((cfg.extra_fields or {}).get("active_profile") or "")
-    return {
-        "active_profile": active,
-        "profiles": [_profile_payload(cfg, profile) for profile in list_profiles(cfg)],
-        "secret_values_included": False,
-    }
-
-
 def _profile_show(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
     cfg = load_config()
     name = _required_str(params, "name", request_id=request_id)
@@ -902,16 +677,6 @@ def _profile_use(params: dict[str, Any], request_id: RequestId) -> dict[str, Any
         "changed": True,
         "secret_values_included": False,
     }
-
-
-def _profile_select_model(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    # ``alysis profile select-model`` without a new process: the same single locked write that
-    # activates the API profile, keeps the model as its default and routes execution natively.
-    payload = select_api_profile_model(
-        _required_str(params, "name", request_id=request_id),
-        _required_str(params, "model", request_id=request_id),
-    )
-    return {**payload, "changed": True, "secret_values_included": False}
 
 
 def _profile_rename(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
@@ -1213,31 +978,6 @@ def _tool_untrust(params: dict[str, Any], request_id: RequestId) -> dict[str, An
     }
 
 
-def _commands_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    # Reuse the terminal catalog; hosts decide which commands have native handlers.
-    from ..cli_impl.chat_slash_catalog import command_rows
-
-    mode = params.get("mode", "chat")
-    if mode != "chat":
-        raise ProtocolError("invalid_field", "mode must be chat", request_id=request_id)
-    return {"commands": command_rows()}
-
-
-def _agents_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    """Every subagent with the model and provider it would run on (subagent_settings.py).
-
-    Without workspace or path, the project's .alysis_agents/ is not included.
-    """
-    from ..subagent_settings import subagent_catalog
-
-    root = (
-        _workspace_root_from_params(params, request_id=request_id, required=True)
-        if params.get("workspace") is not None or params.get("path") is not None
-        else None
-    )
-    return {**subagent_catalog(load_config(), root=root), "secret_values_included": False}
-
-
 _skill_workbench = SkillWorkbench()
 
 
@@ -1416,33 +1156,6 @@ def _hooks_document_save(params: dict[str, Any], request_id: RequestId) -> dict[
         raise SkillLifecycleError("Invalid hooks configuration: " + str(exc)) from exc
     atomic_write_text(path, content)
     return {"changed": True, "path": str(path)}
-
-
-def _skill_list(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    workspace_root, catalog, available = _available_skill_catalog(params, request_id=request_id)
-    return {
-        "workspace_root": str(workspace_root),
-        "skills_enabled": bool(load_config().skills_enabled),
-        "skills": [
-            {**_skill_entry_payload(entry), "available": entry.skill.name in available}
-            for entry in catalog.entries
-        ],
-        "issues": _skill_issues_payload(catalog),
-    }
-
-
-def _skill_info(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
-    name = _required_str(params, "name", request_id=request_id)
-    workspace_root, catalog, available = _available_skill_catalog(params, request_id=request_id)
-    entry = resolve_skill_catalog_entry(entries=catalog.entries, raw_name=name)
-    if entry is None:
-        raise ProtocolError("skill_not_found", f"Skill not found: {name}", request_id=request_id)
-    return {
-        "workspace_root": str(workspace_root),
-        "skill": {**_skill_entry_payload(entry), "available": entry.skill.name in available},
-        "info_text": render_skill_info_text(entry.skill, catalog_entry=entry),
-        "issues": _skill_issues_payload(catalog),
-    }
 
 
 def _skill_init(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
@@ -1627,22 +1340,6 @@ def _doctor_bundle(_params: dict[str, Any], _request_id: RequestId) -> dict[str,
     }
 
 
-def _sandbox_doctor(params: dict[str, Any], _request_id: RequestId) -> dict[str, Any]:
-    cfg = load_config()
-    diagnostic = diagnose_sandbox(
-        cfg,
-        include_smoke=_optional_bool(params, "smoke", default=False),
-        include_server_image=_optional_bool(params, "include_server", default=True),
-    )
-    result = {
-        "diagnostic": _dataclass_payload(diagnostic),
-        "message": format_sandbox_problem_message(diagnostic),
-    }
-    if _optional_bool(params, "env", default=False):
-        result["env"] = sandbox_env_summary()
-    return result
-
-
 def _sandbox_pull(params: dict[str, Any], _request_id: RequestId) -> dict[str, Any]:
     cfg = load_config()
     images = _string_list_param(params.get("images"))
@@ -1701,6 +1398,13 @@ def _update_check(params: dict[str, Any], _request_id: RequestId) -> dict[str, A
 
 
 def _report_create(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    from ..feedback_report import (
+        create_feedback_bundle,
+        create_feedback_github_issue_draft,
+        feedback_github_issue_status_lines,
+        resolve_feedback_workspace_root,
+    )
+
     workspace_root = resolve_feedback_workspace_root(
         _workspace_root_from_params(params, request_id=request_id, required=True)
     )
@@ -3000,72 +2704,6 @@ def _select_project_tool_entry(
     )
 
 
-def _available_skill_catalog(
-    params: dict[str, Any], *, request_id: RequestId
-) -> tuple[Path, Any, frozenset[str]]:
-    workspace_root, catalog = _skill_catalog(params, request_id=request_id)
-    # Management requests do not grant workspace trust. Use exactly the same
-    # plugin activation and ownership filter as noninteractive agent sessions.
-    effective, _ = filter_discovered_skills_for_plugins(
-        discovered=catalog.effective,
-        activation_decision=resolve_active_plugins(
-            repo_root=workspace_root, workspace_trust_prompt=None
-        ),
-        index=build_plugin_activation_index(workspace_root),
-    )
-    available = (
-        frozenset(skill.name for skill in effective.ordered)
-        if load_config().skills_enabled
-        else frozenset()
-    )
-    return workspace_root, catalog, available
-
-
-def _skill_catalog(params: dict[str, Any], *, request_id: RequestId) -> tuple[Path, Any]:
-    workspace_root = _workspace_root_from_params(params, request_id=request_id, required=True)
-    discovered = discover_skills(
-        focus_path=workspace_root,
-        workspace_root=workspace_root,
-        cfg=load_config(),
-    )
-    catalog = resolve_skill_catalog(discovered=discovered, workspace_root=workspace_root)
-    return workspace_root, catalog
-
-
-def _workspace_root_from_params(
-    params: dict[str, Any],
-    *,
-    request_id: RequestId,
-    required: bool,
-) -> Path:
-    raw = params.get("workspace", params.get("path"))
-    if raw is None:
-        if required:
-            raise ProtocolError(
-                "missing_param",
-                "This method requires workspace or path.",
-                request_id=request_id,
-            )
-        raw = "."
-    path = Path(str(raw))
-    try:
-        binding = resolve_startup_workspace_binding(
-            requested_path=path,
-            interactive=False,
-            create_if_missing=False,
-            allow_broad_workspace=_optional_bool(params, "allow_broad_workspace", default=False),
-            source="ide_management_param",
-            action=WorkspaceAction.CHAT,
-        )
-    except WorkspaceBindingError as exc:
-        raise ProtocolError(
-            "workspace_binding_error",
-            _redact_management_error_message(str(exc)),
-            request_id=request_id,
-        ) from exc
-    return binding.workspace_context.workspace_root
-
-
 def _workspace_child_path(workspace_root: Path, raw: str, *, request_id: RequestId) -> Path:
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
@@ -3218,118 +2856,6 @@ def _session_log_path(params: dict[str, Any], *, request_id: RequestId) -> Path:
     return path
 
 
-def _require_workspace_trust(
-    params: dict[str, Any],
-    *,
-    method: str,
-    request_id: RequestId,
-) -> None:
-    if params.get("workspace_trusted") is True:
-        return
-    raise ProtocolError(
-        "workspace_trust_required",
-        f"{method} mutates local Alysis Code state and requires Workspace Trust.",
-        request_id=request_id,
-    )
-
-
-def _require_workspace_binding_param(
-    params: dict[str, Any],
-    *,
-    method: str,
-    request_id: RequestId,
-) -> None:
-    for key in ("workspace", "path"):
-        value = params.get(key)
-        if isinstance(value, str) and value.strip():
-            return
-    raise ProtocolError(
-        "missing_param",
-        f"{method} requires an explicit workspace or path.",
-        request_id=request_id,
-    )
-
-
-def _safe_config_payload(cfg: AppConfig) -> dict[str, Any]:
-    payload = cfg.model_dump()
-    for key in list(payload):
-        if _unsafe_config_response_key(key):
-            payload[key] = "<redacted>" if payload[key] else payload[key]
-    extra = dict(cfg.extra_fields or {})
-    profiles_raw = extra.get("profiles")
-    if isinstance(profiles_raw, dict):
-        extra["profiles"] = {
-            name: _safe_profile_config_dict(name, value)
-            for name, value in sorted(profiles_raw.items(), key=lambda item: str(item[0]))
-            if isinstance(value, dict)
-        }
-    payload["extra_fields"] = _redact_mapping_by_key(extra)
-    return payload
-
-
-def _safe_profile_config_dict(name: object, value: dict[str, Any]) -> dict[str, Any]:
-    safe = dict(value)
-    env_var = safe.pop("api_key_env", None)
-    if env_var:
-        safe["env_var"] = str(env_var)
-    headers = safe.get("extra_headers")
-    if isinstance(headers, dict):
-        safe["extra_headers"] = {
-            "names": sorted(str(key) for key in headers),
-            "count": len(headers),
-            "values_redacted": True,
-        }
-    safe["name"] = str(name)
-    return _redact_mapping_by_key(safe)
-
-
-def _profile_payload(
-    cfg: AppConfig,
-    profile: ProfileSpec | None,
-    *,
-    include_details: bool = False,
-) -> dict[str, Any]:
-    if profile is None:
-        return {}
-    resolved = resolve_profile_api_key(cfg, profile.name)
-    active = profile.name == str((cfg.extra_fields or {}).get("active_profile") or "")
-    auth_provider = str(profile.auth_provider or "").strip() or None
-    payload: dict[str, Any] = {
-        "name": profile.name,
-        "active": active,
-        "protocol": profile.protocol,
-        "base_url": profile.base_url,
-        "base_url_host": _url_host(profile.base_url),
-        "default_model": profile.default_model,
-        # These are selection metadata, not credentials. The IDE needs the
-        # authoritative active-subscription verdict so it does not enable a
-        # composer merely because an account profile exists while its required
-        # model/reasoning selection is still incomplete.
-        "auth_provider": auth_provider,
-        "reasoning_effort": profile.reasoning_effort,
-        "subscription_selection_ready": (
-            active_subscription_selection_ready(cfg)
-            if active and auth_provider is not None
-            else None
-        ),
-        "web_search_adapter": profile.web_search_adapter,
-        "web_search_model": profile.web_search_model,
-        "notes": profile.notes,
-        "key_env_var": profile.api_key_env,
-        "api_key": _api_key_status(resolved),
-        "extra_headers": {
-            "names": sorted(profile.extra_headers),
-            "count": len(profile.extra_headers),
-            "values_redacted": True,
-        },
-    }
-    if include_details:
-        payload["protocol_kind"] = (
-            "native" if profile.protocol != "openai_compat" else "compatibility"
-        )
-    return payload
-
-
 def _preset_payload(preset: Any) -> dict[str, Any]:
     return {
         "key": preset.key,
@@ -3361,13 +2887,6 @@ def _secret_action_for_profile(profile: ProfileSpec) -> dict[str, Any] | None:
         "reason": "Provider credentials must be supplied through VS Code SecretStorage or existing CLI credential sources.",
         "profile": profile.name,
         "env_var": profile.api_key_env,
-    }
-
-
-def _api_key_status(value: Any) -> dict[str, Any]:
-    return {
-        "present": bool(getattr(value, "key", None)),
-        "source": str(getattr(value, "source", "missing") or "missing"),
     }
 
 
@@ -3511,53 +3030,6 @@ def _custom_tool_payload(
     return payload
 
 
-def _skill_entry_payload(entry: Any) -> dict[str, Any]:
-    skill = entry.skill
-    payload = _skill_payload(skill)
-    payload.update(
-        {
-            "enabled": bool(entry.enabled),
-            "managed": bool(entry.managed),
-            "disabled_by": entry.disabled_by,
-            "install_record": _dataclass_payload(entry.install_record)
-            if entry.install_record is not None
-            else None,
-        }
-    )
-    return payload
-
-
-def _skill_payload(skill: Any) -> dict[str, Any]:
-    return {
-        "name": skill.name,
-        "description": skill.description,
-        "bundle_name": skill.bundle_name,
-        "bundle_path": str(skill.bundle_path),
-        "entry_path": str(skill.entry_path),
-        "source_scope": skill.source_scope,
-        "source_kind": skill.source_kind,
-        "source_family": skill.source_family,
-        "source_path": str(skill.source_path),
-        "trust_level": skill.trust_level,
-        "ancestor_distance": skill.ancestor_distance,
-        "aliases": list(skill.aliases),
-        "metadata": dict(skill.metadata),
-    }
-
-
-def _skill_issues_payload(catalog: Any) -> dict[str, Any]:
-    return {
-        "discovery": [
-            {"source_path": str(issue.source_path), "message": issue.message}
-            for issue in getattr(catalog.effective, "issues", ())
-        ],
-        "lifecycle": [
-            {"source_path": str(issue.source_path), "message": issue.message}
-            for issue in getattr(catalog, "lifecycle_issues", ())
-        ],
-    }
-
-
 def _validation_payload(result: Any) -> dict[str, Any]:
     return {
         "bundle_path": str(result.bundle_path),
@@ -3577,99 +3049,8 @@ def _validation_payload(result: Any) -> dict[str, Any]:
     }
 
 
-def _dataclass_payload(value: Any) -> Any:
-    if value is None:
-        return None
-    if is_dataclass(value):
-        return _json_safe(asdict(value))
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return _json_safe(model_dump(mode="json"))
-    return _json_safe(value)
-
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _json_safe(child) for key, child in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe(child) for child in value]
-    return value
-
-
 def _rows_to_dict(rows: tuple[tuple[str, str], ...]) -> dict[str, str]:
     return {str(key): str(value) for key, value in rows}
-
-
-def _url_host(value: str | None) -> str:
-    from urllib.parse import urlsplit
-
-    try:
-        return urlsplit(str(value or "")).netloc
-    except ValueError:
-        return ""
-
-
-def _redact_mapping_by_key(value: Any) -> Any:
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for key, child in value.items():
-            key_text = str(key)
-            if _unsafe_config_response_key(key_text):
-                out[key_text] = "<redacted>" if child else child
-            else:
-                out[key_text] = _redact_mapping_by_key(child)
-        return out
-    if isinstance(value, list):
-        return [_redact_mapping_by_key(child) for child in value]
-    return value
-
-
-def _redact_payload(value: Any) -> Any:
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for key, child in value.items():
-            key_text = str(key)
-            if _unsafe_payload_response_key(key_text) and isinstance(child, str):
-                out[key_text] = "<redacted>" if child else child
-            else:
-                out[key_text] = _redact_payload(child)
-        return out
-    if isinstance(value, list):
-        return [_redact_payload(child) for child in value]
-    if isinstance(value, tuple):
-        return [_redact_payload(child) for child in value]
-    if isinstance(value, str):
-        return _redact_secret_string(value)
-    return value
-
-
-def _redact_management_error_message(message: str) -> str:
-    return _redact_secret_string(str(message))
-
-
-def _redact_secret_string(value: str) -> str:
-    redacted = str(redact_secrets(value))
-    redacted = _SECRET_ASSIGNMENT_PATTERN.sub(r"\1<redacted>", redacted)
-    redacted = _URL_USERINFO_PATTERN.sub(r"\1<redacted>@\3", redacted)
-    return redacted
-
-
-def _unsafe_payload_response_key(key: str) -> bool:
-    normalized = key.strip().lower()
-    if normalized in {
-        "api_key_env",
-        "key_env_var",
-        "secret_action",
-        "secret_policy",
-        "secret_redaction",
-        "secret_values_included",
-        "secret_values_in_params",
-        "values_redacted",
-    }:
-        return False
-    return _unsafe_config_response_key(key)
 
 
 def _json_size_bytes(value: Any) -> int:
@@ -3683,16 +3064,6 @@ def _truncate_text_utf8(value: str, max_bytes: int) -> tuple[str, bool]:
     if len(encoded) <= max_bytes:
         return value, False
     return encoded[:max_bytes].decode("utf-8", errors="ignore"), True
-
-
-def _unsafe_config_response_key(key: str) -> bool:
-    normalized = key.strip().lower()
-    if normalized in {"api_key_env", "key_env_var"}:
-        return False
-    return normalized in {"prompt_cache_key"} or any(
-        marker in normalized
-        for marker in ("api_key", "token", "secret", "password", "credential", "authorization")
-    )
 
 
 def _unsafe_config_set_key(key: str) -> bool:
@@ -3713,20 +3084,6 @@ def _config_value_to_cli_string(value: Any) -> str:
     return str(value)
 
 
-def _required_str(
-    params: dict[str, Any],
-    key: str,
-    *,
-    request_id: RequestId,
-) -> str:
-    value = params.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ProtocolError(
-            "missing_param", f"Missing required string param: {key}.", request_id=request_id
-        )
-    return value.strip()
-
-
 def _required_str_any(
     params: dict[str, Any],
     keys: tuple[str, ...],
@@ -3743,33 +3100,11 @@ def _required_str_any(
     )
 
 
-def _optional_str(params: dict[str, Any], key: str, *, default: str) -> str:
-    value = params.get(key)
-    if value is None:
-        return default
-    return str(value)
-
-
 def _optional_str_or_none(params: dict[str, Any], key: str) -> str | None:
     if key not in params or params.get(key) is None:
         return None
     text = str(params.get(key) or "").strip()
     return text or None
-
-
-def _optional_bool(params: dict[str, Any], key: str, *, default: bool) -> bool:
-    value = params.get(key)
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return default
 
 
 def _positive_int(
@@ -3972,6 +3307,7 @@ def _confirmation_required(method: str, reason: str) -> dict[str, Any]:
 
 
 _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
+    **SETTINGS_HANDLERS,
     "skill.import.describe": _skill_import_describe,
     "skill.import.package": _skill_import_package,
     "skill.import.preview": _skill_import_preview,
@@ -3982,19 +3318,12 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
     "skill.update.preview": _skill_update_preview,
     "hooks.document.read": _hooks_document_read,
     "hooks.document.save": _hooks_document_save,
-    "provider.auth.status": _provider_auth_status,
-    "provider.auth.reasoning": _provider_auth_reasoning,
-    "provider.auth.selectModel": _provider_auth_select_model,
-    "config.get": _config_get,
     "config.set": _config_set,
-    "config.schema": _config_schema,
     "config.validate": _config_validate,
-    "profile.list": _profile_list,
     "profile.show": _profile_show,
     "profile.add": _profile_add,
     "profile.remove": _profile_remove,
     "profile.use": _profile_use,
-    "profile.selectModel": _profile_select_model,
     "profile.rename": _profile_rename,
     "profile.presets": _profile_presets,
     "profile.preset": _profile_preset,
@@ -4007,10 +3336,6 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
     "tool.info": _tool_info,
     "tool.trust": _tool_trust,
     "tool.untrust": _tool_untrust,
-    "commands.list": _commands_list,
-    "agents.list": _agents_list,
-    "skill.list": _skill_list,
-    "skill.info": _skill_info,
     "skill.init": _skill_init,
     "skill.validate": _skill_validate,
     "skill.install": _skill_install,
@@ -4021,7 +3346,6 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
     "doctor.providers": _doctor_providers,
     "doctor.providers.live": _doctor_providers_live,
     "doctor.bundle": _doctor_bundle,
-    "sandbox.doctor": _sandbox_doctor,
     "sandbox.setup": _sandbox_setup,
     "sandbox.pull": _sandbox_pull,
     "update.check": _update_check,

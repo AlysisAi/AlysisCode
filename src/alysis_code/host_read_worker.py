@@ -36,6 +36,19 @@ _READ_MODULES = {
     "git_shell_inspect": ".git_shell_inspection",
 }
 READ_TOOLS = frozenset((*_READ_MODULES, "mutation_snapshot"))
+# These fixed operations use only the interpreter. Listing may consult Git for ignore rules.
+FILESYSTEM_ONLY_TOOLS = frozenset(
+    {
+        "fs_read",
+        "mutation_snapshot",
+        "fs_write_prepared",
+        "fs_edit_prepared",
+        "fs_move",
+        "fs_copy",
+        "fs_delete",
+        "fs_mkdir",
+    }
+)
 
 
 def mutation_snapshot(*, root: Path) -> dict[str, Any]:
@@ -210,6 +223,7 @@ def main() -> int:
             or set(request) - {"tool", "arguments", "project_folders", "opaque_files"}
         ):
             raise ValueError("Invalid contained read envelope")
+        receipts = []
         root = Path.cwd()
         # The launcher supplies these roots independently of model arguments;
         # the OS sandbox grants the same folders for this invocation.
@@ -217,13 +231,27 @@ def main() -> int:
             if "opaque_files" in request:
                 result = inspect_with_opaque_files(request, root)
             elif request["tool"] in WRITE_TOOLS:
+                from contextlib import nullcontext
+
+                from . import committed_edits
                 from .host_file_handles import windows_workspace_paths
 
-                with windows_workspace_paths(root, additional=allowed_roots(root)[1:]):
+                observe = (
+                    committed_edits.observe(root, receipts.append)
+                    if request["tool"] in committed_edits.TRACKED_WORKER_TOOLS
+                    else nullcontext()
+                )
+                with observe, windows_workspace_paths(root, additional=allowed_roots(root)[1:]):
                     result = execute_write(request["tool"], request["arguments"], root)
             else:
                 result = execute(request["tool"], request["arguments"], root)
-        encoded = json.dumps({"ok": True, "result": result}, ensure_ascii=True)
+        envelope = {"ok": True, "result": result}
+        if len(receipts) == 1:
+            envelope["committed_edit"] = receipts[0]
+        encoded = json.dumps(envelope, ensure_ascii=True)
+        if len(encoded) > MAX_RESULT_BYTES and "committed_edit" in envelope:
+            del envelope["committed_edit"]
+            encoded = json.dumps(envelope, ensure_ascii=True)
         if len(encoded) > MAX_RESULT_BYTES:
             raise ValueError("Contained read result is too large; narrow the request")
         print(encoded)

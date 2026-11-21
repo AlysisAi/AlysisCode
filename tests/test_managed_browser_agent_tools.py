@@ -293,6 +293,37 @@ def test_browser_mutations_fail_closed_without_host_managed_approvals(tmp_path: 
     assert service.calls == []
 
 
+def test_browser_approval_binds_only_the_paused_destination_origin(tmp_path: Path) -> None:
+    from alysis_code.ide.approval_binding import build_approval_binding
+
+    service = _FakeManagedBrowserService()
+    host = _HostApprovalSurface(allow=False)
+    tool = _build_tools(tmp_path, service=service, surface=host)["browser_start"]
+
+    def binding(request):
+        return build_approval_binding(
+            request, project_root=tmp_path, runtime_fingerprint="fixture", mode="review"
+        )
+
+    origins = []
+    for port in (49842, 49843):
+        with pytest.raises(ApprovalDeclinedError):
+            tool.run({"url": f"https://example.com:{port}/private-path?token=sensitive#secret"})
+        request = host.requests[-1]
+        bound = binding(request)
+        assert bound.action["url"] == f"https://example.com:{port}"
+        for private in ("private-path", "sensitive", "#secret"):
+            assert private not in request.preview and private not in str(bound.action)
+        assert request.allow_for_session_scope is None
+        origins.append(bound.action_fingerprint)
+    assert origins[0] != origins[1]
+    assert service.calls == []
+    untrusted = ApprovalRequest(
+        kind="browser_start", reason="", preview="", metadata={"url": "https://other.example"}
+    )
+    assert "url" not in binding(untrusted).action
+
+
 def test_browser_tool_lifecycle_is_owner_scoped_cancellable_and_secret_safe(tmp_path: Path) -> None:
     service = _FakeManagedBrowserService()
     surface = _HostApprovalSurface()
@@ -370,6 +401,9 @@ def test_browser_preview_allowlist_is_derived_live_from_session_services(
         def list_active(self) -> list[dict[str, Any]]:
             return list(self.active)
 
+        def recorded_preview_urls(self) -> tuple[str, ...]:
+            return tuple(service["preview_url"] for service in self.active)
+
     services = PreviewServices()
     browser = _FakeManagedBrowserService()
     tools = _build_tools(
@@ -390,6 +424,55 @@ def test_browser_preview_allowlist_is_derived_live_from_session_services(
 
     services.active.clear()
     assert provider() == ()
+
+
+def test_browser_start_preflights_before_approval_without_contacting_a_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from alysis_code.durable_service_manager import DurableServiceManager
+    from alysis_code.sandbox_settings import ShellSandboxSettings
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "index.html").write_text("Ordinary preview fixture.", encoding="utf-8")
+    manager = DurableServiceManager(
+        root=root, state_dir=tmp_path / "services", settings=ShellSandboxSettings()
+    )
+    browser = _FakeManagedBrowserService()
+    surface = _HostApprovalSurface(allow=False)
+    tools = _build_tools(root, service=browser, surface=surface, durable_service_manager=manager)
+    preview = manager.start_preview(cwd=root, access="local")
+    try:
+        from urllib.parse import urlsplit
+
+        registered = next(
+            url for url in preview.payload["preview_urls"] if urlsplit(url).hostname == "localhost"
+        )
+        with monkeypatch.context() as guarded:
+
+            def no_network(*args, **kwargs):
+                pytest.fail(
+                    "Browser preflight must not resolve, connect or probe service readiness"
+                )
+
+            guarded.setattr("socket.getaddrinfo", no_network)
+            guarded.setattr("socket.create_connection", no_network)
+            guarded.setattr(manager, "list_active", no_network)
+            for target in ("http://localhost.invalid.local/", "http://127.0.0.1:0/", "file:///"):
+                with pytest.raises(AgentRuntimeError):
+                    tools["browser_start"].run({"url": target})
+            assert surface.requests == [] and browser.calls == []
+            for target in (registered, "https://example.com/"):
+                with pytest.raises(ApprovalDeclinedError):
+                    tools["browser_start"].run({"url": target})
+            assert len(surface.requests) == 2 and browser.calls == []
+            assert surface.requests[0].display_origin == f"http://{urlsplit(registered).netloc}"
+    finally:
+        manager.stop(preview.service_id)
+
+    with pytest.raises(AgentRuntimeError, match="Local and private"):
+        tools["browser_start"].run({"url": registered})
+    assert len(surface.requests) == 2 and browser.calls == []
 
 
 def test_unexpected_browser_failure_does_not_expose_exception_secrets(tmp_path: Path) -> None:

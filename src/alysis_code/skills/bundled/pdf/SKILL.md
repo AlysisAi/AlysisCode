@@ -1,6 +1,7 @@
 ---
 name: pdf
 description: Read, create, or inspect PDF files when page content, layout, or extraction fidelity matters.
+uses_tools: [document_operation, capability_status, artifact_check, asset_view]
 ---
 
 For text-led PDF creation, use `document_operation` with action `describe` and format `pdf`, then create from a workspace Markdown source. This uses the installed engine runtime even when shell commands run in a container. Retain the Markdown for revisions.

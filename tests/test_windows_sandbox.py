@@ -74,6 +74,82 @@ def test_fixed_worker_keeps_policy_and_bypasses_only_shell_startup(workspace, mo
         )
 
 
+@pytest.mark.parametrize("access", ["read-only", "workspace-write"])
+def test_python_only_worker_retains_denials_and_verifies_explicit_tools(
+    workspace, monkeypatch, access
+):
+    from alysis_code import windows_toolchain
+
+    runtime = workspace.parent / "runtime"
+    slots = {name: runtime / name for name in ("node", "git", "git-sign")}
+    for path in slots.values():
+        path.mkdir(parents=True)
+    monkeypatch.setattr(windows_toolchain, "tool_installation_roots", lambda: slots)
+    checked = []
+
+    def admission(*, only=None):
+        checked.append(only)
+        return {
+            name: (path / "tool.exe", path)
+            for name, path in slots.items()
+            if only is None or name in only
+        }
+
+    monkeypatch.setattr(windows_toolchain, "installed_tools", admission)
+    monkeypatch.setenv("PATH", str(slots["git"] / "cmd"))
+    settings = ShellSandboxSettings(
+        backend="windows-mxc",
+        filesystem_access=access,
+        network="off",
+        windows_read_roots=(str(runtime),),
+    )
+
+    def build(tool, config=settings):
+        return request(workspace, config, cmd=native.FileWorkerCommand(("packet",), tool=tool))
+
+    for tool in ("fs_read", "fs_edit_prepared", "fs_write_prepared"):
+        policy = build(tool)
+        for path in slots.values():
+            assert str(path) in policy["deny_write"] and str(path) in policy["deny_read"]
+            assert str(path) not in policy["read"]
+        assert str(runtime) in policy["deny_write"] and str(runtime) in policy["read"]
+        assert str(slots["git"] / "cmd") not in dict(policy["env"])["PATH"].split(os.pathsep)
+        assert policy["write"] == ([str(workspace)] if access == "workspace-write" else [])
+        assert policy["network"] == "off"
+    assert checked == []
+
+    explicit = build(
+        "fs_read", replace(settings, windows_read_roots=(str(runtime), str(slots["git"])))
+    )
+    assert checked == [{"git"}] and str(slots["git"]) in explicit["read"]
+    assert (
+        str(slots["git"]) not in explicit["deny_read"]
+        and str(slots["git"]) in explicit["deny_write"]
+    )
+    assert str(slots["node"]) in explicit["deny_read"]
+    for tool in ("fs_list", "git_apply_patch", None, "unknown"):
+        assert str(slots["git"]) in build(tool)["read"]
+        assert checked[-1] is None
+    request(workspace, settings, cmd="Write-Output fixture")
+    assert checked[-1] is None
+
+    def failed_admission(*, only):
+        assert only == {"git"}
+        raise ValueError("Fixture integrity check failed")
+
+    if access == "workspace-write":
+        with pytest.raises(ConfigError, match="trusted host runtime"):
+            request(
+                slots["node"],
+                replace(settings, windows_read_roots=()),
+                cmd=native.FileWorkerCommand(("packet",), tool="fs_read"),
+            )
+
+    monkeypatch.setattr(windows_toolchain, "installed_tools", failed_admission)
+    with pytest.raises(ValueError, match="Fixture integrity check failed"):
+        build("fs_read", replace(settings, windows_read_roots=(str(slots["git"]),)))
+
+
 def test_workspace_write_keeps_metadata_protected(workspace):
     result = request(workspace)
     assert result["write"] == [str(workspace)]

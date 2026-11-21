@@ -6,17 +6,22 @@ import mimetypes
 import sqlite3
 import time
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from . import failures
+from .browser_tools import STEP_VARIANTS
 from .file_revisions import migrate as migrate_file_revisions
 from .files import FILE_CHUNK_BYTES, INLINE_FILE_BYTES, MAX_FILE_BYTES, FileQuery
 from .models import (
+    BotCreateInput,
+    BotDuplicateInput,
     BotInput,
+    BotOrganizeInput,
     ConversationPageQuery,
     FileInput,
     HistoryQuery,
@@ -24,11 +29,13 @@ from .models import (
     MemoryInput,
     NoteConsolidation,
     NoteInput,
+    RegenerateInput,
     ReplyReviewSettings,
     TaskInput,
     TimeZoneSettings,
 )
 from .object_storage import ObjectRef, ObjectStorageError
+from .regenerate import persons_request, regenerates
 from .routine_access import RoutineAccessDecision, RoutineNeeds, approval_reason, parse_needs
 from .scheduling import (
     CATCH_UP_SECONDS,
@@ -39,6 +46,7 @@ from .scheduling import (
     RETRY_DELAYS_SECONDS,
     RunFailure,
     ScheduleInput,
+    ScheduleModelChoice,
     ScheduleProposal,
     Timing,
     advance_run,
@@ -47,11 +55,44 @@ from .scheduling import (
     retry_time,
     upcoming_runs,
 )
-from .schema import SCHEMA_VERSION, schema
+from .schema import SCHEMA_VERSION, STEER_COLUMNS, STEER_INDEX, schema
+from .task_events import TaskSignals
 from .text_search import excerpt, loose_contains, loose_fold
 
 ACTIVE = ("queued", "running", "waiting", "cancelling")
 TERMINAL = ("completed", "failed", "cancelled", "interrupted")
+# SQL on ``schedule_runs r``: when the run checked and found nothing new to report (its task's
+# nothing_new event), or NULL.
+NOTHING_NEW_AT = (
+    "(SELECT max(q.created_at) FROM events q WHERE q.task_id=r.task_id "
+    "AND q.kind='nothing_new') AS nothing_new_at"
+)
+MAX_OWLS = 30
+# Room chats (rooms.py): rows of rooms, whose ids are their chats' ids.
+_ROOM_CHATS = "SELECT id FROM rooms"
+
+
+@dataclass(frozen=True)
+class ChatScope:
+    """The messages and turns one conversation reads: an owl's own (all its chats but rooms), or a
+    room's (its one chat, with every owl's turns in it). ``value`` binds the SQL's one parameter:
+    the owl's id, or the room's."""
+
+    value: str
+    room: bool = False
+
+    @property
+    def chats(self) -> str:
+        """SQL on ``chats c``."""
+        return "c.id=?" if self.room else f"c.bot_id=? AND c.id NOT IN ({_ROOM_CHATS})"
+
+    @property
+    def tasks(self) -> str:
+        """SQL on ``tasks t``. A room's turns are its owner's: those of an owl deleted since are
+        tombstones."""
+        if self.room:
+            return "t.chat_id=? AND t.owner=(SELECT r.owner FROM rooms r WHERE r.id=t.chat_id)"
+        return f"t.bot_id=? AND t.chat_id NOT IN ({_ROOM_CHATS})"
 
 
 class NotFound(Exception):
@@ -74,12 +115,26 @@ class LibraryCapacityExceeded(LimitReached):
     """A definite admission refusal: no Library file was published."""
 
 
+# One Library file is at most MAX_FILE_BYTES (50 MiB).
+FILE_TOO_LARGE = (
+    "Nothing was saved: this file is larger than 50 MiB, the most one Library file can hold. "
+    "Save a smaller file, or split the content into several files."
+)
+
+
 def uid() -> str:
     return uuid4().hex
 
 
 def encode(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+class _Connection(sqlite3.Connection):
+    """A store connection. ``event_tasks``: the tasks its transaction wrote events for, whose
+    followers wake once it commits (task_events.py)."""
+
+    event_tasks: set[str]
 
 
 class Store:
@@ -95,6 +150,7 @@ class Store:
     def __init__(self, path: Path, *, objects=None) -> None:
         self.path = path
         self.objects = objects
+        self.task_signals = TaskSignals()
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with sqlite3.connect(path) as setup:
             setup.execute("PRAGMA journal_mode=WAL")
@@ -138,6 +194,9 @@ class Store:
                 row["name"] for row in db.execute("PRAGMA table_info(schedule_runs)")
             }:
                 db.execute("ALTER TABLE schedule_runs ADD COLUMN origin TEXT")
+            # The model a routine's runs think with; NULL: the owl's own.
+            if "model" not in {row["name"] for row in db.execute("PRAGMA table_info(schedules)")}:
+                db.execute("ALTER TABLE schedules ADD COLUMN model TEXT")
             for table in ("workspace_objects", "browser_states"):
                 if "settled" not in {
                     row["name"] for row in db.execute(f"PRAGMA table_info({table})")
@@ -145,12 +204,33 @@ class Store:
                     db.execute(
                         f"ALTER TABLE {table} ADD COLUMN settled INTEGER NOT NULL DEFAULT 0 CHECK(settled IN (0,1))"
                     )
-            if "failure" not in {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}:
+            task_columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
+            if "failure" not in task_columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN failure TEXT")
+            # How many times a turn a restart cut off was started again (Store.recover).
+            if "restarts" not in task_columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN restarts INTEGER NOT NULL DEFAULT 0")
+            # What a step waiting for the person would do (action_review.py), NULL: not named.
+            if "effect" not in {
+                row["name"] for row in db.execute("PRAGMA table_info(bot_action_reviews)")
+            }:
+                db.execute("ALTER TABLE bot_action_reviews ADD COLUMN effect TEXT")
             bot_columns = {row["name"] for row in db.execute("PRAGMA table_info(bots)")}
-            for part in ("color", "background"):
+            for part in ("color", "background", "model"):
                 if part not in bot_columns:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {part} TEXT")
+            # When the person pinned the owl, and when they archived it; NULL: not now.
+            for part in ("pinned_at", "archived_at"):
+                if part not in bot_columns:
+                    db.execute(f"ALTER TABLE bots ADD COLUMN {part} REAL")
+            # A waiting message sent now to the running turn, and how it went (steering.py).
+            queued_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(queued_messages)")
+            }
+            for part, kind in STEER_COLUMNS:
+                if part not in queued_columns:
+                    db.execute(f"ALTER TABLE queued_messages ADD COLUMN {part} {kind}")
+            db.execute(STEER_INDEX)
             if objects is not None:
                 db.execute("INSERT INTO object_storage_enabled VALUES(1) ON CONFLICT DO NOTHING")
             elif db.execute("SELECT 1 FROM object_storage_enabled").fetchone():
@@ -160,7 +240,8 @@ class Store:
 
     @contextmanager
     def connect(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        db = sqlite3.connect(self.path, timeout=10, isolation_level=None, factory=_Connection)
+        db.event_tasks = set()
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA busy_timeout=10000")
@@ -182,6 +263,7 @@ class Store:
             raise
         finally:
             db.close()
+        self.task_signals.notify(db.event_tasks)
 
     @contextmanager
     def _joined(self, within=None) -> Iterator:
@@ -211,8 +293,9 @@ class Store:
         """The task, when it is the person's own current request in this bot's chat.
 
         With ``background``, that request may also be continuing off the reply loop (its
-        running background turn); routine runs, activations, an owl's first hello, peer turns
-        and turns waiting for an answer never qualify.
+        running background turn); routine runs, activations, an owl's first hello, peer turns,
+        turns an owl started by checking back (check_backs.py) and turns waiting for an answer
+        never qualify.
         """
         task = cls._task(db, owner, task_id)
         if (
@@ -220,6 +303,7 @@ class Store:
             or not (cls.executing(db, task) if background else task["status"] == "running")
             or task["config"].get("activation")
             or task["config"].get("intro")
+            or task["config"].get("check_back")
             or db.execute("SELECT 1 FROM schedule_runs WHERE task_id=?", (task_id,)).fetchone()
             or db.execute("SELECT 1 FROM task_waits WHERE task_id=?", (task_id,)).fetchone()
             or db.execute(
@@ -272,8 +356,37 @@ class Store:
         row = db.execute("SELECT * FROM chats WHERE id=?", (chat_id,)).fetchone()
         if row is None:
             raise NotFound("Conversation not found.")
-        cls._bot(db, owner, row["bot_id"])
+        # A room's chat belongs to the room's owner, whichever owl it was made with.
+        room = cls._room_row(db, chat_id)
+        if room is not None:
+            if room["owner"] != owner:
+                raise NotFound("Conversation not found.")
+        else:
+            cls._bot(db, owner, row["bot_id"])
         return dict(row)
+
+    @staticmethod
+    def _room_row(db, chat_id: str):
+        """The room whose conversation this chat is (rooms.py), or None for an owl's own chat."""
+        return db.execute("SELECT * FROM rooms WHERE id=?", (chat_id,)).fetchone()
+
+    @staticmethod
+    def _room_member(db, room_id: str, bot_id: str) -> bool:
+        return bool(
+            db.execute(
+                "SELECT 1 FROM room_members WHERE room_id=? AND bot_id=?", (room_id, bot_id)
+            ).fetchone()
+        )
+
+    def _reply_chat(self, db, owner: str, source: dict) -> str:
+        """Where the person's answer to a turn's card carries on: in the room the turn was taken
+        in while its owl is still there, otherwise in the owl's own chat."""
+        if self._room_row(db, source["chat_id"]) is not None and self._room_member(
+            db, source["chat_id"], source["bot_id"]
+        ):
+            return source["chat_id"]
+        bot = self._bot(db, owner, source["bot_id"])
+        return self._ensure_chat(db, owner, bot["id"], bot["name"])["id"]
 
     @staticmethod
     def _event(db: sqlite3.Connection, task_id: str, kind: str, data: dict) -> None:
@@ -281,13 +394,27 @@ class Store:
             "INSERT INTO events(task_id,kind,data,created_at) VALUES(?,?,?,?)",
             (task_id, kind, encode(data), time.time()),
         )
+        # Whoever follows the task (task_events.py) wakes once this transaction commits.
+        written = getattr(db, "event_tasks", None)
+        if written is not None:
+            written.add(task_id)
 
-    def list_bots(self, owner: str) -> list[dict]:
+    # An owl still arriving from the person's other place (owl_move.py) stays out of every list
+    # until all of it has arrived and been checked.
+    ARRIVING = "SELECT bot_id FROM owl_moves WHERE state='receiving' AND bot_id IS NOT NULL"
+    # A room's conversation (rooms.py) is a chat of its own, which its owls share: an owl's own
+    # conversation leaves out room chats and the turns it took in rooms.
+    ROOM_CHATS = _ROOM_CHATS
+
+    def list_bots(self, owner: str, *, now: float | None = None) -> list[dict]:
+        now = time.time() if now is None else now
         with self.connect() as db:
             bots = [
                 self._bot(db, owner, row[0])
                 for row in db.execute(
-                    "SELECT id FROM bots WHERE owner=? ORDER BY created_at,id", (owner,)
+                    f"SELECT id FROM bots WHERE owner=? AND id NOT IN ({self.ARRIVING}) "
+                    "ORDER BY created_at,id",
+                    (owner,),
                 )
             ]
             for bot in bots:
@@ -311,7 +438,53 @@ class Store:
                 bot["latest_activity"] = latest["latest"] if latest else None
                 bot["now_doing"] = self._now_doing(db, bot["id"])
                 bot["asks_you"] = self._asks_you(db, bot)
+                bot["next_routine_at"] = self._next_routine_at(db, bot, now)
             return bots
+
+    def _next_routine_at(self, db: sqlite3.Connection, bot: dict, now: float) -> float | None:
+        """When the owl's next routine run is due: the earliest next time of a routine that is
+        on, or of a failed run's retry. None for an owl without one, and for an archived owl,
+        whose routines rest. The desktop app keeps the computer awake for it.
+
+        A time already past still counts: the run starts late, once the scheduler gets to it.
+        """
+        if bot.get("archived_at") is not None:
+            return None
+        due: list[float] = []
+        for row in db.execute(
+            "SELECT s.*,h.retry_at,h.retry_for,h.retry_reason FROM schedules s "
+            "LEFT JOIN schedule_health h ON h.schedule_id=s.id AND h.revision=s.revision "
+            "WHERE s.bot_id=? AND s.state IN ('active','ended')",
+            (bot["id"],),
+        ).fetchall():
+            schedule = dict(row)
+            schedule["timing"] = json.loads(schedule["timing"])
+            health = schedule if schedule["retry_at"] is not None else None
+            first = self._next_scheduled_run(schedule, health, now)
+            if first is not None:
+                due.append(first)
+            # A retry with nothing to replay is only a hold on the routine's runs.
+            if health is not None and health["retry_for"] is not None:
+                due.append(health["retry_at"])
+        return min(due, default=None)
+
+    @classmethod
+    def _next_scheduled_run(
+        cls, schedule: dict, health: dict | None, now: float, timing: Timing | None = None
+    ) -> float | None:
+        """The routine's next scheduled run, if it is on. While a plan or usage limit holds,
+        its runs wait: the first one after the limit frees up is next."""
+        first = schedule["next_run_at"] if schedule["state"] == "active" else None
+        retry_at = health["retry_at"] if health else None
+        if (
+            first is not None
+            and retry_at is not None
+            and health["retry_reason"] == "limit"
+            and first < retry_at
+            and retry_at > now
+        ):
+            first = advance_run(timing or cls._timing(schedule), first, retry_at)
+        return first
 
     @staticmethod
     def _now_doing(db: sqlite3.Connection, bot_id: str) -> dict | None:
@@ -319,8 +492,9 @@ class Store:
 
         A task works while it runs in chat or as background work that is queued or running.
         step is the tool now running (the app words it in the person's language) with its
-        search topic or file name when it has one, note the owl's latest short update, host
-        the last web address the task opened.
+        search topic or file name when it has one, and, only when it names one, variant: which
+        kind of step a browser tool that does several took (browser_tools.STEP_VARIANTS). note is
+        the owl's latest short update, host the last web address the task opened.
         """
         task = db.execute(
             "SELECT t.id FROM tasks t LEFT JOIN background_turns j ON j.task_id=t.id "
@@ -350,6 +524,8 @@ class Store:
                     result["step"] = data.get("name")
                     result["topic"] = data.get("topic")
                     result["file"] = data.get("file")
+                    if data.get("variant") in STEP_VARIANTS:
+                        result["variant"] = data["variant"]
                 if result["host"] is None and data.get("host"):
                     result["host"] = data["host"]
             elif result["note"] is None:
@@ -367,6 +543,76 @@ class Store:
                     (task_id,),
                 )
             ]
+
+    def turn_routines(self, owner: str, task_id: str) -> list[dict]:
+        """How the routines this task saved, changed or suggested are now, oldest first.
+
+        The person can turn one on, pause, change or delete it in Routines while the task still
+        works, so this is read again, never remembered from the task's own tool results. A
+        routine no longer there is "deleted"; a suggestion the person said no to, "declined".
+        """
+        with self.connect() as db:
+            task = self._task(db, owner, task_id)
+            ids = [
+                json.loads(row[0]).get("id")
+                for row in db.execute(
+                    "SELECT data FROM events WHERE task_id=? AND kind='routine_changed' "
+                    "ORDER BY seq",
+                    (task_id,),
+                )
+            ]
+            suggested = {
+                row["schedule_id"] or row["id"]: row
+                for row in db.execute(
+                    "SELECT id,schedule_id,name,status FROM routine_suggestions "
+                    "WHERE source_task_id=? AND bot_id=?",
+                    (task_id, task["bot_id"]),
+                )
+            }
+            proposed = [
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM bot_triggers WHERE source_task_id=? AND bot_id=?",
+                    (task_id, task["bot_id"]),
+                )
+            ]
+            result = []
+            for routine_id in dict.fromkeys([*ids, *suggested, *proposed]):
+                if not routine_id:
+                    continue
+                schedule = db.execute(
+                    "SELECT id,name,state,timing FROM schedules WHERE id=? AND bot_id=?",
+                    (routine_id, task["bot_id"]),
+                ).fetchone()
+                if schedule is not None:
+                    result.append(
+                        {
+                            "id": schedule["id"],
+                            "kind": "schedule",
+                            "name": schedule["name"],
+                            "state": schedule["state"],
+                            "timing": json.loads(schedule["timing"]),
+                        }
+                    )
+                    continue
+                trigger = db.execute(
+                    "SELECT id,name,state FROM bot_triggers WHERE id=? AND bot_id=?",
+                    (routine_id, task["bot_id"]),
+                ).fetchone()
+                if trigger is not None:
+                    result.append({**dict(trigger), "kind": "trigger"})
+                    continue
+                card = suggested.get(routine_id)
+                result.append(
+                    {
+                        "id": routine_id,
+                        "name": card["name"] if card is not None else None,
+                        "state": "declined"
+                        if card is not None and card["status"] == "declined"
+                        else "deleted",
+                    }
+                )
+            return result
 
     @staticmethod
     def _asks_you(db: sqlite3.Connection, bot: dict) -> dict | None:
@@ -445,19 +691,21 @@ class Store:
                             )
                         # The answer to the first create was lost: the same owl, not a second.
                         return self._bot(db, owner, made["bot_id"])
+                # Archived owls count: they keep their chats, memories and files.
                 if (
                     db.execute("SELECT count(*) FROM bots WHERE owner=?", (owner,)).fetchone()[0]
-                    >= 30
+                    >= MAX_OWLS
                 ):
                     raise LimitReached(
-                        "You can have up to 30 bots. Delete one to make room for a new one."
+                        f"You can have up to {MAX_OWLS} owls, archived ones included. "
+                        "Delete one to make room for a new one."
                     )
                 bot_id = uid()
                 db.execute(
                     "INSERT INTO bots(id,owner,name,purpose,instructions,memory_enabled,"
-                    "files_enabled,created_at,updated_at,color,background) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (bot_id, owner, *values, now, now, data.color, data.background),
+                    "files_enabled,created_at,updated_at,color,background,model) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (bot_id, owner, *values, now, now, data.color, data.background, data.model),
                 )
                 if request_id:
                     db.execute(
@@ -468,7 +716,9 @@ class Store:
                 current = self._bot(db, owner, bot_id)
                 # Its look, like its name, is only a label: it applies at once. A change that
                 # leaves a part out (an app from before looks) keeps the one the person picked.
-                for part in ("color", "background"):
+                # Its model applies the same way, from the next turn it starts: work already
+                # thinking keeps the model it started with.
+                for part in ("color", "background", "model"):
                     if part in data.model_fields_set:
                         db.execute(
                             f"UPDATE bots SET {part}=? WHERE id=?", (getattr(data, part), bot_id)
@@ -502,21 +752,27 @@ class Store:
                 )
             return self._bot(db, owner, bot_id)
 
-    def delete_bot(self, owner: str, bot_id: str) -> None:
+    def delete_bot(self, owner: str, bot_id: str, *, check=None) -> None:
         """Remove a bot and what it holds from its owner's account.
 
-        Its conversation (messages, their attachments, activity, tool results), files, uploads,
-        memories, working notes, questions, proposals, About me suggestions, approvals, routines
-        and file events are erased now; erasing its checkpoint rows lets retention
-        reclaim their stored objects. The bot, chat and task rows stay as empty
-        records under a tombstone owner that no account can resolve, because
+        It leaves its rooms (rooms.py): its turns there are erased like its own chat, and a
+        message the person sent it there with other owls stays with theirs.
+        Its conversation (messages, their attachments and reactions, activity, tool results),
+        files, uploads, memories, playbooks, working notes, questions, proposals, About me
+        suggestions, approvals, routines (and those it suggested), check-backs and file events are
+        erased now;
+        erasing its checkpoint rows lets retention reclaim their stored objects. The bot, chat and
+        task rows stay as empty records under a tombstone owner that no account can resolve, because
         model-call accounting and other history still reference them; every
         owner-scoped read (lists, tasks, conversations, routines, peers, limits
         and Library usage) stops seeing them at once. Running work must stop
-        first, so nothing keeps acting for a bot that is gone.
+        first, so nothing keeps acting for a bot that is gone. ``check(db)`` runs first in the
+        same transaction and may refuse (a move deletes the original only if it didn't change).
         """
         with self.connect(write=True) as db:
             self._bot(db, owner, bot_id)
+            if check is not None:
+                check(db)
             if db.execute(
                 "SELECT 1 FROM tasks WHERE bot_id=? AND status IN ('queued','running','waiting','cancelling')",
                 (bot_id,),
@@ -528,15 +784,25 @@ class Store:
                 if json.loads(row["record"]).get("state") != "deleted":
                     raise Conflict("Wait for this bot's computer to shut down, then delete it.")
             tasks = "SELECT id FROM tasks WHERE bot_id=?"
-            chats = "SELECT id FROM chats WHERE bot_id=?"
+            # Its own chats; a room it was made with keeps its chat (rooms.py).
+            chats = f"SELECT id FROM chats WHERE bot_id=? AND id NOT IN ({self.ROOM_CHATS})"
             notes = "SELECT id FROM working_notes WHERE bot_id=?"
+            from .rooms import leave_rooms
+
+            # It leaves its rooms: its turns there go with it, the person's messages it shared
+            # with other owls stay (rooms.py).
+            leave_rooms(db, bot_id)
             # Children before parents, so foreign keys hold at every step.
             for statement, count in (
+                ("DELETE FROM reply_reactions WHERE bot_id=?", 1),
                 (f"DELETE FROM messages WHERE chat_id IN ({chats})", 1),
+                (f"DELETE FROM messages WHERE task_id IN ({tasks})", 1),
+                (f"DELETE FROM room_turns WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM chat_read_cursors WHERE chat_id IN ({chats})", 1),
                 (f"DELETE FROM events WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM task_tool_results WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM task_files WHERE task_id IN ({tasks})", 1),
+                (f"DELETE FROM queued_messages WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM browser_task_drafts WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM task_waits WHERE task_id IN ({tasks})", 1),
                 (
@@ -551,10 +817,12 @@ class Store:
                 ("DELETE FROM action_proposals WHERE bot_id=?", 1),
                 ("DELETE FROM about_me_suggestions WHERE bot_id=?", 1),
                 ("DELETE FROM setup_proposals WHERE bot_id=?", 1),
+                ("DELETE FROM routine_suggestions WHERE bot_id=?", 1),
                 ("DELETE FROM bot_action_reviews WHERE bot_id=?", 1),
                 ("DELETE FROM bot_action_rules WHERE bot_id=?", 1),
                 ("DELETE FROM bot_review_settings WHERE bot_id=?", 1),
                 ("DELETE FROM bot_context_summaries WHERE bot_id=?", 1),
+                ("DELETE FROM memory_capture_state WHERE bot_id=?", 1),
                 (
                     f"DELETE FROM note_consolidations WHERE source_note_id IN ({notes}) "
                     f"OR target_note_id IN ({notes})",
@@ -564,6 +832,8 @@ class Store:
                 ("DELETE FROM working_notes WHERE bot_id=?", 1),
                 ("DELETE FROM memory_changes WHERE bot_id=?", 1),
                 ("DELETE FROM memories WHERE bot_id=?", 1),
+                ("DELETE FROM playbooks WHERE bot_id=?", 1),
+                ("DELETE FROM check_backs WHERE bot_id=?", 1),
                 ("DELETE FROM files WHERE bot_id=?", 1),
                 ("DELETE FROM file_uploads WHERE bot_id=?", 1),
                 (
@@ -638,11 +908,164 @@ class Store:
                 "WHERE bot_id=?",
                 (tombstone, now, bot_id),
             )
-            db.execute("UPDATE chats SET title='' WHERE bot_id=?", (bot_id,))
             db.execute(
-                "UPDATE bots SET owner=?,name='',purpose='',instructions='',color=NULL,background=NULL,updated_at=? WHERE id=?",
+                f"UPDATE chats SET title='' WHERE bot_id=? AND id NOT IN ({self.ROOM_CHATS})",
+                (bot_id,),
+            )
+            db.execute(
+                "UPDATE bots SET owner=?,name='',purpose='',instructions='',color=NULL,background=NULL,"
+                "model=NULL,pinned_at=NULL,archived_at=NULL,updated_at=? WHERE id=?",
                 (tombstone, now, bot_id),
             )
+
+    def organize_bot(
+        self, owner: str, bot_id: str, data: BotOrganizeInput, *, now: float | None = None
+    ) -> dict:
+        """Pin an owl to the top of the list or archive it, and back; a part left out stays.
+
+        Both are places in the person's list, not its setup: updated_at stays, so nothing
+        approved against the owl's setup goes out of date. Pinning again keeps the time it
+        was first pinned, so the pinned owls keep their order. An archived owl keeps
+        everything, but its routines and file events rest: it can't be archived while it
+        works, and file events waiting to start are dropped, never replayed. When it comes
+        back, its routines go on from their next time (_bring_back).
+        """
+        now = time.time() if now is None else now
+        with self.connect(write=True) as db:
+            bot = self._bot(db, owner, bot_id)
+            if data.pinned is not None:
+                db.execute(
+                    "UPDATE bots SET pinned_at=? WHERE id=?",
+                    ((bot["pinned_at"] or now) if data.pinned else None, bot_id),
+                )
+            if data.archived and bot["archived_at"] is None:
+                if db.execute(
+                    "SELECT 1 FROM tasks WHERE bot_id=? AND status IN "
+                    "('queued','running','waiting','cancelling') LIMIT 1",
+                    (bot_id,),
+                ).fetchone():
+                    raise Conflict("Stop this owl's work before archiving it.")
+                db.execute(
+                    "UPDATE trigger_deliveries SET state='skipped',reason=? WHERE state='pending' "
+                    "AND trigger_id IN (SELECT id FROM bot_triggers WHERE bot_id=?)",
+                    ("The owl was archived; files added before will not start it.", bot_id),
+                )
+                db.execute("UPDATE bots SET archived_at=? WHERE id=?", (now, bot_id))
+            elif data.archived is False:
+                self._bring_back(db, bot_id, now)
+            return self._bot(db, owner, bot_id)
+
+    def _bring_back(self, db, bot_id: str, now: float) -> None:
+        """An archived owl back in the list: its routines go on from their next time.
+
+        Runs that came due while it was archived, and retries that came due then, are not
+        replayed: the person archived it so it would rest. Nothing else changes, so routines
+        the person paused stay paused. Work the person starts for an archived owl (a message,
+        an answer, an approval, Run now) brings it back, so it never works out of sight.
+        """
+        if not db.execute(
+            "UPDATE bots SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL", (bot_id,)
+        ).rowcount:
+            return
+        for row in db.execute(
+            "SELECT id FROM schedules WHERE bot_id=? AND state='active' AND next_run_at<=?",
+            (bot_id, now),
+        ).fetchall():
+            schedule = self._schedule(db, bot_id, row["id"])
+            following = advance_run(self._timing(schedule), schedule["next_run_at"], now)
+            db.execute(
+                "UPDATE schedules SET next_run_at=?,state=?,updated_at=? WHERE id=?",
+                (following, "active" if following else "ended", now, schedule["id"]),
+            )
+        for row in db.execute(
+            "SELECT s.id FROM schedule_health h JOIN schedules s ON s.id=h.schedule_id "
+            "WHERE s.bot_id=? AND h.revision=s.revision AND s.state IN ('active','ended') "
+            "AND h.retry_at<=?",
+            (bot_id, now),
+        ).fetchall():
+            schedule = self._schedule(db, bot_id, row["id"])
+            health = self._schedule_health(db, schedule)
+            self._save_schedule_health(
+                db,
+                schedule["id"],
+                schedule["revision"],
+                now,
+                failures=health["failures"],
+                pause_code=health["pause_code"],
+            )
+
+    def duplicate_bot(self, owner: str, bot_id: str, data: BotDuplicateInput) -> dict:
+        """A new owl like this one, made through the create path in one transaction.
+
+        It gets the same purpose, instructions, memory and files switches, look, apps it may
+        use and approval mode, and the approved memories when asked. Never its chats, files,
+        routines, sign-ins or list place: it starts unpinned in the main list. The same
+        request_id returns the copy that request made, so a retried duplicate makes one owl.
+        """
+        with self.connect(write=True) as db:
+            source = self._bot(db, owner, bot_id)
+            made = db.execute(
+                "SELECT 1 FROM bot_create_requests WHERE owner=? AND request_id=?",
+                (owner, data.request_id),
+            ).fetchone()
+            copy = self.save_bot(
+                owner,
+                BotCreateInput(
+                    name=data.name,
+                    purpose=source["purpose"],
+                    instructions=source["instructions"],
+                    memory_enabled=source["memory_enabled"],
+                    files_enabled=source["files_enabled"],
+                    color=source["color"],
+                    background=source["background"],
+                    model=source["model"],
+                    request_id=data.request_id,
+                ),
+                within=db,
+            )
+            if made:
+                # The answer to the first duplicate was lost: the copy it made, as it is now.
+                return copy
+            now = time.time()
+            for row in db.execute(
+                "SELECT plugin_id,enabled FROM bot_plugin_grants WHERE bot_id=?", (bot_id,)
+            ).fetchall():
+                db.execute(
+                    "INSERT INTO bot_plugin_grants(bot_id,plugin_id,enabled,revision,updated_at) "
+                    "VALUES(?,?,?,1,?)",
+                    (copy["id"], row["plugin_id"], row["enabled"], now),
+                )
+            mode = db.execute(
+                "SELECT mode FROM bot_review_settings WHERE bot_id=?", (bot_id,)
+            ).fetchone()
+            if mode:
+                db.execute(
+                    "INSERT INTO bot_review_settings VALUES(?,?)", (copy["id"], mode["mode"])
+                )
+            if data.memories:
+                # Approved memories only, in their order; suggestions wait for review on the
+                # original. They are the person's own in the copy: no task of its own made them.
+                for row in db.execute(
+                    "SELECT title,content,created_at FROM memories WHERE bot_id=? "
+                    "AND status='active' ORDER BY created_at,id",
+                    (bot_id,),
+                ).fetchall():
+                    memory_id = uid()
+                    db.execute(
+                        "INSERT INTO memories VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            memory_id,
+                            copy["id"],
+                            row["title"],
+                            row["content"],
+                            "active",
+                            None,
+                            row["created_at"],
+                            now,
+                        ),
+                    )
+                    self._memory_change(db, copy["id"], memory_id, "created", None, "active")
+            return self._bot(db, owner, copy["id"])
 
     def create_chat(self, owner: str, bot_id: str, title: str) -> dict:
         with self.connect(write=True) as db:
@@ -653,28 +1076,49 @@ class Store:
         cls._bot(db, owner, bot_id)
         # One stable conversation per bot. Keep legacy chat rows and source IDs;
         # reads project their messages into this same timeline without rewriting data.
-        row = db.execute(
-            "SELECT * FROM chats WHERE bot_id=? ORDER BY created_at,id LIMIT 1", (bot_id,)
-        ).fetchone()
+        row = cls._own_chat(db, bot_id)
         if row is not None:
             return dict(row)
         chat_id = uid()
         db.execute("INSERT INTO chats VALUES(?,?,?,?)", (chat_id, bot_id, title, time.time()))
         return cls._chat(db, owner, chat_id)
 
-    @staticmethod
-    def _chat_activities(db: sqlite3.Connection, bot_id: str) -> list[dict]:
-        """Use event order, not client clocks, for receipts and unread state."""
-        chat = db.execute(
-            "SELECT * FROM chats WHERE bot_id=? ORDER BY created_at,id LIMIT 1", (bot_id,)
+    @classmethod
+    def _own_chat(cls, db, bot_id: str):
+        """The first chat of the owl's own conversation (never a room's), or None."""
+        return db.execute(
+            f"SELECT * FROM chats WHERE bot_id=? AND id NOT IN ({cls.ROOM_CHATS}) "
+            "ORDER BY created_at,id LIMIT 1",
+            (bot_id,),
         ).fetchone()
+
+    @classmethod
+    def _scope(cls, db, owner: str, chat_id: str) -> tuple[dict, ChatScope]:
+        """The chat, checked to be the owner's, and the conversation it belongs to."""
+        chat = cls._chat(db, owner, chat_id)
+        if cls._room_row(db, chat_id) is not None:
+            return chat, ChatScope(chat_id, room=True)
+        return chat, ChatScope(chat["bot_id"])
+
+    @classmethod
+    def _chat_activities(cls, db: sqlite3.Connection, bot_id: str) -> list[dict]:
+        """Use event order, not client clocks, for receipts and unread state."""
+        chat = cls._own_chat(db, bot_id)
         if chat is None:
             return []
+        return [cls._activity(db, dict(chat), ChatScope(bot_id))]
+
+    @staticmethod
+    def _activity(db, chat: dict, scope: ChatScope) -> dict:
+        """A conversation's newest activity, what the person read of it, and its last line."""
+        from .queued_messages import not_withdrawn
+
         # Per task: its newest event and its newest finishing event, each one index lookup. The
         # owl list asks this for every owl every few seconds, so it must not read the events
-        # themselves, which grow with every step an owl ever took.
+        # themselves, which grow with every step an owl ever took. A message the person
+        # cancelled before it started leaves the activity as it was before it was sent.
         row = db.execute(
-            """SELECT coalesce(max(x.latest),0) AS latest_seq,
+            f"""SELECT coalesce(max(x.latest),0) AS latest_seq,
                       coalesce(max(x.finished),0) AS activity_seq,
                       coalesce(max(CASE WHEN x.finished>coalesce(r.event_seq,0) THEN 1 ELSE 0 END),0)
                         AS unread
@@ -682,20 +1126,48 @@ class Store:
                             (SELECT max(e.seq) FROM events e WHERE e.task_id=t.id) AS latest,
                             (SELECT max(e.seq) FROM events e WHERE e.task_id=t.id AND e.kind IN
                               ('completed','failed','cancelled','interrupted')) AS finished
-                     FROM tasks t WHERE t.bot_id=?) x
+                     FROM tasks t WHERE {scope.tasks} AND {not_withdrawn("t")}) x
                LEFT JOIN chat_read_cursors r ON r.chat_id=x.chat_id""",
-            (bot_id,),
+            (scope.value,),
         ).fetchone()
-        item = {**dict(chat), **dict(row)}
+        item = {**chat, **dict(row)}
         latest = db.execute(
-            """SELECT e.seq,e.created_at,t.id AS task_id,t.chat_id,t.status,
+            """SELECT e.seq,e.created_at,t.id AS task_id,t.chat_id,t.status,t.bot_id,
                       substr(CASE WHEN t.status='completed' THEN t.output ELSE t.message END,1,240) AS preview
                FROM events e JOIN tasks t ON t.id=e.task_id WHERE e.seq=?""",
             (item["latest_seq"],),
         ).fetchone()
-        item["latest"] = {**dict(latest), "title": item["title"]} if latest else None
+        latest = dict(latest) if latest else None
+        if latest and latest["status"] == "completed":
+            # A routine's run that found nothing new has no reply to show as the last line.
+            quiet = db.execute(
+                "SELECT max(created_at) FROM events WHERE task_id=? AND kind='nothing_new'",
+                (latest["task_id"],),
+            ).fetchone()[0]
+            if quiet is not None:
+                latest["nothing_new_at"] = quiet
+        # In a room the last line says which owl it is from; an owl's own chat is all its own.
+        if latest and not scope.room:
+            latest.pop("bot_id")
+        item["latest"] = {**latest, "title": item["title"]} if latest else None
         item["unread"] = bool(item["unread"])
-        return [item]
+        return item
+
+    @staticmethod
+    def _unread(db, chat_id: str) -> bool:
+        """Whether a conversation has a finished turn after what the person last read in it."""
+        from .queued_messages import not_withdrawn
+
+        return bool(
+            db.execute(
+                f"""SELECT 1 FROM tasks t JOIN events e ON e.task_id=t.id
+                LEFT JOIN chat_read_cursors r ON r.chat_id=t.chat_id
+                WHERE t.chat_id=? AND {not_withdrawn("t")}
+                AND e.kind IN ('completed','failed','cancelled','interrupted')
+                AND e.seq>coalesce(r.event_seq,0) LIMIT 1""",
+                (chat_id,),
+            ).fetchone()
+        )
 
     def list_chats(self, owner: str, bot_id: str) -> list[dict]:
         with self.connect() as db:
@@ -715,19 +1187,19 @@ class Store:
 
     def mark_chat_read(self, owner: str, chat_id: str, activity_seq: int) -> dict:
         with self.connect(write=True) as db:
-            chat = self._chat(db, owner, chat_id)
+            _chat, scope = self._scope(db, owner, chat_id)
             observed = db.execute(
-                """SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
-                   WHERE e.seq=? AND t.bot_id=? AND e.kind IN
+                f"""SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
+                   WHERE e.seq=? AND {scope.tasks} AND e.kind IN
                      ('completed','failed','cancelled','interrupted')""",
-                (activity_seq, chat["bot_id"]),
+                (activity_seq, scope.value),
             ).fetchone()
             if not observed:
                 raise NotFound("Conversation activity not found.")
             db.execute(
-                """INSERT INTO chat_read_cursors SELECT id,? FROM chats WHERE bot_id=? ON CONFLICT(chat_id)
+                f"""INSERT INTO chat_read_cursors SELECT c.id,? FROM chats c WHERE {scope.chats} ON CONFLICT(chat_id)
                    DO UPDATE SET event_seq=CASE WHEN chat_read_cursors.event_seq>excluded.event_seq THEN chat_read_cursors.event_seq ELSE excluded.event_seq END""",
-                (activity_seq, chat["bot_id"]),
+                (activity_seq, scope.value),
             )
             return {
                 "read_seq": db.execute(
@@ -737,34 +1209,45 @@ class Store:
 
     def conversation(self, owner: str, chat_id: str) -> dict:
         with self.connect() as db:
-            chat = self._chat(db, owner, chat_id)
-            chat = dict(
-                db.execute(
-                    "SELECT * FROM chats WHERE bot_id=? ORDER BY created_at,id LIMIT 1",
-                    (chat["bot_id"],),
-                ).fetchone()
-            )
+            chat, scope = self._scope(db, owner, chat_id)
+            chat = chat if scope.room else dict(self._own_chat(db, chat["bot_id"]))
             chat["messages"] = [
                 dict(row)
                 for row in db.execute(
-                    """SELECT m.* FROM messages m JOIN chats c ON c.id=m.chat_id
-                    WHERE c.bot_id=? ORDER BY m.created_at,m.rowid""",
-                    (chat["bot_id"],),
+                    f"""SELECT m.* FROM messages m JOIN chats c ON c.id=m.chat_id
+                    WHERE {scope.chats} ORDER BY m.created_at,m.rowid""",
+                    (scope.value,),
                 )
             ]
             # The person's own message lists the files they attached to it.
-            self._message_file_lists(db, chat["bot_id"], chat["messages"])
+            self._message_file_lists(db, scope, chat["messages"])
             chat["tasks"] = [
                 self._task(db, owner, row[0])
                 for row in db.execute(
-                    "SELECT id FROM tasks WHERE bot_id=? ORDER BY created_at,id", (chat["bot_id"],)
+                    f"SELECT t.id FROM tasks t WHERE {scope.tasks} ORDER BY t.created_at,t.id",
+                    (scope.value,),
                 )
             ]
-            self._decorate_tasks(db, chat["bot_id"], chat["tasks"])
-            activity = self._chat_activities(db, chat["bot_id"])[0]
+            self._decorate_scope(db, scope, chat["tasks"])
+            activity = self._activity(
+                db, {key: chat[key] for key in ("id", "bot_id", "title", "created_at")}, scope
+            )
             chat["activity_seq"] = activity["activity_seq"]
             chat["unread"] = activity["unread"]
+            chat["read_at"] = self._read_at(db, chat["id"])
             return chat
+
+    @staticmethod
+    def _read_at(db, chat_id: str) -> float | None:
+        """When the activity the person last read the conversation up to happened, in the same
+        clock as its messages, so the app can mark the messages that came after it; None before
+        their first read."""
+        row = db.execute(
+            "SELECT e.created_at FROM chat_read_cursors r JOIN events e ON e.seq=r.event_seq "
+            "WHERE r.chat_id=?",
+            (chat_id,),
+        ).fetchone()
+        return row[0] if row else None
 
     @staticmethod
     def _decided_actions(db, bot_id: str, *, only=None) -> dict[str, list[dict]]:
@@ -807,16 +1290,34 @@ class Store:
         return decided
 
     @classmethod
-    def _message_file_lists(cls, db, bot_id: str, messages: list[dict], *, only=None) -> None:
-        attached = cls._message_files(db, bot_id, only=only)
+    def _message_file_lists(cls, db, scope: ChatScope, messages: list[dict], *, only=None) -> None:
+        attached = cls._message_files(db, scope, only=only)
         for message in messages:
             if message["role"] == "user":
                 message["files"] = attached.get(message["task_id"], [])
 
     @classmethod
+    def _decorate_scope(cls, db, scope: ChatScope, tasks: list[dict], *, only=None) -> None:
+        """What a conversation shows with each of its tasks (_decorate_tasks). A room's turns
+        belong to several owls, each read with its own owl, and carry the cards that wait for
+        the person there (rooms.py)."""
+        if not scope.room:
+            cls._decorate_tasks(db, scope.value, tasks, only=only)
+            return
+        by_owl: dict[str, list[dict]] = {}
+        for task in tasks:
+            by_owl.setdefault(task["bot_id"], []).append(task)
+        for bot_id, owned in by_owl.items():
+            cls._decorate_tasks(db, bot_id, owned, only=[task["id"] for task in owned])
+        from .rooms import room_cards
+
+        room_cards(db, tasks)
+
+    @classmethod
     def _decorate_tasks(cls, db, bot_id: str, tasks: list[dict], *, only=None) -> None:
-        """Each task's coding job, file count, short updates, decided actions and the setup card
-        the owl proposed in it (proposals.py), as the conversation shows them.
+        """Each task's coding job, file count, short updates, decided actions, the setup card
+        the owl proposed in it (proposals.py), when it started, its message's state while it
+        waits and the reactions to its reply, as the conversation shows them.
 
         ``only`` limits the reads to those task ids, so a page reads only its own tasks.
         """
@@ -852,6 +1353,15 @@ class Store:
             text = json.loads(row["data"]).get("text")
             if text:
                 progress_notes.setdefault(row["task_id"], []).append(text)
+        # A routine's run that checked and found nothing new, posting no reply: when it did.
+        nothing_new = {
+            row["task_id"]: row["at"]
+            for row in db.execute(
+                "SELECT e.task_id,max(e.created_at) AS at FROM events e JOIN tasks t ON "
+                f"t.id=e.task_id WHERE {scope} AND e.kind='nothing_new' GROUP BY e.task_id",
+                values,
+            )
+        }
         for task in tasks:
             task["coding_job_id"] = jobs.get(task["id"])
             task["file_count"] = file_counts.get(task["id"], 0)
@@ -859,15 +1369,41 @@ class Store:
             task["progress_notes"] = notes
             # Apps released before progress_notes show one line: the latest.
             task["progress_note"] = notes[-1] if notes else None
+            # Only such a run carries it, so other turns read as before.
+            if task["id"] in nothing_new:
+                task["nothing_new_at"] = nothing_new[task["id"]]
         decided = cls._decided_actions(db, bot_id, only=only)
         from .proposals import setup_cards
+        from .routine_suggestions import suggestion_cards
 
         setups = setup_cards(db, bot_id, only=only)
+        # A routine the owl suggested in that turn (routine_suggestions.py).
+        routines = suggestion_cards(db, bot_id, only=only)
         for task in tasks:
             task["decided_actions"] = decided.get(task["id"], [])
             # Only a turn with a card carries one, so other turns read as before.
             if task["id"] in setups:
                 task["setup_proposal"] = setups[task["id"]]
+            if task["id"] in routines:
+                task["routine_suggestion"] = routines[task["id"]]
+        # The playbook a turn kept (playbooks.py), shown under its reply with Undo.
+        from .playbooks import task_playbooks
+
+        kept = task_playbooks(db, bot_id, only=only)
+        for task in tasks:
+            if task["id"] in kept:
+                task["playbook"] = kept[task["id"]]
+        # The check-backs a turn set, under its reply (pending ones with Cancel), and what a turn
+        # a check-back started shows above its reply (check_backs.py).
+        from .check_backs import checked_back, task_check_backs
+
+        set_here = task_check_backs(db, bot_id, only=only)
+        for task in tasks:
+            if task["id"] in set_here:
+                task["check_backs"] = set_here[task["id"]]
+            started = checked_back(task)
+            if started:
+                task["checked_back"] = started
         # The facts a reply offered to add to About me (about_me.py), when it offered any.
         from .about_me import task_suggestions
 
@@ -888,11 +1424,36 @@ class Store:
             )
         for task in tasks:
             task["app_needs"] = needs.get(task["id"], [])
+        # When the owl started each turn (its first claim), so a message that waited behind
+        # earlier work reads after what that work said meanwhile; None while it waits. A message
+        # that steered a running turn reads from when that turn read it (steering.py).
+        started = {
+            row["task_id"]: row["started_at"]
+            for row in db.execute(
+                "SELECT e.task_id,min(e.created_at) AS started_at FROM events e "
+                f"JOIN tasks t ON t.id=e.task_id WHERE {scope} "
+                "AND e.kind IN ('running','steer_applied') GROUP BY e.task_id",
+                values,
+            )
+        }
+        # The person's own message: whether it still waits, so it can be changed or cancelled
+        # (queued_messages.py); and the reactions to the owl's replies (reactions.py).
+        from .queued_messages import task_states
+        from .reactions import task_reactions
 
-    # The messages of an owl's one conversation, in the order the conversation shows them.
+        sent = task_states(db, bot_id, only=only)
+        reactions = task_reactions(db, bot_id, only=only)
+        for task in tasks:
+            task["started_at"] = started.get(task["id"])
+            if task["id"] in sent:
+                task["queued_message"] = sent[task["id"]]
+            if task["id"] in reactions:
+                task["reactions"] = reactions[task["id"]]
+
+    # The messages of one conversation (an owl's own, or a room's), in the order it shows them.
     _PAGE_MESSAGES = (
         "SELECT m.rowid AS position,m.id,m.chat_id,m.task_id,m.role,{content},m.created_at "
-        "FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.bot_id=?{where} "
+        "FROM messages m JOIN chats c ON c.id=m.chat_id WHERE {scope}{where} "
         "ORDER BY m.created_at {order},m.rowid {order}{limit}"
     )
     _OLDER = " AND (m.created_at<? OR (m.created_at=? AND m.rowid<?))"
@@ -901,27 +1462,36 @@ class Store:
 
     @classmethod
     def _page_messages(
-        cls, db, bot_id, *, where="", values=(), newest_first=False, limit=None, content=True
+        cls,
+        db,
+        scope: ChatScope,
+        *,
+        where="",
+        values=(),
+        newest_first=False,
+        limit=None,
+        content=True,
     ):
         # Without content: only where the page starts and which turns it holds, for a poll.
         rows = db.execute(
             cls._PAGE_MESSAGES.format(
                 content="m.content" if content else "'' AS content",
+                scope=scope.chats,
                 where=where,
                 order="DESC" if newest_first else "ASC",
                 limit=" LIMIT ?" if limit is not None else "",
             ),
-            (bot_id, *values, *((limit,) if limit is not None else ())),
+            (scope.value, *values, *((limit,) if limit is not None else ())),
         ).fetchall()
         messages = [dict(row) for row in rows]
         return messages[::-1] if newest_first else messages
 
     @staticmethod
-    def _message_key(db, bot_id: str, message_id: str) -> tuple | None:
+    def _message_key(db, scope: ChatScope, message_id: str) -> tuple | None:
         row = db.execute(
             "SELECT m.created_at,m.rowid AS position FROM messages m JOIN chats c ON c.id=m.chat_id "
-            "WHERE m.id=? AND c.bot_id=?",
-            (message_id, bot_id),
+            f"WHERE m.id=? AND {scope.chats}",
+            (message_id, scope.value),
         ).fetchone()
         return (row["created_at"], row["created_at"], row["position"]) if row else None
 
@@ -929,7 +1499,7 @@ class Store:
     def _key(message: dict) -> tuple:
         return (message["created_at"], message["created_at"], message["position"])
 
-    def _page_tasks(self, db, owner, bot_id, messages, *, since, until, latest, also=()):
+    def _page_tasks(self, db, owner, scope: ChatScope, messages, *, since, until, latest, also=()):
         """The tasks a page shows: those its messages belong to, those started within its span
         (a turn with no message yet, like one still being written), every task still working
         (latest page only), and ``also``.
@@ -937,28 +1507,28 @@ class Store:
         clauses, values = [], []
         span = []
         if since is not None:
-            span.append("created_at>=?")
+            span.append("t.created_at>=?")
             values.append(since)
         if until is not None:
-            span.append("created_at<?")
+            span.append("t.created_at<?")
             values.append(until)
         clauses.append("(" + " AND ".join(span) + ")" if span else "1=1")
         named = sorted({message["task_id"] for message in messages} | set(also))
         if named:
-            clauses.append(f"id IN ({','.join('?' * len(named))})")
+            clauses.append(f"t.id IN ({','.join('?' * len(named))})")
             values.extend(named)
         if latest:
-            clauses.append("status IN ('queued','running','waiting','cancelling')")
+            clauses.append("t.status IN ('queued','running','waiting','cancelling')")
         ids = [
             row[0]
             for row in db.execute(
-                f"SELECT id FROM tasks WHERE bot_id=? AND ({' OR '.join(clauses)}) "
-                "ORDER BY created_at,id",
-                (bot_id, *values),
+                f"SELECT t.id FROM tasks t WHERE {scope.tasks} AND ({' OR '.join(clauses)}) "
+                "ORDER BY t.created_at,t.id",
+                (scope.value, *values),
             )
         ]
         tasks = [self._task(db, owner, task_id) for task_id in ids]
-        self._decorate_tasks(db, bot_id, tasks, only=ids)
+        self._decorate_scope(db, scope, tasks, only=ids)
         return tasks
 
     @staticmethod
@@ -981,7 +1551,7 @@ class Store:
         return head, known
 
     def conversation_page(self, owner: str, chat_id: str, query: ConversationPageQuery) -> dict:
-        """One page of the owl's conversation (see ``ConversationPageQuery``).
+        """One page of the owl's conversation, or of a room's (see ``ConversationPageQuery``).
 
         The latest page always carries every task still working and every task started since
         its first message, so a message the person just sent finds its task on it. With a
@@ -990,46 +1560,49 @@ class Store:
         ``earlier`` is the message to read the page before from, or None at the start.
         """
         with self.connect() as db:
-            chat = self._chat(db, owner, chat_id)
-            bot_id = chat["bot_id"]
-            first = db.execute(
-                "SELECT * FROM chats WHERE bot_id=? ORDER BY created_at,id LIMIT 1", (bot_id,)
-            ).fetchone()
+            chat, scope = self._scope(db, owner, chat_id)
+            first = chat if scope.room else dict(self._own_chat(db, chat["bot_id"]))
             result = {key: first[key] for key in ("id", "bot_id", "title", "created_at")}
-            activity = self._chat_activities(db, bot_id)[0]
-            result.update(activity_seq=activity["activity_seq"], unread=activity["unread"])
+            activity = self._activity(db, result, scope)
+            result.update(
+                activity_seq=activity["activity_seq"],
+                unread=activity["unread"],
+                read_at=self._read_at(db, first["id"]),
+            )
             head = f"{activity['activity_seq']}.{int(activity['unread'])}"
             limit = query.limit
             if query.before is not None:
-                before = self._message_key(db, bot_id, query.before)
+                before = self._message_key(db, scope, query.before)
                 if before is None:
                     raise NotFound("Message not found.")
                 messages = self._page_messages(
-                    db, bot_id, where=self._OLDER, values=before, newest_first=True, limit=limit
+                    db, scope, where=self._OLDER, values=before, newest_first=True, limit=limit
                 )
-                messages = self._reach_back(db, owner, bot_id, messages, query, before)
-                earlier = self._earlier(db, bot_id, messages)
+                messages = self._reach_back(db, owner, scope, messages, query, before)
+                earlier = self._earlier(db, scope, messages)
                 tasks = self._page_tasks(
                     db,
                     owner,
-                    bot_id,
+                    scope,
                     messages,
                     since=messages[0]["created_at"] if messages and earlier else None,
                     until=before[0],
                     latest=False,
                 )
-                return self._page(db, result, messages, tasks, earlier=earlier, continues=False)
+                return self._page(
+                    db, scope, result, messages, tasks, earlier=earlier, continues=False
+                )
             latest = self._page_messages(
-                db, bot_id, newest_first=True, limit=limit, content=query.version is None
+                db, scope, newest_first=True, limit=limit, content=query.version is None
             )
             seen, known = self._read_version(query.version)
             new = None
             if query.version is not None:
-                after = self._message_key(db, bot_id, query.after) if query.after else None
+                after = self._message_key(db, scope, query.after) if query.after else None
                 if query.after is None or after is not None:
                     new = self._page_messages(
                         db,
-                        bot_id,
+                        scope,
                         where=self._NEWER if after else "",
                         values=after or (),
                         newest_first=True,
@@ -1039,15 +1612,15 @@ class Store:
                         new = None
             if new is None:
                 if query.version is not None:
-                    latest = self._page_messages(db, bot_id, newest_first=True, limit=limit)
-                latest = self._reach_back(db, owner, bot_id, latest, query, None)
+                    latest = self._page_messages(db, scope, newest_first=True, limit=limit)
+                latest = self._reach_back(db, owner, scope, latest, query, None)
             # New messages are the newest, so the latest page holds them too.
             window = latest
-            earlier = self._earlier(db, bot_id, latest)
+            earlier = self._earlier(db, scope, latest)
             tasks = self._page_tasks(
                 db,
                 owner,
-                bot_id,
+                scope,
                 window,
                 since=latest[0]["created_at"] if latest and earlier else None,
                 until=None,
@@ -1070,18 +1643,29 @@ class Store:
                 head + ":" + ",".join(f"{task['id']}.{prints[task['id']]}" for task in current)
             )
             if new is None:
-                return self._page(db, result, latest, current, earlier=earlier, continues=False)
+                return self._page(
+                    db, scope, result, latest, current, earlier=earlier, continues=False
+                )
             changed = [task for task in tasks if known.get(task["id"]) != prints[task["id"]]]
             if not new and not changed and seen == head:
-                return self._page(db, result, [], [], earlier=None, continues=True, unchanged=True)
-            return self._page(db, result, new, changed, earlier=None, continues=True)
+                return self._page(
+                    db, scope, result, [], [], earlier=None, continues=True, unchanged=True
+                )
+            return self._page(db, scope, result, new, changed, earlier=None, continues=True)
 
-    def _reach_back(self, db, owner, bot_id, messages, query, before):
+    @staticmethod
+    def _in_scope(scope: ChatScope, task: dict, room: bool) -> bool:
+        """Whether the task is a turn of this conversation (``room``: it was taken in a room)."""
+        if scope.room:
+            return task["chat_id"] == scope.value
+        return task["bot_id"] == scope.value and not room
+
+    def _reach_back(self, db, owner, scope: ChatScope, messages, query, before):
         """Extend a page back to the first message of ``query.through_task``."""
         if query.through_task is None:
             return messages
         task = self._task(db, owner, query.through_task)
-        if task["bot_id"] != bot_id:
+        if not self._in_scope(scope, task, self._room_row(db, task["chat_id"]) is not None):
             raise NotFound("Task not found.")
         start = db.execute(
             "SELECT m.created_at,m.rowid AS position FROM messages m WHERE m.task_id=? "
@@ -1100,27 +1684,27 @@ class Store:
             return messages
         return self._page_messages(
             db,
-            bot_id,
+            scope,
             where=self._SINCE + (self._OLDER if before is not None else ""),
             values=key + (before or ()),
         )
 
-    def _earlier(self, db, bot_id, messages) -> str | None:
+    def _earlier(self, db, scope: ChatScope, messages) -> str | None:
         if not messages:
             return None
         older = db.execute(
-            "SELECT 1 FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.bot_id=?"
+            f"SELECT 1 FROM messages m JOIN chats c ON c.id=m.chat_id WHERE {scope.chats}"
             + self._OLDER
             + " LIMIT 1",
-            (bot_id, *self._key(messages[0])),
+            (scope.value, *self._key(messages[0])),
         ).fetchone()
         return messages[0]["id"] if older else None
 
     @classmethod
-    def _page(cls, db, result, messages, tasks, *, earlier, continues, unchanged=False) -> dict:
-        cls._message_file_lists(
-            db, result["bot_id"], messages, only=sorted({m["task_id"] for m in messages})
-        )
+    def _page(
+        cls, db, scope: ChatScope, result, messages, tasks, *, earlier, continues, unchanged=False
+    ) -> dict:
+        cls._message_file_lists(db, scope, messages, only=sorted({m["task_id"] for m in messages}))
         for message in messages:
             message.pop("position", None)
         return {
@@ -1148,8 +1732,9 @@ class Store:
             columns = """m.rowid AS position,m.id,m.chat_id,m.task_id,m.role,
                           substr(m.content,1,700) AS preview,length(m.content) AS characters,
                           m.created_at,c.title AS conversation_title,t.status AS task_status"""
-            source = """FROM messages m JOIN chats c ON c.id=m.chat_id JOIN tasks t ON t.id=m.task_id
-                   WHERE c.bot_id=? AND (CAST(? AS BIGINT) IS NULL OR m.rowid<?)"""
+            # The owl's own conversation: rooms keep their messages to themselves (rooms.py).
+            source = f"""FROM messages m JOIN chats c ON c.id=m.chat_id JOIN tasks t ON t.id=m.task_id
+                   WHERE {ChatScope(bot_id).chats} AND (CAST(? AS BIGINT) IS NULL OR m.rowid<?)"""
             rows = db.execute(
                 f"""SELECT {columns} {source}
                      AND instr(unicode_fold(m.content),unicode_fold(?))>0
@@ -1162,7 +1747,8 @@ class Store:
                 and not (
                     data.before is not None
                     and db.execute(
-                        "SELECT 1 FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.bot_id=? "
+                        "SELECT 1 FROM messages m JOIN chats c ON c.id=m.chat_id "
+                        f"WHERE {ChatScope(bot_id).chats} "
                         "AND instr(unicode_fold(m.content),unicode_fold(?))>0 LIMIT 1",
                         (bot_id, data.query),
                     ).fetchone()
@@ -1207,19 +1793,39 @@ class Store:
         to be turned on, and the owl's latest turn when it failed or was interrupted and the
         person hasn't seen it. ``text`` is the owl's own words where there are some (an app's
         name for an app); the app words everything else. Help on its computer carries ``help``
-        ({kind, site, site_name}) when the owl said what it needs.
+        ({kind, site, site_name}) when the owl said what it needs. Archived owls are left out:
+        the person put them away, and they start no work of their own.
         """
         now = time.time()
         with self.connect() as db:
             owls = {
                 row["id"]: row
                 for row in db.execute(
-                    "SELECT id,name,color,background FROM bots WHERE owner=?", (owner,)
+                    f"SELECT id,name,color,background FROM bots WHERE owner=? "
+                    f"AND archived_at IS NULL AND id NOT IN ({self.ARRIVING})",
+                    (owner,),
                 )
             }
             items: list[dict] = []
+            rooms: dict[str, dict | None] = {}
+
+            def room_of(task_id):
+                """The room a turn was taken in, so the app opens the room (rooms.py)."""
+                if task_id is None:
+                    return None
+                if task_id not in rooms:
+                    row = db.execute(
+                        "SELECT r.id,r.name FROM tasks t JOIN rooms r ON r.id=t.chat_id "
+                        "WHERE t.id=? AND r.owner=?",
+                        (task_id, owner),
+                    ).fetchone()
+                    rooms[task_id] = dict(row) if row else None
+                return rooms[task_id]
 
             def add(kind, row, **extra):
+                if row["bot_id"] not in owls:
+                    return
+                room = room_of(row["task_id"])
                 items.append(
                     {
                         "kind": kind,
@@ -1231,6 +1837,8 @@ class Store:
                         "task_id": row["task_id"],
                         "text": None,
                         "at": row["at"],
+                        # Only a turn taken in a room names it, so other items read as before.
+                        **({"room_id": room["id"], "room_name": room["name"]} if room else {}),
                         **extra,
                     }
                 )
@@ -1255,7 +1863,7 @@ class Store:
             ):
                 add("app", row, text=row["name"], state=row["state"])
             for row in db.execute(
-                "SELECT r.id,r.bot_id,r.task_id,r.action,r.created_at AS at "
+                "SELECT r.id,r.bot_id,r.task_id,r.action,r.effect,r.created_at AS at "
                 "FROM bot_action_reviews r JOIN tasks t ON t.id=r.task_id "
                 "JOIN bots b ON b.id=r.bot_id WHERE b.owner=? AND r.status='pending' "
                 "AND t.status IN ('queued','running','waiting')",
@@ -1275,6 +1883,8 @@ class Store:
                         "arguments": action.get("arguments") or {},
                         "observed_context": observed,
                     },
+                    # What the step would do that made it wait (action_review.request).
+                    effect=row["effect"],
                 )
             # A suggestion shows under the owl's reply, under the owl's current setup.
             for row in db.execute(
@@ -1324,14 +1934,17 @@ class Store:
                 elif self._task(db, owner, row["id"]).get("wait_reason") == "local_approval":
                     add("local_approval", row)
             # A routine paused by itself (a failed run, a used-up allowance) carries a reason;
-            # one the person paused doesn't. A draft is one an owl suggested, not yet turned on.
+            # one the person paused doesn't. A draft is one an owl set up, not yet turned on. A
+            # routine the owl only suggested (routine_suggestions.py) blocks nothing: its card
+            # under the reply is where the person answers it, if they want it at all.
             for row in db.execute(
                 "SELECT s.id,s.bot_id,s.source_task_id AS task_id,s.name,s.state,"
                 "s.updated_at AS at,h.pause_code FROM schedules s JOIN bots b ON b.id=s.bot_id "
                 "LEFT JOIN tasks t ON t.id=s.source_task_id "
                 "LEFT JOIN schedule_health h ON h.schedule_id=s.id AND h.revision=s.revision "
                 "WHERE b.owner=? AND ((s.state='paused' AND s.pause_reason IS NOT NULL) OR "
-                "(s.state='draft' AND (t.status IS NULL OR t.status!='running')))",
+                "(s.state='draft' AND (t.status IS NULL OR t.status!='running') AND NOT EXISTS("
+                "SELECT 1 FROM routine_suggestions g WHERE g.schedule_id=s.id)))",
                 (owner,),
             ):
                 # pause_code says why it paused, such as "access": a run needs the person to
@@ -1353,13 +1966,22 @@ class Store:
             ):
                 add("routine", row, text=row["name"], routine="trigger", state="draft")
             # The owl's newest turn ended without its work, and the person hasn't seen it yet.
-            # A routine's own run pauses its routine instead, which is listed above.
+            # A routine's own run pauses its routine instead, which is listed above. A message the
+            # person cancelled before it started is not a newer turn.
+            from .queued_messages import not_withdrawn
+
+            # Newer in the same conversation: the owl's own chat, or the room the turn was in.
+            rooms_sql = self.ROOM_CHATS
             for row in db.execute(
-                "SELECT t.id,t.bot_id,t.id AS task_id,t.status,t.message FROM tasks t "
+                "SELECT t.id,t.bot_id,t.chat_id,t.id AS task_id,t.status,t.message FROM tasks t "
                 "JOIN bots b ON b.id=t.bot_id WHERE b.owner=? "
                 "AND t.status IN ('failed','interrupted') "
-                "AND NOT EXISTS(SELECT 1 FROM tasks n WHERE n.bot_id=t.bot_id AND "
-                "(n.created_at>t.created_at OR (n.created_at=t.created_at AND n.id>t.id))) "
+                "AND NOT EXISTS(SELECT 1 FROM tasks n WHERE n.owner=t.owner AND "
+                f"((t.chat_id IN ({rooms_sql}) AND n.chat_id=t.chat_id) OR "
+                f"(t.chat_id NOT IN ({rooms_sql}) AND n.bot_id=t.bot_id "
+                f"AND n.chat_id NOT IN ({rooms_sql}))) AND "
+                "(n.created_at>t.created_at OR (n.created_at=t.created_at AND n.id>t.id)) "
+                f"AND {not_withdrawn('n')}) "
                 "AND NOT EXISTS(SELECT 1 FROM schedule_runs r WHERE r.task_id=t.id)",
                 (owner,),
             ):
@@ -1368,10 +1990,15 @@ class Store:
                     "ORDER BY seq DESC LIMIT 1",
                     (row["id"], row["status"]),
                 ).fetchone()
+                scope = (
+                    ChatScope(row["chat_id"], room=True)
+                    if room_of(row["id"])
+                    else ChatScope(row["bot_id"])
+                )
                 read = db.execute(
                     "SELECT coalesce(max(r.event_seq),0) FROM chat_read_cursors r "
-                    "JOIN chats c ON c.id=r.chat_id WHERE c.bot_id=?",
-                    (row["bot_id"],),
+                    f"JOIN chats c ON c.id=r.chat_id WHERE {scope.chats}",
+                    (scope.value,),
                 ).fetchone()[0]
                 if ended and ended["seq"] > read:
                     add(
@@ -1389,9 +2016,9 @@ class Store:
         with self.connect() as db:
             self._bot(db, owner, bot_id)
             row = db.execute(
-                """SELECT m.*,t.status AS task_status FROM messages m
+                f"""SELECT m.*,t.status AS task_status FROM messages m
                    JOIN chats c ON c.id=m.chat_id JOIN tasks t ON t.id=m.task_id
-                   WHERE m.id=? AND c.bot_id=?""",
+                   WHERE m.id=? AND {ChatScope(bot_id).chats}""",
                 (message_id, bot_id),
             ).fetchone()
             if row is None:
@@ -1640,7 +2267,10 @@ class Store:
                 if previous["bot_id"] != bot_id:
                     raise Conflict("This request ID was already used for a different message.")
                 return self._task(db, owner, previous["id"])
-            if db.execute("SELECT 1 FROM tasks WHERE bot_id=? LIMIT 1", (bot_id,)).fetchone():
+            # Its own chat: talking to it in a room first doesn't take its hello away.
+            if db.execute(
+                f"SELECT 1 FROM tasks t WHERE {ChatScope(bot_id).tasks} LIMIT 1", (bot_id,)
+            ).fetchone():
                 return None
             chat = self._ensure_chat(db, owner, bot_id, bot["name"])
             task_id, now = uid(), time.time()
@@ -1665,8 +2295,13 @@ class Store:
             return self._task(db, owner, task_id)
 
     def enqueue(self, owner: str, chat_id: str, data: TaskInput) -> dict:
+        """Queue a message the person sent in chat; until it starts they may change or cancel it."""
+        from .queued_messages import record
+
         with self.connect(write=True) as db:
-            return self._enqueue(db, owner, chat_id, data)
+            task = self._enqueue(db, owner, chat_id, data)
+            record(db, task["id"], data.message, task["created_at"])
+            return task
 
     def continue_without_answer(self, db, owner: str, source: dict, question) -> dict | None:
         """Queue the turn that carries ``source`` on after the person skipped its question.
@@ -1682,10 +2317,13 @@ class Store:
         ).fetchone()
         if previous:
             return self._task(db, owner, previous["id"])
+        from .queued_messages import not_withdrawn
+
         if (
             source["status"] != "completed"
             or db.execute(
-                "SELECT 1 FROM tasks WHERE chat_id=? AND id<>? AND created_at>=? LIMIT 1",
+                "SELECT 1 FROM tasks t WHERE t.chat_id=? AND t.id<>? AND t.created_at>=? "
+                f"AND {not_withdrawn('t')} LIMIT 1",
                 (source["chat_id"], source["id"], source["created_at"]),
             ).fetchone()
         ):
@@ -1700,6 +2338,10 @@ class Store:
             raise LimitReached("The task queue is full. Wait for tasks to finish.")
         bot = self._bot(db, owner, source["bot_id"])
         task_id, now = uid(), time.time()
+        # The person moved its conversation on: an archived owl comes back (_bring_back).
+        if bot["archived_at"] is not None:
+            self._bring_back(db, bot["id"], now)
+            bot = self._bot(db, owner, bot["id"])
         db.execute(
             "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
@@ -1724,23 +2366,146 @@ class Store:
         self._event(db, task_id, "queued", {})
         return self._task(db, owner, task_id)
 
-    def _enqueue(self, db: sqlite3.Connection, owner: str, chat_id: str, data: TaskInput) -> dict:
+    def regenerate(self, owner: str, task_id: str, data: RegenerateInput) -> dict:
+        """Queue another answer to the person's message that ``task_id`` answered (regenerate.py).
+
+        Only the owl's latest turn can be answered again, once it finished and while nothing of
+        this owl is working: a finished answer to the person's own message, or an answer asked
+        this way that didn't finish (trying it again). Like a first hello the turn has no message
+        of its own; its request is the person's message, read at run time. The same request id
+        returns the turn already queued.
+        """
+        from .queued_messages import not_withdrawn
+
+        with self.connect(write=True) as db:
+            source = self._task(db, owner, task_id)
+            previous = db.execute(
+                "SELECT id,config FROM tasks WHERE owner=? AND request_id=?",
+                (owner, data.request_id),
+            ).fetchone()
+            if previous:
+                asked = json.loads(previous["config"]).get("regenerate") or {}
+                if asked.get("source") != task_id:
+                    raise Conflict("This request ID was already used for a different message.")
+                return self._task(db, owner, previous["id"])
+            bot = self._bot(db, owner, source["bot_id"])
+            if self._room_row(db, source["chat_id"]) is not None:
+                raise Conflict("A reply in a room can't get a new answer yet.")
+            # A message the person cancelled before it started is not in the chat (queued_messages).
+            latest = db.execute(
+                f"SELECT id FROM tasks t WHERE {ChatScope(bot['id']).tasks} AND {not_withdrawn('t')} "
+                "ORDER BY created_at DESC,id DESC LIMIT 1",
+                (bot["id"],),
+            ).fetchone()
+            if latest is None or latest["id"] != task_id:
+                raise Conflict("Only the latest reply can get a new answer.")
+            if db.execute(
+                "SELECT 1 FROM tasks WHERE bot_id=? AND status IN ('queued','running','waiting','cancelling') LIMIT 1",
+                (bot["id"],),
+            ).fetchone():
+                raise Conflict("Your owl is still working. Ask for a new answer once it's done.")
+            earlier = regenerates(source)
+            if earlier:
+                # Trying again an answer asked this way: it replaces what that one replaced,
+                # unless it finished, and then it is the answer to replace.
+                asked = source["config"]["regenerate"]
+                original = self._task(db, owner, earlier)
+                replaces = task_id if source["status"] == "completed" else asked["replaces"]
+            else:
+                if source["status"] != "completed":
+                    raise Conflict("Only a finished reply can get a new answer.")
+                original, replaces = source, task_id
+            spoken = db.execute(
+                "SELECT 1 FROM messages WHERE task_id=? AND role='user' LIMIT 1", (original["id"],)
+            ).fetchone()
+            if not spoken or not persons_request(original):
+                raise Conflict("Only a reply to your own message can get a new answer.")
+            if (
+                db.execute(
+                    "SELECT count(*) FROM tasks WHERE owner=? AND status IN ('queued','running','waiting','cancelling')",
+                    (owner,),
+                ).fetchone()[0]
+                >= 20
+            ):
+                raise LimitReached("The task queue is full. Wait for tasks to finish.")
+            new_id, now = uid(), time.time()
+            # The person asked for it, so an archived owl comes back (_bring_back).
+            if bot["archived_at"] is not None:
+                self._bring_back(db, bot["id"], now)
+                bot = self._bot(db, owner, bot["id"])
+            db.execute(
+                "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    new_id,
+                    source["chat_id"],
+                    bot["id"],
+                    owner,
+                    data.request_id,
+                    # The person's words, for previews and lists; the turn reads the message.
+                    original["message"],
+                    "queued",
+                    encode(
+                        {
+                            **bot,
+                            "reply_review_enabled": self._reply_review_enabled(db, owner),
+                            "regenerate": {
+                                "task_id": original["id"],
+                                "replaces": replaces,
+                                "source": task_id,
+                            },
+                        }
+                    ),
+                    now,
+                    now,
+                ),
+            )
+            self._event(db, new_id, "queued", {})
+            return self._task(db, owner, new_id)
+
+    def _enqueue(
+        self,
+        db: sqlite3.Connection,
+        owner: str,
+        chat_id: str,
+        data: TaskInput,
+        *,
+        bot_id: str | None = None,
+    ) -> dict:
+        """Queue a message for an owl. In a room's chat, ``bot_id`` names the owl it is for (the
+        room's own route sends the person's messages: rooms.py)."""
         chat = self._chat(db, owner, chat_id)
-        bot = self._bot(db, owner, chat["bot_id"])
+        room = self._room_row(db, chat_id) is not None
+        if room:
+            if bot_id is None:
+                raise Conflict("Send messages in a room through the room.")
+            bot = self._bot(db, owner, bot_id)
+            if not self._room_member(db, chat_id, bot_id):
+                raise Conflict(f"{bot['name']} isn't in this room any more.")
+        else:
+            bot = self._bot(db, owner, chat["bot_id"])
+            if bot_id is not None and bot_id != bot["id"]:
+                raise Conflict("This conversation belongs to another owl.")
         previous = db.execute(
             "SELECT id,bot_id,message FROM tasks WHERE owner=? AND request_id=?",
             (owner, data.request_id),
         ).fetchone()
         if previous:
+            from .queued_messages import sent_as
+
             if (
                 previous["bot_id"] != bot["id"]
-                or previous["message"] != data.message
+                # A message changed or cancelled while it waited is still the one first sent.
+                or (
+                    previous["message"] != data.message
+                    and not sent_as(db, previous["id"], data.message)
+                )
                 or self._attached_file_ids(db, previous["id"]) != data.file_ids
             ):
                 raise Conflict("This request ID was already used for a different message.")
             return self._task(db, owner, previous["id"])
         attached = self._attachable_files(db, bot, data.file_ids)
-        chat = self._ensure_chat(db, owner, bot["id"], bot["name"])
+        if not room:
+            chat = self._ensure_chat(db, owner, bot["id"], bot["name"])
         chat_id = chat["id"]
         if (
             db.execute(
@@ -1751,6 +2516,11 @@ class Store:
         ):
             raise LimitReached("The task queue is full. Wait for tasks to finish.")
         task_id, now = uid(), time.time()
+        # Routines and file events never reach an archived owl; anything else here is work the
+        # person started for it (a message, an answer, an approval, Run now), so it comes back.
+        if bot["archived_at"] is not None:
+            self._bring_back(db, bot["id"], now)
+            bot = self._bot(db, owner, bot["id"])
         db.execute(
             "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
@@ -1767,10 +2537,15 @@ class Store:
                 now,
             ),
         )
+        message_id = uid()
         db.execute(
             "INSERT INTO messages(id,chat_id,task_id,role,content,created_at) VALUES(?,?,?,?,?,?)",
-            (uid(), chat_id, task_id, "user", data.message, now),
+            (message_id, chat_id, task_id, "user", data.message, now),
         )
+        if room:
+            db.execute(
+                "INSERT INTO room_turns(task_id,message_id) VALUES(?,?)", (task_id, message_id)
+            )
         for ordinal, file in enumerate(attached):
             db.execute(
                 "INSERT INTO task_files(task_id,ordinal,file_id,name,media_type,size_bytes) "
@@ -1784,7 +2559,7 @@ class Store:
                     file["size_bytes"],
                 ),
             )
-        if chat["title"] == "New conversation":
+        if not room and chat["title"] == "New conversation":
             title = data.message.strip() or (attached[0]["name"] if attached else "")
             db.execute("UPDATE chats SET title=? WHERE id=?", (title[:80], chat_id))
         self._event(db, task_id, "queued", {})
@@ -1823,18 +2598,18 @@ class Store:
         return files
 
     @staticmethod
-    def _message_files(db, bot_id: str, *, only=None) -> dict[str, list[dict]]:
+    def _message_files(db, scope: ChatScope, *, only=None) -> dict[str, list[dict]]:
         """Each task's attached files as sent, and whether each is still in the Library."""
         attached: dict[str, list[dict]] = {}
         if only is not None and not only:
             return attached
-        scope = "" if only is None else f" AND t.id IN ({','.join('?' * len(only))})"
+        within = "" if only is None else f" AND t.id IN ({','.join('?' * len(only))})"
         for row in db.execute(
             "SELECT a.task_id,a.file_id,a.name,a.media_type,a.size_bytes,"
             "EXISTS(SELECT 1 FROM files f WHERE f.id=a.file_id AND f.bot_id=t.bot_id) AS available "
-            f"FROM task_files a JOIN tasks t ON t.id=a.task_id WHERE t.bot_id=?{scope} "
+            f"FROM task_files a JOIN tasks t ON t.id=a.task_id WHERE {scope.tasks}{within} "
             "ORDER BY a.task_id,a.ordinal",
-            (bot_id, *(only or ())),
+            (scope.value, *(only or ())),
         ):
             attached.setdefault(row["task_id"], []).append(
                 {
@@ -1864,16 +2639,30 @@ class Store:
             ]
             return task
 
-    def claim(self, owner: str) -> dict | None:
+    def claim(self, owner: str, *, admit: Callable[[], bool] | None = None) -> dict | None:
+        """The next turn to run: one at a time per owl, and in a room one at a time, in the order
+        the turns were asked for (rooms.py), so each owl reads the answers before its own.
+
+        ``admit`` is asked once a turn is found, inside the claim's transaction: False leaves
+        it as it is. A runtime that is stopping passes it, so a turn it has just queued to
+        start again after the restart (restart_cut) is never taken by another of its workers.
+        """
         from .hosted_maintenance import MaintenanceLease
+        from .steering import release_ended
 
         with self.connect(write=True) as db:
             if MaintenanceLease.pending(db):
                 return None
+            # A message sent to a turn that stopped before reading it waits its turn, as below.
+            release_ended(db, owner)
             row = db.execute(
-                """SELECT t.id FROM tasks t WHERE t.owner=?
+                f"""SELECT t.id FROM tasks t WHERE t.owner=?
                 AND NOT EXISTS (SELECT 1 FROM tasks active WHERE active.bot_id=t.bot_id
                     AND active.status IN ('running','cancelling'))
+                AND (t.chat_id NOT IN ({self.ROOM_CHATS}) OR NOT EXISTS (SELECT 1 FROM tasks e
+                    WHERE e.chat_id=t.chat_id AND e.id<>t.id AND (e.status IN ('running','cancelling')
+                    OR (e.status='queued' AND (e.created_at<t.created_at
+                        OR (e.created_at=t.created_at AND e.id<t.id))))))
                 AND (t.status='queued' OR (t.status='waiting' AND EXISTS
                     (SELECT 1 FROM coding_jobs j WHERE j.task_id=t.id
                      AND j.status NOT IN ('queued','running')))
@@ -1886,7 +2675,7 @@ class Store:
                     t.created_at,t.id LIMIT 1""",
                 (owner,),
             ).fetchone()
-            if row is None:
+            if row is None or (admit is not None and not admit()):
                 return None
             db.execute(
                 "UPDATE tasks SET status='running',updated_at=? WHERE id=?", (time.time(), row[0])
@@ -1943,10 +2732,18 @@ class Store:
         publish_reply: bool = True,
         failure: dict | None = None,
         routine_failure: RunFailure | None = None,
+        checked: bool = False,
+        nothing_new: str | None = None,
     ) -> None:
         """End a task. ``failure`` (failures.py) says why a failed or interrupted turn stopped, for
         the person; ``routine_failure`` says what a failed routine run means for its routine (retry,
-        wait for a limit, or pause).
+        wait for a limit, or pause). ``checked``: the reply passed the reply checker as a reply
+        (not a plain status), so a playbook the run wrote may be kept (playbooks.py), and the
+        person's chat is read for what to remember once it goes quiet (memory_capture.py).
+
+        ``nothing_new``: a routine's run completed having found nothing new, for this short
+        reason of the owl's own. It posts no reply, and a conversation the person had read up
+        to here stays read, so nothing calls them to it (the nothing_new event says it checked).
         """
         if status not in TERMINAL:
             raise ValueError("Invalid terminal task state.")
@@ -1954,6 +2751,13 @@ class Store:
             task = self._task(db, owner, task_id)
             if task["status"] in TERMINAL:
                 return
+            if (
+                nothing_new is not None
+                and not db.execute(
+                    "SELECT 1 FROM schedule_runs WHERE task_id=?", (task_id,)
+                ).fetchone()
+            ):
+                raise ValueError("Only a routine's run ends with nothing new.")
             if task["status"] == "cancelling":
                 status, content, error = "cancelled", "", None
             if status == "completed" and self._defer_peer_report(db, task):
@@ -1971,6 +2775,10 @@ class Store:
                 failure = failures.failure(failures.UNKNOWN)
             if status not in ("failed", "interrupted"):
                 failure = None
+            quiet = status == "completed" and nothing_new is not None
+            if quiet:
+                content, publish_reply = "", False
+                read_before = not self._unread(db, task["chat_id"])
             now = time.time()
             db.execute(
                 "UPDATE tasks SET status=?,output=?,error=?,failure=?,updated_at=? WHERE id=?",
@@ -1981,6 +2789,25 @@ class Store:
                     "INSERT INTO messages(id,chat_id,task_id,role,content,created_at) VALUES(?,?,?,?,?,?)",
                     (uid(), task["chat_id"], task_id, "assistant", content, now),
                 )
+            from .playbooks import settle_run
+
+            # A playbook the run wrote is kept only with a published, checked reply.
+            settle_run(
+                db,
+                task_id,
+                succeeded=status == "completed" and publish_reply and bool(content) and checked,
+                now=now,
+            )
+            if quiet:
+                self._event(db, task_id, "nothing_new", {"reason": nothing_new})
+            if status == "completed":
+                from .memory_capture import note_turn
+
+                # The person's own turn with a checked reply: their chat is read for what to
+                # remember once it has been quiet a while (memory_capture.py).
+                note_turn(
+                    db, task, published=publish_reply and bool(content), checked=checked, now=now
+                )
             self._event(
                 db,
                 task_id,
@@ -1988,8 +2815,21 @@ class Store:
                 {
                     **({"error": error} if error else {}),
                     **({"failure": failure} if failure else {}),
+                    **({"nothing_new": True} if quiet else {}),
                 },
             )
+            if quiet and read_before:
+                # Nothing new to read: the conversation stays read through this run's end.
+                ended = db.execute(
+                    "SELECT max(seq) FROM events WHERE task_id=? AND kind='completed'", (task_id,)
+                ).fetchone()[0]
+                db.execute(
+                    """INSERT INTO chat_read_cursors(chat_id,event_seq) VALUES(?,?)
+                    ON CONFLICT(chat_id) DO UPDATE SET event_seq=CASE
+                    WHEN chat_read_cursors.event_seq>excluded.event_seq
+                    THEN chat_read_cursors.event_seq ELSE excluded.event_seq END""",
+                    (task["chat_id"], ended),
+                )
             if status == "completed" and content and publish_reply:
                 db.execute(
                     "UPDATE peer_exchanges SET reported_at=?,updated_at=? WHERE source_task_id=?",
@@ -2033,7 +2873,11 @@ class Store:
             return self._defer_peer_report(db, self._task(db, owner, task_id))
 
     def recover(self, owner: str) -> int:
-        """Never replay a task that might have already performed an action."""
+        """After a crash, an update or sleep: settle every turn the runtime was working on.
+
+        Never replay a task that might have already performed an action: a turn starts again
+        once only when nothing it did reached outside the owl's own records (_cut_by_restart).
+        """
         with self.connect(write=True) as db:
             peer_rows = db.execute(
                 "SELECT p.id,p.source_task_id FROM peer_exchanges p JOIN tasks t ON t.id=p.source_task_id "
@@ -2059,22 +2903,19 @@ class Store:
                 (owner,),
             ).fetchall()
             for row in rows:
-                state = "cancelled" if row["status"] == "cancelling" else "interrupted"
-                reason = "The runtime stopped before this task finished. Review saved results before sending a new task."
-                # The service restarted under the task: a service cause, never the person's setup.
-                failure = failures.failure(failures.SERVICE) if state == "interrupted" else None
-                db.execute(
-                    "UPDATE tasks SET status=?,error=?,failure=?,updated_at=? WHERE id=?",
-                    (state, reason, encode(failure) if failure else None, time.time(), row["id"]),
-                )
-                self._event(
-                    db,
-                    row["id"],
-                    state,
-                    {"error": reason, **({"failure": failure} if failure else {})},
-                )
-                if state == "interrupted":
-                    self._settle_schedule_run(db, row["id"], state, RunFailure("interrupted"))
+                if row["status"] == "cancelling":
+                    reason = "The runtime stopped before this task finished. Review saved results before sending a new task."
+                    db.execute(
+                        "UPDATE tasks SET status='cancelled',error=?,failure=NULL,updated_at=? "
+                        "WHERE id=?",
+                        (reason, time.time(), row["id"]),
+                    )
+                    self._event(db, row["id"], "cancelled", {"error": reason})
+                    from .playbooks import settle_run
+
+                    settle_run(db, row["id"], succeeded=False, now=time.time())
+                else:
+                    self._cut_by_restart(db, self._task(db, owner, row["id"]))
             db.execute(
                 "UPDATE provider_calls SET status='unknown',updated_at=? WHERE status='started' AND task_id IN (SELECT id FROM tasks WHERE owner=?)",
                 (time.time(), owner),
@@ -2085,6 +2926,101 @@ class Store:
         with self.connect(write=True) as db:
             self._task(db, owner, task_id)
             self._event(db, task_id, kind, data)
+
+    def restart_cut(self, owner: str, task_id: str) -> bool:
+        """The runtime is stopping under this turn (an app update or quit): settle it now as a
+        restart would (_cut_by_restart). False when it is not a turn being worked on (a turn the
+        person stopped, or one already settled), for the caller to finish as before."""
+        with self.connect(write=True) as db:
+            task = self._task(db, owner, task_id)
+            if task["status"] != "running" and not (
+                task["status"] == "waiting"
+                and db.execute(
+                    "SELECT 1 FROM background_turns WHERE task_id=? AND state='running'",
+                    (task_id,),
+                ).fetchone()
+            ):
+                return False
+            self._cut_by_restart(db, task)
+            return True
+
+    def _cut_by_restart(self, db, task: dict) -> None:
+        """A restart cut this turn off. It starts again once, told so, when its step receipts
+        show nothing it did reached outside the owl's own records (step_effects.py): a turn in
+        the chat queues again and reads the conversation afresh; work off the reply loop carries
+        on from its saved checkpoint. Otherwise, or the second time, it is interrupted, and its
+        failure says why it was not started again (failures.restart_failure)."""
+        from .playbooks import settle_run
+        from .step_effects import RESTART_RERUNS, first_outward_step, restart_note, steps_taken
+
+        task_id, now = task["id"], time.time()
+        step = first_outward_step(db, task_id)
+        if step is None and task["restarts"] < RESTART_RERUNS:
+            steps = steps_taken(db, task_id)
+            if task["status"] == "waiting":
+                checkpoint = db.execute(
+                    "SELECT messages FROM background_turns WHERE task_id=?", (task_id,)
+                ).fetchone()
+                # A current state transition, as when the person gives the computer back
+                # (computer_control.py): the execution reads it as one, not as old reference.
+                messages = [
+                    *json.loads(checkpoint["messages"]),
+                    {
+                        "role": "system",
+                        "_bot_control_return": task_id,
+                        "content": restart_note(steps),
+                    },
+                ]
+                db.execute(
+                    "UPDATE background_turns SET state='queued',messages=? WHERE task_id=?",
+                    (encode(messages), task_id),
+                )
+            else:
+                db.execute("UPDATE tasks SET status='queued' WHERE id=?", (task_id,))
+            db.execute(
+                "UPDATE tasks SET restarts=restarts+1,updated_at=? WHERE id=?", (now, task_id)
+            )
+            # Nobody holds the owl's computer for a turn that starts again.
+            db.execute("DELETE FROM bot_computer_control WHERE task_id=?", (task_id,))
+            self._event(db, task_id, "restarted", {"restarts": task["restarts"] + 1})
+            return
+        # The service restarted under the task: a service cause, never the person's setup.
+        if step is None:
+            failure = failures.restart_failure("already_rerun")
+            reason = (
+                "The runtime stopped before this task finished, after it had already started "
+                "again once. Review saved results before sending a new task."
+            )
+        else:
+            failure = failures.restart_failure(
+                "acted" if step.finished else "unconfirmed", step.name
+            )
+            reason = (
+                "The runtime stopped before this task finished. It did not start again on its "
+                "own because a step it took "
+                + ("changed something" if step.finished else "may have changed something")
+                + ". Review saved results before sending a new task."
+            )
+        db.execute(
+            "UPDATE tasks SET status='interrupted',error=?,failure=?,updated_at=? WHERE id=?",
+            (reason, encode(failure), now, task_id),
+        )
+        self._event(db, task_id, "interrupted", {"error": reason, "failure": failure})
+        self._settle_schedule_run(db, task_id, "interrupted", RunFailure("interrupted"))
+        settle_run(db, task_id, succeeded=False, now=now)
+
+    def restart_steps(self, owner: str, task_id: str) -> list[dict] | None:
+        """For a turn started again after a restart, its newest steps before that; else None."""
+        from .step_effects import steps_taken
+
+        with self.connect() as db:
+            task = self._task(db, owner, task_id)
+            restarted = db.execute(
+                "SELECT max(seq) FROM events WHERE task_id=? AND kind='restarted'", (task_id,)
+            ).fetchone()[0]
+            if not task["restarts"] or restarted is None:
+                return None
+            return steps_taken(db, task_id, before=restarted)
 
     def reserve_call(
         self,
@@ -2195,9 +3131,10 @@ class Store:
             records = self._memories(db, bot_id)
             if for_person:
                 saved = {
-                    row[0]
+                    row[0]: row[1]
                     for row in db.execute(
-                        "SELECT DISTINCT memory_id FROM memory_changes WHERE bot_id=? AND action='saved'",
+                        "SELECT DISTINCT memory_id,action FROM memory_changes WHERE bot_id=? "
+                        "AND action IN ('saved','captured')",
                         (bot_id,),
                     )
                 }
@@ -2207,6 +3144,8 @@ class Store:
                         and bool(record["source_task_id"])
                         and record["id"] in saved
                     )
+                    # Kept after the chat went quiet, from the person's own words (memory_capture.py).
+                    record["captured"] = saved.get(record["id"]) == "captured"
             return records
 
     def cache_memory_applicability(self, owner, bot_id, task_id, sources, scopes):
@@ -2421,11 +3360,13 @@ class Store:
         """Locate UI changes in the visible conversation's actual chronology."""
         with self.connect() as db:
             task = self._task(db, owner, task_id)
+            # The owl's own previous reply: in a room, other owls reply too.
             previous = db.execute(
                 "SELECT id,task_id,created_at FROM messages WHERE chat_id=? "
                 "AND role='assistant' AND task_id!=? AND created_at<=? "
+                "AND task_id IN (SELECT id FROM tasks WHERE bot_id=?) "
                 "ORDER BY created_at DESC,id DESC LIMIT 1",
-                (task["chat_id"], task_id, task["created_at"]),
+                (task["chat_id"], task_id, task["created_at"], task["bot_id"]),
             ).fetchone()
             changes = self._memory_changes(db, task["bot_id"])
             return {
@@ -2446,11 +3387,13 @@ class Store:
         """
         with self.connect() as db:
             task = self._task(db, owner, task_id)
+            # The owl's own previous reply: in a room, other owls reply too.
             previous = db.execute(
                 "SELECT id,task_id,created_at FROM messages WHERE chat_id=? "
                 "AND role='assistant' AND task_id!=? AND created_at<=? "
+                "AND task_id IN (SELECT id FROM tasks WHERE bot_id=?) "
                 "ORDER BY created_at DESC,id DESC LIMIT 1",
-                (task["chat_id"], task_id, task["created_at"]),
+                (task["chat_id"], task_id, task["created_at"], task["bot_id"]),
             ).fetchone()
             changes = (
                 db.execute(
@@ -2527,9 +3470,13 @@ class Store:
                 self._memory_change(
                     db, bot_id, memory_id, "edited", row["status"], "active", row["source_task_id"]
                 )
+            elif saved_by_owl:
+                return self._keep_owl_memory(
+                    db, bot_id, data.title, data.content, source_task_id, target, now
+                )
             else:
                 memory_id = uid()
-                status = "pending" if source_task_id and not saved_by_owl else "active"
+                status = "pending" if source_task_id else "active"
                 db.execute(
                     "INSERT INTO memories VALUES(?,?,?,?,?,?,?,?)",
                     (memory_id, bot_id, data.title, data.content, status, source_task_id, now, now),
@@ -2543,29 +3490,59 @@ class Store:
                     db,
                     bot_id,
                     memory_id,
-                    "saved" if saved_by_owl else "proposed" if source_task_id else "created",
+                    "proposed" if source_task_id else "created",
                     None,
                     status,
                     source_task_id,
                     replaces_memory_id,
                 )
-                if saved_by_owl and target is not None:
-                    # The old memory stops being used now and stays only so Undo can restore it.
-                    db.execute(
-                        "UPDATE memories SET status='superseded',updated_at=? WHERE id=?",
-                        (now, target["id"]),
-                    )
-                    self._memory_change(
-                        db,
-                        bot_id,
-                        target["id"],
-                        "superseded",
-                        "active",
-                        "superseded",
-                        target["source_task_id"],
-                        memory_id,
-                    )
             return dict(db.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone())
+
+    @classmethod
+    def _keep_owl_memory(
+        cls, db, bot_id, title, content, source_task_id, target, now, *, action="saved"
+    ) -> dict:
+        """What an owl keeps by itself, from one of its turns: kept at once, and a correction
+        replaces ``target`` at once. The old memory is superseded, not erased, so undo_memory can
+        bring it back. ``action`` is the lifecycle receipt: ``saved`` during a turn, ``captured``
+        after the chat went quiet (memory_capture.py)."""
+        memory_id = uid()
+        db.execute(
+            "INSERT INTO memories VALUES(?,?,?,?,?,?,?,?)",
+            (memory_id, bot_id, title, content, "active", source_task_id, now, now),
+        )
+        if target is not None:
+            db.execute(
+                "INSERT INTO memory_replacements VALUES(?,?,?)",
+                (memory_id, target["id"], target["updated_at"]),
+            )
+        cls._memory_change(
+            db,
+            bot_id,
+            memory_id,
+            action,
+            None,
+            "active",
+            source_task_id,
+            target["id"] if target is not None else None,
+        )
+        if target is not None:
+            # The old memory stops being used now and stays only so Undo can restore it.
+            db.execute(
+                "UPDATE memories SET status='superseded',updated_at=? WHERE id=?",
+                (now, target["id"]),
+            )
+            cls._memory_change(
+                db,
+                bot_id,
+                target["id"],
+                "superseded",
+                "active",
+                "superseded",
+                target["source_task_id"],
+                memory_id,
+            )
+        return dict(db.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone())
 
     @staticmethod
     def _activate_memory(db: sqlite3.Connection, bot_id: str, memory_id: str) -> None:
@@ -2608,28 +3585,31 @@ class Store:
 
     @staticmethod
     def _retire_superseded(db: sqlite3.Connection, bot_id: str, replacement_id: str) -> None:
-        """When a replacement goes, Undo no longer applies: erase what it superseded."""
-        row = db.execute(
-            "SELECT m.* FROM memory_replacements r JOIN memories m ON m.id=r.target_id "
-            "WHERE r.proposal_id=? AND m.bot_id=? AND m.status='superseded'",
-            (replacement_id, bot_id),
-        ).fetchone()
-        if row is None:
-            return
-        db.execute(
-            "UPDATE memories SET status='rejected',title='',content='',updated_at=? WHERE id=?",
-            (time.time(), row["id"]),
-        )
-        Store._memory_change(
-            db,
-            bot_id,
-            row["id"],
-            "retired",
-            "superseded",
-            "rejected",
-            row["source_task_id"],
-            replacement_id,
-        )
+        """When a replacement goes, Undo no longer applies: erase what it superseded, and what
+        that one superseded in turn, which only its Undo could have brought back."""
+        while True:
+            row = db.execute(
+                "SELECT m.* FROM memory_replacements r JOIN memories m ON m.id=r.target_id "
+                "WHERE r.proposal_id=? AND m.bot_id=? AND m.status='superseded'",
+                (replacement_id, bot_id),
+            ).fetchone()
+            if row is None:
+                return
+            db.execute(
+                "UPDATE memories SET status='rejected',title='',content='',updated_at=? WHERE id=?",
+                (time.time(), row["id"]),
+            )
+            Store._memory_change(
+                db,
+                bot_id,
+                row["id"],
+                "retired",
+                "superseded",
+                "rejected",
+                row["source_task_id"],
+                replacement_id,
+            )
+            replacement_id = row["id"]
 
     def undo_memory(self, owner: str, bot_id: str, memory_id: str) -> dict:
         """Undo a memory an owl saved by itself: forget it, and restore what it replaced.
@@ -2645,7 +3625,8 @@ class Store:
             if row is None:
                 raise NotFound("Memory not found.")
             saved = db.execute(
-                "SELECT 1 FROM memory_changes WHERE bot_id=? AND memory_id=? AND action='saved'",
+                "SELECT 1 FROM memory_changes WHERE bot_id=? AND memory_id=? "
+                "AND action IN ('saved','captured')",
                 (bot_id, memory_id),
             ).fetchone()
             if row["status"] != "active" or not row["source_task_id"] or saved is None:
@@ -2898,7 +3879,7 @@ class Store:
         self, owner, bot_id, name, chunks, size, *, source_task_id=None, previous_file_id=None
     ):
         if type(size) is not int or not 0 <= size <= MAX_FILE_BYTES:
-            raise LimitReached("File exceeds the 50 MiB transfer limit.")
+            raise LibraryCapacityExceeded(FILE_TOO_LARGE)
         return self._save_file(
             owner,
             bot_id,
@@ -2919,7 +3900,7 @@ class Store:
         previous_file_id: str | None = None,
     ) -> dict:
         if not isinstance(payload, bytes) or len(payload) > MAX_FILE_BYTES:
-            raise LimitReached("File exceeds the 50 MiB transfer limit.")
+            raise LibraryCapacityExceeded(FILE_TOO_LARGE)
         return self._save_file(
             owner,
             bot_id,
@@ -3508,17 +4489,8 @@ class Store:
         """What the routine will do next: its next runs, a run in progress, a waiting retry."""
         health = self._schedule_health(db, schedule)
         timing = self._timing(schedule)
-        first = schedule["next_run_at"] if schedule["state"] == "active" else None
+        first = self._next_scheduled_run(schedule, health, now, timing)
         retry_at = health["retry_at"] if health else None
-        if (
-            first is not None
-            and retry_at is not None
-            and health["retry_reason"] == "limit"
-            and first < retry_at
-            and retry_at > now
-        ):
-            # Runs wait while a plan or usage limit holds; the first one after it is next.
-            first = advance_run(timing, first, retry_at)
         active = self._active_schedule_run(db, schedule["id"])
         return {
             "upcoming_runs": upcoming_runs(timing, first),
@@ -3549,9 +4521,10 @@ class Store:
             ).fetchall():
                 schedule = self._schedule(db, bot_id, row[0])
                 last = db.execute(
-                    """SELECT r.id,r.scheduled_for,r.task_id,r.reason,r.origin,
-                    COALESCE(t.status,r.status) AS status,t.error AS task_error FROM schedule_runs r
-                    LEFT JOIN tasks t ON t.id=r.task_id WHERE r.schedule_id=? ORDER BY r.id DESC LIMIT 1""",
+                    f"""SELECT r.id,r.scheduled_for,r.task_id,r.reason,r.origin,
+                    COALESCE(t.status,r.status) AS status,t.error AS task_error,{NOTHING_NEW_AT}
+                    FROM schedule_runs r LEFT JOIN tasks t ON t.id=r.task_id
+                    WHERE r.schedule_id=? ORDER BY r.id DESC LIMIT 1""",
                     (row[0],),
                 ).fetchone()
                 schedule["last_run"] = dict(last) if last else None
@@ -3590,7 +4563,7 @@ class Store:
                     raise Conflict("This task cannot propose a schedule here.")
                 if not schedule_id:
                     previous = db.execute(
-                        "SELECT id,name,prompt,timing FROM schedules WHERE source_task_id=?",
+                        "SELECT id,name,prompt,timing,model FROM schedules WHERE source_task_id=?",
                         (source_task_id,),
                     ).fetchone()
                     if previous:
@@ -3600,17 +4573,20 @@ class Store:
                             or json.loads(previous["timing"]) != data.timing.model_dump(mode="json")
                             or self._routine_access(db, previous["id"])["needs"]
                             != (data.needs or RoutineNeeds()).model_dump()
+                            or previous["model"] != data.model
                         ):
                             raise Conflict(
                                 "This request already created a different schedule. Read the existing routine before editing it."
                             )
                         return self._schedule(db, bot_id, previous["id"])
-            # Without needs, the payload reads as it did before routines had them, so a request
-            # resent across an upgrade still matches.
+            # Without needs or a model, the payload reads as it did before routines had them, so
+            # a request resent across an upgrade still matches.
             payload = encode(
                 data.model_dump(
                     mode="json",
-                    exclude={"request_id"} if data.needs is not None else {"request_id", "needs"},
+                    exclude={"request_id"}
+                    | ({"needs"} if data.needs is None else set())
+                    | ({"model"} if data.model is None else set()),
                 )
             )
             if data.request_id:
@@ -3656,6 +4632,9 @@ class Store:
                         schedule_id,
                     ),
                 )
+                # Its model, like its needs, stays as it was when an edit leaves it out.
+                if "model" in data.model_fields_set:
+                    db.execute("UPDATE schedules SET model=? WHERE id=?", (data.model, schedule_id))
                 # An edited routine starts afresh: earlier failures and retries were for the old one.
                 db.execute("DELETE FROM schedule_health WHERE schedule_id=?", (schedule_id,))
                 # A new job or new needs asks the person again. Left out, needs stay as they were.
@@ -3682,7 +4661,9 @@ class Store:
                     raise LimitReached("This bot has 20 schedules. Edit an existing schedule.")
                 schedule_id = uid()
                 db.execute(
-                    "INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO schedules(id,bot_id,name,prompt,timing,state,revision,next_run_at,"
+                    "pause_reason,source_task_id,created_at,updated_at,model) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         schedule_id,
                         bot_id,
@@ -3696,6 +4677,7 @@ class Store:
                         source_task_id,
                         now,
                         now,
+                        data.model,
                     ),
                 )
                 self._reset_routine_access(db, schedule_id, data.needs, now)
@@ -3717,13 +4699,18 @@ class Store:
                 (schedule_id,),
             ).fetchone():
                 raise Conflict("Stop this routine's current run before deleting it.")
-            db.execute("DELETE FROM schedule_runs WHERE schedule_id=?", (schedule_id,))
-            db.execute("DELETE FROM schedule_requests WHERE schedule_id=?", (schedule_id,))
-            db.execute("DELETE FROM schedule_run_requests WHERE schedule_id=?", (schedule_id,))
-            db.execute("DELETE FROM schedule_health WHERE schedule_id=?", (schedule_id,))
-            # What the person allowed was for this routine only: it goes with it.
-            db.execute("DELETE FROM routine_access WHERE schedule_id=?", (schedule_id,))
-            db.execute("DELETE FROM schedules WHERE id=?", (schedule_id,))
+            self._erase_schedule(db, schedule_id)
+
+    @staticmethod
+    def _erase_schedule(db: sqlite3.Connection, schedule_id: str) -> None:
+        """A routine's rows, run history included; also a suggested draft the person declined."""
+        db.execute("DELETE FROM schedule_runs WHERE schedule_id=?", (schedule_id,))
+        db.execute("DELETE FROM schedule_requests WHERE schedule_id=?", (schedule_id,))
+        db.execute("DELETE FROM schedule_run_requests WHERE schedule_id=?", (schedule_id,))
+        db.execute("DELETE FROM schedule_health WHERE schedule_id=?", (schedule_id,))
+        # What the person allowed was for this routine only: it goes with it.
+        db.execute("DELETE FROM routine_access WHERE schedule_id=?", (schedule_id,))
+        db.execute("DELETE FROM schedules WHERE id=?", (schedule_id,))
 
     def decide_schedule(
         self,
@@ -3747,6 +4734,39 @@ class Store:
             if current["revision"] != expected_revision:
                 raise Conflict("This schedule changed. Refresh it before changing its state.")
             self._set_schedule_state(db, current, state, now)
+            return self._schedule(db, bot_id, schedule_id)
+
+    def set_schedule_model(
+        self,
+        owner: str,
+        bot_id: str,
+        schedule_id: str,
+        data: ScheduleModelChoice,
+        *,
+        now: float | None = None,
+    ) -> dict:
+        """The person picks the model a routine's runs think with; null: its owl's own.
+
+        Only the model changes: the routine keeps its state (a suggested draft stays one), what
+        it was allowed and its failures or retry. A run already queued or under way keeps the
+        model it started with. The same choice again changes nothing.
+        """
+        now = time.time() if now is None else now
+        with self.connect(write=True) as db:
+            self._bot(db, owner, bot_id)
+            current = self._schedule(db, bot_id, schedule_id)
+            if current["model"] == data.model:
+                return current
+            if current["revision"] != data.expected_revision:
+                raise Conflict("This routine changed. Reopen it before changing its model.")
+            db.execute(
+                "UPDATE schedules SET model=?,revision=revision+1,updated_at=? WHERE id=?",
+                (data.model, now, schedule_id),
+            )
+            db.execute(
+                "UPDATE schedule_health SET revision=revision+1 WHERE schedule_id=? AND revision=?",
+                (schedule_id, current["revision"]),
+            )
             return self._schedule(db, bot_id, schedule_id)
 
     def _set_schedule_state(
@@ -3773,15 +4793,17 @@ class Store:
         data: RoutineAccessDecision,
         *,
         now: float | None = None,
+        within=None,
     ) -> dict:
         """The person allows what a routine needs, for that routine only.
 
         They allow exactly what their app showed (``access.to_allow``), so a routine that
         changed meanwhile is never allowed more than they saw. With turn_on the routine is
         turned on too. Sending the same decision again after it applied changes nothing.
+        ``within``: the caller's transaction (Turn on under a suggested routine's card).
         """
         now = time.time() if now is None else now
-        with self.connect(write=True) as db:
+        with self._joined(within) as db:
             self._bot(db, owner, bot_id)
             current = self._schedule(db, bot_id, schedule_id)
             access = current["access"]
@@ -3839,6 +4861,35 @@ class Store:
             ).fetchone()
             return parse_needs(json.loads(row["config"]).get("access")) if row else None
 
+    def routine_run_model(self, owner: str, task_id: str, bot_id: str) -> str | None:
+        """The model a run of one of this owl's routines thinks with, fixed when it was queued.
+
+        None for any other turn (another owl's included, such as a peer answering it) and for a
+        run of a routine without a model of its own: it thinks with its owl's.
+        """
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT r.config FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id "
+                "JOIN bots b ON b.id=s.bot_id WHERE r.task_id=? AND s.bot_id=? AND b.owner=?",
+                (task_id, bot_id, owner),
+            ).fetchone()
+            return json.loads(row["config"]).get("model") if row else None
+
+    def routine_needs_more(self, owner: str, task_id: str) -> bool:
+        """Whether this routine run asked for something its routine doesn't allow."""
+        with self.connect() as db:
+            self._task(db, owner, task_id)
+            return self._run_access_need(db, task_id) is not None
+
+    def outward_step(self, owner: str, task_id: str):
+        """The task's first step that changed something outside the owl's own records, or may
+        have (step_effects.OutwardStep); None when every step read or kept its records."""
+        from .step_effects import first_outward_step
+
+        with self.connect() as db:
+            self._task(db, owner, task_id)
+            return first_outward_step(db, task_id)
+
     def schedule_runs(
         self, owner: str, bot_id: str, schedule_id: str, before: int | None = None
     ) -> dict:
@@ -3846,8 +4897,8 @@ class Store:
             self._bot(db, owner, bot_id)
             self._schedule(db, bot_id, schedule_id)
             rows = db.execute(
-                """SELECT r.*,COALESCE(t.status,r.status) AS current_status,t.error AS task_error
-                FROM schedule_runs r LEFT JOIN tasks t ON t.id=r.task_id
+                f"""SELECT r.*,COALESCE(t.status,r.status) AS current_status,t.error AS task_error,
+                {NOTHING_NEW_AT} FROM schedule_runs r LEFT JOIN tasks t ON t.id=r.task_id
                 WHERE r.schedule_id=? AND (CAST(? AS BIGINT) IS NULL OR r.id<?) ORDER BY r.id DESC LIMIT 21""",
                 (schedule_id, before, before),
             ).fetchall()
@@ -4053,6 +5104,9 @@ class Store:
             allowed = Store._routine_access(db, schedule["id"])["access"]["allowed"]
             if allowed:
                 config["access"] = allowed
+            # So does the model it thinks with; without one, it thinks with its owl's.
+            if schedule.get("model"):
+                config["model"] = schedule["model"]
         db.execute(
             "INSERT INTO schedule_runs(schedule_id,schedule_revision,scheduled_for,task_id,status,reason,config,created_at,origin) VALUES(?,?,?,?,?,?,?,?,?)",
             (
@@ -4211,14 +5265,16 @@ class Store:
         acknowledges or starts these runs. Temporary foreground/queue pressure retains
         the deadline until admission or the end of the catch-up window. Unrelated background work does
         not block the conversation lane, but a routine cannot overlap itself.
-        Retries of failed runs come due here too; a scheduled run supersedes them.
+        Retries of failed runs come due here too; a scheduled run supersedes them. An archived
+        owl's routines rest: none of its runs or retries start until it comes back.
         """
         now = time.time() if now is None else now
         queued = 0
         with self.connect(write=True) as db:
             due_rows = db.execute(
                 """SELECT s.id,s.bot_id FROM schedules s JOIN bots b ON b.id=s.bot_id
-                WHERE b.owner=? AND s.state='active' AND s.next_run_at<=? ORDER BY s.next_run_at,s.id""",
+                WHERE b.owner=? AND b.archived_at IS NULL AND s.state='active' AND s.next_run_at<=?
+                ORDER BY s.next_run_at,s.id""",
                 (owner, now),
             ).fetchall()
             for row in due_rows:
@@ -4332,8 +5388,9 @@ class Store:
         queued = 0
         rows = db.execute(
             """SELECT s.id,s.bot_id FROM schedule_health h JOIN schedules s ON s.id=h.schedule_id
-            JOIN bots b ON b.id=s.bot_id WHERE b.owner=? AND h.revision=s.revision
-            AND s.state IN ('active','ended') AND h.retry_at<=? ORDER BY h.retry_at,s.id""",
+            JOIN bots b ON b.id=s.bot_id WHERE b.owner=? AND b.archived_at IS NULL
+            AND h.revision=s.revision AND s.state IN ('active','ended') AND h.retry_at<=?
+            ORDER BY h.retry_at,s.id""",
             (owner, now),
         ).fetchall()
         for row in rows:

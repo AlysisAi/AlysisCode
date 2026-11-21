@@ -1,6 +1,7 @@
 ---
 name: image-pdf-files
 description: "Read named saved image and PDF files directly: pixels, embedded text, and page previews; not unknown or unsaved app views."
+uses_tools: [capability_status, asset_view, shell_run]
 ---
 
 Use when: The user asks about a named saved image or PDF, or already-provided PDF attachment text, in any language.

@@ -17,6 +17,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from .. import committed_edits
 from ..file_classification import derived_artifact_reason
 from ..host_file_handles import (
     admit_host_path,
@@ -699,11 +700,14 @@ def _displaced_file_matches(path: Path, precondition: FilePrecondition) -> bool:
         return False
     # Rename metadata is not stable across all supported filesystems, so compare
     # the durable semantics that matter: exact bytes, regular-file type, and mode.
-    return (
+    matches = (
         current.content_sha256 == precondition.content_sha256
         and current.mode == precondition.mode
         and _content_sha256(data) == precondition.content_sha256
     )
+    if matches and current.content_sha256 is not None:
+        committed_edits.remember_verified_bytes(precondition.path, current.content_sha256, data)
+    return matches
 
 
 def _publish_regular_file_no_replace(source: Path, destination: Path) -> None:
@@ -817,6 +821,13 @@ def write_prepared_fs_write(prepared: PreparedFsWrite, *, root: Path) -> dict[st
         prepared.content,
         root=root,
         precondition=prepared.precondition,
+    )
+    committed_edits.committed(
+        root,
+        prepared.path_obj,
+        prepared.path,
+        prepared.precondition.content_sha256,
+        prepared.content,
     )
     return {
         "path": prepared.path,
@@ -1091,6 +1102,13 @@ def write_prepared_fs_edit(prepared: PreparedFsEdit, *, root: Path | None = None
         root=effective_root,
         precondition=prepared.precondition,
     )
+    committed_edits.committed(
+        effective_root,
+        prepared.path_obj,
+        prepared.path,
+        prepared.precondition.content_sha256,
+        prepared.updated_content,
+    )
     return {
         "path": prepared.path,
         "applied_edits": prepared.applied_edits,
@@ -1299,6 +1317,7 @@ def fs_delete(
         displaced.unlink(missing_ok=True)
         raise StaleFileError(path)
     displaced.unlink()
+    committed_edits.committed(root, path_obj, path, effective_precondition.content_sha256, None)
     return {
         "path": path,
         "deleted": True,
@@ -1457,7 +1476,9 @@ def fs_list(
     seen_paths: set[str] = set()
     gitignore_evidence_sources: set[str] = set()
     truncated = False
-    batch_size = max(256, max_results or 0)
+    # Batch paths for git check-ignore. Plain folders can stop at the first extra visible file.
+    batch_size = max(256, max_results or 0) if repo_root else 1
+    excluded_parts = _DEFAULT_IGNORE_DIRS | ignore_set
     pending: list[tuple[Path, str, str | None]] = []
 
     def _flush_pending() -> bool:
@@ -1490,6 +1511,10 @@ def fs_list(
     for pat in patterns:
         for p in base.glob(pat):
             rel_path = p.relative_to(base)
+            traverse_parent = os.pardir in rel_path.parts
+            # A lexical exclusion cannot become visible unless the pattern traverses "..".
+            if not traverse_parent and not excluded_parts.isdisjoint(rel_path.parts):
+                continue
             try:
                 resolved_path = p.resolve()
                 resolved_rel = resolved_path.relative_to(base)
@@ -1498,14 +1523,11 @@ def fs_list(
             # Glob traversal and symlink targets must obey the same selected-root
             # boundary. Preserve ordinary symlink names; canonicalize traversal
             # aliases so their reported names remain usable and count only once.
-            if os.pardir in rel_path.parts:
+            if traverse_parent:
                 p = resolved_path
                 rel_path = resolved_rel
-            rel_parts = rel_path.parts
-            if set(rel_parts) & _DEFAULT_IGNORE_DIRS:
-                continue
-            if any(seg in ignore_set for seg in rel_parts):
-                continue
+                if not excluded_parts.isdisjoint(rel_path.parts):
+                    continue
             if p.is_dir():
                 continue
 

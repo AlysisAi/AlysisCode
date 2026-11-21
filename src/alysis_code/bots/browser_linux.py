@@ -19,6 +19,7 @@ from ..ide.browser_profiles import BrowserProfileStore
 from ..ide.cdp_websocket_transport import WebSocketCdpTransportFactory
 from ..ide.managed_browser import BrowserCancelledError, ManagedBrowserConfig, ManagedBrowserService
 from .browser import BrowserStartupCleanupError
+from .cloud_browser import OPERATIONS
 from .computer import LinuxScreenCapture
 from .desktop_worker import TINT2_SETTINGS, WALLPAPER, desktop_exec
 from .files import MAX_FILE_BYTES
@@ -49,6 +50,9 @@ def write_browser_bar(directory: Path, request: Path, available=os.path.exists) 
 
 
 class LinuxBrowserComputer:
+    # Its browser is this version's managed browser, in this process: it does all of it.
+    browser_features = frozenset(OPERATIONS)
+
     def __init__(
         self,
         bot_id: str,

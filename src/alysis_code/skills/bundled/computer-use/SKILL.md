@@ -1,6 +1,7 @@
 ---
 name: computer-use
 description: 'Observe/operate Mac app windows ("open preview", "in finder"); use computer_discover before assuming a project preview.'
+uses_tools: [computer_discover, computer_start]
 ---
 
 Use when: The requested outcome requires reading or operating a Mac application interface, including unfamiliar apps and requests in any language. Named desktop apps refer to those Mac apps even with lowercase or informal spelling ("open preview", "in finder", "safari"). If unsure whether a word names an app, call `computer_discover` before treating it as a dev/web preview. Treat it as a project preview only when the user mentions a project, URL, localhost or the workspace.

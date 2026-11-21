@@ -13,6 +13,7 @@ from ..cancellation import CooperativeCancellationError, EventCancellationToken
 from ..llm.types import LLMOutputLimitError
 from ..request_estimation import estimate_request_tokens
 from .about_me import peer_context, stored_facts
+from .cut_off import CutOffReplies
 from .memory_retrieval import selected
 from .models import Input
 from .store import TERMINAL, Conflict, LimitReached, NotFound, Store, encode, uid
@@ -167,7 +168,10 @@ class PeerStore:
                 item["sha256"] = hashlib.sha256(item["content"].encode()).hexdigest()
                 files.append(item)
             if sum(len(f["content"]) for f in files) > 16000:
-                raise LimitReached("Shared files exceed this exchange's text allowance.")
+                raise LimitReached(
+                    "Nothing was sent: the shared files are longer than 16,000 characters "
+                    "together. Share fewer or shorter files and send the request again."
+                )
             exchange_id, now = uid(), time.time()
             db.execute(
                 "INSERT INTO peer_exchanges(id,source_task_id,source_bot_id,recipient_bot_id,"
@@ -226,7 +230,10 @@ class PeerStore:
                 {"source_task_id": request["id"], "content": request["message"]},
             ]
             if len(encode(corrections)) > 16000:
-                raise LimitReached("The exchange correction allowance is full.")
+                raise LimitReached(
+                    "Nothing was sent: this exchange has no room for another correction. Stop "
+                    "it and send the whole corrected request as a new one."
+                )
             db.execute(
                 "UPDATE peer_exchanges SET corrections=?,revision=revision+1,"
                 "status=CASE WHEN status='running' THEN 'running' ELSE 'queued' END,"
@@ -394,9 +401,11 @@ class PeerStore:
 
 
 class PeerRunner:
-    def __init__(self, peers: PeerStore, client_factory, limits, stop):
+    def __init__(self, peers: PeerStore, client_factory, limits, stop, *, turn=None):
         self.peers, self.store = peers, peers.store
         self.client_factory, self.limits, self.stop = client_factory, limits, stop
+        # The receiving owl answers with the model it thinks with (BotRuntime.turn_model).
+        self.turn = turn or (lambda task_id, _bot_id: (client_factory(task_id), limits))
 
     def run(self, item: dict) -> None:
         exchange_id = item["id"]
@@ -423,20 +432,33 @@ class PeerRunner:
 
         token = Token(self.stop)
         try:
-            client = self.client_factory(item["source_task_id"])
+            client, limits = self.turn(item["source_task_id"], item["recipient_bot_id"])
+            # A reply the output limit cut off is never the peer's reply (cut_off.py).
+            notes: list[dict] = []
+            cut_offs = CutOffReplies(
+                self.store,
+                self.peers.owner,
+                item["source_task_id"],
+                limits,
+                fail=lambda: LimitReached(
+                    "The peer reached its response limit; no partial reply was marked complete."
+                ),
+                event={"exchange_id": exchange_id},
+            )
             while True:
                 token.throw_if_cancelled()
                 item, messages, fingerprint = self.peers.context(exchange_id)
+                messages = [*messages, *notes]
                 if (
-                    self.limits.context_characters is not None
-                    and len(encode(messages)) > self.limits.context_characters
-                ) or estimate_request_tokens(messages, None) > self.limits.context_tokens:
+                    limits.context_characters is not None
+                    and len(encode(messages)) > limits.context_characters
+                ) or estimate_request_tokens(messages, None) > limits.context_tokens:
                     raise LimitReached(
                         "The peer brief and relevant context exceed the context allowance."
                     )
                 try:
                     call_id = self.peers.reserve_call(
-                        exchange_id, item["revision"], client.model, self.limits.max_calls
+                        exchange_id, item["revision"], client.model, limits.max_calls
                     )
                 except PeerChanged:
                     continue
@@ -444,22 +466,18 @@ class PeerRunner:
                     response = client.chat(
                         messages=messages,
                         tools=None,
-                        max_tokens=self.limits.output_tokens,
+                        max_tokens=cut_offs.output_tokens(limits.output_tokens, messages, None),
                         cancellation_token=token,
                         stream=False,
                     )
                 except LLMOutputLimitError as exc:
-                    self.store.finish_call(
-                        call_id,
-                        "incomplete",
-                        asdict(exc.response.usage) if exc.response.usage else None,
-                    )
-                    raise LimitReached(
-                        "The peer reached its response limit; no partial reply was marked complete."
-                    ) from None
+                    cut_offs.settle(call_id, exc.response, notes, limit_error=True)
+                    continue
                 except BaseException:
                     self.store.finish_call(call_id, "unknown", None)
                     raise
+                if cut_offs.settle(call_id, response, notes):
+                    continue
                 self.store.finish_call(
                     call_id, "completed", asdict(response.usage) if response.usage else None
                 )

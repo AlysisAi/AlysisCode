@@ -33,9 +33,19 @@ tests outside read/write denials and exercises the contained file worker.
 MXC starts the engine's built-in file worker directly for file reads and
 approved mutations. The worker uses the request's workspace grants, denials
 and offline network policy. A write or edit uses the same fixed runtime as a
-read, with a writable project and private scratch space. Stop waits for its
-owned process family to exit. Shell commands use host PATH discovery and
+read, with a writable project and private scratch space. For file reads and
+prepared text mutations, the worker excludes unused Node.js, bundled Git and
+Git signer directories, including those under its own Python runtime. Explicit
+tool grants still go through normal installation checks. File listing keeps Git
+available for the repository's ignore rules. Stop waits for the worker's owned
+process family to exit. Shell commands use host PATH discovery and
 start Windows PowerShell with the execution policy queried for that request.
+
+If a file worker exceeds its deadline, the error reports how many processes
+Windows observed in the helper job and how many were still active when cleanup
+began, if those counts are available. They include the helper itself. The error
+also reports whether the engine collected any worker output. A timed-out write
+or edit may have reached disk. Inspect the target before deciding to retry.
 
 The current helper requires Windows x64 with MXC/PSEC support and local fixed
 NTFS workspace paths. Unsupported versions, ARM64, UNC paths, reparse points,

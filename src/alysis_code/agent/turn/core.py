@@ -1981,7 +1981,12 @@ def run_turn(
             evidence_state["enabled"] = type(evidence_version) is int and evidence_version == 1
 
     def _finish_turn(
-        code: int, *, reason: str, final_text: str = "", host_failure: bool = False
+        code: int,
+        *,
+        reason: str,
+        final_text: str = "",
+        host_failure: bool = False,
+        provider_diagnostic: str | None = None,
     ) -> int:
         if evidence_state["enabled"]:
             origin = (
@@ -2055,6 +2060,7 @@ def run_turn(
         outcome = self._record_task_outcome(
             exit_code=code,
             reason=reason,
+            **({"provider_diagnostic": provider_diagnostic} if provider_diagnostic else {}),
             trusted_entry_blocked=(
                 resolved_entry is not None
                 and getattr(self, "resolved_entry", None) is resolved_entry
@@ -4824,6 +4830,11 @@ def run_turn(
             0,
             reason="provider_failure_salvaged",
             final_text=local_summary,
+            provider_diagnostic=(
+                sanitize_optional_error_summary(str(error), max_chars=2048)
+                if not computer_use_tool_turn and not self.sensitive_media
+                else None
+            ),
         )
 
     def _resolve_empty_response_stall(
@@ -5185,6 +5196,10 @@ def run_turn(
             )
             from ...memory_sources import ANNOTATION_KEY
 
+            if self.tool_output_offloader is not None and "session_artifact_read" in turn_tools:
+                messages = self.tool_output_offloader.project_completed_artifact_reads(
+                    messages, current_user_message=user_message
+                )
             memory_context = turn_memory.context() if turn_memory is not None else ""
             supplied = turn_memory.input if turn_memory is not None else {}
             # Each reply keeps the receipt of the request that produced it, so
@@ -8947,6 +8962,7 @@ def run_turn(
                     verification_authoritative=bool(self.verification_authoritative),
                     evidence_v2=_evidence_v2_enabled(self.cfg),
                     elapsed_ms=elapsed_ms,
+                    tool_call_id=tc.id,
                     scope_environment_known=scope_environment_is_host(
                         self.shell_runner,
                         verification_config=self.cfg

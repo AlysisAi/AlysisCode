@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -160,7 +160,7 @@ from ..surface import (
     PatchEvent,
 )
 from ..surface.base import Surface
-from ..surface.types import approval_review_line
+from ..surface.types import ManagedBrowserApproval, approval_review_line
 from ..task_scope import (
     ancestor_directory_scope_patterns,
     is_non_material_untracked_path,
@@ -987,6 +987,89 @@ def _unified_diff(old: str, new: str, path: str) -> str:
     )
 
 
+def builtin_tool_def(
+    name: str,
+    *,
+    run: Callable[[dict[str, Any]], dict[str, Any]],
+    parameters: dict[str, Any] | None = None,
+    visual_delivery: LocalAssetViewer | None = None,
+    model_description: str | None = None,
+) -> ToolDef:
+    """A built-in tool as the model sees it, running ``run``."""
+    metadata = require_builtin_tool_metadata(name)
+    return ToolDef(
+        name=metadata.name,
+        description=metadata.description,
+        parameters=parameters if parameters is not None else copied_tool_parameters(name),
+        run=run,
+        visual_delivery=visual_delivery,
+        metadata={
+            "tool_type": "builtin",
+            "read_only_context": (
+                "read" in metadata.categories
+                and not {"write", "verify", "verification"}.intersection(metadata.categories)
+            ),
+            "compact_parameters_for_model": True,
+            "model_description": model_description
+            or _BUILTIN_MODEL_DESCRIPTIONS.get(metadata.name, metadata.description),
+        },
+    )
+
+
+def skill_read_runner(
+    *,
+    root: Path,
+    skill_registry: Mapping[str, SkillBundle] | None,
+    plugin_skills: tuple[PluginSkill, ...] = (),
+    skill_offered: Callable[[SkillBundle], bool] | None = None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """``skill_read`` over a session's skills.
+
+    ``skill_offered`` decides, when a read happens, whether this session offers a skill; a
+    skill it does not offer reads as unknown and is not listed, like one never discovered.
+    """
+    registry = dict(skill_registry or {})
+
+    def _offered_registry() -> dict[str, SkillBundle]:
+        if skill_offered is None:
+            return registry
+        return {key: skill for key, skill in registry.items() if skill_offered(skill)}
+
+    def _skill_read(args: dict[str, Any]) -> dict[str, Any]:
+        raw_name = str(args.get("name", "")).strip()
+        if not raw_name:
+            return {"error": "Missing required argument: name"}
+        # A plugin skill: publisher guidance, read only while its plugin is still on.
+        plugin_skill = find_plugin_skill(plugin_skills, raw_name)
+        if plugin_skill is not None:
+            return read_plugin_skill(root, plugin_skill)
+        offered = _offered_registry()
+        skill = resolve_skill_by_name(offered, raw_name) if offered else None
+        if skill is None:
+            return {
+                "error": f"Unknown skill: {raw_name}",
+                "available_skills": sorted(
+                    [
+                        *(skill.name for skill in offered.values()),
+                        *(skill.name for skill in plugin_skills),
+                    ]
+                ),
+            }
+        try:
+            return read_skill_bundle_file(
+                skill,
+                path=(str(args["path"]) if args.get("path") is not None else None),
+            )
+        except SkillReadError as exc:
+            return {
+                "error": str(exc),
+                "name": skill.name,
+                "source_path": skill.source_path.as_posix(),
+            }
+
+    return _skill_read
+
+
 def build_tools(
     *,
     root: Path,
@@ -1022,6 +1105,7 @@ def build_tools(
     completion_gate_tools_enabled: bool = False,
     skills_enabled: bool = True,
     skill_registry: dict[str, SkillBundle] | None = None,
+    skill_offered: Callable[[SkillBundle], bool] | None = None,
     plugin_skills: tuple[PluginSkill, ...] = (),
     subagents_enabled: bool = False,
     helper_subagents_enabled: bool = False,
@@ -1056,6 +1140,7 @@ def build_tools(
     subagent_coordinator_sink: Callable[[SubagentCoordinator], None] | None = None,
     child_scheduler_sink: Callable[[ChildScheduler], None] | None = None,
     tool_availability_sink: Callable[[ToolAvailabilitySnapshot], None] | None = None,
+    mode_withheld_tool_names_sink: Callable[[frozenset[str]], None] | None = None,
     parent_steer_inbox: SteerInbox | None = None,
     read_ledger_sink: Callable[[SessionReadLedger], None] | None = None,
     artifact_output_access_sink: Callable[[Callable[[str, bool], bool]], None] | None = None,
@@ -2775,32 +2860,7 @@ def build_tools(
                 return "README"
         return rel_path
 
-    def _make_tool_def(
-        name: str,
-        *,
-        run: Callable[[dict[str, Any]], dict[str, Any]],
-        parameters: dict[str, Any] | None = None,
-        visual_delivery: LocalAssetViewer | None = None,
-        model_description: str | None = None,
-    ) -> ToolDef:
-        metadata = require_builtin_tool_metadata(name)
-        return ToolDef(
-            name=metadata.name,
-            description=metadata.description,
-            parameters=parameters if parameters is not None else copied_tool_parameters(name),
-            run=run,
-            visual_delivery=visual_delivery,
-            metadata={
-                "tool_type": "builtin",
-                "read_only_context": (
-                    "read" in metadata.categories
-                    and not {"write", "verify", "verification"}.intersection(metadata.categories)
-                ),
-                "compact_parameters_for_model": True,
-                "model_description": model_description
-                or _BUILTIN_MODEL_DESCRIPTIONS.get(metadata.name, metadata.description),
-            },
-        )
+    _make_tool_def = builtin_tool_def
 
     def _run_custom_tool(spec: Any, args: dict[str, Any]) -> dict[str, Any]:
         if mode == "readonly":
@@ -2917,6 +2977,9 @@ def build_tools(
             )
         return AgentRuntimeError(message, result_payload=payload)
 
+    # Built-in tools this session has but its permission mode holds back for now.
+    mode_withheld_tool_names: set[str] = set()
+
     def _append_builtin_tool(
         name: str,
         *,
@@ -2931,6 +2994,7 @@ def build_tools(
             subagent_depth=subagent_depth,
             readonly_child_web_tool_names=readonly_child_web_tool_names,
         ):
+            mode_withheld_tool_names.add(name)
             return
         # Repository-wide helpers can inspect more than the explicitly requested
         # file. Refuse a private subtree before its content enters these readers.
@@ -3911,7 +3975,7 @@ def build_tools(
         except Exception:  # noqa: BLE001 - a broken host token fails closed
             return True
 
-    def _browser_public_url(raw_url: Any) -> str | None:
+    def _browser_public_url(raw_url: Any, *, origin_only: bool = False) -> str | None:
         value = str(raw_url or "").strip()
         if not value:
             return None
@@ -3921,11 +3985,19 @@ def build_tools(
             hostname = split.hostname
             if scheme not in {"http", "https"} or not hostname:
                 return None
+            if origin_only:
+                if split.username is not None or "\\" in value or any(c.isspace() for c in value):
+                    return None
+                hostname = hostname.encode("idna").decode("ascii")
+                if not re.fullmatch(r"[a-zA-Z0-9.:-]+", hostname):
+                    return None
             host = f"[{hostname}]" if ":" in hostname else hostname
             if split.port is not None:
                 host = f"{host}:{split.port}"
-            public_url = urlunsplit((scheme, host, split.path or "/", "", ""))
-        except (TypeError, ValueError):
+            public_url = urlunsplit(
+                (scheme, host, "" if origin_only else split.path or "/", "", "")
+            )
+        except (TypeError, ValueError, UnicodeError):
             return None
         return str(redact_secrets(public_url))
 
@@ -3955,15 +4027,13 @@ def build_tools(
             "artifact_count": int(source.get("artifact_count") or 0),
         }
 
-    def _browser_action_preview(kind: str, args: dict[str, Any]) -> str:
+    def _browser_action_preview(kind: str, args: dict[str, Any], origin: str | None) -> str:
         session_id = str(args.get("session_id") or "").strip()
         lines = [f"Managed browser action: {kind}"]
         if session_id:
             lines.append(f"session: {session_id[:80]}")
         if kind == "browser_navigate":
-            target = _browser_public_url(args.get("url"))
-            lines.append(f"public target: {target or '(invalid URL)'}")
-            lines.append("query parameters and fragments are omitted from this preview")
+            lines.append(f"target origin: {origin or '(invalid URL)'}")
         elif kind in {"browser_click", "browser_type"}:
             selector = str(args.get("selector") or "")
             lines.append(f"selector: {selector[:300]}")
@@ -3971,10 +4041,8 @@ def build_tools(
                 lines.append(f"input characters: {len(str(args.get('text') or ''))}")
                 lines.append("input text is intentionally omitted")
         elif kind == "browser_start":
-            target = _browser_public_url(args.get("url"))
-            if target:
-                lines.append(f"initial target: {target}")
-                lines.append("query parameters and fragments are omitted from this preview")
+            if origin:
+                lines.append(f"initial origin: {origin}")
             lines.append("network policy: public or session-owned preview destinations")
         return "\n".join(lines)
 
@@ -3983,11 +4051,17 @@ def build_tools(
             raise AgentRuntimeError(
                 "Managed browser state changes require an IDE host-managed approval."
             )
+        origin = (
+            _browser_public_url(args.get("url"), origin_only=True)
+            if kind in {"browser_start", "browser_navigate"}
+            else None
+        )
         decision = _request_action_approval(
-            ApprovalRequest(
+            ManagedBrowserApproval(
                 kind=kind,
+                display_origin=origin,
                 reason="managed browser actions can launch processes or change remote page state",
-                preview=_browser_action_preview(kind, args),
+                preview=_browser_action_preview(kind, args, origin),
                 command=kind,
                 metadata={
                     "managed_browser": True,
@@ -4074,6 +4148,15 @@ def build_tools(
             return status
 
         def _browser_start(args: dict[str, Any]) -> dict[str, Any]:
+            target = str(args.get("url") or "").strip()
+            if target:
+                from ..ide.managed_browser import preflight_browser_start_url
+
+                _run_managed_browser(
+                    lambda: preflight_browser_start_url(
+                        target, getattr(durable_service_manager, "recorded_preview_urls", None)
+                    )
+                )
             _guard_managed_browser_action("browser_start", args)
             status = _run_managed_browser(
                 lambda: managed_browser_service.start(
@@ -4084,7 +4167,6 @@ def build_tools(
                 )
             )
             payload = _browser_status_payload(status)
-            target = str(args.get("url") or "").strip()
             if not target:
                 return payload
             session_id = str(payload.get("session_id") or "")
@@ -4860,43 +4942,15 @@ def build_tools(
         )
 
     if skills_enabled and (resolved_skill_registry or plugin_skills):
-
-        def _skill_read(args: dict[str, Any]) -> dict[str, Any]:
-            raw_name = str(args.get("name", "")).strip()
-            if not raw_name:
-                return {"error": "Missing required argument: name"}
-            # A plugin skill: publisher guidance, read only while its plugin is still on.
-            plugin_skill = find_plugin_skill(plugin_skills, raw_name)
-            if plugin_skill is not None:
-                return read_plugin_skill(root, plugin_skill)
-            skill = (
-                resolve_skill_by_name(resolved_skill_registry, raw_name)
-                if resolved_skill_registry
-                else None
-            )
-            if skill is None:
-                return {
-                    "error": f"Unknown skill: {raw_name}",
-                    "available_skills": sorted(
-                        [
-                            *(skill.name for skill in (resolved_skill_registry or {}).values()),
-                            *(skill.name for skill in plugin_skills),
-                        ]
-                    ),
-                }
-            try:
-                return read_skill_bundle_file(
-                    skill,
-                    path=(str(args["path"]) if args.get("path") is not None else None),
-                )
-            except SkillReadError as exc:
-                return {
-                    "error": str(exc),
-                    "name": skill.name,
-                    "source_path": skill.source_path.as_posix(),
-                }
-
-        _append_builtin_tool("skill_read", run=_skill_read)
+        _append_builtin_tool(
+            "skill_read",
+            run=skill_read_runner(
+                root=root,
+                skill_registry=resolved_skill_registry,
+                plugin_skills=plugin_skills,
+                skill_offered=skill_offered,
+            ),
+        )
 
     verify_artifact_counter = 0
 
@@ -7303,11 +7357,8 @@ def build_tools(
                     )
                 )
 
-    if mcp_manager is not None and _mcp_tool_exposed_in_mode(
-        mode=mode,
-        write_scope_restricted=persona_write_scope_active,
-    ):
-        for binding in mcp_manager.tool_bindings:
+    def _admitted_mcp_bindings(manager: McpManager) -> Iterator[Any]:
+        for binding in manager.tool_bindings:
             if connector_mcp and any(
                 binding.tool_alias.startswith(connector_tool_prefix(c["plugin_id"]))
                 for c in connector_mcp
@@ -7323,6 +7374,17 @@ def build_tools(
             ) and binding.tool_alias.startswith("mcp__github__"):
                 # A user-configured server cannot impersonate the selected plugin's tools.
                 continue
+            yield binding
+
+    if mcp_manager is not None and not _mcp_tool_exposed_in_mode(
+        mode=mode,
+        write_scope_restricted=persona_write_scope_active,
+    ):
+        mode_withheld_tool_names.update(
+            binding.tool_alias for binding in _admitted_mcp_bindings(mcp_manager)
+        )
+    elif mcp_manager is not None:
+        for binding in _admitted_mcp_bindings(mcp_manager):
             bound_binding = binding.bind_session_mode(mode)
             channel = McpVisualDelivery(cfg) if isinstance(bound_binding, McpToolBinding) else None
             if channel is not None:
@@ -7538,6 +7600,8 @@ def build_tools(
             subagent_coordinator_sink(pending_subagent_coordinator)
         if child_scheduler_sink is not None:
             child_scheduler_sink(pending_subagent_coordinator.scheduler)
+    if mode_withheld_tool_names_sink is not None:
+        mode_withheld_tool_names_sink(frozenset(mode_withheld_tool_names - set(active_tools)))
     committed_tool_availability = tool_availability_snapshot(pending_tool_availability)
     if tool_availability_sink is not None:
         tool_availability_sink(committed_tool_availability)

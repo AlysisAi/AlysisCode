@@ -1,6 +1,7 @@
 ---
 name: documents
 description: Create or revise Word documents and formatted reports, preserving source evidence and existing document structure.
+uses_tools: [document_operation, capability_status, artifact_check, asset_view]
 ---
 
 Use when: The task requests a DOCX deliverable, changes to an existing Word file, or a formatted report from source materials.

@@ -7,18 +7,19 @@ import hashlib
 import os
 from uuid import uuid4
 
-from ..ide.browser_profiles import BrowserProfileStore
+from ..ide.browser_profiles import BrowserProfileError, BrowserProfileStore
 from ..ide.managed_browser import BrowserStaleFrameError
 from .browser_linux import LinuxBrowserComputer
-from .cloud_browser import METHODS
+from .cloud_browser import METHODS, OPERATIONS
 from .cloud_desktop_worker import Transfers
 from .compute import transfer_chunks
 from .files import MAX_FILE_BYTES
 from .models import FileInput
 
 # Declared to the host when the browser starts. "site_data": the browser lists its cookies by
-# identity and clears one site's data while it runs (sign-ins).
-FEATURES = ("site_data",)
+# identity and clears one site's data while it runs (sign-ins). OPERATIONS: what its browser
+# does beyond the first images' (cloud_browser.py).
+FEATURES = ("site_data", *OPERATIONS)
 
 
 class BrowserBridge:
@@ -75,7 +76,8 @@ class BrowserBridge:
         lease = self.profiles.acquire("private-browser", self.session)
         try:
             if lease.recovered:
-                raise ValueError(
+                # Typed, so the host learns which refusal this was (cloud_desktop_worker).
+                raise BrowserProfileError(
                     "Browser shutdown was unclean; the previous saved state was retained."
                 )
             target = self.root / ("export-" + uuid4().hex)
@@ -117,7 +119,9 @@ class BrowserBridge:
             saved, self.frame = self.frame, None
             if saved is None or saved[0] != args["frame_id"]:
                 raise BrowserStaleFrameError("Visual observation expired.")
-            return browser.click_visual_frame(owner, sid, saved[1], args["x"], args["y"])
+            return browser.click_visual_frame(
+                owner, sid, saved[1], args["x"], args["y"], **args.get("options", {})
+            )
         if method == "upload_prepare":
             name = FileInput(name=args["name"], content="").name
             prepared = self.transfers.prepare({**args, "name": uuid4().hex})

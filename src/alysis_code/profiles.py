@@ -195,7 +195,6 @@ def migrate_subscription_endpoints(cfg: AppConfig) -> bool:
     profiles = _profile_dict(cfg)
     if not profiles:
         return False
-    from .provider_auth import provider_auth_connection
 
     updated: dict[str, dict[str, Any]] = {}
     for name, data in profiles.items():
@@ -205,6 +204,8 @@ def migrate_subscription_endpoints(cfg: AppConfig) -> bool:
         stored = str(data.get("base_url") or "").strip()
         if not provider_id or not stored:
             continue
+        from .provider_auth import provider_auth_connection
+
         connection = provider_auth_connection(provider_id)
         if connection is None or _same_base_url(stored, connection.base_url):
             continue

@@ -22,7 +22,8 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias
 from urllib.parse import urlsplit
@@ -31,6 +32,7 @@ from .managed_browser import (
     BrowserCancelledError,
     BrowserDependencyError,
     BrowserDestinationUnresolvedError,
+    BrowserDialogOpenError,
     BrowserDownloadRequiredError,
     BrowserError,
     BrowserLaunchError,
@@ -65,6 +67,9 @@ _MAX_METHOD_CHARS = 256
 _MAX_SESSION_ID_CHARS = 256
 _MAX_RESPONSE_ID = (1 << 53) - 1
 _MAX_PENDING_CALLS = 256
+# A dialog's message and default prompt text kept for its page (characters).
+_DIALOG_TEXT_MAX_CHARS = 4_096
+_DIALOG_URL_MAX_CHARS = 8_192
 _READER_POLL_SECONDS = 0.2
 _WAIT_POLL_SECONDS = 0.05
 # A committed page whose load event is late is returned as still loading: after this long
@@ -114,6 +119,9 @@ _Connector: TypeAlias = Callable[..., _WebSocketConnection]
 class _PendingCall:
     event: threading.Event
     session_id: str | None = None
+    method: str = ""
+    # A read that must not wait behind a JavaScript dialog (see yielding_to_dialogs).
+    yields_to_dialog: bool = False
     response: Mapping[str, Any] | None = None
     error: BrowserError | None = None
 
@@ -333,6 +341,9 @@ class WebSocketCdpTransport(CdpTransport):
         self._next_id = 1
         self._terminal_error: BrowserError | None = None
         self._upload_allowances: dict[str, int] = {}
+        # The JavaScript dialog each page session shows, from the browser's own events.
+        self._open_dialogs: dict[str, dict[str, Any]] = {}
+        self._dialog_yield = threading.local()
         self._closed = False
         self._reader = threading.Thread(
             target=self._reader_loop,
@@ -377,14 +388,22 @@ class WebSocketCdpTransport(CdpTransport):
         call_timeout = _validated_timeout(timeout)
         _check_cancel(cancel)
         deadline = time.monotonic() + call_timeout
+        yields = bool(getattr(self._dialog_yield, "active", False))
         with self._lock:
             self._raise_if_unavailable_locked()
             if normalized_session in self._detached_sessions:
                 raise BrowserPageUnavailableError("The browser page has detached.")
+            if yields and normalized_session in self._open_dialogs:
+                raise _dialog_error(self._open_dialogs[normalized_session])
             if len(self._pending) >= _MAX_PENDING_CALLS:
                 raise BrowserLimitError("Browser CDP pending command capacity was exhausted.")
             request_id = self._next_request_id_locked()
-            pending = _PendingCall(event=threading.Event(), session_id=normalized_session)
+            pending = _PendingCall(
+                event=threading.Event(),
+                session_id=normalized_session,
+                method=normalized_method,
+                yields_to_dialog=yields,
+            )
             self._pending[request_id] = pending
         message: dict[str, Any] = {
             "id": request_id,
@@ -589,15 +608,20 @@ class WebSocketCdpTransport(CdpTransport):
             ready_at: dict[str, float] = {}
             committed: dict[str, Any] | None = None
             while True:
+                with self._lock:
+                    dialog = normalized_session in self._open_dialogs
                 if committed is not None and (
                     deadline - time.monotonic() <= _LOAD_WAIT_MARGIN_SECONDS
                     or time.monotonic() - ready_at.get(committed["loaderId"], math.inf)
                     >= _LOAD_GRACE_AFTER_READY_SECONDS
+                    # A page that shows a dialog loads nothing more until it is answered.
+                    or dialog
                 ):
                     # The document committed under the guard installed above, and that guard
                     # stays installed for everything it loads later. Only its load event is
-                    # late (busy pages keep loading ads, trackers or challenges), so hand
-                    # back the page as still loading instead of closing the browser.
+                    # late (busy pages keep loading ads, trackers or challenges, or wait for an
+                    # answer to their dialog), so hand back the page as still loading instead
+                    # of closing the browser.
                     return {**committed, "loadEventPending": True}
                 _check_cancel_and_deadline(cancel, deadline, self)
                 with self._lock:
@@ -1021,6 +1045,11 @@ class WebSocketCdpTransport(CdpTransport):
             # failure, still fails closed.
             if not (target_type == "worker" and exc.code == _CDP_METHOD_NOT_FOUND):
                 raise
+        if target_type == "iframe":
+            # A frame from another site reports its JavaScript dialogs only with page events on.
+            # Without them a dialog it opens (also while loading) is never seen, and a read of
+            # that frame waits for an answer the blocked frame never gives.
+            self.call("Page.enable", {}, session_id=child_session_id, timeout=_remaining(deadline))
         self.call(
             "Runtime.runIfWaitingForDebugger",
             {},
@@ -1056,6 +1085,53 @@ class WebSocketCdpTransport(CdpTransport):
                 if child in descendants and kind == "page" and child not in self._detached_sessions
             }
 
+    def guarded_frame_sessions(self, *, session_id: str) -> Mapping[str, str]:
+        """Ready out-of-process iframe descendants of a page session: frame id -> session.
+
+        An out-of-process iframe's target id is its frame id. Nested iframes are included;
+        frames inside another page (a popup) belong to that page, and detached frames are
+        left out."""
+        with self._lock:
+            self._raise_if_unavailable_locked()
+            descendants = {session_id}
+            for _ in range(len(self._guarded_children)):
+                descendants.update(
+                    child
+                    for child, (parent, _, kind) in self._guarded_children.items()
+                    if parent in descendants and kind == "iframe"
+                )
+            return {
+                target: child
+                for child, (_, target, kind) in self._guarded_children.items()
+                if child in descendants
+                and kind == "iframe"
+                and child not in self._detached_sessions
+            }
+
+    def open_dialog(self, *, session_id: str) -> Mapping[str, Any] | None:
+        """The JavaScript dialog the session's page shows (type, message, default prompt, and
+        the frame that shows it: url and frame_id, None when unknown), as the browser's own
+        events reported it; None when it shows none. Sends nothing."""
+        normalized = _validated_session_id(session_id)
+        with self._lock:
+            self._raise_if_unavailable_locked()
+            found = self._open_dialogs.get(normalized) if normalized is not None else None
+            return dict(found) if found is not None else None
+
+    @contextmanager
+    def yielding_to_dialogs(self) -> Iterator[None]:
+        """Within this block, this thread's commands to a page that shows, or opens, a
+        JavaScript dialog fail at once with BrowserDialogOpenError, and the connection stays
+        healthy. Without it they would wait for an answer that a page blocked by a dialog never
+        gives by itself, until a timeout ends the connection. For reads only: input that opens
+        a dialog must keep waiting while its caller answers the dialog."""
+        previous = getattr(self._dialog_yield, "active", False)
+        self._dialog_yield.active = True
+        try:
+            yield
+        finally:
+            self._dialog_yield.active = previous
+
     def _forget_detached_target(self, event: Mapping[str, Any]) -> None:
         params = event.get("params")
         if not isinstance(params, Mapping):
@@ -1090,6 +1166,13 @@ class WebSocketCdpTransport(CdpTransport):
                         return
                     raise BrowserSecurityError("Browser CDP response id was unknown or duplicated.")
                 pending.response = payload
+                if (
+                    pending.method == "Page.handleJavaScriptDialog"
+                    and "error" not in payload
+                    and pending.session_id is not None
+                ):
+                    # Answered: the page works again before its closing event arrives.
+                    self._open_dialogs.pop(pending.session_id, None)
                 pending.event.set()
             return
 
@@ -1108,6 +1191,11 @@ class WebSocketCdpTransport(CdpTransport):
         ):
             raise BrowserSecurityError("Browser CDP event session id was invalid.")
         queued = _QueuedEvent(payload=payload, size_bytes=size_bytes, session_id=session_id)
+        if method in {"Page.javascriptDialogOpening", "Page.javascriptDialogClosed"} and session_id:
+            self._track_dialog(method, params, session_id)
+        if method == "Target.detachedFromTarget" and isinstance(params.get("sessionId"), str):
+            with self._lock:
+                self._open_dialogs.pop(params["sessionId"], None)
         if method in {
             "Fetch.authRequired",
             "Fetch.requestPaused",
@@ -1185,6 +1273,40 @@ class WebSocketCdpTransport(CdpTransport):
                 self._events.append(queued)
                 self._event_bytes += size_bytes
             self._event_changed.notify_all()
+
+    def _track_dialog(self, method: str, params: Mapping[str, Any], session_id: str) -> None:
+        """Note a page's dialog opening or closing. Reads waiting on that page (inside
+        yielding_to_dialogs) are released at once with the dialog; their late replies are
+        ignored when the page answers them after the dialog."""
+        with self._lock:
+            if method == "Page.javascriptDialogClosed":
+                self._open_dialogs.pop(session_id, None)
+                return
+            if (
+                session_id not in self._open_dialogs
+                and len(self._open_dialogs) >= _MAX_PENDING_CALLS
+            ):
+                raise BrowserSecurityError("Browser dialog tracking exceeded its limit.")
+            # The frame that shows it: the browser names it (frameId, url); a frame from another
+            # site has its own session, whose target id is that frame's id.
+            child = self._guarded_children.get(session_id)
+            frame_id = params.get("frameId")
+            if not isinstance(frame_id, str) or not frame_id:
+                frame_id = child[1] if child is not None and child[2] == "iframe" else None
+            details = {
+                "type": str(params.get("type") or "alert")[:32],
+                "message": str(params.get("message") or "")[:_DIALOG_TEXT_MAX_CHARS],
+                "default_prompt": str(params.get("defaultPrompt") or "")[:_DIALOG_TEXT_MAX_CHARS],
+                "url": str(params.get("url") or "")[:_DIALOG_URL_MAX_CHARS] or None,
+                "frame_id": frame_id[:256] if frame_id else None,
+            }
+            self._open_dialogs[session_id] = details
+            for request_id, pending in tuple(self._pending.items()):
+                if pending.session_id == session_id and pending.yields_to_dialog:
+                    self._pending.pop(request_id)
+                    self._detached_response_ids.append(request_id)
+                    pending.error = _dialog_error(details)
+                    pending.event.set()
 
     def _take_navigation_event(
         self,
@@ -1328,6 +1450,12 @@ def _continue_paused_request(
             raise
         return "Gone"
     return "Response" if response_stage else "Request"
+
+
+def _dialog_error(details: Mapping[str, Any]) -> BrowserDialogOpenError:
+    return BrowserDialogOpenError(
+        details["type"], details["message"], details.get("url"), details.get("frame_id")
+    )
 
 
 def _default_connector() -> _Connector:

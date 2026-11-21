@@ -44,6 +44,21 @@ def failure(kind: str, *, status: int | None = None, code: str | None = None) ->
     return result
 
 
+# Why a turn a restart cut off was not started again (Store.recover): a step it took changed
+# something outside the owl's own records (acted) or may have (unconfirmed), or it had already
+# been started again once (already_rerun).
+NOT_RERUN = frozenset({"acted", "unconfirmed", "already_rerun"})
+
+
+def restart_failure(not_rerun: str, step: str | None = None) -> dict:
+    """The cause stored with a turn a restart cut off and that was not started again: a service
+    cause, why it was not started again, and the step that stopped it when one did (its tool name,
+    which the app words)."""
+    if not_rerun not in NOT_RERUN:
+        raise ValueError("Unknown reason for not starting a turn again.")
+    return {**failure(SERVICE), "not_rerun": not_rerun, **({"step": step} if step else {})}
+
+
 def with_kind(exc: BaseException, kind: str) -> BaseException:
     """Mark an exception, where it is raised, with the failure kind it stands for."""
     if kind not in KINDS:

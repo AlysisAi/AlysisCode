@@ -1,6 +1,8 @@
 # ruff: noqa: F401,F403,F405,E402
 from __future__ import annotations
 
+import sys
+
 
 def _harden_stdio() -> None:
     """Make stdout/stderr tolerant of glyphs the console encoding can't map
@@ -53,18 +55,20 @@ def _apply_bundled_git() -> None:
 
 _harden_stdio()
 _apply_host_tls()
-_apply_bundled_git()
+# These two local metadata reads never invoke Git. On a Windows installation
+# without system Git, admitting the bundled binaries can dominate the probe.
+_desktop_metadata_probe = sys.argv[1:] in (["--version"], ["capabilities"])
+if not _desktop_metadata_probe:
+    _apply_bundled_git()
 
 # Source-alignment markers for checks that read this legacy entrypoint after the
 # command implementation moved into cli_impl/commands.
 # Prompt hotkey marker: @kb.add("c-b")
-import sys
-
 from .cli_impl.auth_status_entry import create_auth_status_app, is_auth_status_probe
 
 if is_auth_status_probe(sys.argv[1:]):
     app = create_auth_status_app()
-elif sys.argv[1:] in (["--version"], ["capabilities"]) or sys.argv[1:2] == ["ide-bridge"]:
+elif _desktop_metadata_probe or sys.argv[1:2] == ["ide-bridge"]:
     # Root options (including --add-dir) still use the full parser and its context.
     from .cli_impl.desktop_entry import create_desktop_app
 

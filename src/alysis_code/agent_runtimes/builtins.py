@@ -6,7 +6,6 @@ from typing import Any
 
 from ..branding import env_get
 from .base import AgentRuntimeAdapter
-from .codex_cli import CodexCliRuntimeAdapter
 from .registry import AgentRuntimeRegistry, DuplicateRuntimeError
 
 RUNTIME_ENTRY_POINT_GROUP = "alysis.agent_runtimes"
@@ -25,16 +24,8 @@ class RuntimeSetupOption:
     auth_hint: str
 
 
-_BUILTIN_OPTIONS: tuple[RuntimeSetupOption, ...] = (
-    RuntimeSetupOption(
-        id="openai-codex",
-        label="OpenAI Codex account",
-        description="Delegate work to Codex using its official ChatGPT sign-in.",
-        adapter="codex-cli",
-        default_executable="codex",
-        auth_hint="Browser or device-code sign-in is managed by Codex; Alysis Code never reads its tokens.",
-    ),
-)
+# Alysis ships no delegated runtime of its own; installed plugins may add them.
+_BUILTIN_OPTIONS: tuple[RuntimeSetupOption, ...] = ()
 
 
 def runtime_setup_options() -> tuple[RuntimeSetupOption, ...]:
@@ -63,7 +54,7 @@ def runtime_setup_option(runtime_id: str) -> RuntimeSetupOption | None:
 def create_builtin_runtime_registry() -> AgentRuntimeRegistry:
     """Build a fresh registry so tests and callers never share mutable state."""
 
-    return AgentRuntimeRegistry((CodexCliRuntimeAdapter(),))
+    return AgentRuntimeRegistry(())
 
 
 def create_runtime_registry() -> AgentRuntimeRegistry:

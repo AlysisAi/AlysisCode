@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from ..cancellation import CooperativeCancellationError
 from ..llm.base import require_tool_calling
+from ..llm.output_limit import response_cut_off_by_output_limit
 from ..llm.types import LLMOutputLimitError
 from .coding import (
     CodingModelRequest,
@@ -18,6 +19,8 @@ from .coding import (
     WorkspaceBinding,
     WorkspaceRegistration,
 )
+from .owl_models import work_client
+from .runtime import provider_retry_wait
 
 
 def install_coding_routes(app, *, runtime, settings, client_factory):
@@ -88,7 +91,8 @@ def install_coding_routes(app, *, runtime, settings, client_factory):
     @app.post("/internal/coding/jobs/{job_id}/model")
     def model(job_id: str, data: CodingModelRequest):
         job = coding.require_worker(job_id, data.worker_id)
-        client = client_factory(job["task_id"])
+        # Coding work thinks at work strength, as an owl's computer work does.
+        client = work_client(client_factory(job["task_id"]))
         # Reserve a final parent-report call in the same durable allowance.
         call_id, saved = coding.reserve_model(
             job_id,
@@ -123,7 +127,11 @@ def install_coding_routes(app, *, runtime, settings, client_factory):
             # each broker request, independently of the worker's local state.
             runtime._refresh_memory_context(task, messages, None)
             messages, memory_inputs = runtime._fit_context(
-                task, messages, data.tools, with_memory_inputs=True
+                task,
+                messages,
+                data.tools,
+                with_memory_inputs=True,
+                room=runtime._request_room(task, client),
             )
             token = runtime.task_token(job["task_id"])
             token.throw_if_cancelled()
@@ -140,6 +148,14 @@ def install_coding_routes(app, *, runtime, settings, client_factory):
                 )
             except LLMOutputLimitError as exc:
                 response, limited = exc.response, True
+            else:
+                # A chat-completions or Messages reply cut off by the output limit comes back
+                # as an ordinary response, and the worker gets no raw reply to tell it by:
+                # send it as cut off, without its unfinished calls, so the worker's turn
+                # recovers from it as from any other.
+                cut_off = response_cut_off_by_output_limit(response)
+                if cut_off is not None:
+                    response, limited = cut_off, True
             runtime.store.finish_call(
                 call_id,
                 "incomplete" if limited else "completed",
@@ -170,9 +186,24 @@ def install_coding_routes(app, *, runtime, settings, client_factory):
             raise HTTPException(
                 409, "Coding was stopped; the model attempt was not replayed."
             ) from None
-        except Exception:
+        except Exception as exc:
+            wait = None
             if not usage_recorded:
                 runtime.store.finish_call(call_id, "unknown", None)
-            raise HTTPException(
-                502, "The coding model attempt failed. No automatic retry was made."
-            ) from None
+                # Nothing came back, so no tool ran. After a temporary provider error the
+                # worker may send this step again, as chat and computer work do; it waits
+                # for that itself, so this request never does.
+                wait = provider_retry_wait(
+                    exc, data.provider_retries, runtime.task_token(job["task_id"])
+                )
+            if wait is None:
+                raise HTTPException(
+                    502, "The coding model attempt failed. No automatic retry was made."
+                ) from None
+            runtime.store.event(
+                settings.owner,
+                job["task_id"],
+                "provider_retry",
+                {"exception_type": type(exc).__name__, "wait_seconds": wait},
+            )
+            raise HTTPException(503, {"retry_after": wait}) from None

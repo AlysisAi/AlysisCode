@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "website-en-rail-search",
+      "category": "website_task",
+      "language": "en",
+      "split": "dev",
+      "prompt": "Use the Deutsche Bahn website (www.bahn.com) to search for train connections from Berlin Hbf to München Hbf for next Friday, departing after 08:00, for one adult in second class with no discount card. Use the site's own search form and filters. Stop before selecting a fare that asks you to sign in, enter personal details or pay, and never enter any personal data. Reply with the three earliest connections you found as a list or table (departure time, arrival time, duration, number of changes and the lowest price shown), plus a link to the page you used.",
+      "expect": {
+        "deliverable": "none",
+        "min_items": 3,
+        "min_sources": 1,
+        "source_unit": "url",
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "website-es-national-library-catalogue",
+      "category": "website_task",
+      "language": "es",
+      "split": "heldout",
+      "prompt": "Usa el catálogo en línea de la Biblioteca Nacional de España (www.bne.es) para buscar libros de Gabriel García Márquez publicados entre 1960 y 1980. Usa los filtros o la búsqueda avanzada del catálogo para limitar el tipo de material a libros y el idioma a español. No inicies sesión, no te registres y no introduzcas ningún dato personal. Respóndeme en español con al menos cinco resultados en una lista o tabla (título, año, editorial y signatura si aparece) y el enlace a la página de resultados o a cada registro.",
+      "expect": {
+        "deliverable": "none",
+        "min_items": 5,
+        "min_sources": 1,
+        "source_unit": "url",
+        "reply_language": "es"
+      }
+    },
+    {
+      "id": "website-el-ferry-search",
+      "category": "website_task",
+      "language": "el",
+      "split": "heldout",
+      "prompt": "Χρησιμοποίησε την αναζήτηση ακτοπλοϊκών δρομολογίων του ferryhopper.com για να βρεις πλοία από τον Πειραιά προς τη Νάξο για την επόμενη Τετάρτη, για έναν ενήλικα χωρίς όχημα. Χρησιμοποίησε τα φίλτρα της σελίδας για να ταξινομήσεις τα αποτελέσματα κατά τιμή. Σταμάτα πριν από την κράτηση, τη σύνδεση σε λογαριασμό ή την πληρωμή και μην εισάγεις κανένα προσωπικό στοιχείο. Απάντησέ μου στα ελληνικά με τις τρεις φθηνότερες επιλογές σε λίστα ή πίνακα (εταιρεία, ώρα αναχώρησης, διάρκεια ταξιδιού, τιμή) και τον σύνδεσμο της σελίδας αποτελεσμάτων.",
+      "expect": {
+        "deliverable": "none",
+        "min_items": 3,
+        "min_sources": 1,
+        "source_unit": "url",
+        "reply_language": "el"
+      }
+    }
+  ]
+}

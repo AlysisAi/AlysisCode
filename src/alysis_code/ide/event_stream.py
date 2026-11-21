@@ -4,8 +4,10 @@ import json
 import threading
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ..surface.events import (
@@ -139,6 +141,7 @@ class ProtocolEventSurface(NoopSurface):
         approval_handler: ApprovalHandler | None = None,
         standing_approval_handler: StandingApprovalHandler | None = None,
         semantic_activity_events: bool = False,
+        stream_reset: bool = False,
         reasoning_trace_events: bool = False,
         emit_transient: Callable[[dict[str, Any]], None] | None = None,
         computer_use_evidence_version: int | None = None,
@@ -155,6 +158,7 @@ class ProtocolEventSurface(NoopSurface):
         self._approval_handler = approval_handler
         self._standing_approval_handler = standing_approval_handler
         self._semantic_activity_events = semantic_activity_events
+        self._stream_reset = stream_reset
         self._thread_context = threading.local()
         self._trace_level = "compact"
         # Tool names by call id for calls whose start we announced as a semantic activity, so the
@@ -316,6 +320,11 @@ class ProtocolEventSurface(NoopSurface):
     ) -> None:
         self._emit_event(MessageDelta(text=text, worker_id=worker_id, role=role))
 
+    def reset_streamed_assistant(self) -> None:
+        """Discard the unfinished display text when the provider restarts this response."""
+        if self._stream_reset:
+            self._emit_event(MessageDelta(text="", reset=True))
+
     def emit_message_end(
         self,
         text: str = "",
@@ -381,6 +390,22 @@ class ProtocolEventSurface(NoopSurface):
             self._emit_event(
                 ProtocolPayloadEvent("computer_use_call_diagnostic", {**safe, "call_id": call_id})
             )
+
+    def observe_committed_edits(self, root: Path) -> AbstractContextManager[None]:
+        from ..committed_edits import observe
+
+        context = self.context
+
+        def emit(receipt: dict[str, Any]) -> None:
+            paths = [str(root), receipt["path"]]
+            if not context.job_id or redact_secrets(paths) != paths:
+                return
+            event = ProtocolPayloadEvent(
+                "file_edit_committed", {**receipt, "workspace": str(root), "id": uuid.uuid4().hex}
+            )
+            self._emit_message(self._sequencer.envelope(event, context=context))
+
+        return observe(root, emit)
 
     def emit_activity(self, event: ActivityEvent) -> None:
         self._emit_event(ProtocolPayloadEvent(ACTIVITY_EVENT_TYPE, event.to_payload()))

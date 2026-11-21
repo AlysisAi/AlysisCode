@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "data-el-store-sales",
+      "category": "data_file",
+      "language": "el",
+      "split": "heldout",
+      "prompt": "Το συνημμένο αρχείο CSV έχει συνθετικά δεδομένα πωλήσεων τεσσάρων καταστημάτων για το πρώτο εξάμηνο του 2025 (διαχωριστικό «;» και δεκαδικά με κόμμα). Φτιάξε ένα αρχείο .xlsx με τα συνολικά έσοδα ανά κατάστημα και μια γραμμή συνόλου στο τέλος, καθώς και ένα γράφημα με τα μηνιαία έσοδα όλων των καταστημάτων (μέσα στο .xlsx ή ως εικόνα). Γράψε μου στα ελληνικά μια σύντομη περίληψη με τα συνολικά έσοδα του εξαμήνου και το κατάστημα με τα περισσότερα έσοδα.",
+      "attachments": [
+        "attachments/sales_2025_el.csv"
+      ],
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 4,
+        "columns": [
+          "store",
+          "total revenue in euros"
+        ],
+        "totals_reconcile": true,
+        "chart": true,
+        "values": [
+          {
+            "meaning": "total revenue of all stores for the half year, in euros",
+            "value": 219877.7,
+            "decimals": 2
+          },
+          {
+            "meaning": "total revenue of the store with the most revenue, in euros",
+            "value": 67775.4,
+            "decimals": 2
+          }
+        ],
+        "reply_language": "el"
+      }
+    },
+    {
+      "id": "data-en-support-tickets",
+      "category": "data_file",
+      "language": "en",
+      "split": "dev",
+      "prompt": "The attached spreadsheet has synthetic weekly support-ticket counts by category. Make a chart of tickets per week for each category, and write a one-page summary as a .docx that includes the chart, a table of total tickets per category with an overall total row, and which week had the most tickets.",
+      "attachments": [
+        "attachments/support_tickets.xlsx"
+      ],
+      "expect": {
+        "deliverable": "docx",
+        "min_rows": 4,
+        "columns": [
+          "ticket category",
+          "total tickets"
+        ],
+        "totals_reconcile": true,
+        "chart": true,
+        "values": [
+          {
+            "meaning": "total tickets across all categories and weeks",
+            "value": 1837,
+            "decimals": 0
+          },
+          {
+            "meaning": "total tickets of the category with the most tickets",
+            "value": 581,
+            "decimals": 0
+          }
+        ],
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "data-zh-city-rainfall",
+      "category": "data_file",
+      "language": "zh",
+      "split": "heldout",
+      "prompt": "附件CSV是五个城市2024年各月降雨量的合成数据（单位：毫米）。请生成一个.xlsx文件，列出每个城市的年降雨总量和月平均降雨量，并在最后一行给出五个城市年降雨量的合计；再制作一张各城市年降雨总量的柱状图（可以放在.xlsx中，也可以是单独的图片）。最后请用中文简要总结哪个城市降雨最多、哪个最少。",
+      "attachments": [
+        "attachments/rainfall_2024_zh.csv"
+      ],
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 5,
+        "columns": [
+          "city",
+          "annual rainfall total in millimetres",
+          "average monthly rainfall in millimetres"
+        ],
+        "totals_reconcile": true,
+        "chart": true,
+        "values": [
+          {
+            "meaning": "annual rainfall total of the city with the least rain, in millimetres",
+            "value": 524.6,
+            "decimals": 1
+          },
+          {
+            "meaning": "annual rainfall total of the city with the most rain, in millimetres",
+            "value": 1739.2,
+            "decimals": 1
+          },
+          {
+            "meaning": "sum of the five cities' annual totals, in millimetres",
+            "value": 4963.9,
+            "decimals": 1
+          }
+        ],
+        "reply_language": "zh"
+      }
+    }
+  ]
+}

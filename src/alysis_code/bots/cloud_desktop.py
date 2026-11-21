@@ -12,7 +12,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +24,7 @@ from . import diagnostics
 from .compute import (
     ComputeCreationRefused,
     ComputeError,
+    ComputeReplyTooLarge,
     ComputerIdentity,
     ComputerRef,
     ComputeStopped,
@@ -34,9 +34,11 @@ from .computer import ComputerLocks
 from .computer_context import opening_task
 from .desktop_linux import (
     ComputerActionUncertain,
+    ComputerReplyTooLarge,
     DesktopCapacityBusy,
     DesktopError,
     DesktopStartupCleanupError,
+    declared_features,
 )
 from .files import FILE_CHUNK_BYTES, MAX_FILE_BYTES
 from .models import FileInput
@@ -56,6 +58,21 @@ BOOTSTRAP = (
 
 def worker_argv(mode, session, *args):
     return [PYTHON, "-I", "-c", BOOTSTRAP, mode, session, *args]
+
+
+# Requests that only read the computer: when one's reply is too large to receive, nothing on the
+# computer changed, so the computer keeps working and the caller may ask for less. Every other
+# request whose receipt is lost retires the computer and is never replayed.
+READ_ONLY_OPERATIONS = frozenset({"ping", "status", "capture", "observe", "read_clipboard"})
+READ_ONLY_BROWSER_METHODS = frozenset(
+    {"snapshot", "pages", "page_report", "read_value", "capture_image", "status", "frame"}
+)
+
+
+def reads_only(operation, arguments):
+    if operation == "browser_call":
+        return isinstance(arguments, dict) and arguments.get("method") in READ_ONLY_BROWSER_METHODS
+    return operation in READ_ONLY_OPERATIONS
 
 
 class CloudDesktopFactory:
@@ -514,6 +531,9 @@ class CloudDesktop:
         self._browser_started = False
         # What its browser declared at start (cloud_browser_worker.FEATURES); none for older images.
         self.browser_features = frozenset()
+        # What its desktop declared (desktop_worker.ELEMENTS), with each reply once it runs;
+        # none for older images.
+        self.desktop_features = frozenset()
         self._unified_desktop = True
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -1177,10 +1197,15 @@ class CloudDesktop:
                 "capture",
                 "run",
                 "launch",
+                "command_start",
+                "command_wait",
                 "click",
                 "type",
                 "key",
                 "scroll",
+                "element",
+                "pointer",
+                "focus_window",
             }:
                 self._resume_surface = "desktop"
             if operation == "human_input":
@@ -1242,6 +1267,8 @@ class CloudDesktop:
                         "Cloud action has no matching complete receipt; outcome is uncertain."
                     )
                 matched = True
+                if "desktop_features" in reply:
+                    self.desktop_features = declared_features(reply["desktop_features"])
                 if "error" in reply:
                     from . import diagnostics
 
@@ -1258,19 +1285,9 @@ class CloudDesktop:
                         self._lifecycle(self.owner, "failed")
                         self.close()
                     if operation.startswith("browser_"):
-                        from ..ide.managed_browser import BrowserError
-                        from .cloud_browser import ERRORS
+                        from .cloud_browser import remote_error
 
-                        error = ERRORS.get(reply.get("error_type"), BrowserError)
-                        if error.__name__ == "BrowserPageUnreachableError":
-                            # Chromium's own network error identifier, validated again there.
-                            found = re.search(
-                                r"net::ERR_[A-Z0-9_]{1,64}", str(reply.get("error_detail") or "")
-                            )
-                            raise error(found.group(0) if found else None)
-                        raise error(
-                            "Cloud browser rejected the operation; inspect before retrying."
-                        )
+                        raise remote_error(reply)
                     raise DesktopError("Cloud operation rejected; inspect state before retrying.")
                 return reply["result"]
             except CooperativeCancellationError:
@@ -1281,6 +1298,16 @@ class CloudDesktop:
                 self._lifecycle(self.owner, "failed")
                 self.close()
                 raise DesktopError(str(stopped)) from None
+            except ComputeReplyTooLarge:
+                if not reads_only(operation, arguments):
+                    self._lifecycle(self.owner, "failed")
+                    self.close()
+                    raise ComputerActionUncertain(
+                        "Cloud operation interrupted; no success is confirmed."
+                    ) from None
+                raise ComputerReplyTooLarge(
+                    "The computer's reply was too large to receive in one step; nothing changed."
+                ) from None
             except (ComputeError, ValueError, TypeError):
                 self._lifecycle(self.owner, "failed")
                 self.close()
@@ -1357,12 +1384,18 @@ class CloudDesktop:
             "observe",
             "run",
             "launch",
+            "command_start",
+            "command_wait",
             "status",
             "stop_process",
             "click",
             "type",
             "key",
             "scroll",
+            "element",
+            "pointer",
+            "focus_window",
+            "read_clipboard",
         }:
             raise ValueError("Unsupported remote computer action.")
         return self._request(operation, arguments, cancel=cancel)
@@ -1569,26 +1602,7 @@ class CloudDesktop:
             if self._browser_states is not None and self._browser_started and not self._closed:
                 if self._task_id is None and pause_session is None:
                     raise DesktopError("Browser checkpoint requires an owning task.")
-                receipt = self._request("browser_snapshot", {}, cancel=cancel)
-                path = CloudDesktopFiles._path(self, receipt["path"], "export-")
-                size = receipt["bytes"]
-                if type(size) is not int or not 0 <= size <= MAX_FILE_BYTES:
-                    raise DesktopError("Browser snapshot exceeds its allowance.")
-                with closing(
-                    self.provider.download(self.ref, path, size=size, cancel=cancel)
-                ) as chunks:
-                    parts, total = [], 0
-                    for chunk in chunks:
-                        total += len(chunk)
-                        if total > size:
-                            raise DesktopError("Browser snapshot exceeds its receipt.")
-                        parts.append(chunk)
-                    browser_data = b"".join(parts)
-                if (
-                    len(browser_data) != size
-                    or hashlib.sha256(browser_data).hexdigest() != receipt["sha256"]
-                ):
-                    raise DesktopError("Browser snapshot integrity check failed.")
+                browser_data = self._browser_snapshot(cancel)
             if self.workspace_persistent and not self._closed:
                 if self._task_id is None and pause_session is None:
                     raise DesktopError("Workspace checkpoint requires an owning task.")
@@ -1616,9 +1630,7 @@ class CloudDesktop:
                 # A cleanup failure must not claim successful durable completion.
                 self._retire()
                 if browser_data is not None and pause_session is None:
-                    self._browser_states.stage(
-                        self._account, self.owner, self._task_id, browser_data, cancel=cancel
-                    )
+                    self._stage_browser_state(browser_data, cancel)
                 if cancel():
                     raise CooperativeCancellationError("Workspace checkpoint cancelled.")
                 if self._objects is not None:
@@ -1671,12 +1683,71 @@ class CloudDesktop:
                 sync_directory(self._snapshot.parent)
             elif browser_data is not None:
                 self._retire()
-                self._browser_states.stage(
-                    self._account, self.owner, self._task_id, browser_data, cancel=cancel
-                )
+                self._stage_browser_state(browser_data, cancel)
         finally:
             temporary.unlink(missing_ok=True)
             self.close()
+
+    def _browser_snapshot(self, cancel):
+        """This computer's browser storage, to save when its task completes; None when the
+        computer refused to make it (its browser's clean shutdown was not confirmed, or its
+        storage is over the archive allowance, its type and reason in diagnostics).
+
+        Saving the browser's storage serves the next task's sign-ins; it is not the task's
+        work. A refusal therefore leaves the owl's last saved storage in place (the next browser
+        starts from it), is recorded on the task, and the computer's files are still saved and
+        the computer retired as usual. A refusal that stopped the computer, or no matching
+        receipt, is not one: those raise as before."""
+        from ..ide.managed_browser import BrowserError
+
+        try:
+            receipt = self._request("browser_snapshot", {}, cancel=cancel)
+        except BrowserError as exc:
+            if self._closed:
+                raise
+            self._browser_state_unsaved(exc)
+            return None
+        path = CloudDesktopFiles._path(self, receipt["path"], "export-")
+        size = receipt["bytes"]
+        if type(size) is not int or not 0 <= size <= MAX_FILE_BYTES:
+            raise DesktopError("Browser snapshot exceeds its allowance.")
+        with closing(self.provider.download(self.ref, path, size=size, cancel=cancel)) as chunks:
+            parts, total = [], 0
+            for chunk in chunks:
+                total += len(chunk)
+                if total > size:
+                    raise DesktopError("Browser snapshot exceeds its receipt.")
+                parts.append(chunk)
+            data = b"".join(parts)
+        if len(data) != size or hashlib.sha256(data).hexdigest() != receipt["sha256"]:
+            raise DesktopError("Browser snapshot integrity check failed.")
+        return data
+
+    def _stage_browser_state(self, data, cancel):
+        """Save the browser storage of this computer's completed task. Object storage that
+        refuses or fails it leaves the owl's last saved storage in place, as a refused snapshot
+        does (``_browser_snapshot``); the computer's files are saved after it either way."""
+        try:
+            self._browser_states.stage(
+                self._account, self.owner, self._task_id, data, cancel=cancel
+            )
+        except ObjectStorageError as exc:
+            self._browser_state_unsaved(exc)
+
+    def _browser_state_unsaved(self, exc):
+        diagnostics.record("browser_state_not_saved", exc)
+        if self._task_id is None:
+            return  # an idle pause of an unclaimed viewer: no task to tell
+        self._store.event(
+            self._account,
+            self._task_id,
+            "browser_state_not_saved",
+            {
+                "message": "Website storage from this task (such as sign-ins) was not saved. "
+                "The owl's next browser starts from its last saved storage.",
+                "error_type": type(exc).__name__,
+            },
+        )
 
     def close(self):
         if self._sleep_intent and not self._cleaned:

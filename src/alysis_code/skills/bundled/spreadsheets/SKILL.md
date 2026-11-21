@@ -1,6 +1,7 @@
 ---
 name: spreadsheets
 description: Create, edit, or analyze spreadsheet files, with explicit formula calculation, data provenance, and preservation checks.
+uses_tools: [document_operation, capability_status, artifact_check, asset_view, fs_copy]
 ---
 
 Use when: The request concerns an XLSX workbook or a table of data requiring spreadsheet calculations, formatting, or analysis.
