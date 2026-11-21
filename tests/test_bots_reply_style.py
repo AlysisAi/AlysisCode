@@ -16,7 +16,7 @@ from alysis_code.bots.reply_style import (
     split_follow_ups,
     update_lines,
 )
-from alysis_code.bots.runtime import BotRuntime
+from alysis_code.bots.runtime import BotRuntime, tool_schema
 from alysis_code.bots.store import Store
 from alysis_code.cancellation import EventCancellationToken
 from alysis_code.llm.types import LLMResponse, LLMUsage, ToolCall
@@ -271,3 +271,15 @@ def test_a_routine_run_asks_for_no_updates(tmp_path, monkeypatch):
         for request in client.requests
         for message in request
     )
+
+
+def test_choices_are_offered_only_when_each_answers_the_question(tmp_path):
+    # An open answer (a place, a date) gets the card's field, never choices that answer some other
+    # question; the reply guidance and the tool both say so, for every owl and model.
+    _, _, _, client = run_task(tmp_path, [response("Done.")])
+    system = client.requests[0][0]["content"]
+    assert "make each option a complete answer to that exact question" in system
+    assert "When the answer is open" in system and "give no options" in system
+    description = tool_schema("ask_clarification")["function"]["description"]
+    assert "only when each one fully answers the question as asked" in description
+    assert "none when the answer is open" in description

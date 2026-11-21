@@ -94,3 +94,43 @@ def web_fetch(url: str, max_chars: int) -> dict[str, Any]:
             }
         ),
     }
+
+
+def public_page_address(url: str) -> str:
+    """``url`` when web_fetch may read it, by its form: http(s), a host, no credentials, and not
+    this computer or a private network. A name is resolved, and its addresses checked, at every
+    read (check_backs.py watches pages this way)."""
+    from ..tools.web import WebFetchError, _validate_fetch_target
+
+    try:
+        # No resolver: the form alone now; the address is checked when the page is read.
+        _validate_fetch_target(url, resolver=lambda _host, _port: [])
+    except WebFetchError as exc:
+        raise Conflict(f"Only a public web page can be watched: {str(exc)[:300]}") from exc
+    return url
+
+
+def page_text(url: str, max_chars: int) -> tuple[str, bool]:
+    """A public page's whole readable text (its title, then every part of the page, not only its
+    main content) and whether it was read whole, for checks made without a model. The same
+    address rules, limits and plain reasons as web_fetch."""
+    from ..tools.web import WebFetchError
+    from ..tools.web import web_fetch as fetch
+
+    try:
+        page = fetch(
+            url=url,
+            max_chars=max_chars,
+            truncate_oversized=True,
+            max_bytes=6_000_000,
+            read_pdf=True,
+        )
+    except WebFetchError as exc:
+        reason = getattr(exc, "remote_site_reason", None)
+        raise Conflict(
+            f"The page could not be read ({reason})."
+            if reason
+            else f"The page could not be read: {str(exc)[:300]}"
+        ) from exc
+    text = f"{page.get('title') or ''}\n{page.get('content') or ''}"
+    return text, not page.get("truncated")

@@ -523,6 +523,83 @@ def test_a_ready_page_does_not_wait_for_its_load_event_forever(monkeypatch) -> N
         transport.close(timeout=0.2)
 
 
+def test_a_page_that_shows_a_dialog_while_loading_is_returned_at_once() -> None:
+    # A dialog blocks the page, so its load event waits for an answer: navigation hands the
+    # page back as still loading right away instead of waiting out the grace or the deadline.
+    connection = FakeWebSocket()
+    transport = WebSocketCdpTransport(connection)
+    outcome: dict[str, Any] = {}
+    try:
+        thread = _run_guarded_navigation(transport, lambda url: url, outcome)
+        _commit_without_load(connection)
+        connection.receive_json(
+            {
+                "method": "Page.lifecycleEvent",
+                "params": {
+                    "frameId": "frame-1",
+                    "loaderId": "loader-1",
+                    "name": "DOMContentLoaded",
+                },
+                "sessionId": "session-1",
+            }
+        )
+        started = time.monotonic()
+        connection.receive_json(_dialog_event("session-1", "Καλώς ήρθατε 欢迎", "alert"))
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+        assert time.monotonic() - started < 0.5
+        assert outcome["result"]["loaderId"] == "loader-1"
+        assert outcome["result"]["loadEventPending"] is True
+        assert transport.healthy and not connection.closed.is_set()
+    finally:
+        transport.close(timeout=0.2)
+
+
+def test_a_frame_from_another_site_reports_its_dialogs_before_it_runs() -> None:
+    from alysis_code.ide.managed_browser import BrowserDialogOpenError
+
+    connection = FakeWebSocket()
+    transport = WebSocketCdpTransport(connection)
+    try:
+        _complete_public_navigation(transport, connection, lambda url: url)
+        connection.receive_json(
+            {
+                "method": "Target.attachedToTarget",
+                "sessionId": "session-1",
+                "params": {
+                    "sessionId": "pay-frame",
+                    "waitingForDebugger": True,
+                    "targetInfo": {"targetId": "PAY", "type": "iframe", "url": ""},
+                },
+            }
+        )
+        sent = []
+        for method in ("Target.setAutoAttach", "Fetch.enable"):
+            command = connection.next_command(method)
+            connection.respond(command)
+        # Page events are on before the frame runs, so a dialog it opens while loading is seen.
+        enable = connection.next_command("Page.enable")
+        sent.append(enable["sessionId"])
+        connection.respond(enable)
+        resume = connection.next_command("Runtime.runIfWaitingForDebugger")
+        sent.append(resume["sessionId"])
+        connection.respond(resume)
+        assert sent == ["pay-frame", "pay-frame"]
+        _until(lambda: transport.guarded_frame_sessions(session_id="session-1"))
+        connection.receive_json(_dialog_event("pay-frame", "Επιβεβαίωση πληρωμής; 确认付款？"))
+        _until(lambda: transport.open_dialog(session_id="pay-frame"))
+        # A read of that frame fails at once instead of waiting for an answer.
+        started = time.monotonic()
+        with (
+            pytest.raises(BrowserDialogOpenError, match="确认付款"),
+            transport.yielding_to_dialogs(),
+        ):
+            transport.call("Accessibility.getFullAXTree", session_id="pay-frame", timeout=2)
+        assert time.monotonic() - started < 0.5 and transport.healthy
+    finally:
+        transport.close(timeout=1)
+
+
 def test_a_network_error_page_keeps_the_browser_and_its_guard() -> None:
     from alysis_code.ide.managed_browser import BrowserPageUnreachableError
 
@@ -1372,3 +1449,207 @@ def test_download_navigation_is_typed_and_keeps_persistent_guard():
     finally:
         transport.close(timeout=1)
         thread.join(2)
+
+
+def _attach_guarded(
+    transport: WebSocketCdpTransport,
+    connection: FakeWebSocket,
+    session_id: str,
+    target_type: str,
+    *,
+    parent: str = "session-1",
+) -> None:
+    """A child target (iframe or page) attaches paused under ``parent`` and gets its guard."""
+    connection.receive_json(
+        {
+            "method": "Target.attachedToTarget",
+            "sessionId": parent,
+            "params": {
+                "sessionId": session_id,
+                "waitingForDebugger": True,
+                "targetInfo": {"targetId": session_id + "-target", "type": target_type, "url": ""},
+            },
+        }
+    )
+    methods = ["Target.setAutoAttach", "Fetch.enable", "Runtime.runIfWaitingForDebugger"]
+    if target_type == "iframe":
+        methods.insert(2, "Page.enable")  # its dialogs are reported before it runs
+    for method in methods:
+        command = connection.next_command(method)
+        assert command["sessionId"] == session_id
+        connection.respond(command)
+
+    def ready() -> bool:
+        children = {
+            **transport.guarded_frame_sessions(session_id=parent),
+            **transport.guarded_page_sessions(session_id=parent),
+        }
+        return session_id in children.values()
+
+    _until(ready)
+
+
+def test_out_of_process_frames_of_a_page_include_nested_ones_but_not_a_popups_or_detached():
+    connection = FakeWebSocket()
+    transport = WebSocketCdpTransport(connection)
+    try:
+        _complete_public_navigation(transport, connection, lambda url: url)
+        _attach_guarded(transport, connection, "frame-a", "iframe")
+        _attach_guarded(transport, connection, "frame-b", "iframe", parent="frame-a")
+        _attach_guarded(transport, connection, "popup", "page")
+        _attach_guarded(transport, connection, "popup-frame", "iframe", parent="popup")
+        assert transport.guarded_frame_sessions(session_id="session-1") == {
+            "frame-a-target": "frame-a",
+            "frame-b-target": "frame-b",
+        }
+        assert transport.guarded_frame_sessions(session_id="popup") == {
+            "popup-frame-target": "popup-frame"
+        }
+        connection.receive_json(
+            {
+                "method": "Target.detachedFromTarget",
+                "sessionId": "frame-a",
+                "params": {"sessionId": "frame-b"},
+            }
+        )
+        deadline = time.monotonic() + 1
+        while (
+            time.monotonic() < deadline
+            and len(transport.guarded_frame_sessions(session_id="session-1")) > 1
+        ):
+            time.sleep(0.005)
+        assert transport.guarded_frame_sessions(session_id="session-1") == {
+            "frame-a-target": "frame-a"
+        }
+        assert transport.healthy
+    finally:
+        transport.close(timeout=1)
+
+
+def _dialog_event(session_id: str, message: str, kind: str = "alert") -> dict[str, Any]:
+    return {
+        "method": "Page.javascriptDialogOpening",
+        "sessionId": session_id,
+        "params": {
+            "type": kind,
+            "message": message,
+            "url": "https://example.com/",
+            "defaultPrompt": "",
+        },
+    }
+
+
+def _until(condition: Callable[[], object], timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert condition()
+
+
+def test_a_page_dialog_is_tracked_from_the_browsers_events_without_any_command():
+    connection = FakeWebSocket()
+    transport = WebSocketCdpTransport(connection)
+    try:
+        assert transport.open_dialog(session_id="page") is None
+        connection.receive_json(_dialog_event("page", "Καλώς ήρθατε! 欢迎", "confirm"))
+        _until(lambda: transport.open_dialog(session_id="page"))
+        # With the frame that shows it: its address, and no frame id the event did not name.
+        assert transport.open_dialog(session_id="page") == {
+            "type": "confirm",
+            "message": "Καλώς ήρθατε! 欢迎",
+            "default_prompt": "",
+            "url": "https://example.com/",
+            "frame_id": None,
+        }
+        assert transport.open_dialog(session_id="other-page") is None
+        # The event still reaches readers of the page's events.
+        events = transport.drain_events(session_id="page", max_events=10, timeout=0.1)
+        assert [event["method"] for event in events] == ["Page.javascriptDialogOpening"]
+        connection.receive_json(
+            {"method": "Page.javascriptDialogClosed", "sessionId": "page", "params": {}}
+        )
+        _until(lambda: transport.open_dialog(session_id="page") is None)
+        # A page that goes away takes its dialog with it.
+        connection.receive_json(_dialog_event("gone", "Αντίο"))
+        _until(lambda: transport.open_dialog(session_id="gone"))
+        connection.receive_json(
+            {"method": "Target.detachedFromTarget", "params": {"sessionId": "gone"}}
+        )
+        _until(lambda: transport.open_dialog(session_id="gone") is None)
+        assert connection.outbound.empty() and transport.healthy
+    finally:
+        transport.close(timeout=1)
+
+
+def test_a_read_waiting_on_a_page_is_released_when_the_page_opens_a_dialog():
+    from alysis_code.ide.managed_browser import BrowserDialogOpenError
+
+    connection = FakeWebSocket()
+    transport = WebSocketCdpTransport(connection)
+    outcome: dict[str, Any] = {}
+
+    def read() -> None:
+        try:
+            with transport.yielding_to_dialogs():
+                transport.call("DOMSnapshot.captureSnapshot", session_id="page", timeout=2)
+        except BrowserError as error:
+            outcome["error"] = error
+
+    worker = threading.Thread(target=read)
+    try:
+        worker.start()
+        pending = connection.next_command("DOMSnapshot.captureSnapshot")
+        started = time.monotonic()
+        connection.receive_json(_dialog_event("page", "Η συνεδρία λήγει"))
+        worker.join(timeout=1)
+        assert not worker.is_alive() and time.monotonic() - started < 1
+        error = outcome["error"]
+        assert isinstance(error, BrowserDialogOpenError)
+        assert (error.dialog_type, error.dialog_message) == ("alert", "Η συνεδρία λήγει")
+        assert transport.healthy
+        # While the dialog shows, another read fails at once and sends nothing.
+        with pytest.raises(BrowserDialogOpenError), transport.yielding_to_dialogs():
+            transport.call("Page.captureScreenshot", session_id="page", timeout=2)
+        # The page answers the released read after its dialog: that late reply is ignored.
+        connection.respond(pending)
+        time.sleep(0.05)
+        assert transport.healthy and connection.outbound.empty()
+    finally:
+        transport.close(timeout=1)
+        worker.join(timeout=1)
+
+
+def test_input_keeps_waiting_while_its_dialog_is_answered():
+    connection = FakeWebSocket()
+    transport = WebSocketCdpTransport(connection)
+    outcome: dict[str, Any] = {}
+
+    def click() -> None:
+        outcome["result"] = transport.call(
+            "Input.dispatchMouseEvent", {"type": "mouseReleased"}, session_id="page", timeout=2
+        )
+
+    worker = threading.Thread(target=click)
+    try:
+        worker.start()
+        pending = connection.next_command("Input.dispatchMouseEvent")
+        connection.receive_json(_dialog_event("page", "Διαγραφή;", "confirm"))
+        _until(lambda: transport.open_dialog(session_id="page"))
+        time.sleep(0.05)
+        assert worker.is_alive()  # not released: its caller answers the dialog
+        answer = threading.Thread(
+            target=lambda: transport.call(
+                "Page.handleJavaScriptDialog", {"accept": True}, session_id="page", timeout=2
+            )
+        )
+        answer.start()
+        connection.respond(connection.next_command("Page.handleJavaScriptDialog"))
+        answer.join(timeout=1)
+        # Answered: the page works again before its closing event arrives.
+        assert transport.open_dialog(session_id="page") is None
+        connection.respond(pending)
+        worker.join(timeout=1)
+        assert outcome["result"] == {} and transport.healthy
+    finally:
+        transport.close(timeout=1)
+        worker.join(timeout=1)

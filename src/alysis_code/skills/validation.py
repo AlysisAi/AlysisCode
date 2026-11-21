@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +21,8 @@ from .prompting import (
 SKILL_ENTRYPOINT_WARNING_CHARS = EXPLICIT_SKILL_ENTRYPOINT_MAX_CHARS
 SKILL_NAME_WARNING_CHARS = EXPLICIT_SKILL_NAME_DISPLAY_MAX_CHARS
 SKILL_DESCRIPTION_WARNING_CHARS = EXPLICIT_SKILL_DESCRIPTION_DISPLAY_MAX_CHARS
+# A tool name as model providers accept it in a function declaration.
+_TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -81,7 +86,7 @@ def _validate_skill_bundle(bundle_path: Path) -> SkillValidationResult:
     resolved_bundle = bundle_path.expanduser().resolve()
     entry_path = resolved_bundle / "SKILL.md"
     issues: list[SkillValidationIssue] = []
-    if not resolved_bundle.exists() or not resolved_bundle.is_dir():
+    if not resolved_bundle.is_dir():
         issues.append(
             SkillValidationIssue(
                 severity="error",
@@ -103,7 +108,7 @@ def _validate_skill_bundle(bundle_path: Path) -> SkillValidationResult:
                 path=entry_path,
             )
         )
-    if not entry_path.exists() or not entry_path.is_file():
+    if not entry_path.is_file():
         issues.append(
             SkillValidationIssue(
                 severity="error",
@@ -178,6 +183,17 @@ def _validate_skill_bundle(bundle_path: Path) -> SkillValidationResult:
             or any(not isinstance(value, str) for value in meta["aliases"])
         ):
             raise ValueError("Frontmatter aliases must be a list of strings.")
+        if "uses_tools" in meta and (
+            not isinstance(meta["uses_tools"], list)
+            or any(
+                not isinstance(value, str) or not _TOOL_NAME.fullmatch(value)
+                for value in meta["uses_tools"]
+            )
+        ):
+            raise ValueError(
+                "Frontmatter uses_tools must be a list of tool names "
+                "(a letter, then up to 63 letters, digits, '_' or '-')."
+            )
         # YAML dates are metadata, not runtime objects; recursive aliases are invalid.
         meta = json.loads(json.dumps(meta, default=str))
     except (yaml.YAMLError, ValueError) as exc:
@@ -271,28 +287,15 @@ def _validate_skill_bundle(bundle_path: Path) -> SkillValidationResult:
                     path=optional_path,
                 )
             )
-    for candidate in resolved_bundle.rglob("*"):
-        if candidate == entry_path:
-            continue
-        if candidate.is_symlink():
-            issues.append(
-                SkillValidationIssue(
-                    severity="error",
-                    message="Skill bundles may not contain symlinks.",
-                    path=candidate,
-                )
+    file_count, total_bytes, first_link = _inspect_bundle_contents(resolved_bundle, entry_path)
+    if first_link is not None:
+        issues.append(
+            SkillValidationIssue(
+                severity="error",
+                message="Skill bundles may not contain symlinks.",
+                path=first_link,
             )
-            break
-    total_bytes = 0
-    file_count = 0
-    for candidate in resolved_bundle.rglob("*"):
-        if not candidate.is_file():
-            continue
-        file_count += 1
-        try:
-            total_bytes += candidate.stat().st_size
-        except OSError:
-            continue
+        )
     if total_bytes > 5 * 1024 * 1024:
         issues.append(
             SkillValidationIssue(
@@ -320,3 +323,25 @@ def _validate_skill_bundle(bundle_path: Path) -> SkillValidationResult:
         metadata=meta,
         issues=tuple(issues),
     )
+
+
+def _inspect_bundle_contents(bundle: Path, entry_path: Path) -> tuple[int, int, Path | None]:
+    """Collect link and size diagnostics in one directory walk."""
+    pending = [os.fspath(bundle)]
+    file_count = total_bytes = 0
+    first_link = None
+    while pending:
+        with os.scandir(pending.pop()) as children:
+            for child in children:
+                info = child.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode) or (
+                    os.name == "nt" and info.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+                ):
+                    if first_link is None and Path(child.path) != entry_path:
+                        first_link = Path(child.path)
+                elif stat.S_ISDIR(info.st_mode):
+                    pending.append(child.path)
+                elif stat.S_ISREG(info.st_mode):
+                    file_count += 1
+                    total_bytes += info.st_size
+    return file_count, total_bytes, first_link

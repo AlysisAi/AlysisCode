@@ -718,6 +718,7 @@ def _build_bwrap_argv(
     filesystem_access: str = "workspace-write",
     additional_workspace_roots: tuple[str, ...] = (),
     check_preparation: Callable[[], None] | None = None,
+    system_path_only: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Build bwrap argv + parent-process env without starting subprocesses."""
 
@@ -751,7 +752,10 @@ def _build_bwrap_argv(
     if not contains_workspace_path(root_abs, cwd, additional_workspace_roots):
         raise ConfigError("cwd is outside root and approved additional sandbox workspaces")
     run_env = _sanitized_env(clear_env=clear_env)
-    path_value = _bwrap_path_value(run_env.get("PATH"))
+    # The fixed Python file operations use an absolute interpreter and its explicit
+    # runtime mounts. Discovering executables on the user's PATH can exhaust their
+    # deadline, especially when WSL has imported Windows installation directories.
+    path_value = _bwrap_path_value(os.defpath if system_path_only else run_env.get("PATH"))
     args: list[str] = ["bwrap", "--die-with-parent"]
     created_dirs: set[str] = set()
     if clear_env:
@@ -897,6 +901,7 @@ class BwrapShellRunner:
         cmd: str,
         timeout_s: int,
         cancel_check: Callable[[], bool] | None = None,
+        system_path_only: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         deadline = time.monotonic() + timeout_s
 
@@ -924,6 +929,7 @@ class BwrapShellRunner:
             filesystem_access=self.filesystem_access,
             additional_workspace_roots=self.additional_workspace_roots,
             check_preparation=check_preparation,
+            system_path_only=system_path_only,
         )
         return run_in_tracked_process_group(
             args,

@@ -305,9 +305,9 @@ def test_explicit_provider_argument_and_config_alias_are_preserved(tmp_path):
     (real_config / "config.json").write_text(
         json.dumps(
             {
-                "execution": {"backend": "delegated", "runtime": "openai-codex"},
+                "execution": {"backend": "delegated", "runtime": "sample-agent"},
                 "agent_runtimes": {
-                    "openai-codex": {"adapter": "codex-cli", "executable": "fixture-codex"},
+                    "sample-agent": {"adapter": "sample-cli", "executable": "fixture-sample-agent"},
                 },
             }
         )

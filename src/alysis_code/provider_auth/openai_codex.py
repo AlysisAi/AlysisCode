@@ -12,11 +12,8 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlsplit
-
-import httpx
 
 from ..cancellation import CooperativeCancellationError
 from ..chatgpt_codex_static_provider import (
@@ -29,7 +26,6 @@ from ..llm.cache_capabilities import (
     CACHE_USAGE_SCHEMA_OPENAI,
     CacheCapabilitySpec,
 )
-from ..llm.cancellable_http import cancellation_aware_httpx_client
 from .base import (
     ProviderAccountStatus,
     ProviderAuthError,
@@ -49,6 +45,12 @@ from .store import (
     save_refreshed_provider_token,
     subscription_registration,
 )
+
+if TYPE_CHECKING:
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import httpx
+
 
 SESSION_EXPIRED_DETAIL = "session expired"
 """Stable ``detail`` value meaning the stored session must be re-authorized."""
@@ -493,6 +495,8 @@ class OpenAICodexSubscriptionAuth:
         return adapted
 
     def list_models(self, *, refresh: bool = False) -> tuple[ProviderModel, ...]:
+        import httpx
+
         if self._models_cache is not None and not refresh:
             live_scope = self.route_credential_scope()
             if live_scope and hmac.compare_digest(live_scope, self._models_cache_scope):
@@ -735,6 +739,10 @@ class OpenAICodexSubscriptionAuth:
         allow_unexpired_fallback: bool,
         cancellation_token: Any | None = None,
     ) -> ProviderTokenRecord:
+        import httpx
+
+        from ..llm.cancellable_http import cancellation_aware_httpx_client
+
         try:
             client_context = (
                 cancellation_aware_httpx_client(
@@ -910,6 +918,8 @@ class OpenAICodexSubscriptionAuth:
         nonce: str,
         expected_subject: str | None = None,
     ) -> ProviderTokenRecord:
+        import httpx
+
         try:
             with self._client(timeout=30.0) as client:
                 response = client.post(
@@ -957,6 +967,8 @@ class OpenAICodexSubscriptionAuth:
         )
 
     def _discovery(self) -> dict[str, Any]:
+        import httpx
+
         try:
             with self._client(timeout=20.0) as client:
                 response = client.get(f"{_ISSUER}/.well-known/openid-configuration")
@@ -985,6 +997,8 @@ class OpenAICodexSubscriptionAuth:
         )
 
     def _client(self, *, timeout: float) -> httpx.Client:
+        import httpx
+
         from ..task_budget import refuse_budgeted_auth_refresh
 
         refuse_budgeted_auth_refresh()
@@ -1049,6 +1063,8 @@ def _pkce_challenge(verifier: str) -> str:
 
 
 def _bind_callback_server() -> HTTPServer:
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
     last_error: OSError | None = None
     for port in _CALLBACK_PORTS:
         try:
@@ -1062,6 +1078,8 @@ def _callback_handler(
     result: dict[str, str],
     expected_state: str,
 ) -> type[BaseHTTPRequestHandler]:
+    from http.server import BaseHTTPRequestHandler
+
     class CallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
             split = urlsplit(self.path)

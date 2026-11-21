@@ -185,3 +185,60 @@ def test_cloud_billing_credential_is_kept_out_of_hosted_representations():
     )
     _, hosted = bootstrap(io.BytesIO(json.dumps(data).encode()))
     assert "synthetic-billing-secret" not in repr(hosted)
+
+
+def managed(**hosted_values):
+    data = values()
+    data["hosted"].update(managed_cloud=True, **hosted_values)
+    return data
+
+
+def test_managed_cloud_without_a_metering_source_refuses_to_start():
+    from alysis_code.bots.hosted_azure import controller_billing
+
+    _, hosted = bootstrap(io.BytesIO(json.dumps(managed()).encode()))
+    assert hosted.cloud_metering == "controller"
+    with pytest.raises(ValueError, match="billing connection"):
+        controller_billing(hosted)
+
+
+def test_managed_cloud_meters_through_its_billing_connection_by_default():
+    from alysis_code.bots.cloud_billing import CloudBilling
+    from alysis_code.bots.hosted_azure import controller_billing
+
+    data = managed(billing_url="https://billing.invalid", billing_key="synthetic-billing-secret")
+    _, hosted = bootstrap(io.BytesIO(json.dumps(data).encode()))
+    billing = controller_billing(hosted)
+    try:
+        assert isinstance(billing, CloudBilling)
+    finally:
+        billing.close()
+
+
+def test_externally_metered_cloud_starts_without_a_billing_connection(monkeypatch):
+    from alysis_code.bots.hosted_azure import controller_billing
+
+    payload = json.dumps(managed()).encode()
+    _, original = bootstrap(io.BytesIO(payload))
+    monkeypatch.setenv("ALYSIS_BOTS_CLOUD_METERING", "external")
+    _, hosted = bootstrap(io.BytesIO(payload))
+    assert asdict(hosted) == {**asdict(original), "cloud_metering": "external"}
+    assert controller_billing(hosted) is None
+    # A billing connection left in the bootstrap is never used a second time.
+    data = managed(billing_url="https://billing.invalid", billing_key="synthetic-billing-secret")
+    _, hosted = bootstrap(io.BytesIO(json.dumps(data).encode()))
+    assert controller_billing(hosted) is None
+
+
+def test_unmanaged_hosting_needs_no_metering_source():
+    from alysis_code.bots.hosted_azure import controller_billing
+
+    _, hosted = bootstrap(io.BytesIO(json.dumps(values()).encode()))
+    assert controller_billing(hosted) is None
+
+
+@pytest.mark.parametrize("metering", ["none", "External", " external", "off"])
+def test_cloud_metering_accepts_only_its_named_sources(monkeypatch, metering):
+    monkeypatch.setenv("ALYSIS_BOTS_CLOUD_METERING", metering)
+    with pytest.raises(ValueError, match="Cloud metering"):
+        bootstrap(io.BytesIO(json.dumps(managed()).encode()))

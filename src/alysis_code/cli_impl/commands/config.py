@@ -11,11 +11,11 @@ from ...config import (
     ConfigError,
     clear_persisted_api_key,
     config_path,
+    config_transaction,
     credentials_path,
     ensure_subscription_menu_managed_key,
     load_config,
     resolve_api_key,
-    save_config,
     save_persisted_api_key,
     set_config_value,
 )
@@ -64,11 +64,10 @@ def config_set(
     value: str = typer.Argument(..., help="Value to set."),
 ) -> None:
     console = _console()
-    cfg = _patchable("load_config", load_config)()
     try:
-        ensure_subscription_menu_managed_key(cfg, key)
-        cfg = set_config_value(cfg, key, value)
-        save_config(cfg)
+        with config_transaction(loader=_patchable("load_config", load_config)) as cfg:
+            ensure_subscription_menu_managed_key(cfg, key)
+            set_config_value(cfg, key, value)
     except ConfigError as e:
         console.print(f"[red]Config error:[/red] {e}")
         raise typer.Exit(code=2) from e

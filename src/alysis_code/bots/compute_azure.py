@@ -22,8 +22,10 @@ import httpx
 from .compute import (
     TRANSFER_CHUNK_BYTES,
     TRANSFER_SECONDS,
+    WORKER_REPLY_BYTES,
     CommandReceipt,
     ComputeError,
+    ComputeReplyTooLarge,
     ComputerIdentity,
     ComputerRef,
     ComputerSpec,
@@ -38,7 +40,10 @@ from .compute import (
 
 API_VERSION = "2026-02-01-preview"
 TOKEN_SCOPE = "https://dynamicsessions.io/.default"
-MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+# Azure returns a command's output as a string inside its JSON reply, and JSON escaping can turn
+# one byte of output into six (`<` becomes `\u003c`): the complete receipt for the largest reply a
+# computer sends can be six times that reply.
+MAX_RESPONSE_BYTES = 6 * WORKER_REPLY_BYTES
 
 
 class AzureComputers:
@@ -102,7 +107,9 @@ class AzureComputers:
                     if time.monotonic() >= deadline:
                         raise error("Azure receipt deadline expired; outcome not confirmed.")
                     if len(data) + len(chunk) > MAX_RESPONSE_BYTES:
-                        raise error("Azure receipt exceeded its allowance; outcome not confirmed.")
+                        raise (ComputeReplyTooLarge if mutation else error)(
+                            "Azure receipt exceeded its allowance; outcome not confirmed."
+                        )
                     data.extend(chunk)
                 if not data:
                     return {}

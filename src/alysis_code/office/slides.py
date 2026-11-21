@@ -23,6 +23,8 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE
 from pptx.util import Inches, Pt
 
+from . import charts
+
 MAX_SLIDES = 50
 MAX_SHAPES = 100
 MAX_TEXT = 20_000
@@ -56,7 +58,9 @@ GUIDE = {
             "height": 2,
         },
         {"type": "image", "path": "assets/photo.png", "x": 7, "y": 1.5, "width": 5, "height": 4},
+        {"type": "chart", **charts.EXAMPLE, "x": 0.6, "y": 1.5, "width": 8, "height": 5},
     ],
+    "chart": charts.SHAPE + " On a slide a chart element also takes x, y, width and height.",
     "edit": {
         "expected_source_sha256": "Use source_sha256 from inspect",
         "edits": [
@@ -220,7 +224,8 @@ def create(spec: dict, output: Path, workspace: Path, *, read_guard=None) -> dic
         raise ValueError("Presentation metadata title must be at most 255 characters")
     presentation.core_properties.title = title
     total_text = 0
-    for slide_spec in slides:
+    chart_count = 0
+    for slide_number, slide_spec in enumerate(slides, 1):
         _keys(slide_spec, {"title", "body", "elements"}, "slide")
         elements = slide_spec.get("elements", [])
         if not isinstance(elements, list):
@@ -270,9 +275,10 @@ def create(spec: dict, output: Path, workspace: Path, *, read_guard=None) -> dic
                 "text": {"text", "font_size", "bold", "color"},
                 "table": {"rows", "font_size", "header"},
                 "image": {"path"},
+                "chart": set(charts.FIELDS),
             }
             if not isinstance(kind, str) or kind not in allowed:
-                raise ValueError("Supported element types are text, table and image")
+                raise ValueError("Supported element types are text, table, image and chart")
             _keys(element, common | allowed[kind], "element")
             x, y, width, height = _bounds(
                 element, presentation.slide_width, presentation.slide_height
@@ -321,6 +327,16 @@ def create(spec: dict, output: Path, workspace: Path, *, read_guard=None) -> dic
                         )
                         total_text += len(text)
                 table.first_row = header
+            elif kind == "chart":
+                chart_count += 1
+                if chart_count > charts.MAX_CHARTS:
+                    raise ValueError(f"A presentation can hold at most {charts.MAX_CHARTS} charts")
+                chart = charts.parse(
+                    {key: value for key, value in element.items() if key not in common - {"type"}},
+                    f"Slide {slide_number} chart",
+                )
+                charts.add_slide_chart(slide.shapes, chart, x, y, width, height)
+                total_text += chart.text_length()
             else:
                 if read_guard is not None:
                     read_guard(element.get("path"))
@@ -412,6 +428,7 @@ def inspect(source: Path) -> dict:
     """Return package text and stable locators; no visual-verification claim."""
     presentation = _load(source)
     slides = []
+    chart_count = 0
     for index, slide in enumerate(presentation.slides, 1):
         shapes = []
         for shape in slide.shapes:
@@ -447,6 +464,12 @@ def inspect(source: Path) -> dict:
             elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
                 item["unsupported_edit_reason"] = (
                     "Grouped shapes are preserved; text editing inside groups is unsupported"
+                )
+            elif getattr(shape, "has_chart", False) and chart_count < charts.MAX_CHARTS:
+                chart_count += 1
+                item["chart"] = charts.summarize(shape.chart.part.blob)
+                item["unsupported_edit_reason"] = (
+                    "Charts are preserved; make the deck again to change a chart's data"
                 )
             else:
                 item["unsupported_edit_reason"] = "This shape is not a supported text target"

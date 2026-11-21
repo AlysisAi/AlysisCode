@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -14,6 +15,42 @@ from pydantic import (
 
 class Input(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+Model = TypeVar("Model", bound=BaseModel)
+
+
+def _empty(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def tool_input(model: type[Model], arguments: Any) -> Model:
+    """A model's tool arguments, validated; an optional field it left empty is not given.
+
+    Models often fill an optional field they mean to leave out with null or an empty string
+    (``"replaces_memory_id": ""``). Where that value fails the field's own check, the field
+    takes its default instead of failing the call. An empty value a field accepts is kept as
+    sent (an empty text can mean "clear it"), and required fields are never filled in.
+    """
+    try:
+        return model.model_validate(arguments)
+    except ValidationError as exc:
+        if not isinstance(arguments, dict):
+            raise
+        fields = model.model_fields
+        empty = {
+            key
+            for error in exc.errors()
+            if error["loc"]
+            and isinstance(key := error["loc"][0], str)
+            and key in fields
+            and not fields[key].is_required()
+            and key in arguments
+            and _empty(arguments[key])
+        }
+        if not empty:
+            raise
+    return model.model_validate({k: v for k, v in arguments.items() if k not in empty})
 
 
 # A part of an owl's look (its colour, its background), by the app's name for it; the app draws
@@ -34,6 +71,12 @@ class BotInput(Input):
     # of that colour, as for owls made before. Left out of a change, each stays as it was.
     color: BotLookName | None = None
     background: BotLookName | None = None
+    # The model it thinks with (capability "owl_models"): the id of one of the models its place
+    # offers (GET /v1/models). Null: the place's own, as for owls made before. Left out of a
+    # change, it stays as it was.
+    model: str | None = Field(
+        default=None, min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$"
+    )
 
 
 class BotCreateInput(BotInput):
@@ -42,6 +85,35 @@ class BotCreateInput(BotInput):
     request_id: str | None = Field(
         default=None, min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$"
     )
+
+
+class BotOrganizeInput(Input):
+    """Where an owl sits in the person's list (capability "owl_organize"); a part left out stays.
+
+    pinned keeps it at the top of the list. archived moves it to Archived: it keeps everything,
+    and its routines and file events rest until it comes back.
+    """
+
+    pinned: bool | None = Field(default=None, strict=True)
+    archived: bool | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def _something(self) -> BotOrganizeInput:
+        if self.pinned is None and self.archived is None:
+            raise ValueError("Say whether the owl is pinned or archived.")
+        return self
+
+
+class BotDuplicateInput(Input):
+    """A new owl like this one, in the same place (capability "owl_organize").
+
+    The app names the copy in the person's language. request_id works as for creating an owl:
+    the same id returns the copy it already made. memories also copies the approved memories.
+    """
+
+    name: str = Field(min_length=1, max_length=80)
+    request_id: str = Field(min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+    memories: bool = Field(default=False, strict=True)
 
 
 class ChatInput(Input):
@@ -77,6 +149,12 @@ class TaskInput(Input):
         if not self.message.strip() and not self.file_ids:
             raise ValueError("Write a message or attach a file.")
         return self
+
+
+class RegenerateInput(Input):
+    # The same id returns the answer already asked for, so a press whose reply was lost can be
+    # sent again without starting a second one.
+    request_id: str = Field(min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 class IntroInput(Input):

@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING
 from .conventions import load_repo_conventions, render_repo_conventions_context
 from .discovery import (
     discover_skills,
+    offer_skills_for_tools,
     resolve_bundled_skills_enabled,
     resolve_skill_by_name,
     resolve_skills_enabled,
+    resolve_user_skills_enabled,
 )
 from .loader import SkillReadError, read_skill_bundle_file
 from .matching import match_skills
@@ -121,6 +123,7 @@ __all__ = [
     "load_project_skill_state_tolerant",
     "load_repo_conventions",
     "match_skills",
+    "offer_skills_for_tools",
     "project_managed_skill_root",
     "project_skill_root_for_family",
     "project_skills_state_path",
@@ -134,6 +137,7 @@ __all__ = [
     "resolve_skill_catalog",
     "resolve_skill_catalog_entry",
     "resolve_skills_enabled",
+    "resolve_user_skills_enabled",
     "save_global_skill_state",
     "save_project_skill_state",
     "scaffold_skill_bundle",

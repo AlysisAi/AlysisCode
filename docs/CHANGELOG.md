@@ -1,5 +1,369 @@
 # Changelog
 
+## 0.18.0 - 2026-11-21
+
+- Alysis Code no longer hands its turns to an outside command-line agent: the built-in delegated
+  runtime that ran another company's CLI in place of Alysis Code's own agent is removed. The
+  delegated-runtime interface stays for installed plugins only. A saved setup that still selects
+  the retired runtime moves to the same subscription through Alysis Code's own agent (also for a
+  custom executable or an install that asked to keep it), and the retired settings are dropped.
+- The agent's identity rule is general: it never claims to be another company's model or
+  assistant, or to be made by the company behind the configured model or provider.
+- Feedback reports with logs include the chat's recent failure records (`terminal_error`, `error`,
+  `warning`, `llm_call_retry`, `turn_outcome`; type, time and payload only, redacted, at most 30
+  records and 20,000 bytes), also for a chat that is not open, read from its saved log.
+- A heavy web page no longer retires a Cloud owl's computer when it is only read: the host admits
+  the largest page reply at worst-case escaping; a read that is still too big says to read the page
+  in parts with `browser_source`, and a step that changes something and gets no complete receipt is
+  reported as not confirmed and never replayed. The browser view falls back to the page's text when
+  its snapshot is too big.
+- Deleting a Cloud owl works while its computer is awake: work that is running answers `409`
+  ("Stop this Owl's work before deleting it."), the owl's desktop and browser sessions end and its
+  computer is recovered before the delete, and a computer still settling answers `409` to try again.
+- An owl's reply says how its routines are now: every step reads the routines the turn saved,
+  changed or suggested (a routines note), a routine that changes while the owl writes is restated
+  after the latest tool results and the response is written again (at most twice), and the tools
+  never call a routine on unless the note says so.
+- Owl, browser and desktop tool schemas no longer carry labels that repeat each name (owl tools
+  about 9% smaller), and `check_back` and `list_files` describe their inputs once.
+- Workspace skills and settings reach the desktop app and editors without loading a chat session;
+  skill bundles are inspected in one pass, and MCP and HTTP clients load only when used.
+- Windows file work in the contained file worker starts faster (bundled Git files are verified
+  concurrently, only the tool installations the worker needs are admitted, version and capability
+  probes skip Git admission) and a worker that times out reports the job it was running.
+- Editor streams publish events in sequence, tell the client when a provider attempt restarts, close
+  when a reply only repeats itself and end at the Responses stream's terminal event; ordinary chat
+  keeps a redacted diagnostic when it salvages a provider failure.
+- Provider profiles survive concurrent settings writes from the desktop app; approvals and file
+  results keep primary workspace paths portable; a browser start page that cannot be opened is
+  refused before its approval card, which shows the managed browser's origin.
+- Saved speaker notes are checked before delivery, later requests reuse saved artifact ranges, an
+  unresolved verification failure is explained from recorded evidence, bounded workspace listings
+  no longer resolve ignored files, and fixed interpreter file operations on Linux use the system PATH.
+- Cloud hosts metered by a separate service start without a billing connection.
+- Owls answer questions about the data in their Library with one read-only SQL query
+  (`query_tables`, offered with files on): delimited text (CSV, TSV, other delimiters sniffed
+  from the content), a JSON list of objects or an Excel workbook (a table per sheet) becomes a
+  table in a private in-memory SQLite database for that call, with simple table and column names
+  listed beside the original headers. Only a SELECT runs (no ATTACH, PRAGMA or writes), for at
+  most 20 seconds and up to the task's Stop; at most 500 rows and about 40,000 characters are
+  shown and the rest counted. It counts as reading for routines and restarts.
+
+- A routine can think with its own model (capability `routine_models`, schema 51): one its owl's
+  place offers, set with `PUT /v1/bots/{id}/schedules/{id}/model` or given by the owl in
+  `create_schedule`/`edit_schedule`/`propose_schedule` (only an offered id); each run uses the
+  model its routine had when queued, by the owl's fallback rules, and a move keeps it where the
+  other place offers it. The owl list's `now_doing` also carries the browser step's `variant`.
+- An owl's finished, checked reply is no longer turned into a failure by what happens when its
+  computer is released: a computer that refuses to save its browser storage (typed now, with
+  the real error type in `computer_operation_rejected`), or storage that fails that save, keeps
+  the owl's last saved browser storage, still saves the computer's files and retires it
+  (`browser_state_not_saved`); any other release failure after the reply leaves the handles to
+  the reaper and says so (`computer_cleanup_pending`, `after_reply`). A lasting browser profile
+  keeps Chromium's disk caches outside the saved storage, and a frame that leaves the page while
+  it is read (Chromium's -32602) is shown as `- frame [unavailable]` instead of failing the
+  observation or a navigation; newer owl computer images.
+- An owl can think with any model its connection's catalog offers the person, not only the
+  connection's default: on this computer each saved connection also lists, as
+  `<connection>/<model>`, the account's models on the account gateway (the plan's catalog, open
+  where the gateway serves them; others listed closed with why) or the reviewed models of the
+  provider it was made from, each with its declared image input, context window and reasoning.
+  It thinks through the same connection with only the model changed. A catalog model no longer
+  open to the person gives way to its connection's own model with a `model_fallback` notice, and
+  a moved owl keeps its model where the other place offers it (`owl_move_model`).
+- Owls can make and change pictures: `create_image` and `edit_image` (capability `owl_images`) use
+  the engine's own image generation, are offered only with the owl's files on and a model
+  connection that declares image generation (`image_generation` in `GET /v1/models`), count as the
+  task's own calls, say plainly when the image service refuses for a usage limit or credits, and
+  save each result as a new Library file or version with a file card; Stop mid-request keeps
+  nothing.
+- Word, Excel, PowerPoint and PDF files the engine makes (and owls' `create_document`) can hold
+  charts: column, bar, line, pie and scatter, from one chart element in every format. Office
+  files get native, editable charts (Word's with its own data workbook); a PDF draws a ```chart
+  block as a vector chart in the document's fonts. Inspection lists a file's charts. An Excel
+  sheet with charts prints with no chart cut by a page, also where the workbook's font is
+  missing and the program printing it draws the columns wider (LibreOffice without Calibri).
+- On a newer owl computer, an acting browser step (click, typing, a choice, a key, a check, a drag,
+  an upload, answering a dialog) says what the website itself reported while it ran and while the
+  page was observed after it: `page_reported` lists the site's own document, XHR and fetch requests
+  that failed or answered 400 or above (method, path without query with ids as `:id`, status or
+  Chromium's error name; at most five, the rest counted) and counts uncaught script errors. Never
+  queries, bodies, headers, cookies, console text or another site's requests. The reply checker gets
+  these steps as `browser_page_reports`, kept when a result moves to storage or into a progress
+  record, and holds a reply that says such a send worked against them. Declared as `page_reported`
+  (browser `page_report`); older images report nothing.
+- Owls come back to a chat later by themselves instead of waiting inside a turn: `check_back`
+  (capability `check_back`, schema 47) starts one new turn in the same chat at a time, or sooner when
+  a page shows or loses a text, a Library file arrives or the owl's other work ends, checked by the
+  service without a model; the chat lists waiting ones with Cancel (`GET /v1/chats/{id}/check-backs`).
+- A turn cut off by an app restart (update, quit, crash or sleep) starts again once, told so,
+  when nothing it did reached outside the owl's own records; one that acted, or may have, is
+  interrupted as before and its failure names the step (`not_rerun`, `step`; `restarts`,
+  schema 48; capability `restart_reruns`).
+- A routine's run that checked and found nothing new stays quiet: the owl ends it with
+  `nothing_to_report` (offered only in routine runs; refused after a step that changed
+  something), so it posts no reply and sends no notification, and the routine's history says it
+  checked, with the time (`nothing_new_at`, capability `quiet_routine_runs`).
+- A reply the model's output limit cut off is no longer published or acted on, with any
+  provider: an owl's chat turn, computer work, research helpers and peer replies record the call
+  as incomplete (`output_cut_off`, naming only the tools it was writing), run none of its calls,
+  tell the model to continue shorter and in parts, and give up with the usual plain reason after
+  two; the next call may use more of the model's catalogued output ceiling, once per turn.
+  Coding work gets such a reply as cut off, and the reply checker treats a final reply that only
+  announces work still to do as an omission.
+- An owl stuck repeating itself stops instead of using up the allowance (`bots/repeat_guard.py`,
+  chat turns and work on its computer): a call (tool plus canonical arguments) that failed the
+  same way 3 times is not run again (`{"error", "executed": false}` says why and what to do
+  instead) until another step works; the same successful result 3 times gets a `repeat_notice`;
+  about 10 identical attempts (only back-to-back ones for a successful result) end the turn as a
+  `model` failure. Routine runs, peer exchanges and work off the reply loop use 2/2/6. A result
+  with an image is a fresh look and never counts.
+- A call to a tool the current step does not offer (often one from an earlier turn) is told so,
+  with the tools offered now, instead of "Invalid tool arguments."
+  (`bots/tool_errors.ToolNotOffered`, `executed: false`); real validation errors keep their
+  `validation_errors`.
+- A response is discarded for a memory change only when what it may rely on changed (approved
+  memories' id, status and content, and notes the person wrote), at most twice per turn or
+  computer session (`MEMORY_DISCARDS`). Memory index scopes and notes written by the owl's own
+  running work no longer cost a charged call; they reach the next step.
+- A rate limit no longer ends a chat or background turn when the provider says to wait 20-120
+  seconds: the turn waits (Stop ends the wait), up to 240 seconds of such waits per turn or
+  computer session (`PROVIDER_ASKED_WAIT_SECONDS`, `PROVIDER_ASKED_TURN_SECONDS`). The wait is a
+  `provider_retry` step with `provider_asked` and a `message`; longer stated waits fail as before.
+- An optional tool argument a model leaves as `null` or an empty string takes its default when
+  that value would fail its check (`models.tool_input`: owl, browser and computer tools); an
+  empty value a field accepts is kept. A reply that is a tool call written as text
+  (`<tool_call>…</tool_call>`, `<function=name>…</function>`, or only a JSON object naming an
+  offered tool) is made as the real call when it ends the reply and names a tool offered now
+  (`bots/text_tool_calls.py`, chat and computer work); other such markup is never published,
+  the model is asked once for a real call, then the turn ends as a `model` failure.
+- Refusals say plainly that nothing was done and how to send it again: a value longer than a
+  tool takes names the field and its limit and says to shorten or split it
+  (`tool_errors.invalid_arguments`, with `limits` and `executed: false`; computer work now gets
+  the same structured result instead of the raw validation text); a `computer_run` that timed
+  out or printed too much carries a `note` that it may have partly run and to use
+  `computer_launch` or a file; a file over 50 MiB is a `LibraryCapacityExceeded` ("Nothing was
+  saved", so computer work can split it); peer exchanges over their text allowance say nothing
+  was sent.
+- Long owl tasks no longer fail when their requests outgrow what the model's route admits: chat
+  turns, background and routine work, work on the owl's computer, coding work and research helpers
+  also measure each request with the model client's own wire measure (`request_capacity_ratio`, the
+  hosted gateway's byte bound; 0 elsewhere) and make room at 90% of it as they do for tokens, and a
+  call refused as too long (`context_length_exceeded`, `hosted_request_too_large`) makes room down
+  to 70% of the refused request and is sent again, at most twice a turn, recorded as a
+  `context_window` step with reason `request_too_long`; a third refusal fails as before.
+- On a newer owl computer, owls have fuller hands: `computer_run` waits up to 300 seconds for a
+  command (in short requests, so Stop ends it at once; the computer stops it at its limit itself),
+  `computer_launch` keeps a process's latest 256 KB of output for `computer_process` to read from
+  a byte offset (`output_from`), `computer_pointer` double-clicks, right-clicks, hovers and drags
+  at pixels or at an element's ref, `other_windows` gives every open window a ref for
+  `computer_focus_window`, and `computer_read_clipboard` returns the clipboard's text as untrusted
+  data (never what the person typed while in control). Each is offered only while the running
+  computer declares it (`long_commands`, `process_output`, `pointer`, `windows`, `clipboard`);
+  an older image keeps today's tools, bounds and requests.
+- Owls' browsers go back, forward and reload (`browser_history`, reading; a page that came from
+  sending a form is never reloaded, so no form is sent twice), right-, middle- (links only),
+  double- and triple-click (`browser_click`/`browser_visual_click` `button`, `clicks`; the
+  browser's own menu stays closed), choose several options of a list (`browser_select_many`),
+  show one element or the whole page as an image to image models (`browser_screenshot` `node`,
+  `full_page`, for looking only), and answer a file chooser a click opens with a Library file
+  (`browser_choose_file`, approved like an upload). Offered only by owl computer images that
+  declare them (`history`, `click_options`, `select_options`, `page_images`, `file_chooser`).
+- Owls with many connected apps no longer send every app tool with each request: when a turn's
+  list passes 96 tools, its schemas a quarter of the model's declared window, or (on a route with
+  its own admission bound) the instructions and tools half of that bound, the apps' tools are
+  reached through `tool_details`/`use_tool` with the same approvals and receipts, and, if that is
+  still too much, every tool but the everyday ones; each turn records its mode in a
+  `tools_offered` event.
+- A message waiting for a working owl can be sent now (`PATCH /v1/tasks/{id}/queued` action
+  `steer`, capability `queued_message_steer`): the running turn reads it as the person's own words
+  at its next model round and holds a reply that was about to go out; schema 49.
+- Owls remember what the person says in passing: once an owl's own chat has been quiet for two
+  minutes after a checked turn, one bounded model call without tools (on the owl's model, within
+  the allowance) reads only the person's own words since the last read and keeps at most five
+  durable facts, each only if its quote is in the person's message and it isn't saved already;
+  an update replaces the memory it names. They are kept with Undo under the reply they quote
+  (`captured: true`, capability `memory_capture`, schema 50), never from replies, tool results,
+  web pages, routines or rooms, and a new message, archiving, deleting or memory off cancels a
+  read. Once a day exact duplicate memories are merged through the same replace path, with Undo.
+- An owl's working line and steps can follow its task as they happen: `POST /v1/tasks/{id}/events`
+  (capability `live_task_events`) answers as soon as the task has new events, or empty after a
+  wait of up to 10 seconds, for the task's owner only. Progress only: the reply never streams, and
+  the reply checker's verdicts and suggested next messages come with their data withheld.
+- Owls can install the Python packages a job needs on their own computer: `pip install` in its
+  shell reaches the declared package index (`bots/package_indexes.json`, PyPI) through a guard
+  that admits only those hosts over TLS, and nothing else; packages stay inside the owl's
+  computer and installs are approved like any other command there. Computers declare it in
+  their command receipts (`package_indexes`), only on an image with the guard and pip (the
+  Cloud image adds pip); older images keep a fully offline shell. The npm registry stays out:
+  it accepts uploads on the host it serves installs from.
+- On a newer owl computer, owls read a form inside another site's frame in that site's own
+  process, so a card number typed in a payment frame is paying and a password in a sign-in frame
+  is signing in, in any language (an older computer, or a frame over the read's limits, still
+  waits for the person every time). A step can confirm the question it opens itself (Delete,
+  then Are you sure?) when the request means yes: its review and approval card show that it also
+  says yes, and it accepts only that one question, from the site it acts on, never one the page
+  asked before the step (that stops the step with nothing sent). A dialog from another site's
+  frame is checked and reviewed as that site's and answered only in that frame. A pending
+  approval carries the `effect` that made it wait (schema 46).
+- Owls read the windows of their computer as text: on a computer image with the accessibility
+  bus, observing also returns the focused window's elements, one line each (role, name, states
+  such as checked or disabled, a field's text; a password shows only `[private field]`), with
+  refs that stay with an element while it lives and a clear "Stopped at…" line when a window is
+  too big. `computer_element` activates, fills, selects or ticks one by its ref through the
+  application's accessibility interface, else by clicking its centre, and sends nothing (observe
+  again) when it closed or changed. A model without image input observes (the element view
+  alone) and presses keys there. Offered only while the running computer declares it, so older
+  images keep today's tools; approvals are unchanged. The computer images add `at-spi2-core`,
+  `python3-gi` and `libreoffice-gtk3`.
+- Owls can look into several separate questions at once: `research_helpers` sends up to three
+  read-only helpers in parallel, each with one question (and links to start from). A helper only
+  searches and reads public pages with the owl's own model at work strength, within six model
+  calls, ten web steps and three minutes, and reports facts with the link each came from and
+  what it could not find, in its question's language; a link counts as opened only if the helper
+  read it, and a progress record keeps exactly those. Helper calls are the task's own calls and
+  always leave two for the owl's answer; Stop or a used-up allowance stops them and the owl gets
+  a plainly partial result. Offered with web lookup to a model that calls tools; the task's
+  activity shows each helper, what it looked into and how it ended.
+- Owls keep playbooks: after a run that worked and whose reply passed the reply checker, an owl
+  may keep a short procedure for that job (when to use it, steps, pitfalls met, one check that
+  proves it is done, and the tools the run used, from its receipts) with `save_playbook`; later
+  turns and routines see an index and read one with `read_playbook`, and a better run saves a new
+  version. Nothing is kept from a failed, stopped or unchecked run. At most 20 per owl, three
+  earlier versions each; Undo restores the version before. `/v1/bots/{id}/playbooks` lists,
+  reads, undoes and deletes them (capability `owl_playbooks`, schema 45); they move with the owl
+  and are erased with it.
+- Owls use websites for the person's own request without a card per site: reading, scrolling,
+  searching, filtering, paging and filling in fields go ahead on any site the request needs.
+  Every input still passes the action review, and a step that sends, posts, pays, books, signs
+  in, deletes, uploads or submits personal details waits for the person's approval (password,
+  payment-card, file and filled contact fields are read from the page's HTML; the reviewer
+  names any other effect, and asks when it can't). Routine runs keep their declared sites, Do
+  it cards for a site work as before, and without the action reviewer input still needs a card.
+  Filling, key chords, ticking boxes, dragging and answering a page's dialog follow the same
+  rule (the reviewer reads the dialog's text); a field inside another site's frame is judged by
+  that frame's own form, and when the owl's computer can't read it the step waits for the person.
+- Owls fill form fields and check what they hold, check and uncheck boxes, press shortcuts,
+  hover to open menus, drag and drop, wait for a page to show something, answer a page's pop-up
+  question, and reach fields and buttons inside embedded frames (such as a payment form), on an
+  owl computer that has these new browser abilities; older owl computers keep today's tools. A
+  page's pop-up question no longer stalls the owl: it reads the question and answers it as
+  website input, under the same permission and review as a click.
+- Owls think at work strength in every turn, when they work on their computer and in coding
+  work: the model connection's own reasoning effort when it sets one (a connection set to
+  "auto" sets none), otherwise medium for a model that declares reasoning in the model
+  registry, otherwise none. The connection's own setting is never changed. Coding work
+  survives a temporary model provider error: the controller answers `503` with `retry_after`
+  and the worker sends the step again (at most three times in a row, each attempt charged to
+  the job's allowance); a worker from before this change behaves as before.
+- Owls make, change and check Word, Excel, PowerPoint and PDF files without their computer:
+  `describe_document_format`, `create_document`, `inspect_document`, `edit_document` and
+  `check_document`, built on the engine's own office operations in a per-task scratch folder.
+  A file reaches the owl's Library only when no check failed; a check that can't run on this
+  computer is reported as not checked, never as passed. Offered when files are on and the engine
+  has the format's libraries; the private computer stays for other files and applications.
+- Owls read web pages as a page view: one line per element from the browser's accessibility
+  tree (role, name, state, value, link address), about 20,000 characters, with refs that stay
+  usable while the element is on the page and are checked against the page before every action.
+  `browser_source` reads on in 20,000-character parts. The DOM view remains as a fallback, and
+  an observation says when and why it is used.
+- A long owl turn whose own steps fill the context compacts its finished steps into a progress
+  record and carries on instead of stopping: a summary from the engine's compactor, the steps'
+  receipts (links opened, file and card ids, outcomes) copied by the service, and the exact steps
+  kept for `read_tool_result`. The summary call retries temporary provider errors, and the reply
+  checker counts a progress record's receipts as evidence.
+- Owls' standing guidance is short named sections that say each rule once. Each turn is offered
+  only the tools it can use; a model whose declared context window is under 100,000 tokens gets
+  a short list plus `tool_details` and `use_tool`, which run a hidden tool through the same
+  checks. Owl model calls use the engine's prompt cache, keyed to each owl.
+- PDFs that Work and owls make can now contain Chinese, Japanese and Korean text, which wraps
+  inside the page instead of failing; these characters print in regular weight, even in bold
+  text and headings.
+- Owls now use the engine's built-in skills (research, code review, debugging and more) while
+  they work on their computer. Every session offers a skill only when it has each tool the skill
+  names, so an owl is never pointed at a tool it doesn't have; the document and file skills built
+  on the desktop app's own tools stay in Work and Code. A skill lists the tools it needs with
+  `uses_tools` in its SKILL.md.
+- Each owl in `GET /v1/bots` carries `next_routine_at`: when its next routine run is due, from
+  its routines that are on and the retries of failed runs (capability `next_routine_at`). While
+  a plan or usage limit holds a routine, its first run after the limit frees up counts. Paused
+  routines and archived owls never count, and a time already past stays until the run starts.
+  The desktop app keeps the computer awake shortly before it, so routines on this computer
+  aren't missed because it went to sleep.
+- An owl can offer to make a need the person shows repeats into a routine (capability
+  `routine_suggestions`, schema 44). `propose_schedule` now saves its suggestion as one card
+  under the reply (task `routine_suggestion`: what it does, when, and what it uses) as well as a
+  draft in Routines; nothing runs until the person answers it with
+  `PATCH /v1/bots/{id}/routine-suggestions/{id}`: `turn_on` (with a `request_id`, so sending it
+  again turns on one routine; the person's own name, job or timing; and `allow`, exactly what the
+  card showed when the routine uses the owl's computer, browser or websites) or `decline`, which
+  removes the draft and remembers the decline by a Unicode-normalized, case-folded fingerprint of
+  its job and timing so the owl never offers it again. The owl offers one only while answering the
+  person's own message (never in routine runs, file events, peer exchanges, first hellos or
+  another answer), one waits at a time (a newer one replaces it), and a routine it already has is
+  refused. Open suggestions stay out of Needs you. Suggestions move with the owl (record kind
+  `suggestion`, sent only to a place that lists the capability) and are erased with it.
+- Rooms: one conversation with two to six of the person's owls in one place (capability
+  `owl_rooms`, schema 44). `/v1/rooms` makes, lists, renames, changes and deletes rooms (deleting
+  a room never deletes an owl); `POST /v1/rooms/{id}/messages` writes in one. The owls
+  @mentioned answer, in the order mentioned (names in any script, matched case- and
+  accent-insensitively), else the owl picked, else the one that answered last; each answers as a
+  normal turn of its own, one after another, reading the room's recent messages labelled with who
+  said them, where other owls' words grant nothing. Owls never start each other's turns. A room is
+  read and marked read like a chat (`/v1/chats/{id}/page`, `/read`); its turns carry their
+  questions, approvals and suggestions, and Needs you names the room. An owl that is deleted or
+  moves leaves its rooms; an owl's own chat, history and moves leave rooms out.
+- An owl offers choices with its question only when each choice fully answers that question, and
+  none when the answer is open (a place, a name, a date, an amount), so the app shows a field to
+  type in instead of choices that answer something else. Both the reply guidance and the
+  `ask_clarification` tool say so.
+- Pin an owl to the top of the list, archive it, or duplicate it (capability `owl_organize`,
+  schema 43). Owls carry `pinned_at` and `archived_at`, set with `PATCH /v1/bots/{id}/organize`
+  without touching the owl's setup. An archived owl keeps everything, but its routines and file
+  events rest and Needs you leaves it out; work the person starts for it brings it back, and its
+  routines go on from their next time without replaying what they missed. `POST
+  /v1/bots/{id}/duplicate` makes a new owl with the same setup, look, apps and approval mode
+  (and, if asked, its approved memories), never its chats, files, routines or sign-ins; a
+  retried duplicate with the same `request_id` makes one owl. Archived owls count toward the
+  30-owl limit.
+- An owl can move between the person's places, this computer and Cloud, keeping its setup and
+  look, approval mode and rules, the apps it may use, its chats (messages, replies, steps,
+  attached files, reactions, messages changed or cancelled before they started, and what was
+  read), memories, working notes with their history, routines and
+  file events, and every version of its Library files (capability `owl_move`, schema 43). The
+  desktop app reads it page by page (`GET /v1/bots/{id}/move`, `POST …/move/export`), the other
+  place takes the pages into a hidden copy (`POST /v1/owl-moves`, `…/pages`), files travel
+  through the ordinary resumable uploads, and `…/complete` checks every file by size and SHA-256
+  before showing the copy. The original is deleted through the ordinary delete path
+  (`POST …/move/finish`) only if it didn't work or change meanwhile. Routines and file events
+  arrive off (`pause_code` `moved`) and ask again for what they may use, so nothing runs in both
+  places. A retried move with the same request id never makes a second copy; every part is
+  validated as untrusted input, and a move nobody finishes is cleared after a day.
+- A person can ask an owl for another answer to their latest message from its reply
+  (`POST /v1/tasks/{id}/regenerate`, capability `regenerate_reply`). The new answer is a turn of
+  its own that reads the person's message and files again, with the answer it replaces as
+  reference data; the chat keeps both, and later turns read only the newest finished answer. Only
+  the latest finished reply to the person's own message can be answered again, never while the
+  owl works, and the same `request_id` returns the turn already asked for.
+- Conversations and their pages carry `read_at`, when the person last read them, so the app can
+  show where the messages that arrived since begin.
+- A message the person sends while their owl works can be changed or cancelled until the owl
+  starts it (`PATCH /v1/tasks/{id}/queued`, capability `queued_message_edits`). Each such
+  message's task carries `queued_message` (`revision`, `editable`, `edited`, `withdrawn`), and
+  every task carries `started_at`. A change keeps the message's files; a cancelled message
+  leaves the conversation and the owl's context. A change and the owl starting the message never
+  both happen: the answer's `outcome` is `edited`, `cancelled`, `started` or `changed`, and the
+  same change again gives the same answer (schema 43).
+- Thumbs up or down on an owl's reply, with an optional short note
+  (`PUT/DELETE /v1/bots/{id}/messages/{id}/reaction`, capability `reply_reactions`); the reply's
+  task carries `reactions`. Later turns of that owl read the newest reactions in their task
+  state within a fixed size, labelled as the person's feedback and never as instructions.
+- The Liberation Sans fonts used for PDFs now ship with their own license, the Liberation
+  Fonts license (GNU GPL v2 with Red Hat's font exception), instead of the newer fonts'
+  SIL Open Font License text.
+- The sandbox image's Go toolchain is 1.26.11, which fixes CVE-2026-97054 (an HTTP/1 server
+  using `MaxBytesReader` could crash when its handler reads the body while writing headers).
+
 ## 0.17.3 - 2026-11-18
 
 - Add optional anonymous activity counts for the CLI, off by default: `ALYSIS_USAGE_METRICS=1`
@@ -44,6 +408,16 @@
   like the name and changes at once even while the owl works. A change that leaves a part out
   keeps it, so older apps renaming an owl don't reset it; null goes back to the app's default.
   Owls and Needs you items (`bot_color`, `bot_background`) carry it.
+- Each owl can think with a model of its own (`model`, capability `owl_models`, schema 43), picked
+  from the models its place offers (`GET /v1/models`, with each model's declared image input and
+  context window): on this computer the person's saved model connections, in the Cloud the
+  service's own model and the others it offers on the same endpoint (`Settings.models`,
+  `ALYSIS_BOTS_MODELS`). Null is the place's own model. Every turn of the owl (chat, routine runs,
+  first hellos, carrying on, background work, its answers in exchanges with other owls, a coding
+  worker's calls) thinks with it, with the context and reply allowances its capacities give. When
+  the place no longer offers it, the turn fails with failure kind `model` and says so, a routine
+  pauses (`setting`), and nothing thinks with another model instead. Like a look, it changes at
+  once and a change that leaves it out keeps it; picking a model the place doesn't offer is refused.
 - Owls know the person's local date, weekday, time and time zone on every turn,
   including routine runs, first hellos and exchanges between owls, so "today",
   "tomorrow" and "9 AM" mean the person's own. The app sends its computer's time

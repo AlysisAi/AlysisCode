@@ -129,7 +129,7 @@ def test_long_work_keeps_context_replies_and_applies_exact_correction(tmp_path):
         runtime.stop()
 
 
-def test_background_queue_survives_but_inflight_work_is_not_replayed(tmp_path):
+def test_background_queue_survives_and_inflight_work_starts_again_at_most_once(tmp_path):
     store, bot, send = setup(tmp_path)
     task = send("Prepare report")
     current = store.claim("owner")
@@ -139,8 +139,21 @@ def test_background_queue_survives_but_inflight_work_is_not_replayed(tmp_path):
     assert Store(store.path).recover("owner") == 0
     assert bg.claim()["id"] == task["id"]
     assert bg.checkpoint(task["id"]) == messages
+    # Cut off with nothing done outside its own records: it carries on from its checkpoint,
+    # told it restarted.
     assert Store(store.path).recover("owner") == 1
-    assert store.task("owner", task["id"])["status"] == "interrupted"
+    assert store.task("owner", task["id"])["status"] == "waiting"
+    assert bg.claim()["id"] == task["id"]
+    resumed = bg.checkpoint(task["id"])
+    assert resumed[:-1] == messages and resumed[-1]["role"] == "system"
+    assert "interrupted by a restart" in resumed[-1]["content"]
+    # Work on the owl's computer reads it as a current state change, not old reference data.
+    assert resumed[-1]["_bot_control_return"] == task["id"]
+    # Cut off again: never a second time.
+    assert Store(store.path).recover("owner") == 1
+    stopped = store.task("owner", task["id"])
+    assert stopped["status"] == "interrupted"
+    assert stopped["failure"] == {"kind": "service", "not_rerun": "already_rerun"}
     assert bg.claim() is None
     assert store.claim("owner") is None
 

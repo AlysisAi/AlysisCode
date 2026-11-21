@@ -30,6 +30,7 @@ class AzureWire:
         self.state = "Running"
         self.labels = self.identity.labels
         self.exec_reply = {"exitCode": 0, "stdout": "Ω 日本語", "stderr": ""}
+        self.exec_raw = None
         self.drop = False
         self.list_reply = {"value": []}
         self.provider = AzureComputers(
@@ -51,6 +52,10 @@ class AzureWire:
         if request.url.path.endswith("/executeShellCommand"):
             if self.drop:
                 raise httpx.ReadError("sensitive upstream text", request=request)
+            if self.exec_raw is not None:
+                return httpx.Response(
+                    200, content=self.exec_raw, headers={"content-type": "application/json"}
+                )
             return httpx.Response(200, json=self.exec_reply)
         if request.url.path.endswith("/stop"):
             self.state = "Stopping"
@@ -347,10 +352,53 @@ def test_azure_redirect_does_not_forward_credentials():
 
 
 def test_azure_large_reply_is_uncertain_and_not_retained():
+    from alysis_code.bots.compute import ComputeReplyTooLarge
+    from alysis_code.bots.compute_azure import MAX_RESPONSE_BYTES
+
     wire = AzureWire()
-    wire.exec_reply["stdout"] = "x" * (2 * 1024 * 1024)
-    with pytest.raises(ComputeUncertain, match="allowance"):
+    wire.exec_reply["stdout"] = "x" * MAX_RESPONSE_BYTES
+    with pytest.raises(ComputeReplyTooLarge, match="allowance"):
         wire.provider.run(wire.ref, ["true"])
+
+
+def largest_page_reply(text):
+    """A worker's reply carrying a page snapshot at the owl browser's limit, printed as the worker
+    prints it (compact UTF-8 JSON)."""
+    import json
+
+    from alysis_code.bots.browser_linux import OWL_PAGE_SNAPSHOT_BYTES
+
+    unit = len(json.dumps(text, ensure_ascii=False).encode()) + 1
+    data = {"text": [text] * ((OWL_PAGE_SNAPSHOT_BYTES - 16) // unit)}
+    size = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode())
+    assert OWL_PAGE_SNAPSHOT_BYTES - 2 * unit <= size <= OWL_PAGE_SNAPSHOT_BYTES
+    reply = {"id": "a" * 32, "session": "b" * 32, "result": {"data": data, "size_bytes": size}}
+    return json.dumps(reply, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'A results page <a href="/search?q=owls&page=2">next</a>',
+        "Αποτελέσματα αναζήτησης για κουκουβάγιες",
+        "猫头鹰的搜索结果页面",
+    ],
+)
+def test_azure_receives_the_largest_page_reply_in_any_script(text):
+    # Azure returns the output inside its JSON, escaped as strictly as an encoder may: every
+    # character outside ASCII and every HTML-sensitive one as \uXXXX.
+    import json
+
+    from alysis_code.bots.compute import WORKER_REPLY_BYTES
+
+    stdout = largest_page_reply(text)
+    assert len(stdout.encode()) <= WORKER_REPLY_BYTES
+    body = json.dumps({"exitCode": 0, "stdout": stdout, "stderr": ""})
+    for character in "<>&'":
+        body = body.replace(character, f"\\u{ord(character):04x}")
+    wire = AzureWire()
+    wire.exec_raw = body.encode()
+    assert wire.provider.run(wire.ref, ["true"]).stdout == stdout
 
 
 def test_azure_trickling_receipt_does_not_extend_deadline(monkeypatch):
@@ -399,6 +447,22 @@ def test_docker_cli_transport_bounds_real_processes(monkeypatch, code, timeout, 
     )
     with pytest.raises(ComputeUncertain, match=match):
         DockerComputers("desktop-linux")._call(["unused"], timeout=timeout, mutation=True)
+
+
+def test_docker_cli_transport_receives_the_largest_page_reply(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    stdout = largest_page_reply("Αποτελέσματα <b>&</b> 猫头鹰")
+    reply = tmp_path / "reply.json"
+    reply.write_text(stdout, encoding="utf-8")
+    code = f"import sys;sys.stdout.buffer.write(open({str(reply)!r},'rb').read())"
+    original = subprocess.Popen
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda argv, **kw: original([sys.executable, "-c", code], **kw)
+    )
+    result = DockerComputers("desktop-linux")._call(["unused"], timeout=20, mutation=True)
+    assert result.stdout.decode("utf-8") == stdout
 
 
 def test_operator_can_allow_cloud_egress_without_opening_ingress():

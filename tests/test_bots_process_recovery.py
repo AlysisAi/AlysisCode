@@ -23,6 +23,12 @@ from pathlib import Path
 from alysis_code.bots.runtime import BotRuntime
 from alysis_code.bots.store import Store
 from alysis_code.llm.types import LLMResponse, ToolCall
+FIRST_STEPS = {
+    # Keeps the owl's own record: a later run sees it.
+    'save': ToolCall('save', 'save_file', {'name': 'saved-before-crash.md', 'content': 'Durable result'}),
+    # Shows the person a card: something outside the owl's own records.
+    'card': ToolCall('card', 'propose_action', {'question': 'Να το στείλω;', 'instructions': '发送报告。', 'offline_computer': False}),
+}
 class BlockingFixture:
     model = 'process-crash-fixture'
     supports_tool_calling = True
@@ -30,7 +36,7 @@ class BlockingFixture:
     def chat(self, **kwargs):
         self.calls += 1
         if self.calls == 1:
-            return LLMResponse('', [ToolCall('save', 'save_file', {'name': 'saved-before-crash.md', 'content': 'Durable result'})], {})
+            return LLMResponse('', [FIRST_STEPS[sys.argv[2]]], {})
         while True:
             time.sleep(.1)
 client = BlockingFixture()
@@ -72,8 +78,13 @@ def test_killed_peer_is_not_replayed_and_reports_once_after_restart(tmp_path):
     assert result["unknown_fixture_calls"] == 1
 
 
+@pytest.mark.parametrize("step", ["save", "card"])
 @pytest.mark.parametrize("scheduled", [False, True])
-def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, scheduled):
+def test_killed_worker_retains_files_releases_lease_and_replays_only_what_changed_nothing(
+    tmp_path, scheduled, step
+):
+    """A killed turn starts again once, told so, when its only step kept the owl's own record;
+    one that showed the person a card is never replayed."""
     store = Store(tmp_path / "state.db")
     bot = store.save_bot("owner", BotInput(name="Test", purpose="Process recovery"))
     if scheduled:
@@ -93,7 +104,9 @@ def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, 
         )
     child_stderr = tmp_path / "worker-child-stderr.txt"
     with child_stderr.open("wb") as stderr:
-        child = subprocess.Popen([sys.executable, "-c", CHILD, str(store.path)], stderr=stderr)
+        child = subprocess.Popen(
+            [sys.executable, "-c", CHILD, str(store.path), step], stderr=stderr
+        )
     try:
         if scheduled:
             until(
@@ -110,7 +123,7 @@ def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, 
             process=child,
             stderr_path=child_stderr,
         )
-        assert len(store.list_files("owner", bot["id"])) == 1
+        assert len(store.list_files("owner", bot["id"])) == int(step == "save")
         # This process was created solely for fault injection. No user process
         # or existing service is terminated by this test.
         child.kill()
@@ -121,6 +134,7 @@ def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, 
             child.wait(timeout=5)
 
     calls = []
+    told = []
 
     class FinalFixture:
         model = "restart-fixture"
@@ -130,11 +144,15 @@ def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, 
             calls.append(
                 next(m for m in reversed(kwargs["messages"]) if m["role"] == "user")["content"]
             )
+            told.append(str(kwargs["messages"]))
             return LLMResponse("New task finished", [], {})
 
     runtime = BotRuntime(Store(store.path), "owner", lambda _: FinalFixture())
     runtime.start()
     try:
+        if step == "save":
+            # The cut-off turn queues again and runs first, as the oldest.
+            until(lambda: store.task("owner", task["id"])["status"] == "completed")
         next_chat = store.create_chat("owner", bot["id"], "Second")
         next_task = store.enqueue(
             "owner",
@@ -142,17 +160,32 @@ def test_killed_worker_retains_files_releases_lease_and_never_replays(tmp_path, 
             TaskInput(message="Continue with new work", request_id="second_request"),
         )
         until(lambda: store.task("owner", next_task["id"])["status"] == "completed")
-        interrupted = store.task("owner", task["id"])
-        assert interrupted["status"] == "interrupted"
-        assert interrupted["usage"][-1]["status"] == "unknown"
-        assert calls == ["Continue with new work"]
+        cut = store.task("owner", task["id"])
+        # The call it was waiting on when killed may have been charged.
+        assert cut["usage"][1]["status"] == "unknown"
+        if step == "save":
+            assert cut["status"] == "completed" and cut["restarts"] == 1
+            assert calls == ["Save a result", "Continue with new work"]
+            # It is told it restarted and what it saved before, and saves nothing twice.
+            assert "interrupted by a restart" in told[0] and "saved-before-crash.md" in told[0]
+            assert "interrupted by a restart" not in told[1]
+        else:
+            assert cut["status"] == "interrupted" and cut["restarts"] == 0
+            assert cut["failure"] == {
+                "kind": "service",
+                "not_rerun": "acted",
+                "step": "propose_action",
+            }
+            assert calls == ["Continue with new work"]
         if scheduled:
-            # The interrupted run may have acted, so nothing retries it: its only run stays.
+            # Its only run stays the one run, retried by nobody: a routine run that acted is
+            # never replayed, and one that changed nothing finished in its second start.
             routine = store.list_schedules("owner", bot["id"])[0]
             assert routine["state"] == "ended" and routine["retry"] is None
             assert len(store.schedule_runs("owner", bot["id"], schedule["id"])["runs"]) == 1
         files = store.list_files("owner", bot["id"])
-        assert len(files) == 1
-        assert store.file("owner", bot["id"], files[0]["id"])["content"] == "Durable result"
+        assert len(files) == int(step == "save")
+        if files:
+            assert store.file("owner", bot["id"], files[0]["id"])["content"] == "Durable result"
     finally:
         runtime.stop()

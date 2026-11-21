@@ -39,12 +39,27 @@ retain their shell authorization.
 It supports at most 1 MiB of Markdown, 50 PDF pages, 50 MiB for PDF review, and
 20-inch page dimensions. Unsupported images, font glyphs and complex scripts fail
 explicitly. Raw HTML is literal text. This renderer does not replace image-led
-design, Word conversion, CJK fonts or complex-script shaping.
+design, Word conversion or complex-script shaping.
 
-The four unmodified Liberation Sans fonts are bundled with their SIL Open Font
-License in `alysis_code/documents/fonts/LICENSE_LIBERATION`. Their coverage includes
-Latin, Greek and Cyrillic. ReportLab and PDFium dependency licenses ship in the
-managed runtime wheels. Keep font and dependency license files when packaging.
+The four unmodified Liberation Sans 1.07.4 fonts are bundled with their own license,
+the Liberation Fonts license (GNU GPL v2 with Red Hat's font exception), in
+`alysis_code/documents/fonts/LICENSE_LIBERATION`. Their coverage includes
+Latin, Greek and Cyrillic. A character Liberation Sans has no glyph for is drawn by
+a bundled fallback font that has one: Droid Sans Fallback (Chinese ideographs and
+Japanese kana; Apache License 2.0) or Nanum Gothic (Korean Hangul; SIL Open Font
+License 1.1). The choice is made per character from each font's glyph coverage,
+never from a language setting; within a paragraph, the fallback font that has most of
+its characters is tried first so the paragraph keeps one typeface. The fallback
+fonts have one regular weight, so their characters stay regular in bold, italic and
+heading text. Paragraphs containing wide East Asian characters wrap between
+characters, so text without spaces stays inside the page, and closing punctuation
+stays at the end of a line rather than starting the next. A PDF embeds only the
+glyphs it uses. Characters no bundled font has, combining marks the fallback fonts
+would draw apart from their base letter, and decomposed (conjoining) Hangul still
+fail explicitly. The fallback fonts' upstream sources and SHA-256 digests are in
+`alysis_code/documents/fonts/UPSTREAM.json`, with their license files beside them.
+ReportLab and PDFium dependency licenses ship in the managed runtime wheels. Keep
+font and dependency license files when packaging.
 
 ## Editable Office files
 

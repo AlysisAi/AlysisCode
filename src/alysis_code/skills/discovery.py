@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 
 from ..branding import canonical_user_config_dir
@@ -36,6 +37,30 @@ def resolve_bundled_skills_enabled(cfg: AppConfig | None) -> bool:
     if cfg is None:
         return True
     return bool(getattr(cfg, "bundled_skills_enabled", True))
+
+
+def resolve_user_skills_enabled(cfg: AppConfig | None) -> bool:
+    if cfg is None:
+        return True
+    return bool(getattr(cfg, "user_skills_enabled", True))
+
+
+def offer_skills_for_tools(
+    discovered: DiscoveredSkills, tool_names: Collection[str]
+) -> DiscoveredSkills:
+    """The skills a session offers: those whose declared ``uses_tools`` it all has.
+
+    A skill that declares no tools is offered exactly as before. Discovery issues are kept.
+    """
+    names = frozenset(tool_names)
+    ordered = tuple(skill for skill in discovered.ordered if skill.usable_with(names))
+    if len(ordered) == len(discovered.ordered):
+        return discovered
+    return DiscoveredSkills(
+        skills={key: skill for key, skill in discovered.skills.items() if skill.usable_with(names)},
+        ordered=ordered,
+        issues=discovered.issues,
+    )
 
 
 def discover_skills(
@@ -108,7 +133,8 @@ def discover_skills(
     resolved_home_dir = (
         home_dir.expanduser().resolve() if home_dir is not None else Path.home().resolve()
     )
-    for source_kind, parts, source_family in _USER_SKILL_ROOT_SPECS:
+    user_skill_root_specs = _USER_SKILL_ROOT_SPECS if resolve_user_skills_enabled(cfg) else ()
+    for source_kind, parts, source_family in user_skill_root_specs:
         base_root = canonical_user_root if source_kind == "native" else resolved_home_dir
         root = base_root.joinpath(*parts)
         try:

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-
-import httpx
+from typing import TYPE_CHECKING
 
 from .base import ProviderAuthAdapter, ProviderAuthError, ProviderAuthSetupOption
+
+if TYPE_CHECKING:
+    import httpx
+
 
 ProviderAuthFactory = Callable[..., ProviderAuthAdapter]
 

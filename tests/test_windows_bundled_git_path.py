@@ -3,12 +3,57 @@
 from __future__ import annotations
 
 import os
+from hashlib import sha256
 from pathlib import Path
+from threading import Barrier, Lock
 
 import pytest
 
 from alysis_code import windows_toolchain
 from alysis_code.windows_toolchain import add_bundled_git_to_path
+
+
+def test_bundle_checks_are_bounded_and_revalidate_every_file(tmp_path, monkeypatch):
+    from alysis_code import windows_sandbox
+
+    files = {}
+    for i in range(12):
+        name = f"file-{i}"
+        data = name.encode()
+        (tmp_path / name).write_bytes(data)
+        files[name] = sha256(data).hexdigest()
+
+    check_path = windows_sandbox._local_path
+    rendezvous = Barrier(2)
+    lock = Lock()
+    seen = []
+    active = peak = 0
+
+    def checked(path, *, directory):
+        nonlocal active, peak
+        assert directory is False
+        with lock:
+            seen.append(path.name)
+            active += 1
+            peak = max(peak, active)
+        try:
+            if path.name in ("file-0", "file-1"):
+                rendezvous.wait(timeout=10)
+            return check_path(path, directory=False)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(windows_sandbox, "_local_path", checked)
+    windows_toolchain._verify_bundled_git_files(tmp_path, files)
+    assert sorted(seen) == sorted(files)
+    assert 2 <= peak <= 4
+    assert active == 0
+
+    (tmp_path / "file-0").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="integrity check failed: file-0"):
+        windows_toolchain._verify_bundled_git_files(tmp_path, files)
+    assert active == 0
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows bundles its own verified Git")

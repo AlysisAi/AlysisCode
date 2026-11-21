@@ -24,6 +24,28 @@ def _entrypoint_env() -> dict[str, str]:
     return env
 
 
+@pytest.mark.parametrize(
+    ("command", "needs_git"), [("--version", 0), ("capabilities", 0), ("ide-bridge", 1)]
+)
+def test_only_metadata_probes_skip_bundled_git(command: str, needs_git: int) -> None:
+    code = """
+import sys
+from alysis_code import windows_toolchain
+calls = []
+windows_toolchain.add_bundled_git_to_path = lambda: calls.append(True)
+from alysis_code import cli
+print(len(calls))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, command],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_entrypoint_env(),
+    )
+    assert result.stdout.strip() == str(needs_git)
+
+
 def test_cold_one_shot_classic_workspace_picker_keeps_its_dependencies(tmp_path: Path) -> None:
     code = """
 import io, os, sys
@@ -355,6 +377,31 @@ else:
         timeout=30,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_management_bridge_imports_only_the_sessionless_handlers() -> None:
+    code = """
+import sys
+from alysis_code.ide.management_bridge import ManagementBridge
+from alysis_code.ide.protocol import parse_request_line
+from alysis_code.provider_auth import create_provider_auth
+parse_request_line('{"id": 1, "method": "initialize", "protocol_version": "1"}')
+assert create_provider_auth("openai-codex").provider_id == "openai-codex"
+for module in ('alysis_code.ide.stdio_bridge', 'alysis_code.ide.management_protocol',
+               'alysis_code.ide.forge_protocol', 'alysis_code.provider_diagnostics',
+               'alysis_code.feedback_report', 'alysis_code.cli_impl.commands.auth',
+               'alysis_code.mcp.manager', 'alysis_code.mcp.client', 'httpx'):
+    assert module not in sys.modules, module
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        env=_entrypoint_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_cli_and_plain_trace_imports_defer_optional_execution_and_rendering() -> None:

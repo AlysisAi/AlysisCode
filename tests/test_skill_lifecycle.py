@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import zipfile
 from pathlib import Path
@@ -165,6 +166,72 @@ def test_validate_skill_bundle_accepts_valid_bundle_and_rejects_invalid_utf8(
     assert valid.name == "verification-playbook"
     assert broken.valid is False
     assert any("UTF-8" in issue.message for issue in broken.issues)
+
+
+def test_skill_validation_scans_nested_assets_once_and_preserves_size_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = _write_skill_bundle(tmp_path / "large", name="large", description="Asset bundle.")
+    assets = bundle / "assets"
+    nested = assets / "examples"
+    nested.mkdir(parents=True)
+    for i in range(255):
+        (nested / str(i)).touch()
+    with (assets / "sample").open("wb") as stream:
+        stream.truncate(5 * 1024 * 1024)
+
+    visited: list[Path] = []
+    scandir = os.scandir
+
+    def track_scan(directory):
+        visited.append(Path(directory))
+        return scandir(directory)
+
+    monkeypatch.setattr(os, "scandir", track_scan)
+    result = validate_skill_bundle(bundle)
+    assert result.valid
+    assert [issue.message for issue in result.warnings] == [
+        "Skill bundle is unusually large (>5 MiB).",
+        "Skill bundle contains an unusually high file count (>256 files).",
+    ]
+    assert visited == [bundle, assets, nested]
+
+
+def test_skill_validation_reports_a_nested_link_without_counting_its_target(
+    tmp_path: Path, require_symlinks
+) -> None:
+    bundle = _write_skill_bundle(tmp_path / "linked", name="linked", description="With a link.")
+    nested = bundle / "assets" / "examples"
+    nested.mkdir(parents=True)
+    target = tmp_path / "outside"
+    with target.open("wb") as stream:
+        stream.truncate(6 * 1024 * 1024)
+    link = nested / "sample"
+    link.symlink_to(target)
+
+    result = validate_skill_bundle(bundle)
+    assert not result.valid
+    assert [issue.path for issue in result.errors] == [link]
+    assert result.warnings == ()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS directory junction")
+def test_skill_validation_reports_a_junction_without_scanning_it(tmp_path: Path) -> None:
+    bundle = _write_skill_bundle(tmp_path / "linked", name="linked", description="With a junction.")
+    target = tmp_path / "outside"
+    target.mkdir()
+    with (target / "sample").open("wb") as stream:
+        stream.truncate(6 * 1024 * 1024)
+    junction = bundle / "examples"
+    subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target)],
+        check=True,
+        capture_output=True,
+    )
+
+    result = validate_skill_bundle(bundle)
+    assert [issue.path for issue in result.errors] == [junction]
+    assert result.warnings == ()
 
 
 def test_inaccessible_skill_bundle_is_reported_without_breaking_discovery(

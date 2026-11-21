@@ -118,7 +118,10 @@ def test_formulas_never_return_cached_results_as_calculated(tmp_path):
         book.add_worksheet("Data").write_formula("A1", "=2+2", None, 999)
     result = sheets.inspect(source)
     assert result["sheets"][0]["cells"][0]["formula"] == "=2+2"
-    assert "999" not in json.dumps(result)
+    # The cached result is reported nowhere. The source hash is left out: it is random hex
+    # that can contain "999" by chance.
+    reported = {key: value for key, value in result.items() if key != "source_sha256"}
+    assert "999" not in json.dumps(reported)
     assert result["needs_recalculation"]
     output, _ = edit(
         tmp_path, source, result["source_sha256"], [{"sheet": "Data", "cell": "A2", "value": 3}]

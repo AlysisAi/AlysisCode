@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "price-de-raspberry-pi",
+      "category": "price_check",
+      "language": "de",
+      "split": "dev",
+      "prompt": "Finde den aktuellen Preis eines Raspberry Pi 5 mit 8 GB RAM (nur die Platine, ohne Zubehör) bei mindestens fünf verschiedenen Online-Shops, die nach Deutschland liefern. Erstelle eine Tabelle als .xlsx mit Shop, Preis in Euro, Versandkosten, angegebener Lieferzeit und dem Link zur Produktseite. Lege nichts in den Warenkorb und melde dich nirgends an. Antworte auf Deutsch und nenne das günstigste Angebot inklusive Versand.",
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 5,
+        "columns": [
+          "shop",
+          "price in euros",
+          "shipping cost",
+          "stated delivery time",
+          "link to the product page"
+        ],
+        "min_sources": 5,
+        "source_unit": "host",
+        "reply_language": "de"
+      }
+    },
+    {
+      "id": "price-en-headphones-uk",
+      "category": "price_check",
+      "language": "en",
+      "split": "heldout",
+      "prompt": "Check the current price of the Sony WH-1000XM5 wireless headphones (new, black) at at least four different UK retailers. Save a .csv table with the retailer, the price in GBP, whether it is in stock, the delivery cost, and the link to the product page. Do not add anything to a basket or sign in. Reply with the cheapest option including delivery.",
+      "expect": {
+        "deliverable": "csv",
+        "min_rows": 4,
+        "columns": [
+          "retailer",
+          "price in pounds sterling",
+          "whether it is in stock",
+          "delivery cost",
+          "link to the product page"
+        ],
+        "min_sources": 4,
+        "source_unit": "host",
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "price-pt-saramago-book",
+      "category": "price_check",
+      "language": "pt",
+      "split": "dev",
+      "prompt": "Verifica o preço atual do livro «Ensaio sobre a Cegueira», de José Saramago (edição em português, capa mole), em pelo menos quatro livrarias online portuguesas. Guarda uma tabela em .xlsx com a livraria, o preço em euros, a editora ou edição, a disponibilidade e a ligação para a página do livro. Não adiciones nada ao carrinho nem inicies sessão. Responde em português com a opção mais barata.",
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 4,
+        "columns": [
+          "bookshop",
+          "price in euros",
+          "publisher or edition",
+          "availability",
+          "link to the book's page"
+        ],
+        "min_sources": 4,
+        "source_unit": "host",
+        "reply_language": "pt"
+      }
+    }
+  ]
+}

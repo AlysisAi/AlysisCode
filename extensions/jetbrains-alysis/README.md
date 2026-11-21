@@ -57,5 +57,4 @@ shutdown. A disconnected conversation cannot be resumed; its displayed text may 
 Before release: dogfood the plugin inside actual JetBrains IDEs, run Plugin Verifier across the
 supported versions, validate native trust/ownership boundaries and JCEF light/dark rendering, add
 managed-runtime delivery, and extend the native adapters for the remaining features. Publishing and
-ACP support are separate work. See `docs/multi_ide.md` in the repository root for the architecture
-and verification record.
+ACP support are separate work. See `docs/editors.md` in the repository root for the architecture.

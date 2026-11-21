@@ -30,7 +30,9 @@ class BrowserFixture:
         self.released = threading.Event()
         self.on_close = lambda: None
 
-    def schemas(self, task, eligible, *, approved_origins=(), image_input=False):
+    def schemas(
+        self, task, eligible, *, approved_origins=(), image_input=False, input_by_request=False
+    ):
         self.eligibility.append((task["id"], eligible))
         return [
             {
@@ -46,7 +48,16 @@ class BrowserFixture:
         ]
 
     def call(
-        self, task, name, args, token, *, approved_origins=(), image_input=False, review_action=None
+        self,
+        task,
+        name,
+        args,
+        token,
+        *,
+        approved_origins=(),
+        image_input=False,
+        review_action=None,
+        input_by_request=False,
     ):
         self.calls.append((task, name, args, token))
         return {"title": "Synthetic page", "operation": name}
@@ -306,6 +317,7 @@ def test_inflight_browser_observes_cancellation_and_releases_before_close(store,
             approved_origins=(),
             image_input=False,
             review_action=None,
+            input_by_request=False,
         ):
             super().call(task, name, args, token, approved_origins=approved_origins)
             self.entered.set()
@@ -341,7 +353,9 @@ def test_inflight_browser_observes_cancellation_and_releases_before_close(store,
         assert browser.exited.is_set()
         assert browser.releases == [(task["id"], True)]
         result = store.task("owner", task["id"])
-        assert result["status"] == ("interrupted" if stop_runtime else "cancelled")
+        # Stopping the runtime under a step that only reads a page queues the turn to start
+        # again once after the restart (Store.restart_cut); Stop cancels it.
+        assert result["status"] == ("queued" if stop_runtime else "cancelled")
         assert result["output"] == ""
         assert not any(event["kind"] == "tool_completed" for event in result["events"])
     finally:
@@ -360,7 +374,7 @@ def test_runtime_delivers_browser_image_after_tool_results_and_accounts_usage(st
         def __init__(self):
             super().__init__(advertised=("browser_screenshot",))
 
-        def schemas(self, task, eligible, *, approved_origins=(), image_input=False):
+        def schemas(self, task, eligible, *, approved_origins=(), image_input=False, **_):
             assert image_input is True
             return super().schemas(
                 task, eligible, approved_origins=approved_origins, image_input=image_input
@@ -376,6 +390,7 @@ def test_runtime_delivers_browser_image_after_tool_results_and_accounts_usage(st
             approved_origins=(),
             image_input=False,
             review_action=None,
+            input_by_request=False,
         ):
             assert image_input is True
             return BrowserImageResult(
@@ -419,6 +434,7 @@ def test_nonvisual_browser_refresh_retires_prior_image(store):
             approved_origins=(),
             image_input=False,
             review_action=None,
+            input_by_request=False,
         ):
             if name == "browser_screenshot":
                 return BrowserImageResult(
@@ -467,6 +483,7 @@ def test_background_checkpoint_requires_fresh_pixels_without_persisting_image_bl
             approved_origins=(),
             image_input=False,
             review_action=None,
+            input_by_request=False,
         ):
             return BrowserImageResult(
                 {"source_id": "frame", "frame": {"width": 64, "height": 64}}, png_url()

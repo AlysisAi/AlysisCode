@@ -20,6 +20,17 @@ from .feedback_report import FeedbackReportError, _redact_jsonable, sanitize_fee
 
 MAX_REQUEST_BYTES = 262144
 MAX_DESCRIPTION_CHARS = 8000
+MAX_MESSAGE_BYTES = 180000
+# The session's own failure records: what stopped a turn and why a model call was retried.
+# A report of "it failed" is only actionable with these, since the conversation rarely shows
+# the cause (a request refused before any reply, for example).
+RECENT_ERROR_EVENT_TYPES = frozenset(
+    {"terminal_error", "error", "warning", "llm_call_retry", "turn_outcome"}
+)
+MAX_RECENT_ERRORS = 30
+MAX_RECENT_ERROR_BYTES = 20000
+MAX_RECENT_ERROR_EVENT_BYTES = 2000
+MAX_RECENT_ERROR_FIELD_CHARS = 300
 
 
 @dataclass(frozen=True)
@@ -75,6 +86,62 @@ def _checked_endpoint(endpoint: str) -> str:
     return endpoint
 
 
+def _session_events(active_session: Any | None) -> list[Any]:
+    """The session's recorded events: from its live store, or as read from its log."""
+    store = getattr(active_session, "store", None)
+    snapshot = getattr(store, "events_snapshot", None)
+    if callable(snapshot):
+        try:
+            events = snapshot()
+        except Exception:  # noqa: BLE001 - a diagnostic read must not block the report
+            return []
+    else:
+        events = getattr(active_session, "events", None)
+    return list(events) if isinstance(events, list) else []
+
+
+def _scalar_fields(payload: Any) -> dict[str, Any]:
+    """The top-level plain values of an oversized record (its reason, code and outcome)."""
+    if not isinstance(payload, dict):
+        return {}
+    kept: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, str):
+            kept[str(key)] = value[:MAX_RECENT_ERROR_FIELD_CHARS]
+        elif value is None or isinstance(value, (bool, int, float)):
+            kept[str(key)] = value
+    return kept
+
+
+def _recent_errors(events: list[Any], *, workspace_root: Path) -> list[dict[str, Any]]:
+    """The latest failure records, oldest first, redacted like the messages and bounded."""
+    selected: list[dict[str, Any]] = []
+    size = 0
+    for event in reversed(events):
+        if len(selected) >= MAX_RECENT_ERRORS:
+            break
+        if not isinstance(event, dict) or event.get("type") not in RECENT_ERROR_EVENT_TYPES:
+            continue
+        record = {"type": event["type"], "ts": event.get("ts"), "payload": event.get("payload")}
+        clean = _redact_jsonable(record, workspace_root=workspace_root)
+        encoded = json.dumps(clean, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_RECENT_ERROR_EVENT_BYTES:
+            clean = {**clean, "payload": _scalar_fields(clean.get("payload")), "trimmed": True}
+            encoded = json.dumps(clean, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_RECENT_ERROR_EVENT_BYTES:
+            clean = {
+                "type": clean.get("type"),
+                "ts": clean.get("ts"),
+                "omitted": "Record exceeds the diagnostic size limit.",
+            }
+            encoded = json.dumps(clean, ensure_ascii=False).encode("utf-8")
+        if size + len(encoded) > MAX_RECENT_ERROR_BYTES:
+            break
+        selected.insert(0, clean)
+        size += len(encoded)
+    return selected
+
+
 def prepare_feedback(
     *,
     workspace_root: Path,
@@ -115,7 +182,7 @@ def prepare_feedback(
             if len(encoded) > 32000:
                 clean = {"omitted": "Message exceeds the diagnostic size limit."}
                 encoded = json.dumps(clean).encode()
-            if size + len(encoded) > 180000:
+            if size + len(encoded) > MAX_MESSAGE_BYTES:
                 break
             selected.insert(0, clean)
             size += len(encoded)
@@ -125,6 +192,9 @@ def prepare_feedback(
             "messages": selected,
             "total_messages": len(messages),
             "omitted_messages": len(messages) - len(selected),
+            "recent_errors": _recent_errors(
+                _session_events(active_session), workspace_root=workspace_root
+            ),
         }
     report_id = str(uuid4())
     payload = {

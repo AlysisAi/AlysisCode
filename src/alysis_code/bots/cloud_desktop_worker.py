@@ -153,14 +153,69 @@ class Transfers:
             os.close(directory)
 
 
-def serve(session, *, memory_sleep=False):
+def browser_error_reply(error, *, fatal: bool) -> dict:
+    """The reply fields for a browser operation that failed: its type (the host rebuilds the
+    error from it, cloud_browser.remote_error) and whether the browser stopped; for support its
+    class and, for a stopped browser, its fixed reason (process exit status or failed
+    connection), for a refused protocol command its method name and numeric code, or a network
+    error's identifier, never page data. A dialog's type, message and frame (address and id)
+    are the page's own (bounded by the browser), sent for the owl to answer it, never put in
+    diagnostics."""
     from ..ide.cdp_websocket_transport import CdpCommandError
     from ..ide.managed_browser import (
-        BrowserError,
+        BrowserDialogOpenError,
         BrowserLaunchError,
         BrowserPageUnreachableError,
     )
     from .cloud_browser import ERRORS
+
+    reply = {
+        "error": "Browser operation rejected; inspect before retrying.",
+        "error_type": type(error).__name__ if type(error).__name__ in ERRORS else "BrowserError",
+        "fatal": fatal,
+        "error_class": type(error).__name__[:60],
+    }
+    if isinstance(error, BrowserLaunchError | CdpCommandError | BrowserPageUnreachableError):
+        reply["error_detail"] = str(error)[:200]
+    if isinstance(error, BrowserDialogOpenError):
+        reply["dialog"] = {
+            "type": error.dialog_type,
+            "message": error.dialog_message,
+            **({"url": error.dialog_url} if error.dialog_url else {}),
+            **({"frame_id": error.dialog_frame_id} if error.dialog_frame_id else {}),
+        }
+    return reply
+
+
+def rejected_reply(error, *, fatal: bool) -> dict:
+    """The reply fields for an operation the computer refused (not a browser error): what kind
+    of error it was, as ``error_type`` and ``error_class``, and for support a reason that says
+    why without any data: a refusal whose every message is fixed text written in this code
+    (an archive or browser profile boundary) gives that text, an operating-system error its
+    errno name (e.g. ENOSPC), and anything else no detail, since a ValueError or KeyError text
+    can quote what it was given."""
+    import errno
+
+    from ..ide.browser_profiles import BrowserProfileError
+    from .workspace_archive import WorkspaceArchiveError
+
+    name = type(error).__name__[:60]
+    reply = {
+        "error": "Computer operation rejected; inspect before retrying.",
+        "error_type": name,
+        "error_class": name,
+        "fatal": fatal,
+    }
+    if isinstance(error, WorkspaceArchiveError | BrowserProfileError):
+        reply["error_detail"] = str(error)[:200]
+    elif isinstance(error, OSError) and isinstance(error.errno, int):
+        reply["error_detail"] = errno.errorcode.get(error.errno, str(error.errno))
+    return reply
+
+
+def serve(session, *, memory_sleep=False):
+    from ..ide.browser_profiles import BrowserProfileError
+    from ..ide.managed_browser import BrowserError
     from .cloud_browser_worker import FEATURES, BrowserBridge
     from .workspace_archive import WorkspaceArchiveError
 
@@ -174,21 +229,33 @@ def serve(session, *, memory_sleep=False):
     checkpoint_transfers = Transfers(root, checkpoints)
     desktop = None
     display = None
+    packages = None
     launchers = root / "launchers"
     launchers.mkdir(mode=0o700)
 
     def ensure_desktop(*, shared=False):
-        nonlocal desktop, display
+        nonlocal desktop, display, packages
         if desktop is None:
+            if packages is None:
+                from .package_access import start_package_guard
+
+                # This computer reaches the web; its shell reaches only the declared package
+                # indexes, through this guard. Without one the shell stays fully offline.
+                packages = start_package_guard(root / "packages") or False
+            guard = packages.directory if packages else None
             if shared:
                 from .linux_display import PrivateLinuxDisplay
 
                 display = PrivateLinuxDisplay()
                 desktop = OfflineLinuxDesktop(
-                    session, workspace, shared_display=display.name, launchers=launchers
+                    session,
+                    workspace,
+                    shared_display=display.name,
+                    launchers=launchers,
+                    packages=guard,
                 )
             else:
-                desktop = OfflineLinuxDesktop(session, workspace)
+                desktop = OfflineLinuxDesktop(session, workspace, packages=guard)
         if shared and display is None:
             raise DesktopError("Open a new computer to use the shared Cloud desktop.")
         screen.bind_live(desktop.rfb)
@@ -373,33 +440,25 @@ def serve(session, *, memory_sleep=False):
                         reply["result"] = result
                     except BrowserError as error:
                         reply.update(
-                            error="Browser operation rejected; inspect before retrying.",
-                            error_type=type(error).__name__
-                            if type(error).__name__ in ERRORS
-                            else "BrowserError",
-                            fatal=not browser or not browser.computer.alive(),
-                            # For support: the guest's class, and for a stopped browser its fixed
-                            # reason (process exit status or failed connection), or for a refused
-                            # protocol command its method name and numeric code; no page data.
-                            error_class=type(error).__name__[:60],
-                            **(
-                                {"error_detail": str(error)[:200]}
-                                if isinstance(
-                                    error,
-                                    (
-                                        BrowserLaunchError,
-                                        CdpCommandError,
-                                        BrowserPageUnreachableError,
-                                    ),
-                                )
-                                else {}
-                            ),
+                            browser_error_reply(
+                                error, fatal=not browser or not browser.computer.alive()
+                            )
                         )
-                    except (ValueError, KeyError, OSError, DesktopError, WorkspaceArchiveError):
+                    except (
+                        ValueError,
+                        KeyError,
+                        OSError,
+                        DesktopError,
+                        WorkspaceArchiveError,
+                        BrowserProfileError,
+                    ) as error:
                         reply.update(
-                            error="Computer operation rejected; inspect before retrying.",
-                            fatal=desktop is not None and not desktop.alive(),
+                            rejected_reply(error, fatal=desktop is not None and not desktop.alive())
                         )
+                    if desktop is not None:
+                        # What the running desktop declared at its start (window elements);
+                        # a host offers tools for it only while it is declared.
+                        reply["desktop_features"] = sorted(getattr(desktop, "desktop_features", ()))
                     connection.sendall(
                         json.dumps(reply, ensure_ascii=False).encode("utf-8") + b"\n"
                     )
@@ -411,6 +470,8 @@ def serve(session, *, memory_sleep=False):
             desktop.close()
         if display is not None:
             display.close()
+        if packages:
+            packages.close()
 
 
 def main():

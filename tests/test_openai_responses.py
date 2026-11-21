@@ -72,6 +72,50 @@ def _sse_response(events: list[tuple[str, dict[str, object]]]) -> httpx.Response
     )
 
 
+@pytest.mark.parametrize("event_type", ["response.completed", "response.done"])
+def test_terminal_response_is_returned_when_transport_stays_open(event_type: str) -> None:
+    requests = 0
+
+    class ConnectionStaysOpen(httpx.SyncByteStream):
+        closed = False
+
+        def __iter__(self):
+            yield _sse_event(
+                event_type,
+                {
+                    "type": event_type,
+                    "response": {
+                        "id": "resp_complete",
+                        "model": "search-model",
+                        "status": "completed",
+                        "output_text": "Completed answer",
+                        "output": [],
+                        "usage": {"input_tokens": 8, "output_tokens": 2},
+                    },
+                },
+            )
+            raise httpx.ReadTimeout("peer never ended the HTTP response body")
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = ConnectionStaysOpen()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+    result = _client(httpx.MockTransport(handler)).chat(
+        messages=[{"role": "user", "content": "Test the response boundary."}],
+        stream=True,
+    )
+    assert result.content == "Completed answer"
+    assert result.raw["usage"]["output_tokens"] == 2
+    assert requests == 1
+    assert stream.closed
+
+
 class _MismatchedScopeAuth:
     supports_previous_response_id = False
     supports_input_token_count = True

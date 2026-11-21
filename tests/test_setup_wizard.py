@@ -2052,9 +2052,9 @@ def test_setup_typer_command_runs_wizard(monkeypatch) -> None:
         cli_mod,
         "load_config",
         lambda: AppConfig(
-            execution={"backend": "delegated", "runtime": "openai-codex"},
+            execution={"backend": "delegated", "runtime": "sample-agent"},
             agent_runtimes={
-                "openai-codex": {"adapter": "codex-cli", "executable": "codex"},
+                "sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"},
             },
         ),
     )
@@ -2082,9 +2082,9 @@ def test_setup_command_launches_chat_after_interactive_tui(monkeypatch) -> None:
 def test_setup_command_delegated_tui_finishes_without_launching_native_chat(monkeypatch) -> None:
     chat_calls: list[bool] = []
     delegated = AppConfig(
-        execution={"backend": "delegated", "runtime": "openai-codex"},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
         agent_runtimes={
-            "openai-codex": {"adapter": "codex-cli", "executable": "codex"},
+            "sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"},
         },
     )
     monkeypatch.setattr(cli_mod, "_try_setup_tui", lambda **_k: True)

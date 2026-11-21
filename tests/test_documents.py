@@ -85,7 +85,7 @@ def test_create_renders_all_pages_and_preserves_multilingual_content(tmp_path, m
     [
         ("", "no content"),
         ("---", "empty or clipped"),
-        ("# 漢字", "Unsupported font glyphs"),
+        ("# 𠮷", "Unsupported font glyphs: U\\+20BB7"),
         ("![image](https://example.com/image.png)", "Unsupported Markdown"),
         ("[unsafe](relative-file)", "links must use"),
         ("العربية", "complex-script shaping"),

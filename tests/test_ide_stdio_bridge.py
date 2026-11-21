@@ -317,6 +317,33 @@ def _create_review_session(
     return out, bridge, session_id
 
 
+def test_chat_send_replays_exact_committed_edit_in_the_owning_job(tmp_path, monkeypatch):
+    from alysis_code.tools.fs import fs_write
+
+    _isolate_alysis_state(tmp_path, monkeypatch)
+
+    def run_turn(surface, message):
+        fs_write(root=tmp_path, path="created.txt", content="ordinary fixture")
+        (tmp_path / "external.txt").write_text("external")
+        return 0
+
+    out, bridge, session_id = _create_review_session(tmp_path, monkeypatch, run_turn)
+    try:
+        response = _send_bridge_request(
+            bridge, out, "chat.send", {"session_id": session_id, "message": "edit"}
+        )
+        _wait_for_job_workers(bridge)
+        (event,) = [e for e in _json_lines(out) if e.get("type") == "file_edit_committed"]
+        assert event["job_id"] == response["result"]["job_id"] and event["session_id"] == session_id
+        assert event["payload"]["path"] == "created.txt" and event["payload"]["workspace"] == str(
+            tmp_path
+        )
+        replay = _send_bridge_request(bridge, out, "session.getEvents", {"session_id": session_id})
+        assert event in replay["result"]["events"]
+    finally:
+        bridge.close()
+
+
 def test_artifact_check_receipts_are_read_from_the_named_session(tmp_path, monkeypatch):
     out, bridge, session_id = _create_review_session(tmp_path, monkeypatch, lambda *_: 0)
     report = {"path": "report.docx", "documentSha256": "a" * 64, "items": []}

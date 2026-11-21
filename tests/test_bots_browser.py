@@ -16,7 +16,7 @@ from alysis_code.bots.browser import BrowserComputers, BrowserStartupCleanupErro
 from alysis_code.bots.browser_linux import LinuxBrowserComputer
 from alysis_code.bots.computer import ComputerViews
 from alysis_code.cancellation import CooperativeCancellationError, EventCancellationToken
-from alysis_code.ide.managed_browser import BrowserCancelledError, BrowserError
+from alysis_code.ide.managed_browser import BrowserCancelledError, BrowserError, BrowserLimitError
 
 PREVIEW = "http://127.0.0.1:8123/"
 PUBLIC = "https://example.org/"
@@ -111,6 +111,10 @@ class BrowserFixture:
         self._call("type", owner, session_id, selector, text, **kwargs)
         self.data["strings"][12] = text
 
+    def scroll(self, owner, session_id, selector, **kwargs):
+        self._call("scroll", owner, session_id, selector, **kwargs)
+        self.data["strings"][13] = "Scrolled further"
+
 
 class ExecutorFixture:
     def __init__(self, bot_id, views):
@@ -174,7 +178,8 @@ def lab():
 
 
 def test_schema_discovery_and_invalid_arguments_never_allocate(lab):
-    schemas = lab.adapter.schemas(task(), eligible=True)
+    # Before a browser runs, a step is offered only the tools every browser can do.
+    schemas = lab.adapter.offered(task(), lab.adapter.schemas(task(), eligible=True))
     assert {schema["function"]["name"] for schema in schemas} == {
         "browser_navigate",
         "browser_pages",
@@ -220,13 +225,25 @@ def test_default_adapter_is_read_only_even_for_forged_preview_mutation(lab):
     # explicit false value supplied only by this fixture.
     lab.adapter = BrowserComputers("owner", lab.views, lab.factory)
     schemas = lab.adapter.schemas(task(), eligible=True)
-    assert {schema["function"]["name"] for schema in schemas} == {
+    # Scrolling is reading, so it is offered without any website permission.
+    reading = {
         "browser_navigate",
         "browser_pages",
         "browser_switch_page",
         "browser_close_page",
         "browser_observe",
         "browser_source",
+        "browser_scroll",
+    }
+    offered = lab.adapter.offered(task(), schemas)
+    assert {schema["function"]["name"] for schema in offered} == reading
+    # The newer tools that only read (offered once a browser declares them) need no approval
+    # either; none that sends input is listed.
+    assert {schema["function"]["name"] for schema in schemas} == reading | {
+        "browser_hover",
+        "browser_wait",
+        "browser_read_value",
+        "browser_history",
     }
     for name in (
         "browser_click",
@@ -247,7 +264,6 @@ def test_default_adapter_is_read_only_even_for_forged_preview_mutation(lab):
         "browser_type",
         "browser_select",
         "browser_key",
-        "browser_scroll",
     ):
         arguments = {"source_id": observation["source_id"], "node": 5}
         if name == "browser_type":
@@ -256,6 +272,10 @@ def test_default_adapter_is_read_only_even_for_forged_preview_mutation(lab):
             lab.call(name, arguments)
     assert lab.call("browser_source", {"source_id": observation["source_id"]})["content"]
     assert not any(call[0] in {"click", "type"} for call in lab.executors[0].browser.calls)
+    scrolled = lab.call("browser_scroll", {"source_id": observation["source_id"], "node": 5,
+                                           "delta_y": 400})  # fmt: skip
+    assert [call[0] for call in lab.executors[0].browser.calls].count("scroll") == 1
+    assert scrolled["action"]["dispatched"] and scrolled["source_id"] != observation["source_id"]
 
 
 def test_lazy_computer_uses_trusted_session_and_reuses_only_same_bot(lab):
@@ -331,7 +351,9 @@ def test_click_waits_for_delayed_dom_result_and_never_repeats_input(lab):
 
     def delayed_snapshot(*args, **kwargs):
         nonlocal after_click
-        if any(c[0] == "click" for c in browser.calls):
+        # DOM reads only: each observation also reads the accessibility tree once, after the
+        # DOM has settled.
+        if kwargs.get("kind") == "dom" and any(c[0] == "click" for c in browser.calls):
             after_click += 1
             if after_click == 3:
                 browser.data["strings"][13] = "Αποθηκεύτηκε — 保存済み"
@@ -583,6 +605,32 @@ def test_large_page_text_is_readable_but_never_an_action_reference(lab):
     assert not lab.call("browser_source", {"source_id": source, "find": "not present"})["found"]
     with pytest.raises(ValueError):
         lab.call("browser_click", {"source_id": source, "node": 6})
+    assert not any(c[0] == "click" for c in lab.executors[0].browser.calls)
+
+
+def page_too_large_to_receive(executor, cancel):
+    """A computer whose reply allowance can't carry this page's DOM snapshot (as on Cloud)."""
+    large_page(executor, cancel)
+    browser = executor.browser
+    browser.truncated = False
+    reads = browser.snapshot
+
+    def snapshot(*args, **kwargs):
+        if kwargs.get("kind") == "dom":
+            raise BrowserLimitError("This page is too large to read in one step.")
+        return reads(*args, **kwargs)
+
+    browser.snapshot = snapshot
+
+
+def test_a_page_too_large_to_receive_is_read_as_text_instead_of_failing(lab):
+    lab.factory_hook = page_too_large_to_receive
+    observation = lab.call()
+    assert observation["read_only_text"]
+    part = lab.call("browser_source", {"source_id": observation["source_id"], "find": "Transport"})
+    assert part["content"] == "Transport\nActual source text"
+    with pytest.raises(ValueError):
+        lab.call("browser_click", {"source_id": observation["source_id"], "node": 6})
     assert not any(c[0] == "click" for c in lab.executors[0].browser.calls)
 
 
@@ -1436,11 +1484,13 @@ def test_bot_observation_distinguishes_filtered_nodes_from_missing_rendered_node
 
 
 def test_bot_observation_keeps_real_budget_omissions_explicit(lab, monkeypatch):
-    from alysis_code.bots import browser
+    from alysis_code.bots import browser_view
     from alysis_code.ide.browser_observation import compact_dom_snapshot
 
     monkeypatch.setattr(
-        browser, "compact_dom_snapshot", lambda data: compact_dom_snapshot(data, max_chars=1000)
+        browser_view,
+        "compact_dom_snapshot",
+        lambda data: compact_dom_snapshot(data, max_chars=1000),
     )
     lab.factory_hook = lambda executor, cancel: executor.browser.data["strings"].__setitem__(
         10, "入力" * 500

@@ -635,6 +635,9 @@ def test_incomplete_turn_keeps_original_constraints_and_actual_status(store, sta
         source_task_id=first["id"],
     )
     if state == "interrupted":
+        # A step that changed something, so the restart interrupts it instead of starting over.
+        store.event("alice", first["id"], "tool_started", {"name": "browser_click"})
+        store.event("alice", first["id"], "tool_completed", {"name": "browser_click"})
         assert store.recover("alice") == 1
     else:
         store.finish("alice", first["id"], state, error="Stopped before verification")

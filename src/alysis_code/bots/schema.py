@@ -14,7 +14,44 @@
 # allowed for it), browser_baselines (an owl's saved browser storage that belongs to no task:
 # a person signing in while only viewing its computer, or signing it out of a site) and
 # bots.color and bots.background (the look the person picked for an owl's face).
-SCHEMA_VERSION = 42
+# 43 adds bots.pinned_at and bots.archived_at (when the person pinned an owl to the top of their
+# list, and when they archived it: its routines and file events rest until it comes back),
+# bots.model (the model an owl thinks with, from those its place offers), owl_moves and
+# owl_move_files (an owl arriving from the person's other place, hidden until every part and
+# file has arrived and been checked), queued_messages (a message the person sent in chat,
+# which they can change or cancel while it waits for its owl) and reply_reactions (the
+# person's thumbs up or down on an owl's reply, with an optional note, read back by the
+# owl's later turns).
+# 44 adds routine_suggestions (a routine an owl offered under its reply for a need the person
+# showed repeats, and what the person chose: turned on or Not now, remembered by fingerprint),
+# rooms (one conversation the person has with several of their owls; its id is its chat's
+# id), room_members (the owls in it, in their order) and room_turns (the person's message each
+# owl's turn in a room answers, when one message went to several owls).
+# 45 adds playbooks (short procedures an owl writes for itself after a run that worked, one row
+# per version; playbooks.py).
+# 46 adds bot_action_reviews.effect (what a step waiting for the person would do, as the page's
+# structure settled it or the action reviewer named it; NULL when nothing named one).
+# 47 adds check_backs (an owl coming back to its chat later by itself: check_backs.py).
+# 48 adds tasks.restarts (how many times a turn a restart cut off was started again: at most once,
+# and only when nothing it did reached outside the owl's own records; Store.recover).
+# 49 adds queued_messages.steer_target and steer_state: a waiting message the person sent now to
+# the turn that is running (steering.py), and whether that turn read it or it waits its turn.
+# 50 adds memory_capture_state (where an owl's after-chat memory read got to, when its next read
+# is due, and its last memory tidy-up: memory_capture.py).
+# 51 adds schedules.model (the model a routine's runs think with, from those the owl's place
+# offers; NULL: the owl's own).
+SCHEMA_VERSION = 51
+
+# The queued_messages columns schema 49 adds, for a database made before it, and the index that
+# finds the messages a running turn has still to read (steering.py).
+STEER_COLUMNS = (
+    ("steer_target", "TEXT"),
+    ("steer_state", "TEXT CHECK(steer_state IN ('pending','applied','queued'))"),
+)
+STEER_INDEX = (
+    "CREATE INDEX IF NOT EXISTS queued_messages_steers ON queued_messages(steer_target) "
+    "WHERE steer_state='pending'"
+)
 
 
 def schema(*, postgres=False):
@@ -113,7 +150,8 @@ _DDL = """
                     id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id),
                     task_id TEXT NOT NULL REFERENCES tasks(id), action TEXT NOT NULL,
                     generation TEXT NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL,
-                    created_at {real} NOT NULL, decided_at {real}, reason TEXT NOT NULL DEFAULT ''
+                    created_at {real} NOT NULL, decided_at {real}, reason TEXT NOT NULL DEFAULT '',
+                    effect TEXT
                 );
                 CREATE INDEX IF NOT EXISTS bot_action_reviews_task ON bot_action_reviews(task_id,status);
                 CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(status, created_at);
@@ -220,7 +258,7 @@ _DDL = """
                     name TEXT NOT NULL, prompt TEXT NOT NULL, timing TEXT NOT NULL,
                     state TEXT NOT NULL, revision INTEGER NOT NULL, next_run_at {real},
                     pause_reason TEXT, source_task_id TEXT REFERENCES tasks(id),
-                    created_at {real} NOT NULL, updated_at {real} NOT NULL
+                    created_at {real} NOT NULL, updated_at {real} NOT NULL, model TEXT
                 );
                 CREATE TABLE IF NOT EXISTS schedule_requests (
                     bot_id TEXT NOT NULL REFERENCES bots(id), request_id TEXT NOT NULL,
@@ -463,4 +501,139 @@ CREATE TABLE IF NOT EXISTS routine_access (
  schedule_id TEXT PRIMARY KEY REFERENCES schedules(id), needs TEXT NOT NULL,
  allowed TEXT, allowed_at {real}, requested TEXT, updated_at {real} NOT NULL
 );
+-- An owl moving here from the person's other place (owl_move.py), by the app's request id. Its
+-- copy (bot_id) stays out of every list while receiving; complete once all of it arrived and was
+-- checked. page_digests holds each received part's digest, so a part sent again is recognised;
+-- section and counts are where the parts got to and how many records of each kind arrived.
+CREATE TABLE IF NOT EXISTS owl_moves (
+ id TEXT PRIMARY KEY, owner TEXT NOT NULL, request_id TEXT NOT NULL,
+ source_bot_id TEXT NOT NULL, bot_id TEXT REFERENCES bots(id),
+ state TEXT NOT NULL CHECK(state IN ('receiving','complete','cancelled')),
+ section INTEGER NOT NULL, counts TEXT NOT NULL, page_digests TEXT NOT NULL,
+ received_all INTEGER NOT NULL CHECK(received_all IN (0,1)),
+ created_at {real} NOT NULL, updated_at {real} NOT NULL, UNIQUE(owner, request_id)
+);
+CREATE INDEX IF NOT EXISTS owl_moves_source ON owl_moves(owner, source_bot_id, state);
+CREATE INDEX IF NOT EXISTS owl_moves_bot ON owl_moves(bot_id, state);
+-- The Library files a moving owl brings, as its other place described them; they arrive through
+-- the ordinary uploads and are matched by name and revision, then checked by size and SHA-256.
+CREATE TABLE IF NOT EXISTS owl_move_files (
+ move_id TEXT NOT NULL REFERENCES owl_moves(id), source_id TEXT NOT NULL,
+ name TEXT NOT NULL, revision INTEGER NOT NULL, size_bytes BIGINT NOT NULL, sha256 TEXT NOT NULL,
+ text_file INTEGER NOT NULL CHECK(text_file IN (0,1)), media_type TEXT NOT NULL,
+ source_task_id TEXT, created_at {real} NOT NULL, updated_at {real} NOT NULL,
+ PRIMARY KEY(move_id, source_id), UNIQUE(move_id, name, revision)
+);
+-- A message the person sent in chat (queued_messages.py). revision counts their changes while
+-- it waited for the owl; sent_sha256 names the text first sent, so sending it again with the same
+-- request id is still that one message after a change; withdrawn_at is when they cancelled it
+-- before it started (its message is gone from the chat). steer_target is the running turn they
+-- sent it to now (steering.py), and steer_state pending (that turn reads it at its next model
+-- round), applied (it read it: the message is part of that turn) or queued (it ended first: the
+-- message runs as the next turn); both NULL for a message that just waits its turn.
+CREATE TABLE IF NOT EXISTS queued_messages (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id), revision INTEGER NOT NULL,
+ sent_sha256 TEXT NOT NULL, withdrawn_at {real}, updated_at {real} NOT NULL,
+ steer_target TEXT, steer_state TEXT CHECK(steer_state IN ('pending','applied','queued'))
+);
+-- The person's thumbs up or down on an owl's reply, with an optional short note (reactions.py).
+CREATE TABLE IF NOT EXISTS reply_reactions (
+ message_id TEXT PRIMARY KEY REFERENCES messages(id), bot_id TEXT NOT NULL REFERENCES bots(id),
+ task_id TEXT NOT NULL REFERENCES tasks(id),
+ reaction TEXT NOT NULL CHECK(reaction IN ('up','down')), note TEXT NOT NULL,
+ created_at {real} NOT NULL, updated_at {real} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reply_reactions_bot ON reply_reactions(bot_id,updated_at);
+CREATE INDEX IF NOT EXISTS reply_reactions_task ON reply_reactions(task_id);
+-- A routine an owl suggested under its reply (routine_suggestions.py): name, prompt, timing and
+-- needs as the card shows them (as turned on, after the person's changes), and the draft routine
+-- it saved (schedule_id: none once declined or removed). fingerprint and title_fingerprint digest
+-- its job and its name, each with its timing, so a declined one is never offered again.
+-- status: open, on (the person turned it on), declined (Not now) or closed (replaced, changed or
+-- removed in Routines, or its turn stopped). request_id is the person's Turn on.
+CREATE TABLE IF NOT EXISTS routine_suggestions (
+ id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id),
+ source_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id), schedule_id TEXT,
+ name TEXT NOT NULL, prompt TEXT NOT NULL, timing TEXT NOT NULL, needs TEXT NOT NULL,
+ fingerprint TEXT NOT NULL, title_fingerprint TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('open','on','declined','closed')),
+ revision INTEGER NOT NULL, request_id TEXT,
+ created_at {real} NOT NULL, updated_at {real} NOT NULL, decided_at {real}
+);
+CREATE INDEX IF NOT EXISTS routine_suggestions_bot ON routine_suggestions(bot_id,status);
+CREATE INDEX IF NOT EXISTS routine_suggestions_schedule ON routine_suggestions(schedule_id);
+-- A room: one conversation the person has with several of their owls (rooms.py). Its id is its
+-- chat's id: that chat holds the person's messages and every owl's turns in the room. The chat's
+-- bot_id is the owl the room was made with; a room never reads it, and an owl's own conversation
+-- leaves room chats out. A deleted room keeps this row under a tombstone owner, so its chat and
+-- turns stay apart from that owl's own conversation.
+CREATE TABLE IF NOT EXISTS rooms (
+ id TEXT PRIMARY KEY REFERENCES chats(id), owner TEXT NOT NULL, name TEXT NOT NULL,
+ created_at {real} NOT NULL, updated_at {real} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rooms_owner ON rooms(owner);
+-- The owls in a room, in the order the person put them there.
+CREATE TABLE IF NOT EXISTS room_members (
+ room_id TEXT NOT NULL REFERENCES rooms(id), bot_id TEXT NOT NULL REFERENCES bots(id),
+ position INTEGER NOT NULL, added_at {real} NOT NULL, PRIMARY KEY(room_id,bot_id)
+);
+CREATE INDEX IF NOT EXISTS room_members_bot ON room_members(bot_id);
+-- The person's message each owl's turn in a room answers. One message to several owls is kept
+-- once, with the first owl's turn; the others answer it from here (message_id has no foreign
+-- key: when that first owl is deleted, the message moves to the next owl's turn).
+CREATE TABLE IF NOT EXISTS room_turns (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id), message_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS room_turns_message ON room_turns(message_id);
+-- A playbook an owl wrote from a run that worked (playbooks.py), one row per version. playbook_id
+-- names the playbook its versions share. status: held (written by a run still working; kept only
+-- if that run finishes with a checked reply, else dropped), current (the version in use) or
+-- earlier (kept so Undo can bring it back). steps, pitfalls and tools are JSON lists; tools are
+-- those the run used, from its receipts. source_task_id is the run that wrote the version.
+CREATE TABLE IF NOT EXISTS playbooks (
+ id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, bot_id TEXT NOT NULL REFERENCES bots(id),
+ version INTEGER NOT NULL, name TEXT NOT NULL, when_to_use TEXT NOT NULL, steps TEXT NOT NULL,
+ pitfalls TEXT NOT NULL, done_check TEXT NOT NULL, tools TEXT NOT NULL,
+ source_task_id TEXT REFERENCES tasks(id),
+ status TEXT NOT NULL CHECK(status IN ('held','current','earlier')),
+ created_at {real} NOT NULL, updated_at {real} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS playbooks_bot ON playbooks(bot_id,status);
+CREATE INDEX IF NOT EXISTS playbooks_task ON playbooks(source_task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS playbooks_one_current ON playbooks(playbook_id)
+ WHERE status='current';
+CREATE UNIQUE INDEX IF NOT EXISTS playbooks_one_held_per_run ON playbooks(source_task_id)
+ WHERE status='held';
+-- An owl coming back to its chat later by itself (check_backs.py): set by source_task_id, due at
+-- due_at, with a note for the turn it starts and an optional condition (JSON) the service checks
+-- without a model: next_check_at and checks pace those checks, met_at is when it held, check_error
+-- why the last check could not tell. state: pending, starting (its turn, task_id, is queued or
+-- working; saved with that turn, so it never starts twice), done or cancelled (by the person).
+-- outcome: time, met (the condition held) or deadline (time ran out first).
+CREATE TABLE IF NOT EXISTS check_backs (
+ id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id),
+ chat_id TEXT NOT NULL REFERENCES chats(id), source_task_id TEXT REFERENCES tasks(id),
+ due_at {real} NOT NULL, note TEXT NOT NULL, condition TEXT,
+ state TEXT NOT NULL CHECK(state IN ('pending','starting','done','cancelled')),
+ next_check_at {real}, checks INTEGER NOT NULL DEFAULT 0, checked_at {real}, met_at {real},
+ check_error TEXT, task_id TEXT REFERENCES tasks(id),
+ outcome TEXT CHECK(outcome IN ('time','met','deadline')),
+ created_at {real} NOT NULL, updated_at {real} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS check_backs_due ON check_backs(state,due_at);
+CREATE INDEX IF NOT EXISTS check_backs_chat ON check_backs(chat_id,state);
+CREATE INDEX IF NOT EXISTS check_backs_source ON check_backs(source_task_id);
+CREATE INDEX IF NOT EXISTS check_backs_bot ON check_backs(bot_id,state);
+-- Memory after the chat (memory_capture.py), one row per owl. through_seq: the event seq up to
+-- which the owl's turns were read (a turn is read when the event that ended it comes after it, so
+-- clocks never matter); due_at: when its chat will have been quiet long enough to read the
+-- person's turns after it (NULL: nothing waits); attempt and attempt_at: the read running now,
+-- so only it moves the cursor; retries: reads of these turns that failed for a temporary reason;
+-- tidied_at: the owl's last memory tidy-up.
+CREATE TABLE IF NOT EXISTS memory_capture_state (
+ bot_id TEXT PRIMARY KEY REFERENCES bots(id), through_seq BIGINT NOT NULL,
+ due_at {real}, attempt TEXT, attempt_at {real}, retries INTEGER NOT NULL DEFAULT 0,
+ tidied_at {real}, updated_at {real} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_capture_due ON memory_capture_state(due_at);
 """

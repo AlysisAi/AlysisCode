@@ -373,11 +373,61 @@ def shared_desktop_check(output, url):
             display.close()
 
 
+# Run in the shell: through the installers' proxy, a host that is not a declared package index
+# must be refused by the guard (this check has no network, so no index is reachable either).
+UNDECLARED_HOST_PROBE = """
+import os, socket, urllib.parse
+proxy = urllib.parse.urlsplit(os.environ["PIP_PROXY"])
+with socket.create_connection((proxy.hostname, proxy.port), timeout=5) as link:
+    link.sendall(b"CONNECT example.com:443 HTTP/1.1\\r\\nHost: example.com:443\\r\\n\\r\\n")
+    reply = link.recv(64)
+assert reply.startswith(b"HTTP/1.1 403"), reply
+"""
+
+
+def package_installs_check():
+    """The shell reaches the computer's package-index guard, declares Python installs, and the
+    guard refuses an undeclared host. An actual install needs a computer with network."""
+    import shlex
+    import shutil
+
+    from alysis_code.bots.package_access import start_package_guard
+
+    root = Path(tempfile.mkdtemp(prefix="alysis-pkg-", dir="/tmp"))
+    guard = start_package_guard(root / "packages")
+    desktop = None
+    try:
+        if guard is None:
+            raise RuntimeError("The package-index guard did not start.")
+        with tempfile.TemporaryDirectory() as directory:
+            desktop = OfflineLinuxDesktop(
+                "package-check", Path(directory), packages=guard.directory
+            )
+            pip = desktop.call("package-check", "run", {"command": "pip --version"})
+            if pip["exit_code"] != 0 or "python" not in pip.get("package_indexes", ()):
+                raise RuntimeError("The shell did not declare Python package installs.")
+            probe = desktop.call(
+                "package-check",
+                "run",
+                {"command": "python3 -c " + shlex.quote(UNDECLARED_HOST_PROBE)},
+            )
+            if probe["exit_code"] != 0:
+                raise RuntimeError("The package guard was unreachable or admitted another host.")
+            return {"declared": pip["package_indexes"], "undeclared_host": "refused"}
+    finally:
+        if desktop:
+            desktop.close()
+        if guard:
+            guard.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main(output):
     if sys.prefix == sys.base_prefix or os.getuid() != 1000:
         raise RuntimeError("Use the worker managed environment as UID 1000.")
     output.mkdir(parents=True, exist_ok=True)
     report = {"package": package_matches_source()}
+    report["package_installs"] = package_installs_check()
     with tempfile.TemporaryDirectory() as directory:
         desktop = OfflineLinuxDesktop("image-check", Path(directory))
         try:

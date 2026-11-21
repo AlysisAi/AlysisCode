@@ -99,7 +99,8 @@ def test_create_inspect_greek_headings_and_table_without_network(tmp_path, monke
     "spec,message",
     [
         ({"blocks": []}, "1 and 200"),
-        ({"blocks": [{"kind": "chart"}]}, "Unsupported block"),
+        ({"blocks": [{"kind": "image"}]}, "Unsupported block"),
+        ({"blocks": [{"kind": "chart"}]}, "Block 1 \\(chart\\): categories: is required"),
         ({"blocks": [{"kind": "heading", "text": "X", "level": True}]}, "Heading level"),
         ({"blocks": [{"kind": "heading", "text": "X", "level": 10}]}, "Heading level"),
         ({"blocks": [{"kind": "paragraph", "text": "bad\x00"}]}, "unsupported by document XML"),

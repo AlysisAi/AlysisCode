@@ -31,6 +31,8 @@ from .object_storage_azure import AzureBlobStorage
 from .postgres import PostgresStore
 from .serving import serve
 
+CLOUD_METERING = ("controller", "external")
+
 
 @dataclass(frozen=True)
 class HostedConfig:
@@ -56,6 +58,10 @@ class HostedConfig:
     computer_stream_bots: tuple[str, ...] | None = None
     billing_url: str | None = None
     billing_key: str | None = field(default=None, repr=False)
+    # "controller": this service meters Cloud computers through the billing
+    # connection. "external": a separate operator service meters them, so the
+    # controller opens no billing connection and never debits a second time.
+    cloud_metering: str = "controller"
 
     def __post_init__(self):
         if self.computer_stream_url is not None:
@@ -91,6 +97,8 @@ class HostedConfig:
             or not 1 <= self.max_accounts <= 32
         ):
             raise ValueError("Use an explicit managed Cloud mode and a bounded account capacity")
+        if self.cloud_metering not in CLOUD_METERING:
+            raise ValueError("Cloud metering must be 'controller' or 'external'.")
         if self.expires_at is not None and (
             type(self.expires_at) not in (int, float) or not math.isfinite(self.expires_at)
         ):
@@ -103,17 +111,27 @@ class HostedConfig:
             raise ValueError("Provide both the public TLS certificate and private key")
 
 
+def controller_billing(hosted):
+    """The billing connection this controller meters through, or None.
+
+    Managed Cloud is metered either here or by a separate operator service; it
+    is never left unmetered by an incomplete bootstrap.
+    """
+    if not hosted.managed_cloud or hosted.cloud_metering == "external":
+        return None
+    from .cloud_billing import CloudBilling
+
+    if not hosted.billing_url or not hosted.billing_key:
+        raise ValueError("Managed Cloud requires its controller billing connection.")
+    return CloudBilling(hosted.billing_url, hosted.billing_key)
+
+
 def build(settings, hosted, credential, resources):
     """Credential injection also permits explicit isolated operator qualification."""
     if settings.database.parent.resolve() != hosted.state_directory.resolve():
         raise ValueError("Use the hosted scratch directory for local connection state")
-    billing = None
-    if hosted.managed_cloud:
-        from .cloud_billing import CloudBilling
-
-        if not hosted.billing_url or not hosted.billing_key:
-            raise ValueError("Managed Cloud requires its controller billing connection.")
-        billing = CloudBilling(hosted.billing_url, hosted.billing_key)
+    billing = controller_billing(hosted)
+    if billing:
         resources.callback(billing.close)
     storage = AzureBlobStorage(hosted.storage_url, hosted.storage_container, credential)
     resources.callback(storage.close)
@@ -188,7 +206,8 @@ def build(settings, hosted, credential, resources):
     authority = AccountAuthority(shared, browser_key)
 
     def create_account(owner):
-        billing.account(owner, shared).status()
+        if billing:
+            billing.account(owner, shared).status()
         config = replace(
             settings,
             owner=owner,
@@ -219,6 +238,9 @@ def bootstrap(stream):
         hosted_values["computer_stream_url"] = stream_url
     if stream_bots := os.environ.get("ALYSIS_BOTS_COMPUTER_STREAM_BOTS"):
         hosted_values["computer_stream_bots"] = tuple(stream_bots.split(","))
+    # Which service meters Cloud computers belongs to the host, like the image.
+    if metering := os.environ.get("ALYSIS_BOTS_CLOUD_METERING"):
+        hosted_values["cloud_metering"] = metering
     hosted = HostedConfig(
         **{**hosted_values, "state_directory": Path(hosted_values["state_directory"])}
     )

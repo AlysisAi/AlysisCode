@@ -16,15 +16,14 @@ from alysis_code.config import AppConfig, load_config, save_config
 def _seed_delegated_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path / "config"))
     cfg = AppConfig(
-        execution={"backend": "delegated", "runtime": "openai-codex"},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
         agent_runtimes={
-            "openai-codex": {"adapter": "codex-cli", "executable": "codex"},
+            "sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"},
         },
     )
     cfg.extra_fields = {
         "onboarded": True,
         "default_workspace_path": os.fspath(tmp_path),
-        "preserve_delegated_runtime": True,
     }
     save_config(cfg)
 
@@ -38,7 +37,7 @@ def test_run_dispatches_delegated_backend_without_native_model_or_api_key(
     monkeypatch.setattr(
         host_mod,
         "prepare_delegated_runtime",
-        lambda _cfg, **kwargs: calls.append(("prepare", kwargs)) or "openai-codex",
+        lambda _cfg, **kwargs: calls.append(("prepare", kwargs)) or "sample-agent",
     )
     monkeypatch.setattr(
         host_mod,
@@ -68,7 +67,7 @@ def test_chat_dispatches_delegated_backend_before_native_session_creation(
     monkeypatch.setattr(
         host_mod,
         "prepare_delegated_runtime",
-        lambda *_args, **_kwargs: calls.append("prepare") or "openai-codex",
+        lambda *_args, **_kwargs: calls.append("prepare") or "sample-agent",
     )
     monkeypatch.setattr(
         host_mod,
@@ -143,7 +142,7 @@ def test_delegated_fullaccess_is_rejected_before_provider_turn(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     _seed_delegated_config(tmp_path, monkeypatch)
-    monkeypatch.setattr(host_mod, "prepare_delegated_runtime", lambda *_a, **_k: "openai-codex")
+    monkeypatch.setattr(host_mod, "prepare_delegated_runtime", lambda *_a, **_k: "sample-agent")
     monkeypatch.setattr(
         host_mod,
         "run_runtime_turn",
@@ -170,7 +169,7 @@ def test_delegated_default_launch_falls_back_from_native_fullaccess(
     cfg.default_mode = "fullaccess"
     save_config(cfg)
     captured: dict[str, object] = {}
-    monkeypatch.setattr(host_mod, "prepare_delegated_runtime", lambda *_a, **_k: "openai-codex")
+    monkeypatch.setattr(host_mod, "prepare_delegated_runtime", lambda *_a, **_k: "sample-agent")
     monkeypatch.setattr(
         host_mod, "run_delegated_once", lambda **kwargs: captured.update(kwargs) or 0
     )
@@ -195,7 +194,7 @@ def test_delegated_run_resolves_required_deadline_from_environment(
     monkeypatch.setattr(
         host_mod,
         "prepare_delegated_runtime",
-        lambda *_args, **kwargs: captured.update(kwargs) or "openai-codex",
+        lambda *_args, **kwargs: captured.update(kwargs) or "sample-agent",
     )
     monkeypatch.setattr(host_mod, "run_delegated_once", lambda **_kwargs: 0)
 

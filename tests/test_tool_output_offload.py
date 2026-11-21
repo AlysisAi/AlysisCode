@@ -49,7 +49,7 @@ class _ArtifactReaderClient:
                     ToolCall(
                         id="read-artifact",
                         name="session_artifact_read",
-                        arguments={"locator": self._locator, "max_bytes": 10_000},
+                        arguments={"locator": self._locator, "offset": 2, "max_bytes": 10_000},
                     )
                 ],
                 raw={},
@@ -477,7 +477,7 @@ def test_session_artifact_reader_past_end_returns_empty_page(tmp_path: Path) -> 
     assert result["truncated"] is False
 
 
-def test_run_turn_does_not_reoffload_session_artifact_reader_output(
+def test_artifact_read_stays_complete_during_the_turn_and_is_reopenable_later(
     tmp_path: Path,
 ) -> None:
     workspace_root = tmp_path / "workspace"
@@ -518,7 +518,7 @@ def test_run_turn_does_not_reoffload_session_artifact_reader_output(
     )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     original = "artifact-page:" + "x" * 8_000
-    artifact_path.write_text(original, encoding="utf-8")
+    artifact_path.write_text("  " + original, encoding="utf-8")
     client = _ArtifactReaderClient(
         locator=session.store.session_artifact_layout.locator_for_path(artifact_path)
     )
@@ -527,10 +527,24 @@ def test_run_turn_does_not_reoffload_session_artifact_reader_output(
     try:
         assert session.run_turn("Inspect the saved artifact.") == 0
         log_path = session.store.path
+        assert session.run_turn("Use what you saw in your answer.") == 0
+        later_tool_message = next(
+            message
+            for message in client.calls[2]["messages"]
+            if message.get("tool_call_id") == "read-artifact"
+        )
+        page_reference = json.loads(later_tool_message["content"])
+        reopened = session_artifact_read(
+            artifact_layout=session.store.session_artifact_layout,
+            **page_reference["artifact_read"],
+        )
+        assert reopened["content"] == original
+        artifact_path.unlink()
+        assert session.run_turn("Review the retained artifact output.") == 0
     finally:
         session.close()
 
-    assert len(client.calls) == 2
+    assert len(client.calls) == 4
     followup_messages = client.calls[1]["messages"]
     tool_message = next(
         message for message in reversed(followup_messages) if message.get("role") == "tool"
@@ -540,10 +554,33 @@ def test_run_turn_does_not_reoffload_session_artifact_reader_output(
     assert read_result["bytes_returned"] == len(original.encode("utf-8"))
     assert read_result["has_more"] is False
     assert "offloaded" not in read_result
+    assert page_reference["content_preview"] == original[:2_000]
+    assert "content" not in page_reference
+    assert page_reference["artifact_read"] == {
+        "locator": read_result["locator"],
+        "offset": read_result["offset"],
+        "max_bytes": read_result["max_bytes"],
+    }
+    assert page_reference["bytes_returned"] == read_result["bytes_returned"]
+    assert page_reference["next_offset"] == read_result["next_offset"]
+    missing_file_message = next(
+        message
+        for message in client.calls[3]["messages"]
+        if message.get("tool_call_id") == "read-artifact"
+    )
+    assert missing_file_message == tool_message
 
+    events = list(read_session_events(log_path))
+    saved_read = next(
+        event["payload"]
+        for event in events
+        if event.get("type") == "tool_result"
+        and event["payload"].get("tool_call_id") == "read-artifact"
+    )
+    assert json.loads(saved_read["content"])["content"] == original
     reader_offloads = [
         event
-        for event in read_session_events(log_path)
+        for event in events
         if event.get("type") == "tool_output_offloaded"
         and (event.get("payload") or {}).get("tool") == "session_artifact_read"
     ]

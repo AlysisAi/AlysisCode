@@ -2,9 +2,10 @@
 
 The parent owns credentials and authorization. This executor receives neither.
 It is a process/mount/network boundary inside the disposable lab, not a claim of
-production tenant isolation. A trusted Cloud bridge may supply its owned display
-and a launcher request directory; it never mounts a host home or service socket.
-Standalone local desktops stay offline. Runtime tool admission is separate.
+production tenant isolation. A trusted Cloud bridge may supply its owned display,
+a launcher request directory and its package-index guard (package_access.py); it
+never mounts a host home or service socket. Standalone local desktops stay
+offline. Runtime tool admission is separate.
 """
 
 from __future__ import annotations
@@ -73,6 +74,13 @@ def available() -> bool:
         return True
 
 
+def declared_features(features) -> frozenset[str]:
+    """The feature words a desktop declared (an older one declares none)."""
+    if not isinstance(features, list | tuple | set | frozenset):
+        return frozenset()
+    return frozenset(item for item in features if isinstance(item, str) and len(item) <= 64)
+
+
 class DesktopError(RuntimeError):
     pass
 
@@ -83,6 +91,11 @@ class DesktopCapacityBusy(DesktopError):
 
 class ComputerActionUncertain(DesktopError):
     """An action may have run; end this task instead of offering a retry."""
+
+
+class ComputerReplyTooLarge(DesktopError):
+    """A request that changes nothing ran, but its reply was too large to receive. The computer
+    keeps working; ask for less (a page as text, a part of a file)."""
 
 
 class DesktopStartupCleanupError(DesktopError):
@@ -102,6 +115,7 @@ class OfflineLinuxDesktop:
         cancel=lambda: False,
         shared_display=None,
         launchers=None,
+        packages=None,
     ):
         if platform.system() != "Linux":
             raise DesktopError("The private desktop executor requires Linux.")
@@ -117,7 +131,24 @@ class OfflineLinuxDesktop:
                 raise ValueError("Cloud display socket ownership was not confirmed.")
             if launchers is None or not launchers.is_dir() or launchers.is_symlink():
                 raise ValueError("A private Cloud launcher directory is required.")
+        if packages is not None:
+            # An owl computer's package-index guard (package_access.py): its socket and index
+            # list, owned by this identity, are all that crosses into the networkless jail.
+            from .package_access import INDEXES, SOCKET
+
+            if (
+                not isinstance(packages, Path)
+                or packages.is_symlink()
+                or not packages.is_dir()
+                or packages.stat().st_uid != os.getuid()
+                or packages.stat().st_mode & 0o077
+                or not (packages / SOCKET).is_socket()
+                or (packages / INDEXES).is_symlink()
+                or not (packages / INDEXES).is_file()
+            ):
+                raise ValueError("The package-index guard directory was not confirmed.")
         self.shared_display, self.launchers = shared_display, launchers
+        self.packages = packages
         self.owner = owner
         self.session_id = uuid4().hex
         self.workspace = workspace.resolve(strict=True)
@@ -128,6 +159,9 @@ class OfflineLinuxDesktop:
         self._cleaned = False
         self._process = None
         self._buffer = b""
+        # What the desktop declared it can do when it started (desktop_worker.ELEMENTS); none
+        # for an older worker.
+        self.desktop_features = frozenset()
         self._directory = tempfile.TemporaryDirectory(prefix="alysis-offline-computer-")
         root = Path(self._directory.name)
         (root / "screen").mkdir(mode=0o700)
@@ -146,13 +180,18 @@ class OfflineLinuxDesktop:
                 close_fds=True,
                 bufsize=0,
             )
-            self._request("ping", {}, cancel=cancel, timeout=15)
+            self._handshake(cancel)
         except BaseException:
             try:
                 self.close()
             except Exception:
                 raise DesktopStartupCleanupError(self) from None
             raise
+
+    def _handshake(self, cancel) -> None:
+        """Wait for the desktop's readiness and record what it declares it can do."""
+        ready = self._request("ping", {}, cancel=cancel, timeout=15)
+        self.desktop_features = declared_features(ready.get("features"))
 
     def rfb(self, args):
         from .screen_channel import live
@@ -204,6 +243,9 @@ class OfflineLinuxDesktop:
                 "--ro-bind",
                 str(Path(__file__).with_name("desktop_rfb.py")),
                 "/opt/desktop_rfb.py",
+                "--ro-bind",
+                str(Path(__file__).with_name("desktop_accessibility.py")),
+                "/opt/desktop_accessibility.py",
                 "--bind",
                 str(root / "screen"),
                 "/run/alysis-screen",
@@ -253,6 +295,11 @@ class OfflineLinuxDesktop:
                     "/run/alysis-launchers",
                 ]
             )
+        if self.packages is not None:
+            from .package_access import PACKAGES_IN_COMPUTER
+
+            # Read-only: the shell can connect to the guard's socket, never replace it.
+            args.extend(["--ro-bind", str(self.packages), PACKAGES_IN_COMPUTER])
         paths = runtime_paths()
         # A bundled interpreter can itself live under /tmp. Mount it after the
         # private /tmp and seal its virtual ancestors, without exposing siblings.
@@ -362,8 +409,14 @@ class OfflineLinuxDesktop:
             "type",
             "key",
             "scroll",
+            "element",
+            "pointer",
+            "focus_window",
+            "read_clipboard",
             "run",
             "launch",
+            "command_start",
+            "command_wait",
             "status",
             "stop_process",
             "write_file",
