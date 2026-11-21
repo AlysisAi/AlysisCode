@@ -365,6 +365,18 @@ def test_unittest_discovery_hook_failure_is_not_erased_by_narrower_pass(
     assert final_state["missing_verification_commands"] == ([_INFERRED_COMMAND] if explicit else [])
     assert final_state["failed_verification_commands"] == ([_INFERRED_COMMAND] if explicit else [])
     assert final_state["unresolved_observed_verification_failures"] == (0 if explicit else 1)
+    assert final_state["last_observed_verification_failure_tool_call_id"] == (
+        None if explicit else "declared-discovery"
+    )
+    assert session.last_turn_outcome["verification_failures"] == (
+        {"required_count": 1, "observed_count": 0}
+        if explicit
+        else {
+            "required_count": 0,
+            "observed_count": 1,
+            "last_observed_tool_call_id": "declared-discovery",
+        }
+    )
     assert (
         final_state[
             "supplemental_verification_evidence" if explicit else "accepted_verification_evidence"

@@ -26,6 +26,17 @@ class ComputeUncertain(ComputeError):
     """Dispatch may have happened. Reconcile; never replay automatically."""
 
 
+class ComputeReplyTooLarge(ComputeUncertain):
+    """The command was sent, but its receipt is larger than this host reads, so its outcome is
+    not confirmed: never replay it. Only a request that changes nothing may be asked again."""
+
+
+# The largest reply a computer's worker prints for one request: one browser page snapshot, which
+# an owl's browser bounds at 2 MiB of compact UTF-8 JSON (browser_linux.OWL_PAGE_SNAPSHOT_BYTES),
+# inside the worker's receipt envelope. A transport reads at least this much of a receipt.
+WORKER_REPLY_BYTES = 2 * 1024 * 1024 + 64 * 1024
+
+
 class ComputeStopped(ComputeError):
     """The provider stopped this computer on purpose (for example, its device was almost out of
     disk space) and refused the request before sending it. The message is safe to show."""

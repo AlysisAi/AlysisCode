@@ -378,6 +378,7 @@ def test_restart_interrupts_active_run_without_replay_and_the_next_run_goes_ahea
     s = store.save_schedule("alice", bot, data(), now=1000)
     store.enqueue_due_schedules("alice", max_calls=10, now=1300)
     task = store.claim("alice")
+    store.event("alice", task["id"], "tool_started", {"name": "browser_type"})
     restarted = Store(store.path)
     restarted.recover("alice")
     assert restarted.task("alice", task["id"])["status"] == "interrupted"

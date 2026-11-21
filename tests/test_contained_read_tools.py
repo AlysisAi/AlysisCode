@@ -137,6 +137,9 @@ def test_posix_worker_quotes_payload_and_off_mode_keeps_explicit_host_semantics(
     assert pattern not in calls[0]["cmd"]
     encoded = calls[0]["cmd"].split()[-1]
     assert json.loads(base64.b64decode(encoded))["arguments"]["pattern"] == pattern
+    worker.run("fs_read", {"path": "notes.txt"})
+    worker.run("fs_list", {})
+    assert [call.get("system_path_only", False) for call in calls] == [False, True, False]
 
 
 def test_recursive_worker_supports_normal_repo_and_test_discovery(tmp_path):
@@ -156,6 +159,50 @@ def test_strict_reader_refuses_missing_backend_instead_of_falling_back(tmp_path,
     assert worker is not None
     with pytest.raises(ConfigError, match="no host fallback"):
         worker.run("fs_list", {})
+
+
+@pytest.mark.parametrize("with_receipt", [True, False])
+def test_contained_write_accepts_matching_receipt_and_older_workers(
+    tmp_path, monkeypatch, with_receipt
+):
+    import hashlib
+
+    from alysis_code.committed_edits import observe
+    from alysis_code.sandbox_runner import SandboxBackendChoice
+    from alysis_code.tools.fs import capture_file_precondition
+
+    monkeypatch.setattr(
+        contained, "select_shell_sandbox_backend", lambda _: SandboxBackendChoice("windows-mxc")
+    )
+    worker = contained.ContainedReadTools(ShellSandboxSettings(), tmp_path)
+    args = {
+        "path": "x",
+        "content": "example",
+        "precondition": asdict(capture_file_precondition(root=tmp_path, path="x")),
+    }
+    after = hashlib.sha256(b"example").hexdigest()
+    evidence = {"path": "x", "before": None, "after": after, "added": 1, "removed": 0}
+
+    class Runner:
+        def run_file_worker(self, *, arguments, root, **_):
+            import os
+
+            from alysis_code.host_file_handles import open_windows_packet_read
+
+            packet = root / arguments[1]
+            with open_windows_packet_read(packet) if os.name == "nt" else packet.open("rb") as f:
+                request = json.load(f)
+            assert request == {"tool": "fs_write_prepared", "arguments": args}
+            envelope = {"ok": True, "result": {"created": True}}
+            if with_receipt:
+                envelope["committed_edit"] = evidence
+            return subprocess.CompletedProcess([], 0, json.dumps(envelope), "")
+
+    worker.write_runner = Runner()
+    edits = []
+    with observe(tmp_path, edits.append):
+        assert worker.run_write("fs_write_prepared", args) == {"created": True}
+    assert edits == ([evidence] if with_receipt else [])
 
 
 def test_contained_prepared_write_preserves_stale_file_semantics(tmp_path):

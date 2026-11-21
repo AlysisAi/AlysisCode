@@ -13,7 +13,7 @@ from alysis_code import cli as cli_mod
 from alysis_code import config
 from alysis_code.cli import app
 from alysis_code.config import AppConfig, ConfigError
-from alysis_code.ide import management_protocol
+from alysis_code.ide import management_protocol, management_settings
 from alysis_code.ide.health import SUPPORTED_METHODS
 from alysis_code.ide.protocol import ProtocolError
 from alysis_code.profiles import ProfileSpec, add_profile, set_active_profile
@@ -204,7 +204,7 @@ def test_a_project_agent_is_listed_but_changed_in_its_own_file(tmp_path: Path) -
 
 def test_agents_list_is_a_read_only_management_method(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = profiles_cfg()
-    monkeypatch.setattr(management_protocol, "load_config", lambda: cfg)
+    monkeypatch.setattr(management_settings, "load_config", lambda: cfg)
 
     payload = management_protocol.handle_management_method("agents.list", {}, request_id=1)
 

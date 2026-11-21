@@ -158,7 +158,8 @@ def append_browser_image(messages: list[dict], result: BrowserImageResult) -> No
     image = {"type": "image_url", "image_url": {"url": result.image_url}}
     _image_size(image)
     retire_browser_images(messages)
-    if isinstance(result, FileImageResult):
+    if result.caption:
+        # A Library file's image, or a page image for looking only (it names what it shows).
         caption = result.caption
     else:
         source = result.observation["source_id"]

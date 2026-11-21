@@ -222,10 +222,10 @@ def test_bot_created_files_never_emit_and_review_has_no_write_tools(setup):
                     [ToolCall("write", "save_file", {"name": "bad.txt", "content": "unapproved"})],
                     {},
                 )
-            assert (
-                "Invalid tool arguments"
-                in next(m for m in reversed(kwargs["messages"]) if m["role"] == "tool")["content"]
-            )
+            refused = next(m for m in reversed(kwargs["messages"]) if m["role"] == "tool")
+            # Told the tool is not offered here (not that its arguments were wrong).
+            assert "save_file is not offered now" in refused["content"]
+            assert '"executed":false' in refused["content"].replace(" ", "")
             return LLMResponse("Reviewed", [], {})
 
     runtime = BotRuntime(store, "owner", lambda _: Model())

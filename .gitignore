@@ -59,7 +59,7 @@ owner-scoping.patch
 alysis_ecs.tar.gz
 sylliptor_ecs.tar.gz
 
-# Claude Code local config
+# Other coding tools' local folders
 .claude/
 .codex/
 

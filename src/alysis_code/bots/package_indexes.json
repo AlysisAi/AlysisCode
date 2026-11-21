@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "description": "The only hosts an owl computer's shell can reach: package indexes for package installs, over HTTPS (port 443). Each index lists its index URL and every host its installer downloads from. Changing this list changes what owls can install; review it like code. Only indexes whose upload address differs from their download hosts belong here: an index that also accepts uploads on these hosts would let a package or a tricked command publish the computer's files.",
+  "indexes": {
+    "python": {
+      "index_url": "https://pypi.org/simple/",
+      "hosts": [
+        "pypi.org",
+        "files.pythonhosted.org"
+      ]
+    }
+  }
+}

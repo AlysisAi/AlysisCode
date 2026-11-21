@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 PROTOCOL_VERSION = "1"
+EXPLICIT_SKILL_INVOCATION = {"version": 1, "field": "skill", "scope": "turn"}
 MAX_REQUEST_BYTES = 1024 * 1024
 
 JsonPrimitive: TypeAlias = str | int | float | bool | None
@@ -218,3 +219,33 @@ def error_message(
 
 def dumps_message(payload: dict[str, Any]) -> str:
     return json.dumps(redact_secrets(payload), ensure_ascii=True, sort_keys=True) + "\n"
+
+
+def _contains_secret_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(
+            _is_secret_key(key) or _contains_secret_key(child) for key, child in value.items()
+        )
+    if isinstance(value, list | tuple):
+        return any(_contains_secret_key(child) for child in value)
+    return False
+
+
+def _is_secret_key(key: object) -> bool:
+    lowered = str(key).lower()
+    if lowered in {"api_key_env"}:
+        return False
+    return any(
+        marker in lowered
+        for marker in ("api_key", "token", "secret", "password", "credential", "authorization")
+    )
+
+
+def reject_inline_secrets(params: dict[str, Any], *, request_id: RequestId) -> None:
+    if not _contains_secret_key(params):
+        return
+    raise ProtocolError(
+        "inline_secret_rejected",
+        "Secrets must be provided through configured Alysis Code credential sources, not IDE protocol params.",
+        request_id=request_id,
+    )

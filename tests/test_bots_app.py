@@ -25,13 +25,26 @@ def test_browser_configuration_is_explicit_linux_only_and_lazy(tmp_path, monkeyp
     monkeypatch.setattr("alysis_code.bots.app.platform.system", lambda: "Linux")
     computers = create_app(replace(settings, browser_enabled=True)).state.runtime.browser_computers
     assert computers.views.frame(settings.owner, "bot") == {"state": "not_running"}
-    assert {s["function"]["name"] for s in computers.schemas({"bot_id": "bot"}, True)} == {
+    # Without any website permission only reading tools are offered; scrolling is reading.
+    schemas = computers.schemas({"bot_id": "bot"}, True)
+    reading = {
         "browser_navigate",
         "browser_pages",
         "browser_close_page",
         "browser_switch_page",
         "browser_observe",
         "browser_source",
+        "browser_scroll",
+    }
+    # Before a browser runs a step is offered today's reading tools; the newer ones that only
+    # read come once the running browser declares them.
+    offered = computers.offered({"bot_id": "bot"}, schemas)
+    assert {s["function"]["name"] for s in offered} == reading
+    assert {s["function"]["name"] for s in schemas} == reading | {
+        "browser_hover",
+        "browser_wait",
+        "browser_read_value",
+        "browser_history",
     }
     computers.close()
 

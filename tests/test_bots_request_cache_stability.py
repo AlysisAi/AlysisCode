@@ -59,8 +59,10 @@ class _Client:
 
 
 def _call(call_id, text: str = "", name: str = "list_memories", arguments=None) -> LLMResponse:
+    # Each step its own call: the same call again and again is a stuck model, and stops.
+    arguments = arguments or {"query": f"item {call_id}"}
     return LLMResponse(
-        text, [ToolCall(str(call_id), name, arguments or {})], {}, usage=LLMUsage(10, 5, 15)
+        text, [ToolCall(str(call_id), name, arguments)], {}, usage=LLMUsage(10, 5, 15)
     )
 
 

@@ -494,32 +494,58 @@ def extract_management_method_features() -> set[FeatureRef]:
     return {FeatureRef("ide_bridge_method", method) for method in sorted(methods)}
 
 
-def extract_management_handler_features() -> set[FeatureRef]:
-    tree = _parse_python(IDE_MANAGEMENT_PROTOCOL_PATH)
+def _module_assignment(tree: ast.Module, name: str) -> ast.AST | None:
     for node in tree.body:
-        value: ast.AST | None = None
         if isinstance(node, ast.Assign):
-            if any(
-                isinstance(target, ast.Name) and target.id == "_HANDLERS" for target in node.targets
-            ):
-                value = node.value
+            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+                return node.value
         elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.target.id == "_HANDLERS":
-                value = node.value
-        if value is None:
+            if isinstance(node.target, ast.Name) and node.target.id == name:
+                return node.value
+    return None
+
+
+def _imported_module_path(tree: ast.Module, path: Path, name: str) -> Path | None:
+    """Where a same-package ``from .module import name`` in ``tree`` defines ``name``."""
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+            if any(alias.name == name and alias.asname in (None, name) for alias in node.names):
+                return path.parent / f"{node.module.replace('.', '/')}.py"
+    return None
+
+
+def _static_handler_keys(
+    path: Path, name: str, seen: frozenset[tuple[Path, str]] = frozenset()
+) -> set[str]:
+    """The literal keys of a static handler dict, following ``**OTHER`` spreads of static dicts."""
+    if (path, name) in seen:
+        raise ExtractionError(f"TODO: {name} spreads itself")
+    tree = _parse_python(path)
+    value = _module_assignment(tree, name)
+    if value is None:
+        source = _imported_module_path(tree, path, name)
+        if source is None or not source.is_file():
+            raise ExtractionError(f"TODO: {name} is missing from {path.name}")
+        return _static_handler_keys(source, name, seen | {(path, name)})
+    if not isinstance(value, ast.Dict):
+        raise ExtractionError(f"TODO: {name} must remain a static dict")
+    keys: set[str] = set()
+    for key, item in zip(value.keys, value.values, strict=True):
+        if key is None and isinstance(item, ast.Name):
+            keys |= _static_handler_keys(path, item.id, seen | {(path, name)})
             continue
-        if not isinstance(value, ast.Dict):
-            raise ExtractionError("TODO: _HANDLERS must remain a static dict")
-        methods: set[FeatureRef] = set()
-        for key in value.keys:
-            method = _literal_str(key)
-            if method is None:
-                raise ExtractionError("TODO: non-literal management handler key")
-            methods.add(FeatureRef("ide_bridge_method", method))
-        if not methods:
-            raise ExtractionError("TODO: no management handlers found in _HANDLERS")
-        return methods
-    raise ExtractionError("TODO: _HANDLERS is missing from management_protocol.py")
+        method = _literal_str(key)
+        if method is None:
+            raise ExtractionError("TODO: non-literal management handler key")
+        keys.add(method)
+    return keys
+
+
+def extract_management_handler_features() -> set[FeatureRef]:
+    methods = _static_handler_keys(IDE_MANAGEMENT_PROTOCOL_PATH, "_HANDLERS")
+    if not methods:
+        raise ExtractionError("TODO: no management handlers found in _HANDLERS")
+    return {FeatureRef("ide_bridge_method", method) for method in methods}
 
 
 def _literal_string_container(node: ast.AST) -> set[str] | None:

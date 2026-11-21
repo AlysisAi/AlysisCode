@@ -8,6 +8,7 @@ Narrow package-preserving editing is adapted from the app's work-documents helpe
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import re
 import unicodedata
 from io import BytesIO
@@ -20,8 +21,11 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor, Twips
 from lxml import etree
 
+from . import charts
+
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": W}
+CHART_TYPE = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
 DOC_PART = "word/document.xml"
 MAIN_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
@@ -39,6 +43,12 @@ GUIDE = {
             {"kind": "table", "rows": [["Item", "Value"], ["Total", "10"]]},
         ],
     },
+    "chart": {
+        "block": {"kind": "chart", **charts.EXAMPLE},
+        "shape": charts.SHAPE,
+        "placement": "A chart block is a native Word chart at the full text width; its data "
+        "is an embedded workbook that Word's Edit Data opens.",
+    },
     "edit": {
         "expected_source_sha256": "Copy source_sha256 from inspect",
         "edits": [
@@ -51,13 +61,13 @@ GUIDE = {
         ],
     },
     "limits": [
-        "Create: 1-200 blocks; heading levels 1-9; tables 1-200 rows and 1-8 columns.",
+        "Create: 1-200 blocks; heading levels 1-9; tables 1-200 rows and 1-8 columns; charts as in chart.",
         "The optional title is inserted as the first paragraph.",
-        "Inspect: main-body/table paragraphs only; headers, footers, notes and images are not extracted.",
+        "Inspect: main-body/table paragraphs only; headers, footers, notes and images are not extracted. Charts are listed with their kind, title and series.",
         "Edit: 1-100 inline replacements, one per editable paragraph, each find occurs exactly once.",
         "Edits require both source and paragraph SHA-256; unsupported complex selections fail.",
         "Replacement inherits formatting at the match start; pagination can change.",
-        "DOCX only; no macros, embedded files, active controls, signatures or external links other than hyperlinks.",
+        "DOCX only; no macros, embedded files other than chart data, active controls, signatures or external links other than hyperlinks.",
         "No docxtpl execution, renderer or visual approval in this adapter.",
     ],
 }
@@ -138,8 +148,15 @@ def _parts(data: bytes) -> dict[str, bytes]:
         raise ValueError("File is not a readable DOCX package") from error
     if not {DOC_PART, "[Content_Types].xml", "_rels/.rels"}.issubset(parts):
         raise ValueError("Required DOCX package parts are missing")
+    chart_data = _chart_workbooks(parts)
     for name, value in parts.items():
-        if any(
+        if name in chart_data:
+            # A chart's own data workbook (what Word's Edit Data opens), checked to be a
+            # plain workbook; any other embedded file stays unsupported.
+            problem = charts.chart_workbook_problem(value)
+            if problem:
+                raise ValueError(problem)
+        elif any(
             marker in name.lower()
             for marker in ("vbaproject", "embeddings/", "activex/", "_xmlsignatures/")
         ):
@@ -168,6 +185,64 @@ def _parts(data: bytes) -> dict[str, bytes]:
     if root.tag != qn("w:document") or root.find(qn("w:body")) is None:
         raise ValueError("DOCX main part must contain a Word document body")
     return parts
+
+
+def _chart_workbooks(parts: dict[str, bytes]) -> set[str]:
+    """The .xlsx parts that chart parts hold their data in (their package relationships)."""
+    types = {
+        item.get("PartName", "").lstrip("/"): item.get("ContentType")
+        for item in _xml(parts["[Content_Types].xml"])
+        if item.tag.endswith("}Override")
+    }
+    result = set()
+    for name, value in parts.items():
+        folder, file = posixpath.split(name)
+        if posixpath.basename(folder) != "_rels" or not file.endswith(".rels"):
+            continue
+        source = posixpath.join(posixpath.dirname(folder), file[: -len(".rels")])
+        if types.get(source) != CHART_TYPE:
+            continue
+        for relation in _xml(value):
+            target = relation.get("Target", "")
+            if (
+                relation.get("Type") == charts.PACKAGE_RELATIONSHIP
+                and relation.get("TargetMode", "").lower() != "external"
+                and target.lower().endswith(".xlsx")
+            ):
+                result.add(
+                    target.lstrip("/")
+                    if target.startswith("/")
+                    else posixpath.normpath(posixpath.join(posixpath.dirname(source), target))
+                )
+    return result
+
+
+def _charts(parts: dict[str, bytes], root, paragraphs: list) -> list[dict]:
+    """The charts in the main body: where they are, their kind, title and series."""
+    targets = {}
+    rels = parts.get("word/_rels/document.xml.rels")
+    for relation in _xml(rels) if rels else ():
+        if (
+            relation.get("Type") == charts.CHART_RELATIONSHIP
+            and relation.get("TargetMode", "").lower() != "external"
+        ):
+            target = relation.get("Target", "")
+            targets[relation.get("Id")] = (
+                target.lstrip("/")
+                if target.startswith("/")
+                else posixpath.normpath(posixpath.join("word", target))
+            )
+    found = []
+    for element in root.xpath("/w:document/w:body//c:chart", namespaces={**NS, "c": charts.C}):
+        part = targets.get(element.get(f"{{{charts.R}}}id"))
+        if part not in parts or len(found) >= charts.MAX_CHARTS:
+            continue
+        paragraph = next(element.iterancestors(qn("w:p")), None)
+        entry = {"locator": None, **charts.summarize(parts[part])}
+        if paragraph is not None and paragraph in paragraphs:
+            entry["locator"] = f"paragraph:{paragraphs.index(paragraph) + 1}"
+        found.append(entry)
+    return found
 
 
 def _paragraphs(root) -> list:
@@ -238,7 +313,8 @@ def _metadata(data: bytes, parts: dict | None = None) -> dict:
     restriction = _document_edit_restriction(parts, root)
     records = []
     characters = 0
-    for index, paragraph in enumerate(_paragraphs(root), 1):
+    paragraphs = _paragraphs(root)
+    for index, paragraph in enumerate(paragraphs, 1):
         text = _paragraph_text(paragraph)
         characters += len(text)
         if characters > MAX_CHARACTERS:
@@ -279,6 +355,7 @@ def _metadata(data: bytes, parts: dict | None = None) -> dict:
         "paragraphs": records,
         "paragraph_count": len(records),
         "table_count": len(root.xpath("/w:document/w:body//w:tbl", namespaces=NS)),
+        "charts": _charts(parts, root, paragraphs),
         "package_part_count": len(parts),
         "coverage": {
             "status": "partial"
@@ -365,6 +442,61 @@ def _fit_columns(table, rows: list[list[str]], total: int) -> None:
             cell.width = Twips(width)
 
 
+_INLINE_CHART = (
+    '<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="0" cy="0"/>'
+    '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="Chart"/>'
+    "<wp:cNvGraphicFramePr/><a:graphic>"
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+    '<c:chart r:id=""/></a:graphicData></a:graphic></wp:inline></w:drawing>'
+)
+
+
+def _chart_height(chart: charts.Chart, width: int, page_height: int) -> int:
+    """A chart's height for its width: a 5:3 frame, taller for many horizontal bars."""
+    height = width * 3 // 5
+    if chart.chart == "bar":
+        # About a third of an inch per category keeps horizontal bars and their labels legible.
+        height = max(height, Inches(1.4) + Inches(0.3) * len(chart.categories))
+    return int(min(height, page_height * 9 // 10))
+
+
+def _add_chart(document, chart: charts.Chart, width: int, page_height: int) -> None:
+    """A native Word chart in its own paragraph: a chart part, its data workbook, and an
+    inline drawing that shows the chart at the full text width."""
+    from docx.opc.constants import CONTENT_TYPE, RELATIONSHIP_TYPE
+    from docx.opc.part import Part
+    from docx.oxml import parse_xml
+
+    package = document.part.package
+    chart_name = package.next_partname("/word/charts/chart%d.xml")
+    workbook_name = package.next_partname("/word/embeddings/Microsoft_Excel_Sheet%d.xlsx")
+    # A new part's first relationship is rId1; the chart XML cites its workbook by it.
+    xml, workbook = charts.chart_part(chart, "rId1")
+    chart_part = Part(chart_name, CONTENT_TYPE.DML_CHART, xml, package)
+    data_part = Part(workbook_name, CONTENT_TYPE.SML_SHEET, workbook, package)
+    if chart_part.relate_to(data_part, RELATIONSHIP_TYPE.PACKAGE) != "rId1":
+        raise RuntimeError("The chart's data relationship was not its first")
+    drawing = parse_xml(_INLINE_CHART)
+    extent = drawing.find(".//" + qn("wp:extent"))
+    extent.set("cx", str(int(width)))
+    extent.set("cy", str(_chart_height(chart, int(width), int(page_height))))
+    properties = drawing.find(".//" + qn("wp:docPr"))
+    identifier = document.part.next_id
+    properties.set("id", str(identifier))
+    properties.set("name", f"Chart {identifier}")
+    if chart.title:
+        properties.set("descr", chart.title)
+    drawing.find(".//" + qn("c:chart")).set(
+        qn("r:id"), document.part.relate_to(chart_part, RELATIONSHIP_TYPE.CHART)
+    )
+    document.add_paragraph().add_run()._r.append(drawing)
+
+
 def create(spec: dict, output: Path, workspace: Path) -> dict:
     """Create an editable, text-led DOCX at a new staged output path."""
     _spec(spec, {"title", "blocks"})
@@ -375,11 +507,22 @@ def create(spec: dict, output: Path, workspace: Path) -> dict:
     # Validate the entire specification before constructing potentially large tables.
     characters = len(title or "")
     paragraph_count = int(title is not None)
-    for block in blocks:
+    chart_specs = {}
+    for number, block in enumerate(blocks, 1):
         if not isinstance(block, dict):
             raise ValueError("Each content block must be an object")
         kind = block.get("kind")
-        if kind in ("paragraph", "heading"):
+        if kind == "chart":
+            if len(chart_specs) >= charts.MAX_CHARTS:
+                raise ValueError(f"A document can hold at most {charts.MAX_CHARTS} charts")
+            chart = charts.parse(
+                {key: value for key, value in block.items() if key != "kind"},
+                f"Block {number} (chart)",
+            )
+            chart_specs[number] = chart
+            characters += chart.text_length()
+            paragraph_count += 1
+        elif kind in ("paragraph", "heading"):
             paragraph_count += 1
             _object(
                 block, {"kind", "text", "level"} if kind == "heading" else {"kind", "text"}, "block"
@@ -426,8 +569,12 @@ def create(spec: dict, output: Path, workspace: Path) -> dict:
     document.styles["Normal"].paragraph_format.space_after = Pt(8)
     if title:
         document.add_paragraph(title, "Title")
-    for block in blocks:
-        if block["kind"] == "heading":
+    for number, block in enumerate(blocks, 1):
+        if block["kind"] == "chart":
+            width = section.page_width - section.left_margin - section.right_margin
+            height = section.page_height - section.top_margin - section.bottom_margin
+            _add_chart(document, chart_specs[number], width, height)
+        elif block["kind"] == "heading":
             document.add_heading(block["text"], level=block.get("level", 1))
         elif block["kind"] == "paragraph":
             document.add_paragraph(block["text"])

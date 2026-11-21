@@ -18,6 +18,12 @@ from ..agent.errors import ApprovalReviewDeniedError
 from ..cancellation import raise_if_cancelled
 from ..read_only_commands import is_read_only_command
 from ..surface import ApprovalRequest
+from .browser_effects import (
+    EFFECT_REASONS,
+    HOST_EFFECTS,
+    PERSON_EFFECTS,
+    WEBSITE_REVIEW_POLICY,
+)
 from .models import Input
 from .store import Conflict, NotFound, encode, uid
 
@@ -193,7 +199,11 @@ class ActionReviews:
             }
         return result
 
-    def request(self, task, action, reason):
+    def request(self, task, action, reason, effect=None):
+        """Ask the person about ``action``. ``effect``: what the step would do that made it wait,
+        as the page's structure settled it or the reviewer named it (browser_effects:
+        PERSON_EFFECTS, UNREADABLE_FRAME, or "none" when the reviewer saw none but still asked);
+        None when nothing named one. The pending item carries it for the person's card."""
         with self.store.connect(write=True) as db:
             current = self.store._task(db, self.owner, task["id"])
             if not self.store.executing(db, current):
@@ -204,7 +214,9 @@ class ActionReviews:
             ).fetchone()
             if not old:
                 db.execute(
-                    "INSERT INTO bot_action_reviews VALUES(?,?,?,?,?,'pending',1,?,NULL,?)",
+                    "INSERT INTO bot_action_reviews(id,bot_id,task_id,action,generation,status,"
+                    "revision,created_at,decided_at,reason,effect) "
+                    "VALUES(?,?,?,?,?,'pending',1,?,NULL,?,?)",
                     (
                         uid(),
                         task["bot_id"],
@@ -213,6 +225,7 @@ class ActionReviews:
                         self._generation(db, task),
                         time.time(),
                         reason,
+                        effect if effect in (*HOST_EFFECTS, "none") else None,
                     ),
                 )
                 self.store._event(
@@ -557,7 +570,9 @@ class BotActionReviewer:
                     (task["id"],),
                 )
             ]
-        return [request, *corrections]
+        # The messages the person sent to it while it ran (steering.py) come before any
+        # correction to its background continuation, as they were said.
+        return [request, *runtime.steering.words(task["id"]), *corrections]
 
     def events_since(self, cursor):
         texts = self.user_messages()
@@ -566,19 +581,54 @@ class BotActionReviewer:
             len(texts),
         )
 
-    def check(self, name, arguments, context=None, *, private_computer=False, always_ask=False):
+    def check(
+        self,
+        name,
+        arguments,
+        context=None,
+        *,
+        private_computer=False,
+        always_ask=False,
+        website_effects=None,
+    ):
         """Gate one computer action. ``private_computer`` marks an action on the owl's own
-        offline computer: no internet, personal accounts or service credentials, and only
-        copies of the person's files. The person's request already approved that computer for
-        this task, so in automatic mode its actions never wait for the person or a review.
+        offline computer: no internet (package installs reach only the package indexes its
+        computer declares), personal accounts or service credentials, and only copies of the
+        person's files. The person's request already approved that computer for this task, so
+        in automatic mode its actions, installs included, never wait for the person or a review.
         ``always_ask`` marks an action that must always wait for the person (a plugin change that
-        reaches other people or cannot be undone); it takes precedence over every rule and mode."""
+        reaches other people or cannot be undone); it takes precedence over every rule and mode.
+        ``website_effects`` (a sequence, possibly empty) marks website input that only the
+        person's request permits (browser_effects.py): it lists the effects the page's structure
+        settles, which the person approves every time, like ``always_ask``; with none, the
+        reviewer names the step's effect, and any effect waits for the person too."""
         runtime, task = self.runtime, self.task
         self.token.throw_if_cancelled()
-        action = {"tool": name, "arguments": arguments, "observed_context": context or {}}
+        settled = [effect for effect in HOST_EFFECTS if effect in (website_effects or ())]
+        observed = {**(context or {}), **({"always_ask": True} if settled else {})}
+        action = {"tool": name, "arguments": arguments, "observed_context": observed}
         consumed = runtime.action_reviews.consume(task, action)
         if consumed:
             return SpentApproval(runtime.action_reviews, task, consumed)
+        if settled:
+            # The page's own HTML shows this step pays, signs in, uploads or hands over personal
+            # details, or it goes into another site's frame whose form can't be read: as for a
+            # plugin change that asks, the person approves it every time.
+            reason = EFFECT_REASONS[settled[0]]
+            runtime.store.event(
+                runtime.owner,
+                task["id"],
+                "action_review",
+                {
+                    "name": name,
+                    "outcome": "ask_person",
+                    "model": "",
+                    "elapsed_ms": 0,
+                    "effect": settled[0],
+                    "message": "Needs your approval. " + reason,
+                },
+            )
+            runtime.action_reviews.request(task, action, reason, effect=settled[0])
         if always_ask:
             # A plugin change that reaches other people or can't be undone: the person approves
             # every call, in every mode. Saved rules and the automatic reviewer never answer it.
@@ -616,32 +666,41 @@ class BotActionReviewer:
             }
             for rule in exact
         ]
+        metadata = {
+            "review_action": action,
+            "operating_system": (context or {}).get("operating_system", "Linux"),
+            "approval_rules": review_rules,
+        }
+        if website_effects is not None:
+            # Website input the person's request permits: the reviewer names its effect too.
+            metadata.update(review_policy=WEBSITE_REVIEW_POLICY, person_effects=PERSON_EFFECTS)
         request = ApprovalRequest(
             kind=name,
             reason="Check this computer action against the user request.",
             preview="",
-            metadata={
-                "review_action": action,
-                "operating_system": (context or {}).get("operating_system", "Linux"),
-                "approval_rules": review_rules,
-            },
+            metadata=metadata,
         )
 
         handoff_reason = "You chose to review computer actions yourself."
+        # The effect the reviewer named for this action, when it was asked to name one.
+        handoff_effect = None
 
         class Surface:
             def request_approval(self, request):
-                return runtime.action_reviews.request(task, action, handoff_reason)
+                return runtime.action_reviews.request(
+                    task, action, handoff_reason, effect=handoff_effect
+                )
 
             def emit_approval_reviewed(self, *args, **kwargs):
                 pass
 
         def announce(request, verdict):
-            nonlocal handoff_reason
+            nonlocal handoff_reason, handoff_effect
             handoff_reason = (
                 verdict.reason
                 or "The automatic reviewer could not decide safely. Please review this action."
             )
+            handoff_effect = getattr(verdict, "effect", "") or None
             runtime.store.event(
                 runtime.owner,
                 task["id"],
@@ -704,8 +763,12 @@ class BotActionReviewer:
                 task,
                 action,
                 "Approval rules or instructions changed during review. Review this action again.",
+                effect=handoff_effect,
             )
         if mode == "auto" and runtime.action_reviews.settings(task["bot_id"])["mode"] == "review":
             runtime.action_reviews.request(
-                task, action, "You switched to reviewing computer actions yourself."
+                task,
+                action,
+                "You switched to reviewing computer actions yourself.",
+                effect=handoff_effect,
             )

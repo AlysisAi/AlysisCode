@@ -404,10 +404,12 @@ def test_running_background_browser_cancellation_and_shutdown_close_owned_comput
         assert exited.wait(5)
     finally:
         runtime.stop()
-    assert store.task("owner", request["id"])["status"] == (
-        "interrupted" if stop_runtime else "cancelled"
-    )
-    assert store.task("owner", request["id"])["output"] == ""
+    # Shutting down under a turn that had only read pages queues it to start again once after
+    # the restart (Store.restart_cut); Stop cancels it.
+    stopped = store.task("owner", request["id"])
+    assert stopped["status"] == ("queued" if stop_runtime else "cancelled")
+    assert stopped["restarts"] == int(stop_runtime)
+    assert stopped["output"] == ""
     assert lab.executors[0].closed
     assert lab.executors[0].view_at_close == ["not_running"]
     assert runtime._thread is runtime._background_thread is runtime._scheduler is None
@@ -426,8 +428,9 @@ def test_two_foreground_replies_finish_while_background_browser_holds_operation_
 
         def read(*args, **kwargs):
             nonlocal reads
-            reads += 1
-            if reads == 2:
+            # DOM reads only: each observation also reads the accessibility tree once.
+            reads += kwargs.get("kind") == "dom"
+            if reads == 2 and kwargs.get("kind") == "dom":
                 reading.set()
                 assert finish_read.wait(10)
             return snapshot(*args, **kwargs)
@@ -495,7 +498,7 @@ def test_two_foreground_replies_finish_while_background_browser_holds_operation_
 
 
 @pytest.mark.parametrize("claimed_before_restart", [False, True], ids=["queued", "running"])
-def test_restart_never_restores_computer_or_replays_running_background_work(
+def test_restart_never_restores_computer_and_starts_reading_work_again_once(
     work, claimed_before_restart
 ):
     store, request, old_lab, old_runtime = work
@@ -516,30 +519,31 @@ def test_restart_never_restores_computer_or_replays_running_background_work(
     )
     runtime = BotRuntime(restarted, "owner", lambda _: client, browser_computers=lab.adapter)
     try:
-        if claimed_before_restart:
-            assert runtime.background.claim() is None
-            assert restarted.task("owner", request["id"])["status"] == "interrupted"
-            assert lab.executors == [] and client.requests == []
-        else:
-            runtime.run(
-                runtime.background.claim(), runtime.task_token(request["id"]), background=True
-            )
-            assert restarted.task("owner", request["id"])["status"] == "completed"
-            assert "error" in json.loads(
-                next(m for m in reversed(client.requests[1]["messages"]) if m["role"] == "tool")[
-                    "content"
-                ]
-            )
-            fresh = json.loads(
-                next(m for m in reversed(client.requests[2]["messages"]) if m["role"] == "tool")[
-                    "content"
-                ]
-            )
-            assert fresh["source_id"] != old_source
-            assert len(lab.executors) == 1
-            assert (
-                len([call for call in lab.executors[0].browser.calls if call[0] == "navigate"]) == 1
-            )
+        # Work that only read pages starts again once, from its checkpoint, told it restarted;
+        # the old computer and its page references are never restored.
+        runtime.run(runtime.background.claim(), runtime.task_token(request["id"]), background=True)
+        done = restarted.task("owner", request["id"])
+        assert done["status"] == "completed"
+        assert done["restarts"] == int(claimed_before_restart)
+        told = [
+            m["content"]
+            for m in client.requests[0]["messages"]
+            if m["role"] == "system" and "interrupted by a restart" in str(m["content"])
+        ]
+        assert len(told) == int(claimed_before_restart)
+        assert "error" in json.loads(
+            next(m for m in reversed(client.requests[1]["messages"]) if m["role"] == "tool")[
+                "content"
+            ]
+        )
+        fresh = json.loads(
+            next(m for m in reversed(client.requests[2]["messages"]) if m["role"] == "tool")[
+                "content"
+            ]
+        )
+        assert fresh["source_id"] != old_source
+        assert len(lab.executors) == 1
+        assert len([call for call in lab.executors[0].browser.calls if call[0] == "navigate"]) == 1
     finally:
         runtime.stop()
 

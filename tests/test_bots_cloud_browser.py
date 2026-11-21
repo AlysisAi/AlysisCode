@@ -10,7 +10,11 @@ from test_bots_cloud_desktop import Provider
 from alysis_code.bots.cloud_browser import RemoteBrowser
 from alysis_code.bots.cloud_desktop import CloudDesktopFactory
 from alysis_code.bots.compute import CommandReceipt, ComputerSpec
-from alysis_code.ide.managed_browser import BrowserError, BrowserStaleFrameError
+from alysis_code.ide.managed_browser import (
+    BrowserError,
+    BrowserLimitError,
+    BrowserStaleFrameError,
+)
 
 
 class BrowserProvider(Provider):
@@ -26,11 +30,15 @@ class BrowserProvider(Provider):
                 reply["session"] = "another-session"
             return CommandReceipt(0, json.dumps(reply), "")
         result = {"ready": True}
+        if request["operation"] == "browser_start" and getattr(self, "features", None):
+            result["features"] = self.features
         reply = {key: request[key] for key in ("id", "session")}
         if request["operation"] == "browser_call":
             method = request["arguments"]["method"]
             result = {"state": "running", "command_generation": 8} if method == "status" else {}
-        if self.mode == "stale":
+        if getattr(self, "error_reply", None) and request["operation"] == "browser_call":
+            reply.update(self.error_reply)
+        elif self.mode == "stale":
             reply.update(error="untrusted details excluded", error_type="BrowserStaleFrameError")
         elif self.mode == "download":
             reply.update(
@@ -315,3 +323,161 @@ def test_browser_uses_provider_native_screen_stream_without_a_legacy_ingress_hub
     finally:
         browser.close()
     assert stream.closed
+
+
+def test_the_browser_declares_its_operations_and_the_host_reaches_each_of_them(tmp_path):
+    from alysis_code.bots.cloud_browser import METHODS, OPERATIONS
+    from alysis_code.bots.cloud_browser_worker import FEATURES
+
+    # This version's browser declares every operation beyond the first images'.
+    assert set(OPERATIONS) <= set(FEATURES) and "site_data" in FEATURES
+    provider = BrowserProvider()
+    provider.features = list(FEATURES)
+    factory = CloudDesktopFactory(
+        "owner", provider, ComputerSpec("image"), tmp_path, browser_enabled=True
+    )
+    computer = factory.browser("bot", lambda: False)
+    try:
+        assert computer.browser_features == frozenset(FEATURES)
+        for method in ("fill", "hover", "set_checked", "drag", "wait_for", "read_value"):
+            assert method in METHODS
+        computer.browser.fill(
+            "bot", computer.session_id, None, "Αθηνά 雅典", expected_backend_node_id=7,
+            frame_id="PAY-FRAME", expected_generation=8,
+        )  # fmt: skip
+        assert provider.actions[-1]["arguments"] == {
+            "method": "fill",
+            "args": [None, "Αθηνά 雅典"],
+            "kwargs": {
+                "expected_backend_node_id": 7,
+                "frame_id": "PAY-FRAME",
+                "expected_generation": 8,
+            },
+        }
+        computer.browser.handle_dialog("bot", computer.session_id, accept=False)
+        assert provider.actions[-1]["arguments"]["method"] == "handle_dialog"
+    finally:
+        computer.close()
+    # An older image declares none of them.
+    provider = BrowserProvider()
+    factory = CloudDesktopFactory(
+        "owner", provider, ComputerSpec("image"), tmp_path / "older", browser_enabled=True
+    )
+    older = factory.browser("bot", lambda: False)
+    try:
+        assert older.browser_features == frozenset()
+    finally:
+        older.close()
+
+
+def test_a_page_dialog_crosses_the_bridge_with_its_text_and_never_its_traceback(tmp_path):
+    from alysis_code.bots.cloud_desktop_worker import browser_error_reply
+    from alysis_code.ide.managed_browser import BrowserDialogOpenError, BrowserTargetHiddenError
+
+    # The computer's side: the dialog's type and text travel apart from the support details.
+    reply = browser_error_reply(
+        BrowserDialogOpenError("confirm", "Να φύγετε από τη σελίδα; 离开此页？"), fatal=False
+    )
+    assert reply["error_type"] == "BrowserDialogOpenError" and reply["fatal"] is False
+    assert reply["dialog"] == {"type": "confirm", "message": "Να φύγετε από τη σελίδα; 离开此页？"}
+    assert "error_detail" not in reply
+    hidden = browser_error_reply(BrowserTargetHiddenError("hidden"), fatal=False)
+    assert hidden["error_type"] == "BrowserTargetHiddenError" and "dialog" not in hidden
+    provider = BrowserProvider()
+    factory = CloudDesktopFactory(
+        "owner", provider, ComputerSpec("image"), tmp_path, browser_enabled=True
+    )
+    computer = factory.browser("bot", lambda: False)
+    try:
+        provider.error_reply = {**reply, "error": "untrusted details excluded"}
+        with pytest.raises(BrowserDialogOpenError) as shown:
+            computer.browser.snapshot("bot", computer.session_id, kind="dom")
+        assert shown.value.dialog_type == "confirm"
+        assert shown.value.dialog_message == "Να φύγετε από τη σελίδα; 离开此页？"
+        provider.error_reply = {**hidden, "error": "untrusted details excluded"}
+        with pytest.raises(BrowserTargetHiddenError):
+            computer.browser.hover("bot", computer.session_id, None, expected_backend_node_id=3)
+        assert computer.alive()
+    finally:
+        computer.close()
+
+
+def test_a_dialogs_frame_crosses_the_bridge_and_newer_operations_are_declared(tmp_path):
+    from alysis_code.bots.cloud_browser_worker import FEATURES
+    from alysis_code.bots.cloud_desktop_worker import browser_error_reply
+    from alysis_code.ide.managed_browser import BrowserDialogOpenError
+
+    # The computer's side: the frame that shows the dialog travels with its type and text.
+    reply = browser_error_reply(
+        BrowserDialogOpenError(
+            "confirm", "Πληρωμή; 支付？", "https://pay.example.net/checkout", "PAY-FRAME"
+        ),
+        fatal=False,
+    )
+    assert reply["dialog"] == {
+        "type": "confirm",
+        "message": "Πληρωμή; 支付？",
+        "url": "https://pay.example.net/checkout",
+        "frame_id": "PAY-FRAME",
+    }
+    provider = BrowserProvider()
+    provider.features = list(FEATURES)
+    factory = CloudDesktopFactory(
+        "owner", provider, ComputerSpec("image"), tmp_path, browser_enabled=True
+    )
+    computer = factory.browser("bot", lambda: False)
+    try:
+        for feature in ("frame_snapshots", "step_dialog", "dialog_frames"):
+            assert feature in computer.browser_features
+        provider.error_reply = {**reply, "error": "untrusted details excluded"}
+        with pytest.raises(BrowserDialogOpenError) as shown:
+            computer.browser.snapshot("bot", computer.session_id, kind="dom", frames=True)
+        assert shown.value.dialog_url == "https://pay.example.net/checkout"
+        assert shown.value.dialog_frame_id == "PAY-FRAME"
+        assert provider.actions[-1]["arguments"]["kwargs"] == {"kind": "dom", "frames": True}
+        # A frame id that is not one is dropped, never trusted as one.
+        provider.error_reply = {
+            **reply,
+            "dialog": {**reply["dialog"], "frame_id": "../../not a frame"},
+        }
+        with pytest.raises(BrowserDialogOpenError) as shown:
+            computer.browser.snapshot("bot", computer.session_id, kind="dom")
+        assert shown.value.dialog_frame_id is None
+    finally:
+        computer.close()
+
+
+def test_a_newer_browser_declares_its_page_report_and_the_host_reads_it_over_the_bridge(tmp_path):
+    from alysis_code.bots.cloud_browser_worker import FEATURES
+
+    assert "page_reported" in FEATURES
+    provider = BrowserProvider()
+    provider.features = list(FEATURES)
+    factory = CloudDesktopFactory(
+        "owner", provider, ComputerSpec("image"), tmp_path, browser_enabled=True
+    )
+    computer = factory.browser("bot", lambda: False)
+    try:
+        assert "page_reported" in computer.browser_features
+        computer.browser.page_report("bot", computer.session_id)
+        assert provider.actions[-1]["arguments"] == {
+            "method": "page_report",
+            "args": [],
+            "kwargs": {},
+        }
+    finally:
+        computer.close()
+
+
+@pytest.mark.parametrize("kind", ["dom", "accessibility", "text"])
+def test_a_page_read_too_large_to_receive_reaches_the_reader_as_a_page_limit(kind):
+    from alysis_code.bots.desktop_linux import ComputerReplyTooLarge
+
+    def refuse(*args, **kwargs):
+        raise ComputerReplyTooLarge("too large to receive")
+
+    executor = SimpleNamespace(
+        owner="bot", session_id="session", _surface=SimpleNamespace(_request=refuse)
+    )
+    with pytest.raises(BrowserLimitError, match="browser_source"):
+        RemoteBrowser(executor).snapshot("bot", "session", kind=kind)

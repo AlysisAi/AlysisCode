@@ -2,6 +2,8 @@
 
 This file is mounted alone in the child; it must not import the Bots service.
 All returned page, pixel, file and command content is untrusted task data.
+The shell has no network; in an owl computer whose bridge binds in its package-index
+guard, package installers alone reach the declared package indexes through it.
 """
 
 from __future__ import annotations
@@ -10,14 +12,18 @@ import base64
 import ctypes
 import hashlib
 import importlib.metadata
+import importlib.util
 import io
 import json
 import os
 import select
+import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -56,15 +62,407 @@ MAX_OUTPUT = 64000
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 
+# Window elements (the accessibility tree): read and acted on by desktop_accessibility.py, the
+# file mounted beside this one, run as a short child in an application namespace. Declared in
+# the ping reply only when this desktop's accessibility bus answers, so a host offers element
+# tools only for a computer that has them.
+ELEMENTS = "elements"
+ACCESSIBILITY = Path(__file__).with_name("desktop_accessibility.py")
+SESSION_BUS = Path("/usr/bin/dbus-daemon")
+# The standard AT-SPI bus launcher, started on request by the session bus.
+ACCESSIBILITY_BUS_SERVICE = Path("/usr/share/dbus-1/services/org.a11y.Bus.service")
+# GTK 3 and 4 and LibreOffice publish their windows whenever the bus runs; Qt only when a desktop
+# session asks for it, or with this switch.
+ACCESSIBILITY_ENV = {"QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1"}
+# Startup readiness must stay well inside the host's 15-second ping (desktop_linux.py).
+ACCESSIBILITY_STARTUP_SECONDS = 10
+READ_SECONDS = 8
+ACT_SECONDS = 10
+MAX_ACCESSIBILITY_REPLY = 512 * 1024
+MAX_ACCESSIBILITY_REQUEST = 60_000
+# Refusals the element reader may return (nothing was sent), passed on as they are.
+ELEMENT_REFUSALS = frozenset(
+    {
+        "gone",
+        "changed",
+        "hidden",
+        "disabled",
+        "unresponsive",
+        "no_position",
+        "read_only",
+        "not_toggle",
+        "radio",
+    }
+)
+# Reader failures before it sent anything to an application.
+UNSENT = frozenset({"bus", "request", "operation"})
+
+# What this desktop's own tools can do beyond the first images', declared in the ping reply beside
+# ELEMENTS, so a host offers each only for a computer that has it (an older image declares none).
+LONG_COMMANDS = "long_commands"  # commands up to COMMAND_SECONDS, waited for in short requests
+PROCESS_OUTPUT = "process_output"  # a launched process's output, kept and read from an offset
+POINTER = "pointer"  # double-click, right-click, hover and drag, at pixels or at an element
+WINDOWS = "windows"  # the open windows, and bringing one to the front
+CLIPBOARD = "clipboard"  # reading the clipboard's text
+SHORT_COMMAND_SECONDS = 30  # the bound of ``run``, which answers only when its command ends
+COMMAND_SECONDS = 300
+# One request waits at most this long for a command's end, so the host checks Stop between them
+# and every transport (a pipe, a VM's socket, a Cloud bridge) stays within its own deadline.
+MAX_WAIT_SECONDS = 5
+LOG_BYTES = 256 * 1024  # the latest output kept for each launched process
+MAX_JOBS = 32  # launched processes remembered; the oldest finished one is forgotten first
+CLIPBOARD_BYTES = 64000
+CLIPBOARD_SECONDS = 3
+POINTER_ACTIONS = frozenset({"double_click", "right_click", "hover", "drag"})
+DOUBLE_CLICK_MS = 80  # well inside every toolkit's double-click interval
+DRAG_STEPS = 10  # applications start a drag only once the pressed pointer moves
+# Pointing shows what an application shows on hover (a tooltip, a submenu) after a delay it sets,
+# commonly under a second: a hover lasts this long before its observation.
+HOVER_SECONDS = 1.0
+FOCUS_SECONDS = 1.0  # how long the window manager has to confirm a window came to the front
+MAX_WINDOWS = 30
+WINDOW_TITLE_CHARS = 300
+XLIB = "libX11.so.6"
+XCLIP = "/usr/bin/xclip"
+
 
 class Rejected(Exception):
     pass
+
+
+def accessibility_module():
+    """desktop_accessibility.py, loaded from beside this file (the jail mounts both in /opt)."""
+    module = sys.modules.get("_alysis_desktop_accessibility")
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "_alysis_desktop_accessibility", ACCESSIBILITY
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["_alysis_desktop_accessibility"] = module
+    return module
+
+
+def accessibility_installed() -> bool:
+    """The image ships what reading window elements needs: a session bus, the AT-SPI bus
+    service, GLib's Python bindings, and the reader."""
+    return (
+        SESSION_BUS.is_file()
+        and ACCESSIBILITY_BUS_SERVICE.is_file()
+        and ACCESSIBILITY.is_file()
+        and importlib.util.find_spec("gi") is not None
+    )
+
+
+def child_reply(process, payload: bytes | None, timeout: float) -> dict:
+    """The JSON object a short child prints, read within ``timeout`` seconds and a byte bound.
+
+    The child (started in its own session) is ended either way. A child that overran its time
+    replies ``{"unavailable": "timeout"}``: it may have sent input before it was stopped.
+    """
+    output = bytearray()
+    try:
+        if process.stdin is not None:
+            try:
+                # Smaller than a pipe's buffer, so this write never waits for the child; closing
+                # it ends the request (a child reading its request gets end of input).
+                if payload:
+                    process.stdin.write(payload)
+                process.stdin.close()
+            except OSError:
+                pass  # The child already ended; its output says what happened.
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"unavailable": "timeout"}
+            if select.select([process.stdout], [], [], min(remaining, 0.1))[0]:
+                part = os.read(process.stdout.fileno(), 65536)
+                if not part:
+                    break
+                output.extend(part)
+                if len(output) > MAX_ACCESSIBILITY_REPLY:
+                    return {"unavailable": "size"}
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # It ended on its own; the wait below reaps it.
+        process.wait(timeout=3)
+        process.stdout.close()
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+    try:
+        reply = json.loads(output)
+    except ValueError:
+        return {"unavailable": "invalid"}
+    return reply if isinstance(reply, dict) else {"unavailable": "invalid"}
 
 
 def integer(value, lower, upper):
     if type(value) is not int or not lower <= value <= upper:
         raise Rejected("Invalid bounded integer argument.")
     return value
+
+
+def whole_characters(data: bytes) -> int:
+    """The length of ``data`` without a UTF-8 character cut off at its end."""
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte & 0xC0 != 0x80:  # ASCII or the first byte of a character
+            length = 1 if byte < 0x80 else 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4
+            return len(data) - back if length > back else len(data)
+    return len(data)
+
+
+def kill_group(process):
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # It ended on its own; its owner reaps it.
+
+
+class OutputLog:
+    """A process's combined stdout and stderr, drained by a thread so it never waits on a full
+    pipe. A command (``cap``) keeps its first ``cap`` bytes and is stopped once they fill or at
+    its ``deadline``, as ``run`` stops one; a launched process (``ring``) keeps its latest
+    ``ring`` bytes and runs on. Offsets count bytes of the whole output, kept or not."""
+
+    def __init__(self, process, *, cap=None, ring=None, deadline=None):
+        self.process, self.cap, self.ring, self.deadline = process, cap, ring, deadline
+        self.data = bytearray()
+        self.first = 0  # the offset of data[0]
+        self.lock = threading.Lock()
+        self.ended = threading.Event()  # all output read; for a command, the command ended too
+        self.timed_out = self.truncated = False
+        target = self._command if cap is not None else self._launched
+        threading.Thread(target=target, name="alysis-process-output", daemon=True).start()
+
+    def _keep(self, part) -> bool:
+        """Keep ``part``; True when a command's output filled its cap."""
+        with self.lock:
+            if self.cap is not None:
+                self.data.extend(part[: self.cap - len(self.data)])
+                return len(self.data) >= self.cap
+            self.data.extend(part)
+            excess = len(self.data) - self.ring
+            if excess > 0:
+                del self.data[:excess]
+                self.first += excess
+            return False
+
+    def _launched(self):
+        stream = self.process.stdout
+        try:
+            while part := os.read(stream.fileno(), 65536):
+                self._keep(part)
+        finally:
+            stream.close()
+            self.ended.set()
+
+    def _command(self):
+        stream, reading = self.process.stdout, True
+        try:
+            while True:
+                if time.monotonic() >= self.deadline:
+                    self.timed_out = True
+                    break
+                if not reading:
+                    # Its output closed; the command ends when its process does.
+                    try:
+                        self.process.wait(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                if not select.select([stream], [], [], 0.1)[0]:
+                    continue
+                part = os.read(stream.fileno(), 65536)
+                if not part:
+                    reading = False
+                elif self._keep(part):
+                    self.truncated = True
+                    break
+        finally:
+            if self.process.poll() is None:
+                kill_group(self.process)
+                try:
+                    self.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass  # exit_code stays None: the receipt says it is unconfirmed
+            stream.close()
+            self.ended.set()
+
+    def receipt(self) -> dict:
+        """A finished command's receipt, the shape ``run`` returns."""
+        with self.lock:
+            output = bytes(self.data)
+        if self.truncated:
+            output = output[: whole_characters(output)]
+        return {
+            "exit_code": self.process.poll(),
+            "output": output.decode("utf-8", errors="replace"),
+            "timed_out": self.timed_out,
+            "output_truncated": self.truncated,
+            "untrusted_computer_data": True,
+        }
+
+    def read(self, offset: int, limit: int) -> dict:
+        """At most ``limit`` bytes of output from ``offset``, as whole characters."""
+        with self.lock:
+            end = self.first + len(self.data)
+            start = min(max(offset, self.first), end)
+            chunk = bytes(self.data[start - self.first : start - self.first + limit])
+            dropped = max(self.first - offset, 0)
+            ended = self.ended.is_set()
+        # A read whose start was dropped from the log begins at the next whole character.
+        skip = 0
+        while skip < min(3, len(chunk)) and chunk[skip] & 0xC0 == 0x80:
+            skip += 1
+        chunk = chunk[skip:]
+        if start + skip + len(chunk) < end or not ended:
+            chunk = chunk[: whole_characters(chunk)]  # the rest of a cut character comes next
+        begin = start + skip
+        reply = {
+            "output": chunk.decode("utf-8", errors="replace"),
+            "output_from": begin,
+            "next_output_from": begin + len(chunk),
+            "output_complete": ended and begin + len(chunk) == end,
+        }
+        if dropped:
+            reply["output_dropped"] = dropped
+        return reply
+
+
+_X_ERRORS = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+# A window may close while it is read; Xlib's default answer to that error ends the process.
+_IGNORE_X_ERRORS = _X_ERRORS(lambda display, error: 0)
+
+
+def _xlib():
+    x11 = ctypes.CDLL(XLIB)
+    pointer, ulong = ctypes.c_void_p, ctypes.c_ulong
+    x11.XOpenDisplay.argtypes, x11.XOpenDisplay.restype = [ctypes.c_char_p], pointer
+    x11.XDefaultRootWindow.argtypes, x11.XDefaultRootWindow.restype = [pointer], ulong
+    x11.XInternAtom.argtypes = [pointer, ctypes.c_char_p, ctypes.c_int]
+    x11.XInternAtom.restype = ulong
+    x11.XGetWindowProperty.argtypes = [
+        pointer,
+        ulong,
+        ulong,
+        ctypes.c_long,
+        ctypes.c_long,
+        ctypes.c_int,
+        ulong,
+        ctypes.POINTER(ulong),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ulong),
+        ctypes.POINTER(ulong),
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+    x11.XGetWindowProperty.restype = ctypes.c_int
+    x11.XFree.argtypes = [pointer]
+    x11.XSetErrorHandler.argtypes, x11.XSetErrorHandler.restype = [pointer], pointer
+    x11.XSync.argtypes = [pointer, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [pointer]
+    return x11
+
+
+def _window_property(x11, display, window, atom, length):
+    """(type, values) of one property: ints for 32-bit data, bytes for 8-bit; (0, None) when the
+    window has none, (None, None) when the window is gone."""
+    kind, size, count, after = ctypes.c_ulong(), ctypes.c_int(), ctypes.c_ulong(), ctypes.c_ulong()
+    data = ctypes.POINTER(ctypes.c_ubyte)()
+    status = x11.XGetWindowProperty(
+        display,
+        window,
+        atom,
+        0,
+        length,
+        0,
+        0,  # AnyPropertyType
+        ctypes.byref(kind),
+        ctypes.byref(size),
+        ctypes.byref(count),
+        ctypes.byref(after),
+        ctypes.byref(data),
+    )
+    if status != 0:
+        return None, None
+    try:
+        if not data or not kind.value:
+            return 0, None
+        if size.value == 32:  # Xlib hands 32-bit items over as C longs
+            return kind.value, list(
+                ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[: count.value]
+            )
+        if size.value == 8:
+            return kind.value, ctypes.string_at(data, count.value)
+        return kind.value, None
+    finally:
+        if data:
+            x11.XFree(data)
+
+
+def open_windows(display_name: str, *, supported: bool = False) -> list[dict]:
+    """The windows the window manager lists as open (its EWMH client list, what the dock shows),
+    in its order: each one's X id, title as its application set it, class, and whether it is the
+    active window. A window that closes while it is read is left out. ``supported``: first
+    require the window manager to declare that it lists its windows and brings one to the
+    front (EWMH _NET_SUPPORTED)."""
+    x11 = _xlib()
+    display = x11.XOpenDisplay(display_name.encode())
+    if not display:
+        raise Rejected("Private display unavailable.")
+    previous = x11.XSetErrorHandler(ctypes.cast(_IGNORE_X_ERRORS, ctypes.c_void_p))
+    try:
+
+        def atom(name):
+            return x11.XInternAtom(display, name.encode(), 0)
+
+        def text(window, name):
+            kind, value = _window_property(x11, display, window, atom(name), 4096)
+            if not isinstance(value, bytes):
+                return None
+            # Titles are UTF-8 (EWMH), or Latin-1 in the ICCCM's plain STRING type.
+            return value.decode("latin-1" if kind == atom("STRING") else "utf-8", "replace")
+
+        root = x11.XDefaultRootWindow(display)
+        if supported:
+            _, declared = _window_property(x11, display, root, atom("_NET_SUPPORTED"), 4096)
+            if not {atom("_NET_CLIENT_LIST"), atom("_NET_ACTIVE_WINDOW")} <= set(declared or ()):
+                raise Rejected("The window manager does not list its windows.")
+        _, clients = _window_property(x11, display, root, atom("_NET_CLIENT_LIST"), 4096)
+        _, active = _window_property(x11, display, root, atom("_NET_ACTIVE_WINDOW"), 1)
+        active = active[0] if active else 0
+        hidden = {atom("_NET_WM_WINDOW_TYPE_DOCK"), atom("_NET_WM_WINDOW_TYPE_DESKTOP")}
+        windows = []
+        for window in clients or ():
+            if len(windows) >= MAX_WINDOWS:
+                break
+            kind, types = _window_property(x11, display, window, atom("_NET_WM_WINDOW_TYPE"), 32)
+            if kind is None:
+                continue  # closed while it was read
+            if hidden & set(types or ()):
+                continue  # the dock and the desktop are not windows a person switches to
+            title = text(window, "_NET_WM_NAME")
+            if title is None:
+                title = text(window, "WM_NAME") or ""
+            _, names = _window_property(x11, display, window, atom("WM_CLASS"), 64)
+            parts = names.split(b"\0") if isinstance(names, bytes) else []
+            windows.append(
+                {
+                    "id": window,
+                    "title": " ".join(title.split())[:WINDOW_TITLE_CHARS],
+                    "class": parts[1].decode("utf-8", "replace")[:80] if len(parts) > 1 else "",
+                    "active": window == active,
+                }
+            )
+        return windows
+    finally:
+        x11.XSync(display, 0)  # errors of these reads reach the handler above, not the default
+        x11.XCloseDisplay(display)
+        x11.XSetErrorHandler(previous)
 
 
 def workspace_file(operation, args):
@@ -319,11 +717,196 @@ def application_argv(argv):
     ]
 
 
+# An owl computer's package-index guard (package_access.py), bound read-only here by the
+# computer's bridge: its Unix socket and the package indexes it admits. Older images and
+# standalone desktops have none, and their shell stays fully offline.
+PACKAGES = Path("/run/alysis-packages")
+# Installed packages live in this computer's private home: never the image, the workspace or
+# the person's machine.
+PACKAGE_HOME = Path("/tmp/home/.alysis-packages")
+RELAY_CONNECTIONS = 32
+RELAY_IDLE_SECONDS = 120
+
+
+def pump(first, second):
+    """Copy bytes both ways until both sides finish or the link goes idle."""
+    other = {first: second, second: first}
+    reading = [first, second]
+    while reading:
+        ready, _, _ = select.select(reading, [], [], RELAY_IDLE_SECONDS)
+        if not ready:
+            return
+        for source in ready:
+            data = source.recv(65536)
+            if data:
+                other[source].sendall(data)
+                continue
+            reading.remove(source)
+            try:
+                other[source].shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+
+class PackageRelay:
+    """A loopback port inside this networkless namespace. Each connection is passed to the
+    guard's socket unchanged; the guard alone decides where it may lead."""
+
+    def __init__(self, guard_socket):
+        self.guard_socket = str(guard_socket)
+        self.slots = threading.BoundedSemaphore(RELAY_CONNECTIONS)
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.listener.bind(("127.0.0.1", 0))
+            self.listener.listen(RELAY_CONNECTIONS)
+        except OSError:
+            self.listener.close()
+            raise
+        self.url = "http://127.0.0.1:" + str(self.listener.getsockname()[1])
+        threading.Thread(target=self._accept, name="alysis-package-relay", daemon=True).start()
+
+    def _accept(self):
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            if not self.slots.acquire(blocking=False):
+                client.close()
+                continue
+            threading.Thread(target=self._relay, args=(client,), daemon=True).start()
+
+    def _relay(self, client):
+        try:
+            with client, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as guard:
+                guard.settimeout(5)
+                guard.connect(self.guard_socket)
+                client.settimeout(RELAY_IDLE_SECONDS)
+                guard.settimeout(RELAY_IDLE_SECONDS)
+                pump(client, guard)
+        except OSError:
+            pass
+        finally:
+            self.slots.release()
+
+    def close(self):
+        try:
+            self.listener.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.listener.close()
+
+
+def python_installer(env, index_url, proxy, home):
+    """pip, installing into a private environment layered over this computer's own Python
+    packages: installed packages take precedence, the image's are never changed, and what is
+    already installed is reused. Needs pip in this computer's Python."""
+    import importlib.util
+
+    if importlib.util.find_spec("pip") is None:
+        return False
+    import sysconfig
+    import venv
+
+    overlay = home / "python"
+    venv.EnvBuilder(symlinks=True, with_pip=False).create(overlay)
+    keys = ("base", "platbase", "installed_base", "installed_platbase")
+    paths = sysconfig.get_paths("venv", vars={key: str(overlay) for key in keys})
+    own = sysconfig.get_paths()
+    Path(paths["purelib"], "_alysis_computer_packages.pth").write_text(
+        "".join(
+            f"import site; site.addsitedir({path!r})\n"
+            for path in dict.fromkeys((own["purelib"], own["platlib"]))
+        )
+    )
+    python = Path(paths["scripts"], "python")
+    for name in ("pip", "pip3"):
+        script = Path(paths["scripts"], name)
+        script.write_text(
+            f"#!{python}\nimport sys\nfrom pip._internal.cli.main import main\nsys.exit(main())\n"
+        )
+        script.chmod(0o755)
+    env.update(
+        PIP_INDEX_URL=index_url,
+        PIP_PROXY=proxy,
+        PIP_DISABLE_PIP_VERSION_CHECK="1",
+        PIP_NO_INPUT="1",
+        PIP_PROGRESS_BAR="off",
+        # The home is memory-backed: keep one copy of each package, not a second in a cache.
+        PIP_NO_CACHE_DIR="1",
+    )
+    env["PATH"] = paths["scripts"] + os.pathsep + env["PATH"]
+    return True
+
+
+def node_installer(env, index_url, proxy, home):
+    """npm, with its registry reached through the guard and global installs in the private
+    home. Needs npm in this computer."""
+    if shutil.which("npm", path=env["PATH"]) is None:
+        return False
+    prefix = home / "node"
+    env.update(
+        npm_config_registry=index_url,
+        npm_config_proxy=proxy,
+        npm_config_https_proxy=proxy,
+        npm_config_prefix=str(prefix),
+        npm_config_update_notifier="false",
+        npm_config_fund="false",
+        NODE_PATH=str(prefix / "lib" / "node_modules"),
+    )
+    env["PATH"] = str(prefix / "bin") + os.pathsep + env["PATH"]
+    return True
+
+
+# How each package ecosystem's installer is pointed at its index; the indexes themselves, and
+# so what is reachable, are the guard's declared configuration.
+INSTALLERS = {"python": python_installer, "node": node_installer}
+
+
+def package_installs(env, *, root=PACKAGES, home=PACKAGE_HOME, installers=None, relay=None):
+    """Point the installers present here at the package indexes this computer's guard admits.
+    Returns the declared ecosystems and the relay; nothing without a guard."""
+    try:
+        declared = json.loads((root / "indexes.json").read_text(encoding="utf-8"))["indexes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return (), None
+    guard = root / "proxy.sock"
+    if not isinstance(declared, dict) or not guard.is_socket():
+        return (), None
+    installers = INSTALLERS if installers is None else installers
+    link = (relay or PackageRelay)(guard)
+    names = []
+    for name in sorted(declared):
+        index = declared[name]
+        install = installers.get(name)
+        if install is None or not isinstance(index, dict):
+            continue
+        if not isinstance(index.get("index_url"), str):
+            continue
+        try:
+            if install(env, index["index_url"], link.url, home):
+                names.append(name)
+        except (OSError, ValueError):
+            continue  # This ecosystem stays undeclared; the others still work.
+    if not names:
+        link.close()
+        return (), None
+    return tuple(names), link
+
+
 class Computer:
+    # Package ecosystems whose installers reach their index through the guard (none offline).
+    package_indexes = ()
+
     def __init__(self, shared_display=None):
+        started = time.monotonic()
         self.shared_display = shared_display
         self.processes = []
         self.jobs = {}
+        self.logs = {}
+        self.command = None
+        self.features = ()
+        self.services = []
         self.frame = None
         self._check = None
         self._check_pool = ThreadPoolExecutor(max_workers=1)
@@ -332,6 +915,8 @@ class Computer:
             "HOME": "/tmp/home",
             "LANG": "C.UTF-8",
         }
+        # Before any application starts, so commands and dock apps share the same settings.
+        self.package_indexes, self.package_relay = package_installs(self.env)
         if shared_display is not None:
             import re
 
@@ -422,8 +1007,213 @@ class Computer:
             time.sleep(0.05)
         if time.monotonic() >= deadline:
             raise Rejected("Private window manager did not become ready.")
+        self.features = self._hands()
         self.decorations = []
+        # Before the dock, so every application opened from it or for a task inherits it; within
+        # a startup budget, so a slow computer starts as before, without window elements.
+        deadline = started + ACCESSIBILITY_STARTUP_SECONDS
+        probe = self._start_accessibility(deadline)
         self._decorate()
+        if probe is not None:
+            remaining = max(deadline - time.monotonic(), 0.05)
+            if child_reply(probe, None, remaining).get("ready") is True:
+                self.features = (*self.features, ELEMENTS)
+
+    def _hands(self) -> tuple[str, ...]:
+        """What this desktop's own tools can do beyond the first images' (no service needed):
+        xdotool and the worker's process logs always; the clipboard with xclip; the window list
+        once the window manager lists its windows."""
+        features = [LONG_COMMANDS, PROCESS_OUTPUT, POINTER]
+        if os.path.exists(XCLIP):
+            features.append(CLIPBOARD)
+        try:
+            open_windows(self.display, supported=True)
+        except (OSError, Rejected):
+            pass  # This desktop keeps today's tools for its windows.
+        else:
+            features.append(WINDOWS)
+        return tuple(features)
+
+    def _start_accessibility(self, deadline):
+        """Start this desktop's accessibility bus when the image ships it, and return the
+        probe that confirms it answers (None without it: the desktop is exactly as before).
+
+        A private session bus, run like any application, starts the standard AT-SPI bus
+        launcher and registry when the probe first asks for them. Applications opened later
+        publish their windows' elements there, whatever their toolkit or language.
+        """
+        if not accessibility_installed() or time.monotonic() >= deadline:
+            return None
+        try:
+            bus = subprocess.Popen(
+                application_argv(
+                    [str(SESSION_BUS), "--session", "--nofork", "--nopidfile", "--print-address=1"]
+                ),
+                env=self.env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return None
+        self.services.append(bus)
+        address = b""
+        try:
+            # The bus prints its address once it listens: that is its readiness.
+            deadline = min(deadline, time.monotonic() + 2)
+            while b"\n" not in address and len(address) <= 1024:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([bus.stdout], [], [], remaining)[0]:
+                    break
+                part = os.read(bus.stdout.fileno(), 1025)
+                if not part:
+                    break
+                address += part
+        finally:
+            bus.stdout.close()
+        address = address.split(b"\n", 1)[0].decode("ascii", "replace")
+        if (
+            not address.startswith("unix:")
+            or len(address) > 1024
+            or not address.isprintable()
+            or any(character.isspace() for character in address)
+        ):
+            bus.kill()
+            return None
+        self.env.update(DBUS_SESSION_BUS_ADDRESS=address, **ACCESSIBILITY_ENV)
+        try:
+            return self._reader("probe")
+        except OSError:
+            return None
+
+    def _reader(self, operation):
+        return subprocess.Popen(
+            application_argv([sys.executable, "-I", str(ACCESSIBILITY), operation]),
+            env=self.env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    def accessibility(self, operation, request=None, *, timeout=READ_SECONDS):
+        """One run of the element reader; its reply, or why there is none."""
+        payload = json.dumps(request or {}, ensure_ascii=False).encode()
+        if len(payload) > MAX_ACCESSIBILITY_REQUEST:
+            raise Rejected("The element request is too large.")
+        try:
+            process = self._reader(operation)
+        except OSError:
+            return {"unavailable": "bus"}
+        return child_reply(process, payload, timeout)
+
+    def with_elements(self, observation, args):
+        """An observation with the focused window's elements, when the host asked for them; and
+        without its image when the host's model reads text only (the frame keeps it)."""
+        if args.get("elements") is True:
+            reply = (
+                self.accessibility("read")
+                if ELEMENTS in getattr(self, "features", ())
+                else {"unavailable": "unsupported"}
+            )
+            if isinstance(reply.get("nodes"), list):
+                observation["elements"] = reply
+            else:
+                reason = reply.get("unavailable") or reply.get("refused")
+                observation["elements_unavailable"] = (
+                    reason if isinstance(reason, str) and len(reason) <= 20 else "failed"
+                )
+        if args.get("windows") is True:
+            try:
+                observation["windows"] = self.windows()
+            except (OSError, Rejected):
+                observation["windows_unavailable"] = True
+        if args.get("image") is False:
+            observation.pop("png", None)
+        return observation
+
+    def element(self, args):
+        """Activate, set the text of, select or toggle one element of the element view."""
+        if ELEMENTS not in getattr(self, "features", ()):
+            raise Rejected("This desktop cannot act on window elements.")
+        module = accessibility_module()
+        target = args.get("element")
+        try:
+            bus, path = module.element_identity(target)
+        except ValueError:
+            raise Rejected("Invalid element.") from None
+        role, action = target.get("role"), args.get("action")
+        if not isinstance(role, str) or not 1 <= len(role) <= 60 or action not in module.ACTIONS:
+            raise Rejected("Invalid element action.")
+        request = {"element": {"bus": bus, "path": path, "role": role}, "action": action}
+        if action == "set_text":
+            text = args.get("text")
+            if not isinstance(text, str) or len(text) > module.MAX_SET_TEXT or "\0" in text:
+                raise Rejected("Invalid bounded text.")
+            request["text"] = text
+        if action == "toggle":
+            if type(args.get("checked")) is not bool:
+                raise Rejected("Toggle needs the state to reach.")
+            request["checked"] = args["checked"]
+        reply = self.accessibility("act", request, timeout=ACT_SECONDS)
+        refused = reply.get("refused")
+        if refused is not None or reply.get("unavailable") in UNSENT:
+            return {
+                "dispatched": False,
+                "refused": refused if refused in ELEMENT_REFUSALS else "unavailable",
+            }
+        if "unavailable" in reply:
+            # The reader stopped part-way: an action may have reached the application.
+            result = {"dispatched": None, "uncertain": True, "verification_required": True}
+        else:
+            result = self._element_input(reply, request)
+            if isinstance(result.get("refused"), str):
+                return result
+        try:
+            result["observation"] = self.with_elements(
+                self.observe(), {"elements": True, "image": args.get("image") is not False}
+            )
+        except Exception:
+            result["observation_unavailable"] = True
+        return result
+
+    def _element_input(self, reply, request):
+        """What the reader did, and the pointer click or typing it left for this worker."""
+        pointer = reply.get("pointer")
+        if isinstance(pointer, dict):
+            try:
+                x = integer(pointer.get("x"), 0, WIDTH - 1)
+                y = integer(pointer.get("y"), 0, HEIGHT - 1)
+            except Rejected:
+                return {"dispatched": False, "refused": "no_position"}
+        self.frame = None
+        if reply.get("unchanged") is True:
+            result = {"dispatched": False, "unchanged": True, "verification_required": True}
+        else:
+            method = "pointer" if isinstance(pointer, dict) else "accessibility"
+            if reply.get("focused") is True:
+                method = "focus"
+            result = {"dispatched": True, "method": method, "verification_required": True}
+        if isinstance(pointer, dict):
+            self.move_pointer(x, y)
+            try:
+                self.xdo("mousedown", "1")
+            finally:
+                self.xdo("mouseup", "1")
+        if reply.get("then") == "paste":
+            if request["text"]:
+                self.paste_text(request["text"])
+            result["typed_at_cursor"] = True
+        for key in ("confirmed", "checked", "selected", "value_matches"):
+            if type(reply.get(key)) is bool:
+                result[key] = reply[key]
+        if reply.get("then") == "verify":
+            after = self.accessibility("state", {"element": request["element"]})
+            for key in ("checked", "selected"):
+                if type(after.get(key)) is bool:
+                    result[key] = after[key]
+        return result
 
     def _decorate(self):
         quiet = {
@@ -553,32 +1343,23 @@ class Computer:
         command = args.get("command")
         if not isinstance(command, str) or not 1 <= len(command) <= 8192 or "\0" in command:
             raise Rejected("Invalid bounded command.")
-        timeout = integer(args.get("timeout", 10), 1, 30)
+        timeout = integer(args.get("timeout", 10), 1, SHORT_COMMAND_SECONDS)
         if background and sum(p.poll() is None for p in self.jobs.values()) >= 4:
             raise Rejected("This computer already has four running applications.")
         self.frame = None
-        # A second PID namespace prevents a task command from reaching the
-        # controller's /proc/<pid>/fd/1 or signalling the pipe protocol worker.
-        # The shared filesystem here is already the minimal offline outer jail.
-        process = subprocess.Popen(
-            application_argv(["/bin/sh", "-c", command]),
-            env=self.env,
-            cwd="/workspace",
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL if background else subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            close_fds=True,
-        )
+        # A launched process's output is kept (PROCESS_OUTPUT), drained so it never blocks.
+        process = self._start(command, output=True)
         if background:
             process_id = uuid4().hex
+            self._forget_finished()
             self.jobs[process_id] = process
+            self.logs[process_id] = OutputLog(process, ring=LOG_BYTES)
             return {
                 "process_id": process_id,
                 "started": True,
                 "exit_code": process.poll(),
                 "verification_required": True,
-                "network": "browser-mediated" if self.shared_display else "offline",
+                **self.network_receipt(),
             }
         output = bytearray()
         deadline = time.monotonic() + timeout
@@ -616,8 +1397,278 @@ class Computer:
             "timed_out": timed_out,
             "output_truncated": truncated,
             "untrusted_computer_data": True,
-            "network": "browser-mediated" if self.shared_display else "offline",
+            **self.network_receipt(),
         }
+
+    def _start(self, command, *, output):
+        # A second PID namespace prevents a task command from reaching the
+        # controller's /proc/<pid>/fd/1 or signalling the pipe protocol worker.
+        # The shared filesystem here is already the minimal offline outer jail.
+        return subprocess.Popen(
+            application_argv(["/bin/sh", "-c", command]),
+            env=self.env,
+            cwd="/workspace",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if output else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    def _forget_finished(self):
+        """Keep at most MAX_JOBS launched processes: the oldest finished ones go first (at most
+        four run at once, so one has always finished)."""
+        logs = getattr(self, "logs", None)
+        if logs is None:
+            logs = self.logs = {}
+        for process_id, process in list(self.jobs.items()):
+            if len(self.jobs) < MAX_JOBS:
+                return
+            if process.poll() is not None:
+                del self.jobs[process_id]
+                logs.pop(process_id, None)
+
+    def command_start(self, args):
+        """Start a command of up to COMMAND_SECONDS and wait, at most ``wait`` seconds, for its
+        end: its receipt then, else its id for ``command_wait``. The command is stopped at its
+        time limit, or once its output fills MAX_OUTPUT, here whether or not anyone waits."""
+        command = args.get("command")
+        if not isinstance(command, str) or not 1 <= len(command) <= 8192 or "\0" in command:
+            raise Rejected("Invalid bounded command.")
+        timeout = integer(args.get("timeout", 10), 1, COMMAND_SECONDS)
+        wait = integer(args.get("wait", 0), 0, MAX_WAIT_SECONDS)
+        earlier = getattr(self, "command", None)
+        if earlier is not None and not earlier[1].ended.is_set():
+            # The host waits for each command before its next request, so a command still
+            # running here was abandoned by a wait that failed: it is stopped, not left to run.
+            kill_group(earlier[1].process)
+            earlier[1].ended.wait(5)
+        self.frame = None
+        log = OutputLog(
+            self._start(command, output=True),
+            cap=MAX_OUTPUT,
+            deadline=time.monotonic() + timeout,
+        )
+        self.command = (uuid4().hex, log)
+        return self._command_reply(wait)
+
+    def command_wait(self, args):
+        current = getattr(self, "command", None)
+        if current is None or args.get("command_id") != current[0]:
+            raise Rejected("Command not found in this computer.")
+        return self._command_reply(integer(args.get("wait", 0), 0, MAX_WAIT_SECONDS))
+
+    def _command_reply(self, wait):
+        identity, log = self.command
+        if not log.ended.wait(wait):
+            return {"command_id": identity, "running": True}
+        self.command = None
+        return {**log.receipt(), "running": False, **self.network_receipt()}
+
+    def status(self, args):
+        process = self.jobs.get(args.get("process_id"))
+        if process is None:
+            raise Rejected("Application not found in this computer.")
+        code = process.poll()
+        result = {"exit_code": code, "running": code is None}
+        if "output_from" in args:
+            offset = integer(args["output_from"], 0, 2**53)
+            log = getattr(self, "logs", {}).get(args["process_id"])
+            if log is None:
+                raise Rejected("This process's output was not kept.")
+            result.update(log.read(offset, MAX_OUTPUT), untrusted_computer_data=True)
+        return result
+
+    def windows(self):
+        if WINDOWS not in getattr(self, "features", ()):
+            raise Rejected("This desktop cannot list its windows.")
+        return open_windows(self.display)
+
+    def focus_window(self, args):
+        """Bring one open window to the front, as a click on it in the dock does."""
+        window = integer(args.get("window"), 1, 0xFFFFFFFF)
+        if window not in {item["id"] for item in self.windows()}:
+            return {"dispatched": False, "refused": "gone"}
+        self.frame = None
+        try:
+            # The window manager raises it, gives it the keyboard and restores it if minimised.
+            self.xdo("windowactivate", str(window))
+        except subprocess.CalledProcessError:
+            return {"dispatched": False, "refused": "unavailable"}
+        deadline = time.monotonic() + FOCUS_SECONDS
+        confirmed = False
+        while not confirmed and time.monotonic() < deadline:
+            time.sleep(0.05)
+            confirmed = any(item["id"] == window and item["active"] for item in self.windows())
+        result = {"dispatched": True, "confirmed": confirmed, "verification_required": True}
+        try:
+            result["observation"] = self.with_elements(self.observe(), args)
+        except Exception:
+            result["observation_unavailable"] = True
+        return result
+
+    def _aim(self, target):
+        """A pointer target: ("pixel", (x, y)) or ("element", the element to locate)."""
+        if not isinstance(target, dict):
+            raise Rejected("Invalid pointer target.")
+        if set(target) == {"x", "y"}:
+            return "pixel", (
+                integer(target["x"], 0, WIDTH - 1),
+                integer(target["y"], 0, HEIGHT - 1),
+            )
+        if set(target) != {"element"}:
+            raise Rejected("Invalid pointer target.")
+        if ELEMENTS not in getattr(self, "features", ()):
+            raise Rejected("This desktop cannot act on window elements.")
+        element = target["element"]
+        try:
+            bus, path = accessibility_module().element_identity(element)
+        except ValueError:
+            raise Rejected("Invalid element.") from None
+        role = element.get("role")
+        if not isinstance(role, str) or not 1 <= len(role) <= 60:
+            raise Rejected("Invalid element.")
+        return "element", {"bus": bus, "path": path, "role": role}
+
+    def pointer(self, args):
+        """Double-click, right-click, hover or drag at pixels of the observed frame or at the
+        centre of an element, as a person does with a mouse."""
+        action = args.get("action")
+        if action not in POINTER_ACTIONS:
+            raise Rejected("Invalid pointer action.")
+        targets = [self._aim(args.get("at"))]
+        if action == "drag":
+            targets.append(self._aim(args.get("to")))
+        elif args.get("to") is not None:
+            raise Rejected("Only a drag has an end point.")
+        points = []
+        for kind, value in targets:
+            if kind == "pixel":
+                points.append(value)
+                continue
+            # Where the element is now; nothing is sent when it can't be found.
+            reply = self.accessibility("locate", {"element": value}, timeout=ACT_SECONDS)
+            position = reply.get("pointer")
+            if not isinstance(position, dict):
+                refused = reply.get("refused")
+                return {
+                    "dispatched": False,
+                    "refused": refused if refused in ELEMENT_REFUSALS else "unavailable",
+                }
+            try:
+                points.append(
+                    (
+                        integer(position.get("x"), 0, WIDTH - 1),
+                        integer(position.get("y"), 0, HEIGHT - 1),
+                    )
+                )
+            except Rejected:
+                return {"dispatched": False, "refused": "no_position"}
+        if any(kind == "pixel" for kind, _ in targets):
+            self.fresh(args.get("frame_id"))
+        self.frame = None
+        x, y = points[0]
+        if action == "drag":
+            self.drag(points[0], points[1])
+        else:
+            self.move_pointer(x, y)
+            if action == "double_click":
+                self.xdo("click", "--repeat", "2", "--delay", str(DOUBLE_CLICK_MS), "1")
+            elif action == "right_click":
+                self.xdo("click", "3")
+            else:
+                time.sleep(HOVER_SECONDS)
+        result = {"dispatched": True, "verification_required": True}
+        try:
+            result["observation"] = self.with_elements(self.observe(), args)
+        except Exception:
+            result["observation_unavailable"] = True
+        return result
+
+    def drag(self, start, end):
+        """Press at ``start``, move to ``end`` in steps and release there; the button is
+        released whatever fails."""
+        (x0, y0), (x1, y1) = start, end
+        self.move_pointer(x0, y0)
+        try:
+            self.xdo("mousedown", "1")
+            for step in range(1, DRAG_STEPS):
+                self.xdo(
+                    "mousemove",
+                    str(x0 + (x1 - x0) * step // DRAG_STEPS),
+                    str(y0 + (y1 - y0) * step // DRAG_STEPS),
+                )
+            self.move_pointer(x1, y1)
+        finally:
+            self.xdo("mouseup", "1")
+
+    def read_clipboard(self):
+        """The text on this computer's clipboard, at most CLIPBOARD_BYTES of it."""
+        helper = getattr(getattr(self, "_human_input", None), "_clipboard", None)
+        if helper is not None and helper.poll() is None:
+            # The clipboard serves what the person typed while in control: never read it.
+            return {"text": None, "private": True}
+        # Text as UTF-8, else as the older Latin-1 STRING an application may offer alone.
+        data, encoding = self._selection("UTF8_STRING"), "utf-8"
+        if data is None:
+            data, encoding = self._selection("STRING"), "latin-1"
+        if data is None:
+            return {"text": None, "empty": True}
+        truncated = len(data) > CLIPBOARD_BYTES
+        if truncated:
+            data = data[:CLIPBOARD_BYTES]
+            if encoding == "utf-8":
+                data = data[: whole_characters(data)]
+        return {
+            "text": data.decode(encoding, errors="replace"),
+            "truncated": truncated,
+            "untrusted_computer_data": True,
+        }
+
+    def _selection(self, target):
+        """The clipboard's content in one format, or None when it holds none in it. Bounded in
+        bytes and time: the application that holds the clipboard answers, or is not waited on."""
+        process = subprocess.Popen(
+            [XCLIP, "-selection", "clipboard", "-out", "-target", target],
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        data = bytearray()
+        deadline = time.monotonic() + CLIPBOARD_SECONDS
+        late = False
+        try:
+            while len(data) <= CLIPBOARD_BYTES:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+                    late = True
+                    break
+                part = os.read(process.stdout.fileno(), 65536)
+                if not part:
+                    break
+                data.extend(part)
+        finally:
+            if process.poll() is None:
+                kill_group(process)
+            process.wait(timeout=3)
+            process.stdout.close()
+        if late and not data:
+            raise Rejected(
+                "The application holding the clipboard did not answer; nothing was read."
+            )
+        if process.returncode != 0 and not data:
+            return None
+        return bytes(data)
+
+    def network_receipt(self):
+        receipt = {"network": "browser-mediated" if self.shared_display else "offline"}
+        if self.package_indexes:
+            # Declared only when this computer's guard and the installer are both present.
+            receipt["package_indexes"] = list(self.package_indexes)
+        return receipt
 
     def dispatch(self, operation, args):
         if not isinstance(args, dict):
@@ -630,11 +1681,16 @@ class Computer:
                 self._human_input = HumanInput(self.env["DISPLAY"])
             return self._human_input(args)
         if operation == "ping":
-            return {"ready": True, "network": "offline"}
+            # features: what this desktop can do beyond the first images' (ELEMENTS and its
+            # own tools' newer operations, Computer._hands).
+            features = list(getattr(self, "features", ()))
+            return {"ready": True, "network": "offline", "features": features}
         if operation == "capture":
             return {"png": base64.b64encode(self.capture()).decode()}
         if operation == "observe":
-            return self.observe()
+            return self.with_elements(self.observe(), args)
+        if operation == "element":
+            return self.element(args)
         if operation in {"write_file", "read_file"}:
             return workspace_file(operation, args)
         if operation == "check_file_start":
@@ -659,9 +1715,14 @@ class Computer:
                 return {"running": False, "report": future.result()}
             except (ValueError, OSError, ImportError, RuntimeError) as exc:
                 raise Rejected(str(exc)) from None
-        if operation in {"run", "launch"}:
-            result = self.run(args, background=operation == "launch")
-            if not getattr(self, "_software_reported", False):
+        if operation in {"run", "launch", "command_start", "command_wait"}:
+            if operation == "command_start":
+                result = self.command_start(args)
+            elif operation == "command_wait":
+                result = self.command_wait(args)
+            else:
+                result = self.run(args, background=operation == "launch")
+            if result.get("running") is not True and not getattr(self, "_software_reported", False):
                 # Both local and hosted bridges forward this actual worker
                 # receipt. Do not substitute the controller's installed packages.
                 result["software"] = software_inventory()
@@ -691,10 +1752,17 @@ class Computer:
                 "exit_code": code,
             }
         if operation == "status":
-            process = self.jobs.get(args.get("process_id"))
-            if process is None:
-                raise Rejected("Application not found in this computer.")
-            return {"exit_code": process.poll(), "running": process.poll() is None}
+            return self.status(args)
+        if operation == "pointer":
+            if POINTER not in getattr(self, "features", ()):
+                raise Rejected("Unsupported desktop operation.")
+            return self.pointer(args)
+        if operation == "focus_window":
+            return self.focus_window(args)
+        if operation == "read_clipboard":
+            if CLIPBOARD not in getattr(self, "features", ()):
+                raise Rejected("Unsupported desktop operation.")
+            return self.read_clipboard()
         if operation not in {"click", "type", "key", "scroll"}:
             raise Rejected("Unsupported desktop operation.")
         if operation == "click":
@@ -743,7 +1811,7 @@ class Computer:
             )
         result = {"dispatched": operation != "scroll" or bool(delta), "verification_required": True}
         try:
-            result["observation"] = self.observe()
+            result["observation"] = self.with_elements(self.observe(), args)
         except Exception:
             result["observation_unavailable"] = True
         return result

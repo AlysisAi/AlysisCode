@@ -6,3 +6,9 @@ This product is licensed under the Apache License, Version 2.0.
 The bundled Windows sandbox incorporates Microsoft Windows Sandbox tooling,
 Copyright (c) Microsoft Corporation, under the MIT License. The license and
 exact source inventory accompany the helper in alysis_code/assets/windows-mxc.
+
+The PDF document helper bundles the unmodified fonts Droid Sans Fallback,
+Copyright (c) 2005-2008 The Android Open Source Project, under the Apache
+License, Version 2.0, and Nanum Gothic, Copyright (c) 2010 NHN Corporation,
+under the SIL Open Font License, Version 1.1. Their licenses and exact sources
+accompany the fonts in alysis_code/documents/fonts.

@@ -124,6 +124,13 @@ class ApprovalRequest:
     allow_for_session_scope: dict[str, object] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ManagedBrowserApproval(ApprovalRequest):
+    """The display origin of the paused browser operation, if it has a destination."""
+
+    display_origin: str | None = None
+
+
 def approval_review_line(outcome: str, subject: str, reason: str = "") -> str:
     """One readable line for an approval the reviewer answered ("Approve for me")."""
 

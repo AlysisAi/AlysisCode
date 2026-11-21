@@ -13,6 +13,8 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+import unicodedata
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
@@ -24,6 +26,28 @@ MAX_SOURCE_BYTES = 1024 * 1024
 MAX_PDF_BYTES = 50 * 1024 * 1024
 MAX_PAGES = 50
 MAX_TEXT_CHARS = 12_000
+
+FONT_DIRECTORY = Path(__file__).parent / "fonts"
+# Fonts for characters the body font (Liberation Sans) has no glyph for (see
+# _fallback_fonts). Each has a single regular weight and is loaded only when needed.
+FALLBACK_FONTS = (
+    ("AlysisDocumentDroidSansFallback", "DroidSansFallbackFull.ttf"),
+    ("AlysisDocumentNanumGothic", "NanumGothic-Regular.ttf"),
+)
+# Characters drawn correctly only by a shaping engine, which this renderer does not
+# have: Hebrew to Myanmar, Khmer and Mongolian, and conjoining Hangul jamo (Unicode's
+# Hangul_Syllable_Type L, V and T, i.e. syllables written decomposed). They are refused
+# rather than printed broken. Precomposed Hangul syllables need no shaping.
+_SHAPING_RANGES = (
+    (0x0590, 0x109F),
+    (0x1100, 0x11FF),
+    (0x1780, 0x18AF),
+    (0xA960, 0xA97F),
+    (0xD7B0, 0xD7FF),
+)
+_SETUP_LOCK = threading.Lock()
+_FONT_COVERAGE: dict[str, frozenset[int]] = {}
+_LINE_START_RULE_EXTENDED = False
 
 
 def _extract(source: Path, *, first_page: int, last_page: int | None, max_chars: int) -> dict:
@@ -159,17 +183,38 @@ def _path(root: Path, value: str) -> Path:
     return candidate
 
 
-def _font_setup():
+def _register_font(name: str, filename: str, *, single_weight: bool = False) -> frozenset[int]:
+    """Register a bundled font once per process and return the characters it has glyphs for.
+
+    ReportLab embeds only the glyphs a document uses, so a large font adds little to a PDF.
+    """
+    coverage = _FONT_COVERAGE.get(name)
+    if coverage is not None:
+        return coverage
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
+
+    with _SETUP_LOCK:
+        if name not in _FONT_COVERAGE:
+            if name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(name, str(FONT_DIRECTORY / filename)))
+            if single_weight:
+                # The font has one weight. Mapping bold and italic to it keeps text inside
+                # **bold** or *italic* drawable; its characters stay regular weight.
+                pdfmetrics.registerFontFamily(
+                    name, normal=name, bold=name, italic=name, boldItalic=name
+                )
+            _FONT_COVERAGE[name] = frozenset(pdfmetrics.getFont(name).face.charToGlyph)
+        return _FONT_COVERAGE[name]
+
+
+def _font_setup():
+    from reportlab.pdfbase import pdfmetrics
 
     names = []
     for suffix in ("Regular", "Bold", "Italic", "BoldItalic"):
         name = f"AlysisDocument{suffix}"
-        if name not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(
-                TTFont(name, str(Path(__file__).parent / "fonts" / f"LiberationSans-{suffix}.ttf"))
-            )
+        _register_font(name, f"LiberationSans-{suffix}.ttf")
         names.append(name)
     pdfmetrics.registerFontFamily(
         names[0], normal=names[0], bold=names[1], italic=names[2], boldItalic=names[3]
@@ -177,25 +222,143 @@ def _font_setup():
     return names
 
 
-def _inline(tokens, supported: set[int]) -> str:
+def _borrowable(char: str) -> bool:
+    # A combining mark is positioned against its base character only by a shaping engine;
+    # a fallback font would draw it as a separate spacing glyph, so it is never borrowed.
+    return not unicodedata.category(char).startswith("M")
+
+
+def _fallback_fonts(text: str, body: frozenset[int]) -> tuple[tuple[str, frozenset[int]], ...]:
+    """The fallback fonts for one paragraph, the font that has most of its characters first.
+
+    Several fonts can have the same character (punctuation, or a few Hangul syllables in
+    the ideograph font). Preferring the font that covers most of the paragraph keeps its
+    text in one typeface instead of switching font mid-word. Ties keep FALLBACK_FONTS order.
+    Text the body font covers entirely loads no fallback font.
+    """
+    needed = {ord(c) for c in text if ord(c) not in body and _borrowable(c)}
+    if not needed:
+        return ()
+    fonts = [
+        (name, _register_font(name, filename, single_weight=True))
+        for name, filename in FALLBACK_FONTS
+    ]
+    return tuple(sorted(fonts, key=lambda font: -len(needed & font[1])))
+
+
+def _font_runs(
+    text: str, body: frozenset[int], fallbacks: tuple[tuple[str, frozenset[int]], ...]
+) -> list[tuple[str | None, str]]:
+    """Split text into runs that one font draws, chosen per character by glyph coverage.
+
+    A character the body font has stays in the body font (``None``), which keeps its bold
+    or italic face. Any other character uses the first of ``fallbacks`` that has it. A
+    visible character no bundled font has fails with its code point; whitespace without
+    a glyph stays in the body font, as before.
+    """
+    runs: list[tuple[str | None, list[str]]] = []
+    missing = set()
+    for char in text:
+        font = None
+        if ord(char) not in body:
+            if _borrowable(char):
+                font = next((name for name, glyphs in fallbacks if ord(char) in glyphs), None)
+            if font is None and not char.isspace():
+                missing.add(ord(char))
+        if runs and runs[-1][0] == font:
+            runs[-1][1].append(char)
+        else:
+            runs.append((font, [char]))
+    if missing:
+        raise ValueError(
+            "Unsupported font glyphs: " + ", ".join(f"U+{c:04X}" for c in sorted(missing)[:12])
+        )
+    return [(font, "".join(chars)) for font, chars in runs]
+
+
+def _wraps_between_characters(text: str) -> bool:
+    """Whether text has wide East Asian characters, which lines may break between.
+
+    Chinese, Japanese and Korean text needs no spaces, so space-based wrapping would run
+    it off the page. Unicode line breaking allows a break between wide ideographs, kana
+    and Hangul syllables; their East Asian Width property (W or F) identifies them,
+    whatever the language.
+    """
+    return any(unicodedata.east_asian_width(c) in {"W", "F"} for c in text)
+
+
+def _extend_line_start_rule() -> None:
+    """Keep closing punctuation from starting a line when wrapping between characters.
+
+    ReportLab's table of characters that may not start a line has ASCII and Japanese
+    punctuation but lacks most closing brackets and quotes and the fullwidth commas,
+    colons and question marks of Chinese. Add every character Unicode classes as closing
+    punctuation (Pe) or a final quote (Pf), and every punctuation mark whose compatibility
+    form ReportLab already keeps off a line start (，→, ：→: …→...). Such a character
+    then stays on the previous line, in the width _paragraph_style reserves for it.
+    ReportLab consults this table only for between-character wrapping.
+    """
+    global _LINE_START_RULE_EXTENDED
+    if _LINE_START_RULE_EXTENDED:
+        return
+    from reportlab.lib import textsplit
+    from reportlab.platypus import paragraph
+
+    with _SETUP_LOCK:
+        if not _LINE_START_RULE_EXTENDED:
+            table = textsplit.ALL_CANNOT_START
+            extra = []
+            for code in range(0x10000):
+                char = chr(code)
+                category = unicodedata.category(char)
+                form = unicodedata.normalize("NFKC", char)
+                if char not in table and (
+                    category in {"Pe", "Pf"}
+                    or (category == "Po" and form != char and all(c in table for c in form))
+                ):
+                    extra.append(char)
+            # Both modules read their own reference to the table when wrapping a line.
+            textsplit.ALL_CANNOT_START = paragraph.ALL_CANNOT_START = table + "".join(extra)
+            _LINE_START_RULE_EXTENDED = True
+
+
+def _paragraph_style(style, text: str):
+    from reportlab.lib.styles import ParagraphStyle
+
+    if not _wraps_between_characters(text):
+        return style
+    _extend_line_start_rule()
+    return ParagraphStyle(
+        f"{style.name}Wide",
+        parent=style,
+        wordWrap="CJK",
+        # This wrapping lets one mark that may not start a line (such as 。or ）) hang past
+        # the line end. Reserving its width keeps it inside the page's text frame.
+        rightIndent=style.rightIndent + style.fontSize,
+    )
+
+
+def _text(tokens) -> str:
+    return "".join(token.content for token in tokens if token.type in {"text", "code_inline"})
+
+
+def _inline(tokens, supported: frozenset[int]) -> str:
     parts = []
+    fallbacks = _fallback_fonts(_text(tokens), supported)
     for token in tokens:
         kind = token.type
         if kind in {"text", "code_inline"}:
-            if any(0x0590 <= ord(c) <= 0x109F or 0x1780 <= ord(c) <= 0x18AF for c in token.content):
+            if any(start <= ord(c) <= end for c in token.content for start, end in _SHAPING_RANGES):
                 raise ValueError(
                     "This text requires complex-script shaping. Use a renderer with shaping support."
                 )
-            missing = sorted(
-                {ord(c) for c in token.content if not c.isspace() and ord(c) not in supported}
-            )
-            if missing:
-                raise ValueError(
-                    "Unsupported font glyphs: " + ", ".join(f"U+{c:04X}" for c in missing[:12])
-                )
-            value = html.escape(token.content)
-            if kind == "code_inline":
-                value = value.replace(" ", "&nbsp;")
+            runs = []
+            for font, text in _font_runs(token.content, supported, fallbacks):
+                value = html.escape(text)
+                if kind == "code_inline":
+                    value = value.replace(" ", "&nbsp;")
+                runs.append(value if font is None else f'<font name="{font}">{value}</font>')
+            value = "".join(runs)
             parts.append(
                 f'<font backColor="#eef1f4">{value}</font>' if kind == "code_inline" else value
             )
@@ -232,8 +395,8 @@ def _story(markdown: str):
     from reportlab.platypus import HRFlowable, LongTable, Paragraph, Spacer, TableStyle
 
     fonts = _font_setup()
-    supported = set.intersection(
-        *(set(pdfmetrics.getFont(name).face.charToGlyph) for name in fonts)
+    supported = frozenset.intersection(
+        *(frozenset(pdfmetrics.getFont(name).face.charToGlyph) for name in fonts)
     )
     body = ParagraphStyle(
         "Body",
@@ -264,6 +427,7 @@ def _story(markdown: str):
     style = body
     table_rows = None
     row = None
+    chart_count = 0
     for token in tokens:
         kind = token.type
         if kind == "heading_open":
@@ -280,8 +444,11 @@ def _story(markdown: str):
                 else body
             )
         elif kind == "inline":
+            children = token.children or []
             paragraph = Paragraph(
-                _inline(token.children or [], supported), style, bulletText=bullet
+                _inline(children, supported),
+                _paragraph_style(style, _text(children)),
+                bulletText=bullet,
             )
             bullet = None
             if row is not None:
@@ -360,26 +527,36 @@ def _story(markdown: str):
                     width="100%", color=colors.HexColor("#cad3da"), spaceBefore=8, spaceAfter=10
                 )
             )
+        elif kind == "fence" and token.info.strip().casefold() == "chart":
+            from ..office.charts import MAX_CHARTS
+            from .charts import drawing, parse
+
+            chart_count += 1
+            if chart_count > MAX_CHARTS:
+                raise ValueError(f"A PDF can hold at most {MAX_CHARTS} charts.")
+            story.extend(
+                [drawing(parse(token.content, chart_count), fonts, supported), Spacer(1, 10)]
+            )
         elif kind in {"fence", "code_block"}:
             # Escape every code line, and let Paragraph wrap long lines to avoid page overflow.
+            # One style for the whole block keeps the lines' backgrounds the same width.
+            code = _paragraph_style(
+                ParagraphStyle(
+                    "Code",
+                    parent=body,
+                    fontSize=9,
+                    leading=12,
+                    spaceAfter=0,
+                    backColor=colors.HexColor("#eef1f4"),
+                ),
+                token.content,
+            )
             for line in token.content.splitlines():
                 from markdown_it.token import Token
 
                 text = Token("code_inline", "", 0)
                 text.content = line.expandtabs(4) or " "
-                story.append(
-                    Paragraph(
-                        _inline([text], supported),
-                        ParagraphStyle(
-                            "Code",
-                            parent=body,
-                            fontSize=9,
-                            leading=12,
-                            spaceAfter=0,
-                            backColor=colors.HexColor("#eef1f4"),
-                        ),
-                    )
-                )
+                story.append(Paragraph(_inline([text], supported), code))
             story.append(Spacer(1, 8))
         else:
             raise ValueError(f"Unsupported Markdown block: {kind}.")

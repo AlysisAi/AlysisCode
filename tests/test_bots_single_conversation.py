@@ -114,6 +114,8 @@ def test_read_receipt_preserves_unread_legacy_work_and_cannot_cross_bots(setup):
 def test_legacy_active_work_accepts_new_send_but_serializes_until_recovery(setup):
     store, bot, original = setup
     _, task, _ = legacy_turn(store, bot, status="running")
+    # It had taken a step that may have changed something, so it is not started again.
+    store.event("alice", task, "tool_started", {"name": "browser_click"})
     new = store.enqueue(
         "alice", original["id"], TaskInput(message="Continue", request_id=uuid4().hex)
     )

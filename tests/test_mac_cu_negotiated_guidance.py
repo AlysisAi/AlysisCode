@@ -15,10 +15,12 @@ from importlib import resources
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from alysis_code import computer_use_platform_policy as policy
 from alysis_code.agent.browser_start import BrowserStartHandoff, build_computer_start_tools
 from alysis_code.config import AppConfig
+from alysis_code.frontmatter_utils import split_frontmatter
 from alysis_code.ide import stdio_bridge
 from alysis_code.ide.protocol import ProtocolRequest
 from alysis_code.skills.computer_use import (
@@ -31,8 +33,14 @@ from alysis_code.skills.computer_use import (
 PF_LEGACY_ENTRY_SHA256 = "7a7738241b854f63c41739e7a51ddb30bc7dc331a55725c351c0b877a50583b3"
 # sha256 of the restrictive legacy entry section at ENGINE 304ba715.
 MAIN_LEGACY_ENTRY_SHA256 = "48c27f6352d8237ed05fa038bad76c573055a45a81307fbcc69deed02fdf1be7"
-# sha256 of bundled computer-use/SKILL.md at ENGINE 9949e6b5.
-PF_SKILL_SHA256 = "60be3356fdeda454351513febc196a6e3b8884436702ff689cb9d46b808a97d7"
+# sha256 of the workflow in bundled computer-use/SKILL.md (the body after its frontmatter) at
+# ENGINE 9949e6b5. The frontmatter keeps its name and description and may add metadata, such
+# as the tools the skill uses.
+PF_SKILL_BODY_SHA256 = "dd5016f93aade50200af034397b7196016dcf80541d85e7ef785f19c4b95610a"
+PF_SKILL_DESCRIPTION = (
+    'Observe/operate Mac app windows ("open preview", "in finder"); '
+    "use computer_discover before assuming a project preview."
+)
 
 PF_QUIT = "For an app-close goal prefer quit_application."
 PF_INPUT = "native v2 key/type or visual pointer input_mode background needs that action advertised in background_actions"
@@ -137,9 +145,12 @@ def test_skill_is_plugins_finish_and_static_skill_read_has_no_stale_caveat():
     raw = (
         resources.files("alysis_code.skills")
         .joinpath("bundled", "computer-use", "SKILL.md")
-        .read_bytes()
+        .read_text(encoding="utf-8")
     )
-    assert hashlib.sha256(raw).hexdigest() == PF_SKILL_SHA256
+    frontmatter, body = split_frontmatter(raw)
+    assert _sha(body) == PF_SKILL_BODY_SHA256
+    metadata = yaml.safe_load(frontmatter)
+    assert (metadata["name"], metadata["description"]) == ("computer-use", PF_SKILL_DESCRIPTION)
     assert not any(stale in computer_use_workflow_instructions() for stale in STALE)
 
 

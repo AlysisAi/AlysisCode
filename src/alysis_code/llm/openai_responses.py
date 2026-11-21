@@ -47,6 +47,7 @@ from .focused_input_diagnostic import record_stream_diagnostic
 from .http_cancellation import (
     cancellable_httpx_request,
     cancellable_httpx_send,
+    complete_http1_response,
     raise_if_cancelled,
 )
 from .metadata import (
@@ -3100,9 +3101,10 @@ class OpenAIResponsesClient:
         )
         progress_clock = self._stream_progress_clock
         last_meaningful_progress = progress_clock()
+        body_chunks = response.iter_bytes()
 
         def _observed_byte_chunks() -> Iterator[bytes]:
-            for chunk in response.iter_bytes():
+            for chunk in body_chunks:
                 raise_if_cancelled(cancellation_token)
                 stream_deadline_exhausted = getattr(
                     self,
@@ -3132,7 +3134,8 @@ class OpenAIResponsesClient:
             if not isinstance(raw_event, dict):
                 raise LLMError("OpenAI Responses stream emitted non-object JSON event")
             progress_revision = accumulator.progress_revision
-            if str(raw_event.get("type") or frame.event or "") in {
+            event_type = str(raw_event.get("type") or frame.event or "").strip()
+            if event_type in {
                 "error",
                 "response.failed",
                 "response.incomplete",
@@ -3144,6 +3147,15 @@ class OpenAIResponsesClient:
                     resolved_entry.bound_stream(item.get("arguments"), item.get("name", ""))
             if accumulator.progress_revision != progress_revision:
                 last_meaningful_progress = progress_clock()
+            if (
+                accumulator.seen_final
+                and event_type in {"response.completed", "response.done", "response.incomplete"}
+                and isinstance(raw_event.get("response"), dict)
+            ):
+                # The protocol has finished. Only attempt the bounded HTTP/1.1
+                # cleanup used by Chat Completions so a late EOF cannot retry the answer.
+                complete_http1_response(response, body_chunks, cancellation_token)
+                break
         data = accumulator.finish()
         if resolved_entry.active():
             for index, item in enumerate(data.get("output", [])):

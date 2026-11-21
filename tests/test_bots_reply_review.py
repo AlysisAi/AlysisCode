@@ -726,3 +726,116 @@ def test_stopping_again_without_new_work_still_ends_in_a_plain_status(tmp_path):
 
 def test_the_reviewer_treats_stopping_partway_as_work_left_undone():
     assert "stops partway through requested work" in REVIEW_INSTRUCTIONS
+
+
+# A click on a site's send button: input was sent, and the site's own order request answered
+# with an error while the page was observed after it.
+SENT_ORDER = {
+    "source_id": "observed-2",
+    "url": "https://shop.example.test/checkout",
+    "page_view": '- button "Αποστολή 提交" [ref=e5]',
+    "action": {
+        "name": "browser_click",
+        "dispatched": True,
+        "verification_required": True,
+        "page_reported": {
+            "failed_requests": [{"method": "POST", "path": "/api/orders/:id", "status": 500}],
+            "uncaught_errors": 1,
+        },
+        "message": "Input was sent once.",
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "draft",
+    ["Η παραγγελία σας στάλθηκε με επιτυχία.", "您的订单已成功提交。"],
+)
+@pytest.mark.parametrize("kept", ["result", "stored", "compacted"])
+def test_a_success_claim_after_a_failed_submit_is_checked_against_what_the_site_reported(
+    tmp_path, draft, kept
+):
+    from alysis_code.bots.context_summary import (
+        RESULT_RECEIPT_KEY,
+        TURN_PROGRESS_NOTE,
+        _step_receipts,
+        result_receipt,
+    )
+    from alysis_code.bots.store import encode
+
+    raw = encode(SENT_ORDER)
+    call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "browser_click", "arguments": '{"source_id":"observed-1","node":5}'},
+    }
+    exchange = [
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "call-1", "content": raw, "_tool_name": "browser_click"},
+    ]
+    if kept == "stored":
+        # The result moved to storage: its pointer no longer shows the report, its receipt does.
+        exchange[1][RESULT_RECEIPT_KEY] = result_receipt(raw)
+        exchange[1]["content"] = "Stored result of browser_click; read it with read_tool_result."
+    if kept == "compacted":
+        record = {
+            "summary": {"goal": "Στείλε την παραγγελία / 提交订单"},
+            "steps": [{"stored_result_id": "stored-1", "receipts": _step_receipts(exchange)}],
+        }
+        exchange = [{"role": "user", "content": TURN_PROGRESS_NOTE + encode(record)}]
+    reviewed = {}
+
+    def reviewer(kw):
+        assert kw["messages"][0]["content"] == REVIEW_INSTRUCTIONS
+        reviewed.update(json.loads(kw["messages"][1]["content"]))
+        # A reviewer that reads the site's report finds the claimed send contradicted.
+        return verdict(
+            "repair",
+            "The site answered the order request with status 500 after the click.",
+            issue="contradiction",
+            false_claim=reviewed["draft_reply"],
+        )
+
+    store, task, model, runtime, token = study(
+        tmp_path, [reviewer], message="Στείλε την παραγγελία / 提交订单"
+    )
+    messages = [{"role": "user", "content": task["message"]}, *exchange]
+    result = ReplyReview(runtime).check(task, model, token, messages, [], draft, None)
+    (step,) = reviewed["browser_page_reports"]
+    assert step["page_reported"] == SENT_ORDER["action"]["page_reported"]
+    assert step["tool"] == "browser_click"
+    assert step.get("tool_call_id") == (None if kept == "compacted" else "call-1")
+    assert result.withholds_final_status and result.false_claim == draft
+    assert "browser_page_reports" in REVIEW_INSTRUCTIONS
+    assert "Script errors alone" in REVIEW_INSTRUCTIONS
+
+
+def test_a_review_without_reported_problems_carries_no_page_reports(tmp_path):
+    reviewed = {}
+
+    def reviewer(kw):
+        reviewed.update(json.loads(kw["messages"][1]["content"]))
+        return verdict("ready")
+
+    store, task, model, runtime, token = study(tmp_path, [reviewer], message="Send the order")
+    clean = {**SENT_ORDER, "action": {**SENT_ORDER["action"]}}
+    del clean["action"]["page_reported"]
+    messages = [
+        {"role": "user", "content": task["message"]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c", "function": {"name": "browser_click", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c", "content": json.dumps(clean)},
+    ]
+    ReplyReview(runtime).check(task, model, token, messages, [], "Sent.", None)
+    assert reviewed["browser_page_reports"] is None
+
+
+def test_the_reviewer_knows_the_draft_is_the_final_reply():
+    # Nothing runs after the draft is published, so announcing work still to do is no status.
+    text = " ".join(REVIEW_INSTRUCTIONS.split())
+    assert "draft_reply is this task's final reply" in text
+    assert "nothing runs after it" in text
+    assert "an interim status update that announces work it has not done, however truthful" in text

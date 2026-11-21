@@ -136,10 +136,13 @@ def test_permission_and_vision_are_checked_before_allocation(lab):
         assert manager.schemas(task(), True, approved=approved, image_input=True) == []
         with pytest.raises(DesktopError, match="approval"):
             manager.call(task(), "computer_run", {"command": "true"}, token(), approved=approved)
-    names = {
-        s["function"]["name"]
-        for s in manager.schemas(task(), True, approved=True, image_input=False)
+    schemas = manager.schemas(task(), True, approved=True, image_input=False)
+    # Pixel input is never a text-only model's; observing and keys wait for a computer that
+    # reads window elements, so before one runs the offer is the four non-visual tools.
+    assert not {"computer_click", "computer_type", "computer_scroll"} & {
+        s["function"]["name"] for s in schemas
     }
+    names = {s["function"]["name"] for s in manager.offered(task(), schemas, image_input=False)}
     assert names == {"computer_run", "computer_launch", "computer_process", "computer_stop_process"}
     with pytest.raises(DesktopError, match="unavailable"):
         manager.call(task(), "computer_observe", {}, token(), approved=True)

@@ -36,15 +36,24 @@ def source_freeze(tmp_path: Path) -> Path:
     return frozen
 
 
-def test_stop_process_uses_owned_tree_cleanup_without_posix_groups(monkeypatch):
-    from alysis_code.agent_runtimes import codex_cli
+class _RunningProcess:
+    def __init__(self, returncode: int | None) -> None:
+        self.returncode = returncode
 
-    process = object()
+    def poll(self) -> int | None:
+        return self.returncode
+
+
+def test_stop_process_uses_owned_tree_cleanup_without_posix_groups(monkeypatch):
+    from alysis_code import terminal_manager
+
+    running, finished = _RunningProcess(None), _RunningProcess(0)
     stopped = []
     monkeypatch.delattr(live_eval.os, "killpg", raising=False)
-    monkeypatch.setattr(codex_cli, "_terminate_process_tree", stopped.append)
-    live_eval.stop_process(process)
-    assert stopped == [process]
+    monkeypatch.setattr(terminal_manager, "_kill_windows_process_tree", stopped.append)
+    live_eval.stop_process(running)
+    live_eval.stop_process(finished)
+    assert stopped == [running]
 
 
 def plan_fixture(tmp_path: Path) -> Path:

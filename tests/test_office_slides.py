@@ -259,7 +259,8 @@ def test_table_cell_edit_and_merged_cell_rejection(tmp_path):
             "finite number",
         ),
         ({"type": "text", "text": "A\x00B", "x": 1, "y": 1, "width": 5, "height": 1}, "control"),
-        ({"type": "chart"}, "Supported element"),
+        ({"type": "video"}, "Supported element"),
+        ({"type": "chart", "x": 1, "y": 1, "width": 5, "height": 3}, "categories: is required"),
         (
             {"type": "table", "rows": [["A"], ["B", "C"]], "x": 1, "y": 1, "width": 5, "height": 3},
             "equal column",

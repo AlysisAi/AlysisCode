@@ -264,6 +264,48 @@ def test_a_chat_that_is_not_open_is_read_from_its_retained_log(
     assert not list(sessions.glob("*.meta.json")), "reading a chat never writes to it"
 
 
+def test_a_retained_chat_reports_why_its_turns_failed(
+    bridge, workspace: Path, tmp_path: Path
+) -> None:
+    instance, output, _session = bridge
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    retry = {"provider": "alysis", "reason": "http_503", "elapsed_ms": 1200}
+    events = [
+        {"type": "session_start", "payload": {"mode": "auto"}},
+        {"type": "user_message", "payload": {"content": "hi"}},
+        *[
+            {"type": "llm_call_retry", "payload": {**retry, "attempt": attempt}}
+            for attempt in range(1, 8)
+        ],
+        {
+            "type": "terminal_error",
+            "payload": {"error_type": "APIStatusError", "failure_category": "provider_error"},
+        },
+        {"type": "turn_outcome", "payload": {"reason": "provider_failure", "exit_code": 1}},
+    ]
+    (sessions / "failing-chat.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8"
+    )
+    params = {
+        "session_id": "failing-chat",
+        "workspace": os.fspath(workspace),
+        "session_dir": os.fspath(sessions),
+        "feedback": "nothing works",
+        "include_diagnostics": True,
+    }
+    report = _call(instance, output, "feedback.prepare", params)["result"]["report"]
+    errors = report["diagnostics"]["recent_errors"]
+    assert [e["type"] for e in errors] == [
+        *["llm_call_retry"] * 7,
+        "terminal_error",
+        "turn_outcome",
+    ]
+    assert errors[-1]["payload"]["reason"] == "provider_failure"
+    assert [m["content"] for m in report["diagnostics"]["messages"]] == ["hi"]
+    assert not list(sessions.glob("*.meta.json")), "reading a chat never writes to it"
+
+
 @pytest.mark.parametrize(
     ("params", "code"),
     [

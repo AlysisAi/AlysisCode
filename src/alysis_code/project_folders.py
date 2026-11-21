@@ -90,7 +90,7 @@ def relative_path(root: Path, target: Path) -> str:
     # Additional roots retain their absolute paths in contained workers, whose
     # primary root may instead be mounted at /workspace.
     if target.is_relative_to(root.resolve()):
-        return os.path.relpath(target, root.resolve())
+        return target.relative_to(root.resolve()).as_posix()
     return os.fspath(target)
 
 

@@ -90,6 +90,7 @@ DESKTOP_PROTOCOLS: tuple[tuple[str, int], ...] = ()
 
 DESKTOP_FEATURES: tuple[str, ...] = (
     "ide.bridge",
+    "ide.management-bridge-v1",
     "sensitive-host-context-v1",
     "computer-use-host-v1",
     "computer-discovery-v1",

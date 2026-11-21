@@ -66,6 +66,9 @@ PRIVATE = {"environment": "private offline Linux computer", "network": "disabled
         ("computer_run", {"command": "rm -rf build && python make_deck.py"}),
         ("computer_launch", {"command": "libreoffice --calc budget.xlsx"}),
         ("computer_click", {"source_id": "screen", "x": 2, "y": 3}),
+        # Package installs are ordinary commands on the owl's own computer.
+        ("computer_run", {"command": "pip install pandas matplotlib"}),
+        ("computer_launch", {"command": "npm install --global csv-parse"}),
     ],
 )
 def test_private_computer_work_never_waits_for_the_person_in_automatic_mode(study, tool, arguments):
@@ -112,15 +115,14 @@ def test_an_ask_first_rule_still_reviews_private_computer_work(study):
     assert len(client.requests) == 1
 
 
-def test_reviewing_every_action_still_covers_the_private_computer(study):
+@pytest.mark.parametrize("command", ["touch report.txt", "pip install pandas"])
+def test_reviewing_every_action_still_covers_the_private_computer(study, command):
     from alysis_code.bots.action_review import ReviewSettings
 
     runtime, client, reviewer = reviewer_for(study)
     runtime.action_reviews.settings(study[1]["bot_id"], ReviewSettings(mode="review"))
     with pytest.raises(ApprovalRequired):
-        reviewer.check(
-            "computer_run", {"command": "touch report.txt"}, PRIVATE, private_computer=True
-        )
+        reviewer.check("computer_run", {"command": command}, PRIVATE, private_computer=True)
     assert client.requests == []  # the person reviews it directly; no model call
 
 

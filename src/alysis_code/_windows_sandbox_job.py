@@ -108,15 +108,20 @@ class WindowsSandboxJob:
             self.close()
             raise
 
+    def process_counts(self) -> tuple[int, int]:
+        """Return cumulative and currently active members of this owned job."""
+        info = _Accounting()
+        if not self._kernel.QueryInformationJobObject(
+            self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return info.total, info.active
+
     def wait_empty(self, timeout_s: float = 10) -> None:
         deadline = time.monotonic() + timeout_s
         while True:
-            info = _Accounting()
-            if not self._kernel.QueryInformationJobObject(
-                self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
-            if info.active == 0:
+            _, active = self.process_counts()
+            if active == 0:
                 return
             if time.monotonic() >= deadline:
                 raise RuntimeError(

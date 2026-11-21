@@ -275,7 +275,9 @@ from .prompt_queue import (
     PromptState,
 )
 from .protocol import (
-    MAX_REQUEST_BYTES,
+    MAX_REQUEST_BYTES as MAX_REQUEST_BYTES,
+)
+from .protocol import (
     ProtocolError,
     ProtocolRequest,
     RequestId,
@@ -285,6 +287,9 @@ from .protocol import (
     redact_secrets,
     response_message,
 )
+from .protocol import (
+    reject_inline_secrets as _reject_inline_secrets,
+)
 from .session_search import (
     SessionSearchError,
     SessionSearchLimits,
@@ -292,6 +297,7 @@ from .session_search import (
     search_workspace_sessions,
 )
 from .skill_invocation import skill_context_message, validate_skill_invocation
+from .stdio_transport import JsonLineBridge, claim_protocol_streams
 from .structured_state import (
     DurableStructuredState,
     QuestionIdempotencyConflict,
@@ -897,7 +903,7 @@ def _default_managed_browser_service(*, workspace_root: Path) -> ManagedBrowserS
     )
 
 
-class StdioBridge:
+class StdioBridge(JsonLineBridge):
     def __init__(
         self,
         *,
@@ -944,6 +950,7 @@ class StdioBridge:
         self._jobs: dict[str, BridgeJob] = {}
         self._event_buffers: dict[str, deque[dict[str, Any]]] = {}
         self._event_dropped_counts: dict[str, int] = {}
+        self._published_event_sequences: dict[str, int] = {}
         # session.trace.clear moves this per-session floor instead of touching
         # _event_buffers, so session.getEvents reconnect replay stays intact.
         self._trace_view_floors: dict[str, int] = {}
@@ -1007,35 +1014,6 @@ class StdioBridge:
             payload["features"] = {"plugin_skill_projection_v1": dict(plugin_projection.CAPABILITY)}
         payload["runtime_instance_fingerprint"] = self._runtime_fingerprint
         return payload
-
-    def run(self) -> int:
-        try:
-            while True:
-                line = self.stdin.readline(MAX_REQUEST_BYTES + 1)
-                if not line:
-                    return 0
-                if len(line) > MAX_REQUEST_BYTES and not line.endswith("\n"):
-                    self._discard_oversized_request_line()
-                    self._write(
-                        error_message(
-                            None,
-                            "request_too_large",
-                            "Request exceeds the maximum supported size.",
-                        )
-                    )
-                    continue
-                self.process_line(line)
-                if self._closed:
-                    return 0
-        finally:
-            self.close()
-
-    def _discard_oversized_request_line(self) -> None:
-        """Drain one rejected JSONL record so the next request stays aligned."""
-        while True:
-            remainder = self.stdin.readline(MAX_REQUEST_BYTES + 1)
-            if not remainder or remainder.endswith("\n"):
-                return
 
     def close(self) -> None:
         if self.role == "plugin_projection":
@@ -1216,6 +1194,8 @@ class StdioBridge:
 
     @attribution._safe
     def _attribution_rpc_owner(self, request):
+        if request.method == "config.get":
+            return attribution.management_rpc_collector(request)
         if computer_use_blocked():
             return None
         context = request.computer_use_attribution
@@ -1231,8 +1211,6 @@ class StdioBridge:
             if session is None or session.closed:
                 return None
             role = "protected" if session.sensitive_media else "ordinary"
-        elif request.method == "config.get":
-            role = "management"
         else:
             return None
         if context["producerRole"] != role:
@@ -1324,9 +1302,13 @@ class StdioBridge:
         """
 
         refuse_computer_use()
-        with self._write_lock:
-            self.stdout.write(json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n")
-            self.stdout.flush()
+
+        def write(event: dict[str, Any]) -> None:
+            with self._write_lock:
+                self.stdout.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
+                self.stdout.flush()
+
+        self._publish_event(payload, write)
 
     def _dispatch(
         self, request: ProtocolRequest
@@ -2176,6 +2158,9 @@ class StdioBridge:
             ),
             semantic_activity_events=True,
             reasoning_trace_events=reasoning_trace_events,
+            stream_reset=_optional_bool(
+                params, "stream_reset", default=False, request_id=request.id
+            ),
             emit_transient=_emit_computer_use_evidence
             if computer_use_evidence_version == 1
             else None,
@@ -3273,7 +3258,8 @@ class StdioBridge:
 
         The same report the TUI's "Send to Alysis" builds (``feedback_delivery``):
         the redacted description, the engine version and, only when asked, the
-        last messages of the session plus OS and Python version. A session that is
+        last messages of the session, its recent failure records (stops, model-call
+        retries, warnings) plus OS and Python version. A session that is
         not open in this bridge is read from its retained log (``workspace`` and an
         optional ``session_dir`` as in ``session.create``); without a session_id the
         report has no conversation. The exact
@@ -3302,8 +3288,8 @@ class StdioBridge:
             binding = _resolve_workspace(Path(workspace), request_id=request.id)
             root = binding.workspace_context.workspace_root
             if session_id and include_diagnostics:
-                active_session = _RetainedFeedbackSession(
-                    _retained_session_messages(params, session_id, request_id=request.id)
+                active_session = _retained_feedback_session(
+                    params, session_id, request_id=request.id
                 )
         try:
             prepared = feedback_delivery.prepare_feedback(
@@ -3888,6 +3874,7 @@ class StdioBridge:
                     self._sessions.pop(created_session.session_id, None)
                     self._event_buffers.pop(created_session.session_id, None)
                     self._event_dropped_counts.pop(created_session.session_id, None)
+                    self._published_event_sequences.pop(created_session.session_id, None)
                     self._trace_view_floors.pop(created_session.session_id, None)
             raise
 
@@ -4275,7 +4262,12 @@ class StdioBridge:
                 else nullcontext()
             )
             budget_context = self._task_budget_context(session, job)
-            with worker_image_context, budget_context:
+            edit_context = (
+                session.surface.observe_committed_edits(session.root)
+                if not session.sensitive_media and isinstance(session.surface, ProtocolEventSurface)
+                else nullcontext()
+            )
+            with worker_image_context, budget_context, edit_context:
                 if session.sensitive_media:
                     _assert_live_computer_use_destination(session, request_id=None)
                 with self._state_lock:
@@ -7472,10 +7464,11 @@ class StdioBridge:
             if len(resolved_canonical(payload)) > 262144:
                 session.pending_resolved_start = None
                 return {"error": "computer_use_start_request_invalid"}
-            self._write_resolved_wire(
+            self._publish_event(
                 session.surface.transient_envelope(
                     ProtocolPayloadEvent("computer_start_resolved_request", payload)
-                )
+                ),
+                self._write_resolved_wire,
             )
         try:
             while not pending["done"].wait(0.05):
@@ -9663,6 +9656,7 @@ class StdioBridge:
         self._sessions.pop(session_id, None)
         self._event_buffers.pop(session_id, None)
         self._event_dropped_counts.pop(session_id, None)
+        self._published_event_sequences.pop(session_id, None)
         self._trace_view_floors.pop(session_id, None)
         for job_id, job in list(self._jobs.items()):
             if job.session_id == session_id:
@@ -9802,6 +9796,25 @@ class StdioBridge:
                     job.dropped_event_count += 1
                 job.updated_at = _now_iso()
 
+    def _publish_event(
+        self,
+        payload: dict[str, Any],
+        write: Callable[[dict[str, Any]], None],
+        *,
+        replay: bool = False,
+    ) -> None:
+        # Producer threads can finish building envelopes in a different order
+        # from their sequence allocations. Advance the wire cursor where replay
+        # and the pipe become observable, including events excluded from replay.
+        with self._state_lock:
+            session_id = payload["session_id"]
+            sequence = self._published_event_sequences.get(session_id, 0) + 1
+            self._published_event_sequences[session_id] = sequence
+            event = {**payload, "sequence": sequence}
+            if replay:
+                self._buffer_event_locked(event)
+            write(event)
+
     def _record_and_write_event(self, payload: dict[str, Any]) -> None:
         if (not mac_w7_computer_use_available() and payload.get("type") in W11_EVENTS) or (
             computer_use_blocked() and payload.get("type") in CU_EVENTS
@@ -9848,11 +9861,10 @@ class StdioBridge:
                 )
                 if not isinstance(clean_payload, dict):
                     return
-                self._buffer_event_locked(clean_payload)
                 # Hold the same transition lock used by session.cancel through
                 # the observable write. An event which wins this lock is fully
                 # visible before Stop; once Stop wins, later job output is dropped.
-                self._write(clean_payload)
+                self._publish_event(clean_payload, self._write, replay=True)
                 return
         clean_payload = (
             _redact_sensitive_media_projection(
@@ -9865,9 +9877,7 @@ class StdioBridge:
         )
         if not isinstance(clean_payload, dict):
             return
-        with self._state_lock:
-            self._buffer_event_locked(clean_payload)
-        self._write(clean_payload)
+        self._publish_event(clean_payload, self._write, replay=True)
 
 
 def _browser_public_url(raw_url: Any) -> str | None:
@@ -10314,16 +10324,6 @@ def _expires_at(timeout_seconds: float) -> str:
     )
 
 
-def _reject_inline_secrets(params: dict[str, Any], *, request_id: RequestId) -> None:
-    if not _contains_secret_key(params):
-        return
-    raise ProtocolError(
-        "inline_secret_rejected",
-        "Secrets must be provided through configured Alysis Code credential sources, not IDE protocol params.",
-        request_id=request_id,
-    )
-
-
 def _reject_computer_response_inline_secrets(
     params: dict[str, Any], *, pending: PendingComputerUseRequest, ok: bool, request_id: RequestId
 ) -> None:
@@ -10357,26 +10357,6 @@ def _reject_computer_response_inline_secrets(
             },
         }
     _reject_inline_secrets(guarded_params, request_id=request_id)
-
-
-def _contains_secret_key(value: Any) -> bool:
-    if isinstance(value, dict):
-        return any(
-            _is_secret_key(key) or _contains_secret_key(child) for key, child in value.items()
-        )
-    if isinstance(value, list | tuple):
-        return any(_contains_secret_key(child) for child in value)
-    return False
-
-
-def _is_secret_key(key: object) -> bool:
-    lowered = str(key).lower()
-    if lowered in {"api_key_env"}:
-        return False
-    return any(
-        marker in lowered
-        for marker in ("api_key", "token", "secret", "password", "credential", "authorization")
-    )
 
 
 def _mcp_lifecycle_protocol_error(
@@ -12237,20 +12217,22 @@ def _feedback_delivery_code(exc: FeedbackReportError) -> str:
 
 @dataclass(frozen=True)
 class _RetainedFeedbackSession:
-    """The messages of a chat that is not open, as feedback diagnostics read them."""
+    """A chat that is not open, as feedback diagnostics read it: messages and failure records."""
 
     messages: list[dict[str, Any]]
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _retained_session_messages(
+def _retained_feedback_session(
     params: dict[str, Any], session_id: str, *, request_id: RequestId
-) -> list[dict[str, Any]]:
+) -> _RetainedFeedbackSession:
     """Read a retained chat log the way session.resume rebuilds it; nothing is written."""
     from ..cli_impl.commands.chat_resume_helpers import (
         _load_chat_resume_messages,
         _normalize_chat_resume_session_id,
         _resolve_chat_resume_session_path,
     )
+    from ..session_store import read_session_events
 
     normalized = _normalize_chat_resume_session_id(session_id)
     if normalized is None:
@@ -12265,7 +12247,15 @@ def _retained_session_messages(
     path = _resolve_chat_resume_session_path(sessions_dir=sessions_dir, session_id=normalized)
     if path is None:
         raise ProtocolError("session_not_found", "Session was not found.", request_id=request_id)
-    return _load_chat_resume_messages(path)
+    # Only the latest failure records are kept while reading, so a long log stays cheap.
+    recent: deque[dict[str, Any]] = deque(maxlen=feedback_delivery.MAX_RECENT_ERRORS)
+    try:
+        for event in read_session_events(path):
+            if event.get("type") in feedback_delivery.RECENT_ERROR_EVENT_TYPES:
+                recent.append(event)
+    except OSError:
+        recent.clear()  # The messages are still reported; the records are best-effort.
+    return _RetainedFeedbackSession(_load_chat_resume_messages(path), list(recent))
 
 
 def _session_log_dir(agent_session: Any) -> Path:
@@ -13133,44 +13123,6 @@ def _json_clone(payload: dict[str, Any]) -> dict[str, Any]:
     import json
 
     return json.loads(json.dumps(payload, ensure_ascii=True))
-
-
-def _private_protocol_stream(stream: TextIO, mode: str) -> TextIO:
-    """Duplicate a standard stream onto a descriptor no child process can inherit."""
-    descriptor = os.dup(stream.fileno())
-    os.set_inheritable(descriptor, False)
-    return io.TextIOWrapper(
-        open(descriptor, mode),
-        encoding="utf-8",
-        errors="strict",
-        # Match CPython's own stdio wrappers: universal newlines on Windows, "\n" elsewhere.
-        newline=None if os.name == "nt" else "\n",
-    )
-
-
-def claim_protocol_streams() -> tuple[TextIO, TextIO]:
-    """Make the JSONL transport private to the bridge.
-
-    Child processes (git, search tools, hooks) inherit descriptors 0 and 1 unless the
-    caller overrides them. Pointing at the protocol pipes, a child could consume a
-    request meant for the bridge or write into the response stream. On Windows the
-    pipes are synchronous, so the system serialises every operation on them behind the
-    bridge's pending read: a child that merely inspects its inherited stdin at start-up
-    blocks until the next request arrives, and a turn waiting for that child never
-    finishes. The bridge keeps private duplicates, and descriptors 0 and 1 (with the
-    Windows standard handles the C runtime keeps in step with them) move to the null
-    device.
-    """
-    sys.stdout.flush()
-    protocol_stdin = _private_protocol_stream(sys.stdin, "rb")
-    protocol_stdout = _private_protocol_stream(sys.stdout, "wb")
-    null_descriptor = os.open(os.devnull, os.O_RDWR)
-    try:
-        os.dup2(null_descriptor, sys.stdin.fileno())
-        os.dup2(null_descriptor, sys.stdout.fileno())
-    finally:
-        os.close(null_descriptor)
-    return protocol_stdin, protocol_stdout
 
 
 def run_stdio_bridge(*, role: str = "runtime") -> int:

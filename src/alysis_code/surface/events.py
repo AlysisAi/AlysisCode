@@ -83,9 +83,13 @@ class MessageDelta:
     text: str
     worker_id: str | None = None
     role: str | None = None
+    reset: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return _to_dict(self)
+        data = _to_dict(self)
+        if not self.reset:
+            del data["reset"]
+        return data
 
 
 @dataclass(frozen=True, slots=True)

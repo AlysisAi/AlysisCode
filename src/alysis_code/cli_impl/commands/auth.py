@@ -30,6 +30,7 @@ from ...provider_auth import (
     create_provider_auth,
     provider_auth_setup_options,
 )
+from ...provider_auth.status import connected_credential_scope, native_provider_status_fields
 from . import _patchable
 from ._shared import JSON_OPTION_HELP, _console
 
@@ -76,34 +77,8 @@ def _status_payload(
     return payload
 
 
-def _connected_credential_scope(status: Any) -> str | None:
-    """Return scope from the same validated snapshot as the account status."""
-
-    if not bool(status.connected) or not bool(status.verified):
-        return None
-    scope = str(getattr(status, "credential_scope", None) or "").strip()
-    return scope or None
-
-
 def native_provider_status_payload(provider_id: str) -> dict[str, Any]:
-    """Read a fresh provider-owned status for CLI and IDE callers; never cache identity."""
-    try:
-        adapter = create_provider_auth(provider_id)
-        status = adapter.account_status()
-    except ProviderAuthError as exc:
-        return _status_payload(
-            connection=provider_id, authenticated=False, verified=False, error=str(exc)
-        )
-    return _status_payload(
-        connection=provider_id,
-        authenticated=status.connected,
-        account_label=status.account_label,
-        credential_scope=_connected_credential_scope(status),
-        detail=status.detail,
-        transport=f"native Alysis Code client ({adapter.protocol})",
-        display_name=adapter.display_name,
-        verified=bool(status.verified),
-    )
+    return _status_payload(**native_provider_status_fields(provider_id, create_provider_auth))
 
 
 def _emit_json(payload: Any) -> None:
@@ -279,7 +254,7 @@ def _auth_list_payload(cfg: AppConfig) -> dict[str, Any]:
                     connection=option.id,
                     authenticated=status.connected,
                     account_label=status.account_label,
-                    credential_scope=_connected_credential_scope(status),
+                    credential_scope=connected_credential_scope(status),
                     detail=status.detail,
                     transport=f"native Alysis Code client ({adapter.protocol})",
                     display_name=option.label,

@@ -9,6 +9,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import math
 import os
 import shlex
 import signal
@@ -85,6 +86,33 @@ def workspace_binding(workspace: Path):
     return WorkspaceBinding(workspace, workspace, False, context, "explicit", "normal")
 
 
+class ProviderRetry(LLMError):
+    """The controller's model call hit a temporary provider error before anything came back,
+    so no tool ran, and the controller allows the step to be sent again after ``wait`` seconds."""
+
+    def __init__(self, wait: float):
+        super().__init__(
+            "The model provider had a temporary problem; the controller allows this step "
+            f"again after {wait:g} seconds."
+        )
+        self.wait = wait
+
+
+def _retry_after(response) -> float | None:
+    """The pause the controller asks for before this model step is sent again, if it allows one."""
+    if response.status_code != 503:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None  # Not the controller's answer: an ordinary refusal.
+    detail = body.get("detail") if isinstance(body, dict) else None
+    wait = detail.get("retry_after") if isinstance(detail, dict) else None
+    if type(wait) not in (int, float) or not math.isfinite(wait) or wait < 0:
+        return None
+    return float(wait)
+
+
 class Broker:
     def __init__(self, url: str, token: str, worker_id: str):
         self.worker_id = worker_id
@@ -97,6 +125,9 @@ class Broker:
             "/internal/coding/" + path, json={"worker_id": self.worker_id, **payload}
         )
         if not response.is_success:
+            wait = _retry_after(response)
+            if wait is not None:
+                raise ProviderRetry(wait)
             # Do not persist HTTP request objects, headers or response envelopes.
             raise LLMError(
                 f"Coding controller rejected the request (HTTP {response.status_code}); it was not retried."
@@ -146,40 +177,57 @@ class BrokerClient:
         _compaction=False,
         **kwargs,
     ):
-        if cancellation_token:
-            cancellation_token.throw_if_cancelled()
-        # A session can summarize before the controller's independent checks.
-        # Charge that intermediate summary to execution, so a bounded repair
-        # may still follow. Only the exhausted-budget report closes execution.
-        phase = (
-            "execute"
-            if self.execution_limit is None or self.execution_calls < self.execution_limit
-            else "report"
-        )
-        if _compaction and phase == "report":
-            raise LLMError("No compaction call remains in this explicitly budgeted run.")
-        if phase == "execute":
-            self.execution_calls += 1
-        else:
-            self.reporting_started = True
-            # The reserved report belongs inside the session's normal completion
-            # path. It cannot dispatch more work, even if the session offers tools.
-            tools = None
-            messages = [
-                *messages,
-                {
-                    "role": "system",
-                    "content": "Execution is now closed. Use this reserved report to describe the actual completed and unfinished work from existing tool evidence. No further tools are available. Do not infer success from exhausting the allowance.",
-                },
-            ]
-        data = self.broker.post(
-            f"jobs/{self.job_id}/model",
-            request_id=uuid4().hex,
-            phase=phase,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens or 3000,
-        )
+        provider_retries = 0
+        while True:
+            if cancellation_token:
+                cancellation_token.throw_if_cancelled()
+            # A session can summarize before the controller's independent checks.
+            # Charge that intermediate summary to execution, so a bounded repair
+            # may still follow. Only the exhausted-budget report closes execution.
+            # The controller charges every attempt, a repeated one too.
+            phase = (
+                "execute"
+                if self.execution_limit is None or self.execution_calls < self.execution_limit
+                else "report"
+            )
+            if _compaction and phase == "report":
+                raise LLMError("No compaction call remains in this explicitly budgeted run.")
+            request_messages, request_tools = messages, tools
+            if phase == "execute":
+                self.execution_calls += 1
+            else:
+                self.reporting_started = True
+                # The reserved report belongs inside the session's normal completion
+                # path. It cannot dispatch more work, even if the session offers tools.
+                request_tools = None
+                request_messages = [
+                    *messages,
+                    {
+                        "role": "system",
+                        "content": "Execution is now closed. Use this reserved report to describe the actual completed and unfinished work from existing tool evidence. No further tools are available. Do not infer success from exhausting the allowance.",
+                    },
+                ]
+            try:
+                data = self.broker.post(
+                    f"jobs/{self.job_id}/model",
+                    request_id=uuid4().hex,
+                    phase=phase,
+                    messages=request_messages,
+                    tools=request_tools,
+                    max_tokens=max_tokens or 3000,
+                    # Sent only on a repeat, so a controller from before retries accepts
+                    # every first attempt; such a controller never asks for a repeat.
+                    **({"provider_retries": provider_retries} if provider_retries else {}),
+                )
+            except ProviderRetry as retry:
+                # Without a way to be stopped, do not wait: the caller sees the error.
+                if not cancellation_token:
+                    raise
+                # Wait here, where Stop ends the wait; then send the step again.
+                provider_retries += 1
+                cancellation_token.wait(retry.wait)
+                continue
+            break
         if phase == "execute":
             self.instruction_revision = data.get("instruction_revision", 0)
         elif data.get("tool_calls"):
@@ -297,14 +345,17 @@ def make_session(workspace: Path, state: Path, job: dict, broker: Broker, settin
         base_url=settings["base_url"],
         model=settings["model"],
         stream=False,
-        skills_enabled=False,
-        bundled_skills_enabled=False,
+        # The engine's skills and the workspace's own, each offered only when this session has
+        # the tools it names. Skill folders in this worker's home are not the person's.
+        skills_enabled=True,
+        bundled_skills_enabled=True,
+        user_skills_enabled=False,
         custom_tools_enabled=False,
         web_tools_enabled=False,
         subagents_enabled=False,
         provider_retry_max_retries=0,
-        llm_enable_thinking=True,
-        llm_reasoning_effort="low",
+        # No thinking settings here: the controller makes every model call of this session
+        # with the owl's model connection (BrokerClient), so it decides how hard to think.
         llm_timeout_s=90,
         # Let the existing verifier discover the repository's own checks. A
         # generic pytest fallback is not evidence for an arbitrary project.
@@ -319,7 +370,6 @@ def make_session(workspace: Path, state: Path, job: dict, broker: Broker, settin
                 base_url=settings["base_url"],
                 protocol="openai_compat",
                 default_model=settings["model"],
-                reasoning_effort="low",
             ).to_dict()
         },
         "shell_sandbox": {

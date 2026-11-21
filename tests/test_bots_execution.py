@@ -452,7 +452,8 @@ def test_rejected_execution_call_does_not_remain_running_or_log_arguments(study)
         [
             response(
                 name="computer_run",
-                arguments={"command": "private-synthetic-argument", "timeout": 300},
+                # Past the longest wait any computer offers (300 seconds): invalid, never sent.
+                arguments={"command": "private-synthetic-argument", "timeout": 301},
             ),
             response(name="computer_run", arguments={"command": "printf inspected"}),
             response("The corrected command finished."),
@@ -550,19 +551,26 @@ def test_failed_activity_write_cannot_hide_uncertain_action(study, monkeypatch):
     assert instances[0].closed
 
 
-@pytest.mark.parametrize("claimed", [False, True])
-def test_restart_preserves_queued_work_but_never_replays_started_execution(study, claimed):
+@pytest.mark.parametrize("state", ["queued", "claimed", "acting"])
+def test_restart_preserves_queued_work_but_never_replays_execution_that_acted(study, state):
     store, task, manager, instances = study
     runtime = BotRuntime(store, "owner", lambda _: ClientFixture([]), desktop_computers=manager)
     runtime.run(task, runtime.task_token(task["id"]))
-    if claimed:
+    if state != "queued":
         runtime.background.claim()
-    assert store.recover("owner") == int(claimed)
-    if claimed:
-        assert store.task("owner", task["id"])["status"] == "interrupted"
+    if state == "acting":
+        # A command on the owl's computer was under way: it may have happened.
+        store.event("owner", task["id"], "tool_started", {"name": "computer_run"})
+    assert store.recover("owner") == int(state != "queued")
+    if state == "acting":
+        stopped = store.task("owner", task["id"])
+        assert stopped["status"] == "interrupted"
+        assert stopped["failure"]["not_rerun"] == "unconfirmed"
         assert runtime.background.claim() is None
     else:
+        # Queued work keeps waiting; started work that did nothing yet starts again once.
         assert runtime.background.claim()["id"] == task["id"]
+        assert store.task("owner", task["id"])["restarts"] == int(state == "claimed")
     assert not instances
 
 

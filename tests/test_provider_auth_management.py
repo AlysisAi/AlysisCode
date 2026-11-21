@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from alysis_code.cli_impl.commands import auth
+from alysis_code import provider_auth
 from alysis_code.ide import management_protocol as management
 from alysis_code.ide.protocol import ProtocolError
 from alysis_code.provider_auth import ProviderAccountStatus, ProviderAuthError
@@ -20,8 +20,7 @@ def test_management_reads_fresh_provider_identity_and_revocation(monkeypatch):
             reads.append(status)
             return status
 
-    monkeypatch.setattr(auth, "create_provider_auth", lambda provider_id: Adapter())
-    monkeypatch.setattr(auth, "credential_backend_fields", lambda: {})
+    monkeypatch.setattr(provider_auth, "create_provider_auth", lambda provider_id: Adapter())
 
     def read():
         return management.handle_management_method(
@@ -49,8 +48,7 @@ def test_management_provider_error_is_unverified_and_redacted(monkeypatch):
     def fail(provider_id):
         raise ProviderAuthError("Unavailable token=secret-fixture-value")
 
-    monkeypatch.setattr(auth, "create_provider_auth", fail)
-    monkeypatch.setattr(auth, "credential_backend_fields", lambda: {})
+    monkeypatch.setattr(provider_auth, "create_provider_auth", fail)
     answer = management.handle_management_method(
         "provider.auth.status", {"provider_id": "test-provider"}, request_id="test"
     )

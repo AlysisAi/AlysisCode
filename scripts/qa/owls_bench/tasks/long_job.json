@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "tasks": [
+    {
+      "id": "long-en-rust-releases",
+      "category": "long_job",
+      "language": "en",
+      "split": "dev",
+      "prompt": "Read the official announcement posts for the 20 most recent stable releases of the Rust programming language on the Rust blog (blog.rust-lang.org). Build an .xlsx table with one row per release: the version, the release date, three headline changes in your own words, and the link to that release's announcement post. Reply with a short overview of the main themes across those releases.",
+      "timeout_s": 3600,
+      "expect": {
+        "deliverable": "xlsx",
+        "min_rows": 20,
+        "columns": [
+          "Rust version",
+          "release date",
+          "three headline changes",
+          "link to the release announcement"
+        ],
+        "min_sources": 20,
+        "source_unit": "url",
+        "reply_language": "en"
+      }
+    },
+    {
+      "id": "long-es-latin-american-capitals",
+      "category": "long_job",
+      "language": "es",
+      "split": "heldout",
+      "prompt": "Lee los artículos de Wikipedia en español sobre las capitales de 20 países de América Latina. Elabora un informe en .docx con una tabla que incluya el país, la capital, la población aproximada de la ciudad, su altitud en metros y el enlace al artículo que usaste para cada capital, seguido de un párrafo con tus observaciones. Respóndeme en español.",
+      "timeout_s": 3600,
+      "expect": {
+        "deliverable": "docx",
+        "min_rows": 20,
+        "columns": [
+          "country",
+          "capital city",
+          "approximate population of the city",
+          "altitude in metres",
+          "link to the article used"
+        ],
+        "min_sources": 20,
+        "source_unit": "url",
+        "reply_language": "es"
+      }
+    },
+    {
+      "id": "long-de-federal-states",
+      "category": "long_job",
+      "language": "de",
+      "split": "dev",
+      "prompt": "Lies die deutschsprachigen Wikipedia-Artikel aller 16 deutschen Bundesländer und die Artikel ihrer Landeshauptstädte (insgesamt mindestens 20 Seiten). Erstelle daraus eine Übersicht als PDF mit einem Abschnitt pro Bundesland: Hauptstadt, Einwohnerzahl, Fläche, ein besonderes Merkmal und die Links zu den verwendeten Artikeln. Antworte auf Deutsch mit einer kurzen Zusammenfassung.",
+      "timeout_s": 3600,
+      "expect": {
+        "deliverable": "pdf",
+        "min_pages": 3,
+        "min_sources": 20,
+        "source_unit": "url",
+        "reply_language": "de"
+      }
+    }
+  ]
+}

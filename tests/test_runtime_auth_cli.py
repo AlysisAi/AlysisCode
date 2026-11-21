@@ -401,9 +401,9 @@ def test_auth_status_reports_native_subscription_account(monkeypatch) -> None:
 
 def test_auth_logout_leaves_selection_but_removes_provider_credentials(monkeypatch) -> None:
     cfg = AppConfig(
-        execution={"backend": "delegated", "runtime": "openai-codex"},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
         agent_runtimes={
-            "openai-codex": {"adapter": "codex-cli", "executable": "codex"},
+            "sample-agent": {"adapter": "sample-cli", "executable": "sample-agent"},
         },
     )
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
@@ -418,14 +418,14 @@ def test_auth_logout_leaves_selection_but_removes_provider_credentials(monkeypat
     assert result.exit_code == 0, result.output
     assert "Disconnected" in result.output
     assert cfg.execution.backend == "delegated"
-    assert cfg.execution.runtime == "openai-codex"
+    assert cfg.execution.runtime == "sample-agent"
 
 
 def test_auth_logout_does_not_claim_success_when_provider_could_not_run(monkeypatch) -> None:
     cfg = AppConfig(
-        execution={"backend": "delegated", "runtime": "openai-codex"},
+        execution={"backend": "delegated", "runtime": "sample-agent"},
         agent_runtimes={
-            "openai-codex": {"adapter": "codex-cli", "executable": "missing-codex"},
+            "sample-agent": {"adapter": "sample-cli", "executable": "missing-sample-agent"},
         },
     )
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
@@ -435,7 +435,7 @@ def test_auth_logout_does_not_claim_success_when_provider_could_not_run(monkeypa
         lambda *_args, **_kwargs: RuntimeAccountStatus(
             authenticated=False,
             verified=False,
-            detail="Codex CLI is missing.",
+            detail="The sample agent is missing.",
         ),
     )
 

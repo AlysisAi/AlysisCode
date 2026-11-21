@@ -15,6 +15,9 @@ COPY --chown=1000:1000 src /opt/alysis/src
 # Isolated subprocesses import the installed package, not PYTHONPATH. Keep it
 # and its locked dependencies at the same revision as the worker source.
 RUN uv sync --locked --no-dev --no-editable --extra server --extra documents && uv cache clean
+# pip for the owl's own package installs (package_access.py): uv environments ship without it.
+# Python's bundled copy, so the image needs no download for it; owls install into their computer.
+RUN /opt/alysis/.venv/bin/python -m ensurepip --default-pip && /opt/alysis/.venv/bin/python -m pip --version
 COPY scripts/bots-cloud/check_image.py /opt/alysis/check_image.py
 ENV PYTHONPATH=/opt/alysis/src
 USER 1000:1000

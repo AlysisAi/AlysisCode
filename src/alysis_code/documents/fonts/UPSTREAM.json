@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "fonts": {
+    "DroidSansFallbackFull.ttf": {
+      "sha256": "acb6440a713d880a13a21b468ba7cd43f5a2b2934972e51be791c880730777b8",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE_DROID_SANS_FALLBACK",
+      "repository": "https://github.com/aosp-mirror/platform_frameworks_base",
+      "revision": "android-7.1.2_r39",
+      "path": "data/fonts/DroidSansFallbackFull.ttf",
+      "modified": false
+    },
+    "NanumGothic-Regular.ttf": {
+      "sha256": "76f45ef4a6bcff344c837c95a7dcc26e017e38b5846d5ae0cdcb5b86be2e2d31",
+      "license": "OFL-1.1",
+      "license_file": "LICENSE_NANUM_GOTHIC",
+      "repository": "https://github.com/google/fonts",
+      "path": "ofl/nanumgothic/NanumGothic-Regular.ttf",
+      "upstream_source": {
+        "repository": "https://github.com/googlefonts/nanumgothic",
+        "commit": "1893597aed63d9fecf2e84a70804f60ae490162d",
+        "path": "fonts/ttf/NanumGothic-Regular.ttf"
+      },
+      "modified": false
+    }
+  }
+}

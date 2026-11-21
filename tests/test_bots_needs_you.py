@@ -69,7 +69,8 @@ def test_an_approval_lists_its_action_without_the_screenshot(tmp_path):
     }
     with store.connect(write=True) as db:
         db.execute(
-            "INSERT INTO bot_action_reviews VALUES(?,?,?,?,'g','pending',1,?,NULL,'')",
+            "INSERT INTO bot_action_reviews(id,bot_id,task_id,action,generation,status,revision,"
+            "created_at,decided_at,reason) VALUES(?,?,?,?,'g','pending',1,?,NULL,'')",
             (uuid4().hex, bot["id"], task["id"], json.dumps(action), time.time()),
         )
     [item] = store.needs_you("alice")["items"]
