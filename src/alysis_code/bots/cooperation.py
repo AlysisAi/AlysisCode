@@ -355,7 +355,7 @@ class PeerStore:
                 raise LimitReached("The peer exchange reached its model-call allowance.")
             self.store._bot(db, self.owner, item["recipient_bot_id"])
             call_id = self.store._reserve_call(
-                db, self.owner, source["id"], model, max_calls, background=True
+                db, self.owner, source["id"], model, max_calls, background=True, purpose="peer"
             )
             db.execute("UPDATE peer_exchanges SET calls=calls+1 WHERE id=?", (exchange_id,))
             db.execute("INSERT INTO peer_calls VALUES(?,?,?)", (exchange_id, call_id, revision))

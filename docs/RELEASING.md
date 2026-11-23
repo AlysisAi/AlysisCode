@@ -49,8 +49,11 @@ repository before any push.
 
    The generated `src/alysis_code/_build_info.py` is a build input, not a source change
    to commit. Restore its original contents after building; CI does this automatically.
-6. Wait for the `ci.yml` push run on the exact release commit to complete successfully,
-   then create and push the version tag:
+6. Wait until CI has passed for the exact release commit, then create and push the
+   version tag. When the release commit is the merge of a release pull request with
+   exactly that pull request's files, the pull request's passing CI run counts, so the
+   tag can go on as soon as the pull request is merged. Otherwise wait for the `ci.yml`
+   push run on the release commit:
 
    ```bash
    VERSION=0.14.0
@@ -62,15 +65,24 @@ The public tag-triggered `release` workflow validates that the tag, package vers
 source commit, and default branch agree. Before building, it finds the newest `ci.yml`
 push run for that exact commit on the default branch and requires a successful run
 and all required jobs, including all four Python suites. Missing, running or failed
-CI stops publication; it never falls back to an older successful run. Wait for CI
-before tagging. Manual publication recovery supplies an explicit CI run ID, subject
-to the same exact-source and job checks.
+CI stops publication; it never falls back to an older successful run.
+
+While that push run has no result yet (missing or still running), the release
+pull request's CI can stand in for it. It counts only when GitHub records one merged
+pull request from this repository whose merge is the release commit, the release
+commit's tree is the pull request head's tree (trees are compared, not commits), the
+default branch had nothing that the head did not already contain (so the pull
+request's CI tested the same files), and the newest `ci.yml` run for that head
+succeeded with every required job. A finished push run for the release commit always
+decides, so a failed one is never overridden. In every other case the push-run rule
+above applies. Manual publication recovery supplies an explicit CI run ID, either the
+push run or the release pull request's run, subject to the same checks.
 
 The release reuses that full-suite result instead of running the suite again. It
 still performs three-platform reliability qualification, builds and validates the
 actual source distribution and wheel, creates an SBOM and provenance attestations,
 and publishes through PyPI trusted publishing. The release receipt records the
-verified CI run ID. Internal workflows remain manual-only.
+verified CI run ID and the commit that run tested. Internal workflows remain manual-only.
 
 After publication:
 

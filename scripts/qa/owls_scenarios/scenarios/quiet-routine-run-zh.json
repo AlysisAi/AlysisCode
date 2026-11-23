@@ -1,0 +1,38 @@
+{
+  "id": "quiet-routine-run-zh",
+  "title": "A routine run that found nothing new ends quietly: no reply, nothing unread (Chinese)",
+  "pins": "A routine's run checked and found nothing to tell the person, and ends with the structured nothing_to_report step (offered only in routine runs). It completes with no reply and no reply check, the chat the person had read stays read, and the routine's history says it checked. docs/bots.md (quiet_routine_runs, step_effects.py).",
+  "language": "zh",
+  "owl": {"name": "赫拉", "purpose": "关注价格"},
+  "routines": [
+    {"name": "机票价格", "prompt": "检查机票价格，只有价格变化时才告诉我。",
+     "timing": {"kind": "interval", "every_minutes": 60}, "minutes_since_saved": 60}
+  ],
+  "script": {
+    "owl": [
+      {"say": "你好！有需要随时告诉我。"},
+      {"call": [{"tool": "nothing_to_report", "arguments": {"reason": "价格仍然是 120 欧元，没有变化。"}}]}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "hello", "message": "你好"},
+    {"do": "run"},
+    {"do": "mark_read"},
+    {"do": "run_routine", "routine": "机票价格"},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "reply", "turn": "hello", "published": true},
+    {"kind": "turn", "turn": "routine:1", "status": "completed"},
+    {"kind": "reply", "turn": "routine:1", "published": false},
+    {"kind": "request", "owl_call": 2, "offered": ["nothing_to_report"]},
+    {"kind": "request", "owl_call": 1, "not_offered": ["nothing_to_report"],
+     "why": "only routine runs are offered it"},
+    {"kind": "event", "turn": "routine:1", "event": "nothing_new",
+     "data": {"reason": "价格仍然是 120 欧元，没有变化。"}},
+    {"kind": "routine", "name": "机票价格", "nothing_new": true, "state": "active"},
+    {"kind": "path", "path": "chat.unread", "equals": 0, "why": "nothing to notify"},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "reply_checker"}, "equals": 1},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "owl"}, "equals": 2}
+  ]
+}

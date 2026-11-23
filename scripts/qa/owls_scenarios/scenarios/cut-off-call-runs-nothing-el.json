@@ -1,0 +1,35 @@
+{
+  "id": "cut-off-call-runs-nothing-el",
+  "title": "A reply cut off while writing a tool call runs none of it and shows none of it (Greek)",
+  "pins": "A chat-completions reply that stopped at the output limit (finish_reason length) while writing save_file: the call's arguments even parse, yet nothing from it runs, its text is never published or reviewed, the call is recorded as incomplete, and the next complete reply is the one published. From the 0.18.0 changelog: a reply the model's output limit cut off is no longer published or acted on, with any provider.",
+  "language": "el",
+  "owl": {"name": "Γλαύκα", "purpose": "Συγκρίσεις"},
+  "script": {
+    "owl": [
+      {"cut_off": {"wire": "chat_completions",
+        "say": "Ολοκλήρωσα την έρευνα για τη σύγκριση· γράφω τώρα το έγγραφο.",
+        "call": [{"tool": "save_file", "arguments": {"name": "σύγκριση.txt", "content": "Πίνακας σύγκρισης"}}]}},
+      {"say": "Έγραψα τη σύγκριση σε δύο ενότητες· θέλεις να την αποθηκεύσω ως αρχείο;"}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "Σύγκρινε τα δύο σχέδια και φτιάξε έγγραφο."},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "turn", "turn": "ask", "status": "completed"},
+    {"kind": "tool_not_run", "name": "save_file", "why": "the cut-off call never runs"},
+    {"kind": "count", "of": "requested_calls", "where": {"name": "save_file", "cut_off": true}, "equals": 1},
+    {"kind": "reply", "turn": "ask", "why": "only the complete reply is published",
+     "equals": "Έγραψα τη σύγκριση σε δύο ενότητες· θέλεις να την αποθηκεύσω ως αρχείο;"},
+    {"kind": "reply", "turn": "ask", "why": "the cut-off text is never shown",
+     "excludes": ["Ολοκλήρωσα την έρευνα"]},
+    {"kind": "event", "turn": "ask", "event": "output_cut_off",
+     "data": {"tools": ["save_file"], "attempt": 1, "retry": true}},
+    {"kind": "event", "turn": "ask", "event": "tool_started", "present": false},
+    {"kind": "request", "owl_call": 2, "why": "the next request tells the model, without replaying it",
+     "contains": ["Nothing from it ran"], "excludes": ["Ολοκλήρωσα την έρευνα", "Πίνακας σύγκρισης"]},
+    {"kind": "path", "path": "turns.0.usage", "equals": ["incomplete", "completed", "completed"]},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "reply_checker"}, "equals": 1}
+  ]
+}

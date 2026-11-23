@@ -47,6 +47,61 @@ def _total(values: list) -> int | None:
     return int(sum(present)) if present else None
 
 
+# The report's columns for where the time went, each a sum of time_split parts (timing.py).
+TIME_COLUMNS = (
+    ("Turn steps", ("model", ("turn",))),
+    ("Action reviews", ("model", ("action_review",))),
+    ("Reply checks", ("model", ("reply_check",))),
+    (
+        "Summaries & memory",
+        ("model", ("history_summary", "progress_summary", "memory_index", "work_compaction")),
+    ),
+    ("Research helpers", ("model", ("research_helper",))),
+    ("Other model", ("model", ("image", "computer_work", "coding", "peer", "unlabelled"))),
+    ("Browser", ("tools", ("browser",))),
+    ("Computer", ("tools", ("computer",))),
+    ("Web", ("tools", ("web",))),
+    ("Files", ("tools", ("files",))),
+    ("Other tools", ("tools", ("other",))),
+    ("Service", ("service", ())),
+)
+
+
+def _time_part(split: dict, part: tuple[str, tuple[str, ...]]) -> float:
+    kind, names = part
+    if kind == "service":
+        return float(split.get("service_s") or 0.0)
+    values = split.get("model_s" if kind == "model" else "tools_s") or {}
+    return float(sum(values.get(name) or 0.0 for name in names))
+
+
+def time_summary(splits: list) -> dict | None:
+    """Where a group's time went: each column's share of all its runs' time, its median per
+    run, and the medians of the wait before the first step and of the first computer step."""
+    present = [split for split in splits if isinstance(split, dict) and split.get("wall_s")]
+    if not present:
+        return None
+    total = sum(float(split["wall_s"]) for split in present)
+    columns = {}
+    for title, part in TIME_COLUMNS:
+        values = [_time_part(split, part) for split in present]
+        columns[title] = {
+            "share": round(sum(values) / total, 4) if total else None,
+            "median_s": _median(values),
+        }
+    return {
+        "runs": len(present),
+        "median_wall_s": _median([split["wall_s"] for split in present]),
+        "columns": columns,
+        "median_before_first_step_s": _median(
+            [split.get("before_first_step_s") for split in present]
+        ),
+        "median_first_computer_step_s": _median(
+            [split.get("first_computer_step_s") for split in present]
+        ),
+    }
+
+
 def aggregate(scores: list[dict]) -> dict:
     """One metrics block over a group of scored runs."""
     runs = len(scores)
@@ -84,6 +139,7 @@ def aggregate(scores: list[dict]) -> dict:
         "approvals_asked": _total([m.get("approvals") for m in metrics]),
         "questions_asked": _total([m.get("questions") for m in metrics]),
         "failures": _total([m.get("failures") for m in metrics]),
+        "time": time_summary([m.get("time_split") for m in metrics]),
     }
     if any(value is not None for value in first):
         first_median, repeat_median = _median(first), _median(last_of_repeats)
@@ -255,6 +311,37 @@ def _table(rows: list[tuple[str, dict]], first: str) -> list[str]:
     return lines
 
 
+def _time_table(rows: list[tuple[str, dict]], first: str) -> list[str]:
+    """Where the time went: each column's share of the group's time, then the medians of the
+    wait before the turn's first step and of the first browser or computer step."""
+    timed = [(name, block["time"]) for name, block in rows if block.get("time")]
+    if not timed:
+        return []
+    titles = [title for title, _ in TIME_COLUMNS]
+    lines = [
+        "| "
+        + " | ".join([first, "Runs", *titles, "Before 1st step s", "1st computer step s"])
+        + " |",
+        "|" + "---|" * (len(titles) + 4),
+    ]
+    for name, time_block in timed:
+        cells = [_fmt(time_block["columns"][title]["share"], "rate") for title in titles]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    name,
+                    str(time_block["runs"]),
+                    *cells,
+                    _fmt(time_block["median_before_first_step_s"]),
+                    _fmt(time_block["median_first_computer_step_s"]),
+                ]
+            )
+            + " |"
+        )
+    return lines
+
+
 def _change(row: dict, name: str, kind: str = "") -> str:
     delta = row[name]["change"]
     if delta is None:
@@ -289,6 +376,17 @@ def render_markdown(report: dict, drift_result: dict | None = None) -> str:
             lines.append("")
             lines += _table(list(split_block["tasks"].items()), "Task")
             lines.append("")
+            time_rows = _time_table(
+                [("All", summary), *split_block["categories"].items()], "Category"
+            )
+            if time_rows:
+                lines += [
+                    "Where the time went: each part's share of all the runs' time (the parts "
+                    "never overlap and add up to the turn's time), then two medians in seconds.",
+                    "",
+                    *time_rows,
+                    "",
+                ]
             repeats = [
                 (name, cat["repeat"])
                 for name, cat in split_block["categories"].items()

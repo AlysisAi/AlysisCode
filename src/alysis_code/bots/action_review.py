@@ -517,7 +517,12 @@ class ReviewClient:
                 "The exact action and user intent exceed the review context; human review is required."
             )
         call_id = runtime.store.reserve_call(
-            runtime.owner, task["id"], self.model, runtime.limits.max_calls, background=True
+            runtime.owner,
+            task["id"],
+            self.model,
+            runtime.limits.max_calls,
+            background=True,
+            purpose="action_review",
         )
         runtime.store.event(
             runtime.owner,

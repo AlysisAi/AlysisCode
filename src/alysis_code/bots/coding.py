@@ -621,7 +621,7 @@ class CodingStore:
                     "The coding phase exhausted its model-call allowance. Report unfinished work."
                 )
             call_id = self.store._reserve_call(
-                db, self.owner, job["task_id"], model, max_calls, background=True
+                db, self.owner, job["task_id"], model, max_calls, background=True, purpose="coding"
             )
             db.execute(
                 "INSERT INTO coding_calls VALUES(?,?,?,?,?,NULL)",

@@ -29,6 +29,7 @@ from .owls_client import OwlsClient, OwlsError
 from .report import write_report
 from .score import score_record
 from .tasks import DEFAULT_TIMEOUT_S, TASKS_DIR, Task, TaskError, load_tasks, select
+from .timing import time_split
 
 RECORD_SCHEMA = 1
 OUTPUT_LIMIT = 4 * 1024 * 1024
@@ -126,6 +127,8 @@ def task_receipts(row: dict) -> dict:
         "failure": row.get("failure"),
         "error": row.get("error"),
         "server_wall_s": _server_wall(row, events),
+        # Where the turn's time went: model calls by purpose, tool steps by kind, the rest.
+        "time_split": time_split(row),
     }
 
 

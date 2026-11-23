@@ -1,0 +1,38 @@
+{
+  "id": "steer-during-tool-batch-el",
+  "title": "A message sent now during a batch of tool calls is read at the next model round (Greek)",
+  "pins": "The owl runs two tool calls from one model reply; the person presses Send now on a waiting message while the first runs. Both calls still run and answer, and the person's exact words arrive as their own message after the whole batch, in the next model round; the message is part of the turn it steered and gets no reply of its own. docs/bots.md, Messages that wait (steering.py).",
+  "language": "el",
+  "owl": {"name": "Κίρκη", "purpose": "Ταξίδια", "memory": false},
+  "script": {
+    "owl": [
+      {"call": [
+        {"tool": "save_file", "arguments": {"name": "λίστα.txt", "content": "Νερό, καπέλο"}},
+        {"tool": "save_file", "arguments": {"name": "εισιτήρια.txt", "content": "ΑΘΗ-ΘΕΣ"}}
+      ]},
+      {"say": "Έτοιμα τα δύο αρχεία· πρόσθεσα και το αντηλιακό στη λίστα."}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "Φτιάξε μια λίστα για το ταξίδι στη Θεσσαλονίκη."},
+    {"do": "run", "during": [
+      {"tool": 1, "do": "send", "id": "more", "message": "Πρόσθεσε και αντηλιακό· το Σάββατο έχει ζέστη."},
+      {"tool": 1, "do": "steer", "message": "more"}
+    ]}
+  ],
+  "checks": [
+    {"kind": "tools", "turn": "ask", "order": "exact", "why": "the batch is never interrupted",
+     "expect": [{"name": "save_file", "arguments": {"name": "λίστα.txt"}},
+                {"name": "save_file", "arguments": {"name": "εισιτήρια.txt"}}]},
+    {"kind": "request", "owl_call": 2, "why": "the words come after the whole batch, as the person's own",
+     "tail": [{"role": "assistant"}, {"role": "tool"}, {"role": "tool"},
+              {"role": "user", "content": "Πρόσθεσε και αντηλιακό· το Σάββατο έχει ζέστη."}]},
+    {"kind": "request", "owl_call": 1, "excludes": ["αντηλιακό"]},
+    {"kind": "reply", "turn": "ask", "equals": "Έτοιμα τα δύο αρχεία· πρόσθεσα και το αντηλιακό στη λίστα."},
+    {"kind": "reply", "turn": "more", "published": false},
+    {"kind": "turn", "turn": "more", "status": "completed"},
+    {"kind": "path", "path": "turns.1.queued_message.steer.state", "equals": "applied"},
+    {"kind": "event", "turn": "ask", "event": "steer_applied"},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "owl"}, "equals": 2}
+  ]
+}

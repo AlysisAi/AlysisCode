@@ -1,0 +1,28 @@
+{
+  "id": "same-failing-call-refused-es",
+  "title": "The same failing call is refused after the bound, then the turn stops (Spanish)",
+  "pins": "A model that keeps asking for the same call that fails the same way: it runs until it has failed 3 times, is then refused without running ({executed: false} says why), and about 10 identical attempts end the turn as a model failure instead of using up the allowance. From the 0.18.0 changelog (bots/repeat_guard.py).",
+  "language": "es",
+  "owl": {"name": "Búho", "purpose": "Ordenar notas"},
+  "script": {
+    "owl": [
+      {"call": [{"tool": "read_memory", "arguments": {"memory_id": "recuerdo-que-no-existe"}}], "repeat": 11}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "¿Qué recuerdas de mis preferencias de viaje?"},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "count", "of": "tool_runs", "where": {"name": "read_memory"}, "equals": 3,
+     "why": "it runs until it has failed the same way 3 times"},
+    {"kind": "count", "of": "requested_calls", "where": {"name": "read_memory"}, "equals": 11,
+     "why": "the model asked 11 times; 8 were refused unrun, the last ended the turn"},
+    {"kind": "request", "owl_call": 5, "why": "the refusal says why and that nothing ran",
+     "contains": ["failed the same way 3 times", "\"executed\":false"]},
+    {"kind": "turn", "turn": "ask", "status": "failed", "failure_kind": "model",
+     "error_contains": "kept repeating the same step"},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "owl"}, "equals": 11},
+    {"kind": "reply", "turn": "ask", "published": false}
+  ]
+}

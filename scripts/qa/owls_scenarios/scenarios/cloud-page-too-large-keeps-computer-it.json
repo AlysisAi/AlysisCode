@@ -1,0 +1,51 @@
+{
+  "id": "cloud-page-too-large-keeps-computer-it",
+  "title": "A Cloud page read too large to receive keeps the owl's computer (Italian)",
+  "pins": "On a Cloud owl's computer, a read-only step (the page snapshot after opening a heavy page) answers with a receipt larger than the host reads. Nothing on the computer changed, so it keeps working: the page is read as text instead, the computer is not retired, and the next step uses the same computer. From the 0.18.0 changelog: a heavy web page no longer retires a Cloud owl's computer when it is only read (cloud_desktop.reads_only).",
+  "language": "it",
+  "owl": {"name": "Civetta", "purpose": "Leggere pagine web"},
+  "fakes": {
+    "cloud_computer": {
+      "browser": {
+        "pages": [
+          {"url": "https://news.example/archivio", "title": "Archivio", "body": [
+            {"tag": "MAIN", "role": "main", "name": "", "children": [
+              {"tag": "H1", "role": "heading", "name": "Archivio delle notizie", "text": "Archivio delle notizie",
+               "props": {"level": 1}},
+              {"tag": "P", "role": "paragraph", "name": "", "text": "Il consiglio comunale ha approvato il bilancio."}
+            ]}
+          ]}
+        ]
+      },
+      "reply_too_large": [{"method": "snapshot", "kind": "dom", "times": 1}]
+    }
+  },
+  "script": {
+    "owl": [
+      {"call": [{"tool": "browser_navigate", "arguments": {"url": "https://news.example/archivio"}}]},
+      {"call": [{"tool": "browser_observe", "arguments": {}}]},
+      {"say": "Nell'archivio: il consiglio comunale ha approvato il bilancio."}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "Leggi l'archivio delle notizie e dimmi la notizia principale."},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "turn", "turn": "ask", "status": "completed"},
+    {"kind": "path", "path": "cloud_computer.too_large", "matches": [{"method": "snapshot", "kind": "dom"}],
+     "why": "the read's receipt was too large once"},
+    {"kind": "path", "path": "cloud_computer.computers", "equals": 1,
+     "why": "the same computer served every step"},
+    {"kind": "path", "path": "cloud_computer.lifecycle", "excludes": "failed",
+     "why": "the computer was never retired as failed"},
+    {"kind": "tools", "turn": "ask", "order": "exact", "expect": [
+      {"name": "browser_navigate"}, {"name": "browser_observe"}]},
+    {"kind": "count", "of": "tool_runs", "where": {"raised": {"$exists": true}}, "equals": 0},
+    {"kind": "request", "owl_call": 2, "why": "the page reached the model as text",
+     "contains": ["Il consiglio comunale ha approvato il bilancio."]},
+    {"kind": "request", "owl_call": 3, "why": "the next step on the same computer has a page view again",
+     "contains": ["- heading \"Archivio delle notizie\" [level=1]"]},
+    {"kind": "reply", "turn": "ask", "published": true}
+  ]
+}

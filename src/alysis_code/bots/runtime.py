@@ -3124,6 +3124,7 @@ class BotRuntime:
                         client.model,
                         self.limits.max_calls,
                         background=background,
+                        purpose="turn",
                     )
                 except BackgroundInstructionsPending:
                     continue  # Refresh a racing correction before any provider call.

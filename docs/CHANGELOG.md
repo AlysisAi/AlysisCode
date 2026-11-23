@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.18.1 - 2026-11-23
+
+- GLM-5.4 is a reviewed model on the Z.AI GLM Coding Plan connection and the default for new
+  Coding Plan setups: 1M context, 128K output, reads images, and thinks at low, high or max
+  (max by default) like GLM-5.3. Chats, the desktop app's model picker and owls on a Coding Plan
+  connection offer it, and owls send it browser screenshots. It is offered only on the Coding
+  Plan, where Z.AI serves it; GLM-5.3 and GLM-5.3-Flash stay available.
+- Every model call an owl makes says what it was for (its `model_started` event carries the call id
+  and a fixed purpose: the turn's own step, an action review, a reply check, a summary, memory
+  sorting, a research helper, a picture, computer work, a coding job or a peer's answer). The owls
+  benchmark uses it to show where a turn's time went: model calls by purpose, tool steps by kind
+  and the service's own time, which never overlap and add up to the turn's time, plus the wait
+  before the turn's first step and the first browser or computer step. Older runs are re-scored
+  from the task records they saved.
+- A Cloud owl's computer that fails to wake from sleep goes back to sleep instead of staying
+  "waking up": its record says what the provider confirms (asleep, gone, or still pending when the
+  provider can't tell yet), with its memory kept. A stuck "waking up" record held a Cloud computer
+  slot and kept Cloud maintenance and updates waiting until that owl's account restarted.
+- Windows sandbox qualification (`scripts/qualify_windows_mxc.py`) accepts a blocked loopback
+  connection that times out instead of being refused, but only with proof that the sandbox denied
+  it.
+- Engine CI runs its tests on four processes, and a release counts the release pull request's CI
+  when the merged files are the same, so publishing no longer waits for another full test run.
+- Owl behaviour is checked by scripted-model scenarios (`scripts/qa/owls_scenarios`) that run without
+  calling a real model.
+
 ## 0.18.0 - 2026-11-21
 
 - Alysis Code no longer hands its turns to an outside command-line agent: the built-in delegated

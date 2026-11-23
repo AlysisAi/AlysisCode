@@ -119,6 +119,61 @@ def test_uncertain_resume_never_erases_or_replaces_the_sleeping_computer(tmp_pat
     second.close()
 
 
+@pytest.mark.parametrize(
+    ("failure", "settled"),
+    [
+        ("lost-resume", "sleeping"),  # the start receipt was lost while the computer started
+        ("lost-memory", "sleeping"),  # it started, but its memory could not be reconnected
+        ("missing", "sleep_lost"),  # the provider no longer has the computer
+        ("changing", "sleep_requested"),  # the provider cannot confirm any state yet
+    ],
+)
+def test_a_wake_up_that_fails_never_leaves_the_computer_resuming(tmp_path, failure, settled):
+    provider = MemoryProvider()
+    computers = factory(tmp_path, provider)
+    first = computers("bot", tmp_path, cancel=lambda: False)
+    first.suspend(uuid4().hex)
+    asleep = first.ref
+    if failure == "missing":
+        provider.allocations[asleep.resource_id] = (asleep, "missing")
+    elif failure == "changing":
+        provider.allocations[asleep.resource_id] = (asleep, "transitioning")
+    else:
+        provider.mode = failure
+    with pytest.raises((ComputeUncertain, DesktopError)):
+        computers("bot", tmp_path, cancel=lambda: False)
+    record = json.loads(first._record.read_text())
+    assert record["state"] == settled
+    assert record["resource_id"] == asleep.resource_id and record["resume_kind"] == "memory"
+    assert not provider.deleted
+    if settled == "sleeping":
+        # Put back to sleep with its memory, and it wakes normally next time.
+        assert provider.status(asleep).state == "stopped"
+        provider.mode = None
+        again = computers("bot", tmp_path, cancel=lambda: False)
+        assert again.ref == asleep and again.memory_reopened
+        again.close()
+
+
+def test_after_a_failed_wake_up_maintenance_and_the_capacity_slot_are_free(isolated, tmp_path):  # noqa: F811
+    provider = MemoryProvider()
+    store = isolated("owner")
+    bot, computers = shared_factory(tmp_path, provider, store, "owner")
+    computer = computers(bot, tmp_path, cancel=lambda: False)
+    computer.suspend(uuid4().hex)
+    provider.mode = "lost-memory"
+    with pytest.raises(DesktopError, match="reconnected"):
+        computers(bot, tmp_path, cancel=lambda: False)
+    ledger = AllocationLedger(store, "owner")
+    assert ledger.get(bot)["state"] == "sleeping" and ledger.capacity(provider.scope) == 0
+    lease = MaintenanceLease(store)
+    token = lease.acquire()
+    assert token is not None
+    lease.release(token)
+    provider.mode = None
+    computers(bot, tmp_path, cancel=lambda: False).close()
+
+
 def test_legacy_sleeping_computer_keeps_its_separate_controls(tmp_path):
     provider = MemoryProvider()
     computers = factory(tmp_path, provider)

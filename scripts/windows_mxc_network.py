@@ -5,12 +5,19 @@ These tests do not qualify access to other LAN machines or remote ingress.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import json
 import socket
 import subprocess
+import threading
+import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
+
+T = TypeVar("T")
 
 
 def tcp_sender(address: str, port: int, payload: str) -> str:
@@ -38,6 +45,75 @@ def tcp_boundary_outcome(event: dict) -> str:
     if result in {(2, "TIMEOUT"), (3, "ETIMEDOUT")}:
         return "timeout-with-no-host-delivery"
     raise AssertionError(f"Unqualified TCP result: {event}")
+
+
+def observe_tcp_arrivals(
+    server: socket.socket, attempt: Callable[[], T], settle: float = 0.75
+) -> tuple[T, bool]:
+    """Run `attempt` while accepting on `server`; report whether any connection arrived.
+
+    Accepting while the attempt runs sees a connection even when its sender drops or resets it at
+    once, which one accept after the attempt can miss. The listener is watched for `settle` seconds
+    more, for a connection still on its way when the attempt returned.
+    """
+    arrived = threading.Event()
+    failures: list[Exception] = []
+    deadline: list[float] = []
+    previous = server.gettimeout()
+
+    def watch() -> None:
+        try:
+            while not deadline or time.monotonic() < deadline[0]:
+                try:
+                    connection, _ = server.accept()
+                except TimeoutError:
+                    continue
+                except (ConnectionResetError, ConnectionAbortedError):
+                    # Queued, then reset by its sender before it was accepted: it still arrived.
+                    arrived.set()
+                    continue
+                connection.close()
+                arrived.set()
+        except Exception as error:  # handed to the caller below, never dropped
+            failures.append(error)
+
+    server.settimeout(0.05)
+    watcher = threading.Thread(target=watch, name="tcp-arrivals", daemon=True)
+    watcher.start()
+    try:
+        result = attempt()
+    finally:
+        deadline.append(time.monotonic() + settle)
+        watcher.join()
+        server.settimeout(previous)
+    if failures:
+        raise failures[0]
+    return result, arrived.is_set()
+
+
+def tcp_denial_check(
+    server: socket.socket,
+    control: Callable[[], None],
+    attempt: Callable[[], dict],
+    settle: float = 0.75,
+) -> dict:
+    """One contained TCP attempt against a live host listener, judged only on evidence.
+
+    `control()` sends with the identical sender from outside containment and checks that the
+    listener received it; `attempt()` runs the sender inside containment and returns its event
+    (exit_code, stdout). The attempt runs between two controls while the listener is watched, so
+    a refusal (EACCES/EPERM) or a timeout counts as a denial only when the listener was alive
+    before and after and nothing reached it meanwhile. Returns the event with that evidence and
+    its boundary_outcome; raises AssertionError for anything else.
+    """
+    control()
+    event, arrived = observe_tcp_arrivals(server, attempt, settle)
+    event["host_identical_control_before"] = True
+    event["host_accepted_connection"] = arrived
+    control()
+    event["host_identical_control_after"] = True
+    event["boundary_outcome"] = tcp_boundary_outcome(event)
+    return event
 
 
 def tcp_positive_control(node: Path, work: Path, code: str, server, payload: bytes) -> None:
@@ -132,13 +208,19 @@ def qualify(helper: Path, node: Path, work: Path, request, record):
                             server.settimeout(3)
                             assert server.recvfrom(256)[0] == b"synthetic-mxc-boundary"
                             record({"name": f"host_identical_node_sender_{label}_udp", "ok": True})
-                    process = subprocess.run(
+                    contained = functools.partial(
+                        subprocess.run,
                         [str(helper), "mxc-run-request"],
                         cwd=work,
                         capture_output=True,
                         input=json.dumps(request([node, "-e", code], network=network)).encode(),
                         timeout=15,
                     )
+                    if protocol == "tcp":
+                        # Watch the listener during the attempt, not only after it.
+                        process, arrived = observe_tcp_arrivals(server, contained)
+                    else:
+                        process = contained()
                     event = {
                         "name": f"{network}_{label}_{protocol}_denied",
                         "exit_code": process.returncode,
@@ -147,16 +229,9 @@ def qualify(helper: Path, node: Path, work: Path, request, record):
                     }
                     if protocol == "tcp":
                         event["host_identical_control_before"] = True
-                        # Inspect the listener before accepting timeout/error as
-                        # containment. Even a connection carrying no data fails.
-                        server.settimeout(0.75)
-                        try:
-                            escaped, _ = server.accept()
-                        except TimeoutError:
-                            event["host_accepted_connection"] = False
-                        else:
-                            escaped.close()
-                            event["host_accepted_connection"] = True
+                        # What the listener saw decides before any timeout/error is
+                        # taken as containment. Even a connection carrying no data fails.
+                        event["host_accepted_connection"] = arrived
                         # Preserve the attempt even if the following control
                         # fails; a missing/failed control cannot qualify it.
                         record({**event, "stage": "receiver-observed"})

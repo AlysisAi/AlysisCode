@@ -453,7 +453,7 @@ def test_launch_provider_presets_use_supported_chat_models() -> None:
             "deepseek-ai/deepseek-v4-pro-0813",
             "deepseek-ai/deepseek-v4-flash-0731",
         ),
-        "zai-coding-plan": ("glm-5.3", "glm-5.3-flash"),
+        "zai-coding-plan": ("glm-5.4", "glm-5.3", "glm-5.3-flash"),
         "kimi-code": ("k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"),
         "zhipu": (
             "glm-5.3",

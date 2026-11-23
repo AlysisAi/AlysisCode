@@ -521,6 +521,7 @@ class ResearchHelpers:
                     batch.task["id"],
                     batch.client.model,
                     None if limits.max_calls is None else limits.max_calls - KEEP_FOR_OWL,
+                    purpose="research_helper",
                 )
         except LimitReached:
             raise _AllowanceUsed(everyone=False) from None

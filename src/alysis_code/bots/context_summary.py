@@ -345,6 +345,7 @@ class BotContextSummary:
                     task["id"],
                     client.model,
                     None if limits.max_calls is None else limits.max_calls - 1,
+                    purpose="history_summary",
                 )
                 db.execute(
                     "INSERT INTO bot_context_summaries VALUES(?,?,?,?,?,?,?,?) "
@@ -877,6 +878,7 @@ class TurnProgress:
                     client.model,
                     None if limits.max_calls is None else limits.max_calls - 1,
                     background=True,
+                    purpose="progress_summary",
                 )
             try:
                 response = client.chat(

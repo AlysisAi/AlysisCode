@@ -23,7 +23,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
+# The checked-out qualification modules, also under isolated Python (-I).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# isort: off
 from alysis_code.windows_mxc_contract import WINDOWS_RUNTIME_DIRECTORIES  # noqa: E402
+from windows_mxc_network import tcp_denial_check, tcp_positive_control, tcp_sender  # noqa: E402
+# isort: on
 
 
 def owner() -> dict[str, int]:
@@ -144,7 +149,8 @@ def main() -> int:
         events.append(event)
         save()
         print(json.dumps(event), flush=True)
-        if completed.returncode != expected:
+        # expected=None: any exit; the caller judges the outcome from its evidence.
+        if expected is not None and completed.returncode != expected:
             raise AssertionError(f"{name}: unexpected exit {completed.returncode}")
         return event
 
@@ -277,14 +283,27 @@ def main() -> int:
         )
         assert not (Path(future[0]) / "payload").exists()
         assert Path(future[1]).read_bytes() == b""
+        # A blocked connection to the host's loopback is refused (EACCES/EPERM) or, on Windows
+        # builds that drop it silently, times out. Either counts only with the evidence that it
+        # was denied: the identical sender run outside containment reaches the same listener
+        # before and after, and nothing reaches it during the contained attempt.
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
-            listener.listen(2)
-            port = listener.getsockname()[1]
-            with socket.create_connection(("127.0.0.1", port), timeout=2):
-                pass
-            code = f"const s=require('node:net').connect({{host:'127.0.0.1',port:{port}}});s.setTimeout(2500,()=>{{s.destroy();process.exitCode=2}});s.on('connect',()=>{{s.destroy();process.exitCode=1}});s.on('error',e=>{{console.log(e.code);if(!['EACCES','EPERM'].includes(e.code))process.exitCode=3}})"
-            contained("online_host_loopback_denied", [node, "-e", code], network="on")
+            listener.listen(4)
+            payload = uuid.uuid4().hex
+            sender = tcp_sender("127.0.0.1", listener.getsockname()[1], payload)
+            loopback = tcp_denial_check(
+                listener,
+                lambda: tcp_positive_control(node, work, sender, listener, payload.encode()),
+                lambda: contained(
+                    "online_host_loopback_denied", [node, "-e", sender], expected=None, network="on"
+                ),
+            )
+            save()
+            print(
+                json.dumps({"name": loopback["name"], "outcome": loopback["boundary_outcome"]}),
+                flush=True,
+            )
         contained(
             "stale_parent_refused",
             [system / "cmd.exe", "/d", "/c", "echo", "MUST_NOT_RUN"],

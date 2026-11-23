@@ -120,6 +120,7 @@ _CANONICAL_MODEL_SOURCES: dict[str, tuple[str, ...]] = {
         "https://docs.z.ai/guides/vlm/glm-5.3-flash",
         "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash",
     ),
+    "glm-5.4": ("https://docs.z.ai/devpack/overview",),
     "kimi-k3": (
         "https://platform.kimi.ai/docs/models.md",
         "https://platform.kimi.ai/docs/pricing/chat-k3",
@@ -226,6 +227,16 @@ _CANONICAL_MODEL_METADATA: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_reasoning": True,
     },
+    # GLM-5.4 (2026-11-23) is served on the GLM Coding Plan only and reads
+    # images. Z.AI has no model page for it yet: its announcement names the
+    # 1M-window variant glm-5.4[1m], and the plan endpoint accepts the same
+    # 128K output ceiling as GLM-5.3.
+    "glm-5.4": {
+        "context_window_tokens": 1_000_000,
+        "max_output_tokens": 131_072,
+        "supports_vision": True,
+        "supports_reasoning": True,
+    },
     # Kimi K3: 1M shared window; 131,072 is the API's normal completion
     # allowance and therefore the useful local reserve on every host.
     "kimi-k3": {
@@ -266,6 +277,7 @@ _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
         "glm-5.3-flash": "glm-5.3-flash",
     },
     "zai_coding_plan": {
+        "glm-5.4": "glm-5.4",
         "glm-5.3": "glm-5.3",
         "glm-5.3-flash": "glm-5.3-flash",
     },
@@ -346,6 +358,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
     "zai_coding_plan": {
+        "glm-5.4": ("https://docs.z.ai/devpack/overview",),
         "glm-5.3": ("https://docs.z.ai/guides/llm/glm-5.3", "https://docs.z.ai/devpack/overview"),
         "glm-5.3-flash": (
             "https://docs.z.ai/guides/vlm/glm-5.3-flash",
@@ -749,7 +762,13 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         # Plan credits are not token prices, so this route intentionally
         # carries no monetary cost fields. (GLM-5.3 is also on the Z.AI
         # pay-per-token price list since 2026-08-18 — $1.40/$4.40/$0.26 — but
-        # that is a different endpoint.)
+        # that is a different endpoint. GLM-5.4 is on the plan only.)
+        "glm-5.4": {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 131_072,
+            "supports_vision": True,
+            "supports_reasoning": True,
+        },
         "glm-5.3": {
             "context_window_tokens": 1_000_000,
             "max_output_tokens": 131_072,

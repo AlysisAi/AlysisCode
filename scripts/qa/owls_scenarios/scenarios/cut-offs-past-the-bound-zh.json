@@ -1,0 +1,32 @@
+{
+  "id": "cut-offs-past-the-bound-zh",
+  "title": "Three cut-off replies in a row end the turn plainly with nothing run or published (Chinese)",
+  "pins": "Each provider's way of sending a reply cut off at the output limit (chat-completions length, Messages max_tokens, the Responses client's error) arrives while the owl writes a call. After two recoveries the turn ends with the plain output-limit failure: no call ran, no draft reached the reply checker, nothing was published. From the 0.18.0 changelog (cut_off.py).",
+  "language": "zh",
+  "owl": {"name": "猫头鹰", "purpose": "整理资料"},
+  "script": {
+    "owl": [
+      {"cut_off": {"wire": "chat_completions", "say": "我已经查完资料，现在写报告。",
+        "call": [{"tool": "save_file", "arguments": {"name": "报告.txt", "content": "第一节"}}]}},
+      {"cut_off": {"wire": "messages", "say": "继续写报告。",
+        "call": [{"tool": "save_file", "arguments": {"name": "报告.txt", "content": "第一节"}}]}},
+      {"cut_off": {"wire": "responses", "say": "报告马上就好。",
+        "call": [{"tool": "save_file", "arguments": {"name": "报告.txt", "content": "第一节"}}]}}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "把这些资料整理成一份报告并保存。"},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "turn", "turn": "ask", "status": "failed", "failure_kind": "model",
+     "error_contains": "The model reached its response limit."},
+    {"kind": "tool_not_run", "name": "save_file"},
+    {"kind": "reply", "turn": "ask", "published": false},
+    {"kind": "reply", "turn": "ask", "excludes": ["我已经查完资料", "继续写报告", "报告马上就好"]},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "reply_checker"}, "equals": 0},
+    {"kind": "event", "turn": "ask", "event": "output_cut_off", "equals": 3},
+    {"kind": "event", "turn": "ask", "event": "output_cut_off", "data": {"retry": false}, "equals": 1},
+    {"kind": "path", "path": "turns.0.usage", "equals": ["incomplete", "incomplete", "incomplete"]}
+  ]
+}

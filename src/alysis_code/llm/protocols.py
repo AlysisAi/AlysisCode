@@ -658,7 +658,8 @@ PROVIDER_PROTOCOL_CAPABILITIES: tuple[ProviderProtocolCapabilities, ...] = (
         reports_cache_read_tokens=True,
         quirks=(
             "GLM Coding Plan uses a subscription key and a dedicated OpenAI-compatible endpoint.",
-            "GLM-5.3 has a reasoning floor: low is the minimum and off is not available.",
+            "GLM-5.3 and GLM-5.4 have a reasoning floor: low is the minimum and off is not "
+            "available.",
             "reasoning_content is displayed as provider reasoning, not a summary.",
         ),
     ),
