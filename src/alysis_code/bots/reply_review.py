@@ -602,6 +602,7 @@ class ReplyReview:
                 client.model,
                 runtime.limits.max_calls,
                 background=background,
+                purpose="reply_check",
             )
             runtime.store.event(
                 runtime.owner, task["id"], "reply_review_started", {"call_id": call_id}

@@ -1,0 +1,43 @@
+{
+  "id": "website-sign-in-waits-zh",
+  "title": "Signing in on a website waits for the person, also for a model with image input (Chinese)",
+  "pins": "A form with a password field signs in: a click on its submit button waits for the person's approval with effect sign_in, settled by the page's HTML with no model judgement, and nothing is sent. The same rule holds for a model that declares image input (it is also offered coordinate clicks). browser_effects.py; tests/test_bots_website_access.py.",
+  "language": "zh",
+  "owl": {"name": "猫头鹰", "purpose": "购物"},
+  "model": {"id": "scripted-vision-model", "image_input": true},
+  "fakes": {
+    "browser": {
+      "pages": [
+        {"url": "https://shop.example/account", "title": "登录", "body": [
+          {"tag": "FORM", "role": "form", "name": "", "attrs": {"id": "account", "method": "post", "action": "/session"}, "children": [
+            {"tag": "INPUT", "role": "textbox", "name": "电子邮件", "value": "user@example.org",
+             "attrs": {"type": "email"}, "props": {"editable": "plaintext", "focusable": true}},
+            {"tag": "INPUT", "role": "textbox", "name": "密码", "value": "secret-word", "ax_value": "•••••••••••",
+             "attrs": {"type": "password"}, "props": {"editable": "plaintext", "focusable": true}},
+            {"tag": "BUTTON", "role": "button", "name": "登录", "text": "登录"}
+          ]}
+        ]}
+      ]
+    }
+  },
+  "script": {
+    "owl": [
+      {"call": [{"tool": "browser_navigate", "arguments": {"url": "https://shop.example/account"}}]},
+      {"call": [{"tool": "browser_click", "arguments": {
+        "source_id": {"$result": "source_id"}, "node": {"$page_ref": "- button \"登录\""}}}]}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "登录商店账户，看看我的订单到哪儿了。"},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "turn", "turn": "ask", "status": "waiting"},
+    {"kind": "card", "turn": "ask", "card": "action_review", "equals": 1, "fields": {"effect": "sign_in"}},
+    {"kind": "path", "path": "browser.inputs", "equals": []},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "action_reviewer"}, "equals": 0},
+    {"kind": "request", "owl_call": 1, "offered": ["browser_click", "browser_visual_click"]},
+    {"kind": "request", "owl_call": 2, "excludes": ["secret-word"], "why": "a password never reaches the model"},
+    {"kind": "reply", "turn": "ask", "published": false}
+  ]
+}

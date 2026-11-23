@@ -1,0 +1,38 @@
+{
+  "id": "routine-turned-on-while-writing-el",
+  "title": "A routine turned on while the owl writes is described as on, never as a draft (Greek)",
+  "pins": "The owl suggests a routine; the person turns it on in Routines while the model writes its reply. The reply written over the old state is discarded (routine_refreshed) and the turn writes again from the routines note, so the person never reads 'saved as a draft' about a routine that is on. From the 0.18.0 changelog: an owl's reply says how its routines are now.",
+  "language": "el",
+  "owl": {"name": "Γλαύκα", "purpose": "Βοηθός γραφείου"},
+  "settings": {"time_zone": "Europe/Athens"},
+  "script": {
+    "owl": [
+      {"call": [{"tool": "propose_schedule", "arguments": {
+        "name": "Πρωινά τιμολόγια",
+        "prompt": "Έλεγξε τα εισερχόμενα για νέα τιμολόγια και γράψε μου ποια ήρθαν.",
+        "timing": {"kind": "daily", "time": "08:00"}
+      }}]},
+      {"say": "Την αποθήκευσα ως πρόχειρη ρουτίνα· ενεργοποίησέ την από τις Ρουτίνες."},
+      {"say": "Η ρουτίνα είναι πλέον ενεργή: κάθε πρωί στις 08:00 θα ελέγχω τα εισερχόμενα."}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "Κάθε πρωί ελέγχω τα εισερχόμενα για τιμολόγια."},
+    {"do": "run", "during": [{"owl_call": 2, "do": "turn_on_routine"}]}
+  ],
+  "checks": [
+    {"kind": "turn", "turn": "ask", "status": "completed"},
+    {"kind": "tools", "turn": "ask", "order": "exact",
+     "expect": [{"name": "propose_schedule", "arguments": {"name": "Πρωινά τιμολόγια"}}]},
+    {"kind": "reply", "turn": "ask", "why": "the reply says the routine is on",
+     "equals": "Η ρουτίνα είναι πλέον ενεργή: κάθε πρωί στις 08:00 θα ελέγχω τα εισερχόμενα."},
+    {"kind": "reply", "turn": "ask", "why": "nothing the person sees calls it a draft",
+     "excludes": ["πρόχειρη"]},
+    {"kind": "event", "turn": "ask", "event": "routine_refreshed", "equals": 1,
+     "data": {"response_discarded": true}},
+    {"kind": "request", "owl_call": 3, "why": "the rewrite reads the routine as active",
+     "contains": ["Routines changed while you worked", "\"state\":\"active\""]},
+    {"kind": "routine", "name": "Πρωινά τιμολόγια", "state": "active"},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "reply_checker"}, "equals": 1}
+  ]
+}

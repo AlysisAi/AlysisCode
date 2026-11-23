@@ -30,6 +30,7 @@ from .documents import (
 )
 from .language import check_reply_script
 from .tasks import TASKS_DIR, Task, TaskError, load_tasks
+from .timing import time_split
 
 PASS, FAIL, UNKNOWN = "pass", "fail", "unknown"
 FILE_TEXT_LIMIT = 8_000
@@ -436,7 +437,22 @@ def summarize_checks(checks: list[dict]) -> dict:
     }
 
 
-def metrics(record: dict) -> dict:
+def attempt_time_split(attempt: dict, record_dir: Path | None) -> dict | None:
+    """The attempt's time split: recorded by the runner, or worked out again from the task
+    record it saved (runs recorded before the split existed)."""
+    if isinstance(attempt.get("time_split"), dict):
+        return attempt["time_split"]
+    if record_dir is None or not isinstance(attempt.get("index"), int):
+        return None
+    path = record_dir / f"task-attempt-{attempt['index']}.json"
+    try:
+        row = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return time_split(row) if isinstance(row, dict) else None
+
+
+def metrics(record: dict, record_dir: Path | None = None) -> dict:
     """The numbers the report aggregates, from the scored attempt (and the first one)."""
     attempts = record.get("attempts") or []
     last = scored_attempt(record)
@@ -454,6 +470,7 @@ def metrics(record: dict) -> dict:
         "failures": last.get("failures"),
         "first_wall_s": first.get("wall_s") if len(attempts) > 1 else None,
         "first_model_calls": first.get("model_calls") if len(attempts) > 1 else None,
+        "time_split": attempt_time_split(last, record_dir),
     }
 
 
@@ -519,7 +536,7 @@ def score_record(
         "deterministic": summarize_checks(checks),
         "files": [item.summary() for item in inspections],
         "sources": count_sources(links + find_urls(attempt.get("reply") or "")),
-        "metrics": metrics(record),
+        "metrics": metrics(record, record_dir),
         "judge": None,
     }
     if judge is not None:

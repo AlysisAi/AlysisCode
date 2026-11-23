@@ -1,0 +1,50 @@
+{
+  "id": "website-payment-waits-el",
+  "title": "A website step whose page structure says it pays waits for the person (Greek, model without image input)",
+  "pins": "On a checkout page whose form has payment-card fields (autocomplete cc-number, cc-exp, cc-csc), a click on its submit control goes straight to the person as an approval card: the page's HTML settles the effect (pay) in any language, no model judges it, and nothing reaches the website. The model declares no image input, so it is never offered coordinate clicks. browser_effects.py; docs/bots.md (action review effect).",
+  "language": "el",
+  "owl": {"name": "Γλαύκα", "purpose": "Αγορές"},
+  "model": {"id": "scripted-text-only-model", "image_input": false},
+  "fakes": {
+    "browser": {
+      "pages": [
+        {"url": "https://shop.example/checkout", "title": "Πληρωμή", "body": [
+          {"tag": "FORM", "role": "form", "name": "", "attrs": {"method": "post"}, "children": [
+            {"tag": "INPUT", "role": "textbox", "name": "Αριθμός κάρτας", "value": "",
+             "attrs": {"autocomplete": "cc-number"}, "props": {"editable": "plaintext", "focusable": true}},
+            {"tag": "INPUT", "role": "textbox", "name": "Ημερομηνία λήξης", "value": "",
+             "attrs": {"autocomplete": "billing cc-exp"}, "props": {"editable": "plaintext", "focusable": true}},
+            {"tag": "INPUT", "role": "textbox", "name": "Κωδικός ασφαλείας", "value": "",
+             "attrs": {"type": "password", "autocomplete": "cc-csc"}, "props": {"editable": "plaintext", "focusable": true}},
+            {"tag": "INPUT", "role": "button", "name": "Πληρωμή",
+             "attrs": {"type": "submit", "value": "Πληρωμή"}}
+          ]}
+        ]}
+      ]
+    }
+  },
+  "script": {
+    "owl": [
+      {"call": [{"tool": "browser_navigate", "arguments": {"url": "https://shop.example/checkout"}}]},
+      {"call": [{"tool": "browser_click", "arguments": {
+        "source_id": {"$result": "source_id"}, "node": {"$page_ref": "- button \"Πληρωμή\""}}}]}
+    ],
+    "action_reviewer": []
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "Ολοκλήρωσε την παραγγελία του βραστήρα στο κατάστημα."},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "turn", "turn": "ask", "status": "waiting", "why": "the step waits for the person"},
+    {"kind": "card", "turn": "ask", "card": "action_review", "equals": 1, "fields": {"effect": "pay"}},
+    {"kind": "path", "path": "browser.inputs", "equals": [], "why": "nothing reached the website"},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "action_reviewer"}, "equals": 0,
+     "why": "the page's structure settled it, no model judged it"},
+    {"kind": "tools", "turn": "ask", "order": "exact",
+     "expect": [{"name": "browser_navigate"}, {"name": "browser_click"}]},
+    {"kind": "request", "owl_call": 1, "offered": ["browser_click", "browser_navigate"],
+     "not_offered": ["browser_visual_click", "browser_screenshot"]},
+    {"kind": "reply", "turn": "ask", "published": false}
+  ]
+}

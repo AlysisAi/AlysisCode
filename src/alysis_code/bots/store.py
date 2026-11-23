@@ -60,6 +60,25 @@ from .task_events import TaskSignals
 from .text_search import excerpt, loose_contains, loose_fold
 
 ACTIVE = ("queued", "running", "waiting", "cancelling")
+# What a reserved model call was for, as its model_started event says, so a turn's time and
+# spend can be split by part: the turn's own steps, the checks around them and the work beside
+# them. Fixed tokens, never model or person text.
+CALL_PURPOSES = frozenset(
+    {
+        "turn",  # a step of the owl's own turn (runtime.py)
+        "action_review",  # the automatic action reviewer (action_review.py)
+        "reply_check",  # the reply checker (reply_review.py)
+        "history_summary",  # the summary of earlier chats (context_summary.py)
+        "progress_summary",  # the progress record of a long turn (context_summary.py)
+        "memory_index",  # sorting saved memories for retrieval (memory_applicability.py)
+        "research_helper",  # a research helper's own step (research_helpers.py)
+        "image",  # making or editing a picture (owl_images.py)
+        "computer_work",  # a step of work on the owl's computer (execution.py)
+        "work_compaction",  # compacting that work's context (execution.py)
+        "coding",  # a coding job's step (coding.py)
+        "peer",  # another owl answering a peer request (cooperation.py)
+    }
+)
 TERMINAL = ("completed", "failed", "cancelled", "interrupted")
 # SQL on ``schedule_runs r``: when the run checked and found nothing new to report (its task's
 # nothing_new event), or NULL.
@@ -3030,6 +3049,7 @@ class Store:
         max_calls: int | None,
         *,
         background: bool = False,
+        purpose: str = "turn",
     ) -> str:
         with self.connect(write=True) as db:
             if background:
@@ -3046,7 +3066,9 @@ class Store:
                             "New instructions arrived before this model step."
                         )
                     raise Conflict("Background work changed before this model step.")
-            return self._reserve_call(db, owner, task_id, model, max_calls, background=background)
+            return self._reserve_call(
+                db, owner, task_id, model, max_calls, background=background, purpose=purpose
+            )
 
     @classmethod
     def _reserve_call(
@@ -3058,7 +3080,10 @@ class Store:
         max_calls: int | None,
         *,
         background: bool = False,
+        purpose: str = "turn",
     ) -> str:
+        if purpose not in CALL_PURPOSES:
+            raise ValueError(f"Unknown model call purpose: {purpose}")
         task = cls._task(db, owner, task_id)
         if task["status"] not in (("running", "waiting") if background else ("running",)):
             raise Conflict("Task is no longer running.")
@@ -3077,7 +3102,9 @@ class Store:
             (call_id, task_id, model, "started", None, now, now),
         )
         db.execute("UPDATE tasks SET calls=calls+1 WHERE id=?", (task_id,))
-        cls._event(db, task_id, "model_started", {"model": model})
+        cls._event(
+            db, task_id, "model_started", {"model": model, "call_id": call_id, "purpose": purpose}
+        )
         return call_id
 
     def finish_call(self, call_id: str, status: str, usage: dict | None) -> None:

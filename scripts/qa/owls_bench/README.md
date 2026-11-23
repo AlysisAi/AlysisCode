@@ -180,6 +180,20 @@ held-out are never pooled), then by category and task:
   whose source reported them.
 - **Approvals, Questions, Failures**: totals (approval cards, questions the owl asked, failed
   tool steps and failed turns).
+- **Where the time went** (owls only, `timing.py`): each part's share of all the runs' time.
+  The parts never overlap and add up to each turn's time:
+  - model calls, by what each was for: the turn's own steps, action reviews, reply checks,
+    summaries and memory sorting, research helpers, other model work;
+  - tool steps, by kind (browser, computer, web, files, other), without the model calls made
+    inside them (a review runs inside the step it reviews);
+  - the service's own time (building requests, saving, waiting for a lane).
+
+  Two medians come beside them: the seconds before the turn's first own step (where a
+  summary of earlier chats or memory sorting makes the person wait) and the first browser or
+  computer step (which includes waking a sleeping computer). Each model call's purpose comes
+  from its `model_started` event; runs from older services name only the reviews and
+  reply checks, and their other calls show as "Other model". Re-scoring a folder recorded
+  before this works the split out from the saved `task-attempt-<k>.json` files.
 
 The deterministic checks, by id: `finished`, `deliverable_opens`, `reply_present`,
 `min_rows` (rows under the header in the main table), `columns` (header width; what the

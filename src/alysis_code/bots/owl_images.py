@@ -340,6 +340,7 @@ class OwlImages(OwlDocuments):
                     model,
                     None if limits.max_calls is None else limits.max_calls - KEEP_FOR_OWL,
                     background=True,
+                    purpose="image",
                 )
             except LimitReached:
                 raise LimitReached(NO_CALLS_LEFT) from None

@@ -1028,13 +1028,17 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.z.ai/api/coding/paas/v4",
         api_key_env="ZAI_API_KEY",
         model_choices=(
+            ReviewedModel("glm-5.4", "glm-normal"),
             ReviewedModel("glm-5.3", "glm-normal"),
             ReviewedModel("glm-5.3-flash", "glm-normal"),
         ),
         suggested_model_descriptions={
-            # docs.z.ai/devpack/overview lists exactly these two plan models.
-            # Both reason unconditionally (effort low|high|max, default max).
-            "glm-5.3": "default - latest agentic coding model, 1M context",
+            # docs.z.ai/devpack/overview lists these three plan models. All of
+            # them reason unconditionally (effort low|high|max, default max).
+            # GLM-5.4 reads images and uses about a third fewer plan credits per
+            # token than GLM-5.3.
+            "glm-5.4": "default - newest agentic coding model, reads images, 1M context",
+            "glm-5.3": "previous agentic coding model, 1M context",
             "glm-5.3-flash": "fast - 1M multimodal, 3x the plan quota of glm-5.3",
         },
         model_aliases={
@@ -1059,7 +1063,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         ),
         notes=(
             "Subscription Coding Plan endpoint, not the general Z.AI or China Zhipu API. "
-            "All plan tiers offer GLM-5.3 and GLM-5.3-Flash; GLM-5.2/5.1 requests are "
+            "All plan tiers offer GLM-5.4, GLM-5.3 and GLM-5.3-Flash; GLM-5.2/5.1 requests are "
             "routed by the server to GLM-5.3 and GLM-5-Turbo/4.7 to GLM-5.3-Flash. "
             "Quota is credit-based (off-peak, including weekends, costs 50%)."
         ),
@@ -1963,6 +1967,7 @@ def model_display_name(model: str) -> str:
         "nvidia/nvidia-nemotron-3.5-super-vl": "NVIDIA Nemotron 3.5 Super VL",
         "mistral-small-4": "Mistral Small 4",
         "glm-5.3": "GLM 5.3",
+        "glm-5.4": "GLM 5.4",
         "kimi-k3": "Kimi K3",
         "kimi-k3.1-pro": "Kimi K3.1 Pro",
         "gemini-4-carbon": "Gemini 4 Carbon",

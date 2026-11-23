@@ -1,0 +1,43 @@
+{
+  "id": "check-back-with-condition-de",
+  "title": "A check-back with a condition ends the turn, is kept, and comes back once it holds (German)",
+  "pins": "Instead of waiting inside its turn, the owl calls check_back with a condition (a Library file arrives) and ends the turn with one short line: the check-back is stored, waiting, with its condition, and no further model call is made in that turn. When a matching file arrives the service starts one new turn in the same chat, with outcome met. docs/bots.md, Checking back (check_backs.py).",
+  "language": "de",
+  "owl": {"name": "Eule", "purpose": "Berichte im Blick behalten"},
+  "settings": {"time_zone": "Europe/Berlin"},
+  "script": {
+    "owl": [
+      {"call": [{"tool": "check_back", "arguments": {
+        "after_seconds": 86400,
+        "note": "Prüfe, ob der Monatsbericht angekommen ist, und fasse ihn für die Person zusammen.",
+        "condition": {"kind": "file_appears", "name": "Monatsbericht*"}
+      }}]},
+      {"say": "Ich melde mich, sobald der Monatsbericht in deiner Bibliothek ist, spätestens morgen."},
+      {"say": "Der Monatsbericht ist da: Umsatz und Kosten sind beide gestiegen."}
+    ]
+  },
+  "steps": [
+    {"do": "send", "id": "ask", "message": "Sag mir Bescheid, wenn der Monatsbericht in meiner Bibliothek auftaucht."},
+    {"do": "run"},
+    {"do": "advance_clock", "seconds": 5},
+    {"do": "tick_check_backs"},
+    {"do": "add_file", "name": "Monatsbericht November.md", "content": "Umsatz +4 %, Kosten +2 %"},
+    {"do": "advance_clock", "seconds": 10},
+    {"do": "tick_check_backs"},
+    {"do": "run"}
+  ],
+  "checks": [
+    {"kind": "turn", "turn": "ask", "status": "completed"},
+    {"kind": "tools", "turn": "ask", "order": "exact",
+     "expect": [{"name": "check_back", "arguments": {"condition": {"kind": "file_appears"}}}]},
+    {"kind": "card", "turn": "ask", "card": "check_back", "equals": 1,
+     "fields": {"condition": {"kind": "file_appears", "name": "Monatsbericht*"}}},
+    {"kind": "event", "turn": "ask", "event": "check_back_set", "data": {"condition": {"kind": "file_appears"}}},
+    {"kind": "reply", "turn": "ask", "equals": "Ich melde mich, sobald der Monatsbericht in deiner Bibliothek ist, spätestens morgen."},
+    {"kind": "request", "owl_call": 2, "contains": ["End your turn now"]},
+    {"kind": "count", "of": "turns", "equals": 2, "why": "exactly one turn came back"},
+    {"kind": "path", "path": "turns.1.checked_back.outcome", "equals": "met"},
+    {"kind": "turn", "turn": "turn:2", "status": "completed"},
+    {"kind": "count", "of": "model_calls", "where": {"channel": "owl"}, "equals": 3}
+  ]
+}

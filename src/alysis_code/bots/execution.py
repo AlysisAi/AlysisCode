@@ -174,6 +174,7 @@ class CompactionClient:
                 self.model,
                 None if runtime.limits.max_calls is None else runtime.limits.max_calls - 1,
                 background=True,
+                purpose="work_compaction",
             )
         except (LimitReached, BackgroundInstructionsPending) as exc:
             # The compactor preserves its input on LLMError, leaving the
@@ -472,7 +473,12 @@ class TaskClient:
                 wire = [*wire, {"role": "system", "content": update_request}]
             try:
                 call_id = runtime.store.reserve_call(
-                    runtime.owner, task["id"], self.model, runtime.limits.max_calls, background=True
+                    runtime.owner,
+                    task["id"],
+                    self.model,
+                    runtime.limits.max_calls,
+                    background=True,
+                    purpose="computer_work",
                 )
             except BackgroundInstructionsPending:
                 # A correction can race the context build. No provider call or

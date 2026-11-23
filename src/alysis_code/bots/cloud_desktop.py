@@ -556,6 +556,9 @@ class CloudDesktop:
         self._input_sequence = 0
         self._sleep_intent = False
         self._retained_memory = False
+        # Set once the durable record says "resuming": a wake-up that then fails
+        # must put the record back to what the provider confirms.
+        self._wake_marked = False
         self._lease = factory.leases.acquire(factory.owner, bot_id)
         self._shared_ledger = None
         self._max_computers = factory.max_computers
@@ -681,14 +684,17 @@ class CloudDesktop:
             self._closed = self._cleaned = True
             self._lease.cleanup()
             raise
-        except BaseException:
+        except BaseException as failure:
             if self._retained_memory:
                 # A failed reconnect must not erase the only copy of unsaved
                 # application state. The durable record retains ownership.
+                if self._wake_marked and isinstance(failure, Exception):
+                    self._return_to_sleep(failure)
                 self._closed = True
                 self._stop.set()
-                self._lease.cleanup()
-                self._cleaned = True
+                if not self._cleaned:
+                    self._lease.cleanup()
+                    self._cleaned = True
                 raise
             try:
                 self.close()
@@ -712,11 +718,14 @@ class CloudDesktop:
             )
         else:
             self._save("resuming")
-        self.ref = self.provider.find(self.identity)
-        if self.ref is None:
+        self._wake_marked = True
+        found = self.provider.find(self.identity)
+        if found is None:
+            # Keep the recorded computer, so the record can say it is gone.
             raise DesktopError("The sleeping computer is unavailable. Recover from saved work.")
-        if self.ref.resource_id != previous.get("resource_id"):
+        if found.resource_id != previous.get("resource_id"):
             raise DesktopError("Sleeping computer identity does not match.")
+        self.ref = found
         if cancel():
             raise CooperativeCancellationError("Computer resume cancelled.")
         state = self.provider.status(self.ref).state
@@ -765,6 +774,21 @@ class CloudDesktop:
         )
         self._keepalive_thread.start()
         self._retained_memory = False
+
+    def _return_to_sleep(self, failure):
+        """A wake-up that did not finish leaves the computer asleep, not "resuming".
+
+        "resuming" counts as an awake computer: it holds a Cloud capacity slot and
+        keeps Cloud maintenance waiting. The provider decides what the record says,
+        exactly as when the computer goes to sleep: a stopped computer is asleep, a
+        running one is put back to sleep with its memory, a missing one is lost. A
+        state the provider cannot confirm stays pending; the next start's
+        reconciliation settles it.
+        """
+        try:
+            self.hibernate()
+        except Exception as exc:
+            diagnostics.record("computer_wake_not_settled", exc, after=type(failure).__name__)
 
     def _start_meter(self):
         if self._billing:

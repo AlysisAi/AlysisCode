@@ -18,7 +18,7 @@ on:
         required: true
         type: string
       ci_run_id:
-        description: Successful complete CI run for that exact commit
+        description: Successful complete CI run for that exact commit, or for the merged release pull request with the same tree
         required: true
         type: string
 
@@ -41,6 +41,7 @@ jobs:
       commit: ${{ steps.source.outputs.commit }}
       tag: ${{ steps.source.outputs.tag }}
       ci_run_id: ${{ steps.completed-ci.outputs.run_id }}
+      ci_commit: ${{ steps.completed-ci.outputs.tested_commit }}
     steps:
       - name: Check out the publication policy
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -55,12 +56,15 @@ jobs:
           RELEASE_COMMIT: ${{ inputs.release_commit || github.sha }}
           CI_RUN_ID: ${{ inputs.ci_run_id }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # The merged release pull request's CI counts when the release commit has
+        # exactly its tree, so the same files are not tested twice. A finished CI
+        # run for the release commit itself always decides.
         run: |
           args=()
           if [ -n "$CI_RUN_ID" ]; then args+=(--run-id "$CI_RUN_ID"); fi
           python scripts/release/validate_completed_ci.py \
             "${args[@]}" --commit "$RELEASE_COMMIT" --branch "$DEFAULT_BRANCH" \
-            --github-output "$GITHUB_OUTPUT"
+            --accept-release-pull-request --github-output "$GITHUB_OUTPUT"
 
       - name: Check out the exact tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -160,6 +164,7 @@ jobs:
       RELEASE_COMMIT: ${{ needs.validate-release-source.outputs.commit }}
       RELEASE_TAG: ${{ needs.validate-release-source.outputs.tag }}
       CI_RUN_ID: ${{ needs.validate-release-source.outputs.ci_run_id }}
+      CI_COMMIT: ${{ needs.validate-release-source.outputs.ci_commit }}
     permissions:
       contents: read
       id-token: write
@@ -232,7 +237,10 @@ jobs:
         run: |
           import json, os
           from pathlib import Path
-          source = {key: os.environ[key] for key in ("RELEASE_COMMIT", "RELEASE_TAG", "CI_RUN_ID")}
+          source = {
+              key: os.environ[key]
+              for key in ("RELEASE_COMMIT", "RELEASE_TAG", "CI_RUN_ID", "CI_COMMIT")
+          }
           Path("dist/release-source.json").write_text(json.dumps(source), encoding="utf-8")
 
       - name: Attest the immutable release source
@@ -287,7 +295,10 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
-          expected = {key: os.environ[key] for key in ("RELEASE_COMMIT", "RELEASE_TAG", "CI_RUN_ID")}
+          expected = {
+              key: os.environ[key]
+              for key in ("RELEASE_COMMIT", "RELEASE_TAG", "CI_RUN_ID", "CI_COMMIT")
+          }
           assert json.loads(Path("dist/release-source.json").read_text()) == expected
           PY
           shopt -s nullglob
@@ -340,6 +351,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate-release-source.outputs.commit }}
           RELEASE_TAG: ${{ needs.validate-release-source.outputs.tag }}
           CI_RUN_ID: ${{ needs.validate-release-source.outputs.ci_run_id }}
+          CI_COMMIT: ${{ needs.validate-release-source.outputs.ci_commit }}
 
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1

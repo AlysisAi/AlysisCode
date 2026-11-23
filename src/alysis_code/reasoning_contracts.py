@@ -845,9 +845,22 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         # https://docs.z.ai/guides/capabilities/thinking-mode
         # Sources: https://docs.z.ai/guides/llm/glm-5.3
         # https://docs.z.ai/guides/vlm/glm-5.3-flash
-        # https://docs.z.ai/devpack/overview — the plan serves exactly glm-5.3
+        # https://docs.z.ai/devpack/overview — the plan serves glm-5.4, glm-5.3
         # and glm-5.3-flash; glm-5.2/5.1 route to 5.3 and glm-5-turbo/4.7 to
-        # 5.3-flash server-side, so one prefix rule covers every plan id.
+        # 5.3-flash server-side, so the prefix rule covers every other plan id.
+        (
+            "glm-5.4",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "high", "max"),
+                default="max",
+                off=OFF_IMPOSSIBLE,
+                emits_flat_reasoning_effort=True,
+                replay_reasoning_content=True,
+                notes="Coding Plan surface: disabling thinking is coerced to low",
+            ),
+        ),
         (
             "glm-5.3",
             _C(
@@ -874,7 +887,7 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 off=OFF_IMPOSSIBLE,
                 emits_flat_reasoning_effort=True,
                 replay_reasoning_content=True,
-                notes="every other glm id is server-routed to glm-5.3 or glm-5.3-flash",
+                notes="every other glm id is server-routed to a current plan model",
             ),
         ),
     ),

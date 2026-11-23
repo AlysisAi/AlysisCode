@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -254,3 +256,26 @@ def test_release_reuses_complete_ci_with_native_prerequisites():
     assert not verification.get("continue-on-error", False)
     assert "validate-release-source" in release_jobs["build"]["needs"]
     assert not any(step.get("name") == "Test" for step in release_jobs["build"]["steps"])
+
+
+def test_ci_full_suite_runs_on_four_processes_with_one_file_per_worker():
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["test"]
+    ci_test = next(step for step in ci["steps"] if step.get("name") == "Test")
+    command = shlex.split(ci_test["run"])
+    assert command[:5] == ["uv", "run", "--frozen", "--no-sync", "pytest"]
+    arguments = command[5:]
+    # Parallel, but each file stays on one worker so module fixtures share a process.
+    assert arguments[arguments.index("-n") + 1] == "4"
+    assert arguments[arguments.index("--dist") + 1] == "loadfile"
+    # A crashed worker fails the run; it is never restarted to hide the crash.
+    assert "--max-worker-restart=0" in arguments
+    # Slow-test reporting and the uploaded results are kept.
+    assert "--durations=50" in arguments
+    assert any(argument.startswith("--junitxml=") for argument in arguments)
+    assert not any(argument.startswith(("-p", "--deselect", "-k")) for argument in arguments)
+    # The job installs the dev extra, which must carry the worker plugin.
+    sync = next(step for step in ci["steps"] if "uv sync" in step.get("run", ""))
+    assert "--extra dev" in sync["run"]
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev = pyproject["project"]["optional-dependencies"]["dev"]
+    assert any(requirement.startswith("pytest-xdist") for requirement in dev)

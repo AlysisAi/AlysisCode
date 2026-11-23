@@ -270,6 +270,7 @@ def test_owls_on_this_computer_offer_each_saved_connections_catalog(tmp_path, mo
         ("alysis", "alysis/" + STRONG),
         ("alysis", "alysis/" + LATER),
         ("research", "research"),
+        ("research", "research/glm-5.4"),
         ("research", "research/glm-5.3-flash"),
     ]
     assert all(item["available"] for item in listed if item["connection"] == "research")

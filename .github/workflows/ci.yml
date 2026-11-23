@@ -118,8 +118,11 @@ jobs:
         env:
           ALYSIS_TEST_OFFICE_SOFFICE: /usr/bin/soffice
           ALYSIS_RUN_BWRAP_RUNTIME_TESTS: "1"
+        # Four worker processes, one test file per worker so module fixtures share a
+        # process. A crashed worker fails the run instead of restarting silently.
         run: >-
-          uv run --frozen --no-sync pytest -q --durations=50
+          uv run --frozen --no-sync pytest -q -n 4 --dist loadfile --max-worker-restart=0
+          --durations=50
           --junitxml="${{ runner.temp }}/pytest-python-${{ matrix.python-version }}.xml"
 
       - name: Preserve test timings and results

@@ -108,6 +108,7 @@ class MemoryApplicability:
                     client.model,
                     None if limits.max_calls is None else limits.max_calls - 2,
                     background=background,
+                    purpose="memory_index",
                 )
             except (Conflict, LimitReached):
                 return
