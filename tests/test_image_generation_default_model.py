@@ -18,4 +18,7 @@ def test_default_image_model_is_served() -> None:
 
 
 def test_configured_image_model_is_kept() -> None:
-    assert ImageGenerationConfig(enabled=True, model="gpt-image-2.6-sunburst").model == "gpt-image-2.6-sunburst"
+    assert (
+        ImageGenerationConfig(enabled=True, model="gpt-image-2.6-sunburst").model
+        == "gpt-image-2.6-sunburst"
+    )
