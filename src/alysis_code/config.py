@@ -145,7 +145,7 @@ class ImageGenerationConfig(BaseModel):
     """
 
     enabled: bool = False
-    model: str = "gpt-image-1"
+    model: str = "gpt-image-2"
     base_url: str | None = None
     api_key_env: str | None = None
     timeout_s: float = Field(default=180.0, gt=0.0, le=900.0)

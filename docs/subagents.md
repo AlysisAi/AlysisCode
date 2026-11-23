@@ -453,7 +453,7 @@ Configure an OpenAI-compatible image endpoint and credential, then start a new c
 ```powershell
 $env:ALYSIS_IMAGE_API_KEY = "<image-provider-key>"
 alysis config set image_generation.enabled true
-alysis config set image_generation.model gpt-image-1
+alysis config set image_generation.model gpt-image-2
 # Optional when the active provider profile is not the image provider:
 alysis config set image_generation.base_url https://api.openai.com/v1
 ```
