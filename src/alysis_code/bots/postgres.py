@@ -98,9 +98,18 @@ class Connection:
 
 
 class PostgresStore(Store):
+    """The shared bot state in PostgreSQL.
+
+    ``set_up_schema``: create and upgrade the schema as the store opens. Only the controller's own
+    start does this (and stores for a new database). Setting it up takes exclusive locks on the
+    tables, even when nothing changes, so a store opened beside a running controller (backups,
+    health checks, release and maintenance tools: hosted_operations.maintenance_store) only
+    reads that the database is this release's: running owl work never waits behind it.
+    """
+
     shared = True
 
-    def __init__(self, dsn: str, *, objects, state_directory: Path):
+    def __init__(self, dsn: str, *, objects, state_directory: Path, set_up_schema: bool = True):
         if objects is None:
             raise ObjectStorageError("Shared bot state requires configured object storage.")
         self._dsn, self.objects = dsn, objects
@@ -138,7 +147,10 @@ class PostgresStore(Store):
             open=True,
         )
         try:
-            self._initialize_schema()
+            if set_up_schema:
+                self._initialize_schema()
+            else:
+                self._check_schema()
         except BaseException:
             self.close()
             raise
@@ -146,14 +158,31 @@ class PostgresStore(Store):
     def close(self):
         self._pool.close()
 
+    @staticmethod
+    def _check_server(db):
+        if db.raw.info.server_version < 180000:
+            raise RuntimeError("Shared Bots requires PostgreSQL 18+ with UTF-8 Unicode folding.")
+        if db.execute("SHOW server_encoding").fetchone()[0] != "UTF8":
+            raise RuntimeError("Shared Bots requires UTF-8 database encoding.")
+
+    def _check_schema(self):
+        """Read, without changing or locking anything, that the database is set up for this
+        release (its controller sets it up as it starts)."""
+        with self.connect() as db:
+            self._check_server(db)
+            version = None
+            if db.execute("SELECT to_regclass('bots_schema') IS NOT NULL").fetchone()[0]:
+                row = db.execute("SELECT version FROM bots_schema WHERE id=1").fetchone()
+                version = row[0] if row else None
+            if version != SCHEMA_VERSION:
+                raise RuntimeError(
+                    "The shared Bots database is not set up for this release; its controller "
+                    "sets it up when it starts."
+                )
+
     def _initialize_schema(self):
         with self.connect(write=True) as db:
-            if db.raw.info.server_version < 180000:
-                raise RuntimeError(
-                    "Shared Bots requires PostgreSQL 18+ with UTF-8 Unicode folding."
-                )
-            if db.execute("SHOW server_encoding").fetchone()[0] != "UTF8":
-                raise RuntimeError("Shared Bots requires UTF-8 database encoding.")
+            self._check_server(db)
             db.execute(
                 "CREATE TABLE IF NOT EXISTS bots_schema (id INTEGER PRIMARY KEY,version INTEGER NOT NULL)"
             )

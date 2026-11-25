@@ -37,6 +37,9 @@ from .compute import (
 
 
 class DockerComputers:
+    # docker exec returns a command's whole output (up to WORKER_REPLY_BYTES, checked in run).
+    command_output_bytes = None
+
     def __init__(self, context: str, *, namespace_profile: Path | None = None):
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", context):
             raise ValueError("Choose an explicit Docker context.")

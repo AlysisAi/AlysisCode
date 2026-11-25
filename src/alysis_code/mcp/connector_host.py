@@ -9,6 +9,10 @@ Verified plugins (``alysis.notion``, ...) use the same host channel: a vendor's 
 in a content-pinned bundled descriptor, whose tool list and "only reads" marks Alysis reviewed.
 Only the reviewed tools bind, and arguments the app fills in (host arguments) never come from
 the AI.
+
+Hub plugins (``hub.<app>``, 2026-11-23) are not the app's to send: the engine loads them from
+Alysis's server and runs their calls itself (``plugin_hub``, ``hub_apps``). They share the bound
+catalog form, the model-facing names and the protection against impersonation here.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from ..extensions.registry import find_by_id, load_registry
 from ..extensions.state import compute_effective_enabled, load_global_state
 from ..host_actions import HostActionError, json_size_bytes
 from .github_host import normalize_mcp_call_result, verified_bundled_plugin
+from .plugin_hub import hub_tool_name, hub_tool_prefix, is_hub_plugin
 from .untrusted_content import build_untrusted_mcp_text_block
 
 CONNECTOR_MCP_ACTION = "mcp.connector.call"
@@ -108,12 +113,16 @@ def connector_tool_prefix(plugin_id: str) -> str:
 
     A user-configured tool server whose names start the same way can't take these tools.
     """
+    if is_hub_plugin(plugin_id):
+        return hub_tool_prefix(plugin_id)
     short = plugin_id.split(".", 1)[1]
     return f"mcp__{short}__" if is_verified_connector(plugin_id) else f"mcp__custom_{short}__"
 
 
 def connector_tool_name(plugin_id: str, tool_name: str) -> str:
     """The model-facing name: ``mcp__custom_<name>__<tool>``, at most 64 characters."""
+    if is_hub_plugin(plugin_id):
+        return hub_tool_name(plugin_id, tool_name)
     if is_verified_connector(plugin_id):
         return connector_tool_prefix(plugin_id) + verified_tool_alias(plugin_id, tool_name)
     return f"mcp__custom_{plugin_id.split('.', 1)[1]}__{custom_tool_alias(tool_name)}"
@@ -159,29 +168,33 @@ def normalize_connector_catalogs(raw: Any) -> list[dict[str, Any]]:
             # No readOnly here: the engine takes the person's marks from the descriptor.
             if not isinstance(tool, dict) or set(tool) != {"name", "description", "inputSchema"}:
                 _fail("Invalid custom plugin tool fields.")
-            name = tool["name"]
-            if not isinstance(name, str) or not name or len(name) > 64 or name in names:
-                _fail("Invalid or duplicate custom plugin tool name.")
-            names.add(name)
-            if not isinstance(tool["description"], str) or len(tool["description"]) > 8192:
-                _fail("Invalid custom plugin tool description.")
-            schema = tool["inputSchema"]
-            if (
-                not isinstance(schema, dict)
-                or schema.get("type") != "object"
-                or not isinstance(schema.get("properties", {}), dict)
-            ):
-                _fail("Custom plugin input schemas must describe objects.")
-            properties = schema.get("properties", {})
-            required = schema.get("required", [])
-            if (
-                len(properties) > 64
-                or not isinstance(required, list)
-                or any(not isinstance(k, str) or k not in properties for k in required)
-            ):
-                _fail("Invalid custom plugin schema properties.")
-            _copy(schema, 24_000)
+            _check_tool(tool, names)
     return raw
+
+
+def _check_tool(tool: dict[str, Any], names: set[str]) -> None:
+    name = tool["name"]
+    if not isinstance(name, str) or not name or len(name) > 64 or name in names:
+        _fail("Invalid or duplicate custom plugin tool name.")
+    names.add(name)
+    if not isinstance(tool["description"], str) or len(tool["description"]) > 8192:
+        _fail("Invalid custom plugin tool description.")
+    schema = tool["inputSchema"]
+    if (
+        not isinstance(schema, dict)
+        or schema.get("type") != "object"
+        or not isinstance(schema.get("properties", {}), dict)
+    ):
+        _fail("Custom plugin input schemas must describe objects.")
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    if (
+        len(properties) > 64
+        or not isinstance(required, list)
+        or any(not isinstance(k, str) or k not in properties for k in required)
+    ):
+        _fail("Invalid custom plugin schema properties.")
+    _copy(schema, 24_000)
 
 
 def verified_custom_plugin(
@@ -350,6 +363,10 @@ def bind_active_connector_catalogs(
 
 
 def assert_connector_current(root: Path, catalog: dict[str, Any]) -> None:
+    if is_hub_plugin(catalog["plugin_id"]):
+        # Nothing is installed here for a hub app (the engine loaded it): Alysis's server checks
+        # the person's connection and plan on every call, and refuses one that was removed.
+        return
     verified = connector_plugin(root, catalog["plugin_id"])
     if verified is None or verified[0] != catalog["plugin"]:
         raise HostActionError(

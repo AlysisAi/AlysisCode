@@ -278,11 +278,12 @@ def test_codex_catalog_omission_still_allows_sol_selection_and_authenticated_req
     set_active_profile(cfg, profile.name)
     flow = ConfigFlow(cfg=cfg)
     flow.choose("default")
+    # Equal priorities keep the account's own model ahead of reviewed additions.
     assert [r.value for r in flow.screen().rows] == [
         MODEL,
         "gpt-6-astra",
-        "gpt-6-luna",
         "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",

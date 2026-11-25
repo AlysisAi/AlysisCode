@@ -595,6 +595,7 @@ class BotActionReviewer:
         private_computer=False,
         always_ask=False,
         website_effects=None,
+        stays_on_page=False,
     ):
         """Gate one computer action. ``private_computer`` marks an action on the owl's own
         offline computer: no internet (package installs reach only the package indexes its
@@ -606,7 +607,12 @@ class BotActionReviewer:
         ``website_effects`` (a sequence, possibly empty) marks website input that only the
         person's request permits (browser_effects.py): it lists the effects the page's structure
         settles, which the person approves every time, like ``always_ask``; with none, the
-        reviewer names the step's effect, and any effect waits for the person too."""
+        reviewer names the step's effect, and any effect waits for the person too.
+        ``stays_on_page`` marks such input whose page's HTML proves nothing leaves the page (a
+        search field, a GET form to the page's own origin, a plain link:
+        browser_effects.stays_on_page): in automatic mode it needs no reviewer, as a read-only
+        command doesn't. "Ask first" rules, the person's choice to review every step, and the
+        effects the page settles still win."""
         runtime, task = self.runtime, self.task
         self.token.throw_if_cancelled()
         settled = [effect for effect in HOST_EFFECTS if effect in (website_effects or ())]
@@ -652,13 +658,15 @@ class BotActionReviewer:
         routine = name == "computer_run" and is_read_only_command(
             str(arguments.get("command") or ""), dialect="posix"
         )
+        # Website input the page's own structure proves stays on the page (nothing it settles).
+        structural = website_effects is not None and stays_on_page is True and not settled
         # "Always allow" saves this exact action (same tool, element and observed page) because
         # the person chose not to be asked about it again, which is also what the card says. It
         # is a deterministic match, so it applies when they review every action too; rules
         # written as conditions need the automatic reviewer and wait for automatic mode.
         # An "ask first" rule always wins.
         automatic = not has_ask_rules and (
-            bool(exact) or (mode == "auto" and (routine or private_computer))
+            bool(exact) or (mode == "auto" and (routine or private_computer or structural))
         )
         review_rules = [
             {"id": rule["id"], "effect": rule["effect"], "description": rule["description"]}
@@ -726,6 +734,22 @@ class BotActionReviewer:
 
         if automatic and private_computer and not exact:
             pass  # Nothing was reviewed; the action itself is the record.
+        elif automatic and structural and not exact:
+            runtime.store.event(
+                runtime.owner,
+                task["id"],
+                "action_review",
+                {
+                    "name": name,
+                    "outcome": "allow",
+                    "model": "",
+                    "elapsed_ms": 0,
+                    "effect": "none",
+                    "message": "Allowed automatically. The page's own structure shows nothing "
+                    "leaves the page (a search field, a GET form to the same site, or a plain "
+                    "link); no model review needed.",
+                },
+            )
         elif automatic:
             runtime.store.event(
                 runtime.owner,

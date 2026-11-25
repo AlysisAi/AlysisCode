@@ -103,9 +103,8 @@ def load_chatgpt_codex_static_models() -> tuple[ChatGPTCodexStaticModel, ...]:
     if not isinstance(raw_models, list):
         return ()
     models = tuple(model for raw in raw_models if (model := _parse_model(raw)) is not None)
-    return tuple(
-        sorted(models, key=lambda model: (model.priority, model.label.casefold(), model.id))
-    )
+    # Equal priorities keep the order OpenAI listed them in (sorted() is stable).
+    return tuple(sorted(models, key=lambda model: model.priority))
 
 
 def resolve_chatgpt_codex_static_model(model_name: str) -> ChatGPTCodexStaticModel | None:

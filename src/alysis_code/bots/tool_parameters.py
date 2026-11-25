@@ -3,8 +3,9 @@
 Every tool an owl is offered is sent with every model call, so its schema is paid for on each
 step and shares the context window with the work. Pydantic labels every model and field with a
 "title" that repeats a name the schema already has (``"after_seconds": {"title": "After
-Seconds", ...}``); a model learns nothing from it, so it is left out. Descriptions, types,
-limits and defaults are kept as they are.
+Seconds", ...}``), and gives a tagged union an OpenAPI "discriminator" that maps each tag to the
+variant whose own "kind" already says it; a model learns nothing from either, so both are left
+out. Descriptions, types, limits and defaults are kept as they are.
 """
 
 from __future__ import annotations
@@ -20,8 +21,15 @@ _NAMED = frozenset({"properties", "$defs", "definitions", "patternProperties"})
 _DATA = frozenset({"default", "const", "enum", "examples"})
 
 
+def _labels_only(key: str, value: Any) -> bool:
+    return (key == "title" and isinstance(value, str)) or (
+        key == "discriminator" and isinstance(value, dict) and "propertyName" in value
+    )
+
+
 def without_titles(node: Any) -> Any:
-    """A JSON schema without its "title" labels; parameters called "title" stay."""
+    """A JSON schema without its "title" labels and OpenAPI discriminators; parameters called
+    "title" or "discriminator" stay."""
     if isinstance(node, list):
         return [without_titles(item) for item in node]
     if not isinstance(node, dict):
@@ -35,7 +43,7 @@ def without_titles(node: Any) -> Any:
             else without_titles(value)
         )
         for key, value in node.items()
-        if not (key == "title" and isinstance(value, str))
+        if not _labels_only(key, value)
     }
 
 

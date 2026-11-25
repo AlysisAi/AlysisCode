@@ -64,9 +64,11 @@ def test_astra_subscription_selection_uses_current_catalog_and_saves_reasoning(m
     cfg = _subscription_cfg()
     flow = ConfigFlow(cfg=cfg)
     flow.choose("default")
+    # OpenAI's priorities decide the order; at equal priority the account's own
+    # model comes before a reviewed model it does not list.
     assert [row.value for row in flow.screen().rows] == [
-        "gpt-6.1-sol",
         "gpt-5.6-sol",
+        "gpt-6.1-sol",
         "gpt-6-astra",
         "gpt-6-sol",
         "gpt-6-luna",

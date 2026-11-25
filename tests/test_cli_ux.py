@@ -2194,8 +2194,8 @@ def test_setup_wizard_can_pick_first_suggested_model(monkeypatch, tmp_path: Path
 
     cfg_path = tmp_path / "cfg" / "config.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    # Model choice "1" is the preset's first suggestion: GPT-6 Astra.
-    assert cfg["model"] == "gpt-6-astra"
+    # Model choice "1" is the preset's first suggestion: GPT-6.2 Astra.
+    assert cfg["model"] == "gpt-6.2-astra"
     assert cfg["default_workspace_path"] == os.fspath(tmp_path.resolve())
 
 

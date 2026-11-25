@@ -261,6 +261,23 @@ _ADDITIONAL_REVIEWED_MODEL_PROFILES: dict[str, ParentPromptGuidanceProfile] = {
     "gemini-3-flash-preview": "gemini-normal",
     # qwen
     "qwen3.8-max-0902": "qwen-normal",
+    # Ids that left a preset's suggested list (retired or superseded) keep
+    # the prompt family they were reviewed with, so saved configs that still
+    # name them get the same guidance.
+    "MiniMax-M2.7": "minimax-normal",
+    "MiniMax-M2.7-highspeed": "minimax-normal",
+    "MiniMax-M2.5": "minimax-expanded",
+    "MiniMaxAI/MiniMax-M3": "minimax-expanded",
+    "mimo-v2.5-pro": "mimo-normal",
+    "mimo-v2.5": "mimo-expanded",
+    "gemma-4-31b": "gemma-expanded",
+    "mistral-medium-3-5": "mistral-normal",
+    "mistral-large-2512": "mistral-normal",
+    "zai-glm-5-2": "glm-expanded",
+    "perplexity/kimi-k2.7-code": "kimi-normal",
+    "perplexity/deepseek-v4-flash-0731": "deepseek-normal",
+    "deepseek/deepseek-v4-flash-0731": "deepseek-normal",
+    "deepseek-ai/DeepSeek-V4-Flash-0731": "deepseek-normal",
     # deepseek
     "deepseek-v4-flash": "deepseek-normal",
     "deepseek-v4-flash-vision-exp": "deepseek-expanded",

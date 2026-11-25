@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -627,6 +626,13 @@ def cohere_web_search(
     }
 
 
+# Moonshot's standalone Web Search endpoint. It replaced the chat-completions
+# ``$web_search`` builtin, which Moonshot retired on 2026-10-20.
+# https://platform.kimi.ai/docs/api/tools-search
+_MOONSHOT_SEARCH_MAX_LIMIT = 20
+_MOONSHOT_SEARCH_MAX_TIMEOUT_S = 60
+
+
 def moonshot_kimi_search(
     *,
     query: str,
@@ -641,112 +647,59 @@ def moonshot_kimi_search(
     provider_concurrency_caps: dict[str, int] | None = None,
     provider_retry_settings: ProviderRetrySettings | None = None,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    prompt = f"Use Kimi built-in web search and answer with source URLs.\n\n{query}"
-    prompt += _domain_prompt_suffix(allowed_domains)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-    tools = [{"type": "builtin_function", "function": {"name": "$web_search"}}]
-
-    last_data: dict[str, Any] | None = None
-    raw_sources: list[dict[str, Any]] = []
-    queries: list[str] = []
-    for _attempt in range(4):
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "tools": tools,
-            "thinking": {"type": "disabled"},
-        }
-        data = _post_json(
-            provider_label="Kimi",
-            url=url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "alysis-code/0.1.0",
-            },
-            payload=payload,
-            timeout_s=timeout_s,
-            transport=transport,
-            resolver=resolver,
-            provider_key="moonshot",
-            provider_concurrency_caps=provider_concurrency_caps,
-            provider_retry_settings=provider_retry_settings,
-            operation="moonshot_kimi_search",
-        )
-        last_data = data
-        raw_sources.extend(_collect_source_dicts(data))
-        queries.extend(_collect_queries(data))
-
-        choices = data.get("choices")
-        choice = (
-            next((item for item in choices if isinstance(item, dict)), None)
-            if isinstance(choices, list)
-            else None
-        )
-        message = (
-            choice.get("message")
-            if isinstance(choice, dict) and isinstance(choice.get("message"), dict)
-            else None
-        )
-        finish_reason = str(choice.get("finish_reason") or "") if isinstance(choice, dict) else ""
-        tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
-        if finish_reason != "tool_calls" or not isinstance(tool_calls, list):
-            break
-
-        assistant_message = dict(message)
-        messages.append(assistant_message)
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            function = tool_call.get("function")
-            tool_name = ""
-            raw_arguments = "{}"
-            if isinstance(function, dict):
-                tool_name = str(function.get("name") or "").strip()
-                raw_arguments = str(function.get("arguments") or "{}")
-            try:
-                arguments = json.loads(raw_arguments)
-            except json.JSONDecodeError:
-                arguments = {"raw_arguments": raw_arguments}
-            if isinstance(arguments, dict):
-                raw_sources.extend(_collect_source_dicts(arguments))
-                queries.extend(_collect_queries(arguments))
-            tool_result: Any = (
-                arguments if tool_name == "$web_search" else {"error": "unknown tool"}
-            )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": str(tool_call.get("id") or "").strip(),
-                    "name": tool_name or "$web_search",
-                    "content": json.dumps(tool_result, ensure_ascii=False),
-                }
-            )
-    else:
-        raise ProviderWebSearchError("Kimi web_search did not finish after 4 tool-call rounds")
-
-    if last_data is None:
-        raise ProviderWebSearchError("Kimi web_search did not return a response")
-    answer = _chat_completion_answer(last_data)
+    # The endpoint has no domain filter, so results are filtered here. Ask for
+    # the most results in that case so the filter still leaves some.
+    limit = (
+        _MOONSHOT_SEARCH_MAX_LIMIT
+        if allowed_domains
+        else max(1, min(int(max_results), _MOONSHOT_SEARCH_MAX_LIMIT))
+    )
+    payload: dict[str, Any] = {"text_query": query, "limit": limit}
+    if timeout_s and timeout_s > 0:
+        # Keep the server-side limit within our own HTTP timeout so a slow
+        # search comes back as a clear 504 instead of a dropped connection.
+        payload["timeout_seconds"] = max(1, min(_MOONSHOT_SEARCH_MAX_TIMEOUT_S, int(timeout_s)))
+    data = _post_json(
+        provider_label="Kimi",
+        url=f"{base_url.rstrip('/')}/tools/search",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "alysis-code/0.1.0",
+        },
+        payload=payload,
+        timeout_s=timeout_s,
+        transport=transport,
+        resolver=resolver,
+        provider_key="moonshot",
+        provider_concurrency_caps=provider_concurrency_caps,
+        provider_retry_settings=provider_retry_settings,
+        operation="moonshot_kimi_search",
+    )
+    raw_results = data.get("search_results")
+    raw_sources = (
+        [item for item in raw_results if isinstance(item, dict)]
+        if isinstance(raw_results, list)
+        else []
+    )
     sources, sources_truncated = _dedupe_sources(
-        [*raw_sources, *_sources_from_answer_urls(answer)],
+        raw_sources,
         allowed_domains=allowed_domains,
         max_sources=max_results,
     )
     if not sources:
-        raise ProviderWebSearchError("Kimi web_search did not return sources")
+        raise ProviderWebSearchError("Kimi web search did not return sources")
     return {
         "query": query,
-        "answer": answer,
+        "answer": "",
         "citations": _citations_from_sources(sources),
         "sources": sources,
-        "queries": queries or [query],
-        "model": str(last_data.get("model") or model),
+        "queries": [query],
+        "model": model,
         "backend": "moonshot_kimi",
         "allowed_domains": allowed_domains or [],
         "external_web_access": True,
-        "response_id": str(last_data.get("id") or "").strip() or None,
+        "response_id": None,
         "sources_truncated": sources_truncated,
     }
 

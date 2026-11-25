@@ -538,7 +538,9 @@ class OpenAICodexSubscriptionAuth:
         if not isinstance(raw_models, list):
             raise ProviderAuthError("ChatGPT returned an invalid model catalog.")
 
-        parsed: list[tuple[int, ProviderModel]] = []
+        # Each entry sorts by (priority, position): equal priorities keep the
+        # account catalog's own order, then the reviewed list's order.
+        parsed: list[tuple[int, int, ProviderModel]] = []
         for raw in raw_models:
             if not isinstance(raw, dict):
                 continue
@@ -597,6 +599,7 @@ class OpenAICodexSubscriptionAuth:
             parsed.append(
                 (
                     priority,
+                    len(parsed),
                     ProviderModel(
                         id=model_id,
                         label=str(raw.get("display_name") or model_id).strip(),
@@ -638,11 +641,11 @@ class OpenAICodexSubscriptionAuth:
             for raw in raw_models
             if isinstance(raw, dict)
         }
-        listed_ids = {model.id.casefold() for _priority, model in parsed}
-        parsed.sort(key=lambda pair: (pair[0], pair[1].label.casefold(), pair[1].id))
+        listed_ids = {model.id.casefold() for _priority, _position, model in parsed}
+        parsed.sort(key=lambda entry: (entry[0], entry[1]))
         # The account's own first listed model stays the default; a reviewed
         # addition never becomes the default.
-        default_id = parsed[0][1].id if parsed else ""
+        default_id = parsed[0][2].id if parsed else ""
         reviewed_models = load_chatgpt_codex_static_models()
         reviewed_ids = {reviewed.id.casefold() for reviewed in reviewed_models}
         if any(model_id in reviewed_ids and "luna" not in model_id for model_id in listed_ids):
@@ -655,6 +658,7 @@ class OpenAICodexSubscriptionAuth:
                 parsed.append(
                     (
                         reviewed.priority,
+                        len(parsed),
                         ProviderModel(
                             id=reviewed.id,
                             label=reviewed.label,
@@ -673,14 +677,13 @@ class OpenAICodexSubscriptionAuth:
                         ),
                     )
                 )
-            parsed.sort(key=lambda pair: (pair[0], pair[1].label.casefold(), pair[1].id))
+            parsed.sort(key=lambda entry: (entry[0], entry[1]))
+        # OpenAI's priorities decide the order, so a newer model the account
+        # lists (GPT-6.2, say) comes first without naming any model here.
         models = [
             replace(model, is_default=True) if model.id == default_id else model
-            for _priority, model in parsed
+            for _priority, _position, model in parsed
         ]
-        # Show the latest Sol first while preserving the provider's default
-        # and the relative order of every other model.
-        models.sort(key=lambda model: model.id != "gpt-6.1-sol")
         self._models_cache = tuple(models)
         self._models_cache_scope = authorization.credential_scope
         return self._models_cache

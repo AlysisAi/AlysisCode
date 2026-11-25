@@ -126,6 +126,21 @@ class RepeatGuard:
             "executed": False,
         }
 
+    def joins(self, name: str, arguments: Any) -> bool:
+        """Whether before() lets this call run whatever the calls asked just before it return,
+        as a call that runs beside them (tool_batch): it has no outcome yet, or worked, or has
+        failed the same way fewer than ``failures`` times. Asked right after another call, a
+        call is never a back-to-back repeat, so a working call is not stopped. Any other call is
+        checked by before() after the calls before it, as when calls run one by one: one of them
+        working may let it run once more."""
+        record = self._calls.get(self._key(name, arguments))
+        return (
+            record is None
+            or record.outcome is None
+            or not record.failed
+            or record.ran < self.limits.failures
+        )
+
     def after(self, name: str, arguments: Any, result: Any, *, fresh_look: bool = False):
         """Record a call's outcome; returns a note to give the model with it, or None."""
         key = self._key(name, arguments)

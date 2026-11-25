@@ -459,7 +459,7 @@ def test_profile_preset_clones_into_named_profile(monkeypatch, tmp_path: Path) -
     profile = load_config().extra_fields["profiles"]["claude"]
     assert profile["protocol"] == "anthropic_messages"
     assert profile["base_url"] == "https://api.anthropic.com/v1"
-    assert profile["default_model"] == "claude-sonnet-5"
+    assert profile["default_model"] == "claude-sonnet-5-5"
     assert profile["extra_headers"] == {}
 
 

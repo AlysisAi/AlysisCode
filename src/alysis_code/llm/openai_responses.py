@@ -1204,6 +1204,30 @@ def _responses_text_config(response_format: dict[str, Any] | None) -> dict[str, 
     raise LLMError(f"OpenAI Responses does not support response_format type {response_type!r}")
 
 
+def _reject_reasoning_off_for_always_on_model(
+    *, model: str | None, effort: str, enable_thinking: bool | None
+) -> None:
+    """Fail before sending when an always-reasoning OpenAI model is asked not to reason.
+
+    The catalog's OpenAI reasoning contract says which models cannot turn
+    reasoning off and which efforts they take, so the person gets a plain
+    message instead of the provider's 400.
+    """
+    from ..profile_presets import model_display_name
+    from ..reasoning_contracts import OFF_IMPOSSIBLE, reasoning_contract_for
+
+    name = str(model or "").strip()
+    if not name:
+        return
+    contract = reasoning_contract_for("openai", name)
+    if contract.off != OFF_IMPOSSIBLE or not contract.values:
+        return
+    if (effort and effort not in contract.values) or (not effort and enable_thinking is False):
+        values = list(contract.values)
+        allowed = ", ".join(values[:-1]) + f", or {values[-1]}" if len(values) > 1 else values[0]
+        raise LLMError(f"{model_display_name(name)} requires reasoning effort {allowed}.")
+
+
 def _responses_reasoning(
     *,
     enable_thinking: bool | None,
@@ -1214,11 +1238,9 @@ def _responses_reasoning(
 ) -> dict[str, Any] | None:
     reasoning: dict[str, Any] = {}
     effort = str(reasoning_effort or "").strip().lower()
-    if model == "gpt-6.1-sol" and (
-        (effort and effort not in {"low", "medium", "high", "xhigh", "max"})
-        or (not effort and enable_thinking is False)
-    ):
-        raise LLMError("GPT-6.1 Sol requires reasoning effort low, medium, high, xhigh, or max.")
+    _reject_reasoning_off_for_always_on_model(
+        model=model, effort=effort, enable_thinking=enable_thinking
+    )
     if provider_key == "alysis" and model == "gpt-6-luna":
         # Older hosted pickers exposed the generic Responses efforts. Preserve
         # saved configs and environment overrides at Luna's supported bounds.
