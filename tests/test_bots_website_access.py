@@ -414,7 +414,15 @@ def test_the_persons_request_admits_input_on_any_site_and_every_input_is_reviewe
         "browser_select",
         "browser_click",
     ]
-    assert all(options == {"website_effects": ()} for _, _, options in reviewed)
+    # The search (typing, then Enter sending the GET form to the shop's own site) and the plain
+    # link stay on the page, as its HTML shows; the sort list outside any form is the
+    # reviewer's.
+    assert [options for _, _, options in reviewed] == [
+        {"website_effects": (), "stays_on_page": True},
+        {"website_effects": (), "stays_on_page": True},
+        {"website_effects": ()},
+        {"website_effects": (), "stays_on_page": True},
+    ]
     assert all(
         context["url"] == SHOP and "website_effects" in context for _, context, _ in reviewed
     )
@@ -593,8 +601,10 @@ def test_an_interactive_task_scrolls_searches_filters_and_pages_with_no_card(owl
     # No card of any kind, and nothing waits for the person.
     assert runtime.proposals.list(bot["id"]) == []
     assert runtime.action_reviews.list(bot["id"]) == []
-    # Four inputs, four reviews under the website policy; scrolling needed none.
-    assert len(script.reviews) == 4
+    # Four inputs; scrolling needed no review, and the search and the plain link none either
+    # (the page's HTML shows nothing leaves it): only the sort list outside a form is reviewed,
+    # under the website policy.
+    assert len(script.reviews) == 1
     assert all("WEBSITE INPUT" in review[0]["content"] for review in script.reviews)
     assert all('"website_effects"' in review[1]["content"] for review in script.reviews)
     state = next(m["content"] for m in script.turns[0]["messages"] if "Task start UTC" in str(m))
@@ -763,10 +773,17 @@ def test_when_the_reviewer_cannot_decide_the_person_is_asked(owl, answer):
     browser = serve(harness, catalogue(words))
     ask(store, chat_, words["request"])
     task = store.claim("owner")
+    # A sort list outside any form: only the reviewer can say what choosing in it does.
     script = Script(
         [
             lambda _: ("browser_observe", {}),
-            tool("browser_click", at(f'- link "{words["next"]}"')),
+            tool(
+                "browser_select",
+                lambda r: {
+                    **at(f'- combobox "{words["sort"]}"')(r),
+                    "option_node": ref(r["page_view"], f'- option "{words["cheapest"]}"'),
+                },
+            ),
         ],
         [answer],
     )

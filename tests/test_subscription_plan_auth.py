@@ -342,9 +342,10 @@ def test_catalog_empty_capabilities_override_static_fallback():
         )
     )
     models = adapter.list_models()
+    # Equal priorities keep the account's own model ahead of reviewed additions.
     assert [model.id for model in models] == [
-        "gpt-6.1-sol",
         "gpt-6-astra",
+        "gpt-6.1-sol",
         "gpt-6-sol",
         "gpt-6-luna",
         "gpt-5.6-sol",

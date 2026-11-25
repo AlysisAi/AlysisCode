@@ -255,7 +255,19 @@ def test_protocols_decode_tools_into_real_edits_and_full_trace(
     preset = get_preset(preset_key)
     assert preset is not None
     profile = make_profile_from_preset(preset)
-    model = profile.default_model or "test-model"
+    # The preset's first model that stays on the preset's own wire protocol
+    # (some models are routed to another protocol for tool turns).
+    model = next(
+        (
+            candidate
+            for candidate in preset.suggested_models
+            if resolve_model_protocol(
+                provider_key=preset.provider_key, protocol=profile.protocol, model=candidate
+            )
+            == protocol
+        ),
+        profile.default_model or "test-model",
+    )
     assert protocol == resolve_model_protocol(
         provider_key=preset.provider_key, protocol=profile.protocol, model=model
     )

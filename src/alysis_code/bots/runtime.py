@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,7 +38,7 @@ from ..model_registry import (
 )
 from ..request_estimation import estimate_request_tokens
 from ..token_budget import compute_input_budget
-from . import documents, failures, owl_prompt, owl_toolset, text_tool_calls
+from . import documents, failures, owl_prompt, owl_toolset, text_tool_calls, tool_batch
 from .about_me import AboutMeStore
 from .about_me import context as about_me_context
 from .action_review import ActionReviews, ApprovalRequired, BotActionReviewer
@@ -66,7 +67,7 @@ from .compute import ComputeCreationRefused
 from .computer import ComputerControlPause, ComputerViews
 from .computer_control import ComputerControls
 from .computer_help import ComputerHelp
-from .context_summary import BotContextSummary, current_memory_state, position
+from .context_summary import BotContextSummary, WarmUp, current_memory_state, position
 from .cooperation import PeerReference, PeerRequest, PeerRunner, PeerStore
 from .cut_off import CutOffReplies
 from .desktop import DesktopComputers
@@ -552,6 +553,9 @@ class BotRuntime:
         if foreground_workers is not None:
             self.limits = replace(self.limits, foreground_workers=foreground_workers)
         self.context_summary = BotContextSummary(store, owner)
+        # An owl's earlier chat, summarised and indexed while it is idle after a turn, so its next
+        # turn does not wait for it (context_summary.WarmUp, run in the memory lane).
+        self.warm_up = WarmUp(store, owner, self.context_summary)
         # What the store holds about the receipts that replies keep, by running
         # task (see _kept_receipts). Only a copy for the length of a run:
         # anything missing from it is read from the store again.
@@ -1185,11 +1189,37 @@ class BotRuntime:
 
     def _capture_loop(self) -> None:
         while not self._stop.is_set():
-            if not self._capture_wake.wait(timeout=1):
+            woke = self._capture_wake.wait(timeout=1)
+            if woke:
+                self._capture_wake.clear()
+            if not (woke or self.warm_up.due(time.time())) or not self.work_authorizer():
                 continue
-            self._capture_wake.clear()
-            if self.work_authorizer():
+            if woke:
                 self.capture_memories()
+            self.warm_up_pass()
+
+    def memories_changed(self, bot_id: str) -> None:
+        """The person changed the owl's memories outside a turn (in the app): what changed is
+        sorted while the owl is idle, as after a turn, so its next turn does not wait for it."""
+        self.warm_up.ended(bot_id)
+
+    def warm_up_pass(self, *, now: float | None = None) -> list[dict]:
+        """Make ready each owl whose turn ended a short while ago (context_summary.WarmUp), on
+        the model its next turn thinks with. What each did, for tests."""
+        done = []
+        while not self._stop.is_set() and self.work_authorizer():
+            job = self.warm_up.claim(time.time() if now is None else now)
+            if job is None:
+                break
+            try:
+                client, limits = self.turn_model(job.anchor_task_id, job.bot_id)
+            except (ModelUnavailable, NotFound):
+                # Its turns say so themselves; nothing is made ready ahead of them.
+                continue
+            done.append(
+                self.warm_up.run(job, client, limits, CaptureToken(self._stop, self.warm_up, job))
+            )
+        return done
 
     def capture_memories(self, *, now: float | None = None) -> list[dict]:
         """One pass of the memory lane: read each owl whose chat went quiet (one bounded model
@@ -1207,11 +1237,13 @@ class BotRuntime:
                 # The model the owl's turns think with; a catalog model that gave way to its
                 # connection's own is noticed in the owl's next turn, not here.
                 client, limits, _ = self._chosen_model(job.anchor_task_id, job.bot_id)
-                done.append(
-                    self.memory_capture.run(
-                        job, client, limits, CaptureToken(self._stop, self.memory_capture, job)
-                    )
+                read = self.memory_capture.run(
+                    job, client, limits, CaptureToken(self._stop, self.memory_capture, job)
                 )
+                done.append(read)
+                if read.get("kept"):
+                    # Its new memories are indexed and its summary rewritten before its next turn.
+                    self.warm_up.ended(job.bot_id, now=now)
             except ModelUnavailable:
                 # Its turns fail the same way and say so; the read waits for a turn that works.
                 done.append(self.memory_capture.end(job, "model_unavailable"))
@@ -2669,6 +2701,8 @@ class BotRuntime:
             self._run(task, token, background=background)
         finally:
             _TURN_LIMITS.reset(scope)
+            # Its earlier chat is made ready for its next turn once it has been quiet a moment.
+            self.warm_up.ended(task["bot_id"])
 
     def _run(self, task: dict, token: EventCancellationToken, *, background: bool) -> None:
         task_id = task["id"]
@@ -2691,6 +2725,9 @@ class BotRuntime:
             review_action = action_reviewer.check if action_reviewer else None
             # A room turn reads the room, not the owl's own chat, so it has nothing to summarise.
             in_room = self.rooms.holds(task)
+            # Work made ready while the owl was idle stops for this turn, which uses what is
+            # ready and makes only what is still missing.
+            self.warm_up.started(task["bot_id"])
             if not background and self.limits.compaction_enabled and not in_room:
                 self.context_summary.prepare(task, client, self.limits, token)
             MemoryApplicability(self.store, self.owner).prepare(
@@ -3554,13 +3591,51 @@ class BotRuntime:
                 browser_image = None
                 file_images = []  # (message index, image) of each Library image in this batch
                 computer_handoff = None
-                for call in response.tool_calls:
-                    file_image = None
+
+                def turn_checks(call):
                     token.throw_if_cancelled()
                     self.computer_controls.check(task)
                     if background:
                         self.background.assert_current(task_id)
-                    refusal = repeats.before(call.name, call.arguments)
+
+                def admit(call):
+                    turn_checks(call)
+                    return repeats.before(call.name, call.arguments)
+
+                def started(call):
+                    self.store.event(
+                        self.owner,
+                        task_id,
+                        "tool_started",
+                        self._step_started(task, call.name, call.arguments),
+                    )
+
+                # In the order asked; consecutive reads run side by side, any other step alone.
+                # Checks, receipts and results stay in this thread, in order (tool_batch.py).
+                batch = tool_batch.Batch(
+                    response.tool_calls,
+                    together=tool_batch.side_by_side(
+                        names, elsewhere=(browser_names, desktop_names, connected_tools)
+                    ),
+                    admit=admit,
+                    # A read joins those before it only when the repeat guard lets it run
+                    # whatever they return; it is then checked as if it ran right after them.
+                    joins=lambda call: repeats.joins(call.name, call.arguments),
+                    joining=turn_checks,
+                    started=started,
+                    run=partial(
+                        self._tool,
+                        task,
+                        allowed=names,
+                        review_action=review_action,
+                        image_input=image_input,
+                        token=token,
+                        offered=[s["function"]["name"] for s in offered_schemas],
+                    ),
+                    token=token,
+                )
+                for call, refusal in batch:
+                    file_image = None
                     if refusal is not None:
                         # Not run: the same call already failed the same way several times.
                         self.store.event(
@@ -3580,12 +3655,6 @@ class BotRuntime:
                         continue
                     # Whether this call's result carries an image: a fresh look, never a repeat.
                     looked = False
-                    self.store.event(
-                        self.owner,
-                        task_id,
-                        "tool_started",
-                        self._step_started(task, call.name, call.arguments),
-                    )
                     try:
                         if call.name == "request_peer" and call.name in names:
                             self.peers.submit(
@@ -3770,16 +3839,7 @@ class BotRuntime:
                         elif call.name in owl_toolset.COMPACT_TOOLS and offer.hidden:
                             result = offer.answer(call)
                         else:
-                            result = self._tool(
-                                task,
-                                call.name,
-                                call.arguments,
-                                names,
-                                review_action=review_action,
-                                image_input=image_input,
-                                token=token,
-                                offered=[s["function"]["name"] for s in offered_schemas],
-                            )
+                            result = batch.result(call)
                             if isinstance(result, FileImageResult):
                                 # A Library image takes the batch's one image place, like a
                                 # screenshot; its text receipt is the tool result.

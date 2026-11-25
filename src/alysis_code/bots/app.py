@@ -294,7 +294,14 @@ def create_app(
     connections = ConnectionStore(settings.database.parent / "connections.sqlite3")
     # The desktop app's plugins, each owl using those on for it (desktop_connectors.py).
     desktop_plugins = DesktopConnectors()
-    owl_apps = OwlApps(store, settings.owner, desktop_plugins)
+    # Owls on this computer also use the account's More apps (owl_hub_apps.py); a hosted service
+    # has no account key of its own to call them with.
+    more_apps = None
+    if settings.service_mode == "local":
+        from .owl_hub_apps import OwlHubApps
+
+        more_apps = OwlHubApps()
+    owl_apps = OwlApps(store, settings.owner, desktop_plugins, more_apps)
     computers = computer_views or (
         browser_computers.views
         if browser_computers
@@ -1436,25 +1443,36 @@ def create_app(
     def memories(bot_id: str):
         return store.list_memories(settings.owner, bot_id, for_person=True)
 
+    # Each change the person makes to an owl's memories is sorted while the owl is idle, so its
+    # next turn does not wait for it (runtime.memories_changed).
     @app.post("/v1/bots/{bot_id}/memories", status_code=201)
     def add_memory(bot_id: str, data: MemoryInput):
-        return store.save_memory(settings.owner, bot_id, data)
+        saved = store.save_memory(settings.owner, bot_id, data)
+        runtime.memories_changed(bot_id)
+        return saved
 
     @app.put("/v1/bots/{bot_id}/memories/{memory_id}")
     def edit_memory(bot_id: str, memory_id: str, data: MemoryInput):
-        return store.save_memory(settings.owner, bot_id, data, memory_id=memory_id)
+        saved = store.save_memory(settings.owner, bot_id, data, memory_id=memory_id)
+        runtime.memories_changed(bot_id)
+        return saved
 
     @app.patch("/v1/bots/{bot_id}/memories/{memory_id}")
     def review_memory(bot_id: str, memory_id: str, data: MemoryDecision):
-        return store.decide_memory(settings.owner, bot_id, memory_id, data.status)
+        decided = store.decide_memory(settings.owner, bot_id, memory_id, data.status)
+        runtime.memories_changed(bot_id)
+        return decided
 
     @app.post("/v1/bots/{bot_id}/memories/{memory_id}/undo")
     def undo_memory(bot_id: str, memory_id: str):
-        return store.undo_memory(settings.owner, bot_id, memory_id)
+        undone = store.undo_memory(settings.owner, bot_id, memory_id)
+        runtime.memories_changed(bot_id)
+        return undone
 
     @app.delete("/v1/bots/{bot_id}/memories/{memory_id}", status_code=204)
     def delete_memory(bot_id: str, memory_id: str):
         store.delete_item(settings.owner, bot_id, memory_id, kind="memories")
+        runtime.memories_changed(bot_id)
 
     @app.get("/v1/bots/{bot_id}/playbooks")
     def playbooks(bot_id: str):

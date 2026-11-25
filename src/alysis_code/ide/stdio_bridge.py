@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, TextIO, cast
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
-from .. import __version__, feedback_delivery
+from .. import __version__, feedback_delivery, hub_apps
 from .. import computer_use_attribution as attribution
 from ..agent.action_approval import decide_action_approval
 from ..agent.browser_start import (
@@ -396,6 +396,7 @@ RUN_START_SESSION_FIELDS = frozenset(
         "github_repository_policy",
         "google_mcp",
         "connector_mcp",
+        "hub_apps",
     }
 )
 RUN_START_TURN_FIELDS = CHAT_SEND_ALLOWED_FIELDS - {"session_id", "task_relation"}
@@ -2025,6 +2026,17 @@ class StdioBridge(JsonLineBridge):
                 "connector_mcp and mcp.connector.call must be negotiated together.",
                 request_id=request.id,
             )
+        # Apps of the catalog Alysis's server brokers (hub plugins): the engine loads the
+        # signed-in account's connected apps itself and runs their calls with the account's own
+        # key; the app only asks for them. Failing to load them never fails the session: the
+        # result says why (hub_apps).
+        hub_status: dict[str, Any] | None = None
+        if (
+            _optional_bool(params, "hub_apps", default=False, request_id=request.id)
+            and not sensitive_media
+        ):
+            hub_catalogs, hub_status = hub_apps.load_hub_catalogs()
+            connector_mcp = [*connector_mcp, *hub_catalogs]
         if mode == "readonly":
             connector_mcp = [
                 {**c, "tools": [t for t in c["tools"] if t["readOnly"]]} for c in connector_mcp
@@ -2474,6 +2486,7 @@ class StdioBridge(JsonLineBridge):
                 {"connector_mcp": connector_session_payload(connector_mcp)} if connector_mcp else {}
             ),
             **({"host_plugins_dropped": dropped_host_plugins} if drop_inactive_plugins else {}),
+            **({"hub_apps": hub_status} if hub_status is not None else {}),
         }
 
     def _live_mcp_manager(
@@ -8486,13 +8499,20 @@ class StdioBridge(JsonLineBridge):
                 raise HostActionError(
                     "invalid_host_preparation", str(exc), dispatch_state="not_dispatched"
                 ) from exc
-            # Only a plugin Alysis reviewed may be labelled verified in the approval.
+            # Only a plugin Alysis reviewed may be labelled verified in the approval. Hub apps
+            # never come through the app: the engine runs their calls.
             if context["connector"] == "Verified" and not (
                 action == CONNECTOR_MCP_ACTION and is_verified_connector(arguments.get("plugin_id"))
             ):
                 raise HostActionError(
                     "invalid_host_preparation",
                     "Only a verified plugin's call can be labelled verified.",
+                    dispatch_state="not_dispatched",
+                )
+            if context["connector"] == "Hub":
+                raise HostActionError(
+                    "invalid_host_preparation",
+                    "A hub app's call is the engine's own, never the app's.",
                     dispatch_state="not_dispatched",
                 )
         # A custom plugin's tool is a read only when the person marked it so in the descriptor

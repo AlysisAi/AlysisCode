@@ -156,6 +156,7 @@ _ANTHROPIC_CACHE_CONTROL_CAPABILITY = CacheCapabilitySpec(
     min_cacheable_tokens=1024,
     model_family_overrides=(
         ("claude-haiku-5-5", _cache_minimum(512)),
+        ("claude-sonnet-5-5", _cache_minimum(512)),
         ("claude-opus-5", _cache_minimum(512)),
         ("claude-fable-5", _cache_minimum(512)),
         ("claude-mythos-5", _cache_minimum(512)),
@@ -174,6 +175,21 @@ _GEMINI_EXPLICIT_CACHED_CONTENT_CAPABILITY = CacheCapabilitySpec(
     reports_cache_read_tokens=True,
     usage_schema=CACHE_USAGE_SCHEMA_GEMINI,
     min_cacheable_tokens=4096,
+    # Gemini 4 supports implicit caching only: creating cachedContents (or
+    # sending cached_content) returns an error, so explicit caching is off
+    # for that generation while cached-read usage is still reported.
+    model_family_overrides=(
+        (
+            "gemini-4",
+            CacheCapabilitySpec(
+                supports_explicit_cached_content=False,
+                notes=(
+                    "Gemini 4 caches matching prefixes implicitly; cachedContents is rejected.",
+                ),
+                source="preset",
+            ),
+        ),
+    ),
     source="preset",
 )
 _MISTRAL_PROMPT_CACHE_CAPABILITY = CacheCapabilitySpec(
@@ -372,11 +388,13 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.openai.com/v1",
         api_key_env="OPENAI_API_KEY",
         model_choices=(
-            ReviewedModel("gpt-6-astra", "gpt-normal"),
-            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("gpt-6.2-astra", "gpt-normal"),
+            ReviewedModel("gpt-6.2-sol", "gpt-normal"),
             ReviewedModel("gpt-6.1-terra", "gpt-normal"),
-            ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
+            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("gpt-6-astra", "gpt-normal"),
+            ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-5.6-terra", "gpt-normal"),
             ReviewedModel("gpt-5.6-sol", "gpt-normal"),
             ReviewedModel("gpt-5.6-luna", "gpt-expanded"),
@@ -384,17 +402,21 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("gpt-5.4-mini", "gpt-expanded"),
         ),
         suggested_model_descriptions={
-            # gpt-6-astra (2026-09-03) is OpenAI's flagship and the default here;
-            # Terra is the balanced pick at 1/5 of Astra's input price.
+            # gpt-6.2-astra (2026-11-17) is OpenAI's flagship and the default
+            # here; GPT-6.2 Sol keeps GPT-6.1 Sol's $2/$10 and sits within half
+            # a point of Astra at a quarter of its price. Both reject effort
+            # none, so agentic tool turns run on the Responses route.
             # gpt-5.3-codex is Responses-only (Chat Completions: Not supported)
             # and lives on the openai-responses preset. gpt-5.6-luna replaces
             # gpt-5.4-nano as the economy tier: same $0.20 input, cheaper
             # output, 1.05M context.
-            "gpt-6-astra": "default - GPT-6 flagship, reasoning always on, 1.05M",
-            "gpt-6.1-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6.2-astra": "default - GPT-6.2 flagship, reasoning always on, 1.05M",
+            "gpt-6.2-sol": "coding - latest Sol, everyday coding and agents, 1.05M",
             "gpt-6.1-terra": "balanced - 1.05M context, Off through Max reasoning, Responses tools",
-            "gpt-6-sol": "coding - previous Sol, complex agentic work, 1.05M context",
             "gpt-6-luna": "fast - latest Luna, low-cost focused work, 1.05M context",
+            "gpt-6.1-sol": "coding - previous Sol, complex agentic work, 1.05M context",
+            "gpt-6-astra": "advanced - previous flagship, reasoning always on, 1.05M",
+            "gpt-6-sol": "coding - earlier Sol, complex agentic work, 1.05M context",
             "gpt-5.6-terra": "advanced - balanced 5.6 tier at 1/5 the price, 1.05M",
             "gpt-5.6-sol": "reasoning - top 5.6 tier, 1.05M context",
             "gpt-5.6-luna": "fast - low-cost 5.6 tier, full 1.05M context",
@@ -406,6 +428,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # No official bare alias exists for Astra yet; a typed "gpt-6"
             # would otherwise 404, so retain the explicit Astra shortcut.
             "gpt-6": "gpt-6-astra",
+            "gpt-6.2": "gpt-6.2-astra",
             # Official replacements from OpenAI's deprecations page (2026-07-23
             # codex/chat-latest shutdowns; gpt-5-nano shuts down 2026-12-11).
             "gpt-5-nano": "gpt-5.6-luna",
@@ -427,10 +450,9 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "GPT-6 Sol/Luna and gpt-5.6/5.4 reject tool calls with reasoning_effort other than "
             "'none' on Chat Completions (and 5.6 defaults to 'medium') — for "
             "agentic runs use the OpenAI Responses preset, or pin effort to "
-            "'none' here. gpt-5.3-codex is Responses-only and is not offered here. "
-            "gpt-6-astra cannot disable reasoning and is rolling out to API "
-            "accounts in stages from 2026-09-03; a 404 means your account is not "
-            "enabled yet."
+            "'none' here. GPT-6.2 and GPT-6.1 Sol/Terra already use the Responses "
+            "route here. gpt-5.3-codex is Responses-only and is not offered here. "
+            "GPT-6.2 Astra/Sol and gpt-6-astra cannot disable reasoning."
         ),
     ),
     ProfilePreset(
@@ -441,11 +463,13 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.openai.com/v1",
         api_key_env="OPENAI_API_KEY",
         model_choices=(
-            ReviewedModel("gpt-6-astra", "gpt-normal"),
-            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("gpt-6.2-astra", "gpt-normal"),
+            ReviewedModel("gpt-6.2-sol", "gpt-normal"),
             ReviewedModel("gpt-6.1-terra", "gpt-normal"),
-            ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-6-luna", "gpt-expanded"),
+            ReviewedModel("gpt-6.1-sol", "gpt-normal"),
+            ReviewedModel("gpt-6-astra", "gpt-normal"),
+            ReviewedModel("gpt-6-sol", "gpt-normal"),
             ReviewedModel("gpt-5.6-terra", "gpt-normal"),
             ReviewedModel("gpt-5.6-sol", "gpt-normal"),
             ReviewedModel("gpt-5.6-luna", "gpt-expanded"),
@@ -454,11 +478,13 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("gpt-5.4-mini", "gpt-expanded"),
         ),
         suggested_model_descriptions={
-            "gpt-6-astra": "default - GPT-6 flagship, reasoning always on, 1.05M",
-            "gpt-6.1-sol": "coding - latest Sol, complex agentic work, 1.05M context",
+            "gpt-6.2-astra": "default - GPT-6.2 flagship, reasoning always on, 1.05M",
+            "gpt-6.2-sol": "coding - latest Sol, everyday coding and agents, 1.05M",
             "gpt-6.1-terra": "balanced - 1.05M context, Off through Max reasoning",
-            "gpt-6-sol": "coding - previous Sol, complex agentic work, 1.05M context",
             "gpt-6-luna": "fast - latest Luna, low-cost focused work, 1.05M context",
+            "gpt-6.1-sol": "coding - previous Sol, complex agentic work, 1.05M context",
+            "gpt-6-astra": "advanced - previous flagship, reasoning always on, 1.05M",
+            "gpt-6-sol": "coding - earlier Sol, complex agentic work, 1.05M context",
             "gpt-5.6-terra": "advanced - balanced 5.6 tier at 1/5 the price, 1.05M",
             "gpt-5.6-sol": "reasoning - top 5.6 tier, 1.05M context",
             "gpt-5.6-luna": "fast - low-cost 5.6 tier, full 1.05M context",
@@ -469,6 +495,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         model_aliases={
             "gpt-5.6": "gpt-5.6-sol",
             "gpt-6": "gpt-6-astra",
+            "gpt-6.2": "gpt-6.2-astra",
             # Official replacements from OpenAI's deprecations page (2026-07-23
             # codex/chat-latest shutdowns; gpt-5-nano shuts down 2026-12-11).
             "gpt-5-nano": "gpt-5.6-luna",
@@ -485,9 +512,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         cache_capability=_OPENAI_PROMPT_CACHE_CAPABILITY,
         notes=(
             "Native OpenAI Responses API chat with SSE streaming support. Use the OpenAI compat "
-            "preset to keep Chat Completions-compatible behavior. gpt-6-astra is rolling out "
-            "to API accounts in stages from 2026-09-03; a 404 means the account is not "
-            "enabled yet."
+            "preset to keep Chat Completions-compatible behavior."
         ),
     ),
     ProfilePreset(
@@ -498,9 +523,11 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.anthropic.com/v1",
         api_key_env="ANTHROPIC_API_KEY",
         model_choices=(
-            ReviewedModel("claude-sonnet-5", "claude-normal"),
-            ReviewedModel("claude-haiku-5-5", "claude-normal"),
+            ReviewedModel("claude-sonnet-5-5", "claude-normal"),
             ReviewedModel("claude-opus-5-5", "claude-normal"),
+            ReviewedModel("claude-haiku-5-5", "claude-normal"),
+            ReviewedModel("claude-fable-5-2", "claude-normal"),
+            ReviewedModel("claude-sonnet-5", "claude-normal"),
             ReviewedModel("claude-opus-5", "claude-normal"),
             ReviewedModel("claude-fable-5-1", "claude-normal"),
             ReviewedModel("claude-haiku-4-5", "claude-expanded"),
@@ -508,15 +535,18 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("claude-opus-4-7", "claude-expanded"),
         ),
         suggested_model_descriptions={
-            # Fable 5.1 (2026-09-01) supersedes Fable 5, which is now in
-            # Anthropic's Legacy table. Fable 5 stays callable and is not
-            # aliased: 5.1 rejects forced tool_choice, so a silent swap could
-            # change request behaviour, not just billing.
-            "claude-sonnet-5": "default - 1M context, best speed/intelligence mix",
-            "claude-haiku-5-5": "fast - 1M context, adaptive thinking; higher rates above 100K input",
+            # Sonnet 5.5 (2026-09-28) replaces Sonnet 5 at the same $2/$10 and
+            # is the default; Fable 5.2 (2026-11-09) supersedes Fable 5.1.
+            # Earlier ids stay callable and are not aliased: Sonnet 5.5 and
+            # Fable 5.x reject forced tool_choice, so a silent swap could change
+            # request behaviour, not just billing.
+            "claude-sonnet-5-5": "default - 1M context, best speed/intelligence mix",
             "claude-opus-5-5": "advanced - latest Opus, thinking always on, 1M context",
+            "claude-haiku-5-5": "fast - 1M context, adaptive thinking; higher rates above 100K input",
+            "claude-fable-5-2": "reasoning - long-horizon agentic work, thinking always on",
+            "claude-sonnet-5": "fallback - previous Sonnet, 1M context",
             "claude-opus-5": "fallback - previous Opus, 1M context",
-            "claude-fable-5-1": "reasoning - Mythos-class, adaptive thinking always on",
+            "claude-fable-5-1": "reasoning - previous Fable, adaptive thinking always on",
             "claude-haiku-4-5": "fast - 200K context, lowest cost tier",
             "claude-opus-4-8": "fallback - previous-generation opus, 1M context",
             "claude-opus-4-7": "legacy - prior opus generation, 1M context",
@@ -537,6 +567,9 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "claude-opus-4-1": "claude-opus-4-8",
             "claude-opus-4-6": "claude-opus-4-8",
             "claude-fable-5.1": "claude-fable-5-1",
+            "claude-fable-5.2": "claude-fable-5-2",
+            "claude-sonnet-5.5": "claude-sonnet-5-5",
+            "claude-haiku-5.5": "claude-haiku-5-5",
         },
         validation_model="claude-haiku-4-5",
         web_search_adapter=ANTHROPIC_MESSAGES_ADAPTER,
@@ -554,9 +587,11 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.anthropic.com/v1/",
         api_key_env="ANTHROPIC_API_KEY",
         model_choices=(
-            ReviewedModel("claude-sonnet-5", "claude-normal"),
-            ReviewedModel("claude-haiku-5-5", "claude-normal"),
+            ReviewedModel("claude-sonnet-5-5", "claude-normal"),
             ReviewedModel("claude-opus-5-5", "claude-normal"),
+            ReviewedModel("claude-haiku-5-5", "claude-normal"),
+            ReviewedModel("claude-fable-5-2", "claude-normal"),
+            ReviewedModel("claude-sonnet-5", "claude-normal"),
             ReviewedModel("claude-opus-5", "claude-normal"),
             ReviewedModel("claude-fable-5-1", "claude-normal"),
             ReviewedModel("claude-haiku-4-5", "claude-expanded"),
@@ -564,15 +599,18 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("claude-opus-4-7", "claude-expanded"),
         ),
         suggested_model_descriptions={
-            # Fable 5.1 (2026-09-01) supersedes Fable 5, which is now in
-            # Anthropic's Legacy table. Fable 5 stays callable and is not
-            # aliased: 5.1 rejects forced tool_choice, so a silent swap could
-            # change request behaviour, not just billing.
-            "claude-sonnet-5": "default - 1M context, best speed/intelligence mix",
-            "claude-haiku-5-5": "fast - 1M context, adaptive thinking; higher rates above 100K input",
+            # Sonnet 5.5 (2026-09-28) replaces Sonnet 5 at the same $2/$10 and
+            # is the default; Fable 5.2 (2026-11-09) supersedes Fable 5.1.
+            # Earlier ids stay callable and are not aliased: Sonnet 5.5 and
+            # Fable 5.x reject forced tool_choice, so a silent swap could change
+            # request behaviour, not just billing.
+            "claude-sonnet-5-5": "default - 1M context, best speed/intelligence mix",
             "claude-opus-5-5": "advanced - latest Opus, thinking always on, 1M context",
+            "claude-haiku-5-5": "fast - 1M context, adaptive thinking; higher rates above 100K input",
+            "claude-fable-5-2": "reasoning - long-horizon agentic work, thinking always on",
+            "claude-sonnet-5": "fallback - previous Sonnet, 1M context",
             "claude-opus-5": "fallback - previous Opus, 1M context",
-            "claude-fable-5-1": "reasoning - Mythos-class, adaptive thinking always on",
+            "claude-fable-5-1": "reasoning - previous Fable, adaptive thinking always on",
             "claude-haiku-4-5": "fast - 200K context, lowest cost tier",
             "claude-opus-4-8": "fallback - previous-generation opus, 1M context",
             "claude-opus-4-7": "legacy - prior opus generation, 1M context",
@@ -593,6 +631,9 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "claude-opus-4-1": "claude-opus-4-8",
             "claude-opus-4-6": "claude-opus-4-8",
             "claude-fable-5.1": "claude-fable-5-1",
+            "claude-fable-5.2": "claude-fable-5-2",
+            "claude-sonnet-5.5": "claude-sonnet-5-5",
+            "claude-haiku-5.5": "claude-haiku-5-5",
         },
         validation_model="claude-haiku-4-5",
         web_search_adapter=ANTHROPIC_MESSAGES_ADAPTER,
@@ -613,9 +654,11 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.anthropic.com/v1",
         api_key_env="ANTHROPIC_API_KEY",
         model_choices=(
-            ReviewedModel("claude-sonnet-5", "claude-normal"),
-            ReviewedModel("claude-haiku-5-5", "claude-normal"),
+            ReviewedModel("claude-sonnet-5-5", "claude-normal"),
             ReviewedModel("claude-opus-5-5", "claude-normal"),
+            ReviewedModel("claude-haiku-5-5", "claude-normal"),
+            ReviewedModel("claude-fable-5-2", "claude-normal"),
+            ReviewedModel("claude-sonnet-5", "claude-normal"),
             ReviewedModel("claude-opus-5", "claude-normal"),
             ReviewedModel("claude-fable-5-1", "claude-normal"),
             ReviewedModel("claude-haiku-4-5", "claude-expanded"),
@@ -623,15 +666,18 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("claude-opus-4-7", "claude-expanded"),
         ),
         suggested_model_descriptions={
-            # Fable 5.1 (2026-09-01) supersedes Fable 5, which is now in
-            # Anthropic's Legacy table. Fable 5 stays callable and is not
-            # aliased: 5.1 rejects forced tool_choice, so a silent swap could
-            # change request behaviour, not just billing.
-            "claude-sonnet-5": "default - 1M context, best speed/intelligence mix",
-            "claude-haiku-5-5": "fast - 1M context, adaptive thinking; higher rates above 100K input",
+            # Sonnet 5.5 (2026-09-28) replaces Sonnet 5 at the same $2/$10 and
+            # is the default; Fable 5.2 (2026-11-09) supersedes Fable 5.1.
+            # Earlier ids stay callable and are not aliased: Sonnet 5.5 and
+            # Fable 5.x reject forced tool_choice, so a silent swap could change
+            # request behaviour, not just billing.
+            "claude-sonnet-5-5": "default - 1M context, best speed/intelligence mix",
             "claude-opus-5-5": "advanced - latest Opus, thinking always on, 1M context",
+            "claude-haiku-5-5": "fast - 1M context, adaptive thinking; higher rates above 100K input",
+            "claude-fable-5-2": "reasoning - long-horizon agentic work, thinking always on",
+            "claude-sonnet-5": "fallback - previous Sonnet, 1M context",
             "claude-opus-5": "fallback - previous Opus, 1M context",
-            "claude-fable-5-1": "reasoning - Mythos-class, adaptive thinking always on",
+            "claude-fable-5-1": "reasoning - previous Fable, adaptive thinking always on",
             "claude-haiku-4-5": "fast - 200K context, lowest cost tier",
             "claude-opus-4-8": "fallback - previous-generation opus, 1M context",
             "claude-opus-4-7": "legacy - prior opus generation, 1M context",
@@ -652,6 +698,9 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "claude-opus-4-1": "claude-opus-4-8",
             "claude-opus-4-6": "claude-opus-4-8",
             "claude-fable-5.1": "claude-fable-5-1",
+            "claude-fable-5.2": "claude-fable-5-2",
+            "claude-sonnet-5.5": "claude-sonnet-5-5",
+            "claude-haiku-5.5": "claude-haiku-5-5",
         },
         validation_model="claude-haiku-4-5",
         web_search_adapter=ANTHROPIC_MESSAGES_ADAPTER,
@@ -669,18 +718,25 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://generativelanguage.googleapis.com/v1beta",
         api_key_env="GEMINI_API_KEY",
         model_choices=(
+            ReviewedModel("gemini-4-hydrogen", "gemini-normal"),
+            ReviewedModel("gemini-4-neon", "gemini-normal"),
+            ReviewedModel("gemini-4-carbon", "gemini-normal"),
+            ReviewedModel("gemini-4-argon", "gemini-normal"),
             ReviewedModel("gemini-3.8-flash", "gemini-normal"),
-            ReviewedModel("gemini-3.7-flash", "gemini-normal"),
             ReviewedModel("gemini-3.5-flash-lite", "gemini-expanded"),
-            ReviewedModel("gemini-3.1-pro-preview", "gemini-normal"),
         ),
         suggested_model_descriptions={
-            # No GA Pro model exists; 3.1-pro-preview is still served with no
-            # shutdown date. Intro pricing on 3.6/3.7/3.8 Flash ends 2026-12-31.
-            "gemini-3.8-flash": "default - newest stable flash for SWE and agents, 1M",
-            "gemini-3.7-flash": "fallback - previous stable flash model, 1M context",
+            # Gemini 4 (stable). Hydrogen is the default because it is the
+            # Gemini 4 model every key can call, free tier included; Neon,
+            # Carbon and Argon need a paid project. gemini-3.7-flash and
+            # gemini-3.1-pro-preview stay callable but are superseded by 3.8
+            # Flash and Gemini 4. Intro pricing on 3.8 Flash ends 2026-12-31.
+            "gemini-4-hydrogen": "default - fast Gemini 4 for coding and agents, 1M, free tier",
+            "gemini-4-neon": "advanced - frontier coding and analysis, 1M, paid tier",
+            "gemini-4-carbon": "reasoning - Google's strongest model, 1M, paid tier",
+            "gemini-4-argon": "reasoning - frontier model, fewer thinking tokens, paid tier",
+            "gemini-3.8-flash": "fallback - newest stable Gemini 3 flash, 1M context",
             "gemini-3.5-flash-lite": "economy - lowest-cost stable tier, 1M context",
-            "gemini-3.1-pro-preview": "advanced - pro reasoning preview, 1M context",
         },
         model_aliases={
             # Only shut-down or invalid legacy ids are rewritten. Active stable
@@ -753,18 +809,25 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://generativelanguage.googleapis.com/v1beta",
         api_key_env="GEMINI_API_KEY",
         model_choices=(
+            ReviewedModel("gemini-4-hydrogen", "gemini-normal"),
+            ReviewedModel("gemini-4-neon", "gemini-normal"),
+            ReviewedModel("gemini-4-carbon", "gemini-normal"),
+            ReviewedModel("gemini-4-argon", "gemini-normal"),
             ReviewedModel("gemini-3.8-flash", "gemini-normal"),
-            ReviewedModel("gemini-3.7-flash", "gemini-normal"),
             ReviewedModel("gemini-3.5-flash-lite", "gemini-expanded"),
-            ReviewedModel("gemini-3.1-pro-preview", "gemini-normal"),
         ),
         suggested_model_descriptions={
-            # No GA Pro model exists; 3.1-pro-preview is still served with no
-            # shutdown date. Intro pricing on 3.6/3.7/3.8 Flash ends 2026-12-31.
-            "gemini-3.8-flash": "default - newest stable flash for SWE and agents, 1M",
-            "gemini-3.7-flash": "fallback - previous stable flash model, 1M context",
+            # Gemini 4 (stable). Hydrogen is the default because it is the
+            # Gemini 4 model every key can call, free tier included; Neon,
+            # Carbon and Argon need a paid project. gemini-3.7-flash and
+            # gemini-3.1-pro-preview stay callable but are superseded by 3.8
+            # Flash and Gemini 4. Intro pricing on 3.8 Flash ends 2026-12-31.
+            "gemini-4-hydrogen": "default - fast Gemini 4 for coding and agents, 1M, free tier",
+            "gemini-4-neon": "advanced - frontier coding and analysis, 1M, paid tier",
+            "gemini-4-carbon": "reasoning - Google's strongest model, 1M, paid tier",
+            "gemini-4-argon": "reasoning - frontier model, fewer thinking tokens, paid tier",
+            "gemini-3.8-flash": "fallback - newest stable Gemini 3 flash, 1M context",
             "gemini-3.5-flash-lite": "economy - lowest-cost stable tier, 1M context",
-            "gemini-3.1-pro-preview": "advanced - pro reasoning preview, 1M context",
         },
         model_aliases={
             # Only shut-down or invalid legacy ids are rewritten. Active stable
@@ -879,18 +942,21 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         api_key_env="DASHSCOPE_API_KEY",
         model_choices=(
+            ReviewedModel("qwen4-max", "qwen-normal"),
             ReviewedModel("qwen3.7-plus", "qwen-normal"),
             ReviewedModel("qwen3.8-max", "qwen-normal"),
             ReviewedModel("qwen3.8-flash", "qwen-expanded"),
             ReviewedModel("qwen3.7-flash", "qwen-expanded"),
         ),
         suggested_model_descriptions={
-            # Alibaba's documented coding recommendation is qwen3.7-plus; the
-            # qwen3-coder-* line shuts down 2026-10-10 in every region.
-            # qwen3.7-max, qwen3.6-flash and qwen-flash moved to the Legacy
-            # table (still callable, not aliased).
-            "qwen3.7-plus": "default - 1M context, balanced cost, coding pick",
-            "qwen3.8-max": "advanced - newest multimodal flagship, 1M context",
+            # qwen4-max (2026-11-16, Singapore and China) is the flagship and
+            # the default: $1.50/$4.50, below qwen3.8-max. qwen3.7-plus stays
+            # Alibaba's documented coding pick; the qwen3-coder-* line shut
+            # down 2026-10-10 in every region. qwen3.7-max, qwen3.6-flash and
+            # qwen-flash moved to the Legacy table (still callable, not aliased).
+            "qwen4-max": "default - newest flagship, multimodal, 1M context",
+            "qwen3.7-plus": "coding - 1M context, balanced cost",
+            "qwen3.8-max": "advanced - previous multimodal flagship, 1M context",
             "qwen3.8-flash": "fast - low-cost multimodal tier, 1M context",
             "qwen3.7-flash": "economy - cheapest current-gen model, 1M context",
         },
@@ -944,18 +1010,21 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key_env="DASHSCOPE_API_KEY",
         model_choices=(
+            ReviewedModel("qwen4-max", "qwen-normal"),
             ReviewedModel("qwen3.7-plus", "qwen-normal"),
             ReviewedModel("qwen3.8-max", "qwen-normal"),
             ReviewedModel("qwen3.8-flash", "qwen-expanded"),
             ReviewedModel("qwen3.7-flash", "qwen-expanded"),
         ),
         suggested_model_descriptions={
-            # Alibaba's documented coding recommendation is qwen3.7-plus; the
-            # qwen3-coder-* line shuts down 2026-10-10 in every region.
-            # qwen3.7-max, qwen3.6-flash and qwen-flash moved to the Legacy
-            # table (still callable, not aliased).
-            "qwen3.7-plus": "default - 1M context, balanced cost, coding pick",
-            "qwen3.8-max": "advanced - newest multimodal flagship, 1M context",
+            # qwen4-max (2026-11-16, Singapore and China) is the flagship and
+            # the default: $1.50/$4.50, below qwen3.8-max. qwen3.7-plus stays
+            # Alibaba's documented coding pick; the qwen3-coder-* line shut
+            # down 2026-10-10 in every region. qwen3.7-max, qwen3.6-flash and
+            # qwen-flash moved to the Legacy table (still callable, not aliased).
+            "qwen4-max": "default - newest flagship, multimodal, 1M context",
+            "qwen3.7-plus": "coding - 1M context, balanced cost",
+            "qwen3.8-max": "advanced - previous multimodal flagship, 1M context",
             "qwen3.8-flash": "fast - low-cost multimodal tier, 1M context",
             "qwen3.7-flash": "economy - cheapest current-gen model, 1M context",
         },
@@ -1076,19 +1145,19 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.moonshot.ai/v1",
         api_key_env="MOONSHOT_API_KEY",
         model_choices=(
-            ReviewedModel("kimi-k2.7-code", "kimi-normal"),
+            ReviewedModel("kimi-k3.1-pro", "kimi-normal"),
+            ReviewedModel("kimi-k3.1-pro-highspeed", "kimi-normal"),
             ReviewedModel("kimi-k3", "kimi-normal"),
-            ReviewedModel("kimi-k2.7-code-highspeed", "kimi-normal"),
-            ReviewedModel("kimi-k2.6", "kimi-normal"),
         ),
         suggested_model_descriptions={
-            # k2.7-code is the deliberate default: k3 is always-thinking at
-            # pinned max effort and ~3x the input price — escalate to it when a
-            # task needs the 1M window, don't route routine turns through it.
-            "kimi-k2.7-code": "default - 256K context, long-horizon agentic coding",
-            "kimi-k3": "advanced - 1M context, always-thinking at max effort",
-            "kimi-k2.7-code-highspeed": "fast - ~180 tok/s coding variant, 256K context",
-            "kimi-k2.6": "fallback - 256K context, thinking toggleable",
+            # platform.kimi.ai/docs/models.md (2026-11-24): K3.1 Pro is the
+            # flagship at a third less than K3. The K2 family (k2.7-code,
+            # k2.7-code-highspeed, k2.6) is closed to accounts created from
+            # 2026-11-01 and retires in late December 2026, so it is no longer
+            # offered here; older accounts can still type those ids.
+            "kimi-k3.1-pro": "default - 1M context, multimodal, always reasons",
+            "kimi-k3.1-pro-highspeed": "fast - K3.1 Pro at 2-3x the speed, 2x the price",
+            "kimi-k3": "previous - 1M context, always-thinking at max effort",
         },
         model_aliases={
             # Every id below now 404s on the platform (K2 family retired
@@ -1110,12 +1179,11 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "moonshot-v1-128k": "kimi-k2.6",
             "moonshot-v1-auto": "kimi-k2.6",
         },
-        validation_model="kimi-k2.6",
+        # Every account can call K3.1 Pro; K2 ids fail for accounts created
+        # from 2026-11-01, so they cannot prove a new key works.
+        validation_model="kimi-k3.1-pro",
+        # Uses Moonshot's standalone search endpoint, which runs no model.
         web_search_adapter=MOONSHOT_KIMI_ADAPTER,
-        # Moonshot's pricing pages flag $web_search as "being updated; not
-        # recommended in the near term". Hosted search stays on kimi-k2.6, the
-        # cheapest id the docs still list as $web_search-capable.
-        web_search_model="kimi-k2.6",
         cache_capability=_MOONSHOT_AUTOMATIC_CACHE_CAPABILITY,
         setup_warning=(
             "Moonshot API keys are region-scoped; use a key from the international "
@@ -1130,17 +1198,22 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.kimi.com/coding/v1",
         api_key_env="KIMI_API_KEY",
         model_choices=(
+            ReviewedModel("k3.1-pro", "kimi-normal"),
+            ReviewedModel("k3.1-pro-highspeed", "kimi-normal"),
             ReviewedModel("k3", "kimi-normal"),
             ReviewedModel("k3-256k", "kimi-normal"),
             ReviewedModel("kimi-for-coding", "kimi-normal"),
             ReviewedModel("kimi-for-coding-highspeed", "kimi-normal"),
         ),
         suggested_model_descriptions={
-            # Tier gating: kimi-for-coding = all members; k3 / k3-256k =
-            # Moderato+ (k3 is 256K there, 1M only on Allegretto+); -highspeed =
-            # Allegretto+ only. Default reasoning_effort on this endpoint is
-            # "high"; disabling thinking silently routes to K2.6.
-            "k3": "default - 256K context, 1M on Allegretto+",
+            # Tier gating: kimi-for-coding = all members; k3.1-pro / k3 /
+            # k3-256k = Moderato+ (256K there, 1M only on Allegretto+);
+            # -highspeed = Allegretto+ only. k3.1-pro thinks at low|high|max
+            # (default max) and rejects thinking off; on k3 the default effort
+            # is "high" and disabling thinking silently routes to K2.6.
+            "k3.1-pro": "default - K3.1 Pro, 256K context, 1M on Allegretto+",
+            "k3.1-pro-highspeed": "fast - K3.1 Pro at 2-3x the speed, Allegretto+",
+            "k3": "previous - 256K context, 1M on Allegretto+",
             "k3-256k": "economy - K3 pinned to 256K, ~half the quota burn of k3",
             "kimi-for-coding": "coding - 256K context, all membership tiers",
             "kimi-for-coding-highspeed": "fast - 256K context, Allegretto tier or above",
@@ -1149,6 +1222,8 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # Cross-endpoint remaps: these are live, DIFFERENT ids on
             # platform.moonshot.ai — legal only inside this preset's alias table.
             "kimi-k3": "k3",
+            "kimi-k3.1-pro": "k3.1-pro",
+            "kimi-k3.1-pro-highspeed": "k3.1-pro-highspeed",
             "kimi-k2.7-code": "kimi-for-coding",
             "kimi-k2.7-code-highspeed": "kimi-for-coding-highspeed",
         },
@@ -1169,17 +1244,20 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.moonshot.cn/v1",
         api_key_env="MOONSHOT_API_KEY",
         model_choices=(
-            ReviewedModel("kimi-k2.7-code", "kimi-normal"),
+            ReviewedModel("kimi-k3.1-pro", "kimi-normal"),
+            ReviewedModel("kimi-k3.1-pro-highspeed", "kimi-normal"),
             ReviewedModel("kimi-k3", "kimi-normal"),
+            ReviewedModel("kimi-k2.7-code", "kimi-normal"),
             ReviewedModel("kimi-k2.7-code-highspeed", "kimi-normal"),
             ReviewedModel("kimi-k2.6", "kimi-normal"),
         ),
         suggested_model_descriptions={
-            # k2.7-code is the deliberate default: k3 is always-thinking at
-            # pinned max effort and ~3x the input price — escalate to it when a
-            # task needs the 1M window, don't route routine turns through it.
-            "kimi-k2.7-code": "default - 256K context, long-horizon agentic coding",
-            "kimi-k3": "advanced - 1M context, always-thinking at max effort",
+            # K3.1 Pro (2026-10-23) is the flagship and the default. The K2
+            # ids stay listed on this mainland surface for existing accounts.
+            "kimi-k3.1-pro": "default - 1M context, multimodal, always reasons",
+            "kimi-k3.1-pro-highspeed": "fast - K3.1 Pro at 2-3x the speed, 2x the price",
+            "kimi-k3": "previous - 1M context, always-thinking at max effort",
+            "kimi-k2.7-code": "coding - 256K context, long-horizon agentic coding",
             "kimi-k2.7-code-highspeed": "fast - ~180 tok/s coding variant, 256K context",
             "kimi-k2.6": "fallback - 256K context, thinking toggleable",
         },
@@ -1203,12 +1281,9 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "moonshot-v1-128k": "kimi-k2.6",
             "moonshot-v1-auto": "kimi-k2.6",
         },
-        validation_model="kimi-k2.6",
+        validation_model="kimi-k3",
+        # Uses Moonshot's standalone search endpoint, which runs no model.
         web_search_adapter=MOONSHOT_KIMI_ADAPTER,
-        # Moonshot's pricing pages flag $web_search as "being updated; not
-        # recommended in the near term". Hosted search stays on kimi-k2.6, the
-        # cheapest id the docs still list as $web_search-capable.
-        web_search_model="kimi-k2.6",
         cache_capability=_MOONSHOT_AUTOMATIC_CACHE_CAPABILITY,
         setup_warning=(
             "Moonshot API keys are region-scoped; use a key from the mainland-China "
@@ -1225,22 +1300,17 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         model_choices=(
             ReviewedModel("MiniMax-M3", "minimax-expanded"),
             ReviewedModel("MiniMax-M3.1-Flash", "minimax-expanded"),
-            ReviewedModel("MiniMax-M2.7", "minimax-normal"),
-            ReviewedModel("MiniMax-M2.7-highspeed", "minimax-normal"),
-            ReviewedModel("MiniMax-M2.5", "minimax-expanded"),
         ),
         suggested_model_descriptions={
-            # M3 exposes thinking.type adaptive|disabled; M2.x cannot disable
-            # thinking. M3 input above 512K bills at 2x the base rate.
-            # MiniMax-M2 / M2.5 stay live as separately priced legacy ids, so
-            # no alias remaps them.
+            # M3 exposes thinking.type adaptive|disabled. M3 input above 512K
+            # bills at 2x the base rate. The pay-as-you-go price list
+            # (platform.minimax.io/docs/guides/pricing-paygo, 2026-11-24) now
+            # carries only M3 and M3.1 Flash; M2.x ids are no longer offered.
             "MiniMax-M3": "default - 1M context, multimodal agentic coding",
             "MiniMax-M3.1-Flash": "fast - 1M context, five reasoning effort levels",
-            "MiniMax-M2.7": "coding - 204K context, prior flagship",
-            "MiniMax-M2.7-highspeed": "fast - same weights as M2.7, latency-tuned",
-            "MiniMax-M2.5": "fallback - stable prior generation, 204K",
         },
-        validation_model="MiniMax-M2.5",
+        # The cheapest current model proves the key; M2.x may not answer.
+        validation_model="MiniMax-M3.1-Flash",
         web_search_adapter=MINIMAX_CODING_PLAN_ADAPTER,
         setup_warning=(
             "MiniMax hosted web search requires a Token Plan key; pay-as-you-go model keys "
@@ -1262,26 +1332,25 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             ReviewedModel("mimo-v2.6-pro", "mimo-normal"),
             ReviewedModel("mimo-v2.6-flash", "mimo-expanded"),
             ReviewedModel("mimo-v2.6-pro-ultraspeed", "mimo-normal"),
-            ReviewedModel("mimo-v2.5-pro", "mimo-normal"),
-            ReviewedModel("mimo-v2.5", "mimo-expanded"),
         ),
         suggested_model_descriptions={
             # V2.6 API ids verified against Xiaomi's 2026-09-22 launch and
             # https://mimo.mi.com/docs/en-US/quick-start/summary/model.
-            # V2.5 remains callable until 2026-10-21 10:00 (UTC+8).
+            # V2.5 Pro was retired 2026-10-21 and is served as V2.6 Pro
+            # (mimo.mi.com/docs/en-US/updates/deprecate).
             "mimo-v2.6-pro": "default - flagship coding & agents, multimodal (1M context)",
             "mimo-v2.6-flash": "efficient - multimodal coding & agents (1M context)",
             "mimo-v2.6-pro-ultraspeed": (
                 "fast - Pro UltraSpeed, multimodal (1M context, 10x Pro token price)"
             ),
-            "mimo-v2.5-pro": "legacy - previous flagship (retires 2026-10-21)",
-            "mimo-v2.5": "legacy - previous omni model (retires 2026-10-21)",
         },
         validation_model="mimo-v2.6-pro",
         model_aliases={
-            # Preserve existing V2.5 mappings while those models remain callable;
-            # the retired V2 Flash id follows Xiaomi's server-side routing.
-            "mimo": "mimo-v2.5-pro",
+            # Xiaomi's documented replacement for the retired V2.5 Pro (and
+            # the friendly id that used to point at it) is V2.6 Pro. The
+            # retired V2 Flash id follows Xiaomi's server-side routing.
+            "mimo": "mimo-v2.6-pro",
+            "mimo-v2.5-pro": "mimo-v2.6-pro",
             "mimo-v2-flash": "mimo-v2.5",
         },
     ),
@@ -1368,16 +1437,17 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         api_key_env="CEREBRAS_API_KEY",
         model_choices=(
             ReviewedModel("gpt-oss-120b", "gpt-oss-expanded"),
-            ReviewedModel("gemma-4-31b", "gemma-expanded"),
+            ReviewedModel("qwen-3.8-27b", "qwen-expanded"),
         ),
         suggested_model_descriptions={
-            # Cerebras' public catalog is exactly these two models; GLM 5.x,
-            # Kimi, Qwen-Coder, MiniMax and DeepSeek exist only as dedicated
-            # (enterprise) endpoints with no public id. Context is the free-tier
-            # floor (65K); paid keys get 131K / 40K output. gpt-oss-120b cannot
+            # Cerebras' public catalog (inference-docs.cerebras.ai/models/
+            # overview, 2026-11-24) is exactly these two models; gemma-4-31b
+            # left it. GLM 5.x, Kimi, MiniMax and DeepSeek exist only as
+            # dedicated (enterprise) endpoints with no public id. Context is the
+            # free-tier floor (64K); paid keys get 128K. gpt-oss-120b cannot
             # disable reasoning (effort low|medium|high).
             "gpt-oss-120b": "default - reasoning + tools, ~3000 tok/s",
-            "gemma-4-31b": "fallback - only image-input model, optional reasoning",
+            "qwen-3.8-27b": "fast - Qwen 3.8 27B, 64K context (128K on paid keys)",
         },
         model_aliases={
             # The llama family left Cerebras public endpoints 2026-02-16 (and
@@ -1395,7 +1465,7 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         },
         validation_model="gpt-oss-120b",
         setup_warning=(
-            "Cerebras public endpoints serve only gpt-oss-120b and gemma-4-31b; "
+            "Cerebras public endpoints serve only gpt-oss-120b and qwen-3.8-27b; "
             "zai-glm-4.7 was deprecated 2026-08-17 and now remaps to gpt-oss-120b."
         ),
     ),
@@ -1407,26 +1477,25 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://api.mistral.ai/v1",
         api_key_env="MISTRAL_API_KEY",
         model_choices=(
-            ReviewedModel("mistral-medium-3-5", "mistral-normal"),
             ReviewedModel("mistral-large-4", "mistral-normal"),
-            ReviewedModel("mistral-large-2512", "mistral-normal"),
             ReviewedModel("mistral-small-2603", "mistral-expanded"),
             ReviewedModel("zai-glm-5-3", "glm-normal"),
-            ReviewedModel("zai-glm-5-2", "glm-expanded"),
+            ReviewedModel("zai-glm-5-3-flash", "glm-normal"),
             ReviewedModel("codestral-2508", "mistral-expanded"),
             ReviewedModel("ministral-8b-2512", "mistral-expanded"),
         ),
         suggested_model_descriptions={
+            # docs.mistral.ai/getting-started/models (2026-11-24): Mistral
+            # Medium 3.5 and Large 3 (mistral-large-2512) were deprecated on
+            # 2026-10-31 (retire 2027-04-30, named alternative Mistral Large
+            # 4), so Large 4 is the default. They stay callable but are not
+            # offered. zai-glm-5-2 retired 2026-10-31 and remaps to GLM 5.3.
             # codestral is FIM/completion-oriented — routers should prefer the
-            # default for multi-file agentic patch turns. The hosted GLM
-            # routes are Public Preview with 1M context and a 1-month
-            # deprecation notice.
-            "mistral-medium-3-5": "default - agentic and coding flagship, 256K",
-            "mistral-large-4": "advanced - Mistral Large 4, 1M context, Low/Medium/High reasoning",
-            "mistral-large-2512": "advanced - mistral large 3, 675B MoE, 256K",
+            # default for multi-file agentic patch turns.
+            "mistral-large-4": "default - Mistral Large 4, 1M context, Low/Medium/High reasoning",
             "mistral-small-2603": "fast - mistral small 4, low latency",
-            "zai-glm-5-3": "coding - hosted GLM-5.3, 1M context, preview tier",
-            "zai-glm-5-2": "coding - hosted GLM-5.2, 1M context, preview tier",
+            "zai-glm-5-3": "coding - hosted GLM-5.3, 1M context",
+            "zai-glm-5-3-flash": "economy - hosted GLM-5.3 Flash, 1M multimodal",
             "codestral-2508": "fim - code completion and FIM, 128K context",
             "ministral-8b-2512": "economy - small tool-capable model",
         },
@@ -1437,7 +1506,10 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # devstral-2512 / magistral-* / mistral-medium-2508 were deprecated
             # 2026-05-22 (still callable under the 6-month GA notice policy).
             "mistral-large-4-0": "mistral-large-4",
+            # Retired 2026-10-31; Mistral's named replacement at the same price.
+            "zai-glm-5-2": "zai-glm-5-3",
             "mistral-medium-2604": "mistral-medium-3-5",
+            "mistral-medium-3.5": "mistral-medium-3-5",
             "mistral-medium-3": "mistral-medium-3-5",
             "mistral-medium-2508": "mistral-medium-3-5",
             "mistral-medium-2505": "mistral-medium-3-5",
@@ -1569,25 +1641,34 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         base_url="https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
         model_choices=(
+            ReviewedModel("anthropic/claude-sonnet-5.5", "claude-normal"),
+            ReviewedModel("anthropic/claude-opus-5.5", "claude-normal"),
+            ReviewedModel("anthropic/claude-fable-5.2", "claude-normal"),
             ReviewedModel("anthropic/claude-sonnet-5", "claude-normal"),
             ReviewedModel("anthropic/claude-opus-5", "claude-normal"),
-            ReviewedModel("anthropic/claude-opus-5.5", "claude-normal"),
             ReviewedModel("anthropic/claude-fable-5.1", "claude-normal"),
+            ReviewedModel("openai/gpt-6.2-astra", "gpt-normal"),
+            ReviewedModel("openai/gpt-6.2-sol", "gpt-normal"),
             ReviewedModel("openai/gpt-6-astra", "gpt-normal"),
             ReviewedModel("openai/gpt-6-sol", "gpt-normal"),
             ReviewedModel("openai/gpt-6-luna", "gpt-expanded"),
             ReviewedModel("openai/gpt-5.6-terra", "gpt-normal"),
             ReviewedModel("openai/gpt-5.6-luna", "gpt-expanded"),
+            ReviewedModel("google/gemini-4-neon", "gemini-normal"),
+            ReviewedModel("google/gemini-4-hydrogen", "gemini-normal"),
+            ReviewedModel("google/gemini-4-carbon", "gemini-normal"),
             ReviewedModel("google/gemini-3.8-flash", "gemini-normal"),
             ReviewedModel("x-ai/grok-4.7", "grok-normal"),
             ReviewedModel("x-ai/grok-4.6", "grok-normal"),
             ReviewedModel("z-ai/glm-5.3", "glm-normal"),
             ReviewedModel("z-ai/glm-5.3-flashx", "glm-normal"),
             ReviewedModel("z-ai/glm-5.3-flash", "glm-normal"),
+            ReviewedModel("moonshotai/kimi-k3.1-pro", "kimi-normal"),
             ReviewedModel("moonshotai/kimi-k3", "kimi-normal"),
+            ReviewedModel("qwen/qwen4-max", "qwen-normal"),
+            ReviewedModel("minimax/minimax-m3.1-flash", "minimax-expanded"),
             ReviewedModel("deepseek/deepseek-v4-pro-0813", "deepseek-normal"),
             ReviewedModel("deepseek/deepseek-v4.1-flash", "deepseek-expanded"),
-            ReviewedModel("deepseek/deepseek-v4-flash-0731", "deepseek-normal"),
             ReviewedModel("deepseek/deepseek-v4-flash-vision-exp", "deepseek-expanded"),
             ReviewedModel("qwen/qwen3.8-max", "qwen-normal"),
             ReviewedModel("qwen/qwen3.8-max-0902", "qwen-normal"),
@@ -1600,26 +1681,36 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # Vendor prefixes are exact: z-ai/ (not zai/), x-ai/, moonshotai/;
             # OpenRouter spells Claude versions with dots (claude-fable-5.1).
             # Avoid '-latest' floating aliases (~z-ai/glm-latest etc.) and
-            # rate-limited :free variants for agent loops.
-            "anthropic/claude-sonnet-5": "default - coding and agents, 1M context",
-            "anthropic/claude-opus-5": "advanced - long-horizon autonomous work, 1M",
+            # rate-limited :free variants for agent loops. Model list checked
+            # against openrouter.ai/api/v1/models on 2026-11-24.
+            "anthropic/claude-sonnet-5.5": "default - coding and agents, 1M context",
             "anthropic/claude-opus-5.5": "advanced - latest Opus, thinking always on, 1M",
-            "anthropic/claude-fable-5.1": "reasoning - Mythos-class, always-on thinking",
-            "openai/gpt-6-astra": "advanced - GPT-6 flagship, reasoning always on, 1.05M",
-            "openai/gpt-6-sol": "coding - latest Sol, complex agentic work, 1.05M",
+            "anthropic/claude-fable-5.2": "reasoning - long-horizon agentic work, 1M",
+            "anthropic/claude-sonnet-5": "fallback - previous Sonnet, 1M context",
+            "anthropic/claude-opus-5": "advanced - long-horizon autonomous work, 1M",
+            "anthropic/claude-fable-5.1": "reasoning - previous Fable, always-on thinking",
+            "openai/gpt-6.2-astra": "advanced - GPT-6.2 flagship, reasoning always on, 1.05M",
+            "openai/gpt-6.2-sol": "coding - latest Sol, everyday coding and agents, 1.05M",
+            "openai/gpt-6-astra": "advanced - previous GPT-6 flagship, 1.05M",
+            "openai/gpt-6-sol": "coding - earlier Sol, complex agentic work, 1.05M",
             "openai/gpt-6-luna": "fast - latest Luna, low-cost focused work, 1.05M",
             "openai/gpt-5.6-terra": "coding - balanced gpt-5.6 tier, 1.05M context",
             "openai/gpt-5.6-luna": "fast - cost-efficient gpt-5.6 tier",
-            "google/gemini-3.8-flash": "fallback - newest stable Gemini flash, 1M",
+            "google/gemini-4-neon": "advanced - Gemini 4 Neon, coding and analysis, 1M",
+            "google/gemini-4-hydrogen": "fast - Gemini 4 Hydrogen for coding and agents, 1M",
+            "google/gemini-4-carbon": "reasoning - Google's strongest model, 1M",
+            "google/gemini-3.8-flash": "fallback - newest stable Gemini 3 flash, 1M",
             "x-ai/grok-4.7": "agentic - latest Grok for coding and agents, 500K",
             "x-ai/grok-4.6": "agentic - previous Grok coding model, 500K",
             "z-ai/glm-5.3": "open - GLM-5.3 agentic coding flagship, 1.3M routing",
             "z-ai/glm-5.3-flashx": "fast - GLM-5.3 multimodal reasoning, 1M context",
             "z-ai/glm-5.3-flash": "economy - cheapest 1M-class multimodal tool caller",
+            "moonshotai/kimi-k3.1-pro": "open - Kimi K3.1 Pro long-horizon coding, 1M",
             "moonshotai/kimi-k3": "open - Kimi K3 long-horizon coding, 1M multimodal",
+            "qwen/qwen4-max": "multimodal - Qwen4 Max flagship, 1M context",
+            "minimax/minimax-m3.1-flash": "fast - MiniMax M3.1 Flash, 1M context",
             "deepseek/deepseek-v4-pro-0813": "reasoning - DeepSeek V4 Pro snapshot, 1M",
             "deepseek/deepseek-v4.1-flash": "fast - DeepSeek V4.1 Flash with vision, 1M",
-            "deepseek/deepseek-v4-flash-0731": "legacy - DeepSeek V4 Flash snapshot, 1M",
             "deepseek/deepseek-v4-flash-vision-exp": (
                 "vision preview - image understanding and tools, 1M context"
             ),
@@ -1630,7 +1721,11 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "xiaomi/mimo-v2.6-pro-ultraspeed": "fast - accelerated MiMo V2.6 Pro, 1M",
             "inception/mercury-2.5": "fast - diffusion reasoning and tool use, 260K",
         },
-        validation_model="deepseek/deepseek-v4-flash-0731",
+        model_aliases={
+            # DeepSeek retired V4 Flash; its requests are served by V4.1 Flash.
+            "deepseek/deepseek-v4-flash-0731": "deepseek/deepseek-v4.1-flash",
+        },
+        validation_model="deepseek/deepseek-v4.1-flash",
         web_search_adapter=OPENROUTER_WEB_ADAPTER,
         cache_capability=_OPENROUTER_STICKY_SESSION_CACHE_CAPABILITY,
         setup_warning=(
@@ -1653,19 +1748,23 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         model_choices=(
             ReviewedModel("perplexity/sonar", "sonar-normal"),
             ReviewedModel("perplexity/glm-5.3", "glm-normal"),
+            ReviewedModel("perplexity/glm-5.3-flash", "glm-normal"),
             ReviewedModel("perplexity/kimi-k3", "kimi-normal"),
-            ReviewedModel("perplexity/kimi-k2.7-code", "kimi-normal"),
-            ReviewedModel("perplexity/deepseek-v4-flash-0731", "deepseek-normal"),
+            ReviewedModel("perplexity/deepseek-v4-pro-0813", "deepseek-normal"),
+            ReviewedModel("perplexity/nemotron-3.5-super-120b-a12b", "nemotron-expanded"),
         ),
         suggested_model_descriptions={
-            # Perplexity-hosted ids only. Third-party routes (openai/*,
-            # anthropic/*, google/*, xai/*) also resolve on this surface but
-            # are billed at their vendors' list prices; users can type them in.
+            # Perplexity-hosted ids only (Agent API model list, 2026-11-24).
+            # Third-party routes (openai/*, anthropic/*, google/*, xai/*) also
+            # resolve on this surface but are billed at their vendors' list
+            # prices; users can type them in. Kimi K2.7 Code and DeepSeek V4
+            # Flash left the list.
             "perplexity/sonar": "default - Perplexity search model, grounded via web_search tool",
             "perplexity/glm-5.3": "coding - hosted GLM-5.3 agentic coding, tools + MCP",
+            "perplexity/glm-5.3-flash": "fast - cheapest hosted route ($0.15/$0.50)",
             "perplexity/kimi-k3": "advanced - hosted Kimi K3 long-horizon coding",
-            "perplexity/kimi-k2.7-code": "agentic - hosted Kimi K2.7 Code specialist",
-            "perplexity/deepseek-v4-flash-0731": "fast - cheapest hosted route ($0.13/$0.26)",
+            "perplexity/deepseek-v4-pro-0813": "reasoning - hosted DeepSeek V4 Pro, 1M",
+            "perplexity/nemotron-3.5-super-120b-a12b": "open - NVIDIA Nemotron 3.5 Super, text, 1M",
         },
         model_aliases={
             # Retired Sonar Chat Completions ids. Perplexity maps them to the
@@ -1676,8 +1775,10 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "sonar-reasoning": "perplexity/sonar",
             "sonar-reasoning-pro": "perplexity/sonar",
             "sonar-deep-research": "perplexity/sonar",
+            # Routes that left the Agent API model list.
+            "perplexity/deepseek-v4-flash-0731": "perplexity/glm-5.3-flash",
         },
-        validation_model="perplexity/deepseek-v4-flash-0731",
+        validation_model="perplexity/glm-5.3-flash",
         web_search_adapter=PERPLEXITY_SONAR_ADAPTER,
         web_search_model="perplexity/sonar",
         setup_warning=(
@@ -1701,11 +1802,12 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
         api_key_env="TOGETHER_API_KEY",
         model_choices=(
             ReviewedModel("zai-org/GLM-5.3", "glm-normal"),
+            ReviewedModel("moonshotai/Kimi-K3.1-Pro", "kimi-normal"),
+            ReviewedModel("Qwen/Qwen4-Max", "qwen-normal"),
             ReviewedModel("moonshotai/Kimi-K3", "kimi-normal"),
             ReviewedModel("deepseek-ai/DeepSeek-V4-Pro-0813", "deepseek-normal"),
-            ReviewedModel("deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek-normal"),
+            ReviewedModel("deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-expanded"),
             ReviewedModel("zai-org/GLM-5.3-Flash", "glm-normal"),
-            ReviewedModel("MiniMaxAI/MiniMax-M3", "minimax-expanded"),
             ReviewedModel("MiniMaxAI/MiniMax-M3.1-Flash", "minimax-expanded"),
             ReviewedModel("reflection/Beam-1.0-501B-A23B", "general-expanded"),
             ReviewedModel("nvidia/NVIDIA-Nemotron-3.5-Super-VL", "nemotron-expanded"),
@@ -1719,11 +1821,12 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             # scheduled for removal 2026-09-14 (Together names Qwen3.5-9B as
             # its replacement).
             "zai-org/GLM-5.3": "default - agentic coding flagship, 1M context",
-            "moonshotai/Kimi-K3": "coding - long-horizon coding, 1M multimodal",
+            "moonshotai/Kimi-K3.1-Pro": "coding - Kimi K3.1 Pro long-horizon coding, 1M",
+            "Qwen/Qwen4-Max": "multimodal - Qwen4 Max flagship, 1M context",
+            "moonshotai/Kimi-K3": "coding - previous Kimi, 1M multimodal",
             "deepseek-ai/DeepSeek-V4-Pro-0813": "reasoning - current flagship, 1M context",
-            "deepseek-ai/DeepSeek-V4-Flash-0731": "fast - current 1M-context release",
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017": "fast - DeepSeek V4.1 Flash, 1M context",
             "zai-org/GLM-5.3-Flash": "economy - cheapest 1M-context tool caller",
-            "MiniMaxAI/MiniMax-M3": "multimodal - 512K context, vision + agentic coding",
             "MiniMaxAI/MiniMax-M3.1-Flash": "fast - 1M context, five reasoning effort levels",
             "reflection/Beam-1.0-501B-A23B": "coding - 1M text context, five reasoning effort levels",
             "nvidia/NVIDIA-Nemotron-3.5-Super-VL": "multimodal - 262K context, low/medium/high reasoning",
@@ -1741,6 +1844,8 @@ PROFILE_PRESETS: tuple[ProfilePreset, ...] = (
             "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "moonshotai/Kimi-K3",
             "Qwen/Qwen3-Coder-Next-FP8": "moonshotai/Kimi-K3",
             "deepseek-ai/DeepSeek-V4-Pro": "deepseek-ai/DeepSeek-V4-Pro-0813",
+            # DeepSeek retired V4 Flash; its own API serves V4.1 Flash instead.
+            "deepseek-ai/DeepSeek-V4-Flash-0731": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
             "openai/gpt-oss-20b": "Qwen/Qwen3.5-9B",
         },
         validation_model="Qwen/Qwen3.5-9B",
@@ -1970,15 +2075,28 @@ def model_display_name(model: str) -> str:
         "glm-5.4": "GLM 5.4",
         "kimi-k3": "Kimi K3",
         "kimi-k3.1-pro": "Kimi K3.1 Pro",
+        "kimi-k3.1-pro-highspeed": "Kimi K3.1 Pro Highspeed",
+        "k3.1-pro": "Kimi K3.1 Pro",
+        "k3.1-pro-highspeed": "Kimi K3.1 Pro Highspeed",
+        "qwen4-max": "Qwen4 Max",
+        "gemini-4-neon": "Gemini 4 Neon",
+        "gemini-4-hydrogen": "Gemini 4 Hydrogen",
         "gemini-4-carbon": "Gemini 4 Carbon",
+        "gemini-4-argon": "Gemini 4 Argon",
         "muse-spark-open": "Muse Spark Open",
         "glm-5.3-flash": "GLM 5.3 Flash",
+        "gpt-6.2-astra": "GPT-6.2 Astra",
+        "gpt-6.2-sol": "GPT-6.2 Sol",
+        "gpt-6-astra": "GPT-6 Astra",
+        "gpt-6-sol": "GPT-6 Sol",
         "gpt-6-luna": "GPT-6 Luna",
         "gpt-6.1-sol": "GPT-6.1 Sol",
         "gpt-6.1-terra": "GPT-6.1 Terra",
         "qwen3.8-2.4t": "Qwen 3.8 2.4T",
         "claude-sonnet-5-5": "Claude Sonnet 5.5",
         "claude-haiku-5-5": "Claude Haiku 5.5",
+        "claude-opus-5-5": "Claude Opus 5.5",
+        "claude-fable-5-2": "Claude Fable 5.2",
         "grok-4.7": "Grok 4.7",
     }.get(model.casefold(), model)
 

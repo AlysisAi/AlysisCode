@@ -53,7 +53,7 @@ from .step_effects import NOTHING_TO_REPORT
 from .store import NotFound, encode
 
 # Below this declared context window (in tokens) a model counts as small. The full tool list of
-# an owl with every feature is about 36,000 tokens (63 owl tools), 49,000 with its browser (89),
+# an owl with every feature is about 29,700 tokens (62 owl tools), 41,200 with its browser (90),
 # and the standing guidance about 5,000 more: below 100,000 tokens that would take over a third
 # of everything the model can read, before the conversation even starts.
 SMALL_CONTEXT_WINDOW_TOKENS = 100_000
@@ -69,7 +69,7 @@ MAX_DIRECT_TOOLS = 96
 # this share of the model's declared context window, leaving three quarters for the guidance, the
 # conversation, files and the answer. A fifth would hide even one small app's tools from an owl
 # with memory and files on a 128,000-token window (the registry's default for a model it doesn't
-# know), where that owl's own tools already take 22%. The owl's own tools are a bounded list that
+# know), where that owl's own tools already take 18%. The owl's own tools are a bounded list that
 # SMALL_CONTEXT_WINDOW_TOKENS sizes, so this share alone never hides them.
 TOOL_SCHEMA_WINDOW_SHARE = 0.25
 

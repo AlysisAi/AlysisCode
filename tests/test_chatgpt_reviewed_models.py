@@ -104,6 +104,23 @@ def test_account_catalog_gains_the_reviewed_models_it_does_not_list():
     assert [model.id for model in models if model.is_default] == ["gpt-6-astra"]
 
 
+def test_newer_models_the_account_lists_come_first_in_its_own_order():
+    # A catalog after the GPT-6.2 launch: OpenAI ranks the new models first.
+    catalog = [
+        {"slug": "gpt-6.1-sol", "visibility": "list", "priority": 2},
+        {"slug": "gpt-6.2-sol", "visibility": "list", "priority": 1, "context_window": 400000},
+        {"slug": "gpt-6.2-astra", "visibility": "list", "priority": 1},
+        *ACCOUNT_CATALOG,
+    ]
+    models = _models(catalog)
+    ids = [model.id for model in models]
+    assert ids[:3] == ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol"]
+    assert [model.id for model in models if model.is_default] == ["gpt-6.2-sol"]
+    # The live catalog's capacity is used for a model the review does not cover.
+    assert models[0].context_window_tokens == 400_000
+    assert not models[0].description.endswith("access checked when used")
+
+
 def test_added_models_bring_their_reviewed_efforts_without_ultra():
     by_id = {model.id: model for model in _models(ACCOUNT_CATALOG)}
     luna = by_id["gpt-6-luna"]

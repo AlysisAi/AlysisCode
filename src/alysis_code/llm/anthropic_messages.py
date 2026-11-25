@@ -420,6 +420,22 @@ def _json_arguments(args: Any) -> dict[str, Any]:
     return {"_raw_arguments": json.dumps(args, ensure_ascii=False)}
 
 
+# An attached file travels as a data URL. Messages takes inline images only as a
+# base64 source; its URL source is for web links and refuses data URLs.
+_DATA_URL_IMAGE_RE = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$")
+
+
+def _anthropic_image_source(url: str) -> dict[str, str]:
+    match = _DATA_URL_IMAGE_RE.match(url)
+    if match is None:
+        return {"type": "url", "url": url}
+    return {
+        "type": "base64",
+        "media_type": match.group(1).lower(),
+        "data": re.sub(r"\s+", "", match.group(2)),
+    }
+
+
 def _anthropic_blocks_from_content(raw: Any, *, role: str) -> list[dict[str, Any]]:
     if raw is None:
         return []
@@ -454,7 +470,7 @@ def _anthropic_blocks_from_content(raw: Any, *, role: str) -> list[dict[str, Any
             elif isinstance(image_url, str):
                 url = image_url.strip()
             if url:
-                blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+                blocks.append({"type": "image", "source": _anthropic_image_source(url)})
             continue
         if block_type in {
             "text",

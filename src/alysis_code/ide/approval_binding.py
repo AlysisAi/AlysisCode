@@ -182,7 +182,7 @@ def normalize_connector_approval_context(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
         or not set(value) <= fields
-        or value.get("connector") not in ("GitHub", "Google", "Custom", "Verified")
+        or value.get("connector") not in ("GitHub", "Google", "Custom", "Verified", "Hub")
     ):
         raise ValueError("Invalid connector approval context.")
     result = {"connector": value["connector"]}

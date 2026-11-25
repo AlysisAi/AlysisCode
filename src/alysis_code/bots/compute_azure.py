@@ -44,11 +44,46 @@ TOKEN_SCOPE = "https://dynamicsessions.io/.default"
 # one byte of output into six (`<` becomes `\u003c`): the complete receipt for the largest reply a
 # computer sends can be six times that reply.
 MAX_RESPONSE_BYTES = 6 * WORKER_REPLY_BYTES
+# How much of a refused request's body is read to find Azure's error code.
+ERROR_BODY_BYTES = 64 * 1024
+_ERROR_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}")
+
+
+def _failure(kind, message, **facts):
+    """``kind(message)`` carrying what is known about the receipt that did not arrive whole, for
+    diagnostics (cloud_desktop.receipt_facts): numbers, flags and identifiers only, never a
+    response's text, which can carry command output or request details."""
+    error = kind(message)
+    error.facts = {key: value for key, value in facts.items() if value is not None}
+    return error
+
+
+def _error_code(response, deadline):
+    """Azure's own code for a refused request: its ``x-ms-error-code`` header, or ``error.code``
+    in its JSON body. Only an identifier is kept, never the error's message."""
+    code = response.headers.get("x-ms-error-code")
+    if code is None:
+        body = bytearray()
+        try:
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > ERROR_BODY_BYTES or time.monotonic() >= deadline:
+                    return None
+            value = json.loads(body)
+        except (httpx.HTTPError, ValueError):
+            return None
+        detail = value.get("error") if isinstance(value, dict) else None
+        code = detail.get("code") if isinstance(detail, dict) else None
+    return code if isinstance(code, str) and _ERROR_CODE.fullmatch(code) else None
 
 
 class AzureComputers:
     name = "azure-sandboxes"
     supports_memory_sleep = True
+    # executeShellCommand returns at most 1 MiB of a command's standard output and stops the
+    # command there (seen live: exactly 1,048,576 bytes, exit status 137). A larger reply is
+    # read in parts (cloud_desktop, cloud_reply_parts).
+    command_output_bytes = 1024 * 1024
 
     def __init__(
         self,
@@ -89,6 +124,8 @@ class AzureComputers:
         error = ComputeUncertain if mutation else ComputeError
         headers = self._authorization()
         deadline = time.monotonic() + timeout
+        status = None
+        data = bytearray()
         try:
             with self._client.stream(
                 method,
@@ -98,17 +135,32 @@ class AzureComputers:
                 json=body,
                 timeout=timeout,
             ) as response:
-                if method == "GET" and response.status_code == 404:
+                status = response.status_code
+                if method == "GET" and status == 404:
                     return None
-                if not 200 <= response.status_code < 300:
-                    raise error(f"Azure returned HTTP {response.status_code}; no automatic retry.")
-                data = bytearray()
+                if not 200 <= status < 300:
+                    raise _failure(
+                        error,
+                        f"Azure returned HTTP {status}; no automatic retry.",
+                        http_status=status,
+                        azure_code=_error_code(response, deadline),
+                    )
                 for chunk in response.iter_bytes():
                     if time.monotonic() >= deadline:
-                        raise error("Azure receipt deadline expired; outcome not confirmed.")
+                        raise _failure(
+                            error,
+                            "Azure receipt deadline expired; outcome not confirmed.",
+                            http_status=status,
+                            received_bytes=len(data),
+                            deadline_expired=True,
+                        )
                     if len(data) + len(chunk) > MAX_RESPONSE_BYTES:
-                        raise (ComputeReplyTooLarge if mutation else error)(
-                            "Azure receipt exceeded its allowance; outcome not confirmed."
+                        raise _failure(
+                            ComputeReplyTooLarge if mutation else error,
+                            "Azure receipt exceeded its allowance; outcome not confirmed.",
+                            http_status=status,
+                            received_bytes=len(data) + len(chunk),
+                            over_allowance=True,
                         )
                     data.extend(chunk)
                 if not data:
@@ -117,9 +169,16 @@ class AzureComputers:
                 if not isinstance(value, (dict, list)):
                     raise ValueError
                 return value
-        except (httpx.HTTPError, ValueError):
-            raise error(
-                "Azure request failed or returned an invalid receipt; reconcile before retrying."
+        except (httpx.HTTPError, ValueError) as failure:
+            raise _failure(
+                error,
+                "Azure request failed or returned an invalid receipt; reconcile before retrying.",
+                http_status=status,
+                received_bytes=len(data),
+                # A class name (a timeout, a dropped connection, an unreadable receipt), never
+                # its text, which can quote the response.
+                transport_error=type(failure).__name__,
+                timed_out=isinstance(failure, httpx.TimeoutException) or None,
             ) from None
 
     def _authorization(self):
@@ -448,11 +507,18 @@ class AzureComputers:
         )
         # SDK 0.1.0b4 defaults a missing exitCode to 0. Require the actual field;
         # lost/partial replies cannot become success or trigger command replay.
-        if (
-            not isinstance(value, dict)
-            or type(value.get("exitCode")) is not int
-            or not isinstance(value.get("stdout"), str)
-            or not isinstance(value.get("stderr"), str)
-        ):
-            raise ComputeUncertain("Azure command has no complete execution receipt.")
+        fields = value if isinstance(value, dict) else {}
+        missing = [
+            name
+            for name, kind in (("exitCode", int), ("stdout", str), ("stderr", str))
+            if type(fields.get(name)) is not kind
+        ]
+        if missing:
+            exit_code = fields.get("exitCode")
+            raise _failure(
+                ComputeUncertain,
+                "Azure command has no complete execution receipt.",
+                missing_fields=",".join(missing),
+                exit_code=exit_code if type(exit_code) is int else None,
+            )
         return CommandReceipt(value["exitCode"], value["stdout"], value["stderr"])

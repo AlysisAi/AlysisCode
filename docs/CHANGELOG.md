@@ -1,5 +1,105 @@
 # Changelog
 
+## 0.18.2 - 2026-11-25
+
+- Model catalog brought up to date with every provider's current models (checked against each
+  provider's own model and pricing pages on 2026-11-24):
+  - OpenAI: GPT-6.2 Astra (new default) and GPT-6.2 Sol, 1.05M window, 128K output, efforts low
+    to max. Their tool turns use the Responses route on the OpenAI connection, like GPT-6.1 Sol.
+  - Anthropic: Claude Sonnet 5.5 (new default, same price as Sonnet 5) and Claude Fable 5.2.
+  - Google: Gemini 4 Hydrogen (new default, works on free keys), Neon, Carbon and Argon on the
+    native Gemini connection. Gemini 4 gets named thinking levels (never a token budget), no
+    temperature, and no explicit cache, which Gemini 4 rejects.
+  - Qwen: Qwen4 Max (new default) in Singapore and China. Kimi: K3.1 Pro and K3.1 Pro Highspeed
+    (new default on the platform and Kimi Code). Mistral: Large 4 is the default and GLM 5.3 Flash
+    is offered.
+  - OpenRouter, Together and Perplexity offer the new models they serve; Cerebras offers Qwen 3.8
+    27B.
+- Models providers no longer serve to new accounts leave the lists (Kimi K2 on the global
+  platform, MiniMax M2.x, MiMo V2.5, Cerebras Gemma 4, Mistral Medium 3.5 / Large 3 / GLM 5.2,
+  and retired DeepSeek V4 Flash and Kimi K2.7 Code routes). Saved configs that name them keep
+  their prompt guidance, and retired ids follow the provider's named replacement.
+- Setting up a Kimi, MiniMax, OpenRouter or Perplexity key no longer fails for a new account: the
+  key is checked with a model the provider still serves to it.
+- GPT-6.2 and GPT-6.1 Terra requests no longer send a temperature while reasoning, which the API
+  rejects; a request to turn reasoning off on a model that always reasons now says which efforts
+  it takes instead of failing at the provider.
+- Kimi web search now calls Moonshot's search endpoint. It used the chat `$web_search` tool,
+  which Moonshot retired on 2026-10-20. The endpoint needs no model and costs $0.002 per search
+  that finds something.
+- Signed in with a ChatGPT plan, the model list follows OpenAI's own order, so GPT-6.2 shows
+  first once the account lists it. GPT-6.1 Sol was pinned to the top, above newer models.
+- Images attached in a chat now reach Claude on the Anthropic message route (hosted Claude
+  models and your own Anthropic key). An attached image was sent as a link made of the file
+  itself, which Anthropic and the hosted gateway refuse; it is now sent as the image data.
+- Hosted models say how they take images (directly, read by GPT-6 Luna first, or not at all), so
+  the desktop app can decide from the Engine instead of its own list.
+- More apps (hub plugins): the apps a signed-in account connects from the large catalog Alysis's
+  server brokers load into each chat as `hub.<app>` plugins, and the engine makes every call with
+  the account's own key; no app sign-in is kept on this computer. Each action's approval comes
+  from the action's own hints: a declared read follows the chat's approval mode (or simply runs,
+  for an app Alysis tested), and anything that creates, changes or deletes asks the person on
+  every call. A malformed action is left out without dropping its app, and failing to load the
+  apps never stops a chat from starting. `alysis apps catalog | connections | connect |
+  disconnect --json` serve the desktop app's Plugins page.
+- Owls on this computer use the apps connected under More apps, each owl only those left on for
+  it, with the same approvals. A newly connected app reaches them within a minute.
+
+- A Cloud owl's running work no longer stops with "storage was briefly unavailable" when a
+  backup, recovery, health or release tool opens the shared database beside the running
+  controller. Opening it set the schema up again, which locks the tables even when nothing
+  changes, and work waiting behind those locks gave up. Those tools now only read that the
+  database is set up for their release; only the controller's own start sets it up.
+- Owl and browser tool descriptions say each rule once, in fewer words, so an owl's tools take
+  less of the model's window (an owl with every feature 4-7% less) and leave room for a connected
+  app's tools on a 128,000-token window; a test bounds their size so it can't grow back unnoticed.
+- Owl tools take another 3-5% less of the model's window. The routine tools (create, propose and
+  edit a routine, and propose a setup) say the time-zone rule once instead of in every timing
+  kind, no longer list the single weekday kept only for routines saved before multi-day weeks,
+  and drop the OpenAPI "discriminator" a model reads nothing from; their longest texts and four
+  computer tools' say the same rules in fewer words. The size bounds are lowered to match.
+- Several reads an owl asks for at once (web searches and pages, its files, memory, notes and
+  history) run side by side, so four pages take about as long as the slowest one; any other step
+  still runs alone and in order, and Stop ends the turn without waiting for reads in flight.
+- Reads an owl runs side by side are checked by the repeat guard exactly as if they ran one by
+  one: a read asked right after another is never taken for a back-to-back repeat (before, a
+  rare turn stopped one step early), and a read refused for failing the same way again waits
+  for the reads before it, so one of them working lets it run once more.
+- An owl's next turn in a long chat starts right away: a few seconds after a turn ends, while the
+  owl is idle, it writes the summary of its earlier chat and sorts the memories saved since, so the
+  person's next message no longer waits for them. A message sent before that is done is answered
+  as before, and nothing written from a chat that changed meanwhile is used.
+- Memories the person adds, edits, approves, undoes or deletes in the app are sorted the same
+  way a few seconds later, while the owl is idle, so its next turn no longer starts by sorting
+  them.
+- Owls search, filter, page and follow links on websites without waiting for a model review when
+  the page's own HTML proves nothing leaves the page: typing into a search field, filling and
+  sending a form that submits with GET to the page's own site, and following a plain link. Each
+  such step is recorded as settled by the page's structure. Everything else (POST forms, GET to
+  another site, rich-text editors, password, payment, personal, file or free-text fields, links
+  that run script, download, ping or open a new tab, inline or framework script on or around the
+  element) is reviewed as before, and "ask first" rules and reviewing every step yourself still
+  win. The form details the reviewer sees now follow HTML's own rules too: Enter in a field uses
+  the form's default button, and addresses are read against the page's base address.
+- A Cloud owl's computer stays when a step that only reads it (a page, the screen, the clipboard)
+  gets no complete answer, or when its browser refuses invalid input; only a change whose outcome
+  is unknown still retires it. Each answer that does not arrive whole is recorded for support as a
+  `computer_receipt_unconfirmed` task event: Azure's HTTP status and error code, the timeout or
+  allowance crossed, the guest command's exit status, how much output arrived and whether it was
+  cut, the time taken and, when the computer gave no answer, its memory and whether its
+  dispatcher still runs. Never the request or its output.
+- A Cloud owl reads long pages in its own browser. Azure returns at most 1 MiB of a command's
+  output and stops the command beyond it, so a heavy page's snapshot (a long article, in any
+  language) never arrived and the read was lost. A reply larger than the provider declares it
+  returns is now kept privately on the computer and read in parts, each part asked for again if
+  it is lost, and the whole is checked against its size and SHA-256 before use. This works with
+  every computer image already published; the request itself still runs once and is never
+  replayed.
+- A Cloud owl's computer no longer shuts its browser and desktop when a request's answer comes
+  after the host stopped waiting for it, or when a request never arrives whole: the computer's
+  dispatcher drops that answer (the host already treats the outcome as unconfirmed) and keeps
+  serving. A replayed request still ends it. Takes effect with the next Cloud computer image.
+
 ## 0.18.1 - 2026-11-23
 
 - GLM-5.4 is a reviewed model on the Z.AI GLM Coding Plan connection and the default for new

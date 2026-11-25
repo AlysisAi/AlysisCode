@@ -1323,6 +1323,97 @@ def project_avatar(
     _console().print("\n".join(item["pixels"]), markup=False, highlight=False)
 
 
+@app.command("apps")
+def apps(
+    action: str = typer.Argument(
+        "catalog", help="catalog, connections, connect <app> or disconnect <connection>."
+    ),
+    target: str | None = typer.Argument(
+        None, help="The app to connect, or the connection to remove."
+    ),
+    query: str = typer.Option("", "--query", help="Find apps by name."),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
+) -> None:
+    """More apps for Work, Code and owls: list them, connect one, or remove a connection.
+
+    Built-in plugins aren't listed: they're always free. Each plan includes a number of app
+    calls a month. Connecting opens the app's own sign-in page in your browser; an app that
+    needs no sign-in is added straight away.
+    """
+    from ... import hub_apps
+
+    def fail(reason: str, message: str) -> None:
+        if json_output is True:
+            typer.echo(
+                json.dumps({"ok": False, "error": reason, "detail": message}, sort_keys=True)
+            )
+        else:
+            _console().print(f"[red]{message}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+
+    target = (target or "").strip()
+    if (action, bool(target)) not in {
+        ("catalog", False),
+        ("connections", False),
+        ("connect", True),
+        ("disconnect", True),
+    }:
+        fail(
+            "invalid_request",
+            "Use: alysis apps [catalog | connections | connect <app> | disconnect <connection>]",
+        )
+        return
+    try:
+        client = hub_apps.HubAppsClient.from_saved_account()
+        if action == "catalog":
+            result = client.catalog(query.strip())
+        elif action == "connections":
+            result = client.connections()
+        elif action == "connect":
+            result = client.connect(target)
+        else:
+            result = {"removed": client.disconnect(target)}
+    except hub_apps.HubAppsError as exc:
+        fail(exc.reason, str(exc))
+        return
+    result = {key: value for key, value in result.items() if key != "schema_version"}
+    if json_output is True:
+        typer.echo(json.dumps({"ok": True, **result}, sort_keys=True))
+        return
+    console = _console()
+    allowance = result.get("allowance")
+    if action == "catalog":
+        for app_entry in result.get("apps") or []:
+            mark = " (tested)" if app_entry.get("tested") else ""
+            if app_entry.get("sign_in") is False:
+                mark += " (no sign-in)"
+            console.print(
+                f"{app_entry.get('name')}{mark}  {app_entry.get('catalog_id')}", markup=False
+            )
+    elif action == "connections":
+        for connection in result.get("connections") or []:
+            console.print(
+                f"{connection.get('app')}  {connection.get('status')}  {connection.get('id')}",
+                markup=False,
+            )
+    elif action == "connect" and result.get("added") is True:
+        # An app that needs no sign-in is ready as soon as it's added.
+        console.print("Added. It's ready to use.")
+    elif action == "connect":
+        console.print(f"Sign in to the app here: {result.get('url')}", markup=False)
+        from ...host_browser import open_url
+
+        open_url(str(result.get("url")))
+    else:
+        console.print("Removed." if result.get("removed") else "That connection wasn't found.")
+    if isinstance(allowance, dict):
+        console.print(
+            f"App calls this month: {allowance.get('calls_used')} of"
+            f" {allowance.get('calls_included')}",
+            markup=False,
+        )
+
+
 @app.command("limit-reset")
 def limit_reset(
     use: str | None = typer.Option(

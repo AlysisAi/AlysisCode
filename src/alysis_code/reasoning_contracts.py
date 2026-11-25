@@ -213,16 +213,37 @@ _TOGETHER_GLM_53_REASONING = _C(
 # https://docs.mistral.ai/studio/conversations/reasoning (2026-10-30):
 # Large 4 / 4-0 accepts low, medium and high; High is the recommended setting.
 # Older Large models have no effort control and retain their separate rule.
+# Mistral changelog 2026-10-29: reasoning_effort accepts low|medium|high,
+# 'none' is a 400, the model always reasons and the default is high.
 _MISTRAL_LARGE_4_REASONING = _C(
     mode=ALWAYS_ON,
     wire=WIRE_REASONING_EFFORT,
     values=("low", "medium", "high"),
+    default="high",
     off=OFF_IMPOSSIBLE,
     emits_flat_reasoning_effort=True,
-    notes="Large 4 supports low/medium/high; High is recommended. Auto uses the provider default.",
+    notes="Large 4 supports low/medium/high and always reasons; 'none' is rejected.",
 )
 _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     "openai": (
+        # GPT-6.2 (2026-11-17). Both list low|medium|high|xhigh|max on the
+        # models page and the API rejects effort none, like GPT-6.1 Sol.
+        # https://developers.openai.com/api/docs/models/gpt-6.2-sol
+        # https://developers.openai.com/api/docs/models/gpt-6.2-astra
+        *tuple(
+            (
+                model,
+                _C(
+                    mode=ALWAYS_ON,
+                    wire=WIRE_REASONING_EFFORT,
+                    values=("low", "medium", "high", "xhigh", "max"),
+                    default="medium",
+                    off=OFF_IMPOSSIBLE,
+                    notes="GPT-6.2 always reasons; effort none is rejected",
+                ),
+            )
+            for model in ("gpt-6.2-astra", "gpt-6.2-sol")
+        ),
         (
             "gpt-6.1-terra",
             _C(
@@ -335,6 +356,21 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
                 notes="adaptive by default; disabled only at high or below; forced tools skip thinking",
             ),
         ),
+        # Source: https://platform.claude.com/docs/en/models/fable-5-2/overview
+        # (2026-11-09) and the effort page: all five levels, default high,
+        # thinking always on, forced tool_choice (any/tool) is a 400.
+        (
+            "claude-fable-5-2",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_THINKING_ADAPTIVE,
+                values=("low", "medium", "high", "xhigh", "max"),
+                default="high",
+                off=OFF_IMPOSSIBLE,
+                accepts_tool_choice_while_reasoning=False,
+                notes="always adaptive; forced tool_choice (any/tool) returns an error",
+            ),
+        ),
         # Source: https://platform.claude.com/docs/en/models/fable-5-1/overview
         (
             "claude-fable-5-1",
@@ -442,16 +478,39 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ),
     ),
     "gemini": (
-        (
-            "gemini-4-carbon",
-            _C(
-                mode=ALWAYS_ON,
-                wire=WIRE_THINKING_LEVEL,
-                values=("low", "medium", "high"),
-                default="high",
-                off=OFF_IMPOSSIBLE,
-                notes="Carbon requires Google thought signatures on tool continuations",
-            ),
+        # Gemini 4 (2026-10/11). Model pages: aistudio.google.com/docs/models/
+        # gemini-4-{neon,hydrogen,carbon,argon}. Neon and Hydrogen take
+        # low|medium|high|xhigh with high as the default; Carbon and Argon cap
+        # at high with medium as the default (Gemini 4 Neon release notes).
+        # 'minimal' and a thinkingBudget sent with thinkingLevel are rejected,
+        # and thinking cannot be turned off.
+        *tuple(
+            (
+                model,
+                _C(
+                    mode=ALWAYS_ON,
+                    wire=WIRE_THINKING_LEVEL,
+                    values=("low", "medium", "high", "xhigh"),
+                    default="high",
+                    off=OFF_IMPOSSIBLE,
+                    notes="Gemini 4 requires Google thought signatures on tool continuations",
+                ),
+            )
+            for model in ("gemini-4-neon", "gemini-4-hydrogen")
+        ),
+        *tuple(
+            (
+                model,
+                _C(
+                    mode=ALWAYS_ON,
+                    wire=WIRE_THINKING_LEVEL,
+                    values=("low", "medium", "high"),
+                    default="medium",
+                    off=OFF_IMPOSSIBLE,
+                    notes="Gemini 4 requires Google thought signatures on tool continuations",
+                ),
+            )
+            for model in ("gemini-4-carbon", "gemini-4-argon")
         ),
         (
             "gemini-3.8-flash",
@@ -752,6 +811,22 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ),
     ),
     "qwen": (
+        # https://www.alibabacloud.com/help/en/model-studio/qwen4-max (2026-11-16):
+        # effort low|high|xhigh, default high; thinking is on by default and
+        # enable_thinking=false selects the documented non-thinking mode.
+        (
+            "qwen4-max",
+            _C(
+                mode=OPTIONAL,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "high", "xhigh"),
+                default="high",
+                off=OFF_EXPLICIT,
+                replay_reasoning_content=True,
+                notes="effort is flat; enable_thinking is the separate on/off toggle; "
+                "reasoning_effort and thinking_budget are mutually exclusive",
+            ),
+        ),
         (
             "qwen3.8-max",
             _C(
@@ -931,6 +1006,20 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
     ),
     "kimi-code": (
         # Source: https://www.kimi.com/code/docs/en/kimi-code/models.html
+        # K3.1 Pro (k3.1-pro, k3.1-pro-highspeed) only runs with thinking:
+        # effort low|high|max, default max; a thinking-off request is rejected.
+        (
+            "k3.1-pro",
+            _C(
+                mode=ALWAYS_ON,
+                wire=WIRE_REASONING_EFFORT,
+                values=("low", "high", "max"),
+                default="max",
+                off=OFF_IMPOSSIBLE,
+                emits_flat_reasoning_effort=True,
+                notes="thinking only; a request that turns thinking off is rejected",
+            ),
+        ),
         (
             "k3",
             _C(
@@ -1104,6 +1193,19 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ("mistral-large-", _C(mode=NONE, wire=WIRE_NONE, off=OFF_OMIT)),
         ("codestral-", _C(mode=NONE, wire=WIRE_NONE, off=OFF_OMIT)),
         ("ministral-", _C(mode=NONE, wire=WIRE_NONE, off=OFF_OMIT)),
+        # GLM 5.3 Flash on Mistral (2026-10-22): its reasoning controls are not
+        # documented on Mistral, so nothing is sent and the route's default
+        # applies. Must precede the GLM 5.3 prefix rule.
+        (
+            "zai-glm-5-3-flash",
+            _C(
+                mode=UNKNOWN,
+                wire=WIRE_REASONING_EFFORT,
+                off=OFF_UNKNOWN,
+                notes="third-party route; reasoning controls undocumented on Mistral — "
+                "send nothing until probed",
+            ),
+        ),
         # https://docs.mistral.ai/studio/conversations/reasoning
         (
             "zai-glm-5-3",
@@ -1316,6 +1418,12 @@ _CONTRACTS: dict[str, tuple[tuple[str, ReasoningContract], ...]] = {
         ),
         (
             "deepseek-ai/DeepSeek-V4-Flash",
+            UNKNOWN_CONTRACT,
+        ),
+        # V4.1 Flash on Together: reasoning controls are not published for this
+        # route, so nothing is sent (same treatment as V4 Flash above).
+        (
+            "deepseek-ai/DeepSeek-V4.1-Flash",
             UNKNOWN_CONTRACT,
         ),
         (

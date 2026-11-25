@@ -33,7 +33,9 @@ class ComputeReplyTooLarge(ComputeUncertain):
 
 # The largest reply a computer's worker prints for one request: one browser page snapshot, which
 # an owl's browser bounds at 2 MiB of compact UTF-8 JSON (browser_linux.OWL_PAGE_SNAPSHOT_BYTES),
-# inside the worker's receipt envelope. A transport reads at least this much of a receipt.
+# inside the worker's receipt envelope. A transport reads at least this much of a receipt, unless
+# its provider declares that it returns less of a command's output (command_output_bytes): then a
+# larger reply is kept on the computer and read in parts (cloud_reply_parts).
 WORKER_REPLY_BYTES = 2 * 1024 * 1024 + 64 * 1024
 
 
@@ -212,6 +214,10 @@ def validate_command(argv: list[str], timeout: int):
 
 
 class ComputerProvider(Protocol):
+    # How much of a command's standard output the provider returns, when that is less than a
+    # whole reply can be (None: all of it). A provider that cuts output there declares it.
+    command_output_bytes: int | None
+
     def create(self, identity: ComputerIdentity, spec: ComputerSpec) -> ComputerRef: ...
     def status(self, ref: ComputerRef) -> ComputerStatus: ...
     def start(self, ref: ComputerRef) -> ComputerStatus: ...

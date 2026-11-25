@@ -2751,3 +2751,40 @@ def test_anthropic_extra_headers_override_defaults_case_insensitively() -> None:
     assert headers["anthropic-version"] == "2099-01-01"
     assert headers["content-type"] == "application/custom+json"
     assert len({name.casefold() for name in headers}) == len(headers)
+
+
+def test_attached_images_are_sent_as_base64_and_web_links_as_urls() -> None:
+    # Messages refuses a data URL in a URL source; an attached file must be base64.
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    _system, messages = _anthropic_messages_from_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Ποιο είναι το χρώμα της εικόνας;"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/chart.png", "detail": "high"},
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Ποιο είναι το χρώμα της εικόνας;"},
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": png},
+                },
+                {
+                    "type": "image",
+                    "source": {"type": "url", "url": "https://example.com/chart.png"},
+                },
+            ],
+        }
+    ]

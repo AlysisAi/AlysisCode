@@ -12,7 +12,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 | `experimental_with_gate` | 0 |
 | `implemented_in_bridge_only` | 46 |
 | `implemented_in_extension` | 309 |
-| `intentionally_cli_only` | 46 |
+| `intentionally_cli_only` | 47 |
 | `not_applicable_to_ide` | 27 |
 | `planned_for_protocol` | 0 |
 
@@ -20,7 +20,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 
 - Backend action metadata entries: 104
 - CLI chat slash commands: 34
-- CLI commands and groups: 132
+- CLI commands and groups: 133
 - IDE bridge methods: 180
 - VS Code package/chat commands: 45
 - VS Code slash commands and aliases: 38
@@ -347,8 +347,8 @@ _No entries._
 ### cli.commands.account_profile
 
 - Surface: `cli_command`
-- Features: `account-profile`, `limit-reset`, `project-avatar`
-- Rationale: Change the name and photo of the signed-in Alysis Code account, list or use the usage-limit resets the account was given, and design the owl of a desktop app project. The saved device key authenticates each, and the desktop app runs them with --json. VS Code has no account sign-in (login and logout stay blocked), no account profile or billing page and no project avatars.
+- Features: `account-profile`, `apps`, `limit-reset`, `project-avatar`
+- Rationale: Change the name and photo of the signed-in Alysis Code account, list, connect and remove apps of the catalog Alysis's server brokers, list or use the usage-limit resets the account was given, and design the owl of a desktop app project. The saved device key authenticates each, and the desktop app runs them with --json. VS Code has no account sign-in (login and logout stay blocked), no account profile or billing page and no project avatars.
 
 ### cli.commands.subagent_models
 

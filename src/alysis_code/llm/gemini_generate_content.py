@@ -2931,8 +2931,14 @@ def _thinking_budget(reasoning_effort: str) -> int:
     raise LLMError(f"Gemini GenerateContent reasoning_effort is not supported: {effort}")
 
 
-def _is_gemini_3_model(model: str | None) -> bool:
-    return "gemini-3" in str(model or "").strip().lower()
+def _uses_thinking_levels(model: str | None) -> bool:
+    """Whether the model's declared contract takes ``thinkingLevel``.
+
+    Gemini 3 and later generations replaced ``thinkingBudget`` with named levels
+    (a budget sent alongside a level is a 400 on Gemini 4). Decide from the
+    catalog's reasoning contract so every model that declares levels gets them.
+    """
+    return reasoning_contract_for("gemini", model).wire == WIRE_THINKING_LEVEL
 
 
 def _thinking_level_from_reasoning_effort(
@@ -2961,7 +2967,10 @@ def _gemini_thinking_config(
         raise LLMError("Gemini GenerateContent cannot set both thinking_level and thinking_budget")
     contract = reasoning_contract_for("gemini", model)
     if thinking_level is not None and contract.wire != WIRE_THINKING_LEVEL:
-        raise LLMError("Gemini GenerateContent thinking_level requires a Gemini 3 model")
+        raise LLMError(
+            "Gemini GenerateContent thinking_level requires a model with thinking levels "
+            "(Gemini 3 or later)"
+        )
     if thinking_level is not None:
         normalized_level = str(thinking_level or "").strip().lower()
         if not contract.allows_value(normalized_level):
@@ -2971,7 +2980,7 @@ def _gemini_thinking_config(
     if thinking_budget is not None:
         return {"thinkingBudget": int(thinking_budget)}
     if reasoning_effort:
-        if _is_gemini_3_model(model):
+        if _uses_thinking_levels(model):
             level = _thinking_level_from_reasoning_effort(
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -2979,7 +2988,7 @@ def _gemini_thinking_config(
             return {"thinkingLevel": level} if level else {}
         return {"thinkingBudget": _thinking_budget(reasoning_effort)}
     if enable_thinking is False:
-        if _is_gemini_3_model(model):
+        if _uses_thinking_levels(model):
             return {"thinkingLevel": contract.default} if contract.default else {}
         return {"thinkingBudget": 0}
     return {}
