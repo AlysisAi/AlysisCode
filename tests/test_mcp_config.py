@@ -1425,11 +1425,13 @@ def test_mcp_env_expansion_and_redaction_are_deterministic(
     assert "http-secret" not in repr(http_server)
 
 
-def test_mcp_env_expansion_missing_variable_raises_clear_error_without_secret_value(
+def test_mcp_missing_variable_fails_only_that_server_with_a_clear_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg_dir = tmp_path / "cfg"
     monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(cfg_dir))
+    workspace = tmp_path / "έργο"
+    workspace.mkdir()
     config_path = user_mcp_config_path()
     _write_json(
         config_path,
@@ -1441,15 +1443,88 @@ def test_mcp_env_expansion_missing_variable_raises_clear_error_without_secret_va
                     "headers": {
                         "Authorization": "prefix-${HTTP_TOKEN}-suffix",
                     },
-                }
+                },
+                "stdio-ok": _base_stdio_server(env={"TOKEN": "${PRESENT_TOKEN}"}),
+                "stdio-missing": _base_stdio_server(env={"TOKEN": "${STDIO_TOKEN}"}),
             }
         },
     )
 
-    with pytest.raises(ConfigError) as excinfo:
-        load_resolved_mcp_config(workspace_root=tmp_path, env={})
+    # One server's missing variable no longer refuses the whole file: every session would
+    # fail to start. That server carries the reason; the others resolve as before.
+    resolved = load_resolved_mcp_config(
+        workspace_root=workspace, env={"PRESENT_TOKEN": "present-secret"}
+    )
 
-    message = str(excinfo.value)
-    assert os.fspath(config_path) in message
-    assert "${HTTP_TOKEN}" in message
-    assert "prefix-" not in message
+    by_id = {server.id: server for server in resolved.servers}
+    assert by_id["stdio-ok"].settings_error is None
+    assert by_id["stdio-ok"].env == {"TOKEN": "present-secret"}
+    for server_id, variable in (("http-one", "${HTTP_TOKEN}"), ("stdio-missing", "${STDIO_TOKEN}")):
+        server = by_id[server_id]
+        message = server.settings_error or ""
+        assert os.fspath(config_path) in message
+        assert variable in message
+        assert "prefix-" not in message
+        assert server.env == {}
+        assert server.headers == {}
+        assert "present-secret" not in repr(server)
+    assert {server.id for server in resolved.active_servers_for(RuntimeKind.INTERACTIVE_CHAT)} == {
+        "http-one",
+        "stdio-ok",
+        "stdio-missing",
+    }
+
+
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+def test_mcp_turned_off_server_does_not_need_its_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str
+) -> None:
+    cfg_dir = tmp_path / "cfg"
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(cfg_dir))
+    secret_field = "env" if transport == "stdio" else "headers"
+    builder = _base_stdio_server if transport == "stdio" else _base_http_server
+    _write_json(
+        user_mcp_config_path(),
+        {
+            "servers": {
+                # A server whose secret is only provided while it is in use, then turned off.
+                "helper": builder(
+                    enabled=False,
+                    **{secret_field: {"ADDRESS": "127.0.0.1:1", "TOKEN": "${UNSET_TOKEN}"}},
+                ),
+                "other": _base_stdio_server(),
+            }
+        },
+    )
+
+    resolved = load_resolved_mcp_config(workspace_root=tmp_path, env={})
+
+    by_id = {server.id: server for server in resolved.servers}
+    helper = by_id["helper"]
+    assert helper.enabled is False
+    assert helper.settings_error is None
+    assert [server.id for server in resolved.active_servers_for(RuntimeKind.INTERACTIVE_CHAT)] == [
+        "other"
+    ]
+
+
+def test_mcp_project_turning_a_server_off_skips_its_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_dir = tmp_path / "cfg"
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(cfg_dir))
+    workspace = tmp_path / "proyecto"
+    _write_json(
+        user_mcp_config_path(),
+        {"servers": {"alpha": _base_stdio_server(env={"TOKEN": "${UNSET_TOKEN}"})}},
+    )
+    _write_json(
+        workspace / ".alysis" / "mcp.json",
+        {"servers": {"alpha": {"enabled": False}}},
+    )
+
+    resolved = load_resolved_mcp_config(workspace_root=workspace, env={})
+
+    (alpha,) = resolved.servers
+    assert alpha.enabled is False
+    assert alpha.settings_error is None
