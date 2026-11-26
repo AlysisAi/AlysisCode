@@ -17,7 +17,7 @@ wheels = [
 
 [[package]]
 name = "alysis-code"
-version = "0.18.2"
+version = "0.18.3"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },

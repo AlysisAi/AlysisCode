@@ -610,6 +610,9 @@ class ResolvedMcpServer:
     url: str | None = field(default=None, repr=False)
     headers: dict[str, str] = field(default_factory=dict, repr=False)
     oauth: ResolvedMcpHttpOAuthConfig | None = field(default=None, repr=False)
+    # Why this server can't start with its saved settings (a ``${VAR}`` it references is not
+    # set). It is never started; the session reports it as failed and runs without it.
+    settings_error: str | None = None
 
     def enabled_for(self, runtime_kind: RuntimeKind) -> bool:
         if not self.enabled:

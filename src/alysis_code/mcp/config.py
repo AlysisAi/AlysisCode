@@ -182,22 +182,34 @@ def _load_project_mcp_config(path: Path) -> ProjectMcpConfigFile:
 def _expand_user_secret_map(
     values: Mapping[str, str] | None,
     *,
+    resolve: bool,
     env: Mapping[str, str],
     source_path: Path,
     field_name: str,
     server_id: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], str | None]:
+    """A server's ``env`` or ``headers`` with ``${VAR}`` references filled in, and why not.
+
+    A server that is turned off is never started, so its references stay as written. When a
+    variable is missing, that server gets no values and the reason; the other servers, and the
+    session, are not affected.
+    """
     if not values:
-        return {}
+        return {}, None
+    if not resolve:
+        return dict(values), None
     expanded: dict[str, str] = {}
     for key, raw_value in values.items():
-        expanded[key] = expand_env_placeholders(
-            raw_value,
-            env=env,
-            source_path=source_path,
-            field_path=f"servers.{server_id}.{field_name}.{key}",
-        )
-    return expanded
+        try:
+            expanded[key] = expand_env_placeholders(
+                raw_value,
+                env=env,
+                source_path=source_path,
+                field_path=f"servers.{server_id}.{field_name}.{key}",
+            )
+        except ConfigError as exc:
+            return {}, str(exc)
+    return expanded, None
 
 
 def _normalize_name_key(value: str) -> str:
@@ -476,6 +488,14 @@ def _merge_server(
     )
 
     if isinstance(user_server, UserMcpStdioServer):
+        env_values, settings_error = _expand_user_secret_map(
+            user_server.env,
+            resolve=enabled,
+            env=env,
+            source_path=user_path,
+            field_name="env",
+            server_id=server_id,
+        )
         return ResolvedMcpServer(
             id=server_id,
             transport="stdio",
@@ -492,13 +512,8 @@ def _merge_server(
             prompts_mode=prompts_mode,
             command=user_server.command,
             args=tuple(user_server.args),
-            env=_expand_user_secret_map(
-                user_server.env,
-                env=env,
-                source_path=user_path,
-                field_name="env",
-                server_id=server_id,
-            ),
+            env=env_values,
+            settings_error=settings_error,
         )
     oauth = None
     if user_server.oauth is not None:
@@ -509,6 +524,14 @@ def _merge_server(
             scopes=tuple(user_server.oauth.scopes or []),
             authorization_server_url=user_server.oauth.authorization_server_url,
         )
+    headers, settings_error = _expand_user_secret_map(
+        user_server.headers,
+        resolve=enabled,
+        env=env,
+        source_path=user_path,
+        field_name="headers",
+        server_id=server_id,
+    )
     return ResolvedMcpServer(
         id=server_id,
         transport="http",
@@ -524,14 +547,9 @@ def _merge_server(
         resources_mode=resources_mode,
         prompts_mode=prompts_mode,
         url=user_server.url,
-        headers=_expand_user_secret_map(
-            user_server.headers,
-            env=env,
-            source_path=user_path,
-            field_name="headers",
-            server_id=server_id,
-        ),
+        headers=headers,
         oauth=oauth,
+        settings_error=settings_error,
     )
 
 

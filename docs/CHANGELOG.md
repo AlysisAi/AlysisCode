@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.3 - 2026-11-26
+
+- One MCP server's settings can no longer stop every chat. A `${VAR}` that a server's `env` or
+  `headers` references but that isn't set used to refuse the whole `mcp.json`, so no session
+  could start, whichever model was chosen. Now a server that is turned off isn't asked for its
+  variables at all, and a server that is on but missing one is left out of the session as a
+  failed server with the reason, while the chat and the other servers run.
+
 ## 0.18.2 - 2026-11-25
 
 - Model catalog brought up to date with every provider's current models (checked against each
