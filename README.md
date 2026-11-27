@@ -47,7 +47,7 @@
 
 **Any model, no lock-in.** Use Claude, GPT, Gemini, DeepSeek or an open model. Sign in for Alysis credits, bring your own API keys, or run local models with Ollama or LM Studio. Switch any time.
 
-**It asks before it acts.** Shell commands run in a sandbox by default. Owls ask for your approval before anything that reaches other people, pays, publishes or deletes. [How permissions work](https://alysiscode.com/docs/safety/approval-prompts) · [Shell sandbox](https://github.com/AlysisAi/AlysisCode/blob/main/docs/shell_sandbox.md)
+**It asks before it acts.** Shell commands run in a sandbox by default. Verification commands also default to strict sandboxing: strict mode refuses execution when no backend is available. Owls ask for your approval before anything that reaches other people, pays, publishes or deletes. [How permissions work](https://alysiscode.com/docs/safety/approval-prompts) · [Shell sandbox](https://github.com/AlysisAi/AlysisCode/blob/main/docs/shell_sandbox.md)
 
 **It keeps working when you don't.** Owls run routines on a schedule. Cloud owls keep going after you close the laptop.
 
