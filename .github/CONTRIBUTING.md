@@ -1,4 +1,4 @@
-# Contributing to Alysis Code
+# Contributing to Alysis
 
 Thank you for considering a contribution. Bug fixes, documentation improvements, tests, and
 focused feature proposals are welcome.
@@ -12,7 +12,7 @@ focused feature proposals are welcome.
 
 ## Development setup
 
-Alysis Code requires Python 3.11 or newer and uses [uv](https://docs.astral.sh/uv/) for its locked
+Alysis requires Python 3.11 or newer and uses [uv](https://docs.astral.sh/uv/) for its locked
 development environment.
 
 ```bash

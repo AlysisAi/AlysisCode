@@ -115,7 +115,7 @@ invocation; `config set default_persona architect` makes it permanent.
 
 With the feature off, `/persona` explains itself, `/permissions` accepts execution modes, the
 `switch_mode` tool is not registered, and every prompt is byte-identical to pre-persona
-Alysis Code.
+Alysis.
 
 ## Observability
 

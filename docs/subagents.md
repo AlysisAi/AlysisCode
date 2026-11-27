@@ -228,7 +228,7 @@ alysis config set subagent_orchestration.parallel_nonwriting_shared false
 ### Isolated workspaces
 
 Pass `workspace_view=isolated` to `subagent_run` when a child should work away from the parent's
-working tree. Alysis Code snapshots the parent's current files into an internal Git commit and
+working tree. Alysis snapshots the parent's current files into an internal Git commit and
 creates a detached worktree under the session artifact directory: `subagent_worktrees/<run_id>`.
 The snapshot includes tracked edits and deletions plus nonignored untracked files, without modifying
 the parent's HEAD, index, or files; staging intent is not copied. Files requiring configured external
@@ -460,7 +460,7 @@ alysis config set image_generation.base_url https://api.openai.com/v1
 
 Instead of `ALYSIS_IMAGE_API_KEY`, set
 `image_generation.api_key_env` to the name of a provider-specific environment variable. If neither
-is configured, Alysis Code reuses the active session credential. Generation accepts PNG, JPEG, and
+is configured, Alysis reuses the active session credential. Generation accepts PNG, JPEG, and
 WebP output paths, creates one to four new files, validates decoded image dimensions and format,
 and never overwrites an existing file.
 

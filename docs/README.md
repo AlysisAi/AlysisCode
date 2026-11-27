@@ -1,4 +1,4 @@
-# Alysis Code documentation
+# Alysis documentation
 
 The root [README](../README.md) covers installation and a first run. The guides below describe
 configuration, operation, extension points, and security in more detail.
@@ -10,8 +10,6 @@ configuration, operation, extension points, and security in more detail.
 - [AI subscription connections](account-runtimes.md): sign in through a supported provider.
 - [Hosted prompt caching](hosted-prompt-caching.md): automatic caching, migration, and controls.
 - [Reference](reference.md): commands, modes, configuration, sessions, and troubleshooting.
-- [Migration from Sylliptor](migration-alysis-code.md): update commands and configuration after
-  the project rename.
 
 ## Core guides
 
@@ -48,6 +46,7 @@ configuration, operation, extension points, and security in more detail.
 - [Security policy](../.github/SECURITY.md): private vulnerability reporting.
 - [Code of Conduct](../.github/CODE_OF_CONDUCT.md): community participation expectations.
 - [Changelog](CHANGELOG.md): user-facing release history.
+- [Migration from Sylliptor](migration-alysis-code.md): older command and configuration names.
 
 ## Desktop and terminal workflows
 

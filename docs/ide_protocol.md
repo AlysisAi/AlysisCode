@@ -1,6 +1,6 @@
 # IDE Protocol v1
 
-Alysis Code exposes a versioned IDE protocol for editor integrations. The first transport is newline
+Alysis exposes a versioned IDE protocol for editor integrations. The first transport is newline
 delimited JSON over stdio:
 
 ```bash
@@ -45,7 +45,7 @@ alysis ide-bridge health
 The health command prints a single JSON object with:
 
 - `protocol_version`
-- installed Alysis Code version
+- installed Alysis version
 - supported methods
 - supported surface event types
 - supported modes
@@ -173,7 +173,7 @@ Error response:
 
 The bridge never prints API keys, bearer tokens, or authorization header values in responses or
 events. It rejects inline secret fields such as `api_key`, `token`, `secret`, `password`, and
-`credential` on every request; credentials must come from existing Alysis Code configuration or
+`credential` on every request; credentials must come from existing Alysis configuration or
 environment sources. Secret-looking values in neutral config params and URL userinfo are also
 rejected. Provider extra header values are not accepted through `profile.add`; the bridge returns a
 structured `requires_secret_storage` action instead.
@@ -306,7 +306,7 @@ session's shell and verification configuration; runtime environment policy takes
 The response includes `sandbox_mode` with the resolved shell mode. Existing sessions keep their
 policy until a new session is created.
 
-Creates an Alysis Code session bound to a workspace. Client-provided `session_id` values are optional;
+Creates an Alysis session bound to a workspace. Client-provided `session_id` values are optional;
 the bridge rejects duplicate active ids instead of replacing an existing session. Client-provided ids
 must be 1-128 characters and use only letters, digits, `_`, `-`, `.`, or `:`.
 
@@ -423,7 +423,7 @@ If setup is pending or failed, that action is not executed (`checkpoint_unavaila
 available. The next request reuses a pending worker or retries failed storage. A background worker
 never attaches a baseline after tool execution has begun. The extension shows a recovery card.
 
-Successful real-session turns capture a bounded change checkpoint in Alysis Code-owned external
+Successful real-session turns capture a bounded change checkpoint in Alysis-owned external
 storage; the workspace's own Git repository and refs are never modified. Sensitive files and files
 outside the configured size limits are excluded. `checkpoint.list` returns checkpoint metadata and
 changed paths, while `checkpoint.diff` returns a bounded patch for one checkpoint.
@@ -440,7 +440,7 @@ These methods expose a durable, session-scoped task ledger for native IDE progre
 a stable id, bounded title, and one of `pending`, `in_progress`, `completed`, or `blocked` statuses.
 At most one task may be `in_progress`. Updates require Workspace Trust and an
 `expected_revision`; a stale revision returns `updated: false`, `conflict: true`, and the current
-revision without overwriting newer state. State is stored in Alysis Code-owned external storage rather
+revision without overwriting newer state. State is stored in Alysis-owned external storage rather
 than the project tree and survives bridge restarts.
 
 ### session.questions.create, session.questions.get, session.questions.list, session.questions.answer, session.questions.cancel
@@ -1065,7 +1065,7 @@ Conventions:
 `max_bytes`. Results include `document_count`, `truncated_by_chars`, `truncated_by_bytes`,
 `secret_values_included: false`, and `redacted: true`.
 
-Alysis Code extension package management:
+Alysis extension package management:
 
 - `ext.search`
 - `ext.list`
@@ -1305,7 +1305,7 @@ approvals.
 
 ### Desktop host responses: computer.respond, task_budget.respond, browser_start.respond
 
-These methods answer host requests that the bridge emits only to the Alysis Code desktop
+These methods answer host requests that the bridge emits only to the Alysis desktop
 app, and only for sessions created with the matching negotiated `host_capabilities`
 (`sensitive-host-context-v1` / `computer-use-host-v1`, task budgets, and the browser start
 handoff; see the `computer_use_host`, `task_budget` and `browser_start_v1` capability
@@ -1711,7 +1711,7 @@ never supply a profile directory, artifact path, DevTools port, or WebSocket end
 `browser.start` requires `workspace_trusted: true` and starts a supported Chrome, Edge, or Chromium
 binary as an owned process group. The bridge uses a minimal child environment, disables inherited
 proxy configuration, creates a private per-browser profile and artifact directory below the
-Alysis Code user-data root (never below a declared workspace), and accepts only a literal-loopback
+Alysis user-data root (never below a declared workspace), and accepts only a literal-loopback
 DevTools WebSocket endpoint. Every browser session also owns a validating loopback HTTP/CONNECT
 proxy. Chrome is launched without direct network fallback or implicit loopback proxy bypass, with
 direct host resolution disabled and non-proxied UDP disabled. The proxy itself resolves each

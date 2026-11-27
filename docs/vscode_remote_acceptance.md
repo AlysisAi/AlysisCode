@@ -45,7 +45,7 @@ runner, and have an environment reviewer compare that record before changing the
 Do not treat the remote gate as proof of Microsoft-origin bytes until that provisioning record has
 been reviewed independently.
 
-Before either self-hosted job installs or executes the Alysis Code candidate, it verifies both the
+Before either self-hosted job installs or executes the Alysis candidate, it verifies both the
 hosted `managed-cli-vsix-release` SLSA provenance and the exact CycloneDX predicate for the
 downloaded VSIX. Raw reports are attempt-qualified artifacts. A separate GitHub-hosted job validates
 all available raw reports, selects the newest passing WSL and Remote-SSH report independently, and
