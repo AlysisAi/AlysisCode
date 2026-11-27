@@ -26,9 +26,9 @@
   <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/owl-cast.svg" alt="The Alysis owl cast: Bit, Aly, Luna and Quill." width="840">
 </p>
 
-- 🟩 **Code owls** (Bit) build, fix and test software in your projects, show every change, and roll back to a checkpoint.
-- 📄 **Work owls** (Quill) turn notes, files and research into documents, spreadsheets, slides and PDFs you can preview and revise.
-- 🌙 **Night owls** (Luna) keep working on their own, with memory, routines and their own computer, on your machine, in the cloud or from your Android phone.
+- 🟩 **Code owls** build, fix and test software in your projects, show every change, and roll back to a checkpoint.
+- 📄 **Work owls** turn notes, files and research into documents, spreadsheets, slides and PDFs you can preview and revise.
+- 🦉 **Owls** keep working on their own, with memory, routines and their own computer, on your machine, in the cloud or from your Android phone.
 - 💸 **Plans from $1**, or bring your own API keys and subscriptions.
 
 <p align="center">
@@ -45,7 +45,7 @@
 
 <p align="center">
   <a href="https://alysiscode.com/#desktop-download">
-    <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/alysis-app-0.1.62.png" alt="The Alysis desktop app with Code owls, Work owls and Night owls in the sidebar" width="1000">
+    <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/alysis-app-0.1.62.png" alt="The Alysis desktop app with Code owls, Work owls and Owls in the sidebar" width="1000">
   </a>
 </p>
 
@@ -53,7 +53,7 @@
 
 **Any AI, no lock-in.** Use Claude, GPT, Gemini, DeepSeek or a local model. Bring your own keys or subscription, or just start with Alysis credits. Switch any time.
 
-**Works while you sleep.** Night owls keep your routines going on your computer or in the cloud, so you wake up to a done list.
+**Works while you sleep.** Owls keep your routines going on your computer or in the cloud, so you wake up to a done list.
 
 **Open and affordable.** Plans from $1, on an open-source Apache-2.0 engine you can read, change and run yourself.
 
@@ -63,7 +63,7 @@ Shell commands run in a sandbox by default. Verification commands also default t
 
 1. [Download the desktop app](https://alysiscode.com/#desktop-download) for macOS (Apple silicon) or Windows (x64). No Python or terminal setup needed.
 2. Sign in for Alysis credits, or connect your own model in **Models & keys**.
-3. Open a repository with Code owls, bring a file to Work owls, or give a Night owl a routine.
+3. Open a repository with Code owls, bring a file to Work owls, or give Owls a routine.
 
 [Desktop guide](https://alysiscode.com/docs/desktop) · [Your first task](https://alysiscode.com/docs/desktop/first-task) · [Release notes](https://github.com/AlysisAi/AlysisCode/releases)
 
@@ -96,7 +96,7 @@ Already on Python 3.11+? `uv tool install alysis-code` or `pipx install alysis-c
 | Path | What lives there |
 | --- | --- |
 | [`src/alysis_code/`](https://github.com/AlysisAi/AlysisCode/tree/main/src/alysis_code) | The engine and the `alysis` CLI: agent loop, model providers, tools, MCP client, sandboxing |
-| [`src/alysis_code/bots/`](https://github.com/AlysisAi/AlysisCode/tree/main/src/alysis_code/bots) | The Night owls runtime: routines, memory, approvals, and the owl's computer |
+| [`src/alysis_code/bots/`](https://github.com/AlysisAi/AlysisCode/tree/main/src/alysis_code/bots) | The Owls runtime: routines, memory, approvals, and the owl's computer |
 | [`extensions/`](https://github.com/AlysisAi/AlysisCode/tree/main/extensions) | VS Code extension, JetBrains preview and their shared UI |
 | [`docs/`](https://github.com/AlysisAi/AlysisCode/tree/main/docs) | [Architecture](https://github.com/AlysisAi/AlysisCode/blob/main/docs/architecture.md), [security model](https://github.com/AlysisAi/AlysisCode/blob/main/docs/security_model.md), [MCP](https://github.com/AlysisAi/AlysisCode/blob/main/docs/mcp.md), [skills](https://github.com/AlysisAi/AlysisCode/blob/main/docs/skills.md), [plugins](https://github.com/AlysisAi/AlysisCode/blob/main/docs/plugins.md) |
 
