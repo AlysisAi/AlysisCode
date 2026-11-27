@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://alysiscode.com">
+  <a href="https://alysisai.com">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/alysis-banner-dark.svg">
       <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/alysis-banner-light.svg" alt="Alysis: four pixel owls on a branch in front of the moon, next to the words: A team of owls for all your work." width="100%">
@@ -32,11 +32,13 @@
 - 💸 **Plans from $1**, or bring your own API keys and subscriptions.
 
 <p align="center">
-  <strong><a href="https://alysiscode.com/#desktop-download">Download Alysis for macOS &amp; Windows</a></strong> · plans from $1 ·
+  <strong><a href="https://alysisai.com">alysisai.com</a></strong> ·
+  <strong><a href="https://alysiscode.com/#desktop-download">Download for macOS &amp; Windows</a></strong> · plans from $1 ·
   <a href="#run-it-in-your-terminal">Install the CLI</a> ·
   <a href="https://alysiscode.com/docs">Docs</a> ·
   <a href="https://discord.gg/psEVWZgzFS">Discord</a> ·
-  <a href="https://x.com/alysis_ai">X</a>
+  <a href="https://x.com/alysis_ai">X</a><br>
+  <sub>Also at <a href="https://alysiscode.com">alysiscode.com</a></sub>
 </p>
 
 > **Any AI model, no lock-in.** Use Claude, GPT, Gemini, DeepSeek or a local model with Ollama or LM Studio. Bring your own API keys or subscription, or start with Alysis credits, and switch any time. Everything runs on the open-source Apache-2.0 engine in this repository.

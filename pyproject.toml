@@ -71,7 +71,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://alysiscode.com/"
+Homepage = "https://alysisai.com/"
 Documentation = "https://alysiscode.com/docs"
 Changelog = "https://github.com/AlysisAi/AlysisCode/blob/main/docs/CHANGELOG.md"
 Funding = "https://github.com/sponsors/AlysisAi"
