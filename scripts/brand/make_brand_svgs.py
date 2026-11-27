@@ -1,7 +1,8 @@
-"""Build the Alysis README banner (light + dark) and the small owl coin icon.
+"""Build the small Alysis owl coin used in the README footer.
 
-Everything is drawn with square pixels, so the SVGs need no fonts: GitHub and
-PyPI show them as images, where external fonts never load.
+README banners, the social preview, and the owl cast are drawn by
+scripts/brand/make_team_banners.py. Everything is square pixels, so the SVGs
+need no fonts.
 
 Usage, from the repository root:
     python3 scripts/brand/make_brand_svgs.py docs/assets/brand
@@ -13,8 +14,7 @@ import math
 import sys
 from pathlib import Path
 
-# The official Alysis pixel owl, 21 x 21 cells, taken cell for cell from
-# docs/assets/banner.svg in AlysisAi/AlysisCode.  '#' = ink, 'o' = white.
+# The official Alysis pixel owl, 21 x 21 cells.  '#' = ink, 'o' = white.
 OWL = """\
 .####.........####...
 ..###.........###....
@@ -37,30 +37,6 @@ OWL = """\
 .##oooooooooo#######.
 .###ooooooooo#######.
 ..################...""".splitlines()
-
-# 5 x 7 pixel font: only the glyphs the banner uses.
-FONT = {
-    "A": [".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
-    "D": ["####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."],
-    "E": ["#####", "#....", "#....", "####.", "#....", "#....", "#####"],
-    "G": [".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###."],
-    "H": ["#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
-    "I": [".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."],
-    "K": ["#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"],
-    "L": ["#....", "#....", "#....", "#....", "#....", "#....", "#####"],
-    "N": ["#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"],
-    "O": [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
-    "P": ["####.", "#...#", "#...#", "####.", "#....", "#....", "#...."],
-    "R": ["####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"],
-    "S": [".####", "#....", "#....", ".###.", "....#", "....#", "####."],
-    "T": ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."],
-    "U": ["#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
-    "V": ["#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."],
-    "W": ["#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"],
-    "Y": ["#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."],
-    ".": [".", ".", ".", ".", ".", ".", "#"],
-    " ": ["...", "...", "...", "...", "...", "...", "..."],
-}
 
 THEMES = {
     "light": {
@@ -124,26 +100,6 @@ def owl_paths(x0: float, y0: float, size: float, ink: str, white: str) -> str:
     )
 
 
-def text_cells(text: str) -> tuple[list[tuple[int, int]], int]:
-    """Lay out text in the pixel font; returns cells and the width in cells."""
-    cells, cursor = [], 0
-    for i, ch in enumerate(text):
-        glyph = FONT[ch]
-        for cy, row in enumerate(glyph):
-            for cx, bit in enumerate(row):
-                if bit == "#":
-                    cells.append((cursor + cx, cy))
-        cursor += len(glyph[0])
-        if i < len(text) - 1:
-            cursor += 1  # one empty column between glyphs
-    return cells, cursor
-
-
-def text_path(text: str, x0: float, y0: float, size: float, fill: str) -> tuple[str, float]:
-    cells, width = text_cells(text)
-    return f'<path fill="{fill}" d="{cells_to_path(cells, x0, y0, size)}"/>', width * size
-
-
 def coin(
     cx: float, cy: float, r: float, disc: str, bead: str, beads: int = 44, bead_size: float = 6
 ) -> str:
@@ -157,54 +113,6 @@ def coin(
             f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bead_size:g}" height="{bead_size:g}" fill="{bead}"/>'
         )
     return "".join(out)
-
-
-STARS = [
-    (40, 40, 4, 0.9),
-    (380, 30, 4, 0.5),
-    (880, 48, 6, 0.9),
-    (920, 120, 4, 0.6),
-    (896, 200, 4, 0.45),
-    (918, 268, 6, 0.8),
-    (640, 292, 4, 0.5),
-    (44, 276, 4, 0.6),
-    (820, 292, 4, 0.7),
-    (580, 34, 4, 0.4),
-]
-
-
-def banner(theme: str) -> str:
-    t = THEMES[theme]
-    W, H = 960, 320
-    owl_size = 8
-    cx, cy, r = 226, 160, 108
-    owl_x = cx - 21 * owl_size / 2
-    owl_y = cy - 21 * owl_size / 2
-
-    word, word_w = text_path("ALYSIS", 402, 64, 12, t["word"])
-    dot = f'<rect x="{402 + word_w + 12:g}" y="{64 + 6 * 12:g}" width="12" height="12" fill="{t["accent"]}"/>'
-    line1, _ = text_path("EVERY AGENT YOU NEED.", 402, 178, 4, t["claim"])
-    line2, _ = text_path("ONE APP.", 402, 220, 6, t["word"])
-
-    stars = ""
-    if t["star"]:
-        stars = "".join(
-            f'<rect x="{x}" y="{y}" width="{s}" height="{s}" fill="{t["star"]}" fill-opacity="{o}"/>'
-            for x, y, s, o in STARS
-        )
-
-    label = "Alysis: the Alysis pixel owl on a coin-shaped moon, next to the words: Every agent you need. One app."
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
-        f'role="img" aria-label="{label}" shape-rendering="crispEdges">'
-        f"<title>{label}</title>"
-        f'<rect x="1" y="1" width="{W - 2}" height="{H - 2}" rx="20" fill="{t["bg"]}" stroke="{t["border"]}" stroke-width="2"/>'
-        f"{stars}"
-        f'<g shape-rendering="geometricPrecision">{coin(cx, cy, r, t["disc"], t["bead"])}</g>'
-        f"{owl_paths(owl_x, owl_y, owl_size, t['ink'], t['white'])}"
-        f"{word}{dot}{line1}{line2}"
-        "</svg>\n"
-    )
 
 
 def owl_icon() -> str:
@@ -224,10 +132,9 @@ def owl_icon() -> str:
 
 
 def main() -> None:
+    """Write the owl coin. Team banners are produced by make_team_banners.py."""
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     out.mkdir(parents=True, exist_ok=True)
-    (out / "alysis-banner-light.svg").write_text(banner("light"), encoding="utf-8")
-    (out / "alysis-banner-dark.svg").write_text(banner("dark"), encoding="utf-8")
     (out / "alysis-owl.svg").write_text(owl_icon(), encoding="utf-8")
 
 

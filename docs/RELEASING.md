@@ -1,4 +1,4 @@
-# Releasing Alysis Code
+# Releasing Alysis
 
 This document is for maintainers publishing the Python package or sandbox images. Release
 credentials are managed through protected GitHub environments; they must not be stored in the

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "alysis-code"
 version = "0.18.3"
-description = "Open-source AI coding agent for your terminal. Bring any model, sandboxed by default."
+description = "The open-source engine and CLI behind Alysis, a team of AI owls for all your work. Any model, sandboxed by default."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }

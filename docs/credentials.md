@@ -1,6 +1,6 @@
 # Credentials
 
-Alysis Code supports an explicit persisted API-key store separate from `config.json`.
+Alysis supports an explicit persisted API-key store separate from `config.json`.
 
 API key resolution order:
 
@@ -44,7 +44,7 @@ envelopes remain readable and are re-encrypted automatically with the current ke
 successful decrypt; the legacy deterministic derivation is never used for new credential writes.
 Legacy plaintext `mcp_oauth_tokens.json` files are rewritten as an encrypted envelope on first
 successful read. An accessible macOS keyring envelope is likewise migrated to the filesystem source
-once when that override is set. If the old key source is unavailable, Alysis Code fails
+once when that override is set. If the old key source is unavailable, Alysis fails
 closed instead of replacing the unreadable vault. Migration and key rotation are atomic; failed rewrites do not replace the last
 readable store.
 

@@ -126,7 +126,7 @@ an explicit release-source binding and the dependency SBOM before the existing
   language/syntax preflight; malformed backtick prose stays invalid or advisory
   and must not be sent to `/bin/sh`.
 - Benign runtime artifacts such as `.pytest_cache/`, `__pycache__/`,
-  `.ruff_cache/`, `.mypy_cache/`, `.coverage`, Alysis Code runtime directories,
+  `.ruff_cache/`, `.mypy_cache/`, `.coverage`, Alysis runtime directories,
   and grounded Rust `target/` output do not count as material work.
 - Unknown new outputs and requested deliverables remain material by default.
 - A verifier that mutates verification-relevant material paths cannot satisfy
@@ -188,13 +188,13 @@ an explicit release-source binding and the dependency SBOM before the existing
   the correct source: explicit CLI, environment, config, inherited parent, or
   absent.
 - Managed-host one-shot invocations must pass `--require-deadline` with a
-  finite deadline. If asserted and absent, Alysis Code must fail before session
+  finite deadline. If asserted and absent, Alysis must fail before session
   creation, routing, or model calls and should record only sanitized diagnostic
   metadata when diagnostics are enabled.
-- Benchmark adapters must derive the Alysis Code deadline from the final
+- Benchmark adapters must derive the Alysis deadline from the final
   effective agent timeout exactly once, never from verifier or environment-build
   timeouts, and subtract a host-owned reserve for process collection and
-  artifact flushing. This reserve is separate from Alysis Code's internal
+  artifact flushing. This reserve is separate from Alysis's internal
   finalization reserve.
 - The Terminal-Bench adapter must fail closed unless
   `managed_host_agent_timeout_sec` is supplied through normal agent kwargs. For
@@ -204,7 +204,7 @@ an explicit release-source binding and the dependency SBOM before the existing
   `--global-timeout-multiplier` a second time.
 - Terminal-Bench deadline diagnostics must stay sanitized. The
   `agent-logs/managed-host-deadline.json` artifact may include timeout source,
-  effective timeout, elapsed pre-launch time, host reserve, computed Alysis Code
+  effective timeout, elapsed pre-launch time, host reserve, computed Alysis
   deadline, requirement status, validation status, command timeout, host
   verifier status/source/count, and stable verifier command hashes only. It must
   not include raw verifier commands.
@@ -212,7 +212,7 @@ an explicit release-source binding and the dependency SBOM before the existing
   `verify_cmd` or `verify_cmds`, the adapter must leave `ALYSIS_VERIFY_CMD`
   unset, clear managed-profile explicit verifier commands, pass no
   `--verify-cmd`, record host verifier unavailable diagnostics, and let
-  Alysis Code resolve repo-native verification normally. Explicit vacuous or
+  Alysis resolve repo-native verification normally. Explicit vacuous or
   failure-masking verifiers must fail closed before setup.
 - Terminal-Bench verifier input validation must reject simultaneous
   `verify_cmd`/`verify_cmds`, explicitly empty strings, empty sequence members,

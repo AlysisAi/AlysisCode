@@ -1,6 +1,6 @@
 # Custom Tools
 
-Custom tools let you add trusted Python tools without changing Alysis Code itself.
+Custom tools let you add trusted Python tools without changing Alysis itself.
 
 They are intended for local or team-owned helpers such as issue lookups, repository metadata checks, private API reads, and repeatable project utilities.
 
@@ -8,12 +8,12 @@ Custom tools are trusted Python code. Review them the same way you would review 
 
 ## Tool Roots
 
-Alysis Code discovers custom tools from:
+Alysis discovers custom tools from:
 
 - project tools: `<workspace>/.alysis/tools/*.py`
 - user-global tools: `<user-config-dir>/tools/*.py`
 
-The user config directory follows the same platform config location used for Alysis Code config. `ALYSIS_CONFIG_DIR` can redirect that root for tests or local overrides.
+The user config directory follows the same platform config location used for Alysis config. `ALYSIS_CONFIG_DIR` can redirect that root for tests or local overrides.
 
 Discovery is conservative:
 
@@ -99,7 +99,7 @@ Important rules:
 - `isolation` must be `subprocess`
 - `run(args)` is the only supported entrypoint
 - package-directory tools are not supported
-- tools must not import private Alysis Code host APIs
+- tools must not import private Alysis host APIs
 - `inprocess` execution is rejected
 
 Tools with missing required environment variables remain visible in CLI inspection output, but they are not exposed to the model until the variables are available.
@@ -166,7 +166,7 @@ Mode behavior:
 
 ## Execution Model
 
-Default execution is subprocess-based. For each invocation, Alysis Code:
+Default execution is subprocess-based. For each invocation, Alysis:
 
 - validates arguments against `input_schema`
 - verifies the source hash still matches discovery metadata
