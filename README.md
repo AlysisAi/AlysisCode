@@ -2,15 +2,15 @@
   <a href="https://alysisai.com">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/alysis-banner-dark.svg">
-      <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/alysis-banner-light.svg" alt="Alysis: four pixel owls on a branch in front of the moon, next to the words: A team of owls for all your work." width="100%">
+      <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/alysis-banner-light.svg" alt="Alysis, a team of AI owls for all your work: AI agents for coding, documents and everyday tasks." width="100%">
     </picture>
   </a>
 </p>
 
-<h3 align="center">A team of owls for all your work.</h3>
+<h1 align="center">Alysis: a team of AI owls for all your work</h1>
 
 <p align="center">
-  Alysis gives you a team of AI owls that write, research, build and keep your everyday jobs running on your computer. Tell an owl what you need in plain words, and it gets it done, even while you sleep.
+  Alysis is an AI assistant for your desktop: a team of AI agents (owls) that write, research, build software and keep your everyday jobs running on your computer. Tell an owl what you need in plain words, and it gets it done, even while you sleep.
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@
 ## Meet the owls
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/owl-cast.svg" alt="The Alysis owl cast: Bit, Aly, Luna and Quill." width="840">
+  <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/owl-cast.svg" alt="The Alysis owls: pixel-art AI agents for code, work and everyday tasks." width="840">
 </p>
 
 - 🟩 **Code owls** build, fix and test software in your projects, show every change, and roll back to a checkpoint.
@@ -111,6 +111,6 @@ If Alysis saves you time, a star helps other people find it.
 The engine and CLI in this repository are licensed under Apache-2.0. See [LICENSE](https://github.com/AlysisAi/AlysisCode/blob/main/LICENSE), [NOTICE](https://github.com/AlysisAi/AlysisCode/blob/main/NOTICE), and the editor sidebar's [third-party notices](https://github.com/AlysisAi/AlysisCode/blob/main/extensions/shared-ui/THIRD_PARTY_NOTICES.txt).
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/alysis-owl.svg" alt="Aly, the Alysis pixel owl" width="72"><br>
+  <img src="https://raw.githubusercontent.com/AlysisAi/AlysisCode/main/docs/assets/brand/alysis-owl.svg" alt="The Alysis pixel owl" width="72"><br>
   <sub>Made by <a href="https://alysisai.com">Alysis AI</a>. A team of owls for all your work.</sub>
 </p>
