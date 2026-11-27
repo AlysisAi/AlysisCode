@@ -213,15 +213,15 @@ class ReadClipboard(Input):
 DEFINITIONS = {
     "computer_check_file": (
         CheckFile,
-        "Check an existing DOCX, XLSX, PPTX or PDF in /workspace. Returns byte-bound structure, formula and rendered-page evidence and preview paths. Inspect preview images on this computer for layout quality. Fix failures before saving; unchecked items and source accuracy still need verification. Does not change the source file or publish it to the library.",
+        "Check an existing DOCX, XLSX, PPTX or PDF in /workspace: returns its structure, formula and rendered-page evidence and preview paths (inspect the previews on this computer for layout). Fix failures before saving; unchecked items and source accuracy still need checking. Changes neither the file nor the library.",
     ),
     "computer_import_file": (
         ImportFile,
-        "Copy one of this bot's library files directly into /workspace under its existing name, without transcribing its content. At most 50 MiB; text and binary files retain their exact bytes. Import requires a new workspace name and never overwrites. Returns the copied source ID, name, bytes and digest; no file content enters model context.",
+        "Copy one of this bot's library files into /workspace under its own name, byte for byte (text or binary, at most 50 MiB), without its content entering your context. The name must be new there: nothing is overwritten. Returns the source ID, name, bytes and digest.",
     ),
     "computer_save_file": (
         SaveFile,
-        "Save an actual regular file directly from /workspace into this bot's persistent library, keeping its name. DOCX/XLSX/PPTX/PDF are checked automatically; failed checks return saved=false and repair details. Use computer_check_file to inspect evidence/previews before saving. Report unchecked items honestly; these checks do not establish source accuracy or visual quality. At most 50 MiB; text and binary files are supported. No directories, symlinks or overwrites. Stop writers first. Returns actual file ID/bytes/digest. Export reusable results so the user can open them from the conversation.",
+        "Save a regular file from /workspace to this bot's persistent library under its name, so the user can open it from the conversation: export reusable results this way. DOCX/XLSX/PPTX/PDF are checked first; a failed check returns saved=false with repair details (computer_check_file shows the evidence and previews before saving). Checks do not establish source accuracy or visual quality: report unchecked items honestly. Text or binary, at most 50 MiB; no directories, symlinks or overwrites. Stop writers first. Returns the actual file ID, bytes and digest.",
     ),
     "computer_observe": (
         Observe,
@@ -245,7 +245,7 @@ DEFINITIONS = {
     ),
     "computer_stop_process": (
         Process,
-        "Request termination of one application launched in this task's current computer, using its process_id. Save and verify needed work first: termination can discard unsaved application state. Use only for a finished helper or an explicitly requested stop, never an unfinished form, download, or another task's work. This stops the launched process tree, not the whole computer, and never deletes workspace or library files. Inspect stopped/running; a request is not proof of exit. No force-kill escalation.",
+        "Stop one application this task's current computer launched, by its process_id: its process tree, not the computer, and never workspace or library files. Save and verify needed work first: unsaved application state can be lost. Only for a finished helper or an explicitly requested stop, never an unfinished form, download, or another task's work. No force-kill: inspect stopped/running, as a request is not proof of exit.",
     ),
     "computer_process": (
         ProcessOutput,

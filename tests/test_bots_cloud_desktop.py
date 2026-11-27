@@ -136,7 +136,9 @@ def test_idle_heartbeat_reaches_guest_without_provider_hook_and_never_replays(
     assert requests[0]["operation"] == "ping"
     assert requests[0]["arguments"] == {}
     assert requests[0]["session"] == computer.identity.allocation_id
-    assert provider.status(computer.ref).state == ("missing" if lost_reply else "running")
+    # A ping only reads: a lost answer leaves the computer as it was, and it keeps working.
+    assert provider.status(computer.ref).state == "running"
+    assert computer.alive()
     computer.close()
 
 

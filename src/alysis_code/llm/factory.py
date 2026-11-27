@@ -9,7 +9,11 @@ import httpx
 
 from ..config import resolve_web_search_adapter, resolve_web_search_mode
 from ..model_reasoning import client_reasoning_settings
-from ..model_registry import ModelRegistry, resolve_model_provider_key
+from ..model_registry import (
+    ModelRegistry,
+    requires_responses_tool_route,
+    resolve_model_provider_key,
+)
 from ..profile_presets import LOCAL_PROFILE_PRESET_KEYS, find_preset_for_profile
 from ..profiles import (
     ProfileSpec,
@@ -389,11 +393,10 @@ def make_llm_client(
 
 def resolve_model_protocol(*, provider_key: str | None, model: str, protocol: str) -> str:
     """Resolve model-specific transports for both initial connections and live switches."""
-    # Hosted OpenAI models need Responses for reasoning with function tools.
-    # Keep the managed endpoint and Alysis device credential on this route.
-    if provider_key == "alysis" and model in {"gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"}:
-        return OPENAI_RESPONSES_PROTOCOL
-    if provider_key == "openai" and model in {"gpt-6.1-sol", "gpt-6.1-terra"}:
+    # Models the catalog declares as needing Responses for reasoning with
+    # function tools. Hosted ones keep the managed endpoint and Alysis device
+    # credential on this route.
+    if requires_responses_tool_route(provider_key, model):
         return OPENAI_RESPONSES_PROTOCOL
     if provider_key == "alysis" and model in {"claude-sonnet-5-5", "claude-haiku-5-5"}:
         return ANTHROPIC_MESSAGES_PROTOCOL

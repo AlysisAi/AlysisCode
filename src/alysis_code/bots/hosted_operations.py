@@ -204,6 +204,9 @@ def backup_due(config, *, now=None):
 
 @contextmanager
 def maintenance_store(values, credential):
+    """The shared store, opened beside the running controller (backup admission, recovery,
+    release activation): it reads that the schema is this release's and never sets it up, since
+    that locks the tables the controller's running owls use."""
     from .object_storage_azure import AzureBlobStorage
     from .postgres import PostgresStore
 
@@ -215,6 +218,7 @@ def maintenance_store(values, credential):
             hosted["database_dsn"],
             objects=objects,
             state_directory=Path(hosted["state_directory"]),
+            set_up_schema=False,
         )
         yield store
     finally:

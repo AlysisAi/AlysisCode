@@ -125,6 +125,7 @@ from ..mcp.native_relay_guard import (
     legacy_windows_observation_tool,
 )
 from ..mcp.person_approval import call_approval, tool_server_approval
+from ..mcp.plugin_hub import is_hub_plugin
 from ..mcp.untrusted_content import build_host_owned_mcp_tool_description
 from ..mcp.visual_delivery import McpVisualDelivery
 from ..model_registry import ModelRegistry
@@ -7302,6 +7303,8 @@ def build_tools(
         and host_action_handler is not None
     ):
         for catalog in connector_mcp:
+            if is_hub_plugin(catalog["plugin_id"]):
+                continue  # The engine runs hub apps itself (below), never through the app.
             for connector_tool in catalog["tools"]:
                 if not connector_tool["readOnly"] and (
                     mode == "readonly" or persona_write_scope_active
@@ -7356,6 +7359,138 @@ def build_tools(
                         },
                     )
                 )
+
+    # Apps of the catalog Alysis's server brokers (hub plugins): the engine loaded the account's
+    # connected apps and runs each call itself with the account's own key, after the approval the
+    # tool's effect needs (plugin_hub.hub_tool_effect): a read runs; a read of an app Alysis didn't
+    # test follows the approval mode; anything else asks a person on every call, in every mode.
+    for catalog in connector_mcp or ():
+        if not is_hub_plugin(catalog["plugin_id"]):
+            continue
+        for hub_tool in catalog["tools"]:
+            if hub_tool["effect"] != "read" and (mode == "readonly" or persona_write_scope_active):
+                continue
+
+            def _run_hub(
+                args: dict[str, Any], *, _tool=hub_tool, _catalog=catalog
+            ) -> dict[str, Any]:
+                from .. import hub_apps
+
+                arguments = {
+                    "plugin_id": _catalog["plugin_id"],
+                    "name": _tool["name"],
+                    "arguments": args,
+                }
+                try:
+                    check_connector_call(_catalog, arguments)
+                except HostActionError as exc:
+                    raise AgentRuntimeError(
+                        exc.message, result_payload=exc.to_result_payload()
+                    ) from exc
+                effect = _tool["effect"]
+                if effect != "read":
+                    if mode == "readonly" or persona_write_scope_active:
+                        raise AgentRuntimeError(
+                            "App changes are unavailable in this mode.",
+                            result_payload={
+                                "error_code": "approval_denied_by_policy",
+                                "dispatch_state": "not_dispatched",
+                            },
+                        )
+                    asks = effect == "asks"
+                    preview_args = json.dumps(redact_secrets(args), ensure_ascii=False)
+                    decision = _request_action_approval(
+                        ApprovalRequest(
+                            kind="mcp",
+                            reason=(
+                                f"{_catalog['name']}: this action can change things in your account"
+                                " or reach other people, so it asks you before every call."
+                                if asks
+                                else f"{_catalog['name']}: this action says it only reads; Alysis"
+                                " hasn't tested this app yet, so it follows your approval mode."
+                            ),
+                            preview=(
+                                f"Run MCP tool\nserver: {_catalog['server_id']}\ntool: {_tool['name']}"
+                                f"\nargs:\n{preview_args}"
+                            ),
+                            command=connector_tool_name(_catalog["plugin_id"], _tool["name"]),
+                            metadata={
+                                "access": "write",
+                                "mcp_server": _catalog["server_id"],
+                                "mcp_tool": _tool["name"],
+                                "mcp_server_id": _catalog["server_id"],
+                                "mcp_tool_id": _tool["name"],
+                                "connector_context": {
+                                    "connector": "Hub",
+                                    "service": _catalog["name"],
+                                    "tool": _tool["name"],
+                                },
+                                **(
+                                    {
+                                        "mandatory_explicit_approval": True,
+                                        "always_ask_person": True,
+                                        "tool_server_rule": "ask_every_call",
+                                    }
+                                    if asks
+                                    else {"connector_effect": "own_change"}
+                                ),
+                            },
+                        ),
+                        requires_authorization=True,
+                    )
+                    if not decision.allow:
+                        raise AgentRuntimeError(
+                            "This app action was not approved.",
+                            result_payload={
+                                "error_code": "approval_" + (decision.status or "denied"),
+                                "dispatch_state": "not_dispatched",
+                                "recoverable": True,
+                            },
+                        )
+                try:
+                    result = hub_apps.HubAppsClient.from_saved_account().call(
+                        _catalog["catalog_id"], _tool["name"], args
+                    )
+                except hub_apps.HubAppsError as exc:
+                    raise AgentRuntimeError(
+                        str(exc),
+                        result_payload={
+                            "error_code": f"hub_{exc.reason}",
+                            # A refusal before the call (plan, sign-in, connection) sent nothing;
+                            # a provider that didn't answer may have acted.
+                            "dispatch_state": "unknown"
+                            if exc.reason in {"provider_unavailable", "offline"}
+                            else "not_dispatched",
+                            "recoverable": True,
+                        },
+                    ) from exc
+                return wrap_connector_result(
+                    _catalog,
+                    _tool["name"],
+                    {
+                        "content": [{"type": "text", "text": result.text}],
+                        "isError": result.is_error,
+                    },
+                )
+
+            tools.append(
+                ToolDef(
+                    name=connector_tool_name(catalog["plugin_id"], hub_tool["name"]),
+                    description=build_host_owned_mcp_tool_description(
+                        server_id=catalog["server_id"],
+                        tool_name=hub_tool["name"],
+                        server_description=hub_tool["description"],
+                    ),
+                    parameters=tool_parameters(hub_tool),
+                    run=_run_hub,
+                    metadata={
+                        "tool_type": "mcp",
+                        "plugin_id": catalog["plugin_id"],
+                        "compact_parameters_for_model": True,
+                        "model_description_max_chars": 1000,
+                    },
+                )
+            )
 
     def _admitted_mcp_bindings(manager: McpManager) -> Iterator[Any]:
         for binding in manager.tool_bindings:

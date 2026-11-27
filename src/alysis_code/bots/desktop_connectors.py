@@ -13,6 +13,10 @@ exchange) and a call to it is refused before anything is sent, from the step aft
 When a request needs an app that is off for the owl or not connected, the owl asks for it with a
 card (``need_app``), decided from the app's id, and turning it on or connecting it carries the
 request on with a turn that has no new message (``app_ready``).
+
+Owls in the local service also use the apps connected under More apps (``hub.<app>``,
+``owl_hub_apps.py``): the service calls them itself with the account's key, never through the
+desktop app, and each owl's switches cover them the same way.
 """
 
 from __future__ import annotations
@@ -46,17 +50,20 @@ class CatalogTool(Input):
     effect: Effect
 
 
-PLUGIN_ID = r"^(alysis|custom)\.[a-z][a-z0-9_-]{0,63}$"
+# The desktop app's own plugins. More apps never come from the desktop app (owl_hub_apps.py).
+DESKTOP_PLUGIN_ID = r"^(alysis|custom)\.[a-z][a-z0-9_-]{0,63}$"
+# Any app an owl's switch can name: the desktop app's plugins and the More apps.
+PLUGIN_ID = r"^(?:(?:alysis|custom)\.[a-z][a-z0-9_-]{0,63}|hub\.[a-z][a-z0-9_]{0,23})$"
 
 
 class CatalogPlugin(Input):
-    plugin_id: str = Field(pattern=PLUGIN_ID)
+    plugin_id: str = Field(pattern=DESKTOP_PLUGIN_ID)
     name: str = Field(min_length=1, max_length=120)
     tools: list[CatalogTool] = Field(max_length=96)
 
 
 class CatalogApp(Input):
-    plugin_id: str = Field(pattern=PLUGIN_ID)
+    plugin_id: str = Field(pattern=DESKTOP_PLUGIN_ID)
     name: str = Field(min_length=1, max_length=120)
 
 
@@ -293,8 +300,13 @@ class OwlApps:
     A choice is stored only once the person makes one; no row means on.
     """
 
-    def __init__(self, store, owner: str, hub: DesktopConnectors):
+    def __init__(self, store, owner: str, hub: DesktopConnectors, more_apps: Any = None):
         self.store, self.owner, self.hub = store, owner, hub
+        # The account's More apps (owl_hub_apps.OwlHubApps); None where the service has no account.
+        self.more_apps = more_apps
+
+    def more(self) -> list[Any]:
+        return self.more_apps.plugins() if self.more_apps is not None else []
 
     def for_owl(self, bot_id: str) -> OwlPlugins:
         return OwlPlugins(self, bot_id)
@@ -310,8 +322,15 @@ class OwlApps:
             }
 
     def listing(self, bot_id: str) -> dict:
-        """Every app the desktop app named, with whether it's connected and on for this owl."""
+        """Every app the desktop app named and every connected More app, with whether it's
+        connected and on for this owl."""
         reachable, apps = self.hub.catalog()
+        named = {app["plugin_id"] for app in apps}
+        apps += [
+            {"plugin_id": plugin.plugin_id, "name": plugin.name, "connected": True}
+            for plugin in self.more()
+            if plugin.plugin_id not in named
+        ]
         with self.store.connect() as db:
             self.store._bot(db, self.owner, bot_id)
             choices = {
@@ -594,9 +613,14 @@ class OwlPlugins:
     def available(self) -> bool:
         return self.apps.hub.available()
 
-    def plugins(self) -> list[CatalogPlugin]:
+    def plugins(self) -> list[Any]:
+        """The desktop app's plugins while it answers, and the More apps, on for this owl."""
         off = self.apps.switched_off(self.bot_id)
-        return [plugin for plugin in self.apps.hub.plugins() if plugin.plugin_id not in off]
+        return [
+            plugin
+            for plugin in [*self.apps.hub.plugins(), *self.apps.more()]
+            if plugin.plugin_id not in off
+        ]
 
     def require_on(self, plugin_id: str, name: str) -> None:
         if plugin_id in self.apps.switched_off(self.bot_id):
@@ -628,6 +652,13 @@ class OwlPlugins:
                 "This plugin call belongs to another owl. Nothing was sent.", dispatched=False
             )
         self.require_on(plugin_id, self._name(plugin_id))
+        if plugin_id.startswith("hub."):
+            if self.apps.more_apps is None:
+                raise PluginCallUnavailable(
+                    "More apps aren't available to owls in this service. Nothing was sent.",
+                    dispatched=False,
+                )
+            return self.apps.more_apps.call(plugin_id, tool, arguments)
         return self.apps.hub.call(
             bot_id=bot_id,
             task_id=task_id,
@@ -640,7 +671,10 @@ class OwlPlugins:
 
     def _name(self, plugin_id: str) -> str:
         _, apps = self.apps.hub.catalog()
-        return next((app["name"] for app in apps if app["plugin_id"] == plugin_id), plugin_id)
+        named = next((app["name"] for app in apps if app["plugin_id"] == plugin_id), None)
+        if named is None:
+            named = next((p.name for p in self.apps.more() if p.plugin_id == plugin_id), plugin_id)
+        return named
 
     def need_tools(self, task: dict) -> dict[str, Any]:
         """need_app, while the app answers and some app it named is off here or not connected."""

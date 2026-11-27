@@ -87,7 +87,20 @@ _FALLBACK_WARNING = (
 OFFICIAL_PROVIDER_MODEL_CATALOG_SOURCE = "official_provider_model_catalog"
 CANONICAL_MODEL_CATALOG_SOURCE = "canonical_model_catalog"
 _CANONICAL_MODEL_SOURCES: dict[str, tuple[str, ...]] = {
+    "gpt-6.2-astra": ("https://developers.openai.com/api/docs/models/gpt-6.2-astra",),
+    "gpt-6.2-sol": ("https://developers.openai.com/api/docs/models/gpt-6.2-sol",),
     "gpt-6.1-terra": ("https://developers.openai.com/api/docs/models/gpt-6.1-terra",),
+    "claude-sonnet-5-5": ("https://platform.claude.com/docs/en/models/sonnet-5-5/overview",),
+    "claude-fable-5-2": ("https://platform.claude.com/docs/en/models/fable-5-2/overview",),
+    **{
+        model: (f"https://aistudio.google.com/docs/models/{model}",)
+        for model in ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon")
+    },
+    "qwen4-max": ("https://www.alibabacloud.com/help/en/model-studio/qwen4-max",),
+    "kimi-k3.1-pro": (
+        "https://platform.kimi.ai/docs/models.md",
+        "https://platform.kimi.ai/docs/pricing/chat-k31-pro",
+    ),
     "mistral-large-4": ("https://docs.mistral.ai/models/mistral-large-4",),
     "minimax-m3.1-flash": (
         "https://platform.minimax.io/docs/api-reference/text-openai-api",
@@ -127,6 +140,56 @@ _CANONICAL_MODEL_SOURCES: dict[str, tuple[str, ...]] = {
     ),
 }
 _CANONICAL_MODEL_METADATA: dict[str, dict[str, Any]] = {
+    # GPT-6.2 Astra and Sol (2026-11-17): 1.05M window (922K max input),
+    # 128K output, text and image input, reasoning always on.
+    **{
+        model: {
+            "context_window_tokens": 1_050_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+        }
+        for model in ("gpt-6.2-astra", "gpt-6.2-sol")
+    },
+    # Claude Sonnet 5.5 (2026-09-28) and Fable 5.2 (2026-11-09): 1M context,
+    # 128K output, text and image input, adaptive thinking.
+    **{
+        model: {
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+        }
+        for model in ("claude-sonnet-5-5", "claude-fable-5-2")
+    },
+    # Gemini 4: one 1,048,576-token window shared by input and output. The
+    # model pages give 65,536 output tokens per request (streaming; one
+    # non-streaming request returns up to 32,768). Long decode is opt-in.
+    **{
+        model: {
+            "context_window_tokens": 1_048_576,
+            "max_output_tokens": 65_536,
+            "supports_vision": True,
+            "supports_reasoning": True,
+        }
+        for model in ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon")
+    },
+    # Qwen4-Max (2026-11-16): 1M window, 131,072 output tokens without
+    # thinking (262,144 thinking plus answer), text, image and video input.
+    "qwen4-max": {
+        "context_window_tokens": 1_000_000,
+        "max_output_tokens": 131_072,
+        "supports_vision": True,
+        "supports_reasoning": True,
+    },
+    # Kimi K3.1 Pro (2026-10-23), post-trained from K3: same 1M window and
+    # 131,072 completion allowance, native image input, always reasons.
+    "kimi-k3.1-pro": {
+        "context_window_tokens": 1_048_576,
+        "max_output_tokens": 131_072,
+        "supports_vision": True,
+        "supports_reasoning": True,
+    },
     "gpt-6.1-terra": {
         "context_window_tokens": 1_050_000,
         "max_output_tokens": 128_000,
@@ -250,7 +313,19 @@ _CANONICAL_MODEL_METADATA: dict[str, dict[str, Any]] = {
 # declarative alias table lets each route inherit the canonical model's limits
 # while retaining provider-specific pricing, availability, and stricter caps.
 _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
-    "openai": {"gpt-6.1-terra": "gpt-6.1-terra"},
+    "openai": {
+        "gpt-6.2-astra": "gpt-6.2-astra",
+        "gpt-6.2-sol": "gpt-6.2-sol",
+        "gpt-6.1-terra": "gpt-6.1-terra",
+    },
+    "anthropic": {
+        "claude-sonnet-5-5": "claude-sonnet-5-5",
+        "claude-fable-5-2": "claude-fable-5-2",
+    },
+    "gemini": {
+        model: model
+        for model in ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon")
+    },
     "minimax": {
         "MiniMax-M3.1-Flash": "minimax-m3.1-flash",
         "MiniMax-M3.1-Flash-Preview": "minimax-m3.1-flash",
@@ -258,8 +333,10 @@ _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
     "mistral": {
         "mistral-large-4": "mistral-large-4",
         "mistral-large-4-0": "mistral-large-4",
+        "zai-glm-5-3-flash": "glm-5.3-flash",
     },
     "qwen": {
+        "qwen4-max": "qwen4-max",
         "qwen3.8-max": "qwen3.8-max",
         "qwen3.7-plus": "qwen3.7-plus",
         "qwen3.8-flash": "qwen3.8-flash",
@@ -283,9 +360,21 @@ _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
     },
     "zai": {"glm-5.3": "glm-5.3", "glm-5.3-flash": "glm-5.3-flash"},
     "moonshot": {
+        "kimi-k3.1-pro": "kimi-k3.1-pro",
+        "kimi-k3.1-pro-highspeed": "kimi-k3.1-pro",
         "kimi-k3": "kimi-k3",
     },
     "openrouter": {
+        "openai/gpt-6.2-astra": "gpt-6.2-astra",
+        "openai/gpt-6.2-sol": "gpt-6.2-sol",
+        "anthropic/claude-sonnet-5.5": "claude-sonnet-5-5",
+        "anthropic/claude-fable-5.2": "claude-fable-5-2",
+        "google/gemini-4-neon": "gemini-4-neon",
+        "google/gemini-4-hydrogen": "gemini-4-hydrogen",
+        "google/gemini-4-carbon": "gemini-4-carbon",
+        "moonshotai/kimi-k3.1-pro": "kimi-k3.1-pro",
+        "qwen/qwen4-max": "qwen4-max",
+        "minimax/minimax-m3.1-flash": "minimax-m3.1-flash",
         "qwen/qwen3.8-max": "qwen3.8-max",
         "qwen/qwen3.8-flash": "qwen3.8-flash",
         "deepseek/deepseek-v4-pro-0813": "deepseek-v4-pro",
@@ -296,6 +385,9 @@ _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
         "moonshotai/kimi-k3": "kimi-k3",
     },
     "together": {
+        "moonshotai/Kimi-K3.1-Pro": "kimi-k3.1-pro",
+        "Qwen/Qwen4-Max": "qwen4-max",
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017": "deepseek-flash",
         "MiniMaxAI/MiniMax-M3.1-Flash": "minimax-m3.1-flash",
         "reflection/Beam-1.0-501B-A23B": "reflection-beam",
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL": "nemotron-3.5-super-vl",
@@ -321,6 +413,8 @@ _PROVIDER_CANONICAL_MODEL_IDS: dict[str, dict[str, str]] = {
         "moonshotai/kimi-k3": "kimi-k3",
     },
     "perplexity": {
+        "perplexity/glm-5.3-flash": "glm-5.3-flash",
+        "perplexity/deepseek-v4-pro-0813": "deepseek-v4-pro",
         "perplexity/glm-5.3": "glm-5.3",
         "perplexity/kimi-k3": "kimi-k3",
         "perplexity/deepseek-v4-flash-0731": "deepseek-v4-flash",
@@ -333,6 +427,8 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
             "https://developers.openai.com/api/docs/pricing",
         )
         for model in (
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
             "gpt-6.1-sol",
             "gpt-6.1-terra",
             "gpt-6-astra",
@@ -393,6 +489,15 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
     "gemini": {
         model: (model_url, "https://ai.google.dev/gemini-api/docs/pricing")
         for model, model_url in {
+            **{
+                model: f"https://aistudio.google.com/docs/models/{model}"
+                for model in (
+                    "gemini-4-neon",
+                    "gemini-4-hydrogen",
+                    "gemini-4-carbon",
+                    "gemini-4-argon",
+                )
+            },
             "gemini-3.8-flash": ("https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash"),
             "gemini-3.7-flash": ("https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash"),
             "gemini-3.6-flash": ("https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash"),
@@ -402,6 +507,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         }.items()
     },
     "qwen": {
+        "qwen4-max": ("https://www.alibabacloud.com/help/en/model-studio/qwen4-max",),
         "qwen3.8-max": (
             "https://help.aliyun.com/en/model-studio/qwen3-8-max",
             "https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions",
@@ -425,6 +531,16 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
     "openrouter": {
         model: ("https://openrouter.ai/api/v1/models",)
         for model in (
+            "openai/gpt-6.2-astra",
+            "openai/gpt-6.2-sol",
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-fable-5.2",
+            "google/gemini-4-neon",
+            "google/gemini-4-hydrogen",
+            "google/gemini-4-carbon",
+            "moonshotai/kimi-k3.1-pro",
+            "qwen/qwen4-max",
+            "minimax/minimax-m3.1-flash",
             "anthropic/claude-sonnet-5",
             "openai/gpt-6-astra",
             "openai/gpt-6-sol",
@@ -455,6 +571,14 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         )
     },
     "together": {
+        **{
+            model: ("https://docs.together.ai/docs/serverless-models",)
+            for model in (
+                "moonshotai/Kimi-K3.1-Pro",
+                "Qwen/Qwen4-Max",
+                "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            )
+        },
         "MiniMaxAI/MiniMax-M3.1-Flash": ("https://www.together.ai/models/minimax-m3-1-flash",),
         "reflection/Beam-1.0-501B-A23B": ("https://www.together.ai/models/reflection-beam",),
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL": (
@@ -512,17 +636,31 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
     "moonshot": {
-        model: ("https://platform.kimi.ai/docs/pricing/chat-k3",)
-        if model == "kimi-k3"
-        else ("https://platform.kimi.ai/docs/pricing/chat-k27-code",)
-        if model.startswith("kimi-k2.7")
-        else ("https://platform.kimi.ai/docs/pricing/chat-k26",)
-        for model in (
-            "kimi-k3",
-            "kimi-k2.7-code",
-            "kimi-k2.7-code-highspeed",
-            "kimi-k2.6",
-        )
+        **{
+            model: (
+                "https://platform.kimi.ai/docs/models.md",
+                "https://platform.kimi.ai/docs/pricing/chat-k31-pro",
+            )
+            for model in ("kimi-k3.1-pro", "kimi-k3.1-pro-highspeed")
+        },
+        # Kimi Code membership ids (api.kimi.com/coding/v1).
+        **{
+            model: ("https://www.kimi.com/code/docs/en/kimi-code/models.html",)
+            for model in ("k3.1-pro", "k3.1-pro-highspeed")
+        },
+        **{
+            model: ("https://platform.kimi.ai/docs/pricing/chat-k3",)
+            if model == "kimi-k3"
+            else ("https://platform.kimi.ai/docs/pricing/chat-k27-code",)
+            if model.startswith("kimi-k2.7")
+            else ("https://platform.kimi.ai/docs/pricing/chat-k26",)
+            for model in (
+                "kimi-k3",
+                "kimi-k2.7-code",
+                "kimi-k2.7-code-highspeed",
+                "kimi-k2.6",
+            )
+        },
     },
     "minimax": {
         "MiniMax-M3.1-Flash": ("https://platform.minimax.io/docs/api-reference/text-openai-api",),
@@ -549,6 +687,7 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         "groq/compound-mini": ("https://console.groq.com/docs/models",),
     },
     "cerebras": {
+        "qwen-3.8-27b": ("https://inference-docs.cerebras.ai/models/overview",),
         "gemma-4-31b": ("https://inference-docs.cerebras.ai/models/gemma-4-31b",),
     },
     "mistral": {
@@ -559,6 +698,10 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         "zai-glm-5-3": (
             "https://docs.mistral.ai/models/zai-glm-5-3",
             "https://docs.mistral.ai/inference/pricing",
+        ),
+        "zai-glm-5-3-flash": (
+            "https://docs.mistral.ai/resources/changelogs",
+            "https://docs.mistral.ai/getting-started/models",
         ),
         "mistral-small-2603": (
             "https://docs.mistral.ai/models/mistral-small-4-0-26-03",
@@ -577,6 +720,9 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         model: ("https://docs.perplexity.ai/docs/agent-api/models",)
         for model in (
             "perplexity/sonar",
+            "perplexity/glm-5.3-flash",
+            "perplexity/deepseek-v4-pro-0813",
+            "perplexity/nemotron-3.5-super-120b-a12b",
             "perplexity/glm-5.3",
             "perplexity/kimi-k3",
             "perplexity/kimi-k2.7-code",
@@ -584,6 +730,14 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
         )
     },
     "anthropic": {
+        "claude-sonnet-5-5": (
+            "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+            "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
+        "claude-fable-5-2": (
+            "https://platform.claude.com/docs/en/models/fable-5-2/overview",
+            "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         "claude-opus-5-5": (
             "https://platform.claude.com/docs/en/models/opus-5-5/overview",
             "https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5",
@@ -600,6 +754,34 @@ _OFFICIAL_PROVIDER_MODEL_SOURCES: dict[str, dict[str, tuple[str, ...]]] = {
 }
 _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
     "openai": {
+        # GPT-6.2 (2026-11-17), Standard rates at <=272K input; longer prompts
+        # cost 2x input/cache and 1.5x output, which this flat schema cannot
+        # express. Astra $8/$40 (cached $0.40, 30-minute cache writes $10);
+        # Sol $2/$10 (cached $0.10, cache writes $2.50).
+        # https://developers.openai.com/api/docs/models/gpt-6.2-astra
+        # https://developers.openai.com/api/docs/models/gpt-6.2-sol
+        "gpt-6.2-astra": {
+            "context_window_tokens": 1_050_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.000008,
+            "output_cost_per_token": 0.00004,
+            "cache_read_input_cost_per_token": 0.0000004,
+            "cache_creation_input_cost_per_token": 0.00001,
+            "reasoning_output_cost_per_token": 0.00004,
+        },
+        "gpt-6.2-sol": {
+            "context_window_tokens": 1_050_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.000002,
+            "output_cost_per_token": 0.00001,
+            "cache_read_input_cost_per_token": 0.0000001,
+            "cache_creation_input_cost_per_token": 0.0000025,
+            "reasoning_output_cost_per_token": 0.00001,
+        },
         # GPT-6.1 Terra: Standard rates at <=272K input, 30-minute cache writes.
         # https://developers.openai.com/api/docs/pricing (2026-10-30).
         "gpt-6.1-terra": {
@@ -904,6 +1086,33 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "gemini": {
+        # Gemini 4, Standard paid tier (aistudio.google.com/docs/models/*,
+        # 2026-11-24). Neon $3/$15 (cached $0.15), Hydrogen $1.50/$7.50
+        # (cached $0.075, also on the free tier). Carbon and Argon move from
+        # $2/$10 to $4/$20 (cached $0.20) on 2026-12-01; the later rate is
+        # recorded. Thinking tokens bill at the output rate. Capacity comes
+        # from the canonical layer.
+        "gemini-4-neon": {
+            "input_cost_per_token": 0.000003,
+            "output_cost_per_token": 0.000015,
+            "cache_read_input_cost_per_token": 0.00000015,
+            "reasoning_output_cost_per_token": 0.000015,
+        },
+        "gemini-4-hydrogen": {
+            "input_cost_per_token": 0.0000015,
+            "output_cost_per_token": 0.0000075,
+            "cache_read_input_cost_per_token": 0.000000075,
+            "reasoning_output_cost_per_token": 0.0000075,
+        },
+        **{
+            model: {
+                "input_cost_per_token": 0.000004,
+                "output_cost_per_token": 0.00002,
+                "cache_read_input_cost_per_token": 0.0000002,
+                "reasoning_output_cost_per_token": 0.00002,
+            }
+            for model in ("gemini-4-carbon", "gemini-4-argon")
+        },
         # These stable models postdate the provenance-pinned LiteLLM snapshot.
         # Capacity and current standard-tier pricing are from Google's model
         # and pricing pages. The 3.8/3.7/3.6 introductory rates expire
@@ -955,6 +1164,7 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         # vary by region/currency, which this provider-level flat schema cannot
         # encode, so costs remain unknown instead of applying one region
         # globally. Capacity comes from the canonical layer.
+        "qwen4-max": {},
         "qwen3.8-max": {},
         "qwen3.8-flash": {},
         "qwen3.7-flash": {},
@@ -992,6 +1202,52 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         # may exceed an individual upstream route's cap. The preset's default
         # and the two OpenAI routes were absent from the pinned snapshot and
         # fell back to 128K/8K.
+        # Added 2026-11-24 from the same catalog. Capacity comes from the
+        # canonical layer; Carbon records Google's 2026-12-01 rate.
+        "openai/gpt-6.2-astra": {
+            "input_cost_per_token": 0.000008,
+            "output_cost_per_token": 0.00004,
+            "reasoning_output_cost_per_token": 0.00004,
+        },
+        "openai/gpt-6.2-sol": {
+            "input_cost_per_token": 0.000002,
+            "output_cost_per_token": 0.00001,
+            "reasoning_output_cost_per_token": 0.00001,
+        },
+        "anthropic/claude-sonnet-5.5": {
+            "input_cost_per_token": 0.000002,
+            "output_cost_per_token": 0.00001,
+            "reasoning_output_cost_per_token": 0.00001,
+        },
+        "anthropic/claude-fable-5.2": {
+            "input_cost_per_token": 0.000008,
+            "output_cost_per_token": 0.00004,
+            "reasoning_output_cost_per_token": 0.00004,
+        },
+        "google/gemini-4-neon": {
+            "input_cost_per_token": 0.000003,
+            "output_cost_per_token": 0.000015,
+            "reasoning_output_cost_per_token": 0.000015,
+        },
+        "google/gemini-4-hydrogen": {
+            "input_cost_per_token": 0.0000015,
+            "output_cost_per_token": 0.0000075,
+            "reasoning_output_cost_per_token": 0.0000075,
+        },
+        "google/gemini-4-carbon": {
+            "input_cost_per_token": 0.000004,
+            "output_cost_per_token": 0.00002,
+            "reasoning_output_cost_per_token": 0.00002,
+        },
+        # OpenRouter routes Kimi K3.1 Pro and MiniMax M3.1 Flash across hosts
+        # with different and time-of-day rates, so cost stays unknown.
+        "moonshotai/kimi-k3.1-pro": {},
+        "minimax/minimax-m3.1-flash": {},
+        "qwen/qwen4-max": {
+            "input_cost_per_token": 0.000001425,
+            "output_cost_per_token": 0.000004275,
+            "reasoning_output_cost_per_token": 0.000004275,
+        },
         "anthropic/claude-sonnet-5": {
             "context_window_tokens": 1_000_000,
             "max_output_tokens": 128_000,
@@ -1284,6 +1540,25 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
             "cache_read_input_cost_per_token": 0.00000002,
             "output_cost_per_token": 0.0000005,
         },
+        # docs.together.ai/docs/serverless-models, 2026-11-24.
+        "moonshotai/Kimi-K3.1-Pro": {
+            "context_window_tokens": 1_048_576,
+            "input_cost_per_token": 0.000002,
+            "output_cost_per_token": 0.00001,
+            "reasoning_output_cost_per_token": 0.00001,
+        },
+        "Qwen/Qwen4-Max": {
+            "context_window_tokens": 1_000_000,
+            "input_cost_per_token": 0.000001425,
+            "output_cost_per_token": 0.000004275,
+            "reasoning_output_cost_per_token": 0.000004275,
+        },
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+            "context_window_tokens": 1_000_000,
+            "input_cost_per_token": 0.0000003,
+            "output_cost_per_token": 0.0000012,
+            "reasoning_output_cost_per_token": 0.0000012,
+        },
         # docs.together.ai/docs/serverless-models, 2026-09-02.
         "zai-org/GLM-5.3": {
             "input_cost_per_token": 0.0000014,
@@ -1534,6 +1809,15 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "cerebras": {
+        # inference-docs.cerebras.ai/models/overview (2026-11-24): 64K context
+        # on the free tier, 128K paid. The free-tier window is recorded so no
+        # account overflows it; the output ceiling and image input are not
+        # published, so a conservative reserve and text-only input are used.
+        "qwen-3.8-27b": {
+            "context_window_tokens": 65_536,
+            "max_output_tokens": 16_384,
+            "supports_vision": False,
+        },
         # inference-docs.cerebras.ai/models/gemma-4-31b: 65K context / 32K
         # output on the free tier (131K / 40K paid); the page's own price
         # figures contradict each other, so cost stays unknown.
@@ -1567,6 +1851,14 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
             "input_cost_per_token": 0.00000015,
             "output_cost_per_token": 0.0000006,
             "reasoning_output_cost_per_token": 0.0000006,
+        },
+        # GLM 5.3 Flash on Mistral (changelog 2026-10-22): 1M context,
+        # multimodal, $0.15 in / $0.03 cached / $0.50 out. Capacity comes
+        # from the canonical GLM-5.3-Flash record.
+        "zai-glm-5-3-flash": {
+            "input_cost_per_token": 0.00000015,
+            "cache_read_input_cost_per_token": 0.00000003,
+            "output_cost_per_token": 0.0000005,
         },
         # GLM-5.3 joined Mistral's Public Preview on 2026-09-15. Its page
         # documents tools and text input, but no reasoning control.
@@ -1625,6 +1917,29 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
             "output_cost_per_token": 0.0000044,
             "reasoning_output_cost_per_token": 0.0000044,
         },
+        # Agent API model list, 2026-11-24.
+        "perplexity/glm-5.3-flash": {
+            "input_cost_per_token": 0.00000015,
+            "output_cost_per_token": 0.0000005,
+            "cache_read_input_cost_per_token": 0.00000003,
+            "reasoning_output_cost_per_token": 0.0000005,
+        },
+        "perplexity/deepseek-v4-pro-0813": {
+            "input_cost_per_token": 0.00000132,
+            "output_cost_per_token": 0.00000396,
+            "cache_read_input_cost_per_token": 0.000000044,
+            "reasoning_output_cost_per_token": 0.00000396,
+        },
+        "perplexity/nemotron-3.5-super-120b-a12b": {
+            "context_window_tokens": 1_048_576,
+            "max_output_tokens": 131_072,
+            "supports_vision": False,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.0000002,
+            "output_cost_per_token": 0.0000005,
+            "cache_read_input_cost_per_token": 0.00000004,
+            "reasoning_output_cost_per_token": 0.0000005,
+        },
         "perplexity/kimi-k3": {
             "input_cost_per_token": 0.000003,
             "output_cost_per_token": 0.000015,
@@ -1647,7 +1962,30 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
     },
     "moonshot": {
         # platform.kimi.ai pricing pages (USD, global platform). Capacity for
-        # kimi-k3 is inherited from the canonical layer.
+        # kimi-k3 and kimi-k3.1-pro is inherited from the canonical layer.
+        # K3.1 Pro $2/$10, Highspeed $4/$20; cache hits $0.20 on both.
+        "kimi-k3.1-pro": {
+            "input_cost_per_token": 0.000002,
+            "output_cost_per_token": 0.00001,
+            "cache_read_input_cost_per_token": 0.0000002,
+        },
+        "kimi-k3.1-pro-highspeed": {
+            "input_cost_per_token": 0.000004,
+            "output_cost_per_token": 0.00002,
+            "cache_read_input_cost_per_token": 0.0000002,
+        },
+        # Kimi Code ids: membership billing, so no token prices. Moderato/Plus
+        # members and above can call them and only Allegretto/Pro and above get
+        # the 1M window, so the window every eligible tier has is recorded.
+        **{
+            model: {
+                "context_window_tokens": 262_144,
+                "max_output_tokens": 131_072,
+                "supports_vision": True,
+                "supports_reasoning": True,
+            }
+            for model in ("k3.1-pro", "k3.1-pro-highspeed")
+        },
         "kimi-k3": {
             "input_cost_per_token": 0.000003,
             "output_cost_per_token": 0.000015,
@@ -1688,6 +2026,34 @@ _OFFICIAL_PROVIDER_MODEL_METADATA: dict[str, dict[str, dict[str, Any]]] = {
         # snapshot's provenance. Drop these once a catalog refresh carries them.
         # Anthropic documents "1M context + 128K output"; the window below is
         # the input+output sum so the local reserve does not eat the 1M input.
+        # Sonnet 5.5 (2026-09-28): $2/$10, cache reads $0.10 (5% of input),
+        # cache writes $2.50 (5 minutes) / $4 (1 hour).
+        "claude-sonnet-5-5": {
+            "context_window_tokens": 1_128_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.000002,
+            "output_cost_per_token": 0.00001,
+            "cache_read_input_cost_per_token": 0.0000001,
+            "cache_creation_input_cost_per_token": 0.0000025,
+            "cache_creation_5m_input_cost_per_token": 0.0000025,
+            "cache_creation_1h_input_cost_per_token": 0.000004,
+        },
+        # Fable 5.2 (2026-11-09): $8/$40, cache reads $0.20 (2.5% of input),
+        # cache writes $10 (5 minutes) / $16 (1 hour).
+        "claude-fable-5-2": {
+            "context_window_tokens": 1_128_000,
+            "max_output_tokens": 128_000,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "input_cost_per_token": 0.000008,
+            "output_cost_per_token": 0.00004,
+            "cache_read_input_cost_per_token": 0.0000002,
+            "cache_creation_input_cost_per_token": 0.00001,
+            "cache_creation_5m_input_cost_per_token": 0.00001,
+            "cache_creation_1h_input_cost_per_token": 0.000016,
+        },
         # Opus 5.5 (2026-09-22): $4/$20 per MTok, cache reads $0.20.
         "claude-opus-5-5": {
             "context_window_tokens": 1_128_000,
@@ -2151,6 +2517,19 @@ _BUILT_IN_MODEL_METADATA: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_reasoning": True,
     },
+    # K3.1 Pro on Kimi Code (k3.1-pro / k3.1-pro-highspeed): Moderato/Plus
+    # members and above can call it, and only Allegretto/Pro and above get
+    # the full 1M window, so the window every eligible tier has is recorded.
+    # 131,072 is the documented completion allowance.
+    **{
+        model: {
+            "context_window_tokens": 262_144,
+            "max_output_tokens": 131_072,
+            "supports_vision": True,
+            "supports_reasoning": True,
+        }
+        for model in ("k3.1-pro", "k3.1-pro-highspeed")
+    },
     "kimi-for-coding": {
         "context_window_tokens": 262_144,
         "max_output_tokens": 262_144,
@@ -2291,6 +2670,28 @@ def catalog_model_for_provider(model: str, provider_key: str) -> str | None:
     return None
 
 
+# Models whose function tools need OpenAI's Responses route while they reason:
+# their Chat Completions surface accepts tools only at effort none (GPT-6.1
+# Terra) or documents tool calling on Responses only (GPT-6.1 Sol, and GPT-6.2,
+# which also rejects effort none). Declared per serving provider, like the
+# other per-model capabilities in this catalog.
+_RESPONSES_TOOL_ROUTE_MODELS: dict[str, frozenset[str]] = {
+    "openai": frozenset({"gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra"}),
+    "alysis": frozenset({"gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"}),
+}
+
+
+def requires_responses_tool_route(provider_key: str | None, model: str | None) -> bool:
+    """Whether ``model`` on ``provider_key`` must use the Responses route for tools."""
+    provider = str(provider_key or "").strip().lower()
+    declared = _RESPONSES_TOOL_ROUTE_MODELS.get(provider)
+    name = str(model or "").strip()
+    if not declared or not name:
+        return False
+    resolved = catalog_model_for_provider(name, provider) or name
+    return resolved.casefold() in {model_id.casefold() for model_id in declared}
+
+
 def catalog_model_capabilities(model: str, provider_key: str | None) -> dict[str, Any]:
     """Offline catalog capacities, with route caps ahead of portable model facts.
 
@@ -2311,14 +2712,24 @@ def catalog_model_capabilities(model: str, provider_key: str | None) -> dict[str
         "supports_vision": vision,
         "supports_reasoning": parse_bool(metadata.get("supports_reasoning")),
         "input_modalities": ["text", "image"] if vision else ["text"],
-        **(
-            {"image_input": "assisted", "image_helper": "gpt-6-luna"}
-            if provider == "alysis" and model_id in _HOSTED_ASSISTED_IMAGE_MODELS
-            else {"image_input": "native"}
-            if provider == "alysis" and model_id in _HOSTED_NATIVE_IMAGE_MODELS
-            else {}
-        ),
+        **(_hosted_image_input(model_id) if provider == "alysis" else {}),
     }
+
+
+def _hosted_image_input(model_id: str | None) -> dict[str, str]:
+    """How the hosted route takes images: native, assisted (GPT-6 Luna reads them), or none.
+
+    A model's own vision does not mean the hosted route accepts images, so every
+    hosted model the catalog knows says which one applies. A model it does not
+    know says nothing, and the gateway decides.
+    """
+    if model_id is None:
+        return {}
+    if model_id in _HOSTED_ASSISTED_IMAGE_MODELS:
+        return {"image_input": "assisted", "image_helper": "gpt-6-luna"}
+    if model_id in _HOSTED_NATIVE_IMAGE_MODELS:
+        return {"image_input": "native"}
+    return {"image_input": "none"}
 
 
 def _lookup_model_override(

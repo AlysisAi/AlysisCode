@@ -1137,7 +1137,7 @@ def test_chat_thinking_level_and_budget_are_emitted_for_the_model_contract() -> 
     ).chat(messages=[{"role": "user", "content": "hello"}])
     assert captured[-1]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": -1}
 
-    with pytest.raises(LLMError, match="thinking_level requires a Gemini 3 model"):
+    with pytest.raises(LLMError, match="thinking_level requires a model with thinking levels"):
         GeminiGenerateContentClient(
             base_url="https://generativelanguage.googleapis.com/v1beta",
             api_key="test-key",

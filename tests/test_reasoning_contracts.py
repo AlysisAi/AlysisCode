@@ -348,8 +348,10 @@ def test_catalog_models_resolve_beyond_unknown_where_researched() -> None:
     # the same unresearched reasoning surface as the hosted proxy).
     probe_gated = {"bytedance", "fireworks", "openrouter", "alysis", "xiaomi"}
     probe_gated_models = {
-        ("together", "deepseek-ai/DeepSeek-V4-Flash-0731"),
+        ("together", "deepseek-ai/DeepSeek-V4.1-Flash-1017"),
         ("together", "zai-org/GLM-5.3-Flash"),
+        # Cerebras publishes no reasoning controls for Qwen 3.8 27B.
+        ("cerebras", "qwen-3.8-27b"),
     }
     for preset in PROFILE_PRESETS:
         provider = preset.provider_key or preset.key

@@ -691,6 +691,7 @@ def _resolve_native_provider_readiness(
     model_validator: Callable[[str | None], bool] | None = None,
     model_note: str | None = None,
     min_timeout_s: float | None = None,
+    requires_model: bool = True,
 ) -> _BackendReadiness:
     base_url = resolve_web_search_base_url(cfg)
     model = (
@@ -721,12 +722,12 @@ def _resolve_native_provider_readiness(
         _append_unique_note(
             notes, f"{base_url_label} web search requires {base_url_label} base_url"
         )
-    if not model:
+    if not model and requires_model:
         _append_unique_note(
             notes,
             "missing model: set model, web_search_model, or profile.web_search_model",
         )
-    elif model_validator is not None and not model_validator(model):
+    elif model and model_validator is not None and not model_validator(model):
         _append_unique_note(notes, model_note or f"{base_url_label} model is not search-capable")
     if not resolved_api_key:
         _append_unique_note(
@@ -738,8 +739,8 @@ def _resolve_native_provider_readiness(
     if (
         base_url
         and base_url_predicate(base_url)
-        and model
-        and (model_validator is None or model_validator(model))
+        and (model or not requires_model)
+        and (not model or model_validator is None or model_validator(model))
         and resolved_api_key
         and timeout_s is not None
     ):
@@ -910,7 +911,8 @@ def _resolve_moonshot_kimi_readiness(
         provider=_MOONSHOT_KIMI_PROVIDER,
         base_url_label="Moonshot/Kimi",
         base_url_predicate=_is_moonshot_base_url,
-        default_model="kimi-k2.6",
+        # Kimi's search endpoint runs no model; the model is only reported.
+        requires_model=False,
     )
 
 

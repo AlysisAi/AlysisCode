@@ -1377,76 +1377,55 @@ def test_web_search_dispatches_to_moonshot_kimi_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ALYSIS_WEB_SEARCH_PROVIDER", raising=False)
+    monkeypatch.delenv("ALYSIS_WEB_SEARCH_MODEL", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     calls: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "https://api.moonshot.cn/v1/chat/completions"
+        # Moonshot retired the chat-completions $web_search builtin on
+        # 2026-10-20; search must use the standalone endpoint.
+        assert str(request.url) == "https://api.moonshot.cn/v1/tools/search"
+        assert request.headers["Authorization"] == "Bearer moonshot-key"
         body = json.loads(request.content.decode("utf-8"))
         calls.append(body)
-        assert body["model"] == "kimi-k2.6"
-        assert body["tools"] == [{"type": "builtin_function", "function": {"name": "$web_search"}}]
-        assert body["thinking"] == {"type": "disabled"}
-        if len(calls) == 1:
-            return httpx.Response(
-                200,
-                json={
-                    "id": "kimi_tool_1",
-                    "model": "kimi-k2.6",
-                    "choices": [
-                        {
-                            "finish_reason": "tool_calls",
-                            "message": {
-                                "role": "assistant",
-                                "content": None,
-                                "tool_calls": [
-                                    {
-                                        "id": "call_1",
-                                        "type": "function",
-                                        "function": {
-                                            "name": "$web_search",
-                                            "arguments": json.dumps(
-                                                {
-                                                    "query": "kimi search",
-                                                    "results": [
-                                                        {
-                                                            "title": "Kimi Docs",
-                                                            "url": "https://docs.example.com/kimi",
-                                                            "snippet": "Kimi snippet",
-                                                        }
-                                                    ],
-                                                }
-                                            ),
-                                        },
-                                    }
-                                ],
-                            },
-                        }
-                    ],
-                },
-            )
-        assert body["messages"][-1]["role"] == "tool"
-        assert body["messages"][-1]["tool_call_id"] == "call_1"
         return httpx.Response(
             200,
             json={
-                "id": "kimi_final",
-                "model": "kimi-k2.6",
-                "choices": [
+                "search_results": [
                     {
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "Kimi searched the web."},
-                    }
-                ],
+                        "authority": "S",
+                        "date": "2026-11-01",
+                        "icon": "",
+                        "mime": "text/html",
+                        "site_name": "Docs",
+                        "snippet": "Οδηγός για την αναζήτηση",
+                        "text": "",
+                        "title": "Kimi Docs",
+                        "url": "https://docs.example.com/kimi",
+                    },
+                    {
+                        "authority": "",
+                        "date": "",
+                        "icon": "",
+                        "mime": "text/html",
+                        "site_name": "Other",
+                        "snippet": "Off-domain result",
+                        "text": "",
+                        "title": "Other",
+                        "url": "https://other.example.org/page",
+                    },
+                ]
             },
         )
 
     result = web_search(
-        query="kimi search",
+        query="αναζήτηση στο Kimi",
         cfg=AppConfig(
-            model="kimi-k2",
+            model="kimi-k3.1-pro",
             base_url="https://api.moonshot.cn/v1",
             web_search_adapter="moonshot_kimi",
+            # Saved profiles still carry the old search model; it must not
+            # be sent anywhere.
             web_search_model="kimi-k2.6",
         ),
         api_key="moonshot-key",
@@ -1455,16 +1434,71 @@ def test_web_search_dispatches_to_moonshot_kimi_backend(
         resolver=_public_resolver,
     )
 
+    assert len(calls) == 1
+    assert calls[0]["text_query"] == "αναζήτηση στο Kimi"
+    # No server-side domain filter exists, so the most results are requested
+    # and filtered locally.
+    assert calls[0]["limit"] == 20
+    assert 1 <= int(calls[0]["timeout_seconds"]) <= 60
+    assert "model" not in calls[0]
+    assert "tools" not in calls[0]
     assert result["backend"] == "moonshot_kimi"
-    assert result["response_id"] == "kimi_final"
-    assert result["queries"] == ["kimi search"]
+    assert result["answer"] == ""
+    assert result["queries"] == ["αναζήτηση στο Kimi"]
     assert result["sources"] == [
         {
             "url": "https://docs.example.com/kimi",
             "title": "Kimi Docs",
-            "snippet": "Kimi snippet",
+            "snippet": "Οδηγός για την αναζήτηση",
         }
     ]
+
+
+def test_moonshot_kimi_search_caps_limit_and_timeout_and_reports_empty_results() -> None:
+    from alysis_code.tools.web_search_provider_adapters import (
+        ProviderWebSearchError,
+        moonshot_kimi_search,
+    )
+
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://api.moonshot.ai/v1/tools/search"
+        bodies.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"search_results": []})
+
+    with pytest.raises(ProviderWebSearchError, match="did not return sources"):
+        moonshot_kimi_search(
+            query="kimi search",
+            base_url="https://api.moonshot.ai/v1/",
+            api_key="moonshot-key",
+            model="",
+            max_results=50,
+            allowed_domains=None,
+            timeout_s=120.0,
+            transport=httpx.MockTransport(handler),
+            resolver=_public_resolver,
+        )
+
+    assert bodies == [{"text_query": "kimi search", "limit": 20, "timeout_seconds": 60}]
+
+
+def test_moonshot_kimi_search_is_ready_without_a_search_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ALYSIS_WEB_SEARCH_PROVIDER", raising=False)
+    monkeypatch.delenv("ALYSIS_WEB_SEARCH_MODEL", raising=False)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    cfg = AppConfig(
+        model="",
+        base_url="https://api.moonshot.ai/v1",
+        web_search_adapter="moonshot_kimi",
+    )
+
+    runtime = resolve_web_search_runtime(cfg=cfg, api_key="moonshot-key", strict=True)
+
+    assert runtime is not None
+    assert runtime.provider == "moonshot_kimi"
 
 
 def test_web_search_dispatches_to_zhipu_web_search_backend(

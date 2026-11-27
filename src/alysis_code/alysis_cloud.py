@@ -190,6 +190,11 @@ def avatar_url_prefix() -> str:
     return f"{_project_url()}/storage/v1/object/public/avatars/"
 
 
+def apps_url() -> str:
+    """Apps of the brokered catalog (hub plugins), with the saved Alysis device key."""
+    return _function_url("apps")
+
+
 def cloud_bots_url() -> str:
     """Account-scoped Cloud Bots access and service discovery."""
     return _function_url("cloud-bots")

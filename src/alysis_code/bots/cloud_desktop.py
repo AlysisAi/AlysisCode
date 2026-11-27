@@ -20,7 +20,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..cancellation import CooperativeCancellationError
-from . import diagnostics
+from . import cloud_reply_parts, diagnostics
 from .compute import (
     ComputeCreationRefused,
     ComputeError,
@@ -28,6 +28,8 @@ from .compute import (
     ComputerIdentity,
     ComputerRef,
     ComputeStopped,
+    ComputeUncertain,
+    validate_command,
     wait_for,
 )
 from .computer import ComputerLocks
@@ -50,14 +52,111 @@ MODULE = "alysis_code.bots.cloud_desktop_worker"
 PYTHON = "/opt/alysis/.venv/bin/python"
 # A native disk image need not retain OCI ENV metadata or an editable install.
 # Use only the qualified image's fixed source root, independent of ambient env.
+SOURCE_ROOT = "/opt/alysis/src"
 BOOTSTRAP = (
-    'import runpy,sys; sys.path.insert(0,"/opt/alysis/src"); '
+    f'import runpy,sys; sys.path.insert(0,"{SOURCE_ROOT}"); '
     f'runpy.run_module("{MODULE}",run_name="__main__")'
 )
+# Sent with each command that may need it, so every published computer image can keep a reply
+# larger than its provider returns of a command's output and give it in parts.
+REPLY_PARTS = Path(cloud_reply_parts.__file__).read_text(encoding="utf-8")
+REQUEST_IN_PARTS = (
+    REPLY_PARTS
+    + f"\nsys.path.insert(0, {SOURCE_ROOT!r})\nrun_request({MODULE!r}, int(sys.argv.pop()))\n"
+)
+READ_PART = REPLY_PARTS + "\nserve_part()\n"
+# Room left in a command's output for the receipt around a reply or a part.
+OUTPUT_MARGIN = 4096
+# The largest reply read in parts: twice the bridge's own wire allowance (cloud_desktop_worker).
+MAX_KEPT_REPLY = 8 * 1024 * 1024
+PART_ATTEMPTS = 3
 
 
-def worker_argv(mode, session, *args):
-    return [PYTHON, "-I", "-c", BOOTSTRAP, mode, session, *args]
+def worker_argv(mode, session, *args, output_bytes=None):
+    """The command that runs the computer's bridge client. output_bytes: how much of a command's
+    output the provider returns, when it returns less than a whole reply can be. A request's reply
+    larger than that is then kept on the computer and read in parts (cloud_reply_parts), as long
+    as that wrapper still fits a command's bounds; otherwise the request goes as it always did."""
+    plain = [PYTHON, "-I", "-c", BOOTSTRAP, mode, session, *args]
+    if mode != "request" or output_bytes is None:
+        return plain
+    in_parts = [
+        PYTHON,
+        "-I",
+        "-c",
+        REQUEST_IN_PARTS,
+        mode,
+        session,
+        *args,
+        str(output_bytes - OUTPUT_MARGIN),
+    ]
+    try:
+        validate_command(in_parts, 1)
+    except ValueError:
+        return plain
+    return in_parts
+
+
+def provider_output_bytes(provider):
+    """What the provider declares it returns of a command's output, or None for all of it."""
+    value = getattr(provider, "command_output_bytes", None)
+    if type(value) is int and value >= 16 * OUTPUT_MARGIN:
+        return value
+    return None
+
+
+def part_bytes(output_bytes):
+    """The bytes of a kept reply one command returns: base64 of them, with the part's receipt,
+    fits in what the provider returns."""
+    return (output_bytes - OUTPUT_MARGIN) // 4 * 3
+
+
+def kept_reply(text):
+    """The receipt for a reply kept on the computer (cloud_reply_parts.keep), or None when the
+    command printed its reply itself."""
+    try:
+        receipt = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(receipt, dict) or set(receipt) != {"parts"}:
+        return None
+    kept = receipt["parts"]
+    if (
+        not isinstance(kept, dict)
+        or set(kept) != {"name", "bytes", "sha256"}
+        or not isinstance(kept["name"], str)
+        or len(kept["name"]) != 32
+        or not set(kept["name"]) <= set("0123456789abcdef")
+        or type(kept["bytes"]) is not int
+        or kept["bytes"] < 1
+        or not isinstance(kept["sha256"], str)
+        or len(kept["sha256"]) != 64
+        or not set(kept["sha256"]) <= set("0123456789abcdef")
+    ):
+        raise _UnmatchedReceipt("Cloud action has a malformed receipt; outcome is uncertain.")
+    if kept["bytes"] > MAX_KEPT_REPLY:
+        error = ComputeReplyTooLarge("The computer's reply exceeds what this host reads.")
+        error.facts = {"kept_bytes": kept["bytes"], "over_allowance": True}
+        raise error
+    return kept
+
+
+def _part(receipt, size, offset, length):
+    """One part's bytes from its command receipt (cloud_reply_parts.read_part), checked."""
+    if receipt.exit_code != 0:
+        raise ValueError("The computer did not give this part.")
+    reply = json.loads(receipt.stdout)
+    if (
+        not isinstance(reply, dict)
+        or reply.get("bytes") != size
+        or reply.get("offset") != offset
+        or not isinstance(reply.get("part"), str)
+    ):
+        raise ValueError("The computer gave another part.")
+    data = base64.b64decode(reply["part"], validate=True)
+    if len(data) != length:
+        raise ValueError("The computer gave a part of another size.")
+    return data
 
 
 # Requests that only read the computer: when one's reply is too large to receive, nothing on the
@@ -73,6 +172,117 @@ def reads_only(operation, arguments):
     if operation == "browser_call":
         return isinstance(arguments, dict) and arguments.get("method") in READ_ONLY_BROWSER_METHODS
     return operation in READ_ONLY_OPERATIONS
+
+
+class ComputerReadUnconfirmed(DesktopError):
+    """A request that only reads the computer got no complete answer. Reading changes nothing, so
+    the computer keeps working and the reader may look again or ask for less."""
+
+
+class _UnmatchedReceipt(ValueError):
+    """The guest command ended, but without this request's complete receipt."""
+
+
+# How long one request may take, end to end, through the provider.
+REQUEST_SECONDS = 50
+# The task event (and diagnostics entry) for a request whose receipt did not arrive whole.
+RECEIPT_EVENT = "computer_receipt_unconfirmed"
+# Reply shapes that mean the computer's dispatcher gave no answer of its own.
+_NO_ANSWER = frozenset({"empty", "unreadable", "bridge_failed"})
+# Run on the computer after a request got no answer, to tell a dying computer (out of memory, its
+# dispatcher gone) from a slow or cut answer. Kernel counters and a process count only.
+GUEST_PROBE = f"""
+import json, os, sys
+def table(path):
+    values = {{}}
+    try:
+        with open(path) as stream:
+            for line in stream:
+                parts = line.replace(":", " ").split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    values[parts[0]] = int(parts[1])
+    except OSError:
+        pass
+    return values
+session, bridges = sys.argv[1].encode(), 0
+for pid in os.listdir("/proc"):
+    if pid.isdigit() and int(pid) != os.getpid():
+        try:
+            with open("/proc/" + pid + "/cmdline", "rb") as stream:
+                words = stream.read().split(b"\\0")
+        except OSError:
+            continue
+        if b"{MODULE}" in words and session in words:
+            bridges += 1
+vm, memory = table("/proc/vmstat"), table("/proc/meminfo")
+print(json.dumps({{
+    "oom_kills": vm.get("oom_kill"),
+    "mem_total_kib": memory.get("MemTotal"),
+    "mem_available_kib": memory.get("MemAvailable"),
+    "bridges": bridges,
+}}))
+"""
+PROBE_SECONDS = 10
+
+
+def _size(value):
+    if isinstance(value, bytes):
+        return len(value)
+    return len(value.encode("utf-8", "surrogatepass")) if isinstance(value, str) else 0
+
+
+def _reply_shape(text, identity, session):
+    if not text.strip():
+        return "empty"
+    try:
+        reply = json.loads(text)
+    except ValueError:
+        return "unreadable"
+    if not isinstance(reply, dict):
+        return "unreadable"
+    if "id" not in reply and isinstance(reply.get("error"), str):
+        # The guest bridge's last resort (cloud_desktop_worker): no answer from the dispatcher.
+        return "bridge_failed"
+    if set(reply) == {"parts"}:
+        # A reply kept on the computer, to read in parts (cloud_reply_parts).
+        return "kept"
+    if reply.get("id") != identity or reply.get("session") != session:
+        return "other_request"
+    if isinstance(reply.get("result"), dict) ^ isinstance(reply.get("error"), str):
+        return "matched"
+    return "incomplete"
+
+
+def receipt_facts(error, receipt, identity, session):
+    """What tells apart why a request's receipt did not arrive whole: the provider's own facts
+    (its HTTP status and error code, bytes received, a deadline or allowance crossed, the
+    transport's error class), the guest command's exit status, how much stdout and stderr arrived,
+    whether stdout was cut, and the reply's shape. Counts, flags and identifiers only: never the
+    output, the request or an error's text."""
+    facts = {"exception": type(error).__name__}
+    provided = getattr(error, "facts", None)
+    if isinstance(provided, dict):
+        for key, value in provided.items():
+            if isinstance(value, bool | int | float) or (
+                isinstance(value, str) and len(value) <= 80
+            ):
+                facts[key] = value
+    if receipt is not None:
+        stdout = receipt.stdout
+        text = stdout.decode("utf-8", "replace") if isinstance(stdout, bytes) else stdout
+        text = text if isinstance(text, str) else ""
+        shape = _reply_shape(text, identity, session)
+        facts.update(
+            exit_code=receipt.exit_code if type(receipt.exit_code) is int else None,
+            stdout_bytes=_size(stdout),
+            stderr_bytes=_size(receipt.stderr),
+            reply=shape,
+            # The worker prints one JSON object: one that starts but does not end was cut.
+            stdout_cut=shape == "unreadable"
+            and text.lstrip().startswith("{")
+            and not text.rstrip().endswith("}"),
+        )
+    return {key: value for key, value in facts.items() if value is not None}
 
 
 class CloudDesktopFactory:
@@ -1207,6 +1417,64 @@ class CloudDesktop:
             raise DesktopError("Computer stream operation rejected; inspect before retrying.")
         return reply["result"]
 
+    def _record_unconfirmed(self, operation, arguments, error, receipt, identity, started, *, kept):
+        """Record, for support, why a request's receipt did not arrive whole (receipt_facts):
+        in the task's events and the diagnostics file. Never the request, its output or an
+        error's text. Never raises: a diagnostic must not replace the failure it describes."""
+        try:
+            facts = receipt_facts(error, receipt, identity, self.identity.allocation_id)
+            method = arguments.get("method") if isinstance(arguments, dict) else None
+            facts.update(
+                operation=operation,
+                read_only=reads_only(operation, arguments),
+                computer_kept=kept,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                timeout_s=REQUEST_SECONDS,
+                provider=self.ref.provider,
+            )
+            if operation == "browser_call" and isinstance(method, str):
+                facts["method"] = method
+            facts = {
+                key: value
+                for key, value in facts.items()
+                if not isinstance(value, str) or (value.isprintable() and len(value) <= 80)
+            }
+            if (
+                facts.get("reply") in _NO_ANSWER
+                or facts.get("timed_out")
+                or facts.get("deadline_expired")
+            ):
+                facts.update(self._probe_guest())
+        except Exception:
+            facts = {"exception": type(error).__name__, "operation": str(operation)[:40]}
+        diagnostics.record(RECEIPT_EVENT, error, **facts)
+        if self._store is not None and self._task_id is not None:
+            try:
+                self._store.event(self._account, self._task_id, RECEIPT_EVENT, facts)
+            except Exception:
+                pass  # A diagnostic write must not replace the failure it describes.
+
+    def _probe_guest(self):
+        """After a request got no answer from the computer's dispatcher: whether the kernel has
+        killed processes for memory, how much memory is left, and whether this session's
+        dispatcher still runs. A failed probe says only that it failed."""
+        try:
+            receipt = self.provider.run(
+                self.ref,
+                [PYTHON, "-I", "-c", GUEST_PROBE, self.identity.allocation_id],
+                timeout=PROBE_SECONDS,
+            )
+            value = json.loads(receipt.stdout) if receipt.exit_code == 0 else None
+        except (ComputeError, ValueError, TypeError):
+            value = None
+        if not isinstance(value, dict):
+            return {"guest_probe": False}
+        facts = {"guest_probe": True}
+        for key in ("oom_kills", "mem_total_kib", "mem_available_kib", "bridges"):
+            if type(value.get(key)) is int:
+                facts["guest_" + key] = value[key]
+        return facts
+
     def _request(self, operation, arguments, *, cancel):
         with self._lock:
             if self._closed or self._stop.is_set():
@@ -1253,31 +1521,27 @@ class CloudDesktop:
             payload = json.dumps(request).encode()
             if len(payload) > 48000:
                 raise DesktopError("Cloud computer request exceeds its allowance.")
+            output_bytes = provider_output_bytes(self.provider)
             argv = worker_argv(
-                "request", self.identity.allocation_id, base64.b64encode(payload).decode()
+                "request",
+                self.identity.allocation_id,
+                base64.b64encode(payload).decode(),
+                output_bytes=output_bytes,
             )
             # Cancellation can stop the entire VM while its RPC is outstanding.
             # Never retry the command, even if the transport response is lost.
-            pool = ThreadPoolExecutor(max_workers=1)
-            future = None
             matched = False
+            receipt = None
+            started = time.monotonic()
             try:
+                receipt = self._run_cancellable(argv, cancel)
                 if cancel() or self._stop.is_set():
                     raise CooperativeCancellationError("Cloud computer operation cancelled.")
-                future = pool.submit(
-                    self.provider.run,
-                    self.ref,
-                    argv,
-                    timeout=50,
-                )
-                while not future.done():
-                    if cancel() or self._stop.is_set():
-                        raise CooperativeCancellationError("Cloud computer operation cancelled.")
-                    time.sleep(0.05)
-                receipt = future.result()
-                if cancel() or self._stop.is_set():
-                    raise CooperativeCancellationError("Cloud computer operation cancelled.")
-                reply = json.loads(receipt.stdout)
+                text = receipt.stdout
+                kept = kept_reply(text) if receipt.exit_code == 0 else None
+                if kept is not None:
+                    text = self._read_kept(kept, output_bytes, cancel)
+                reply = json.loads(text)
                 if (
                     receipt.exit_code != 0
                     or not isinstance(reply, dict)
@@ -1287,7 +1551,7 @@ class CloudDesktop:
                         isinstance(reply.get("result"), dict) ^ isinstance(reply.get("error"), str)
                     )
                 ):
-                    raise ComputerActionUncertain(
+                    raise _UnmatchedReceipt(
                         "Cloud action has no matching complete receipt; outcome is uncertain."
                     )
                 matched = True
@@ -1322,21 +1586,33 @@ class CloudDesktop:
                 self._lifecycle(self.owner, "failed")
                 self.close()
                 raise DesktopError(str(stopped)) from None
-            except ComputeReplyTooLarge:
-                if not reads_only(operation, arguments):
-                    self._lifecycle(self.owner, "failed")
-                    self.close()
-                    raise ComputerActionUncertain(
-                        "Cloud operation interrupted; no success is confirmed."
+            except (ComputeError, ValueError, TypeError) as error:
+                if matched:
+                    # The computer's own complete answer, refusing the request (a browser's
+                    # refusal of invalid input is also a ValueError): nothing is uncertain.
+                    raise
+                # No complete receipt: the request may or may not have run, and is never
+                # replayed. A read changed nothing, so the computer keeps working.
+                read = reads_only(operation, arguments)
+                self._record_unconfirmed(
+                    operation, arguments, error, receipt, identity, started, kept=read
+                )
+                if read and isinstance(error, ComputeReplyTooLarge):
+                    raise ComputerReplyTooLarge(
+                        "The computer's reply was too large to receive in one step; nothing changed."
                     ) from None
-                raise ComputerReplyTooLarge(
-                    "The computer's reply was too large to receive in one step; nothing changed."
-                ) from None
-            except (ComputeError, ValueError, TypeError):
+                if read:
+                    raise ComputerReadUnconfirmed(
+                        "This read got no complete answer from the computer. Reading changes "
+                        "nothing, so the computer and its pages are as they were: look again, or "
+                        "read less at once (a page's text, or a part of it)."
+                    ) from None
                 self._lifecycle(self.owner, "failed")
                 self.close()
                 raise ComputerActionUncertain(
-                    "Cloud operation interrupted; no success is confirmed."
+                    str(error)
+                    if isinstance(error, _UnmatchedReceipt)
+                    else "Cloud operation interrupted; no success is confirmed."
                 ) from None
             except DesktopError:
                 # Validation rejection with a matched receipt is safe to inspect;
@@ -1345,8 +1621,61 @@ class CloudDesktop:
                     self._lifecycle(self.owner, "failed")
                     self.close()
                 raise
-            finally:
-                pool.shutdown(wait=False, cancel_futures=True)
+
+    def _run_cancellable(self, argv, cancel):
+        """Run one command on the computer, giving up waiting as soon as the task is cancelled
+        or the computer stops. The command itself is never retried here."""
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            if cancel() or self._stop.is_set():
+                raise CooperativeCancellationError("Cloud computer operation cancelled.")
+            future = pool.submit(self.provider.run, self.ref, argv, timeout=REQUEST_SECONDS)
+            while not future.done():
+                if cancel() or self._stop.is_set():
+                    raise CooperativeCancellationError("Cloud computer operation cancelled.")
+                time.sleep(0.05)
+            return future.result()
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _read_kept(self, kept, output_bytes, cancel):
+        """The text of a reply the computer kept because it was larger than the provider returns
+        of one command's output: read part by part, then checked whole against the receipt's size
+        and SHA-256. Reading a part changes nothing, so a lost part is asked for again."""
+        size, step = kept["bytes"], part_bytes(output_bytes)
+        data = bytearray()
+        for offset in range(0, size, step):
+            length = min(step, size - offset)
+            argv = [
+                PYTHON,
+                "-I",
+                "-c",
+                READ_PART,
+                self.identity.allocation_id,
+                kept["name"],
+                str(offset),
+                str(step),
+            ]
+            for attempt in range(PART_ATTEMPTS):
+                try:
+                    data += _part(self._run_cancellable(argv, cancel), size, offset, length)
+                    break
+                except ComputeStopped:
+                    raise
+                except (ComputeError, ValueError, TypeError) as error:
+                    if attempt == PART_ATTEMPTS - 1:
+                        lost = ComputeUncertain("A part of the computer's reply did not arrive.")
+                        lost.facts = {
+                            "kept_bytes": size,
+                            "parts_read": offset // step,
+                            "part_error": type(error).__name__,
+                        }
+                        raise lost from None
+        if hashlib.sha256(data).hexdigest() != kept["sha256"]:
+            mismatch = ComputeUncertain("The computer's reply did not match its receipt.")
+            mismatch.facts = {"kept_bytes": size, "parts_read": -(-size // step), "checksum": False}
+            raise mismatch
+        return data.decode("utf-8")
 
     def human_input(self, event, *, surface="desktop"):
         with self._lock:

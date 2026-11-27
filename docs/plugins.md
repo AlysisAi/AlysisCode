@@ -321,6 +321,38 @@ resource `https://mcp.intercom.com`; its reviewed tools cover support search, ar
 and internal notes, excluding customer replies and Fin Operator. Changes require
 approval for every call. See the descriptor for the complete pinned tool list.
 
+### Hub plugins (`hub.<app>`): apps of the catalog Alysis's server brokers
+
+A hub plugin is one app of a large catalog reached through Alysis's own server (the `apps`
+function). Nothing is installed for it, and no app's sign-in is on this computer: the engine
+calls Alysis's server with the signed-in account's device key, and the server talks to the
+catalog's provider. The desktop app never holds that key, never sends a hub catalog and never
+makes a hub call.
+
+- `alysis apps [catalog | connections | connect <app> | disconnect <connection>] --json` lists the
+  apps the account may connect (with this month's allowance of app calls), connects one (a
+  sign-in page the person opens) and removes a connection. Built-in plugins are never listed:
+  they stay free. An app with nothing to sign in to (`sign_in: false`, a public feed) is added
+  at once (`added: true`, no page) and shows as a connection with the id `added-<app>`.
+- Each plan includes a number of app calls a month and of connected apps. Past the included
+  calls, Alpha and Pro pay from the plan's credits (`credits_per_call` in the allowance; the
+  call is refused with `credits_used` once they're used up); Free and Beta stop at
+  `allowance_used`. A call that never reached the app is given back, credits included.
+- A session that asks for them (`session.create` `hub_apps: true`) gets the account's connected
+  apps, loaded by the engine (`hub_apps.load_hub_catalogs`); its result says how many loaded,
+  which failed, or why none did (`hub_apps`). Failing to load them never fails the session.
+- The engine decides each action's effect by one rule (`mcp/plugin_hub.py`): an action whose
+  hints say it only reads runs when Alysis tested the app, and otherwise follows the approval
+  mode; any other action (creates, updates, deletes, or declares nothing) asks a person on every
+  call, also in Full access. The approval is labelled `Hub`.
+- Ids are `hub.` plus at most 24 lowercase letters, digits or underscores; actions are
+  `mcp__hub_<app>__<action>`, without the app's id repeated, at most 64 characters. At most 16
+  apps per session and 300 actions per app; a call's arguments may take 32 KiB.
+- Owls in the local service use the same connected apps (`bots/owl_hub_apps.py`): the service
+  loads them with the account's key and makes each call itself after the owl's approval step
+  for the action's effect; each owl's app switches cover them (`hub.<app>`). The desktop app
+  can't publish a hub app to the service. A hosted service has no account key and offers none.
+
 ### `[[components.tool]]`
 
 | Field | Type | Required | Description |

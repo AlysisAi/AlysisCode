@@ -2008,6 +2008,9 @@ class McpManager:
     def _build_live_client(self, server: ResolvedMcpServer) -> _McpLiveClient:
         from .native_relay_guard import REFUSAL, is_reserved_relay_name, legacy_windows_launch
 
+        # Settings that could not be resolved (a missing ${VAR}) fail this server alone.
+        if server.settings_error:
+            raise ConfigError(server.settings_error)
         # LR-41 permits only the selected legacy Windows interactive tuple.
         # This is availability, not W11 admission. The old standalone Mac socket
         # relay remains denied; a task-owned Mac launch needs its actual owner.

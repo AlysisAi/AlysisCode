@@ -247,7 +247,13 @@ def test_every_newer_acting_tool_works_by_the_persons_request_with_its_review(la
             source = result["source_id"]
         assert sent(browser, *INPUT) == ["fill", "press_key", "drag"]
         assert [name for name, _, _ in reviewed] == [name for name, _ in steps]
-        assert all(options == {"website_effects": ()} for _, _, options in reviewed)
+        # Filling the search field stays on the page (its HTML shows it); a key chord or a drag
+        # is for the reviewer.
+        assert [options for _, _, options in reviewed] == [
+            {"website_effects": (), "stays_on_page": True},
+            {"website_effects": ()},
+            {"website_effects": ()},
+        ]
         # A key chord with Enter in the search field submits its search form: nothing settled.
         chord = reviewed[1][1]["website_effects"]
         assert chord["effects"] == [] and chord["form"]["submits"] is True
@@ -413,7 +419,9 @@ def test_filling_a_search_box_and_pressing_enter_needs_no_card(owl, language):
     assert sent(browser, *INPUT) == ["fill", "press_key"]
     assert runtime.proposals.list(bot["id"]) == []
     assert runtime.action_reviews.list(bot["id"]) == []
-    assert len(script.reviews) == 2
+    # Filling the search and pressing Enter sends a GET search to the shop's own site: no
+    # reviewer. The key chord is reviewed.
+    assert len(script.reviews) == 1
     for review in script.reviews:
         assert "WEBSITE INPUT" in review[0]["content"]
         effects = json.loads(review[1]["content"])["action"]["exact_action"]["observed_context"][

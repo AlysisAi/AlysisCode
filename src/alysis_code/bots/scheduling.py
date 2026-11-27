@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AfterValidator, AwareDatetime, Field, model_serializer, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from .models import Input
 from .routine_access import RoutineNeeds
@@ -54,7 +55,9 @@ class CalendarTiming(Input):
     kind: Literal["daily", "weekly"]
     time: str = Field(pattern=CLOCK_TIME)
     timezone: TimeZoneName
-    weekday: int | None = Field(default=None, ge=0, le=6)
+    # One weekday, as routines made before multi-day weeks were saved; tools and apps give
+    # weekdays, so it is accepted but not offered.
+    weekday: SkipJsonSchema[int | None] = Field(default=None, ge=0, le=6)
     weekdays: list[Annotated[int, Field(ge=0, le=6)]] | None = Field(
         default=None,
         min_length=1,
@@ -96,7 +99,7 @@ class MonthlyTiming(Input):
     day: int = Field(
         ge=1,
         le=31,
-        description="Day of the month, 1 to 31. A month without that day runs on its last day: 31 runs on 30 April and on 28 or 29 February.",
+        description="Day of the month, 1 to 31; a shorter month runs on its last day (31: on 30 April, and 28 or 29 February).",
     )
     time: str = Field(pattern=CLOCK_TIME)
     timezone: TimeZoneName
@@ -112,7 +115,7 @@ class WindowTiming(Input):
     start: str = Field(pattern=CLOCK_TIME, description="The first run of each chosen day, HH:MM.")
     end: str = Field(
         pattern=CLOCK_TIME,
-        description="The latest a run may start that day, HH:MM, later than start. Start 09:00, end 17:00, every 30 minutes runs at 09:00, 09:30 and so on through 17:00.",
+        description="The latest a run may start that day, HH:MM, after start: 09:00 to 17:00 every 30 minutes runs at 09:00, 09:30 and so on through 17:00.",
     )
     weekdays: list[Annotated[int, Field(ge=0, le=6)]] = Field(
         min_length=1,
@@ -154,7 +157,7 @@ class ScheduleProposal(Input):
     # Left out: a new routine needs nothing beyond chat, and an edit keeps what it had.
     needs: RoutineNeeds | None = Field(
         default=None,
-        description="What each run needs beyond chat: the owl's offline computer, its online browser, or exact website origins to interact with. The person sees these and allows them once for this routine; runs get only what they allow, and a run that needs anything else pauses the routine until they allow it. Leave out when runs only reply, read files or memory, or look things up with web_search/web_fetch. In an edit, leave out to keep the routine's current needs.",
+        description="What each run needs beyond chat: the owl's offline computer, its online browser, or exact website origins to act on. The person allows these once for this routine; runs get only that, and a run needing more pauses the routine until they allow it. Leave out when runs only reply, read files or memory, or use web_search/web_fetch, and in an edit to keep its current needs.",
     )
 
 
@@ -163,9 +166,9 @@ class ScheduleProposal(Input):
 RoutineModelId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")]
 
 ROUTINE_MODEL_DESCRIPTION = (
-    "The model each run thinks with: one id from models.offered in list_schedules. Leave it out "
-    "for your own model (in an edit, to keep the routine's); null sets an edited routine back to "
-    "your own. Give one only when the person asks this routine to use a particular model."
+    "The model each run thinks with, only when the person asks for one: an id from "
+    "models.offered in list_schedules. Leave it out for your own model (in an edit, to keep the "
+    "routine's); null sets an edited routine back to your own."
 )
 
 
@@ -190,7 +193,7 @@ class DelayTiming(Input):
     delay_seconds: int = Field(
         ge=1,
         le=31536000,
-        description="The user's requested duration expressed in seconds. The service adds it to the original message time; do not compute a clock timestamp.",
+        description="The requested duration in seconds. The service adds it to the message's time; never work out a clock time.",
     )
 
 
@@ -201,7 +204,7 @@ class ScheduleRequest(ScheduleProposal):
         DelayTiming | OnceTiming | IntervalTiming | CalendarTiming | MonthlyTiming | WindowTiming,
         Field(discriminator="kind"),
     ] = Field(
-        description="For a one-time relative delay use kind=after and delay_seconds; the service calculates the deadline from the user's message time. For a specific clock time use kind=once and at with an explicit offset. Other variants recur: interval (every N minutes around the clock), daily, weekly, monthly (a day of the month), and window (every N minutes between start and end on chosen weekdays, such as every 30 minutes 09:00-17:00 Monday to Friday). Supply a JSON object, not a JSON-encoded string.",
+        description="A JSON object, not a JSON-encoded string. Once after a delay: kind=after with delay_seconds (the service counts from the message's time). Once at a stated time: kind=once, at with its UTC offset. Recurring: interval (every N minutes around the clock), daily, weekly, monthly (a day of the month) or window (every N minutes from start to end on chosen weekdays, such as every 30 minutes 09:00-17:00 Monday to Friday).",
         json_schema_extra={"type": "object"},
     )
 

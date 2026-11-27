@@ -134,6 +134,8 @@ def _write_multi_server_stdio_config(
             }
         elif "args" in spec:
             server_payload["args"] = list(spec["args"])
+        if "env" in spec:
+            server_payload["env"] = {**dict(server_payload.get("env") or {}), **spec["env"]}
         for key in (
             "enabled",
             "enabled_in",
@@ -2579,6 +2581,39 @@ def test_mcp_manager_skips_a_server_that_fails_to_start_and_keeps_the_others(
         assert broken["exposed_tool_count"] == 0
         with pytest.raises(RuntimeError, match="did not start when this session began"):
             manager.restart_server(server_id="broken")
+    finally:
+        manager.close()
+
+
+def test_mcp_manager_runs_without_a_server_whose_variable_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ALYSIS_TEST_UNSET_TOKEN", raising=False)
+    manager = _load_multi_server_manager(
+        tmp_path,
+        monkeypatch,
+        servers={
+            "alpha": {"fixture_payload": {"tools_pages": [_echo_tools(2, prefix="echo")]}},
+            "needs-token": {
+                "fixture_payload": {"tools_pages": [_echo_tools(1, prefix="never")]},
+                "env": {"TOKEN": "${ALYSIS_TEST_UNSET_TOKEN}"},
+            },
+        },
+        runtime_kind=RuntimeKind.INTERACTIVE_CHAT,
+    )
+    try:
+        aliases = [binding.tool_alias for binding in manager.tool_bindings]
+        assert aliases == ["mcp__alpha__echo_00", "mcp__alpha__echo_01"]
+
+        errors = manager.server_startup_errors()
+        assert list(errors) == ["needs-token"]
+        assert "${ALYSIS_TEST_UNSET_TOKEN}" in errors["needs-token"]
+        assert manager.catalog_snapshot_metadata()["failed_server_ids"] == ["needs-token"]
+        status = manager.server_lifecycle_status(server_id="needs-token")
+        assert status["connection_state"] == "failed"
+        assert status["exposed_tool_count"] == 0
+        with pytest.raises(RuntimeError, match="did not start when this session began"):
+            manager.restart_server(server_id="needs-token")
     finally:
         manager.close()
 

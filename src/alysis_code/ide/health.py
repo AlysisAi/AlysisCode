@@ -22,6 +22,7 @@ from ..host_actions import (
     HOST_ACTIONS,
 )
 from ..mcp.connector_host import MAX_CONNECTOR_PLUGINS, VERIFIED_CONNECTOR_PLUGIN_IDS
+from ..mcp.plugin_hub import MAX_HUB_APPS, MAX_HUB_TOOLS
 from ..surface.events import EVENT_REGISTRY
 from .activity_events import activity_capabilities
 from .approval_binding import (
@@ -314,6 +315,17 @@ def capabilities_payload() -> dict[str, Any]:
                 "max_plugins": MAX_CONNECTOR_PLUGINS,
                 # Alysis-reviewed vendor plugins bound through the same channel.
                 "verified_plugins": list(VERIFIED_CONNECTOR_PLUGIN_IDS),
+            },
+            # Apps of the catalog Alysis's server brokers (hub.<app>): a session that asks for
+            # them (hub_apps) gets the signed-in account's connected apps, loaded and called by
+            # the engine with the account's own key; `alysis apps --json` lists and connects them.
+            "hub_apps": {
+                "version": 1,
+                "session_param": "hub_apps",
+                "result": "hub_apps",
+                "command": "apps",
+                "max_apps": MAX_HUB_APPS,
+                "max_tools": MAX_HUB_TOOLS,
             },
             "github_repository_policy_v1": {"supported": True, "version": 1},
             "github_mcp_plugin": {

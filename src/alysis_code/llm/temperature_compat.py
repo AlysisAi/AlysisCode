@@ -4,6 +4,7 @@ import re
 
 ANTHROPIC_DEPRECATED_SAMPLING_PARAMETERS = "anthropic_sampling_parameters_deprecated"
 GEMINI_3_DEFAULT_TEMPERATURE = "gemini_3_default_temperature"
+GEMINI_SAMPLING_PARAMETERS_REMOVED = "gemini_sampling_parameters_removed"
 DEEPSEEK_THINKING_TEMPERATURE_UNSUPPORTED = "deepseek_thinking_temperature_unsupported"
 QWEN_QVQ_DEFAULT_TEMPERATURE = "qwen_qvq_default_temperature"
 KIMI_FIXED_TEMPERATURE = "kimi_fixed_temperature"
@@ -14,10 +15,14 @@ _CLAUDE_SONNET_VERSION_RE = re.compile(
     r"claude[-_.]sonnet[-_.](?P<major>\d+)(?:[-_.](?P<minor>\d+))?"
 )
 _GEMINI_3_RE = re.compile(r"(?:^|[/.:_-])gemini[-_.]?3(?:[-_.]|$)")
+# Gemini 4 and later generations: sampling parameters were removed from the
+# API and are ignored when sent.
+_GEMINI_4_PLUS_RE = re.compile(r"(?:^|[/.:_-])gemini[-_.]?(?:[4-9]|[1-9]\d+)(?:[-_.]|$)")
 _DEEPSEEK_V4_RE = re.compile(r"(?:^|[/.:_-])deepseek[-_.]v?4(?:[-_.]|$)")
 _QWEN_QVQ_RE = re.compile(r"(?:^|[/.:_-])qvq(?:[-_.]|$)")
 _CURRENT_KIMI_RE = re.compile(r"(?:^|[/.:_-])kimi[-_.]?k(?:3|2[-_.]?(?:6|7))(?:[-_.]|$)")
-_GPT6_RE = re.compile(r"(?:^|/)gpt-6(?:\.1)?-(?:astra|sol|luna)(?:$|-)")
+# Every GPT-6 point release and tier (6, 6.1, 6.2, ...; Astra, Sol, Terra, Luna).
+_GPT6_RE = re.compile(r"(?:^|/)gpt-6(?:\.\d+)?-(?:astra|sol|terra|luna)(?:$|-)")
 
 
 def documented_temperature_omit_reason(
@@ -63,6 +68,11 @@ def documented_temperature_omit_reason(
     if _GEMINI_3_RE.search(normalized_model):
         return GEMINI_3_DEFAULT_TEMPERATURE
 
+    # https://ai.google.dev/gemini-api/docs/generate-content/latest-model:
+    # "Remove temperature, top_p, top_k, and candidate_count from requests."
+    if _GEMINI_4_PLUS_RE.search(normalized_model):
+        return GEMINI_SAMPLING_PARAMETERS_REMOVED
+
     if _QWEN_QVQ_RE.search(normalized_model):
         return QWEN_QVQ_DEFAULT_TEMPERATURE
 
@@ -83,6 +93,7 @@ __all__ = [
     "ANTHROPIC_DEPRECATED_SAMPLING_PARAMETERS",
     "DEEPSEEK_THINKING_TEMPERATURE_UNSUPPORTED",
     "GEMINI_3_DEFAULT_TEMPERATURE",
+    "GEMINI_SAMPLING_PARAMETERS_REMOVED",
     "GPT6_REASONING_TEMPERATURE_UNSUPPORTED",
     "KIMI_FIXED_TEMPERATURE",
     "QWEN_QVQ_DEFAULT_TEMPERATURE",

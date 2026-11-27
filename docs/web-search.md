@@ -29,7 +29,7 @@ model contains its own search engine.
 | Google Gemini | `gemini_grounding` | Gemini 2.5 and current Gemini 3.x models through Google Search grounding. |
 | Alibaba Qwen | `dashscope_chat` | Qwen 3.7 and 3.6 use the Responses API `web_search` tool. Qwen 3.5 and supported older Qwen aliases use Chat Completions `enable_search`. The preset pins search to `qwen3.7-plus` when a selected coding model has no search support. |
 | Zhipu / GLM | `zhipu_web_search` | Uses Zhipu's first-party Web Search API independently of the selected GLM chat model. |
-| Moonshot / Kimi | `moonshot_kimi` | Uses `builtin_function.$web_search` pinned to `kimi-k2.6`. Moonshot currently flags `$web_search` as "being updated; not recommended in the near term" on its pricing pages. |
+| Moonshot / Kimi | `moonshot_kimi` | Calls Moonshot's standalone Web Search endpoint (`POST /v1/tools/search`, $0.002 per call that returns results). It runs no model and returns results without an answer. It replaced the chat-completions `$web_search` builtin, which Moonshot retired on 2026-10-20. The endpoint has no domain filter, so allowed domains are filtered locally. |
 | MiniMax | `minimax_coding_plan` | Uses the Token Plan search endpoint. A Token Plan key is required; ordinary pay-as-you-go model keys are not interchangeable. |
 | ByteDance Doubao | `volcengine_web_search` | Uses the Ark Responses API `web_search` tool with supported Doubao Seed models. |
 | Groq | `groq_compound` | Uses `groq/compound-mini` as the provider-hosted search system, regardless of the selected Groq chat model. |

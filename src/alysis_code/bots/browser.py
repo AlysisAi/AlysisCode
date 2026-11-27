@@ -46,7 +46,13 @@ from ..ide.managed_browser import (
 )
 from . import diagnostics
 from .browser_drafts import form_draft
-from .browser_effects import UNREADABLE_FRAME, frame_document, origin, structural_effects
+from .browser_effects import (
+    UNREADABLE_FRAME,
+    frame_document,
+    origin,
+    stays_on_page,
+    structural_effects,
+)
 from .browser_tools import (
     DEFINITIONS,
     DIALOG_FRAMES,
@@ -2138,6 +2144,22 @@ class BrowserComputers:
                             )
                             context["website_effects"] = assessment
                             effects_review = {"website_effects": tuple(assessment["effects"])}
+                            # A search, a GET form to the page's own site or a plain link, as
+                            # the page's HTML proves it: the step needs no reviewer (the
+                            # person's rules and review mode still decide; check()). Only an
+                            # element of the page's own document, not another frame's.
+                            if (
+                                drop is None
+                                and not _in_frame(target)
+                                and not assessment["effects"]
+                                and stays_on_page(
+                                    current["data"],
+                                    options["expected_backend_node_id"],
+                                    name,
+                                    args,
+                                )
+                            ):
+                                effects_review["stays_on_page"] = True
                         approval = review_action(
                             name,
                             step_dialog_arguments(args.model_dump()),

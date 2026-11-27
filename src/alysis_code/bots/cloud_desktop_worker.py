@@ -35,12 +35,16 @@ def root_for(session):
     return Path("/tmp") / ("alysis-cloud-" + session)
 
 
+class PipeClosed(DesktopError):
+    """The other end of the computer's pipe went away before a whole message arrived."""
+
+
 def receive(connection):
     data = bytearray()
     while b"\n" not in data:
         chunk = connection.recv(65536)
         if not chunk:
-            raise DesktopError("Computer pipe closed without a receipt.")
+            raise PipeClosed("Computer pipe closed without a receipt.")
         data.extend(chunk)
         if len(data) > MAX_WIRE:
             raise DesktopError("Computer message exceeds its allowance.")
@@ -281,7 +285,12 @@ def serve(session, *, memory_sleep=False):
                 connection, _ = listener.accept()
                 with connection:
                     connection.settimeout(45)
-                    request = receive(connection)
+                    try:
+                        request = receive(connection)
+                    except (PipeClosed, ConnectionError, TimeoutError):
+                        # The bridge client went away before its request arrived whole, so
+                        # nothing ran; the computer stays for the next request.
+                        continue
                     identity = request.get("id")
                     is_input = request.get("operation") == "human_input"
                     memory_read = memory_sleep and request.get("operation") in {
@@ -459,9 +468,16 @@ def serve(session, *, memory_sleep=False):
                         # What the running desktop declared at its start (window elements);
                         # a host offers tools for it only while it is declared.
                         reply["desktop_features"] = sorted(getattr(desktop, "desktop_features", ()))
-                    connection.sendall(
-                        json.dumps(reply, ensure_ascii=False).encode("utf-8") + b"\n"
-                    )
+                    try:
+                        connection.sendall(
+                            json.dumps(reply, ensure_ascii=False).encode("utf-8") + b"\n"
+                        )
+                    except (ConnectionError, TimeoutError):
+                        # The bridge client gave up before this answer (its wait ran out, or
+                        # its command was stopped). The operation ran; its host never got this
+                        # answer and treats the outcome as unconfirmed. Everything open on the
+                        # computer stays for the next request.
+                        pass
     finally:
         screen.close()
         if browser is not None:
