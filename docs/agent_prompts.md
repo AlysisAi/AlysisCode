@@ -1,6 +1,6 @@
 # Agent system prompts
 
-Alysis builds the main agent's system prompt at session creation. The shared
+Alysis Code builds the main agent's system prompt at session creation. The shared
 base text is `SYSTEM_PROMPT` in
 [`prompt_context.py`](../src/alysis_code/agent/prompt_context.py). The same
 module adds applicable sections for editing, skills, delegation, personas, and

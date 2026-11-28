@@ -37,11 +37,12 @@ from pydantic import Field
 from ..cancellation import EventCancellationToken
 from . import documents
 from .files import MAX_FILE_BYTES
-from .models import Input
+from .models import FileInput, Input, NewSeries
 from .store import Conflict
 
 TABLE_TOOL = "query_tables"
-TABLE_TOOLS = (TABLE_TOOL,)
+PRESENT_TABLE = "present_table"
+TABLE_TOOLS = (TABLE_TOOL, PRESENT_TABLE)
 
 MAX_FILES = 8
 # Every table of one call together; past this the person's file is better worked on with the
@@ -117,6 +118,26 @@ class TableQuery(Input):
     max_rows: int = Field(default=DEFAULT_ROWS, ge=1, le=MAX_ROWS)
 
 
+class PresentedQuery(TableQuery):
+    new_series: NewSeries = False
+    keep_rows: bool = Field(
+        default=False,
+        strict=True,
+        description="Confirm an intentional revision with unchanged rows.",
+    )
+    title: str = Field(min_length=1, max_length=90)
+    previous_file_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="Latest saved data result to revise in its original series.",
+    )
+
+
+class QueryEdit(Input):
+    sql: str = Field(min_length=1, max_length=MAX_SQL)
+
+
 # Kept short: every owl with files carries it in each request (owl_toolset.py measures the list).
 DESCRIPTION = (
     "One read-only SQLite SELECT over Library tables (CSV/TSV, JSON list of objects, Excel: a "
@@ -182,6 +203,86 @@ class OwlTables:
         self.store = store
         self.owner = owner
         self.token = token
+
+    def present(self, task: dict, args: PresentedQuery) -> dict:
+        result = self.call(task, args)
+        source_ids = list(dict.fromkeys(args.file_ids))
+
+        # The author sees actual computed values before describing the result. The chat card
+        # retains the full table; this compact receipt fits the normal tool-response budget.
+        def sample_value(value):
+            return value[:95] + "…" if isinstance(value, str) and len(value) > 96 else value
+
+        sample = {
+            "columns": [sample_value(c) for c in result["columns"][:8]],
+            "rows": [[sample_value(v) for v in row[:8]] for row in result["rows"][:4]],
+        }
+        card = {"title": args.title, "sql": args.sql, "max_rows": args.max_rows, **result}
+        raw = json.dumps(card, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+        if len(raw) > 1024 * 1024:
+            raise Conflict(
+                "Narrow the query or use fewer source tables before presenting this result."
+            )
+        identity = hashlib.sha256(task["id"].encode() + raw).hexdigest()[:12]
+        filename = f"{simple_name(args.title, 'result')[:64]}-{identity}.owlquery.json"
+        previous = None
+        if args.previous_file_id:
+            previous = self.store.file(self.owner, task["bot_id"], args.previous_file_id)
+            if not previous.get("query_result"):
+                raise Conflict("Only a saved data result can be revised with present_table.")
+            filename = previous["name"]
+            if not args.keep_rows and set(source_ids) == set(
+                self.store.query_file_sources(self.owner, task["bot_id"], previous["id"])
+            ):
+                original = json.loads(
+                    self.store.file_data(self.owner, task["bot_id"], previous["id"])
+                )
+                if all(
+                    original.get(k) == result.get(k)
+                    for k in ("columns", "rows", "rows_total", "rows_total_at_least")
+                ):
+                    raise Conflict(
+                        "These source versions still produce the same rows as the previous result. "
+                        "For a data correction, use a corrected source version or express it in the SQL. "
+                        "If keeping these rows is intended (for example a title change), pass keep_rows=true. "
+                        "Executed sample: "
+                        + json.dumps(sample, ensure_ascii=False, separators=(",", ":"))
+                    )
+        try:
+            saved = self.store._save_file(
+                self.owner,
+                task["bot_id"],
+                FileInput(name=filename, content="", previous_file_id=args.previous_file_id),
+                source_task_id=task["id"],
+                payload=raw,
+                query_sources={"file_ids": source_ids, "title": args.title},
+            )
+        except Conflict:
+            # A retried call can reach an already saved immutable copy. Only return that exact result.
+            with self.store.connect() as db:
+                row = db.execute(
+                    "SELECT f.id FROM files f JOIN owl_query_files q ON q.file_id=f.id WHERE f.bot_id=? AND f.source_task_id=? AND f.name=? AND f.revision>? "
+                    "ORDER BY f.revision DESC LIMIT 1",
+                    (
+                        task["bot_id"],
+                        task["id"],
+                        filename,
+                        previous["revision"] if previous else 0,
+                    ),
+                ).fetchone()
+            if row is None or self.store.file_data(self.owner, task["bot_id"], row[0]) != raw:
+                raise
+            saved = self.store.file(self.owner, task["bot_id"], row[0])
+        return {
+            "id": saved["id"],
+            "name": saved["name"],
+            "saved": True,
+            "series_id": saved["series_id"],
+            "revision": saved["revision"],
+            "title": args.title,
+            "rows_shown": result["rows_shown"],
+            "executed_sample": sample,
+        }
 
     def call(self, task: dict, args: TableQuery) -> dict:
         self.token.throw_if_cancelled()

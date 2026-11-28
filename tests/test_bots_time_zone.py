@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from bots_task_state import task_state
+from packaging.requirements import Requirement
 from pydantic import ValidationError
 
 from alysis_code.bots.cooperation import PeerRequest, PeerStore
@@ -363,3 +366,19 @@ def test_an_owl_answering_another_owl_knows_the_persons_date(tmp_path):
     system = messages[0]["content"]
     assert "Now for the person, when this task started: " in system
     assert local_time(exchange["created_at"], "Pacific/Auckland") in system
+
+
+def test_windows_installs_carry_the_time_zone_database():
+    # zoneinfo reads the system's time zone database, and Windows has none: without the tzdata
+    # package every zone is refused there and owls fall back to UTC.
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    found = [
+        requirement
+        for requirement in map(Requirement, project["dependencies"])
+        if requirement.name == "tzdata"
+    ]
+    assert len(found) == 1 and found[0].marker is not None
+    assert found[0].marker.evaluate({"sys_platform": "win32"})
+    assert not found[0].marker.evaluate({"sys_platform": "linux"})

@@ -1,23 +1,23 @@
 # MCP
 
-Alysis can connect to external Model Context Protocol (MCP) servers and expose selected MCP tools, resources, roots, and prompts to supported runtimes.
+Alysis Code can connect to external Model Context Protocol (MCP) servers and expose selected MCP tools, resources, roots, and prompts to supported runtimes.
 
 MCP integration is intentionally explicit. User configuration defines connection details, project configuration may only narrow exposure, and readonly sessions do not expose MCP tools.
 
 ## Supported Transports
 
-Alysis supports:
+Alysis Code supports:
 
 - stdio MCP servers
 - synchronous Streamable HTTP MCP servers
 - `tools/list` and `tools/call`
 - optional `roots/list` support for the current workspace root
-- optional listed resource access through Alysis-managed `mcp_resources_list` and `mcp_resource_read`
+- optional listed resource access through Alysis Code-managed `mcp_resources_list` and `mcp_resource_read`
 - optional manual prompt listing and retrieval through `alysis mcp prompts ...`
 - static HTTP headers with `${ENV_VAR}` expansion
 - OAuth for configured HTTP MCP servers through manual `alysis mcp auth ...` commands
 
-Alysis does not currently implement GET SSE listening, resumability, polling, HTTP+SSE fallback, sampling, elicitation, resource subscriptions, resource templates, prompt subscriptions, or broad server-initiated request flows beyond the supported `roots/list` path.
+Alysis Code does not currently implement GET SSE listening, resumability, polling, HTTP+SSE fallback, sampling, elicitation, resource subscriptions, resource templates, prompt subscriptions, or broad server-initiated request flows beyond the supported `roots/list` path.
 
 ## Runtime Exposure
 
@@ -217,7 +217,7 @@ Use `allowed_tools` and `denied_tools` to keep the MCP surface narrow:
 
 If `allowed_tools` is non-empty, only those tool names may be exposed. `denied_tools` removes tools from the effective catalog. A tool cannot appear in both lists.
 
-Alysis assigns local aliases for exposed MCP tools using the server id or configured `tool_prefix`, for example:
+Alysis Code assigns local aliases for exposed MCP tools using the server id or configured `tool_prefix`, for example:
 
 ```text
 mcp__docs__search
@@ -279,7 +279,7 @@ Roots are disabled by default. Enable the current workspace root for a server wi
 }
 ```
 
-When enabled in a supported runtime, Alysis answers `roots/list` with a single `file://` root for the bound workspace. Roots are not exposed in subagents.
+When enabled in a supported runtime, Alysis Code answers `roots/list` with a single `file://` root for the bound workspace. Roots are not exposed in subagents.
 
 ## Resources
 
@@ -291,7 +291,7 @@ Resources are disabled by default. Enable listed read-only resources with:
 }
 ```
 
-When enabled, Alysis lists resources for the session and exposes generic host tools:
+When enabled, Alysis Code lists resources for the session and exposes generic host tools:
 
 - `mcp_resources_list`
 - `mcp_resource_read`
@@ -355,7 +355,7 @@ alysis mcp auth status
 alysis mcp auth logout <server_id>
 ```
 
-OAuth tokens are stored in the user config scope, separate from `mcp.json`. Alysis does not write raw tokens into project config or session diagnostics.
+OAuth tokens are stored in the user config scope, separate from `mcp.json`. Alysis Code does not write raw tokens into project config or session diagnostics.
 
 OAuth currently requires an interactive authorization-code login. Device-code flow, dynamic client registration, token revocation, and browserless paste-back auth are not implemented.
 

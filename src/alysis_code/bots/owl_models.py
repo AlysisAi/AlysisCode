@@ -29,13 +29,25 @@ import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from ..config import AppConfig
 from ..llm.base import ChatClient
 from ..llm.factory import resolve_model_protocol
-from ..llm.protocols import OPENAI_COMPAT_PROTOCOL
+from ..llm.protocols import (
+    ANTHROPIC_MESSAGES_PROTOCOL,
+    OPENAI_COMPAT_PROTOCOL,
+    OPENAI_RESPONSES_PROTOCOL,
+)
+from ..model_reasoning import (
+    contract_reasoning_capabilities,
+    reasoning_client_options,
+    route_reasoning_contract,
+)
 from ..model_registry import ModelRegistry
+from ..profile_presets import find_preset_for_base_url
+from ..reasoning_contracts import ReasoningContract, resolve_reasoning_provider
 from .browser_images import declared_image_support
 from .store import Conflict
 
@@ -146,22 +158,30 @@ class ModelUnavailable(Conflict):
         return cls(f"{model_id} isn't available here. Choose one of the models this place offers.")
 
 
+def model_provider(settings) -> str | None:
+    # A saved profile can be renamed without changing its endpoint's route.
+    preset = find_preset_for_base_url(getattr(settings, "base_url", ""))
+    return preset.provider_key if preset else settings.provider_key
+
+
 def model_protocol(settings) -> str:
     """The wire protocol for this model on its endpoint, as the desktop agent routes it."""
     return resolve_model_protocol(
-        provider_key=settings.provider_key, model=settings.model, protocol=settings.protocol
+        provider_key=model_provider(settings), model=settings.model, protocol=settings.protocol
     )
 
 
 def image_input(settings) -> bool:
     """Whether turns with this model can be shown images (screens, pictures in files).
 
-    Only the compatible protocol's image path is qualified, and only for a model whose catalog
-    declares vision; unknown models are treated as text only.
+    The adapters below accept the bounded user image block from browser_images. The model's
+    trusted catalog entry must also declare image input for its endpoint.
     """
-    return model_protocol(settings) == OPENAI_COMPAT_PROTOCOL and declared_image_support(
-        settings.model, settings.base_url
-    )
+    return model_protocol(settings) in {
+        OPENAI_COMPAT_PROTOCOL,
+        OPENAI_RESPONSES_PROTOCOL,
+        ANTHROPIC_MESSAGES_PROTOCOL,
+    } and declared_image_support(settings.model, settings.base_url)
 
 
 def declared_image_generation(settings) -> bool:
@@ -215,6 +235,59 @@ def work_reasoning_effort(connection_effort: str | None, model: str, base_url: s
     return WORK_REASONING_EFFORT if declares_reasoning(model, base_url) else None
 
 
+@lru_cache(maxsize=4)
+def _openrouter_contracts(base_url: str, minute: int) -> dict[str, ReasoningContract]:
+    """Share one public gateway lookup across the models in a picker and subsequent turns."""
+    from ..profiles import ProfileSpec
+    from ..provider_model_catalog import ProviderModelCatalogError, discover_provider_models
+
+    profile = ProfileSpec(name="openrouter", base_url=base_url)
+    try:
+        models = discover_provider_models(profile=profile, api_key=None, timeout_s=3)
+    except ProviderModelCatalogError:
+        return {}
+    return {
+        item.id: item.reasoning_contract for item in models if item.reasoning_contract is not None
+    }
+
+
+def effort_choices(settings) -> list[dict]:
+    preset = find_preset_for_base_url(settings.base_url)
+    route = preset.provider_key if preset else settings.provider_key
+    provider = resolve_reasoning_provider(route, settings.model)
+    protocol = resolve_model_protocol(
+        provider_key=route, model=settings.model, protocol=settings.protocol
+    )
+    if provider == "openrouter" and protocol == OPENAI_COMPAT_PROTOCOL:
+        from ..provider_model_catalog import openrouter_reasoning_contract
+
+        declared = (
+            _openrouter_contracts(settings.base_url, int(time.monotonic() // 60))
+            if preset and preset.provider_key == "openrouter"
+            else {}
+        )
+        contract = declared.get(settings.model) or openrouter_reasoning_contract(
+            None, model=settings.model
+        )
+        if contract is None:
+            return []
+    else:
+        contract = route_reasoning_contract(
+            provider, settings.model, protocol, preset.key if preset else None
+        )
+    return contract_reasoning_capabilities(contract)["reasoning_efforts"]
+
+
+def owl_effort_client(client: ChatClient, choice: str, settings) -> ChatClient:
+    # Connections can change after saving. Apply only a choice the current route takes.
+    if not any(option["id"] == choice for option in effort_choices(settings)):
+        return client
+    selected = copy.copy(client)
+    selected.reasoning_effort, selected.enable_thinking = reasoning_client_options(choice)
+    selected._alysis_owl_effort = True
+    return selected
+
+
 def work_client(client: ChatClient) -> ChatClient:
     """The client an owl works with: its connection's, at work strength.
 
@@ -227,6 +300,8 @@ def work_client(client: ChatClient) -> ChatClient:
     WORK_REASONING_EFFORT; the compatible one leaves out of the request an effort the model's
     provider does not document.
     """
+    if getattr(client, "_alysis_owl_effort", False):
+        return client
     effort = work_reasoning_effort(
         getattr(client, "reasoning_effort", None),
         client.model,
@@ -238,6 +313,23 @@ def work_client(client: ChatClient) -> ChatClient:
     thinking.enable_thinking = True
     thinking.reasoning_effort = effort
     return thinking
+
+
+#: What decides where a model call goes and what it asks for: the settings a client is made from.
+_ROUTE_FIELDS = (
+    "model",
+    "base_url",
+    "api_key",
+    "protocol",
+    "provider_key",
+    "reasoning_effort",
+    "extra_headers",
+)
+
+
+def same_route(first, second) -> bool:
+    """Whether two connection settings make the same model client."""
+    return all(getattr(first, name, None) == getattr(second, name, None) for name in _ROUTE_FIELDS)
 
 
 def _catalog(connection: ModelConnection) -> ModelCatalog:
@@ -259,7 +351,11 @@ class PlaceModels:
         self,
         connections: Callable[[], list[ModelConnection]],
         client: Callable[[str, Any], ChatClient],
+        *,
+        account_scoped: bool = False,
     ) -> None:
+        # Managed Cloud offers exact gateway IDs. Its default also follows the current account.
+        self.account_scoped = account_scoped
         self._connections = connections
         self._client = client
 
@@ -285,6 +381,7 @@ class PlaceModels:
             # The image generation its connection declares (owl_images.py).
             "image_generation": declared_image_generation(settings),
             "reasoning": declares_reasoning(settings.model, settings.base_url),
+            "reasoning_efforts": effort_choices(settings),
             # The connection it thinks through (the picker's group), and the model's own name.
             "connection": connection.id,
             "connection_label": connection.label,
@@ -332,6 +429,8 @@ class PlaceModels:
         connections = self._connections()
         if any(item.id == model_id for item in connections):
             return True
+        if self.account_scoped:
+            return False
         pick = _CatalogPick.of(connections, model_id)
         return (
             pick is not None
@@ -339,13 +438,18 @@ class PlaceModels:
             and _with_model(pick.connection, pick.model) is not None
         )
 
-    def resolve(self, model_id: str) -> ModelResolution | None:
+    def resolve(self, model_id: str | None) -> ModelResolution | None:
         """What an owl that picked ``model_id`` thinks with here; None when its connection isn't
         offered here (any more)."""
+        if model_id is None:
+            default = self.default()
+            return ModelResolution(default) if default is not None else None
         connections = self._connections()
         exact = next((item for item in connections if item.id == model_id), None)
         if exact is not None:
             return ModelResolution(exact)
+        if self.account_scoped:
+            return None
         pick = _CatalogPick.of(connections, model_id)
         if pick is None:
             return None
@@ -389,6 +493,21 @@ class PlaceModels:
             return own["id"] if explicit else None
         same = [row["id"] for row in rows if row["model"] == model and row["available"]]
         return same[0] if len(same) == 1 else None
+
+    def supports_effort(
+        self, model_id: str | None, effort: str, *, model_name: str | None = None
+    ) -> bool:
+        """Check the chosen model itself; a catalog fallback cannot inherit its effort."""
+        if model_id is None:
+            connection = self.default()
+        else:
+            resolved = self.resolve(model_id)
+            connection = resolved.connection if resolved and not resolved.fallback else None
+        return bool(
+            connection
+            and (model_name is None or connection.settings.model == model_name)
+            and any(option["id"] == effort for option in effort_choices(connection.settings))
+        )
 
     def model_of(self, model_id: str) -> str | None:
         """The model ``model_id`` names here, without reading any catalog; None when unknown."""

@@ -150,7 +150,14 @@ def test_pack_rejects_entry_overflow_and_cleans_stage(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("change", ["current", "previous", "new_entry"])
-def test_pack_detects_writers_during_and_after_file_read(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize("coarse_timestamps", [False, True])
+def test_pack_detects_writers_during_and_after_file_read(
+    tmp_path, monkeypatch, change, coarse_timestamps
+):
+    if coarse_timestamps:
+        # A fast same-size edit may be indistinguishable from the old file in stat.
+        original_stamp = snapshots._stamp
+        monkeypatch.setattr(snapshots, "_stamp", lambda info: original_stamp(info)[:-2])
     source = directory(tmp_path / "source")
     (source / "first").write_bytes(b"one")
     (source / "second").write_bytes(b"two")

@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,10 @@ REPO = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def candidate(tmp_path, monkeypatch):
+    # The hook runs this synthetic tree's builder, which puts the tree's src (an engine
+    # package with only the build modules) first on sys.path. Undo that after the test so
+    # later tests and their child processes in this worker import the real engine.
+    monkeypatch.setattr(sys, "path", list(sys.path))
     root = tmp_path / "source"
     root.mkdir()
     (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")

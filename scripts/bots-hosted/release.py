@@ -40,8 +40,10 @@ def activate(candidate, previous, config):
         with ManagedIdentityCredential() as credential, httpx.Client(trust_env=False) as client:
             payload = operations.fetch_bootstrap(config["secret_uri"], credential, client)
             settings, hosted = operations.bootstrap(io.BytesIO(payload))
+            if hosted.expires_at is None:
+                return {"activated": False, "reason": "finite_test_window_required"}
             if time.time() >= hosted.expires_at:
-                raise ValueError("Start a new approved guarded test window before activation.")
+                return {"activated": False, "reason": "test_window_expired"}
             # Read the schema before constructing a store: initialization can
             # migrate it. This path never disguises a migration as code rollback.
             with psycopg.connect(hosted.database_dsn, autocommit=True, connect_timeout=5) as db:

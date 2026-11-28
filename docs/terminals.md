@@ -2,7 +2,7 @@
 
 ## Overview
 
-Background terminals let Alysis start long-running shell commands without blocking the agent loop.
+Background terminals let Alysis Code start long-running shell commands without blocking the agent loop.
 They are meant for dev servers, file watchers, test runners in watch mode, log tailers, and similar
 processes where the agent needs to keep working while output accumulates in the background.
 
@@ -107,7 +107,7 @@ For very chatty commands, poll more often with `shell_output` or inspect the pro
 
 ## Lifecycle
 
-Background terminals are scoped to one Alysis session.
+Background terminals are scoped to one Alysis Code session.
 
 Starting a process returns a `process_id`. That id is stable for the lifetime of the process record
 and can be passed to:
@@ -120,13 +120,13 @@ and can be passed to:
 When a process exits naturally, the session keeps its summary and recent output until the manager
 prunes old terminal records.
 
-When a process is killed, Alysis first sends a graceful termination signal:
+When a process is killed, Alysis Code first sends a graceful termination signal:
 
 - POSIX process-group runners receive `SIGTERM`.
 - Windows runners receive the platform control-break equivalent where supported.
 - Direct runners, such as Docker background cleanup, terminate the tracked process directly.
 
-If the process does not exit within `background_kill_timeout_s`, Alysis escalates to a forced
+If the process does not exit within `background_kill_timeout_s`, Alysis Code escalates to a forced
 kill.
 
 When the chat session closes, all running background processes are terminated. Dev servers,

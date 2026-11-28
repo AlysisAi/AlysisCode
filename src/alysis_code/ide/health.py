@@ -144,6 +144,8 @@ SUPPORTED_METHODS = (
     "profile.list",
     "profile.show",
     "profile.add",
+    "assistant.observation.models",
+    "assistant.observation.infer",
     "provider.auth.status",
     "provider.auth.reasoning",
     "provider.auth.selectModel",

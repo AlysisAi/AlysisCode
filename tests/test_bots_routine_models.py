@@ -508,7 +508,7 @@ def test_an_older_database_gets_routine_models_and_its_routines_keep_their_owls(
         db.execute("PRAGMA user_version=50")
     reopened = Store(path)
     with sqlite3.connect(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 51
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert schedule(reopened, bot, item["id"])["model"] is None
     picked = reopened.set_schedule_model(
         OWNER, bot["id"], item["id"], ScheduleModelChoice(model=TEXT_ONLY, expected_revision=1)

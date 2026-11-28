@@ -187,6 +187,10 @@ class _UnmatchedReceipt(ValueError):
 REQUEST_SECONDS = 50
 # The task event (and diagnostics entry) for a request whose receipt did not arrive whole.
 RECEIPT_EVENT = "computer_receipt_unconfirmed"
+# The task event for where the computer a task is opening is: ``queued`` (waiting for a free
+# computer), ``starting`` (booting, or waking from sleep) and ``ready`` once its surface works. The
+# app's live line says so while the step that needs the computer waits for it (nowDoing.ts).
+PHASE_EVENT = "computer_phase"
 # Reply shapes that mean the computer's dispatcher gave no answer of its own.
 _NO_ANSWER = frozenset({"empty", "unreadable", "bridge_failed"})
 # Run on the computer after a request got no answer, to tell a dying computer (out of memory, its
@@ -325,6 +329,8 @@ class CloudDesktopFactory:
         # idle expiry, so an approved click still finds it. Cloud computers close (billing).
         self.retain_browser_while_waiting = retain_browser_while_waiting
         self.lifecycle = lambda bot_id, phase: None
+        # The phase each task opening a computer was last told (PHASE_EVENT), until it is ready.
+        self._told = {}
         from .browser_state import BrowserStates
 
         self.browser_states = (
@@ -408,10 +414,39 @@ class CloudDesktopFactory:
         try:
             if self.browser_enabled and surface._unified_desktop:
                 surface.start_browser(self.preview_urls, cancel)
+            self._tell_ready()
             return surface
         except BaseException:
+            self._forget_told()
             surface.close()
             raise
+
+    def _tell(self, phase):
+        """Tell the task opening a computer (computer_context.opening_for) where it is, once per
+        phase. Called outside this factory's lock: a task event is a write to the store."""
+        task_id = opening_task()
+        if task_id is None or self.store is None:
+            return
+        with self._lock:
+            if self._told.get(task_id) == phase:
+                return
+            self._told[task_id] = phase
+        self.store.event(self.owner, task_id, PHASE_EVENT, {"phase": phase})
+
+    def _tell_ready(self):
+        """The computer the task waited for works: tell it, when it was told it was waiting."""
+        task_id = opening_task()
+        with self._lock:
+            told = self._told.pop(task_id, None) if task_id is not None else None
+        if told is not None and self.store is not None:
+            self.store.event(self.owner, task_id, PHASE_EVENT, {"phase": "ready"})
+
+    def _forget_told(self):
+        """The computer did not open: the step's own result says what happened."""
+        task_id = opening_task()
+        if task_id is not None:
+            with self._lock:
+                self._told.pop(task_id, None)
 
     def _acquire(self, bot_id, surface, cancel):
         # Only this Bot's surface attachment/startup is serialized. Reserve a
@@ -420,8 +455,11 @@ class CloudDesktopFactory:
             if self.persist_workspace and self.store is None:
                 raise DesktopError("Durable cloud workspaces require the owning task store.")
             ticket = None
+            queued = False
             try:
                 while True:
+                    if queued:
+                        self._tell("queued")
                     with self._condition:
                         if cancel():
                             raise CooperativeCancellationError("Computer allocation cancelled.")
@@ -450,6 +488,7 @@ class CloudDesktopFactory:
                                     "All available computers are busy. Try again after current work finishes."
                                 )
                             self.lifecycle(bot_id, "queued")
+                            queued = True
                             self._condition.wait(timeout=0.25)
                             continue
                         self._starting.add(bot_id)
@@ -460,6 +499,7 @@ class CloudDesktopFactory:
                         self._condition.notify_all()
                     self.lifecycle(bot_id, "starting")
                     try:
+                        self._tell("starting")
                         if self.billing:
                             self.billing.admit()
                         computer = CloudDesktop(self, bot_id, cancel=cancel)
@@ -470,6 +510,7 @@ class CloudDesktopFactory:
                             self._condition.notify_all()
                             if self.wait_for_capacity:
                                 self.lifecycle(bot_id, "queued")
+                                queued = True
                                 self._condition.wait(timeout=0.5)
                                 continue
                         self.lifecycle(bot_id, "failed")
@@ -498,6 +539,10 @@ class CloudDesktopFactory:
                 with self._condition:
                     if bot_id not in self._instances:
                         self.lifecycle(bot_id, "stopped")
+                self._forget_told()
+                raise
+            except BaseException:
+                self._forget_told()
                 raise
             finally:
                 with self._condition:
@@ -569,8 +614,10 @@ class CloudDesktopFactory:
             browser = CloudBrowser(surface, self.preview_urls, cancel)
             if self.retain_browser_while_waiting:
                 browser.retain_while_waiting = True
+            self._tell_ready()
             return browser
         except BaseException:
+            self._forget_told()
             try:
                 surface.close()
             except Exception:

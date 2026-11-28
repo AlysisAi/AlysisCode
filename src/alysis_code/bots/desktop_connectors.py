@@ -21,17 +21,22 @@ desktop app, and each owl's switches cover them the same way.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import Field, StrictBool
+from pydantic import Field, StrictBool, field_validator, model_validator
 
 from ..cloud_connections import ConnectionUnavailable
+from ..hub_apps import HubAppsError
+from ..mcp.plugin_hub import is_hub_connection_id
+from .connector_results import ConnectorEvidence
 from .models import Input
 from .store import Conflict, LimitReached, NotFound, encode, uid
 
@@ -83,11 +88,25 @@ class PluginChoice(Input):
     expected_revision: int = Field(ge=0)
 
 
+class OwlHubGrant(Input):
+    connection_id: str | None
+    mode: Literal["inherit", "read", "actions"]
+    expected_revision: int = Field(ge=0, strict=True)
+
+    @field_validator("connection_id")
+    @classmethod
+    def valid_connection_id(cls, value: str | None) -> str | None:
+        if value is not None and not is_hub_connection_id(value):
+            raise ValueError("Invalid More Apps connection ID.")
+        return value
+
+
 class AppNeedDecision(Input):
     """The person's answer on an app card: turn it on for the owl, connect it, or not now."""
 
-    action: Literal["turn_on", "connect", "dismiss"]
+    action: Literal["turn_on", "connect", "dismiss", "use_account"]
     expected_revision: int = Field(ge=1)
+    connection_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class NeedInput(Input):
@@ -97,10 +116,19 @@ class NeedInput(Input):
 
 class ResultInput(Input):
     ok: bool
-    text: str = Field(default="", max_length=60000)
+    text: str = Field(default="", max_length=60000, repr=False)
     is_error: bool = False
     dispatch_state: Literal["not_dispatched", "dispatched", "unknown"] = "dispatched"
     error: str = Field(default="", max_length=1000)
+    evidence: ConnectorEvidence | None = None
+
+    @model_validator(mode="after")
+    def one_dispatched_result(self):
+        if self.evidence is not None and (
+            not self.ok or self.dispatch_state != "dispatched" or self.text
+        ):
+            raise ValueError("Rich evidence belongs to one dispatched plugin result.")
+        return self
 
 
 class PluginCallUnavailable(ConnectionUnavailable):
@@ -136,7 +164,7 @@ class _Call:
     arguments: dict[str, Any]
     approval: str
     claimed: bool = False
-    result: dict[str, Any] | None = None
+    result: dict[str, Any] | None = field(default=None, repr=False)
 
     def public(self) -> dict[str, Any]:
         return {
@@ -147,6 +175,7 @@ class _Call:
             "name": self.tool,
             "arguments": self.arguments,
             "approval": self.approval,
+            "result_version": 1,
         }
 
 
@@ -158,6 +187,8 @@ class DesktopConnectors:
         self._revision = -1
         self._seen: float | None = None
         self._calls: dict[str, _Call] = {}
+        # A lost HTTP acknowledgement can be retried without retaining any result bytes.
+        self._accepted: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
         self._apps: list[CatalogApp] = []
 
     # ---- the desktop app --------------------------------------------------------------------
@@ -185,12 +216,26 @@ class DesktopConnectors:
                 self._lock.wait(remaining)
 
     def answer(self, call_id: str, data: ResultInput) -> dict[str, Any]:
+        payload = data.model_dump(exclude_none=True)
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).digest()
         with self._lock:
-            self._seen = self._clock()
+            now = self._clock()
+            self._seen = now
+            while self._accepted and next(iter(self._accepted.values()))[0] <= now:
+                self._accepted.popitem(last=False)
+            if accepted := self._accepted.get(call_id):
+                if digest != accepted[1]:
+                    raise Conflict("This plugin call already accepted a different result.")
+                return {"accepted": True}
             call = self._calls.get(call_id)
             if call is None or not call.claimed or call.result is not None:
                 raise NotFound("This plugin call is no longer waiting.")
-            call.result = data.model_dump()
+            call.result = payload
+            self._accepted[call_id] = (now + 2 * CALL_TIMEOUT_S, digest)
+            if len(self._accepted) > 256:
+                self._accepted.popitem(last=False)
             self._lock.notify_all()
         return {"accepted": True}
 
@@ -305,8 +350,8 @@ class OwlApps:
         # The account's More apps (owl_hub_apps.OwlHubApps); None where the service has no account.
         self.more_apps = more_apps
 
-    def more(self) -> list[Any]:
-        return self.more_apps.plugins() if self.more_apps is not None else []
+    def more(self, bot_id: str, *, refresh: bool = False) -> list[Any]:
+        return self.more_apps.plugins(bot_id, refresh=refresh) if self.more_apps is not None else []
 
     def for_owl(self, bot_id: str) -> OwlPlugins:
         return OwlPlugins(self, bot_id)
@@ -325,10 +370,25 @@ class OwlApps:
         """Every app the desktop app named and every connected More app, with whether it's
         connected and on for this owl."""
         reachable, apps = self.hub.catalog()
+        self.store.bot(self.owner, bot_id)
+        accounts = self.more_apps.settings(bot_id) if self.more_apps is not None else None
         named = {app["plugin_id"] for app in apps}
+        if accounts is not None:
+            for group in accounts:
+                if group["plugin_id"] not in named:
+                    apps.append(
+                        {
+                            "plugin_id": group["plugin_id"],
+                            "name": group["name"],
+                            "connected": any(
+                                row["status"] == "active" for row in group["accounts"]
+                            ),
+                        }
+                    )
+                    named.add(group["plugin_id"])
         apps += [
             {"plugin_id": plugin.plugin_id, "name": plugin.name, "connected": True}
-            for plugin in self.more()
+            for plugin in (self.more(bot_id) if accounts is None else [])
             if plugin.plugin_id not in named
         ]
         with self.store.connect() as db:
@@ -353,7 +413,25 @@ class OwlApps:
             for app in apps
         ]
         rows.sort(key=lambda row: (not row["connected"], row["name"].casefold(), row["plugin_id"]))
-        return {"reachable": reachable, "apps": rows}
+        return {
+            "reachable": reachable,
+            "apps": rows,
+            **({"hub_accounts": accounts} if accounts is not None else {}),
+        }
+
+    def set_hub_grant(self, bot_id: str, app: str, data: OwlHubGrant) -> dict:
+        self.store.bot(self.owner, bot_id)
+        if self.more_apps is None:
+            raise ConnectionUnavailable("More apps aren't available to owls in this service.")
+        try:
+            self.more_apps.set_grant(bot_id, app, data.model_dump())
+        except HubAppsError as exc:
+            if exc.reason in {"conflict", "not_connected", "invalid_request"}:
+                raise Conflict(str(exc)) from exc
+            raise ConnectionUnavailable(str(exc)) from exc
+        with self.store.connect(write=True) as db:
+            self._pause_app_watches(db, bot_id, app)
+        return self.listing(bot_id)
 
     def choose(self, bot_id: str, data: PluginChoice) -> dict:
         with self.store.connect(write=True) as db:
@@ -376,12 +454,71 @@ class OwlApps:
             "enabled=excluded.enabled,revision=excluded.revision,updated_at=excluded.updated_at",
             (bot_id, plugin_id, int(enabled), revision + 1, time.time()),
         )
+        if not enabled and plugin_id.startswith("hub."):
+            db.execute(
+                "UPDATE bot_app_needs SET status='dismissed',revision=revision+1,updated_at=? "
+                "WHERE bot_id=? AND plugin_id=? AND status='connecting'",
+                (time.time(), bot_id, plugin_id),
+            )
+            OwlApps._pause_app_watches(db, bot_id, plugin_id.removeprefix("hub."))
+
+    @staticmethod
+    def _pause_app_watches(db, bot_id, catalog_id):
+        from .app_events import SOURCES
+        from .triggers import revoke
+
+        for watch in db.execute(
+            "SELECT id,kind FROM bot_triggers WHERE bot_id=? AND kind!='file_added' AND state='active'",
+            (bot_id,),
+        ).fetchall():
+            if SOURCES[watch["kind"]].catalog != catalog_id:
+                continue
+            revoke(db, watch["id"], "Connected app access changed.")
+            db.execute(
+                "UPDATE bot_triggers SET state='paused',revision=revision+1,updated_at=? WHERE id=?",
+                (time.time(), watch["id"]),
+            )
+            db.execute(
+                "UPDATE app_event_watches SET notice='reconnect' WHERE trigger_id=?", (watch["id"],)
+            )
 
     # ---- an app a turn needs ------------------------------------------------------------------
+    def need_catalog(self, bot_id):
+        reachable, desktop = self.hub.catalog()
+        if self.more_apps is None:
+            return reachable, desktop
+        groups = self.more_apps.settings(bot_id)
+        if groups is None:
+            return reachable, desktop
+        rows = (
+            [app for app in desktop if not app["plugin_id"].startswith("hub.")] if reachable else []
+        )
+        for group in groups:
+            grant = group["grant"]
+            expected = grant.get("connection_id")
+            active = next(
+                (
+                    row
+                    for row in group["accounts"]
+                    if row.get("status") == "active"
+                    and (row["id"] == expected if expected else row.get("selected"))
+                ),
+                None,
+            )
+            rows.append(
+                {
+                    "plugin_id": group["plugin_id"],
+                    "name": group["name"],
+                    "connected": bool(active),
+                    "connection_id": expected or (active and active["id"]),
+                }
+            )
+        return True, rows
+
     def need(self, task: dict, arguments: dict) -> dict:
         """need_app: show the person a card to turn on or connect the app the request needs."""
         args = NeedInput.model_validate(arguments)
-        reachable, apps = self.hub.catalog()
+        reachable, apps = self.need_catalog(task["bot_id"])
         app = next((item for item in apps if item["plugin_id"] == args.app), None)
         if app is None:
             raise NotFound("No app with this id is in Alysis. Use one need_app lists.")
@@ -415,12 +552,13 @@ class OwlApps:
                     "you can without it and say plainly what that leaves undone.",
                 }
             if asked is None:
+                need_id = uid()
                 db.execute(
                     "INSERT INTO bot_app_needs(id,bot_id,source_task_id,plugin_id,name,reason,"
                     "state,status,revision,resume_task_id,created_at,updated_at) "
                     "VALUES(?,?,?,?,?,?,?,'pending',1,NULL,?,?)",
                     (
-                        uid(),
+                        need_id,
                         source["bot_id"],
                         source["id"],
                         args.app,
@@ -431,6 +569,10 @@ class OwlApps:
                         now,
                     ),
                 )
+                if app.get("connection_id"):
+                    db.execute(
+                        "INSERT INTO hub_need_accounts VALUES(?,?)", (need_id, app["connection_id"])
+                    )
         return {
             "app": name,
             "status": "card_shown",
@@ -462,8 +604,8 @@ class OwlApps:
         }
 
     def decide(self, bot_id: str, need_id: str, data: AppNeedDecision) -> dict:
-        reachable, apps = self.hub.catalog()
-        connected = {app["plugin_id"] for app in apps if app["connected"]} if reachable else set()
+        reachable, apps = self.need_catalog(bot_id)
+        connected = {app["plugin_id"]: app for app in apps if app["connected"]} if reachable else {}
         with self.store.connect(write=True) as db:
             self.store._bot(db, self.owner, bot_id)
             row = db.execute(
@@ -475,6 +617,7 @@ class OwlApps:
             if (row["status"], data.action) in (
                 ("resumed", "turn_on"),
                 ("resumed", "connect"),
+                ("resumed", "use_account"),
                 ("dismissed", "dismiss"),
                 ("connecting", "connect"),
             ):
@@ -483,8 +626,32 @@ class OwlApps:
                 raise Conflict("This app request changed. Review its current state.")
             if data.action == "dismiss":
                 self._status(db, need_id, "dismissed")
-            elif row["plugin_id"] in connected:
-                self._resume(db, row, "turned_on" if row["state"] == "off" else "connected")
+            elif data.action == "use_account":
+                current = connected.get(row["plugin_id"])
+                if (
+                    row["status"] != "connecting"
+                    or not row["plugin_id"].startswith("hub.")
+                    or not current
+                    or not data.connection_id
+                    or current.get("connection_id") != data.connection_id
+                ):
+                    raise Conflict(
+                        "The selected account changed. Review it again before continuing."
+                    )
+                db.execute(
+                    "INSERT INTO hub_need_accounts VALUES(?,?) ON CONFLICT(need_id) DO UPDATE SET connection_id=excluded.connection_id",
+                    (need_id, data.connection_id),
+                )
+                self._resume(db, row, "connected", connection_id=data.connection_id)
+            elif row["plugin_id"] in connected and self._matches_account(
+                db, row, connected[row["plugin_id"]]
+            ):
+                self._resume(
+                    db,
+                    row,
+                    "turned_on" if row["state"] == "off" else "connected",
+                    connection_id=connected[row["plugin_id"]].get("connection_id"),
+                )
             elif data.action == "turn_on" and row["state"] == "not_connected":
                 raise Conflict(
                     f"{row['name']} isn't connected in Alysis on this computer. Connect it first."
@@ -519,11 +686,48 @@ class OwlApps:
                 "WHERE b.owner=? AND n.status='connecting' ORDER BY n.created_at,n.id",
                 (self.owner,),
             ).fetchall():
-                if row["plugin_id"] not in connected or self._queue_full(db):
+                if (
+                    row["plugin_id"].startswith("hub.")
+                    or row["plugin_id"] not in connected
+                    or self._queue_full(db)
+                ):
                     continue
                 self._resume(db, row, "connected")
                 resumed = True
         return resumed
+
+    @staticmethod
+    def _matches_account(db, need, app):
+        bound = db.execute(
+            "SELECT connection_id FROM hub_need_accounts WHERE need_id=?", (need["id"],)
+        ).fetchone()
+        return not bound or bound[0] == app.get("connection_id")
+
+    def resume_hub_connections(self, stopping=lambda: False):
+        """Only probe the broker for people who pressed Connect; coalesce work for each Owl."""
+        with self.store.connect() as db:
+            bots = db.execute(
+                "SELECT DISTINCT n.bot_id FROM bot_app_needs n JOIN bots b ON b.id=n.bot_id "
+                "WHERE b.owner=? AND b.archived_at IS NULL AND n.plugin_id LIKE 'hub.%' AND n.status='connecting'",
+                (self.owner,),
+            ).fetchall()
+        for bot in bots:
+            if stopping():
+                return
+            bot_id = bot[0]
+            _, apps = self.need_catalog(bot_id)
+            connected = {
+                app["plugin_id"]: app
+                for app in apps
+                if app["plugin_id"].startswith("hub.") and app["connected"]
+            }
+            with self.store.connect(write=True) as db:
+                for need in db.execute(
+                    "SELECT * FROM bot_app_needs WHERE bot_id=? AND status='connecting'", (bot_id,)
+                ).fetchall():
+                    app = connected.get(need["plugin_id"])
+                    if app and self._matches_account(db, need, app) and not self._queue_full(db):
+                        self._resume(db, need, "connected", connection_id=app.get("connection_id"))
 
     def _status(self, db, need_id: str, status: str, resume_task_id: str | None = None):
         db.execute(
@@ -542,7 +746,7 @@ class OwlApps:
             >= MAX_QUEUED
         )
 
-    def _resume(self, db, need, how: str) -> None:
+    def _resume(self, db, need, how: str, *, connection_id=None) -> None:
         """Turn the app on for the owl and carry its request on, as one change."""
         self._set(db, need["bot_id"], need["plugin_id"], True)
         source = self.store._task(db, self.owner, need["source_task_id"])
@@ -590,6 +794,7 @@ class OwlApps:
                                 "plugin_id": need["plugin_id"],
                                 "name": need["name"],
                                 "how": how,
+                                **({"connection_id": connection_id} if connection_id else {}),
                             },
                         }
                     ),
@@ -618,7 +823,7 @@ class OwlPlugins:
         off = self.apps.switched_off(self.bot_id)
         return [
             plugin
-            for plugin in [*self.apps.hub.plugins(), *self.apps.more()]
+            for plugin in [*self.apps.hub.plugins(), *self.apps.more(self.bot_id, refresh=True)]
             if plugin.plugin_id not in off
         ]
 
@@ -646,6 +851,8 @@ class OwlPlugins:
         arguments: dict[str, Any],
         approval: str,
         token: Any = None,
+        connection_id: str | None = None,
+        grant_revision: int | None = None,
     ) -> dict[str, Any]:
         if bot_id != self.bot_id:
             raise PluginCallUnavailable(
@@ -658,7 +865,14 @@ class OwlPlugins:
                     "More apps aren't available to owls in this service. Nothing was sent.",
                     dispatched=False,
                 )
-            return self.apps.more_apps.call(plugin_id, tool, arguments)
+            return self.apps.more_apps.call(
+                bot_id,
+                plugin_id,
+                tool,
+                arguments,
+                connection_id=connection_id,
+                grant_revision=grant_revision,
+            )
         return self.apps.hub.call(
             bot_id=bot_id,
             task_id=task_id,
@@ -673,14 +887,16 @@ class OwlPlugins:
         _, apps = self.apps.hub.catalog()
         named = next((app["name"] for app in apps if app["plugin_id"] == plugin_id), None)
         if named is None:
-            named = next((p.name for p in self.apps.more() if p.plugin_id == plugin_id), plugin_id)
+            named = next(
+                (p.name for p in self.apps.more(self.bot_id) if p.plugin_id == plugin_id), plugin_id
+            )
         return named
 
     def need_tools(self, task: dict) -> dict[str, Any]:
         """need_app, while the app answers and some app it named is off here or not connected."""
-        from ..agent.tools_assembly import ToolDef
+        from ..agent.tool_definition import ToolDef
 
-        reachable, apps = self.apps.hub.catalog()
+        reachable, apps = self.apps.need_catalog(self.bot_id)
         if not reachable:
             return {}
         off = self.apps.switched_off(self.bot_id)

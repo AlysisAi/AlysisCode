@@ -23,14 +23,27 @@ class CloudAccessError(RuntimeError):
         super().__init__(status)
 
 
-def discover(key, *, client=None):
+def discover(key, *, client=None, owl_id=None, manage=False):
     if not isinstance(key, str) or not DEVICE_KEY.fullmatch(key):
         raise CloudAccessError("sign_in_required")
+    if owl_id is not None and not re.fullmatch(r"[0-9a-f]{32}", owl_id):
+        raise CloudAccessError()
     try:
         # Only the product's account endpoint receives this device credential.
         response = (client or httpx).get(
             alysis_cloud.cloud_bots_url(),
-            headers={"Authorization": "Bearer " + key, "Accept": "application/json"},
+            headers={
+                "Authorization": "Bearer " + key,
+                "Accept": "application/json",
+                **(
+                    {
+                        "X-Alysis-Owl-Apps": owl_id,
+                        "X-Alysis-Owl-App-Access": "manage" if manage else "run",
+                    }
+                    if owl_id
+                    else {}
+                ),
+            },
             timeout=8,
             follow_redirects=False,
         )
@@ -47,6 +60,11 @@ def discover(key, *, client=None):
         ):
             raise CloudAccessError()
         result = {k: value[k] for k in ("status", "account_id", "plan")}
+        if owl_id and value["status"] == "available":
+            access = value.get("owl_app_access")
+            if not isinstance(access, str) or len(access) > 300 or not access.startswith("oha1."):
+                raise CloudAccessError()
+            result["owl_app_access"] = access
         if "storage_limit_bytes" in value:
             limit = value["storage_limit_bytes"]
             if type(limit) is not int or not 0 <= limit <= 2**63 - 1:

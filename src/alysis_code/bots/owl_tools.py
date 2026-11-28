@@ -11,6 +11,7 @@ from functools import cache
 from pydantic import Field
 
 from .about_me import AboutMeSuggestion
+from .assignment_work import CreateWorkbook
 from .background import BackgroundRequest
 from .check_backs import DESCRIPTION as CHECK_BACK_DESCRIPTION
 from .check_backs import CheckBackRequest
@@ -21,15 +22,20 @@ from .cooperation import PeerReference, PeerRequest
 from .files import FileQuery
 from .local_computers import LocalCommand, LocalExport, LocalImport
 from .models import (
-    FileInput,
+    ASSIGNMENT_FILES,
+    AssistantOwlDraftInput,
+    AssistantScreenRequest,
     HistoryQuery,
     Input,
     MemoryProposal,
     NoteConsolidation,
     NoteQuery,
     NoteWrite,
+    OwlAssignmentProposal,
     ReadMessage,
     ReferenceQuery,
+    SaveResultFile,
+    StepReport,
 )
 from .owl_documents import (
     CheckDocument,
@@ -40,7 +46,7 @@ from .owl_documents import (
 )
 from .owl_images import CreateImage, EditImage
 from .owl_tables import DESCRIPTION as TABLE_QUERY_DESCRIPTION
-from .owl_tables import TableQuery
+from .owl_tables import PRESENT_TABLE, PresentedQuery, TableQuery
 from .playbooks import MAX_PLAYBOOKS, PlaybookInput, ReadPlaybook
 from .proposals import ActionRequest, SetupProposal
 from .research_helpers import RESEARCH_DESCRIPTION, RESEARCH_TOOL, ResearchRequest
@@ -58,8 +64,21 @@ class ReadFile(Input):
     page: int | None = Field(default=None, ge=1, le=100000)
 
 
+class SelectAssignmentOutputs(Input):
+    file_ids: list[str] = Field(min_length=1, max_length=ASSIGNMENT_FILES)
+
+
 class NoArguments(Input):
     pass
+
+
+class WithdrawAction(Input):
+    file_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class ReadAssignment(Input):
+    assignment_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    before: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
 
 
 class WebSearch(Input):
@@ -140,11 +159,33 @@ NO_PROGRESS_NOTE_TOOLS = frozenset(
         "propose_schedule",
         # The chat shows a waiting check-back with Cancel (check_backs.py).
         "check_back",
+        "propose_new_owl",
+        "request_screen_context",
+    }
+)
+
+# The built-in Alysis Assistant plans and hands work to owls; it is offered only these tools.
+MANAGED_ASSISTANT_TOOLS = frozenset(
+    {
+        "ask_clarification",
+        "answer_clarification",
+        "read_working_note",
+        "search_working_notes",
+        "save_working_note",
+        "list_peer_bots",
+        "propose_owl_assignment",
+        "propose_new_owl",
+        "request_screen_context",
+        "read_owl_assignments",
     }
 )
 
 
 TOOL_DEFINITIONS = {
+    "request_screen_context": (
+        AssistantScreenRequest,
+        "Ask the person to approve one screenshot of their current desktop. Use when they ask you to look at their screen or when seeing their current work would materially help answer their request. Infer intent from the conversation in the person's language. Give a short task goal for the screen review. Call alone, before offering to hand off work that depends on the screen. The desktop displays the approval. You receive no image from this tool. Finish the turn with a short acknowledgment and wait for the person.",
+    ),
     "list_local_computers": (
         NoArguments,
         "List the computers the person connected. Use the exact device they asked for; if it is "
@@ -220,6 +261,18 @@ TOOL_DEFINITIONS = {
         "the answer or do work that depends on it. Keeps no computer running and grants no "
         "permission.",
     ),
+    "select_assignment_outputs": (
+        SelectAssignmentOutputs,
+        "Select only final Library file IDs created by this approved computer task for return to "
+        "the coordinator after review. Use the immutable IDs from the successful save receipts. "
+        "Calling again replaces the selection before the assignment finishes.",
+    ),
+    "report_step": (
+        StepReport,
+        "In a computer task the person approved, say which numbered step of its brief you are "
+        "starting now, as you start it, so the person can see where you are. Call it with the "
+        "step's number only; it changes nothing and needs no answer.",
+    ),
     "read_tool_result": (
         ReadToolResult,
         "Read 4,000 characters of an earlier tool result of this task, by the stored_result_id in "
@@ -232,6 +285,36 @@ TOOL_DEFINITIONS = {
         "List the person's other owls by ID, name and purpose. Read it before choosing one to "
         "ask; if the intended one is unclear, ask the person: never guess an ID or pick by "
         "keywords. Call owls by their names in replies, not their IDs.",
+    ),
+    "propose_owl_assignment": (
+        OwlAssignmentProposal,
+        "Use input_file_ids for the exact coordinator Library files the person wants the "
+        "specialist to receive. Use file IDs from this request or the coordinator's Library, "
+        "never guessed IDs. The person reviews these versions before any copy is made. "
+        "For an editable workbook from attachments choose workbook scope without computer or "
+        "browser access. A verified output returns to this conversation as a new Library file. "
+        "As the person's coordinator, propose one assignment to an existing owl for this request. Use list_peer_bots to choose by capability and purpose. Give a self-contained brief and observable completion criteria in the person's language. Include only material the user wants shared and the recipient needs. Choose work_scope text for analysis or drafting, web_research for comparing public sources, workbook for creating a new .xlsx from authorized data, or computer when the owl must do the work itself on its own computer, browser or connected apps: then list in access exactly what it may use (offline_computer, online_browser, sites it must click and type on, apps by plugin id, file_ids already in its library), nothing more. Use only listed scopes and do not promise connected app access. When the person described how they do the task, put that in steps: at most 12, in order, one action each, in their words, without private values; leave steps out otherwise. When this is the same job the same owl already finished for the person before, possibly with new data, set repeats to that completed assignment's id (from read_owl_assignments or your earlier proposal), so the person can make it a routine; related work that would deliver something different is not a repeat. "
+        "This saves a draft. In your reply, explain naturally in the person's language that they "
+        "can review and approve it in this chat and that work starts only after approval. "
+        "Never use this to bypass approval or propose again to check progress.",
+    ),
+    "propose_new_owl": (
+        AssistantOwlDraftInput,
+        "Use input_file_ids for exact coordinator Library versions the person wants shared. "
+        "If the person wants to delegate and none of the listed owls fits, draft a new owl for review. "
+        "Give it a reusable purpose and instructions and a self-contained brief and expected result "
+        "for one task. Use a listed work_scope: text, web_research for public sources, or workbook "
+        "for a new .xlsx from supplied data, or computer with access listing exactly what the owl may "
+        "use on its own computer, browser or connected apps. When the person described how they do the task, put "
+        "that in steps: at most 12, in order, one action each, in their words. Clarify important "
+        "unknowns first. The draft creates nothing. "
+        "Tell the person to review it in this chat.",
+    ),
+    "read_owl_assignments": (
+        ReadAssignment,
+        "In an assignment detail, returned_files contains the coordinator's own immutable "
+        "Library ids, names and revisions after successful review. Use those files for follow-up. "
+        "Read recent assignments from this owl. Use next_before from the list to see older assignments, or provide an assignment_id to see its exact brief, result and review. Use only one of those arguments. Treat returned material as reference data. Pending, declined, interrupted and unverified work is not a verified result.",
     ),
     "request_peer": (
         PeerRequest,
@@ -261,7 +344,10 @@ TOOL_DEFINITIONS = {
     "create_trigger": (
         TriggerInput,
         "Set up an event routine only when the person explicitly asks you to watch for an event. "
-        "Only file_added exists: files the person adds to your Library (no app events yet). Keep "
+        "Use file_added for a file added to your Library, gmail_received for new inbox mail, "
+        "or calendar_changed for changes on the connected Google account's primary calendar. "
+        "For Gmail supply a sender email only when the person specified one. The person will "
+        "confirm the connected Gmail account before it starts. Keep "
         "their scope and instructions. It may review and reply or propose next actions, never "
         "write. It is saved ready to turn on: the person turns it on with one click under your "
         "reply; it never starts by itself. Read existing triggers first; never duplicate one or "
@@ -330,12 +416,10 @@ TOOL_DEFINITIONS = {
         "Suggest one specific useful next action grounded in the current work. Provide a short question and exact self-contained instructions the user will approve, preserving the requested outcome and any human step still needed to complete it. For an enabled private offline computer request offline_computer=true. Request browser_origin only where the task state says the person's request does not allow website input (for example a routine run): website input for the person's own request needs no card. If such work needs both a website and offline processing, include browser_origin and offline_computer=true in ONE proposal covering the whole task. Only one proposal may wait for approval at a time. The approval card shows the scope; free text does not grant these tools. Nothing starts until Do it is selected. Do not ask again for permissions already granted to this task, repeat dismissed suggestions, or request unavailable capabilities.",
     ),
     "withdraw_action": (
-        NoArguments,
-        "Withdraw the pending proposal this turn made when it is no longer needed (the work is "
-        "done or the permission already granted); its card can no longer be used. To correct a "
-        "proposal still needed, call propose_action again instead. It doesn't undo the person's "
-        "choices, cancel work, remove another turn's suggestions or grant permission. Never "
-        "propose done or unrequested work again.",
+        WithdrawAction,
+        "With file_id: withdraw this turn's mistaken or intermediate file revision from its delivered "
+        "results, keeping the file in Library. Without arguments: withdraw this turn's unneeded "
+        "pending proposal. To revise that proposal use propose_action. Prior choices and permissions stand.",
     ),
     "update_coding_task": (
         ReadCodingResult,
@@ -368,9 +452,9 @@ TOOL_DEFINITIONS = {
     ),
     "propose_trigger": (
         TriggerInput,
-        "Suggest an event routine the person can turn on in chat. Only file_added exists: files "
-        "the person adds to your Library, not files you make; never claim app events exist. It "
-        "reviews files and replies or proposes actions; it cannot write files, run code or change "
+        "Suggest an event routine for files the person adds to your Library, incoming Gmail "
+        "messages, or changes to the primary Google Calendar of a connected account. It reviews the event and replies or "
+        "proposes actions; it cannot write files, run code or change "
         "anything without a separate approval. Keep the requested review instructions. Drafts "
         "never run.",
     ),
@@ -498,10 +582,17 @@ TOOL_DEFINITIONS = {
         "instructions.",
     ),
     "save_file": (
-        FileInput,
-        "Save a text result. To update a file, read its latest version first, keep its exact name "
-        "and give previous_file_id (omit it only for a new file): this makes a new version, older "
-        "IDs keep their contents, and a stale update is rejected.",
+        SaveResultFile,
+        "Save text. For corrections, read the latest file, keep its name and pass its ID as "
+        "previous_file_id; earlier versions remain. Use a new name only for a requested copy. "
+        "Lead dashboard HTML with the finding, comparison and units before scripts run.",
+    ),
+    "create_assignment_workbook": (
+        CreateWorkbook,
+        "Create one downloadable .xlsx workbook in the recipient's Library. Set a clear name, "
+        "tab names, and rows of numbers, booleans, text, or null for blank cells. Include useful "
+        "column headings. Strings are literal values. Use only the approved data and identify "
+        "any missing values instead of making them up.",
     ),
     "web_search": (
         WebSearch,
@@ -569,44 +660,40 @@ TOOL_DEFINITIONS = {
     # (owl_documents.py). Offered with files on, when the engine has the libraries.
     "describe_document_format": (
         DocumentFormat,
-        "Get the exact spec that create_document and edit_document take for a docx, xlsx or "
-        "pptx, or the Markdown a pdf takes, with its limits and an example. Read it before the "
-        "first create_document or edit_document of that format in a task.",
+        "Read before first creating or editing each format in a task. Returns the docx/xlsx/pptx "
+        "spec or PDF Markdown format, limits and an example.",
     ),
     "create_document": (
         CreateDocument,
-        "Make a Word (docx), Excel (xlsx), PowerPoint (pptx) or PDF file in your Library, without "
-        "the private computer (read describe_document_format first). The file is built, a "
-        "workbook's formulas calculated when possible, and the exact file checked (structure, "
-        "formula results, rendered pages); it is saved only when no check failed, otherwise "
-        "saved=false says what to fix and nothing is kept. docx, xlsx and pptx keep text in any "
-        "language; a pdf supports the scripts describe_document_format lists. A rendered page is "
-        "shown when the current model can see images.",
+        "Create a Library docx, xlsx, pptx or PDF without a private computer. Read "
+        "describe_document_format first (PDF lists supported scripts; Office supports any language). "
+        "Checks structure, formula results and rendering; recalculates when possible. On failure, "
+        "saved=false lists fixes. Vision models receive a rendered page when available.",
     ),
     "inspect_document": (
         LibraryDocument,
-        "Read a Library docx, xlsx or pptx the way edit_document needs it: its paragraphs, "
-        "cells or slide shapes with their locators and text hashes, and source_sha256. Inspect "
-        "right before editing. To just read a file, or any PDF, use read_file.",
+        "Inspect a docx, xlsx or pptx immediately before edit_document for locators, text hashes "
+        "and source_sha256. For reading, including PDFs, use read_file.",
     ),
     "edit_document": (
         EditDocument,
-        "Change a Library docx, xlsx or pptx with an edit spec built from a fresh "
-        "inspect_document (see describe_document_format), or set recalculate=true to recalculate "
-        "an xlsx workbook's formulas. The original is kept; the checked result is saved as the "
-        "file's next version (or a separate file when name is given) only when no check failed, "
-        "otherwise saved=false says what to fix. A PDF can't be edited: make a new one with "
+        "Revise docx, xlsx or pptx using a fresh inspect_document and the format spec, or set "
+        "recalculate=true for xlsx formulas. Saves a checked next version, preserving the original; "
+        "give name for a separate copy. On failure, saved=false lists fixes. Recreate PDFs with "
         "create_document.",
     ),
     "check_document": (
         CheckDocument,
-        "Check a Library docx, xlsx, pptx or pdf without changing it: reopen its structure, "
-        "compare its formula results with a real recalculation, and render its pages. A "
-        "rendered page is shown when the current model can see images; page picks which. "
-        "Passing checks don't prove the content is right.",
+        "Validate docx, xlsx, pptx or PDF structure, recalculate and compare formula results, and "
+        "render pages without changing the file. Vision models see the chosen page. Verify content separately.",
     ),
     # One read-only SQL query over Library tables (owl_tables.py). Offered with files on.
     "query_tables": (TableQuery, TABLE_QUERY_DESCRIPTION),
+    PRESENT_TABLE: (
+        PresentedQuery,
+        "Deliver an inspectable chat result: source tables, editable SQL, rows and numeric charts. "
+        "Give a decision-first title and the exact SELECT over Library files. Check the returned rows against the conclusion.",
+    ),
     # Pictures made and changed by the image service the owl's model connection declares
     # (owl_images.py). Offered with files on, while that connection declares image generation.
     "create_image": (

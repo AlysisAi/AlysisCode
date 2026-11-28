@@ -150,6 +150,7 @@ from ..tools.registry import iter_builtin_tool_metadata
 from ..tools.web_search_runtime import resolve_web_search_runtime_status
 from ..updates import check_for_updates, status_from_cache
 from ..usage_tracker import aggregate_usage_from_session_logs
+from . import assistant_observation
 from .management_common import (
     MUTATING_MANAGEMENT_METHODS,
     WORKSPACE_REQUIRED_MANAGEMENT_METHODS,
@@ -185,6 +186,8 @@ _CONVENTIONS_RENDER_MAX_BYTES = 256 * 1024
 _EXTENSION_REGISTRY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_-]*$")
 
 MANAGEMENT_METHODS = (
+    "assistant.observation.models",
+    "assistant.observation.infer",
     "skill.import.describe",
     "skill.import.package",
     "skill.import.preview",
@@ -3307,6 +3310,7 @@ def _confirmation_required(method: str, reason: str) -> dict[str, Any]:
 
 
 _HANDLERS: dict[str, Callable[[dict[str, Any], RequestId], dict[str, Any]]] = {
+    "assistant.observation.infer": assistant_observation.infer,
     **SETTINGS_HANDLERS,
     "skill.import.describe": _skill_import_describe,
     "skill.import.package": _skill_import_package,

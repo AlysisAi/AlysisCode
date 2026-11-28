@@ -26,13 +26,72 @@ CATALOG = {
 }
 
 
-def service(tmp_path):
+def service(tmp_path, mode="development"):
     settings = Settings(
-        tmp_path / "apps.db", "t" * 40, "fixture-key", "https://example.invalid/v1", "fixture"
+        tmp_path / "apps.db",
+        "t" * 40,
+        "fixture-key",
+        "https://example.invalid/v1",
+        "fixture",
+        service_mode=mode,
     )
     client = TestClient(create_app(settings))
     client.headers["Authorization"] = "Bearer " + settings.token
     return client
+
+
+def test_local_hub_grant_settings_use_the_current_owl_and_preserve_disconnected_accounts(
+    tmp_path, monkeypatch
+):
+    from alysis_code import hub_apps
+
+    calls = []
+    state = {"connection_id": None, "mode": "inherit", "revision": 0}
+
+    class Broker:
+        def __init__(self, owl_id):
+            self.owl_id = owl_id
+
+        def connections(self, *, manage):
+            assert manage
+            return {
+                "hub_accounts": [
+                    {
+                        "plugin_id": "hub.notes",
+                        "catalog_id": "notes",
+                        "name": "Notes",
+                        "accounts": [],
+                        "grant": state,
+                    }
+                ]
+            }
+
+        def set_owl_grant(self, app, grant):
+            calls.append((self.owl_id, app, grant))
+            if state["revision"] != grant["expected_revision"]:
+                raise hub_apps.HubAppsError("conflict")
+            state.update(
+                mode=grant["mode"],
+                connection_id=grant["connection_id"],
+                revision=state["revision"] + 1,
+            )
+
+    monkeypatch.setattr(
+        hub_apps.HubAppsClient,
+        "from_saved_account",
+        classmethod(lambda cls, owl_id, **kw: Broker(owl_id)),
+    )
+    with service(tmp_path, "local") as client:
+        owl = client.post("/v1/bots", json={"name": "Juno", "purpose": ""}).json()["id"]
+        prefix = f"/v1/bots/{owl}"
+        body = {"mode": "read", "connection_id": "ca_work", "expected_revision": 0}
+        saved = client.patch(prefix + "/hub-grants/notes", json=body)
+        assert saved.status_code == 200 and calls == [(owl, "notes", body)]
+        assert saved.json()["hub_accounts"][0]["grant"]["revision"] == 1
+        assert saved.json()["apps"][0]["connected"] is False
+        assert client.patch(prefix + "/hub-grants/notes", json=body).status_code == 409
+        assert client.patch("/v1/bots/missing/hub-grants/notes", json=body).status_code == 404
+        assert len(calls) == 2
 
 
 def test_status_lists_the_capability_and_each_owl_keeps_its_own_switches(tmp_path):

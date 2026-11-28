@@ -9,12 +9,25 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 FORMATS = {
     "docx": ("word", ("docx", "lxml")),
     "xlsx": ("sheets", ("openpyxl", "xlsxwriter")),
     "pptx": ("slides", ("pptx", "PIL", "lxml")),
 }
+
+
+class SpreadsheetAuthoringError(ValueError):
+    """A workbook validation failure with a stable code for a person's activity view."""
+
+    def __init__(
+        self,
+        reason_code: Literal["spreadsheet_merge_occupied", "spreadsheet_font_size_invalid"],
+        message: str,
+    ):
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 def renderer_path() -> Path | None:
@@ -31,6 +44,12 @@ def renderer_path() -> Path | None:
             base / "LibreOffice.app/Contents/MacOS/soffice"
             for base in (Path("/Applications"), Path.home() / "Applications")
         )
+    elif sys.platform == "win32":
+        candidates.extend(
+            Path(folder) / "LibreOffice/program/soffice.com"
+            for key in ("ProgramFiles", "ProgramFiles(x86)")
+            if (folder := os.environ.get(key))
+        )
     return next(
         (path.resolve() for path in candidates if path.is_file() and os.access(path, os.X_OK)), None
     )
@@ -43,13 +62,10 @@ def office_capability_status() -> dict:
     for name, (_, modules) in FORMATS.items():
         missing = [module for module in modules if importlib.util.find_spec(module) is None]
         formats[name] = {"state": "unavailable" if missing else "ready", "missing_modules": missing}
-    preview_ready = sys.platform in {"darwin", "linux"} and (
-        renderer_path() is not None and importlib.util.find_spec("pypdfium2") is not None
-    )
-    calculation_ready = (
-        sys.platform in {"darwin", "linux"}
-        and renderer_path() is not None
-        and all(importlib.util.find_spec(module) is not None for module in ("openpyxl", "lxml"))
+    converter = sys.platform in {"darwin", "linux", "win32"} and renderer_path() is not None
+    preview_ready = converter and importlib.util.find_spec("pypdfium2") is not None
+    calculation_ready = converter and all(
+        importlib.util.find_spec(module) is not None for module in ("openpyxl", "lxml")
     )
     return {
         "state": "ready"
@@ -67,7 +83,7 @@ def office_capability_status() -> dict:
         "preview": {
             "state": "configured" if preview_ready else "unavailable",
             "basis": "Installed LibreOffice plus PDFium; successful conversion still requires page review.",
-            "configuration": "Uses LibreOffice on PATH or in standard macOS Applications folders. ALYSIS_OFFICE_SOFFICE overrides discovery with an absolute executable path.",
+            "configuration": "Uses LibreOffice on PATH or in the standard Windows Program Files or macOS Applications folders. ALYSIS_OFFICE_SOFFICE overrides discovery with an absolute executable path.",
             "render_example": command
             + ' render --source "report.docx" --preview-dir "scratch/office-review"',
         },
@@ -79,5 +95,5 @@ def office_capability_status() -> dict:
             "guidance": "Check calculation.state, errors and expected business results. A successful inspection or an old cached value is not proof of calculation. Recalculate again after changing inputs or formulas.",
         },
         "guidance": "Use describe for the selected format's exact JSON schema and example, then use this exact interpreter through shell_run. Save editable files in the requested output folder. Inspect before editing and use source/selection hashes. Originals are preserved; choose a new output filename for a revision. When previews are configured, render then inspect every returned page image with asset_view. No automatic installs or converter launches during capability discovery. Existing shell and filesystem permissions still apply.",
-        "limits": "Bounded DOCX/XLSX/PPTX operations, not arbitrary Office fidelity. Unsupported edits fail explicitly. Excel formulas are not calculated by these Python libraries; use the separate LibreOffice recalculation command. Inspection alone never verifies existing caches. Rendering and calculation require installed LibreOffice. No macros.",
+        "limits": "Bounded DOCX/XLSX/PPTX operations. Unsupported edits fail explicitly. Creating and editing formula workbooks uses installed LibreOffice to calculate displayed results. Without a calculator, results are not calculated and previews can show blank cells. Inspection alone never verifies existing caches. Rendering also requires installed LibreOffice. No macros.",
     }

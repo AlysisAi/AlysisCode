@@ -121,6 +121,11 @@ from .provider_limits import (
     mark_provider_call_non_retryable,
     run_provider_limited_call,
 )
+from .rate_limit_metadata import (
+    BILLING_ERROR_CODE,
+    provider_error_detail,
+    requires_provider_billing,
+)
 from .reasoning_trace import CompatibleReasoningTrace
 from .reflection_history import reflection_history_for_transport
 from .request_plan import LLMRequestPlan, RequestCachePlan, WireRequestDiagnostics
@@ -1630,6 +1635,12 @@ def alysis_trial_error_message(err: LLMError) -> str | None:
         if message.startswith(_HOSTED_WINDOW_LIMITS):
             return _with_reset_time(message[:2048], err)
         return message[:2048]
+    # Some providers reuse this code for funding failures. Let the shared billing
+    # guidance handle those after preserving the hosted gateway's specific messages.
+    if code == "rate_limit_exceeded" and requires_provider_billing(
+        _llm_error_status_code(err), error
+    ):
+        return None
     template = _ALYSIS_PROXY_ERROR_MESSAGES.get(code)
     if template is None or "{account_url}" not in template:
         # str.format would also choke on any literal brace in an unrelated
@@ -1993,8 +2004,25 @@ def _plan_allowance_used_up(status_code: int, body: str) -> bool:
     return str(error.get("code") or "") == "1308" or message.startswith("usage limit reached")
 
 
+def _compat_error_detail(data: Any, provider: str | None, status: int | None) -> Mapping[str, Any]:
+    detail = provider_error_detail(data)
+    # Business codes belong to the emitting API. Translate them before applying
+    # the shared policy, including for localized errors inside a successful stream.
+    if (
+        provider in ("zai", "zai_coding_plan")
+        and status in (None, 429)
+        and detail.get("code") in ("1113", 1113)
+    ):
+        return {**detail, "code": BILLING_ERROR_CODE}
+    return detail
+
+
 def _error_from_status_body(
-    *, status_code: int, body: str, headers: Mapping[str, str] | None = None
+    *,
+    status_code: int,
+    body: str,
+    headers: Mapping[str, str] | None = None,
+    provider: str | None = None,
 ) -> LLMError:
     safe_body = sanitize_error_text_for_output(body)
     err = LLMError(f"LLM error {status_code}: {_display_error_body(safe_body)}")
@@ -2003,9 +2031,8 @@ def _error_from_status_body(
     try:
         data = json.loads(body)
     except (TypeError, ValueError):
-        data = None
-    detail = data.get("error") if isinstance(data, dict) else None
-    detail = detail if isinstance(detail, dict) else {}
+        data = body
+    detail = _compat_error_detail(data, provider, status_code)
     if _plan_allowance_used_up(status_code, body):
         # The hard-quota code is never retried (provider_limits) and names the cause (QA-011).
         detail = {**detail, "code": "usage_limit_reached"}
@@ -2048,7 +2075,7 @@ def _stream_error_event_status(error: Any) -> int | None:
     return None
 
 
-def _error_from_stream_error_event(error: Any) -> LLMError:
+def _error_from_stream_error_event(error: Any, *, provider: str | None = None) -> LLMError:
     """An error a provider sent inside a stream that began with HTTP 200.
 
     Classified like the HTTP error with the provider's code, so a throttle or
@@ -2058,12 +2085,12 @@ def _error_from_stream_error_event(error: Any) -> LLMError:
     body = json.dumps({"error": error}, ensure_ascii=False, default=str)
     status_code = _stream_error_event_status(error)
     if status_code is not None:
-        return _error_from_status_body(status_code=status_code, body=body)
+        return _error_from_status_body(status_code=status_code, body=body, provider=provider)
     safe_body = sanitize_error_text_for_output(body)
     return apply_provider_error_metadata(
         LLMError(f"LLM stream returned an error event: {_display_error_body(safe_body)}"),
         status=None,
-        detail=error if isinstance(error, Mapping) else {},
+        detail=_compat_error_detail(error, provider, status=None),
     )
 
 
@@ -3194,7 +3221,9 @@ class OpenAICompatClient:
                                     # what happened to a specific call.
                                     telemetry.set_response_headers(resp.headers)
                                     if resp.status_code >= 400:
-                                        raise self._error_from_response(resp)
+                                        raise self._error_from_response(
+                                            resp, provider=self._error_provider()
+                                        )
                                     response = self._parse_non_stream_response(
                                         resp,
                                         provider_key=reasoning_provider_key,
@@ -3565,14 +3594,17 @@ class OpenAICompatClient:
             ),
         )
 
+    def _error_provider(self) -> str | None:
+        return _provider_key_from_base_url(self.base_url) or self.provider_key
+
     @staticmethod
-    def _error_from_response(resp: httpx.Response) -> LLMError:
+    def _error_from_response(resp: httpx.Response, *, provider: str | None = None) -> LLMError:
         try:
             body = resp.text
         except Exception:
             body = "<unable to read response body>"
         return _error_from_status_body(
-            status_code=resp.status_code, body=body, headers=resp.headers
+            status_code=resp.status_code, body=body, headers=resp.headers, provider=provider
         )
 
     def _parse_stream_response(
@@ -3589,7 +3621,10 @@ class OpenAICompatClient:
         if resp.status_code >= 400:
             body = self._safe_error_body(resp)
             raise _error_from_status_body(
-                status_code=resp.status_code, body=body, headers=resp.headers
+                status_code=resp.status_code,
+                body=body,
+                headers=resp.headers,
+                provider=self._error_provider(),
             )
 
         # Register response.close only for the lifetime of this parse. Every
@@ -3709,7 +3744,9 @@ class OpenAICompatClient:
 
                 if event.get("error") is not None:
                     attempt.values["terminal_reason"] = "provider_error"
-                    raise _error_from_stream_error_event(event.get("error"))
+                    raise _error_from_stream_error_event(
+                        event.get("error"), provider=self._error_provider()
+                    )
 
                 event_progress = False
                 event_count += 1

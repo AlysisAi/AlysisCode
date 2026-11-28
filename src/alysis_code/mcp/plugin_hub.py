@@ -49,6 +49,7 @@ HUB_ARGUMENT_BYTES = MAX_VERIFIED_ARGUMENT_BYTES
 # (Alysis's server gives a longer catalog id a short stable one).
 _HUB_PLUGIN_ID = re.compile(r"hub\.[a-z][a-z0-9_]{0,23}\Z")
 _CATALOG_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
+_PROVIDER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _TOOL_NAME_LIMIT = 64
 _CATALOG_FIELDS = frozenset(
     {"protocol_version", "plugin_id", "server_id", "catalog_id", "name", "tested", "tools"}
@@ -61,6 +62,14 @@ class HubCatalogError(ValueError):
 
 def is_hub_plugin(plugin_id: Any) -> bool:
     return isinstance(plugin_id, str) and _HUB_PLUGIN_ID.fullmatch(plugin_id) is not None
+
+
+def is_hub_connection_id(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value.startswith("added-"):
+        return bool(_CATALOG_ID.fullmatch(value[6:]))
+    return bool(_PROVIDER_ID.fullmatch(value))
 
 
 def hub_server_id(plugin_id: str) -> str:
@@ -159,8 +168,19 @@ def check_hub_tool(plugin_id: str, tool: Any, seen: set[str]) -> None:
 
 def check_hub_catalog(catalog: Any) -> None:
     """One connected app as the engine loaded it from Alysis's server."""
-    if not isinstance(catalog, dict) or set(catalog) != _CATALOG_FIELDS:
+    if (
+        not isinstance(catalog, dict)
+        or set(catalog) - {"connection_id", "grant_revision"} != _CATALOG_FIELDS
+    ):
         raise HubCatalogError("Invalid hub app fields.")
+    if "connection_id" in catalog and not is_hub_connection_id(catalog["connection_id"]):
+        raise HubCatalogError("Invalid hub connection ID.")
+    if "grant_revision" in catalog and (
+        "connection_id" not in catalog
+        or type(catalog["grant_revision"]) is not int
+        or catalog["grant_revision"] < 0
+    ):
+        raise HubCatalogError("Invalid hub grant revision.")
     plugin_id = catalog["plugin_id"]
     if (
         not is_hub_plugin(plugin_id)

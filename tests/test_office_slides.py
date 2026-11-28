@@ -108,6 +108,55 @@ def test_create_inspect_greek_tables_images_and_no_network(tmp_path, monkeypatch
     json.dumps(result)
 
 
+def test_layout_evidence_and_targeted_repair_preserve_other_shapes_and_slides(tmp_path):
+    from alysis_code.artifact_checks import ArtifactChecks
+    from alysis_code.bots.owl_documents import _summary
+
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    body = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(2))
+    body.text = "Αποτελέσματα\n結果"
+    footer = slide.shapes.add_textbox(Inches(1), Inches(2.75), Inches(5), Inches(0.5))
+    footer.text = "出典"
+    footer.text_frame.paragraphs[0].runs[0].font.bold = True
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(2))  # empty layer
+    deck.slides.add_slide(deck.slide_layouts[6])
+    source = tmp_path / "notes.pptx"
+    deck.save(source)
+
+    checked = ArtifactChecks(tmp_path).check(source.name)
+    evidence = _summary(checked)["text_box_overlaps"]
+    assert evidence == {
+        "count": 1,
+        "examples": [
+            {
+                "slide": 1,
+                "shape_ids": [body.shape_id, footer.shape_id],
+                "width_inches": 5,
+                "height_inches": 0.25,
+            }
+        ],
+    }
+    edit = {
+        "slide": 1,
+        "shape_id": footer.shape_id,
+        "bounds": {"x": 1, "y": 3, "width": 5, "height": 0.5},
+    }
+    spec = {"expected_source_sha256": checked["documentSha256"], "edits": [edit]}
+    output = tmp_path / "revised.pptx"
+    result = slides.edit(source, spec, output, tmp_path)
+    assert result["text_box_overlaps"] == {"count": 0, "examples": []}  # touching edges
+    assert result["changed_package_parts"] == ["ppt/slides/slide1.xml"]
+    revised = Presentation(output).slides[0].shapes[1]
+    assert revised.text == "出典" and revised.text_frame.paragraphs[0].runs[0].font.bold
+    assert revised.top == Inches(3) and footer.top == Inches(2.75)
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == checked["documentSha256"]
+    edit["bounds"]["y"] = 40
+    with pytest.raises(ValueError, match="outside"):
+        slides.edit(source, spec, tmp_path / "bad.pptx", tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
 def test_edit_preserves_source_other_slide_chart_media_and_style(tmp_path):
     source, _ = create_deck(tmp_path)
     presentation = Presentation(source)
@@ -149,7 +198,10 @@ def test_precise_run_edit_keeps_formatting_links_and_surrounding_text(tmp_path):
     run.hyperlink.address = "https://example.com/"
     presentation.save(source)
     result = slides.inspect(source)
-    assert not result["slides"][0]["shapes"][0]["whole_text_editable"]
+    inspected_text = result["slides"][0]["shapes"][0]
+    assert inspected_text["text_editable"] and not inspected_text["whole_text_editable"]
+    assert result["text_editing"] == slides.GUIDE["text_editing"]
+    assert "edit this native text directly in PowerPoint" in result["text_editing"]
     spec = change_for(result, text=" revised", paragraph=1, run=2)
     spec["edits"][0]["expected_text_sha256"] = digest(" linked")
     output = tmp_path / "revised.pptx"

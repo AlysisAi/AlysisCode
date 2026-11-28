@@ -12,6 +12,7 @@ from ..error_text import sanitize_error_text_for_output
 from ..provider_telemetry import ProviderCallTelemetryRecorder
 from .base import input_token_count_request, scoped_input_token_counter
 from .cancellable_http import provider_httpx_client
+from .error_metadata import apply_provider_error_metadata
 from .http_cancellation import cancellable_httpx_send, raise_if_cancelled
 from .metadata import (
     GEMINI_INTERACTIONS_PROVIDER_METADATA_KEY,
@@ -30,6 +31,7 @@ from .provider_limits import (
     best_effort_provider_key,
     run_provider_limited_call,
 )
+from .rate_limit_metadata import provider_error_detail
 from .request_plan import LLMRequestPlan
 from .request_shape import build_request_shape_report
 from .temperature_compat import documented_temperature_omit_reason
@@ -160,26 +162,18 @@ class GeminiInteractionsClient:
     def _llm_error_from_response(response: httpx.Response) -> LLMError:
         try:
             data = response.json()
-        except Exception:
+        except ValueError:
             body = response.text
             if len(body) > 1000:
                 body = body[:1000] + "...(truncated)"
-            return LLMError(
-                sanitize_error_text_for_output(
-                    f"Gemini Interactions error {response.status_code}: {body}"
-                )
-            )
-        message = _extract_error_message(data)
-        if message:
-            return LLMError(
-                sanitize_error_text_for_output(
-                    f"Gemini Interactions error {response.status_code}: {message}"
-                )
-            )
-        return LLMError(
-            sanitize_error_text_for_output(
-                f"Gemini Interactions error {response.status_code}: {data!r}"
-            )
+            data = body
+        else:
+            body = _extract_error_message(data) or repr(data)
+        return apply_provider_error_metadata(
+            LLMError(f"Gemini Interactions error {response.status_code}: {body}"),
+            status=response.status_code,
+            detail=provider_error_detail(data),
+            headers=response.headers,
         )
 
     @scoped_input_token_counter

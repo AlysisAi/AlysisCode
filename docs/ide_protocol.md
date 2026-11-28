@@ -1,6 +1,6 @@
 # IDE Protocol v1
 
-Alysis exposes a versioned IDE protocol for editor integrations. The first transport is newline
+Alysis Code exposes a versioned IDE protocol for editor integrations. The first transport is newline
 delimited JSON over stdio:
 
 ```bash
@@ -45,7 +45,7 @@ alysis ide-bridge health
 The health command prints a single JSON object with:
 
 - `protocol_version`
-- installed Alysis version
+- installed Alysis Code version
 - supported methods
 - supported surface event types
 - supported modes
@@ -173,7 +173,7 @@ Error response:
 
 The bridge never prints API keys, bearer tokens, or authorization header values in responses or
 events. It rejects inline secret fields such as `api_key`, `token`, `secret`, `password`, and
-`credential` on every request; credentials must come from existing Alysis configuration or
+`credential` on every request; credentials must come from existing Alysis Code configuration or
 environment sources. Secret-looking values in neutral config params and URL userinfo are also
 rejected. Provider extra header values are not accepted through `profile.add`; the bridge returns a
 structured `requires_secret_storage` action instead.
@@ -306,7 +306,7 @@ session's shell and verification configuration; runtime environment policy takes
 The response includes `sandbox_mode` with the resolved shell mode. Existing sessions keep their
 policy until a new session is created.
 
-Creates an Alysis session bound to a workspace. Client-provided `session_id` values are optional;
+Creates an Alysis Code session bound to a workspace. Client-provided `session_id` values are optional;
 the bridge rejects duplicate active ids instead of replacing an existing session. Client-provided ids
 must be 1-128 characters and use only letters, digits, `_`, `-`, `.`, or `:`.
 
@@ -423,7 +423,7 @@ If setup is pending or failed, that action is not executed (`checkpoint_unavaila
 available. The next request reuses a pending worker or retries failed storage. A background worker
 never attaches a baseline after tool execution has begun. The extension shows a recovery card.
 
-Successful real-session turns capture a bounded change checkpoint in Alysis-owned external
+Successful real-session turns capture a bounded change checkpoint in Alysis Code-owned external
 storage; the workspace's own Git repository and refs are never modified. Sensitive files and files
 outside the configured size limits are excluded. `checkpoint.list` returns checkpoint metadata and
 changed paths, while `checkpoint.diff` returns a bounded patch for one checkpoint.
@@ -440,7 +440,7 @@ These methods expose a durable, session-scoped task ledger for native IDE progre
 a stable id, bounded title, and one of `pending`, `in_progress`, `completed`, or `blocked` statuses.
 At most one task may be `in_progress`. Updates require Workspace Trust and an
 `expected_revision`; a stale revision returns `updated: false`, `conflict: true`, and the current
-revision without overwriting newer state. State is stored in Alysis-owned external storage rather
+revision without overwriting newer state. State is stored in Alysis Code-owned external storage rather
 than the project tree and survives bridge restarts.
 
 ### session.questions.create, session.questions.get, session.questions.list, session.questions.answer, session.questions.cancel
@@ -969,6 +969,63 @@ inside the resolved workspace and is not a symlink. HTTPS remote skill sources r
 remote intent (`allow_remote: true`) plus confirmation (`yes: true` or `confirm: true`); URL
 userinfo and non-HTTPS remote transports fail closed in Protocol v1.
 
+Desktop Assist:
+
+- `assistant.observation.models` takes empty params and returns
+  `{models: [{id, name, provider, hosted}], activeModel, modelStatus, snapshotPlanning}`.
+  Discovery uses saved connections and the offline model catalog. The ID binds the selected model
+  and configured endpoint, profile, protocol, routing headers, and credential. `provider` is a
+  display label. `hosted` indicates a route that can send the snapshot off the device.
+  `activeModel` is the ID of the explicitly configured vision model, or null.
+  `modelStatus` is `ready`, `no-vision` or `unavailable`. Desktop uses the active
+  model and asks for fresh consent if that route changes. `snapshotPlanning: true` advertises the
+  `snapshot` phase, `repeatOffers: true` the `earlier` list and `offer.repeats`, and
+  `quickLook: true` the `glance` phase. It only reads settings, so the settings engine
+  (`--role management`) answers it too; a host falls back to an engine of its own when an older
+  settings engine lacks it.
+- `assistant.observation.infer` takes `route`, `phase`, `activity`, and optional `language` (language
+  tag). Activity contains `trigger` (`sustained-work` or `repeated-switching`) and up to 12
+  `sequence` entries with an anonymous integer `app` and integer `seconds`. Desktop sends
+  `sustained-work` after recent input, including work that stays in one window. The sequence
+  captures recent window duration and changes. Window identities stay on-device.
+  An explicit screen check uses `{"trigger":"user-request","sequence":[]}` and can only use
+  phases `suggest`, `snapshot` and `watch`.
+  Phase `check` returns `{check: boolean}` and accepts no image. A positive response lets the
+  Desktop ask for a screen check. Only the person's explicit acceptance starts capture.
+  Phase `suggest` requires one `imageBase64` containing
+  a JPEG or PNG, up to 700 KiB decoded and 2048 pixels on its longest edge. It returns
+  `{offer: {title, outcome, newOwl?, existingOwl?} | null}`. The optional `newOwl` includes a name, purpose,
+  instructions, brief and `expectedResult` for the person to review. With `askBeforePlanning: true`,
+  a suggestion uses the active model only and returns
+  `{offer: {title, outcome, question} | null}`. The person can reply before the Assistant plans any
+  handoff. The desktop must obtain consent for the exact route before
+  sending an image. A stale route returns `assistant_observation_route_changed` before any model
+  call. An unusable model reply returns `assistant_observation_invalid_reply`. A valid decline
+  returns `{check: false}` or `{offer: null}`. Inference runs outside Owl conversations with a
+  30-second deadline and permits one provider request. The bridge does not save the image or send tools.
+  `suggest`, `snapshot`, and `watch` can receive up to 30 same-runtime `candidates`, each with
+  `id`, `name`, `purpose`, and optional `filesEnabled`. During `snapshot` and `watch`, the optional
+  `workScopes` lists capabilities supported by the coordinating owl’s service. A handoff
+  may return one of those values as `workScope` for the person to approve. An
+  `existingOwl` offer carries a valid candidate ID
+  as `recipientId`, the match `reason`, the task `brief` and `expectedResult`.
+  Phase `snapshot` accepts exactly one image in `frames` (up to 700 KiB decoded), an optional
+  typed `goal`, and empty `notes`. It uses the active route and can return an offer, an offer
+  containing a question, or `{more: {reason, notes}}` when `canExtend` is true. A `more` reply
+  to a snapshot is a request for the person's recording approval.
+  Phase `watch` accepts one to four ordered screen `frames` (up to 160 KiB each),
+  an optional typed `goal`, transient `notes` and the boolean `canExtend`. It returns
+  an offer or `{more: {reason, notes}}` when the client still has consent for more
+  capture. It accepts only the active route. The desktop collects 30-second
+  segments, up to 120 seconds of capture, and discards each segment after review.
+  Phase `glance` is the quick look before an ask, for people who turned it on. It takes no
+  `activity`; instead `moment` says what the computer noticed, from counts and timings only:
+  `kind` (`repetition`, `transfer`, `stuck`, `grind` or `rhythm`), integer `windows` (0–99) and
+  `seconds` (0–86400), and optional integer `count` (0–999). It requires one `imageBase64`, a
+  JPEG or PNG up to 128 KiB decoded and 1024 pixels on its longest edge, and returns
+  `{ask: boolean}`. Nothing from it is shown to the person: `true` lets the Desktop ask, `false`
+  keeps it quiet. It accepts no candidates and no earlier tasks.
+
 Doctor, sandbox, update, and report:
 
 - `doctor.summary`
@@ -1065,7 +1122,7 @@ Conventions:
 `max_bytes`. Results include `document_count`, `truncated_by_chars`, `truncated_by_bytes`,
 `secret_values_included: false`, and `redacted: true`.
 
-Alysis extension package management:
+Alysis Code extension package management:
 
 - `ext.search`
 - `ext.list`
@@ -1305,7 +1362,7 @@ approvals.
 
 ### Desktop host responses: computer.respond, task_budget.respond, browser_start.respond
 
-These methods answer host requests that the bridge emits only to the Alysis desktop
+These methods answer host requests that the bridge emits only to the Alysis Code desktop
 app, and only for sessions created with the matching negotiated `host_capabilities`
 (`sensitive-host-context-v1` / `computer-use-host-v1`, task budgets, and the browser start
 handoff; see the `computer_use_host`, `task_budget` and `browser_start_v1` capability
@@ -1711,7 +1768,7 @@ never supply a profile directory, artifact path, DevTools port, or WebSocket end
 `browser.start` requires `workspace_trusted: true` and starts a supported Chrome, Edge, or Chromium
 binary as an owned process group. The bridge uses a minimal child environment, disables inherited
 proxy configuration, creates a private per-browser profile and artifact directory below the
-Alysis user-data root (never below a declared workspace), and accepts only a literal-loopback
+Alysis Code user-data root (never below a declared workspace), and accepts only a literal-loopback
 DevTools WebSocket endpoint. Every browser session also owns a validating loopback HTTP/CONNECT
 proxy. Chrome is launched without direct network fallback or implicit loopback proxy bypass, with
 direct host resolution disabled and non-proxied UDP disabled. The proxy itself resolves each

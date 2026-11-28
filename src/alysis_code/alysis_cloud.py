@@ -200,9 +200,24 @@ def cloud_bots_url() -> str:
     return _function_url("cloud-bots")
 
 
+def owl_share_recipients_url() -> str:
+    return _function_url("owl-share-recipients")
+
+
 def activate_url() -> str:
     """The website page where a signed-in user approves a device code."""
     return f"{site_url()}/activate"
+
+
+def images_base_url() -> str:
+    """The account's image service, beside the model gateway: OpenAI-shaped
+    ``/images/generations`` and ``/images/edits`` under it, and ``/capabilities``, which says
+    what the account may use (account_images.py). A gateway at ``.../llm/v1`` has it at
+    ``.../images/v1``; otherwise it is the deployment's ``images`` function."""
+    gateway = gateway_base_url().rstrip("/")
+    if gateway.endswith("/llm/v1"):
+        return f"{gateway[: -len('/llm/v1')]}/images/v1"
+    return f"{_function_url('images')}/v1"
 
 
 def models_url() -> str:

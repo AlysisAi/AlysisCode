@@ -2111,13 +2111,63 @@ test("AlysisBridgeClient never starts a replacement until the exact prior child 
   client.dispose();
 });
 
-test("AlysisBridgeClient refuses credential profile restart while a request is pending", async () => {
+// Reads the CLI answers from local state, as the sidebar's catalog load and a status check send.
+const LOCAL_READS: Array<[string, (client: AlysisBridgeClient) => Promise<unknown>, Record<string, unknown>]> = [
+  ["session status", (client) => client.sessionStatus("session-1"), sessionStatusPayload()],
+  ["profile list", (client) => client.profileList(), { active_profile: "default", profiles: [] }],
+  ["profile presets", (client) => client.profilePresets(), { presets: [] }]
+];
+
+for (const [label, read, answer] of LOCAL_READS) {
+  test(`AlysisBridgeClient answers a ${label} read in flight before a credential profile restart`, async () => {
+    const fakes: FakeBridgeProcess[] = [];
+    const client = new AlysisBridgeClient(
+      new CliDiscovery(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+      () => {
+        const fake = new FakeBridgeProcess();
+        fakes.push(fake);
+        return fake;
+      }
+    );
+    await client.ensureStartedForProfile(config(), { stripApiKey: true });
+    const prior = fakes[0];
+    const reading = read(client);
+    await prior.waitForRequests(1);
+
+    let restartSettled = false;
+    const restarting = client.ensureStartedForProfile(
+      config(),
+      { apiKey: "bridge-secret" },
+      { credentialsRequired: true }
+    );
+    const settle = () => {
+      restartSettled = true;
+    };
+    restarting.then(settle, settle);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // The restart waits for the read: it neither refuses nor cuts the read off.
+    assert.equal(restartSettled, false);
+    assert.equal(prior.killCalls.length, 0);
+    assert.equal(fakes.length, 1);
+
+    prior.respond(0, answer);
+    await reading;
+    const result = await restarting;
+    assert.equal(result.restarted, true);
+    assert.equal(fakes.length, 2);
+    assert.equal(client.currentLaunchProfile()?.alysisApiKeyForwarded, true);
+    client.dispose();
+  });
+}
+
+test("AlysisBridgeClient refuses credential profile restart while a request that is not a local read is pending", async () => {
   const fake = new FakeBridgeProcess();
   const client = clientFor(fake);
   await client.ensureStartedForProfile(config(), { stripApiKey: true });
 
-  const pending = client.sessionStatus("session-1").catch(() => undefined);
-  await fake.waitForRequests(1);
+  const reading = client.sessionStatus("session-1").catch(() => undefined);
+  const sending = client.sendChat("session-1", "hello").catch(() => undefined);
+  await fake.waitForRequests(2);
 
   await assert.rejects(
     client.ensureStartedForProfile(config(), { apiKey: "bridge-secret" }, { credentialsRequired: true }),
@@ -2129,7 +2179,34 @@ test("AlysisBridgeClient refuses credential profile restart while a request is p
     }
   );
   fake.respond(0, sessionStatusPayload());
-  await pending;
+  fake.respond(1, { session_id: "session-1", job_id: "job-1", status: "completed" });
+  await Promise.all([reading, sending]);
+  client.dispose();
+});
+
+test("AlysisBridgeClient refuses credential profile restart when an approval opens while a read finishes", async () => {
+  const fake = new FakeBridgeProcess();
+  const client = clientFor(fake);
+  await client.ensureStartedForProfile(config(), { stripApiKey: true });
+
+  const reading = client.sessionStatus("session-1");
+  await fake.waitForRequests(1);
+  const outcome = client
+    .ensureStartedForProfile(config(), { apiKey: "bridge-secret" }, { credentialsRequired: true })
+    .then(() => undefined, (error: unknown) => error);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  fake.emitEvent(eventEnvelope({
+    type: "prompt_for_input",
+    payload: { kind: "approval", approval_id: "approval-1", prompt_id: "approval-1" },
+    job_id: null,
+    sequence: 2
+  }));
+  fake.respond(0, sessionStatusPayload());
+  await reading;
+  const error = await outcome;
+  assert.equal(error instanceof ProtocolClientError, true);
+  assert.equal((error as ProtocolClientError).code, "bridge_profile_restart_blocked");
+  assert.equal(fake.killCalls.length, 0);
   client.dispose();
 });
 

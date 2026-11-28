@@ -574,6 +574,74 @@ def test_dropped_call_stops_before_dispatch_and_is_accounted(tmp_path):
     assert store.usage("owner")["unconfirmed_calls"] == 0
 
 
+@pytest.mark.parametrize("proposed", [True, False])
+def test_review_uses_this_turns_saved_assignment_separately_from_action_approvals(
+    tmp_path, proposed
+):
+    claim = "La proposition pour Léa vous attend dans cette discussion. Le travail débutera après votre accord."
+    correction = "Aucune proposition n’a été enregistrée."
+
+    def propose(_):
+        return response(
+            calls=[
+                ToolCall(
+                    "draft",
+                    "propose_owl_assignment",
+                    {
+                        "recipient_bot_id": specialist["id"],
+                        "brief": "Rédige une invitation.",
+                        "expected_result": "Une invitation en français.",
+                    },
+                )
+            ]
+        )
+
+    def inspect(request):
+        data = json.loads(request["messages"][1]["content"])
+        assert data["draft_reply"] == claim and data["current_action_proposal"] is None
+        card = data["current_owl_assignment_proposal"]
+        if not proposed:
+            assert card is None
+            return verdict("repair", "Aucune proposition à approuver.", issue="contradiction")
+        (saved,) = store.list_assignments("owner", task["bot_id"])["items"]
+        assert not saved["ready"] and saved["child_task_id"] is None
+        assert card == {
+            "id": saved["id"],
+            "recipient_name": "Léa",
+            "work_scope": "text",
+            "status": "proposed",
+            "approval_availability": "when_reply_completes",
+        }
+        return verdict("ready")
+
+    responses = ([propose] if proposed else []) + [response(claim), inspect]
+    if not proposed:
+        responses.extend([response(correction), verdict("ready")])
+    store, task, _, runtime, token = study(tmp_path, responses, message="Propose une tâche à Léa.")
+    specialist = store.save_bot("owner", BotInput(name="Léa"))
+    store.set_coordinator("owner", task["bot_id"], True)
+    runtime.run(task, token)
+    finished = store.task("owner", task["id"])
+    assert finished["output"] == (claim if proposed else correction)
+    assert sum(e["kind"] == "reply_review_finished" for e in finished["events"]) == (
+        1 if proposed else 2
+    )
+    if proposed:
+        (saved,) = store.list_assignments("owner", task["bot_id"])["items"]
+        assert saved["ready"] and saved["child_task_id"] is None
+        assert (
+            store.assignment_proposal_for_task("owner", task["id"])["approval_availability"]
+            == "ready"
+        )
+        assert store.assignment_proposal_for_task("another-owner", task["id"]) is None
+        later = store.enqueue(
+            "owner", task["chat_id"], TaskInput(message="Merci.", request_id="another-request")
+        )
+        assert store.assignment_proposal_for_task("owner", later["id"]) is None
+        store.decide_assignment("owner", task["bot_id"], saved["id"], "decline")
+        assert store.assignment_proposal_for_task("owner", task["id"]) is None
+
+
 def test_reply_repair_withdraws_unneeded_card_instead_of_only_hiding_it_in_text(tmp_path):
     def inspect_pending(request):
         payload = json.loads(request["messages"][1]["content"])

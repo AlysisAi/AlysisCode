@@ -6,8 +6,8 @@ release. See [desktop engine contracts](desktop-engine.md).
 
 ## Product and execution boundaries
 
-- Each bot has one continuous conversation. Bots are peers; the product does not
-  require a privileged main assistant or a separate user-facing coding agent.
+- Each bot has one continuous conversation. Bots are peers. A person can choose one
+  owl in each runtime to coordinate assignments using the same permission boundaries.
 - Longer work runs in the background while the conversation remains responsive.
   Coding uses the engine through a scoped internal worker and retains task
   ownership, accounting, cancellation, and result verification.
@@ -75,6 +75,110 @@ tenant isolation. Qualify the actual backend and its trust boundary.
 - Portable storage: durable data and storage-provider boundaries.
 - App and cloud integration: app/service connection and cloud qualification.
 - Local computer integration: lifecycle, private VM boundaries, and native-app checks.
+
+### Owl assignments
+
+Services with the `owl_assignments` capability let the person select one existing
+coordinator for their owner on this runtime with
+`PUT /v1/bots/{bot_id}/coordinator` (`{"enabled":true}`). The coordinator can propose one
+assignment per direct request with a same-owner recipient, brief, and expected result.
+`GET /v1/bots/{bot_id}/assignments` lists the owl's coordinator status and newest outgoing
+assignments. Follow `next_before` with `POST /v1/bots/{bot_id}/assignments/page`
+(`{"before":"<cursor>"}`) to read older items. A proposal is ready after the originating turn
+finishes. The person can
+approve or decline it with `PATCH /v1/bots/{bot_id}/assignments/{assignment_id}`
+(`{"decision":"approve"}` or `{"decision":"decline"}`). Repeating approval returns
+the same task. Changing the coordinator cancels its pending proposals and keeps
+already approved work and results.
+
+An assignment runs as a separate task for the recipient, with its own usage and
+stop state. It reads the scoped brief and expected result. Text assignments run
+without tools. It does not
+inherit conversations, attached files, connected apps, computers, or authority to
+delegate. The coordinator's assignment list shows the result and the verification
+verdict when available. If the service stops after recording the result and before
+finishing verification, the saved result remains visible with no verification verdict.
+The existing task cancel endpoint stops the assigned task. Deleting either owl
+removes the assignment, after active assigned work has stopped.
+
+### Assist
+
+Services with `owl_assistant` expose `GET /v1/assistant` and
+`PUT /v1/assistant` (`{"enabled":true}` or `{"enabled":false}`). Both return the
+enabled state and the built-in owl, or `bot: null` before its first creation.
+Assist starts off. The first enable creates one Alysis Assistant for the owner
+on the current runtime and makes it the coordinator in the same transaction.
+Enabling does not queue a first message or any other work. Re-enabling uses the
+same owl and history. Alysis Assistant has its own slot alongside the 30
+ordinary owls.
+
+The built-in owl is marked `managed_assistant: true` and carries its current
+`assistant_enabled` state in the bot view. Its name, purpose and instructions
+come from the runtime. The person can change its look and memory or file
+preferences. New direct messages require Assist to be on. Assignments must use
+another owl as the recipient. While Assist owns the role, assignment responses
+add `assistant_coordinator: true`, and a manual coordinator cannot replace it.
+
+Assist can group related questions in a clarification card and ask a follow-up in
+the same chat. It can retain confirmed project decisions in editable working notes
+and use them to brief another owl. The person reviews the resulting assignment or
+new-owl draft before work starts.
+
+Desktop clients that support `owl_assistant_screen_requests` can send
+`assistant_screen_requests: true` on an Assistant message. When screen context
+would help, the model can attach an `assistant_screen_request` with a short goal
+to the completed task. The desktop presents the request for approval before it
+takes a screenshot. The request itself never captures or uploads an image.
+
+Turning Assist off restores the previous manual coordinator if it still
+exists. The same role transition cancels unapproved drafts and pauses active
+assignment routines for the outgoing coordinator. That coordinator's already
+approved work and saved history are kept. Turning Assist back on does not resume
+paused routines. Deleting the built-in owl through the usual owl deletion
+flow also releases the role and removes the assistant record.
+
+Services with `owl_assistant_create_owl` let the person approve a new owl proposed by Assist.
+Completed turns with a new-owl draft include `assistant_owl_draft` in the conversation response.
+`POST /v1/assistant/{bot_id}/create-owl` takes the reviewed `name`, `purpose`, `instructions`,
+`brief`, `expected_result`, `start_task` and `request_id`. It returns `{bot, assignment}`.
+Creating the owl and optionally queuing its first assignment commit together. Repeating
+the approved request returns the same owl and assignment. The result is available through
+`GET /v1/bots/{bot_id}/assignments/{assignment_id}` on the coordinating Assistant.
+
+Services with `owl_assistant_assign_existing` also accept
+`POST /v1/assistant/{bot_id}/assign` with the reviewed `recipient_bot_id`,
+`brief`, `expected_result` and `request_id`. The recipient must be an existing
+ordinary owl on the same owner and runtime. The response contains the selected
+owl and its queued assignment. A retry with the same reviewed text recovers
+the same task. Read its status through the same endpoint as a new-owl handoff.
+Approved Assistant handoffs appear in the recipient's conversation. The task
+includes the approved brief, expected result and any verification verdict in
+`assistant_handoff`. Its reply follows the recipient's normal unread behavior.
+
+The optional `work_scope` on assignment and new-owl requests defaults to `text`.
+The approval for a proposed assignment repeats its scope. `web_research` allows
+search and reading public pages (`owl_assignment_web_research`). `workbook`
+creates a new .xlsx (`owl_assignment_workbook`) from the approved
+brief if the assigned owl has Library access. The completed assignment includes its
+`artifact_id` for download from the recipient's files. Both scopes are confined to
+the approved task and share the existing task model-call limits.
+
+### Assignment routines
+
+A service with `owl_assignment_routines` lets the current coordinator's owner
+schedule a completed original assignment from Owl assignments.
+`POST /v1/bots/{bot_id}/assignments/{assignment_id}/schedule` takes a routine name,
+timing and request ID. This saves a paused routine. The person turns it on in
+Routines. The routine keeps the original recipient, scope, exact brief and expected
+result, so a regular prompt edit cannot change what was approved.
+
+Each occurrence queues one real recipient task in the same transaction that
+records the routine run. The worker gets the current run's time with the approved
+text and uses the same approved tools and result check as a one-time
+assignment. Run status appears in Routines and the draft and review appear in Owl
+assignments. The routine pauses when it loses its coordinator or recipient, or
+when a completed draft needs review. An interrupted run preserves any saved draft
+and follows the existing scheduler's missed-run policy.
 
 ### Memory and Library
 
@@ -354,13 +458,17 @@ for the place's own. `GET /v1/models` lists them, the default first, each with `
 capacities for that model on that endpoint, never guessed from names), the `connection` it thinks
 through with its `connection_label`, its `model_label`, and `available` with `unavailable` (why
 not). A local service offers the person's saved model connections that have a key and an endpoint
-the service accepts, read again on every turn; a hosted one offers its own model and
-`Settings.models` on the same endpoint (`owl_models.py`). A local connection also offers the
+the service accepts, read again on every turn. A managed Cloud Owl lists the models its owner's
+authenticated Alysis gateway serves, and runs its turns through that connection with the owner's
+plan and usage accounting. An operator service offers its own model and `Settings.models`. A local connection also offers the
 models its provider lists for the person, each as `<connection>/<model>` after the connection's
 own: on the account gateway the account's catalog (the plan's models, open where the gateway serves
 them to its key, else the gateway's own listing; read at most once a minute, the last good read
 standing while a read fails), otherwise the reviewed models of the provider preset it was made
-from. A catalog model closed to the person is listed with `available: false` and `unavailable`
+from. Each model lists its supported `reasoning_efforts`. Services advertising `owl_reasoning_effort`
+accept a per-Owl `reasoning_effort` in Owl settings. Null inherits the connection’s normal Owl
+behavior. A model-only change clears its previous effort. Both apply on the next turn.
+A catalog model closed to the person is listed with `available: false` and `unavailable`
 `pending` (listed, not open to this account yet) or `unchecked` (couldn't be checked just now).
 It thinks through its connection with only the model changed: the same key, endpoint, usage
 accounting, plan limits and work strength. Every turn of the owl, and its answers to other owls,
@@ -399,8 +507,16 @@ that model's connection) declares image generation, which `GET /v1/models` shows
 `image_generation`. On this computer a saved
 connection declares it when the person's `image_generation` settings are on and the request can
 reach it (an image `base_url` of its own, or the connection speaks `openai_compat`); the image
-key and endpoint default to the connection's own. A hosted service declares it with an
-`image_generation` object in its settings. Each request is one of the task's own provider calls
+key and endpoint default to the connection's own. A connection to the account gateway declares
+what the account's image service declares (`account_images.py`: its models for new and changed
+pictures and the qualities it accepts, with the connection's own key and only that key), unless
+the person has an image provider of their own. Any other connection, without image settings the
+request can use, declares what the person's signed-in Alysis account declares, with the saved
+account key and only that key (`image_generation.key_from = "account"`). A hosted service declares it with an
+`image_generation` object in its settings. `create_image` and `edit_image` take a `quality` only
+when the person asks for one; otherwise the person's `image_generation.quality` applies as the
+request goes out, and a quality the connection does not accept is refused before any call is
+counted. Each request is one of the task's own provider calls
 in the call ledger (the workspace allowance and the task's ceiling, leaving two calls for the
 owl's answer); the image provider charges and limits it for the account its key belongs to, and
 an HTTP 402/429 answer or a quota or plan-limit code comes back to the owl as a plain refusal.

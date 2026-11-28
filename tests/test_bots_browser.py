@@ -210,14 +210,40 @@ def test_definite_creation_refusal_has_structured_receipt_and_no_claim(lab):
 
     lab.adapter.factory = refuse
     result = lab.call()
-    assert result == {
+    assert {key: result[key] for key in ("error", "code", "computer_created", "retryable")} == {
         "error": "Ανεπαρκής χώρος 東京",
         "code": "insufficient_local_storage",
         "computer_created": False,
         "retryable": False,
     }
+    # The state its computer is in, as data the owl words for the person.
+    assert result["computer"] == {"state": "not_enough_disk_space"}
+    assert result["executed"] is False
     assert lab.executors == []
     assert lab.views.current("owner", "bot-a")[1] is None
+
+
+def test_a_computer_that_does_not_start_leaves_the_task_going_without_it(lab):
+    from alysis_code.bots.compute import ComputeError, ComputeUncertain
+
+    def fail(*_):
+        raise ComputeError("provider detail")
+
+    lab.adapter.factory = fail
+    result = lab.call()
+    # A result the owl reads and words for the person, not a failed task; no detail of the cause.
+    assert result["computer"] == {"state": "start_failed"} and result["executed"] is False
+    assert "provider detail" not in str(result)
+    assert lab.executors == []
+    assert lab.views.current("owner", "bot-a")[1] is None
+
+    def uncertain(*_):
+        raise ComputeUncertain("Lost creation response")
+
+    # An outcome that is not known (a computer may exist) keeps stopping the task as before.
+    lab.adapter.factory = uncertain
+    with pytest.raises(ComputeUncertain):
+        lab.call()
 
 
 def test_default_adapter_is_read_only_even_for_forged_preview_mutation(lab):

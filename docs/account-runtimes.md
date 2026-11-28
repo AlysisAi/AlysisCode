@@ -1,12 +1,12 @@
 # Connect an AI subscription
 
-Alysis can use a provider API key or sign in through a supported subscription.
+Alysis Code can use a provider API key or sign in through a supported subscription.
 Both use the native agent, tools and session history. The connection determines
 authentication, available models and provider request settings.
 
 ## First-run setup
 
-Start Alysis in your workspace:
+Start Alysis Code in your workspace:
 
 ```bash
 cd /path/to/project
@@ -32,7 +32,7 @@ alysis config menu
 ```
 
 The `openai-codex` connection ID and `chatgpt-codex` profile name are retained for
-compatibility. The current adapter uses browser sign-in for Alysis. Its
+compatibility. The current adapter uses browser sign-in for Alysis Code. Its
 `--device-code` option is unsupported. Under WSL, the browser callback must reach
 the engine's loopback listener; check localhost forwarding if it cannot return.
 

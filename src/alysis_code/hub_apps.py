@@ -16,6 +16,7 @@ messages here are for the command line.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -34,6 +35,7 @@ from .mcp.plugin_hub import (
     bind_hub_catalog,
     check_hub_catalog,
     check_hub_tool,
+    is_hub_connection_id,
     is_hub_plugin,
 )
 
@@ -42,6 +44,8 @@ _TOOLS_TTL_S = 600.0
 _LOAD_TIMEOUT_S = 8.0
 
 MESSAGES = {
+    "conflict": "This owl's app grant changed. Review its current setting.",
+    "grant_changed": "This owl's app grant changed. Review the account and action again.",
     "signed_out": "No Alysis Code account is connected. Sign in to use more apps.",
     "invalid_key": "Your Alysis Code sign-in has expired. Sign in again to use more apps.",
     "rate_limited": "Too many app requests in a short time. Wait a minute and try again.",
@@ -59,6 +63,10 @@ MESSAGES = {
     "unavailable": "More apps aren't available right now. Try again later.",
 }
 _STATUS_REASONS = {401: "invalid_key", 413: "too_large", 429: "rate_limited"}
+
+
+# The languages of the Alysis apps and website; the page after signing in to an app uses one.
+RETURN_LANGUAGES = frozenset({"en", "de", "el", "es", "fr", "zh-CN"})
 
 
 class HubAppsError(Exception):
@@ -91,9 +99,15 @@ class HubAppsClient:
         url: str | None = None,
         timeout_s: float = 20.0,
         opener: Callable[..., Any] | None = None,
+        owl_id: str | None = None,
     ) -> None:
         self._key = key
         self._url = (url or cloud.apps_url()).rstrip("/")
+        self.owl_id = owl_id
+        if owl_id is not None:
+            if not re.fullmatch(r"[a-f0-9]{32}", owl_id):
+                raise HubAppsError("invalid_request")
+            self._url += f"/owls/{owl_id}"
         self._timeout = timeout_s
         self._open = opener or urllib.request.build_opener(_NoRedirect()).open
 
@@ -152,12 +166,32 @@ class HubAppsClient:
         """Every app this account may connect, with this month's allowance."""
         return self._request("GET", "/catalog", query={"query": query[:100]} if query else None)
 
-    def connections(self) -> dict[str, Any]:
-        return self._request("GET", "/connections")
+    def connections(self, *, manage: bool = False) -> dict[str, Any]:
+        return self._request("GET", "/connections", query={"manage": "1"} if manage else None)
 
-    def connect(self, app: str) -> dict[str, Any]:
-        """A page where the person signs in to the app; nothing is connected until they do."""
-        return self._request("POST", "/connect", body={"app": app})
+    def set_owl_grant(self, catalog_id: str, grant: dict[str, Any]) -> None:
+        if not self.owl_id or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", catalog_id):
+            raise HubAppsError("invalid_request")
+        self._request("PATCH", f"/grants/{catalog_id}", body=grant)
+
+    def select(self, connection_id: str) -> dict[str, Any]:
+        if not is_hub_connection_id(connection_id):
+            raise HubAppsError("invalid_request")
+        result = self._request("POST", f"/connections/{connection_id}/select", body={})
+        if result.get("selected") != connection_id:
+            raise HubAppsError("unavailable")
+        return result
+
+    def connect(self, app: str, *, language: str | None = None) -> dict[str, Any]:
+        """A page where the person signs in to the app; nothing is connected until they do.
+
+        ``language`` is the Alysis app's own (one of ``RETURN_LANGUAGES``): the page the person
+        returns to after signing in is shown in it. Any other value is left out.
+        """
+        body: dict[str, Any] = {"app": app}
+        if language in RETURN_LANGUAGES:
+            body["language"] = language
+        return self._request("POST", "/connect", body=body)
 
     def disconnect(self, connection_id: str) -> bool:
         return (
@@ -167,22 +201,43 @@ class HubAppsClient:
             is True
         )
 
-    def tools(self, app: str, *, timeout_s: float | None = None) -> dict[str, Any]:
-        return self._request("GET", "/tools", query={"app": app}, timeout_s=timeout_s)
+    def tools(
+        self, app: str, *, connection_id: str | None = None, timeout_s: float | None = None
+    ) -> dict[str, Any]:
+        path = (
+            f"/connections/{urllib.parse.quote(connection_id, safe='')}/tools"
+            if connection_id
+            else "/tools"
+        )
+        result = self._request("GET", path, query={"app": app}, timeout_s=timeout_s)
+        if connection_id and result.get("connection_id") != connection_id:
+            raise HubAppsError("not_connected")
+        return result
 
     def call(
-        self, app: str, tool: str, arguments: dict[str, Any], *, request_id: str | None = None
+        self,
+        app: str,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        connection_id: str | None = None,
+        grant_revision: int | None = None,
+        timeout_s: float = 90.0,
     ) -> HubCallResult:
         payload = self._request(
             "POST",
-            "/call",
+            f"/connections/{urllib.parse.quote(connection_id, safe='')}/call"
+            if connection_id
+            else "/call",
             body={
                 "app": app,
                 "tool": tool,
                 "arguments": arguments,
                 "request_id": request_id or str(uuid.uuid4()),
+                **({"grant_revision": grant_revision} if grant_revision is not None else {}),
             },
-            timeout_s=90.0,
+            timeout_s=timeout_s,
         )
         text = payload.get("text")
         if not isinstance(text, str):
@@ -192,7 +247,7 @@ class HubAppsClient:
         )
 
 
-_tools_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_tools_cache: dict[tuple[str, str, str, str | None, int | None], tuple[float, dict[str, Any]]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -240,28 +295,61 @@ def load_hub_catalogs(
     try:
         client = client or HubAppsClient.from_saved_account(timeout_s=_LOAD_TIMEOUT_S)
         listed = client.connections()
-        apps = sorted(
-            {
-                c["app"]
-                for c in listed.get("connections") or []
-                if isinstance(c, dict)
-                and c.get("status") == "active"
-                and isinstance(c.get("app"), str)
-            }
-        )[:MAX_HUB_APPS]
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in listed.get("connections") or []:
+            if isinstance(row, dict) and isinstance(row.get("app"), str):
+                grouped.setdefault(row["app"], []).append(row)
+        # Only the broker can say which provider identity is selected. Old brokers
+        # cannot pin calls. A public app added without a sign-in has no identity.
+        chosen = {}
+        for app, rows in grouped.items():
+            active = [
+                row
+                for row in rows
+                if row.get("status") == "active"
+                and isinstance(row.get("id"), str)
+                and is_hub_connection_id(row["id"])
+                and (row.get("selected") is True or row["id"] == f"added-{app}")
+            ]
+            if len(active) == 1:
+                chosen[app] = active[0]
+        apps = sorted(chosen)[:MAX_HUB_APPS]
         if not apps:
             return [], {"loaded": 0, "allowance": listed.get("allowance")}
         key = client._key  # noqa: SLF001 - the cache belongs to one account.
 
         def tools(app: str) -> dict[str, Any]:
+            row = chosen[app]
+            id_ = row["id"]
+            revision = row.get("grant_revision")
+            scope = client.owl_id
+            if scope and (type(revision) is not int or revision < 0):
+                raise HubAppsError("grant_changed")
+            cache_key = (key, app, id_, scope, revision)
             with _cache_lock:
-                hit = _tools_cache.get((key, app))
+                hit = _tools_cache.get(cache_key)
             if hit and now() - hit[0] < _TOOLS_TTL_S:
-                return hit[1]
-            catalog = _catalog_from(app, client.tools(app, timeout_s=_LOAD_TIMEOUT_S))
-            with _cache_lock:
-                _tools_cache[(key, app)] = (now(), catalog)
-            return catalog
+                catalog = hit[1]
+            else:
+                bound_id = id_ if listed.get("account_selection") == 1 else None
+                if not bound_id and id_ != f"added-{app}":
+                    raise HubAppsError("not_connected")
+                listing = client.tools(app, connection_id=bound_id, timeout_s=_LOAD_TIMEOUT_S)
+                if scope and listing.get("grant_revision") != revision:
+                    raise HubAppsError("grant_changed")
+                catalog = _catalog_from(app, listing)
+                if bound_id:
+                    catalog["connection_id"] = bound_id
+                if scope:
+                    catalog["grant_revision"] = revision
+                with _cache_lock:
+                    if len(_tools_cache) >= 512:
+                        _tools_cache.clear()
+                    _tools_cache[cache_key] = (now(), catalog)
+            if id_ == f"added-{app}":
+                return catalog
+            label = str(row.get("label") or id_).strip()[:80]
+            return {**catalog, "name": f"{catalog['name'][:36]} · {label}"}
 
         catalogs, failed = [], []
         with ThreadPoolExecutor(max_workers=min(4, len(apps))) as pool:

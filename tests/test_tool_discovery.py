@@ -37,7 +37,7 @@ def test_session_installs_bounded_discovery_for_client_capacity_preference(tmp_p
         handler = optional.run
         assert not model_visible(optional)
         loaded = session.tools["tool_search"].run({"names": ["shell_background"]})
-        assert loaded["tools"][0]["function"]["name"] == "shell_background"
+        assert loaded["tools"][0]["name"] == "shell_background"
         assert model_visible(optional)
         assert optional.run is handler
     finally:
@@ -69,7 +69,9 @@ def test_search_supports_unicode_and_keeps_existing_discovery_entrypoints():
     }
     install_tool_discovery(tools)
     assert set(names(tools)) == {"tool_search", "existing_discovery"}
-    assert tools["tool_search"].run({"query": "日本語"})["tools"][0]["function"]["name"] == "alpha"
+    assert tools["tool_search"].run({"query": "日本語"})["tools"][0]["name"] == "alpha"
+    # A script written without spaces still matches part of a word.
+    assert tools["tool_search"].run({"query": "日本"})["tools"][0]["name"] == "alpha"
 
 
 def test_loaded_schema_reaches_next_model_request_in_same_turn(tmp_path, monkeypatch):
@@ -146,3 +148,83 @@ def test_private_retention_engages_when_schema_is_loaded_not_merely_registered(
         assert "PRIVATE_RECORD_49" not in session.store.path.read_text()
     finally:
         session.close()
+
+
+def test_results_name_each_tool_and_its_inputs_without_repeating_full_schemas():
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "x" * 4000}, "page": {}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+    tools = {
+        "mcp__github__search_repositories": ToolDef(
+            name="mcp__github__search_repositories",
+            description="Search repositories. " + "Long reference text. " * 200,
+            parameters=schema,
+            run=lambda _: {},
+            metadata={"tool_type": "mcp"},
+        )
+    }
+    install_tool_discovery(tools)
+    found = tools["tool_search"].run({"query": "repositories"})["tools"]
+    assert found == [
+        {
+            "name": "mcp__github__search_repositories",
+            "description": found[0]["description"],
+            "inputs": ["query", "page"],
+            "required": ["query"],
+        }
+    ]
+    assert len(found[0]["description"]) <= 280
+    assert "x" * 100 not in str(found)
+    # The full schema still reaches the model as a normal tool.
+    assert set(names(tools)) == {"tool_search", "mcp__github__search_repositories"}
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("repositories", "mcp__code__list_repository"),
+        ("updated issues", "mcp__tracker__issue_updates"),
+        ("Αρχεία", "mcp__drive__find_files"),
+        ("αρχειο", "mcp__drive__find_files"),
+        ("listRepositories", "mcp__code__list_repository"),
+    ],
+)
+def test_search_matches_words_with_other_endings_in_any_language(query, expected):
+    tools = {
+        "mcp__code__list_repository": tool("mcp__code__list_repository", "One repository"),
+        "mcp__tracker__issue_updates": tool("mcp__tracker__issue_updates", "Recent update"),
+        "mcp__drive__find_files": tool("mcp__drive__find_files", "Βρίσκει ένα αρχείο"),
+        "mcp__mail__send": tool("mcp__mail__send", "Sends a message"),
+    }
+    install_tool_discovery(tools)
+    result = tools["tool_search"].run({"query": query})
+    assert result["tools"][0]["name"] == expected
+    assert "mcp__mail__send" not in [entry["name"] for entry in result["tools"]]
+
+
+def test_words_found_in_few_tools_outrank_words_found_in_most():
+    tools = {
+        f"mcp__app__tool_{i}": tool(f"mcp__app__tool_{i}", "Reads the account data")
+        for i in range(8)
+    }
+    tools["mcp__app__invoices"] = tool("mcp__app__invoices", "Lists invoices for the account")
+    install_tool_discovery(tools)
+    result = tools["tool_search"].run({"query": "the account invoices", "limit": 1})
+    assert result["tools"][0]["name"] == "mcp__app__invoices"
+
+
+def test_discovery_says_which_apps_are_connected_before_any_search():
+    tools = {
+        **{f"mcp__github__t{i}": tool(f"mcp__github__t{i}") for i in range(3)},
+        "mcp__hub_gmail__fetch": tool("mcp__hub_gmail__fetch"),
+        "mcp__custom_acme__lookup": tool("mcp__custom_acme__lookup"),
+    }
+    install_tool_discovery(tools)
+    description = tools["tool_search"].description
+    assert "github (3)" in description
+    assert "hub gmail (1)" in description
+    assert "custom acme (1)" in description
+    assert "rather than its website" in description

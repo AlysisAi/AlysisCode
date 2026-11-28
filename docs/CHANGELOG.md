@@ -1,5 +1,87 @@
 # Changelog
 
+## Unreleased
+
+- Beta goes on past its included More apps calls with its own credits, like Alpha and Pro: one
+  credit per 4 calls. Free still stops at its included calls.
+
+- Owls remember a reasoning effort for their selected model and use it from the next turn.
+  In Cloud, the model list and model usage follow the signed-in person's Alysis account and plan.
+  On this computer, saved OpenAI Responses connections are available in the picker.
+
+- Model calls stop on the first explicit billing or subscription rejection and tell you
+  which connection to check. Temporary rate limits still use the provider retry policy.
+- In "Approve for me", ordinary foreground commands and verification steps (listing a folder,
+  reading a file, running a project's tests, fetching a public HTTPS page, removing a generated
+  folder) can go to the approval reviewer when command internet access is on, instead of always
+  asking. The reviewer sees the command, its folder and its access; a denied command doesn't
+  run, and credential grants and remote writes still ask a person.
+- Owls on this computer start sooner. Reading the model list, which the app asks for before it
+  starts them, no longer loads the whole owls service just to know which model APIs it speaks:
+  it answers in about a third of the time it took (seconds less on every start).
+- An owl on the person's computer whose own computer isn't ready yet knows where it stands, as
+  data: the desktop app writes its setup state (downloading with its progress, unpacking, paused,
+  waiting for the Windows prompt, restart needed, virtualization off, not enough disk space,
+  stopped, not set up, not supported, or ready and connecting once no owl works) to
+  `computer-setup.json` in the service's folder, and each turn of an owl without a computer reads
+  it. The owl says it in the person's words, points at the card on its page (never Settings), says
+  what will work once it is ready, and meanwhile answers from web search and page reads instead
+  of stopping. This PC's service refusals point at the card's Finish setup.
+- A computer that is refused or fails to start (on this device or in the Cloud) no longer ends the
+  task with "check the model connection": the step's result says nothing ran and gives the
+  computer's state as data (`computer.state`, for example `not_enough_disk_space`,
+  `virtualization_off`, `all_computers_busy` or `start_failed`), so the owl tells the person and
+  carries on without it. An uncertain outcome (a computer may exist) still stops as before.
+- A task opening a computer gets `computer_phase` events (`queued`, `starting`, `ready`) from the
+  computer's own start, wake-up from sleep included, on this device and in the Cloud, so the
+  desktop app can say "Starting its computer…" while the first browser or computer step waits.
+- While the reply checker checks an owl's reply, the person sees it: the turn's events carry it
+  as `reply_draft` (its number and the reply as it would be published, without its suggested next
+  messages) before the check starts, in `GET /v1/tasks/{id}` and the live feed (capability
+  `reply_drafts`). A draft the checker withholds, or that the turn sets aside for a change that
+  arrived meanwhile (the person's words, saved memory, an answered question, a routine, the
+  computer taken over), is withdrawn at once (`reply_draft_withdrawn`) and the next draft takes
+  its place; the one that passes becomes the reply. Its text lasts only while it is checked: the
+  store removes it on withdrawal and on the turn's next state (starting again after a restart,
+  Stop, failure or completion), so nothing else (the conversation, exports, moves, search, Needs
+  you, routines, other owls) ever carries a draft. What the reviewer reads is unchanged, and an
+  owl with reply checking off records no draft.
+- Picture quality is a setting: `image_generation.quality` is `low`, `medium` (the default),
+  `high`, `xhigh`, `max` or `auto`. Work's `image_generate` and the owls' `create_image` and
+  `edit_image` use it whenever a request names no quality, and name one only when the person
+  asks for it in the chat. The setting is applied as the request goes out, never written into
+  the model's instructions, so changing it keeps the chat's prompt cache. A connection can
+  declare the qualities it accepts; another one is refused before anything is sent or counted.
+- `image_generation.edit_model` changes existing pictures with their own model (for example a
+  slower, more precise one); left empty, one model makes and changes pictures as before.
+- With the Alysis account as the model connection and no image provider of their own, chats and
+  owls make pictures with what the account's image service declares for the person's plan: its
+  models for new and changed pictures and the qualities it accepts. The account's key goes only
+  to the account's own image service. The answer is kept for ten minutes per key.
+- Signed in to Alysis, chats and owls make pictures with the account on every other model
+  connection too (your own provider's key, a plan subscription, any protocol) when there are no
+  image settings of your own to use. Only the saved Alysis key goes to the account's image
+  service, never the connection's. `image_generation.key_from` (`settings`, `connection` or
+  `account`) says which key an image request carries.
+- A picture is asked for only after its folder is shown to be writable, so a sandbox that can't
+  save files never costs a picture. A picture made but then not saved says so, and that asking
+  again makes and charges another one.
+- Pictures from an image service that compresses its answer (gzip) are read. The answer was
+  decoded twice and the picture lost; the byte limit now counts the decoded answer.
+- With image generation on and no model chosen, pictures use GPT Image 2.6 Flare
+  (`gpt-image-2.6-flare`). The old default, `gpt-image-1`, was retired by OpenAI on
+  2026-10-23, so the first picture failed with your own key. Thanks to Ayham Joumran (#60).
+- Connected apps are easier for every model to find and use. Tool discovery now names the
+  connected apps and servers (with how many tools each has) before any search, matches the words
+  of a request with other endings and in any language ("repositories" finds a repository tool,
+  "αρχεία" finds "αρχείο"), weighs rare words above common ones, and ignores accents only when
+  nothing matches exactly. Its results name each tool, what it does and the inputs it needs,
+  instead of repeating every full schema, which the model receives as normal tools on its next
+  step; large results no longer spill into a file the model had to read back.
+- `alysis apps connect` takes `--language` (en, de, el, es, fr or zh-CN). After signing in to the
+  app, you come back to an Alysis page in that language that says whether it connected; the
+  sign-in window itself follows it where it can (Spanish, French and Chinese).
+
 ## 0.18.3 - 2026-11-26
 
 - One MCP server's settings can no longer stop every chat. A `${VAR}` that a server's `env` or

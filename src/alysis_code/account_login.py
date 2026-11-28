@@ -978,10 +978,17 @@ def billing_with_model_availability(
     paid = billing["paid"]
     if paid.get("credit_unit_version") != "paid-base-display-v1":
         return billing
+    from .account_images import picture_models
+
     served = gateway_models()
     ids = set(served) if served is not None else None
+    # The models the account makes pictures with are listed for billing, never to think with.
+    key = load_persisted_profile_keys().get(cloud.PROFILE_KEY)
+    pictures = picture_models(key) if key else frozenset()
     models = []
     for model in paid["models"]:
+        if model["model"] in pictures:
+            continue
         current = dict(model)
         if current.get("available") is not False:
             current["available"] = ids is not None and current["model"] in ids
@@ -1046,6 +1053,7 @@ def account_model_catalog(key: str) -> list[dict[str, Any]] | None:
     (the rule of billing_with_model_availability). Without one (Free, or the plan couldn't be
     read) the gateway's own listing for this key is the catalog. None when neither was read.
     """
+    from .account_images import picture_models
     from .profile_presets import model_display_name
 
     served = gateway_models(key)
@@ -1054,8 +1062,12 @@ def account_model_catalog(key: str) -> list[dict[str, Any]] | None:
     if isinstance(paid, dict) and paid.get("models"):
         # Older plan catalogs predate the gateway check: their models are open unless they say.
         checked = paid.get("credit_unit_version") == "paid-base-display-v1"
+        # The plan also lists the models its pictures are made with; nobody thinks with those.
+        pictures = picture_models(key)
         rows = []
         for row in paid["models"]:
+            if row["model"] in pictures:
+                continue
             if row.get("available") is False:
                 unavailable = "pending"
             elif not checked:

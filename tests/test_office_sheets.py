@@ -5,13 +5,16 @@ import json
 import socket
 import zipfile
 from contextlib import closing
+from copy import copy
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 import openpyxl
 import pytest
 import xlsxwriter
 
+from alysis_code.artifact_checks import ArtifactChecks
 from alysis_code.office import sheets
 
 
@@ -35,6 +38,321 @@ def replace_part(path: Path, name: str, transform) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for item, data in parts.items():
             archive.writestr(item, data)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"merge_ranges": ["A1:A2"]},
+        {"merge_ranges": ["A1:C1", "B1:C1"]},
+        {"merge_ranges": ["A1:C1"], "cells": {"B1": "0002"}},
+        {"merge_ranges": ["A1:C1"], "cells": {"C1": {"formula": "=1+2"}}},
+        {"merge_ranges": ["A1:C1"], "cells": {"B1": {"value": None, "format": {"bold": True}}}},
+        {"merge_ranges": ["A1:C1"], "tables": [{"name": "Cases", "range": "A1:A2"}]},
+        {"row_heights": {"1": False}},
+        {"row_heights": {"9999": 16}},
+        {"cells": {"C1": {"value": "x", "format": {"font_size": 1000}}}},
+    ],
+)
+def test_unsafe_or_destructive_heading_geometry_fails_before_publication(tmp_path, extra):
+    with pytest.raises(ValueError):
+        create(tmp_path, {"sheets": [{"name": "Å", "rows": [["Étapes"], [2]], **extra}]})
+    assert not (tmp_path / "source.xlsx").exists()
+
+
+def test_merged_multiline_heading_gets_native_height_and_leaves_header_cells_sortable(tmp_path):
+    spec = {
+        "sheets": [
+            {
+                "name": "Étapes",
+                "rows": [
+                    [
+                        {
+                            "value": "Trois contrôles\nrestent à planifier",
+                            "format": {"font_size": 18, "wrap": True},
+                        }
+                    ],
+                    ["Lot", "Étape"],
+                    ["0002", "ouvert"],
+                ],
+                "column_widths": [13, 18],
+                "merge_ranges": ["A1:B1"],
+                "tables": [{"name": "Lots", "range": "A2:B3"}],
+            }
+        ]
+    }
+    path, _ = create(tmp_path, spec)
+    with closing(openpyxl.load_workbook(path)) as book:
+        assert book.active.row_dimensions[1].height >= 48
+        assert book.active["A1"].font.sz == 18
+        assert str(book.active.merged_cells) == "A1:B1"
+        assert book.active.tables["Lots"].autoFilter.ref == "A2:B3"
+        assert book.active["A3"].value == "0002"
+
+
+def test_custom_heading_height_preserves_separation_between_native_charts(tmp_path):
+    chart = {
+        "chart": "column",
+        "categories": "A2:A3",
+        "series": [{"name": "Heures", "values": "B2:B3"}],
+    }
+    path, _ = create(
+        tmp_path,
+        {
+            "sheets": [
+                {
+                    "name": "Évolution",
+                    "rows": [["Secteurs", "Heures"], ["Q1", 3], ["Q2", 7]],
+                    "row_heights": {"1": 72},
+                    "charts": [chart] * 5,
+                }
+            ]
+        },
+    )
+    with closing(openpyxl.load_workbook(path)) as book:
+        ws = book.active
+        anchors = [ch.anchor for ch in ws._charts]
+        breaks = [br.id for br in ws.row_breaks.brk]
+        assert breaks
+        for earlier, later in pairwise(anchors):
+            assert earlier.to.row < later._from.row
+        for anchor in anchors:
+            assert all(not anchor._from.row < row <= anchor.to.row for row in breaks)
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {"merge_ranges": ["A2:B2"]},
+        {"merge_ranges": ["B1:C1"]},
+        {"merge_ranges": ["A3:B3"]},
+        {"extend_print_area": "A1:B2"},
+    ],
+)
+def test_edit_rejects_overlapping_layout_and_shrinking_print_area(tmp_path, layout):
+    path, saved = create(
+        tmp_path,
+        {
+            "sheets": [
+                {
+                    "name": "Données",
+                    "rows": [["Examen"], ["Équipe", "Temps"], ["Est", 14]],
+                    "merge_ranges": ["A1:B1"],
+                    "page_setup": {"print_area": "A1:B3"},
+                    "tables": [{"name": "Durees", "range": "A2:B3"}],
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError):
+        edit(tmp_path, path, saved["source_sha256"], [{"sheet": "Données", **layout}])
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == saved["source_sha256"]
+    assert not (tmp_path / "revised.xlsx").exists()
+
+
+def test_revision_examples_are_bounded_and_missing_previous_formula_display_is_unknown(tmp_path):
+    for name, offset in [("source.xlsx", 0), ("final.xlsx", 1)]:
+        with xlsxwriter.Workbook(tmp_path / name) as book:
+            ws = book.add_worksheet("Mesure")
+            unit = book.add_format({"num_format": '0.00 "h"'})
+            for row in range(17):
+                ws.write_formula(
+                    row, 0, "=1+1", unit, "" if row == 0 and not offset else row + offset
+                )
+    result = sheets.formula_changes(
+        tmp_path / "source.xlsx",
+        tmp_path / "final.xlsx",
+        {
+            "formula_count": 17,
+            "results": [{"sheet": "Mesure", "cell": f"A{row}"} for row in range(1, 18)],
+        },
+    )
+    assert result["source_value_unavailable"] == 1 and result["changed"] == result["compared"] == 16
+    assert result["unexamined"] == 0 and result["examples_truncated"]
+    assert len(result["examples"]) == sheets.MAX_CHANGE_EXAMPLES
+    assert result["examples"][0] == {
+        "sheet": "Mesure",
+        "cell": "A2",
+        "numeric_difference": "1",
+        "previous": {"type": "n", "value": 1, "number_format": '0.00 "h"'},
+        "current": {"type": "n", "value": 2, "number_format": '0.00 "h"'},
+    }
+
+
+def test_overflowing_filled_heading_can_be_wrapped_without_replacing_cell_contents(tmp_path):
+    title = "Disponibilité des bénévoles pour les permanences du samedi"
+    source = tmp_path / "source.xlsx"
+    with xlsxwriter.Workbook(source) as book:
+        sheet = book.add_worksheet("Équipe")
+        sheet.set_column("A:B", 14)
+        header = book.add_format({"bold": True, "bg_color": "#183153", "font_color": "#FFFFFF"})
+        sheet.write("A1", title, header)
+        sheet.merge_range("A2:B2", "Ordre du jour", header)
+        sheet.write_formula("A3", "=SUM(2,3)")
+        sheet.set_row(3, None, None, {"hidden": True})
+        sheet.write("A4", title, header)
+    result = sheets.inspect(source)
+    assert result["heading_fit"] == {"count": 1, "examples": [{"sheet": "Équipe", "cell": "A1"}]}
+    revised, inspection = edit(
+        tmp_path,
+        source,
+        result["source_sha256"],
+        [
+            {"sheet": "Équipe", "cell": "A1", "format": {"wrap": True}},
+            {"sheet": "Équipe", "cell": "A3", "format": {"bold": True}},
+        ],
+    )
+    assert inspection["heading_fit"]["count"] == 0
+    with closing(openpyxl.load_workbook(revised)) as book:
+        assert book.active["A1"].value == title
+        assert book.active["A3"].data_type == "f" and book.active["A3"].value == "=SUM(2,3)"
+    with pytest.raises(ValueError, match="nonempty format"):
+        edit(tmp_path, source, result["source_sha256"], [{"sheet": "Équipe", "cell": "A1"}])
+
+
+def test_table_header_wrap_survives_table_creation_and_inspection_locates_unwrapped_header(
+    tmp_path,
+):
+    long_header = "Différence (compté − théorique)"
+    source, result = create(
+        tmp_path,
+        {
+            "sheets": [
+                {
+                    "name": "Écarts",
+                    "rows": [["Inventaire"], ["Référence", long_header], ["0007", -3]],
+                    "column_widths": [16, 24],
+                    "tables": [{"name": "Inventaire", "range": "A2:B3"}],
+                }
+            ]
+        },
+    )
+    assert result["heading_fit"]["count"] == 0
+    with closing(openpyxl.load_workbook(source)) as book:
+        sheet = book.active
+        assert sheet["B2"].alignment.wrap_text and not sheet["A2"].alignment.wrap_text
+        assert sheet["B2"].value == long_header and sheet.tables["Inventaire"].ref == "A2:B3"
+        assert sheet["B2"].fill.patternType is None  # The table's theme still supplies the fill.
+    _, inspection = edit(
+        tmp_path,
+        source,
+        result["source_sha256"],
+        [
+            {"sheet": "Écarts", "cell": "B2", "format": {"wrap": False}},
+        ],
+    )
+    assert inspection["heading_fit"] == {
+        "count": 1,
+        "examples": [{"sheet": "Écarts", "cell": "B2"}],
+    }
+
+
+def test_header_contrast_respects_direct_colors_and_native_table_theme(tmp_path, monkeypatch):
+    def header(label, **style):
+        return {"value": label, "format": style}
+
+    source, result = create(
+        tmp_path,
+        {
+            "sheets": [
+                {
+                    "name": "Stock",
+                    "header_row": True,
+                    "rows": [
+                        [header("Stock report", fill="#FFF1BC")],
+                        [
+                            header("Pale", fill="#D9EAF7"),
+                            header("Dark", fill="#17365D"),
+                            header("Explicit", fill="#D9EAF7", font_color="#FFFFFF"),
+                            "Themed",
+                        ],
+                        [1, 2, 3, 4],
+                    ],
+                    "tables": [{"name": "Inventory", "range": "A2:D3"}],
+                }
+            ]
+        },
+    )
+    with closing(openpyxl.load_workbook(source)) as book:
+        sheet = book.active
+        assert [sheet[c].font.color.rgb[-6:] for c in ("A1", "A2", "B2", "C2")] == [
+            "000000",
+            "000000",
+            "FFFFFF",
+            "FFFFFF",
+        ]
+        assert sheet["D2"].fill.patternType is None
+        assert sheet["D2"].font.color.type == "theme"
+        # A workbook authored before the correction can have a solid custom fill
+        # while its native table supplies the header font.
+        sheet["A2"].font = copy(sheet["D2"].font)
+        legacy = tmp_path / "legacy.xlsx"
+        book.save(legacy)
+    assert result["header_contrast"]["count"] == 1
+    issue = result["header_contrast"]["examples"][0]
+    assert issue["cell"] == "C2" and issue["reason"] == "low_contrast"
+    assert 1.20 < issue["ratio"] < 1.30
+    monkeypatch.setattr("alysis_code.office.renderer_path", lambda: None)
+    report = ArtifactChecks(tmp_path).check(source.name)
+    assert report["headerContrast"] == result["header_contrast"]
+    check = next(entry for entry in report["items"] if entry["id"] == "header_contrast")
+    assert check["status"] == "not_checked" and "Stock!C2" in check["detail"]
+    assert "formatting-only font_color" in check["detail"]
+    inspected = sheets.inspect(legacy)
+    assert inspected["header_contrast"]["examples"][0] == {
+        "sheet": "Stock",
+        "cell": "A2",
+        "reason": "theme_dependent",
+        "fill": "#D9EAF7",
+    }
+    _, repaired = edit(
+        tmp_path,
+        legacy,
+        inspected["source_sha256"],
+        [
+            {"sheet": "Stock", "cell": cell, "format": {"font_color": "#17365D"}}
+            for cell in ("A2", "C2")
+        ],
+    )
+    assert repaired["header_contrast"]["count"] == 0
+
+
+def test_print_coverage_can_extend_a_table_filter_and_print_area_without_changing_cells(tmp_path):
+    spec = {
+        "sheets": [
+            {
+                "name": "Écarts",
+                "rows": [
+                    ["Ref", "Attendu", "Compté"],
+                    ["0007", 18, 15],
+                    ["0042", 6, 8],
+                    ["Q-021", 14, 10],
+                    [],
+                    ["Note", "Texte"],
+                ],
+                "tables": [{"name": "Inventaire", "range": "A1:C3"}],
+                "page_setup": {"print_area": "A1:C3", "orientation": "landscape"},
+            }
+        ]
+    }
+    source, result = create(tmp_path, spec)
+    finding = result["print_coverage"]["examples"][0]
+    assert finding["first_outside_row"] == finding["through_row"] == 4
+    assert finding["extended_table"] == finding["extended_print_area"] == "A1:C4"
+    output, repaired = edit(
+        tmp_path,
+        source,
+        result["source_sha256"],
+        [{"sheet": "Écarts", "extend_printed_table": "Inventaire"}],
+    )
+    assert repaired["print_coverage"]["count"] == 0
+    with closing(openpyxl.load_workbook(output)) as book:
+        ws = book.active
+        assert ws.tables["Inventaire"].ref == ws.tables["Inventaire"].autoFilter.ref == "A1:C4"
+        assert str(ws.print_area).endswith("$A$1:$C$4")
+        assert ws["A2"].value == "0007" and ws["A4"].value == "Q-021"
+        assert ws["B6"].value == "Texte"
+    assert sheets.inspect(source)["print_coverage"]["count"] == 1
 
 
 def test_greek_create_inspect_edit_preserves_original_styles_tables_and_formulas(

@@ -129,6 +129,65 @@ class ArtifactChecks:
                 record("structure", "File structure", "failed", str(exc))
                 return self._publish(source, sha, report, retain_report=retain_report)
 
+            if format_name == "pptx" and inspected["text_box_overlaps"]["count"]:
+                overlaps = inspected["text_box_overlaps"]
+                sample = overlaps["examples"][0]
+                report["textBoxOverlaps"] = overlaps
+                record(
+                    "text_box_layout",
+                    "Text box layout",
+                    "not_checked",
+                    f"{overlaps['count']} pair(s) of text boxes share space. "
+                    f"Inspect slide {sample['slide']}, shapes {sample['shape_ids'][0]} and "
+                    f"{sample['shape_ids'][1]}. Box geometry alone cannot establish whether "
+                    "the text collides. Review the slide and adjust bounds if needed.",
+                )
+
+            if format_name == "xlsx" and inspected.get("heading_fit", {}).get("count"):
+                fit = inspected["heading_fit"]
+                sample = fit["examples"][0]
+                report["headingFit"] = fit
+                record(
+                    "heading_fit",
+                    "Workbook headings",
+                    "not_checked",
+                    f"{fit['count']} unwrapped heading(s) may exceed their available column width. "
+                    f"Review {sample['sheet']}!{sample['cell']} in the rendered sheet. "
+                    "Widen the heading area or wrap its text if it is clipped.",
+                )
+
+            if format_name == "xlsx" and inspected.get("header_contrast", {}).get("count"):
+                contrast = inspected["header_contrast"]
+                sample = contrast["examples"][0]
+                report["headerContrast"] = contrast
+                detail = (
+                    f"Stored text {sample['font']} on {sample['fill']} has a contrast ratio of "
+                    f"{sample['ratio']}:1, below {sample['minimum']}:1."
+                    if sample["reason"] == "low_contrast"
+                    else f"Excel can supply the header text color over the explicit {sample['fill']} fill."
+                )
+                record(
+                    "header_contrast",
+                    "Workbook header contrast",
+                    "not_checked",
+                    f"Review {sample['sheet']}!{sample['cell']}. {detail} Inspect the rendered "
+                    "header. If difficult to read, use a formatting-only font_color edit and recheck.",
+                )
+
+            if format_name == "xlsx" and inspected.get("print_coverage", {}).get("count"):
+                coverage = inspected["print_coverage"]
+                report["printCoverage"] = coverage
+                first = coverage["examples"][0]
+                record(
+                    "print_coverage",
+                    "Printed table coverage",
+                    "not_checked",
+                    f"On {first['sheet']}, rows {first['first_outside_row']} through "
+                    f"{first['through_row']} continue below both table {first['table']} and "
+                    "the print area. They will be absent in a print or PDF. Check those records "
+                    "against the request. If they belong, use extend_printed_table and recheck.",
+                )
+
             capabilities = office_capability_status()
             if format_name == "xlsx" and inspected.get("formula_count"):
                 if capabilities["calculation"]["state"] != "configured":
@@ -214,6 +273,13 @@ class ArtifactChecks:
                         "pages": result["pages"],
                         "visualReview": "not_performed",
                     }
+                    if (
+                        report.get("textBoxOverlaps")
+                        and result["page_count"] == inspected["slide_count"]
+                    ):
+                        report["preview"]["suggestedPage"] = report["textBoxOverlaps"]["examples"][
+                            0
+                        ]["slide"]
                     pdf_path = (
                         str(source.relative_to(self.root))
                         if format_name == "pdf"

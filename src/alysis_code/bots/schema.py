@@ -40,7 +40,19 @@
 # is due, and its last memory tidy-up: memory_capture.py).
 # 51 adds schedules.model (the model a routine's runs think with, from those the owl's place
 # offers; NULL: the owl's own).
-SCHEMA_VERSION = 51
+# Two lines used 52: the release added bots.reasoning_effort; the Owl candidate added
+# coordinator selection, durable assignments and task conversation visibility.
+# 53 binds assignment routines to their original, explicitly approved assignments.
+# 54 records the built-in assistant and the manual coordinator to restore when it loses
+# authority.
+# 55 publishes approved Assistant handoffs in the recipient's conversation.
+# 56 records the immutable Library revisions proposed, delivered, checked and returned on a handoff.
+# 57 stores the versioned, user-saved JSON state of each interactive HTML Library series.
+# 58 adds Owl conversations, room files, connected events and shareable results.
+# 59 records withdrawn results without deleting their Library revisions.
+# 60 unifies the two lines. Setup installs missing tables and columns on either shape
+# before allowing workers to open the database at the combined version.
+SCHEMA_VERSION = 60
 
 # The queued_messages columns schema 49 adds, for a database made before it, and the index that
 # finds the messages a running turn has still to read (steering.py).
@@ -70,6 +82,21 @@ _DDL = """
                     owner TEXT PRIMARY KEY, credential TEXT NOT NULL,
                     updated_at {real} NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS owl_publication_owners (
+                    owner TEXT PRIMARY KEY, revocation_epoch INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS owl_publications (
+                    id TEXT PRIMARY KEY, owner TEXT NOT NULL, source TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('conversation','dashboard')),
+                    title TEXT NOT NULL, content TEXT NOT NULL,
+                    version INTEGER NOT NULL, updated_at {real} NOT NULL,
+                    UNIQUE(owner,kind,source)
+                );
+                CREATE TABLE IF NOT EXISTS owl_publication_readers (
+                    publication TEXT NOT NULL REFERENCES owl_publications(id) ON DELETE CASCADE,
+                    account TEXT NOT NULL, address TEXT NOT NULL, PRIMARY KEY(publication,account)
+                );
+                CREATE INDEX IF NOT EXISTS owl_publication_inbox ON owl_publication_readers(account);
                 CREATE TABLE IF NOT EXISTS host_maintenance (
                     id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL,
                     expires_at {real} NOT NULL
@@ -111,13 +138,47 @@ _DDL = """
                     id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id),
                     title TEXT NOT NULL, created_at {real} NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS owl_chat_threads (
+                    chat_id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+                    bot_id TEXT NOT NULL REFERENCES bots(id), request_id TEXT NOT NULL,
+                    UNIQUE(bot_id,request_id)
+                );
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY, chat_id TEXT NOT NULL REFERENCES chats(id),
                     bot_id TEXT NOT NULL REFERENCES bots(id), owner TEXT NOT NULL,
                     request_id TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL,
                     config TEXT NOT NULL, created_at {real} NOT NULL, updated_at {real} NOT NULL,
                     error TEXT, calls INTEGER NOT NULL DEFAULT 0, output TEXT NOT NULL DEFAULT '',
+                    conversation_visible INTEGER NOT NULL DEFAULT 1 CHECK(conversation_visible IN (0,1)),
                     UNIQUE(owner, request_id)
+                );
+                CREATE TABLE IF NOT EXISTS owl_coordinators (
+                    owner TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id)
+                );
+                CREATE TABLE IF NOT EXISTS owl_assistants (
+                    owner TEXT PRIMARY KEY,
+                    bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id),
+                    previous_coordinator_id TEXT REFERENCES bots(id)
+                );
+                CREATE TABLE IF NOT EXISTS owl_assignments (
+                    id TEXT PRIMARY KEY,
+                    source_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+                    recipient_bot_id TEXT NOT NULL REFERENCES bots(id),
+                    recipient_name TEXT NOT NULL,
+                    brief TEXT NOT NULL,
+                    expected_result TEXT NOT NULL,
+                    work_scope TEXT NOT NULL DEFAULT 'text',
+                    decision TEXT NOT NULL CHECK(decision IN ('proposed','declined','cancelled','approved')),
+                    child_task_id TEXT UNIQUE REFERENCES tasks(id),
+                    verification TEXT,
+                    created_at {real} NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS owl_assignments_recipient
+                    ON owl_assignments(recipient_bot_id);
+                CREATE TABLE IF NOT EXISTS owl_assignment_files (
+                    assignment_id TEXT PRIMARY KEY REFERENCES owl_assignments(id) ON DELETE CASCADE,
+                    proposed TEXT NOT NULL DEFAULT '[]', inputs TEXT NOT NULL DEFAULT '[]',
+                    checkpoint_ids TEXT, repair TEXT, recipient_artifact_id TEXT, outputs TEXT NOT NULL DEFAULT '[]'
                 );
                 CREATE TABLE IF NOT EXISTS bot_local_devices (
                     id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL,
@@ -187,6 +248,17 @@ _DDL = """
                 CREATE TABLE IF NOT EXISTS file_payloads ({rowid}
                     file_id TEXT PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
                     data {blob} NOT NULL, media_type TEXT NOT NULL, sha256 TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS interactive_result_states (
+                    series_id TEXT PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                    version BIGINT NOT NULL CHECK(version > 0), data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS owl_query_files (
+                    file_id TEXT PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                    sources TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS owl_withdrawn_results (
+                    file_id TEXT PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS files_bot_recent ON files(bot_id,created_at DESC,id DESC);
                 CREATE INDEX IF NOT EXISTS files_task_recent ON files(bot_id,source_task_id,created_at DESC,id DESC);
@@ -266,6 +338,10 @@ _DDL = """
                     PRIMARY KEY(bot_id, request_id)
                 );
                 CREATE INDEX IF NOT EXISTS schedules_due ON schedules(state,next_run_at);
+                CREATE TABLE IF NOT EXISTS owl_assignment_routines (
+                    schedule_id TEXT PRIMARY KEY REFERENCES schedules(id) ON DELETE CASCADE,
+                    assignment_id TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS schedule_runs (
                     id {sequence},
                     schedule_id TEXT NOT NULL REFERENCES schedules(id),
@@ -326,6 +402,13 @@ _DDL = """
                     kind TEXT NOT NULL, resource_id TEXT NOT NULL, payload TEXT NOT NULL,
                     created_at {real} NOT NULL, UNIQUE(bot_id,kind,resource_id)
                 );
+                CREATE TABLE IF NOT EXISTS app_event_watches (
+                    trigger_id TEXT PRIMARY KEY REFERENCES bot_triggers(id) ON DELETE CASCADE,
+                    sender TEXT, connection_id TEXT NOT NULL, label TEXT NOT NULL, grant_revision INTEGER NOT NULL,
+                    cursor_at {real} NOT NULL, window_end INTEGER, page_token TEXT NOT NULL,
+                    next_poll {real} NOT NULL, notice TEXT
+                );
+                CREATE INDEX IF NOT EXISTS app_event_watch_poll ON app_event_watches(next_poll);
                 CREATE TABLE IF NOT EXISTS trigger_deliveries (
                     id TEXT PRIMARY KEY, trigger_id TEXT NOT NULL REFERENCES bot_triggers(id),
                     trigger_revision INTEGER NOT NULL, event_id TEXT NOT NULL REFERENCES activation_events(id),
@@ -493,6 +576,9 @@ CREATE TABLE IF NOT EXISTS bot_app_needs (
  created_at {real} NOT NULL, updated_at {real} NOT NULL, UNIQUE(source_task_id,plugin_id)
 );
 CREATE INDEX IF NOT EXISTS bot_app_needs_bot ON bot_app_needs(bot_id,status);
+CREATE TABLE IF NOT EXISTS hub_need_accounts (
+  need_id TEXT PRIMARY KEY REFERENCES bot_app_needs(id) ON DELETE CASCADE, connection_id TEXT NOT NULL
+);
 -- What a routine's runs use beyond chat (routine_access.RoutineNeeds as JSON): needs as the owl
 -- declared them, what the person allowed for this routine (NULL: nothing yet, or revoked), and
 -- what a run asked for beyond that, which paused the routine. A changed job or needs clears
@@ -523,6 +609,11 @@ CREATE TABLE IF NOT EXISTS owl_move_files (
  text_file INTEGER NOT NULL CHECK(text_file IN (0,1)), media_type TEXT NOT NULL,
  source_task_id TEXT, created_at {real} NOT NULL, updated_at {real} NOT NULL,
  PRIMARY KEY(move_id, source_id), UNIQUE(move_id, name, revision)
+);
+CREATE TABLE IF NOT EXISTS owl_move_withdrawn_results (
+ move_id TEXT NOT NULL, source_id TEXT NOT NULL,
+ PRIMARY KEY(move_id,source_id), FOREIGN KEY(move_id,source_id)
+ REFERENCES owl_move_files(move_id,source_id) ON DELETE CASCADE
 );
 -- A message the person sent in chat (queued_messages.py). revision counts their changes while
 -- it waited for the owl; sent_sha256 names the text first sent, so sending it again with the same

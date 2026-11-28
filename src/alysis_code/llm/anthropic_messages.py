@@ -31,6 +31,7 @@ from .cache_control_blocks import (
 )
 from .cache_policy import merge_cache_policy_metadata
 from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
+from .error_metadata import apply_provider_error_metadata
 from .http_cancellation import (
     cancellable_httpx_request,
     cancellable_httpx_send,
@@ -56,6 +57,7 @@ from .provider_limits import (
     mark_provider_call_non_retryable,
     run_provider_limited_call,
 )
+from .rate_limit_metadata import provider_error_detail
 from .request_plan import LLMRequestPlan, RequestCachePlan, WireRequestDiagnostics
 from .request_shape import build_request_shape_report
 from .streaming import SSEFrame, iter_sse_frames, parse_sse_json_frame
@@ -1360,7 +1362,11 @@ class _AnthropicStreamAccumulator:
             return
         if event_type == "error":
             message = _extract_error_message(data)
-            raise LLMError(f"Anthropic Messages stream error: {message or data!r}")
+            raise apply_provider_error_metadata(
+                LLMError(f"Anthropic Messages stream error: {message or data!r}"),
+                status=None,
+                detail=provider_error_detail(data),
+            )
 
         self._append_unknown(frame=frame, data=data)
 
@@ -1663,6 +1669,7 @@ class AnthropicMessagesClient:
             data = response.json()
         except Exception:
             body = safe_body
+            data = safe_body
             if len(body) > 1000:
                 body = body[:1000] + "...(truncated)"
         else:
@@ -1677,7 +1684,12 @@ class AnthropicMessagesClient:
         )
         error.provider_status_code = response.status_code
         error.provider_error_body = safe_body
-        return error
+        return apply_provider_error_metadata(
+            error,
+            status=response.status_code,
+            detail=provider_error_detail(data),
+            headers=response.headers,
+        )
 
     @scoped_input_token_counter
     def count_input_tokens(

@@ -1,6 +1,6 @@
 # Skills
 
-Skills are named instruction bundles rooted at a `SKILL.md` file. They let teams package repeatable guidance, references, scripts, and assets without changing Alysis itself.
+Skills are named instruction bundles rooted at a `SKILL.md` file. They let teams package repeatable guidance, references, scripts, and assets without changing Alysis Code itself.
 
 Skills are prompt context, not privileged host policy. Higher-priority system instructions, direct user instructions, execution modes, workspace boundaries, and tool policy still apply.
 
@@ -68,7 +68,7 @@ Bundled root:
 
 - the packaged `alysis_code/skills/bundled/<skill_name>/SKILL.md` directory
 
-Alysis discovers only approved roots. It does not scan arbitrary `skills/` directories.
+Alysis Code discovers only approved roots. It does not scan arbitrary `skills/` directories.
 
 When multiple skills have the same name:
 
@@ -82,7 +82,7 @@ Malformed skills are skipped and reported as discovery issues instead of crashin
 
 ## How Skills Are Used
 
-When `skills_enabled=true`, Alysis advertises discovered skill names and short descriptions to the session. Full skill bodies are not injected by default.
+When `skills_enabled=true`, Alysis Code advertises discovered skill names and short descriptions to the session. Full skill bodies are not injected by default.
 
 With `skills_auto_invoke=true`, the working agent chooses relevant skills from this catalog
 using its conversation and current evidence. This applies to parent agents and subagents,
@@ -150,7 +150,7 @@ not interpreted as an invocation.
 
 ## Bundled Skill Pack
 
-Alysis ships reusable workflow skills:
+Alysis Code ships reusable workflow skills:
 
 | Skill | Purpose |
 | --- | --- |
@@ -231,11 +231,11 @@ Managed state files:
 - project: `./.alysis/skills.json`
 - user: `~/.config/alysis/skills.json`
 
-Lifecycle commands create and remove managed native skills. Interop roots remain discoverable, but Alysis does not delete arbitrary foreign-root bundles.
+Lifecycle commands create and remove managed native skills. Interop roots remain discoverable, but Alysis Code does not delete arbitrary foreign-root bundles.
 
 ## Trust Model
 
-Skills are untrusted instructions. Project-local skills come from the repository, user-global skills come from the user's environment, and bundled skills ship with Alysis. None can override system instructions, direct user requests, execution modes, workspace binding, or tool policy.
+Skills are untrusted instructions. Project-local skills come from the repository, user-global skills come from the user's environment, and bundled skills ship with Alysis Code. None can override system instructions, direct user requests, execution modes, workspace binding, or tool policy.
 
 Review skills before relying on them, especially when they recommend commands, external services, or broad edits.
 
@@ -291,7 +291,7 @@ the shell. Review any untrusted manifest before running it.
 
 ## Limitations
 
-The starter pack above is bundled and versioned with Alysis. These distribution and runtime limitations remain:
+The starter pack above is bundled and versioned with Alysis Code. These distribution and runtime limitations remain:
 
 - no marketplace or registry browsing
 - no packaged skill update channel

@@ -171,6 +171,38 @@ def test_an_owl_without_a_model_thinks_with_the_places(tmp_path):
     assert runtime.limits.output_tokens == RuntimeLimits().output_tokens
 
 
+def test_the_places_own_model_is_read_again_for_every_turn(tmp_path):
+    """The person chose another default model in the app while the owl works: its next turn
+    thinks with it, with its allowances; every turn sends the whole conversation anyway."""
+    store = Store(tmp_path / "bots.sqlite3")
+    owls = [
+        store.save_bot("owner", BotInput(name="Έρευνα")),
+        store.save_bot("owner", BotInput(name="Σημειώσεις", model="place")),
+    ]
+    chats = [store.create_chat("owner", bot["id"], "Chat") for bot in owls]
+    recorder = Recorder()
+    started = ModelConnection("place", "place", connection(PLACE).settings, default=True)
+    connections = [started]
+    runtime = BotRuntime(store, "owner", lambda _task: recorder.client(PLACE + " (started)"))
+    runtime.models = PlaceModels(
+        lambda: list(connections), lambda _task, settings: recorder.client(settings.model)
+    )
+    runtime.place_settings = started.settings
+    for chat in chats:
+        ask(store, chat)
+        assert run_next(store, runtime)["status"] == "completed"
+    # Until it changes: the client the place started with, and its allowances.
+    assert recorder.calls == [(PLACE + " (started)", RuntimeLimits().output_tokens)] * 2
+    connections[0] = ModelConnection("place", "place", connection(SEEING).settings, default=True)
+    for chat in chats:
+        ask(store, chat, "Και τώρα;")
+        assert run_next(store, runtime)["status"] == "completed"
+    fitted = RuntimeLimits.for_model(model=SEEING, base_url=ENDPOINT)
+    # The owl without a model and the one that picked the place's own both think with it now.
+    assert recorder.calls[2:] == [(SEEING, fitted.output_tokens)] * 2
+    assert runtime.limits.output_tokens == RuntimeLimits().output_tokens
+
+
 def test_picking_the_places_own_model_is_the_place_client(tmp_path):
     store = Store(tmp_path / "bots.sqlite3")
     bot = store.save_bot("owner", BotInput(name="Έρευνα", model=PLACE))
@@ -333,6 +365,7 @@ def test_the_place_lists_its_models_with_their_declared_capacities():
         "context_window",
         "image_generation",
         "reasoning",
+        "reasoning_efforts",
         "connection",
         "connection_label",
         "model_label",

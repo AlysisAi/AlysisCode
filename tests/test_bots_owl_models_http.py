@@ -2,12 +2,132 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
+
+import httpx
 from fastapi.testclient import TestClient
 
 from alysis_code.bots.app import Settings, create_app
 from alysis_code.config import AppConfig, save_config
 
 ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
+
+
+def test_gateway_efforts_come_from_its_model_catalog_once_for_the_picker(tmp_path, monkeypatch):
+    from alysis_code import provider_model_catalog as catalog
+    from alysis_code.bots.owl_models import _openrouter_contracts
+
+    calls = []
+    contract = catalog.openrouter_reasoning_contract(
+        {"supported_efforts": ["high"], "mandatory": True}
+    )
+
+    def discover(**options):
+        calls.append(options)
+        return (catalog.ProviderModelOption("custom-model", "Custom", reasoning_contract=contract),)
+
+    monkeypatch.setattr(catalog, "discover_provider_models", discover)
+    _openrouter_contracts.cache_clear()
+    try:
+        settings = Settings(
+            tmp_path / "bots.db",
+            "t" * 40,
+            "fixture",
+            "https://openrouter.ai/api/v1",
+            "custom-model",
+            models=["other"],
+        )
+        with TestClient(create_app(settings)) as api:
+            api.headers["Authorization"] = "Bearer " + settings.token
+            rows = api.get("/v1/models").json()["models"]
+            assert [e["id"] for e in rows[0]["reasoning_efforts"]] == ["high"]
+            assert rows[1]["reasoning_efforts"] == []
+            assert len(calls) == 1 and calls[0]["api_key"] is None
+    finally:
+        _openrouter_contracts.cache_clear()
+
+
+def test_toggle_only_effort_survives_work_client_and_stays_on_its_owl(tmp_path):
+    from alysis_code.bots.owl_models import work_client
+
+    settings = Settings(
+        tmp_path / "bots.db",
+        "t" * 40,
+        "fixture",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "qwen3-32b",
+    )
+    app = create_app(settings)
+    with TestClient(app) as api:
+        api.headers["Authorization"] = "Bearer " + settings.token
+        choices = api.get("/v1/models").json()["models"][0]["reasoning_efforts"]
+        assert [option["id"] for option in choices] == ["none", "enabled"]
+        for option, expected in (("none", ("none", False)), ("enabled", (None, True))):
+            owl = api.post("/v1/bots", json={"name": "Toggle", "reasoning_effort": option}).json()
+            chosen, _ = app.state.runtime.turn_model("task", owl["id"])
+            client = work_client(chosen)
+            assert (client.reasoning_effort, client.enable_thinking) == expected
+        assert settings.reasoning_effort is None
+
+
+def test_existing_owls_inherit_their_previous_thinking_when_the_database_upgrades(tmp_path):
+    from alysis_code.bots.models import BotInput
+    from alysis_code.bots.store import Store
+
+    path = tmp_path / "bots.db"
+    original = Store(path).save_bot("owner", BotInput(name="Apollo", model="existing"))
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE bots DROP COLUMN reasoning_effort")
+        db.execute("PRAGMA user_version=51")
+    upgraded = Store(path).bot("owner", original["id"])
+    assert (upgraded["model"], upgraded["reasoning_effort"]) == ("existing", None)
+
+
+def test_saved_effort_reaches_the_next_provider_request_after_restart(tmp_path):
+    from alysis_code.bots.owl_models import work_client
+
+    settings = Settings(
+        tmp_path / "bots.db", "t" * 40, "fixture", ENDPOINT, "glm-5.3-flash", models=["glm-5.4"]
+    )
+    with TestClient(create_app(settings)) as api:
+        api.headers["Authorization"] = "Bearer " + settings.token
+        assert "owl_reasoning_effort" in api.get("/v1/status").json()["capabilities"]
+        models = api.get("/v1/models").json()["models"]
+        assert [e["id"] for e in models[1]["reasoning_efforts"]] == ["low", "high", "max"]
+        owl = api.post("/v1/bots", json={"name": "Apollo"}).json()
+        path = f"/v1/bots/{owl['id']}"
+        assert api.put(
+            path, json={"name": "Apollo", "model": "glm-5.4", "reasoning_effort": "high"}
+        ).is_success
+        invalid = api.put(path, json={"name": "Apollo", "reasoning_effort": "unsupported"})
+        assert invalid.status_code == 422
+        assert api.put(path, json={"name": "Apollo II"}).json()["reasoning_effort"] == "high"
+
+    app = create_app(settings)
+    with TestClient(app) as api:
+        api.headers["Authorization"] = "Bearer " + settings.token
+        stored = api.get("/v1/bots").json()[0]
+        assert (stored["model"], stored["reasoning_effort"]) == ("glm-5.4", "high")
+        sent = []
+
+        def record(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(
+                200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+            )
+
+        client, _ = app.state.runtime.turn_model("next-turn", owl["id"])
+        client._transport = httpx.MockTransport(record)
+        work_client(client).chat(messages=[{"role": "user", "content": "Hello"}])
+        assert (sent[0]["model"], sent[0]["reasoning_effort"]) == ("glm-5.4", "high")
+        # Model-only clients clear the effort as part of the same save.
+        assert (
+            api.put(path, json={"name": "Apollo", "model": None}).json()["reasoning_effort"] is None
+        )
+        assert api.put(path, json={"name": "Apollo", "reasoning_effort": "low"}).is_success
+        default_client, _ = app.state.runtime.turn_model("another-turn", owl["id"])
+        assert (default_client.model, default_client.reasoning_effort) == ("glm-5.3-flash", "low")
 
 
 def test_the_model_is_advertised_offered_validated_and_kept(tmp_path):

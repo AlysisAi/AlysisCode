@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import re
 import time
+import unicodedata
 from collections.abc import Mapping
 from datetime import timezone
 from email.utils import parsedate_to_datetime
@@ -15,6 +17,65 @@ HARD_QUOTA_CODES = frozenset(
 MAX_RETRY_SECONDS = 31 * 24 * 60 * 60
 MAX_RESET_AT = 4_102_444_800  # 2100-01-01
 RETRY_TIMING_STATUS_CODES = frozenset({408, 429, *range(500, 600)})
+
+BILLING_ERROR_CODE = "billing_hard_limit_reached"
+_BILLING_CODES = frozenset(
+    {
+        BILLING_ERROR_CODE,
+        "insufficient_quota",
+        "insufficient_balance",
+        "insufficient_funds",
+        "insufficient_credits",
+        "credits_exhausted",
+        "credit_balance_exhausted",
+        "payment_required",
+        "billing_not_active",
+        "billing_disabled",
+        "subscription_required",
+        "subscription_expired",
+    }
+)
+_BILLING_MESSAGE = re.compile(
+    r"\b(?:insufficient (?:account |credit )?(?:balance|credits?|funds)"
+    r"|(?:credit |account )?balance is (?:too low|insufficient)"
+    r"|out of credits|not enough credits|no (?:remaining credits|credits (?:left|remaining))|payment required"
+    r"|no (?:active (?:subscription|plan)|resource package)"
+    r"|(?:subscription|plan) (?:has expired|is (?:expired|inactive))"
+    r"|(?:subscription|plan) does not (?:yet )?include access to"
+    r"|(?:billing|spending) hard limit (?:has been )?reached)\b",
+    re.IGNORECASE,
+)
+
+
+def requires_provider_billing(status: int | None, detail: Mapping[str, Any]) -> bool:
+    """Match an explicit funding or subscription rejection in the provider's error fields."""
+    if status == 402:
+        return True
+    if status not in {None, 400, 401, 403, 429}:
+        return False
+    for field in ("code", "type", "status", "reason"):
+        code = detail.get(field)
+        if isinstance(code, str) and code.casefold() in _BILLING_CODES:
+            return True
+    message = detail.get("message")
+    if not isinstance(message, str):
+        return False
+    normalized = " ".join(unicodedata.normalize("NFKC", message).split())
+    return _BILLING_MESSAGE.search(normalized) is not None
+
+
+def provider_error_detail(data: Any) -> Mapping[str, Any]:
+    """Read only the error envelope (or a plain-text rejection), never other payload fields."""
+    if isinstance(data, str):
+        return {"message": data}
+    if not isinstance(data, Mapping):
+        return {}
+    nested = data.get("error")
+    if isinstance(nested, Mapping):
+        return nested
+    if isinstance(nested, str) and not data.get("message"):
+        return {**data, "message": nested}
+    return data
 
 
 def bounded_seconds(value: Any) -> int:

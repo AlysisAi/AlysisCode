@@ -169,6 +169,10 @@ class ChatPart(_Record):
     created_at: Time
 
 
+class ThreadPart(ChatPart):
+    id: SourceId
+
+
 class OwlRecord(_Record):
     kind: Literal["owl"]
     name: str = Field(min_length=1, max_length=80)
@@ -184,12 +188,14 @@ class OwlRecord(_Record):
     archived_at: Time | None = None
     created_at: Time
     chat: ChatPart | None
+    threads: list[ThreadPart] = Field(default_factory=list)
     review_mode: Literal["auto", "review"] | None
     # The model it thinks with, only when the app asked (MoveExport.model, capability
     # "owl_move_model"): its id where it was and the model that id names there. Model ids belong
     # to a place, so the copy keeps it only where it is offered (PlaceModels.keep).
     model: ModelId | None = None
     model_name: ModelId | None = None
+    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class RuleRecord(_Record):
@@ -225,13 +231,34 @@ class ActivationEvent(_Record):
     occurred_at: Time | None = None
 
 
+class MailActivationEvent(_Record):
+    message_id: str = Field(max_length=256, pattern=r"^[a-zA-Z0-9_.@-]+$")
+    sender: str | None = Field(default=None, max_length=256)
+    name: str = Field(max_length=160)
+    account: str = Field(max_length=256)
+    occurred_at: Time | None = None
+
+
+class CalendarActivationEvent(_Record):
+    calendar_event_id: str = Field(max_length=256, pattern=r"^[a-zA-Z0-9_.@-]+$")
+    name: str = Field(max_length=160)
+    account: str = Field(max_length=256)
+    status: str = Field(max_length=32)
+    start: str | None = Field(default=None, max_length=64)
+    end: str | None = Field(default=None, max_length=64)
+    location: str | None = Field(default=None, max_length=256)
+    occurred_at: Time | None = None
+
+
 class Activation(_Record):
     trigger_id: SourceId | None = None
     revision: StrictInt | None = Field(default=None, ge=1)
     name: str = Field(max_length=100)
-    kind: Literal["file_added"] = "file_added"
+    kind: Literal["file_added", "gmail_received", "calendar_changed"] = "file_added"
     mode: str = Field(default="review", max_length=40)
-    events: list[ActivationEvent] = Field(max_length=100)
+    events: list[ActivationEvent | MailActivationEvent | CalendarActivationEvent] = Field(
+        max_length=100
+    )
 
 
 class Regeneration(_Record):
@@ -314,6 +341,7 @@ class AttachmentPart(_Record):
 
 
 class TurnRecord(_Record):
+    thread: SourceId | None = None
     kind: Literal["turn"]
     id: SourceId
     request_id: str = Field(min_length=1, max_length=200)
@@ -442,7 +470,10 @@ class TriggerRecord(_Record):
     kind: Literal["trigger"]
     id: SourceId
     name: str = Field(min_length=1, max_length=100)
-    trigger_kind: Literal["file_added"]
+    trigger_kind: Literal["file_added", "gmail_received", "calendar_changed"]
+    gmail_sender: str | None = Field(
+        default=None, max_length=254, pattern=r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$"
+    )
     instructions: str = Field(min_length=1, max_length=4000)
     state: Literal["draft", "active", "paused"]
     source_task_id: SourceId | None
@@ -461,6 +492,7 @@ class FileRecord(_Record):
     binary: StrictBool
     media_type: str = Field(min_length=1, max_length=200)
     source_task_id: SourceId | None
+    withdrawn_from_reply: StrictBool = False
     created_at: Time
     updated_at: Time
 
@@ -624,9 +656,11 @@ class MovePage(Input):
 
 
 class MoveExport(Input):
+    threads: StrictBool = False
     cursor: str | None = Field(default=None, min_length=1, max_length=1000)
     # Carry the owl's model in its owl record: only for a place that takes it ("owl_move_model").
     model: StrictBool = False
+    reasoning_effort: StrictBool = False
     # Carry each routine's model in its routine record: only for a place that takes it
     # ("routine_models").
     routine_models: StrictBool = False
@@ -661,8 +695,9 @@ def fingerprint(db, bot_id: str) -> str:
     parts: list[Any] = []
     for sql in (
         "SELECT name,purpose,instructions,memory_enabled,files_enabled,color,background,"
-        "pinned_at,archived_at,updated_at,model FROM bots WHERE id=?",
+        "pinned_at,archived_at,updated_at,model,reasoning_effort FROM bots WHERE id=?",
         "SELECT count(*),max(updated_at) FROM tasks WHERE bot_id=?",
+        "SELECT count(*),max(c.created_at) FROM chats c JOIN owl_chat_threads x ON x.chat_id=c.id WHERE c.bot_id=?",
         "SELECT max(e.seq) FROM events e JOIN tasks t ON t.id=e.task_id WHERE t.bot_id=?",
         "SELECT count(*),max(updated_at) FROM memories WHERE bot_id=?",
         "SELECT count(*),max(updated_at),sum(revision) FROM working_notes WHERE bot_id=?",
@@ -687,6 +722,12 @@ def fingerprint(db, bot_id: str) -> str:
     ):
         row = db.execute(sql, (bot_id,)).fetchone()
         parts.append([None if v is None else repr(v) for v in tuple(row)] if row else None)
+    withdrawn = db.execute(
+        "SELECT count(*) FROM owl_withdrawn_results w JOIN files f ON f.id=w.file_id WHERE f.bot_id=?",
+        (bot_id,),
+    ).fetchone()[0]
+    if withdrawn:
+        parts.append(["withdrawn_results", withdrawn])
     return hashlib.sha256(encode(parts).encode()).hexdigest()
 
 
@@ -869,16 +910,32 @@ def _turn_config(config: dict) -> dict:
             ),
             "events": [
                 {
-                    "file_id": event["file_id"],
+                    **{
+                        key: value
+                        for key, value in event.items()
+                        if key
+                        in {
+                            "file_id",
+                            "message_id",
+                            "calendar_event_id",
+                            "name",
+                            "sender",
+                            "account",
+                            "status",
+                            "start",
+                            "end",
+                            "location",
+                            "occurred_at",
+                        }
+                    },
                     "name": event.get("name") if isinstance(event.get("name"), str) else "",
-                    **(
-                        {"occurred_at": event["occurred_at"]}
-                        if isinstance(event.get("occurred_at"), int | float)
-                        else {}
-                    ),
                 }
                 for event in activation.get("events") or []
-                if isinstance(event, dict) and isinstance(event.get("file_id"), str)
+                if isinstance(event, dict)
+                and any(
+                    isinstance(event.get(field), str)
+                    for field in ("file_id", "message_id", "calendar_event_id")
+                )
             ],
         }
         kept["activation"].setdefault("name", "")
@@ -919,7 +976,7 @@ def _message_parts(db, task_id: str) -> list[dict]:
 def _turn_records(db, bot_id, after, limit):
     read = db.execute(
         "SELECT coalesce(max(r.event_seq),0) FROM chat_read_cursors r "
-        f"JOIN chats c ON c.id=r.chat_id WHERE {ChatScope(bot_id).chats}",
+        f"JOIN chats c ON c.id=r.chat_id WHERE {ChatScope(bot_id, default_chat=True).chats}",
         (bot_id,),
     ).fetchone()[0]
     records = []
@@ -971,6 +1028,12 @@ def _turn_records(db, bot_id, after, limit):
                 )
             ],
         }
+        if Store._is_thread(db, row["chat_id"]):
+            record["thread"] = row["chat_id"]
+            local_read = db.execute(
+                "SELECT event_seq FROM chat_read_cursors WHERE chat_id=?", (row["chat_id"],)
+            ).fetchone()
+            record["read"] = finished is None or finished <= (local_read[0] if local_read else 0)
         queued = db.execute(
             "SELECT revision,sent_sha256,withdrawn_at FROM queued_messages WHERE task_id=?",
             (row["id"],),
@@ -1121,6 +1184,9 @@ def _trigger_records(db, bot_id, after, limit):
                 "id": row["id"],
                 "name": row["name"],
                 "trigger_kind": row["kind"],
+                **(
+                    {"gmail_sender": row["gmail_sender"]} if row["kind"] == "gmail_received" else {}
+                ),
                 "instructions": row["instructions"],
                 "state": row["state"],
                 "source_task_id": row["source_task_id"],
@@ -1130,7 +1196,12 @@ def _trigger_records(db, bot_id, after, limit):
             },
         )
         for row in _rows(
-            db, "SELECT x.* FROM bot_triggers x WHERE x.bot_id=?{after}", bot_id, after, limit
+            db,
+            "SELECT x.*,w.sender AS gmail_sender FROM bot_triggers x LEFT JOIN app_event_watches w "
+            "ON w.trigger_id=x.id WHERE x.bot_id=?{after}",
+            bot_id,
+            after,
+            limit,
         )
     ]
 
@@ -1151,6 +1222,7 @@ def _file_records(db, bot_id, after, limit):
                     "sha256": meta["sha256"],
                     "binary": bool(meta["binary"]),
                     "media_type": meta["media_type"],
+                    **({"withdrawn_from_reply": True} if meta.get("withdrawn_from_reply") else {}),
                     "source_task_id": row["source_task_id"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
@@ -1307,15 +1379,29 @@ def export_page(
         size = 0
         next_cursor = None
         carried = {}
+        threads = db.execute(
+            "SELECT c.id,c.title,c.created_at FROM chats c JOIN owl_chat_threads x ON x.chat_id=c.id WHERE x.bot_id=? "
+            "ORDER BY c.created_at,c.id",
+            (bot_id,),
+        ).fetchall()
+        if threads and not query.threads:
+            raise Conflict("Update both places before moving an owl with separate conversations.")
         if query.model:
-            model = db.execute("SELECT model FROM bots WHERE id=?", (bot_id,)).fetchone()[0]
+            row = db.execute(
+                "SELECT model,reasoning_effort FROM bots WHERE id=?", (bot_id,)
+            ).fetchone()
+            model = row["model"]
             name = models.model_of(model) if model and models is not None else None
             carried = {"model": model, "model_name": name}
+            if query.reasoning_effort and row["reasoning_effort"]:
+                carried["reasoning_effort"] = row["reasoning_effort"]
         while section < len(SECTIONS):
             batch = _EXPORTERS[section](db, bot_id, after, 32)
             for key, record in batch:
                 if record["kind"] == "owl":
                     record = {**record, **carried}
+                    if threads:
+                        record["threads"] = [dict(row) for row in threads]
                 elif record["kind"] == "routine":
                     record = _routine_model(record, query.routine_models, models)
                 record_size = len(encode(record).encode())
@@ -1481,6 +1567,7 @@ class OwlMoves:
         # The model the copy keeps, decided before the page's transaction: reading what this
         # place offers may read a provider's catalog.
         kept = None
+        effort = None
         routines: dict[str, str | None] = {}
         for record in records:
             if (
@@ -1489,6 +1576,15 @@ class OwlMoves:
                 and (record.model or record.model_name)
             ):
                 kept = self.models.keep(record.model, record.model_name)
+            if (
+                record.kind == "owl"
+                and record.reasoning_effort
+                and self.models
+                and self.models.supports_effort(
+                    kept, record.reasoning_effort, model_name=record.model_name
+                )
+            ):
+                effort = record.reasoning_effort
             # A routine's the same way, by id; none means its owl's, so the place's own model
             # is kept by its id too.
             if (
@@ -1510,7 +1606,9 @@ class OwlMoves:
                 return self._receipt(db, move)
             if data.page != len(digests) or move["received_all"]:
                 raise Conflict("A part of this move is missing. Send its parts in order.")
-            state = _Import(self, db, move, model=kept, routine_models=routines)
+            state = _Import(
+                self, db, move, model=kept, reasoning_effort=effort, routine_models=routines
+            )
             for record in records:
                 state.apply(record)
             if data.last and not state.counts.get("owl"):
@@ -1589,6 +1687,14 @@ class OwlMoves:
             for row in expected:
                 file_id = mapping[row["source_id"]]
                 source_task = row["source_task_id"]
+                if db.execute(
+                    "SELECT 1 FROM owl_move_withdrawn_results WHERE move_id=? AND source_id=?",
+                    (move_id, row["source_id"]),
+                ).fetchone():
+                    db.execute(
+                        "INSERT INTO owl_withdrawn_results(file_id) VALUES(?) ON CONFLICT(file_id) DO NOTHING",
+                        (file_id,),
+                    )
                 db.execute(
                     "UPDATE files SET created_at=?,updated_at=?,source_task_id=? WHERE id=?",
                     (
@@ -1653,6 +1759,8 @@ class OwlMoves:
                 continue
             events = [
                 {**event, "file_id": mapping.get(event["file_id"], event["file_id"])}
+                if event.get("file_id")
+                else event
                 for event in activation.get("events") or []
             ]
             db.execute(
@@ -1712,11 +1820,13 @@ class _Import:
         move: dict,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         routine_models: dict[str, str | None] | None = None,
     ):
         self.moves, self.db, self.move = moves, db, move
         # The model the owl keeps here (OwlMoves.receive); None: this place's own.
         self.model = model
+        self.reasoning_effort = reasoning_effort
         # The model each routine keeps here, by the routine's id there; None: its owl's.
         self.routine_models = routine_models or {}
         self.owner = moves.owner
@@ -1724,14 +1834,7 @@ class _Import:
         self.section: int = move["section"]
         self.counts: dict[str, int] = json.loads(move["counts"])
         self.now = time.time()
-        self.chat_id = (
-            db.execute(
-                "SELECT id FROM chats WHERE bot_id=? ORDER BY created_at,id LIMIT 1",
-                (self.bot_id,),
-            ).fetchone()[0]
-            if self.bot_id
-            else None
-        )
+        self.chat_id = Store._own_chat(db, self.bot_id)["id"] if self.bot_id else None
 
     def derive(self, kind: str, source_id: str) -> str:
         return _derive(self.move["id"], kind, source_id)
@@ -1772,8 +1875,8 @@ class _Import:
         self.fresh("bots", "id", self.bot_id)
         self.db.execute(
             "INSERT INTO bots(id,owner,name,purpose,instructions,memory_enabled,files_enabled,"
-            "created_at,updated_at,color,background,pinned_at,archived_at,model) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "created_at,updated_at,color,background,pinned_at,archived_at,model,reasoning_effort) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self.bot_id,
                 self.owner,
@@ -1789,6 +1892,7 @@ class _Import:
                 record.pinned_at,
                 record.archived_at,
                 self.model,
+                self.reasoning_effort,
             ),
         )
         self.chat_id = self.derive("chat", self.move["source_bot_id"])
@@ -1801,6 +1905,17 @@ class _Import:
                 record.chat.created_at if record.chat else record.created_at,
             ),
         )
+        for thread in record.threads:
+            chat_id = self.derive("thread", thread.id)
+            self.fresh("chats", "id", chat_id)
+            self.db.execute(
+                "INSERT INTO chats VALUES(?,?,?,?)",
+                (chat_id, self.bot_id, thread.title, thread.created_at),
+            )
+            self.db.execute(
+                "INSERT INTO owl_chat_threads VALUES(?,?,?)",
+                (chat_id, self.bot_id, "moved_" + chat_id),
+            )
         if record.review_mode:
             self.db.execute(
                 "INSERT INTO bot_review_settings(bot_id,mode) VALUES(?,?)",
@@ -1838,6 +1953,14 @@ class _Import:
 
     def _turn(self, record: TurnRecord) -> None:
         task_id = self.derive("turn", record.id)
+        chat_id = self.chat_id
+        if record.thread:
+            chat_id = self.derive("thread", record.thread)
+            if not self.db.execute(
+                "SELECT 1 FROM owl_chat_threads WHERE chat_id=? AND bot_id=?",
+                (chat_id, self.bot_id),
+            ).fetchone():
+                raise Conflict("A moved turn refers to an unknown conversation.")
         self.fresh("tasks", "id", task_id)
         # The person's own request id where it is free here, so the app knows its own turns.
         request_id = record.request_id
@@ -1864,7 +1987,7 @@ class _Import:
             "created_at,updated_at,error,calls,output,failure) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 task_id,
-                self.chat_id,
+                chat_id,
                 self.bot_id,
                 self.owner,
                 request_id,
@@ -1886,7 +2009,7 @@ class _Import:
                 "VALUES(?,?,?,?,?,?)",
                 (
                     message_id,
-                    self.chat_id,
+                    chat_id,
                     task_id,
                     message.role,
                     message.content,
@@ -1942,7 +2065,7 @@ class _Import:
                     "ON CONFLICT(chat_id) DO UPDATE SET event_seq=CASE WHEN "
                     "chat_read_cursors.event_seq>excluded.event_seq THEN "
                     "chat_read_cursors.event_seq ELSE excluded.event_seq END",
-                    (self.chat_id, finished),
+                    (chat_id, finished),
                 )
 
     def _memory(self, record: MemoryRecord) -> None:
@@ -2105,6 +2228,13 @@ class _Import:
             ),
         )
 
+        if record.trigger_kind != "file_added":
+            # Provider account grants don't move with an Owl. Keep the requested filter for review.
+            self.db.execute(
+                "INSERT INTO app_event_watches VALUES(?,?, '', '',0,?,NULL,'',?,'rebind')",
+                (trigger_id, record.gmail_sender, self.now, self.now),
+            )
+
     def _suggestion(self, record: SuggestionRecord) -> None:
         suggestion_id = self.derive("suggestion", record.id)
         self.fresh("routine_suggestions", "id", suggestion_id)
@@ -2185,6 +2315,10 @@ class _Import:
         row_id = self.derive("check_back", record.id)
         self.fresh("check_backs", "id", row_id)
         condition = record.condition
+        source = self.task(record.source_task_id)
+        chat = self.db.execute(
+            "SELECT chat_id FROM tasks WHERE id=? AND bot_id=?", (source, self.bot_id)
+        ).fetchone()
         # An owl moves only while none of its work is going, so work it waited for has ended.
         met_at = self.now if condition and condition["kind"] == "work_ends" else None
         self.db.execute(
@@ -2194,8 +2328,8 @@ class _Import:
             (
                 row_id,
                 self.bot_id,
-                self.chat_id,
-                self.task(record.source_task_id),
+                chat[0] if chat else self.chat_id,
+                source,
                 record.due_at,
                 record.note,
                 encode(condition) if condition else None,
@@ -2231,3 +2365,8 @@ class _Import:
                 record.updated_at,
             ),
         )
+        if record.withdrawn_from_reply:
+            self.db.execute(
+                "INSERT INTO owl_move_withdrawn_results(move_id,source_id) VALUES(?,?)",
+                (self.move["id"], record.id),
+            )

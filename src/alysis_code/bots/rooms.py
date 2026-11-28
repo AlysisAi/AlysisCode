@@ -36,7 +36,7 @@ from typing import Annotated
 
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
-from .models import Input
+from .models import MAX_MESSAGE_FILES, Input
 from .store import ACTIVE, ChatScope, Conflict, LimitReached, NotFound, Store, encode, uid
 from .text_search import _loose_piece
 
@@ -87,13 +87,28 @@ class RoomChange(Input):
         return self
 
 
+class RoomFile(Input):
+    bot_id: OwlId
+    file_id: OwlId
+
+
 class RoomMessage(Input):
-    message: str = Field(min_length=1, max_length=20000)
+    message: str = Field(max_length=20000)
     # Like a message in an owl's chat: the same id returns the turns it already started. Shorter,
     # since each further owl's turn adds a short suffix to it.
     request_id: str = Field(min_length=8, max_length=90, pattern=r"^[a-zA-Z0-9_-]+$")
     # The owl picked to write to, for a message that mentions none.
     to: OwlId | None = None
+    expertise: bool = Field(default=False, strict=True)
+    files: list[RoomFile] = Field(default_factory=list, max_length=MAX_MESSAGE_FILES)
+
+    @model_validator(mode="after")
+    def _valid_message(self):
+        if not self.message.strip() and not self.files:
+            raise ValueError("Write a message or attach a file.")
+        if len({f.file_id for f in self.files}) != len(self.files):
+            raise ValueError("Attach each file once.")
+        return self
 
 
 # ---------------------------------------------------------------------------------------------
@@ -535,6 +550,25 @@ class Rooms:
             if len(members) < MIN_OWLS:
                 raise Conflict("Add another owl to this room to write in it.")
             recipients = self.recipients(db, room_id, data)
+            roster = {m["bot_id"] for m in members}
+            shared = []
+            for reference in data.files:
+                if reference.bot_id not in roster:
+                    raise Conflict("The attached file must belong to an owl in this room.")
+                source = self.store._bot(db, self.owner, reference.bot_id)
+                file = self.store._attachable_files(db, source, [reference.file_id])[0]
+                shared.append(self.store._handoff_metadata(file))
+            auto = (
+                data.expertise
+                and not data.to
+                and not mentions(data.message, [m["name"] for m in members])
+            )
+            if (
+                auto
+                and shared
+                and not self.store._bot(db, self.owner, recipients[0]["bot_id"])["files_enabled"]
+            ):
+                recipients = [next(m for m in members if m["bot_id"] == data.files[0].bot_id)]
             if (
                 db.execute(
                     f"SELECT count(*) FROM tasks WHERE owner=? AND status IN {ACTIVE}",
@@ -567,11 +601,21 @@ class Rooms:
                         data.request_id if position == 0 else f"{data.request_id}.{position}",
                         data.message,
                         "queued",
-                        encode({**bot, "reply_review_enabled": review}),
+                        encode(
+                            {
+                                **bot,
+                                "reply_review_enabled": review,
+                                **({"room_route_pending": True} if auto else {}),
+                                "room_request": data.model_dump(
+                                    exclude={"message", "request_id"}, exclude_defaults=True
+                                ),
+                            }
+                        ),
                         created,
                         created,
                     ),
                 )
+                self._assign_files(db, task_id, None if auto else bot, shared)
                 if position == 0:
                     db.execute(
                         "INSERT INTO messages(id,chat_id,task_id,role,content,created_at) "
@@ -584,10 +628,90 @@ class Rooms:
                 self.store._event(db, task_id, "queued", {})
             return self._result(db, message_id)
 
+    def _assign_files(self, db, task_id, bot, shared):
+        for index, file in enumerate(shared):
+            # Until automatic routing chooses the recipient, reference the member's revision;
+            # only the Owl that will actually answer receives a Library copy.
+            if bot is not None and file["source_bot_id"] != bot["id"]:
+                file = self.store._copy_assignment_files(db, self.owner, bot, [file])[0]
+            db.execute(
+                "INSERT INTO task_files(task_id,ordinal,file_id,name,media_type,size_bytes) VALUES(?,?,?,?,?,?)",
+                (task_id, index, file["id"], file["name"], file["media_type"], file["size_bytes"]),
+            )
+
+    def routing_input(self, task: dict) -> dict:
+        with self.store.connect() as db:
+            room = self._room(db, task["chat_id"])
+            files = bool(self.store._attached_file_ids(db, task["id"]))
+            roster = []
+            for member in self._members(db, room["id"]):
+                bot = self.store._bot(db, self.owner, member["bot_id"])
+                if not files or bot["files_enabled"]:
+                    roster.append(
+                        {"id": bot["id"], "name": bot["name"], "purpose": bot["purpose"][:400]}
+                    )
+            # Exclude this turn and any person who writes while it waits.
+            recent = db.execute(
+                "SELECT m.role,m.content,b.name FROM messages m JOIN tasks t ON t.id=m.task_id "
+                "JOIN bots b ON b.id=t.bot_id WHERE m.chat_id=? AND t.created_at<? "
+                "ORDER BY m.created_at DESC,m.rowid DESC LIMIT 6",
+                (room["id"], task["created_at"]),
+            ).fetchall()
+            return {
+                "room": room["name"],
+                "members": roster,
+                "recent": [
+                    {
+                        "from": row["name"] if row["role"] == "assistant" else "user",
+                        "text": row["content"][:400],
+                    }
+                    for row in reversed(recent)
+                ],
+                "request": task["message"][:3000],
+            }
+
+    def finish_routing(self, task_id: str, chosen: str | None) -> None:
+        """Resolve once under the queue transaction. The normal worker claims the selected owl."""
+        with self.store.connect(write=True) as db:
+            task = self.store._task(db, self.owner, task_id)
+            config = task["config"]
+            if task["status"] != "running" or not config.get("room_route_pending"):
+                return
+            members = {m["bot_id"] for m in self._members(db, task["chat_id"])}
+            files = config["room_request"].get("files", [])
+            candidate = chosen if chosen in members else task["bot_id"]
+            bot = self.store._bot(db, self.owner, candidate)
+            if files and not bot["files_enabled"]:
+                bot = self.store._bot(db, self.owner, task["bot_id"])
+            if bot["id"] not in members or (files and not bot["files_enabled"]):
+                raise Conflict("The owl for this room message is no longer available.")
+            shared = []
+            for file in files:
+                if file["bot_id"] not in members:
+                    raise Conflict("The owl that shared this file has left the room.")
+                source = self.store._bot(db, self.owner, file["bot_id"])
+                revision = self.store._attachable_files(db, source, [file["file_id"]])[0]
+                shared.append(self.store._handoff_metadata(revision))
+            db.execute("DELETE FROM task_files WHERE task_id=?", (task_id,))
+            self._assign_files(db, task_id, bot, shared)
+            if bot["archived_at"] is not None:
+                self.store._bring_back(db, bot["id"], time.time())
+                bot = self.store._bot(db, self.owner, bot["id"])
+            config = {
+                **bot,
+                "room_request": config["room_request"],
+                "reply_review_enabled": config["reply_review_enabled"],
+            }
+            db.execute(
+                "UPDATE tasks SET bot_id=?,config=?,status='queued',updated_at=? WHERE id=?",
+                (config["id"], encode(config), time.time(), task_id),
+            )
+            self.store._event(db, task_id, "queued", {})
+
     def _sent(self, db, room_id: str, data: RoomMessage) -> dict | None:
         """The turns a message sent before with this request id started, or None."""
         previous = db.execute(
-            "SELECT t.id,t.chat_id,t.message,r.message_id FROM tasks t "
+            "SELECT t.id,t.chat_id,t.message,t.config,r.message_id FROM tasks t "
             "LEFT JOIN room_turns r ON r.task_id=t.id WHERE t.owner=? AND t.request_id=?",
             (self.owner, data.request_id),
         ).fetchone()
@@ -597,6 +721,11 @@ class Rooms:
             previous["chat_id"] != room_id
             or previous["message"] != data.message
             or previous["message_id"] is None
+            or (
+                "room_request" in (config := json.loads(previous["config"]))
+                and config["room_request"]
+                != data.model_dump(exclude={"message", "request_id"}, exclude_defaults=True)
+            )
         ):
             raise Conflict("This request ID was already used for a different message.")
         return self._result(db, previous["message_id"])
@@ -668,6 +797,9 @@ class Rooms:
                     (self.owner, room["id"]),
                 )
             }
+            attached = self.store._message_files(
+                db, ChatScope(room["id"], room=True), only=[task["id"]]
+            )
         left_out = max(0, len(rows) - CONTEXT_MESSAGES)
         messages: list[dict] = []
         used = 0
@@ -693,6 +825,7 @@ class Rooms:
             "name": room["name"],
             "owls": [member["name"] for member in members],
             "request": own["content"] if own else None,
+            "files": attached.get(task["id"], []),
             "messages": messages,
             "left_out": left_out,
         }

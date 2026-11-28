@@ -1314,6 +1314,18 @@
       "bridge_only_rationale": "Desktop connection settings consume this optional method. VS Code has typed transport coverage but has not adopted native subscription status in its UI."
     },
     {
+      "id": "ide.methods.desktop_assistant_observation",
+      "surface": "ide_bridge_method",
+      "names": [
+        "assistant.observation.models",
+        "assistant.observation.infer"
+      ],
+      "status": "implemented_in_bridge_only",
+      "desktop_host_only": true,
+      "rationale": "Desktop Assist discovers configured vision routes and makes bounded inference requests outside chat sessions.",
+      "bridge_only_rationale": "The desktop app owns Assist screen consent and capture. The VS Code extension has no Assist observation surface."
+    },
+    {
       "id": "ide.methods.desktop_model_selection",
       "surface": "ide_bridge_method",
       "names": [

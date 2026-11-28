@@ -19,6 +19,7 @@ from alysis_code.bots.desktop_connectors import (
     CatalogInput,
     DesktopConnectors,
     OwlApps,
+    OwlHubGrant,
     PluginCallUnavailable,
 )
 from alysis_code.bots.models import BotInput
@@ -65,9 +66,21 @@ class Account:
         self.calls: list[tuple[str, str, dict]] = []
         self.error: hub_apps.HubAppsError | None = None
         self.sent = True
+        self.connection_id = "ca_work"
+        self.revision = 0
 
-    def call(self, app, tool, arguments, request_id=None):
+    def connections(self, *, manage=False):
+        return {}
+
+    def set_owl_grant(self, app, grant):
+        assert app == "gmail"
+        self.connection_id = grant["connection_id"]
+        self.revision += 1
+
+    def call(self, app, tool, arguments, request_id=None, connection_id=None, grant_revision=None):
         self.calls.append((app, tool, arguments))
+        self.last_connection = connection_id
+        assert (connection_id, grant_revision) == (self.connection_id, self.revision)
         if self.error:
             raise self.error
         return hub_apps.HubCallResult(
@@ -83,11 +96,13 @@ def env(tmp_path):
     account = Account()
     loads: list[int] = []
 
-    def load():
+    def load(client):
         loads.append(1)
-        return [MAIL], {"loaded": 1}
+        return [
+            {**MAIL, "connection_id": client.connection_id, "grant_revision": client.revision}
+        ], {"loaded": 1}
 
-    more = OwlHubApps(load=load, client=lambda: account)
+    more = OwlHubApps(load=load, client=lambda **kwargs: account)
     apps = OwlApps(store, "owner", DesktopConnectors(), more)
     connections = ConnectionStore(tmp_path / "connections.sqlite3")
     owl = store.save_bot("owner", BotInput(name="Ήρα", purpose="Everyday work"))
@@ -119,7 +134,7 @@ def test_a_connected_more_app_is_on_for_every_owl_until_switched_off_for_one(env
     switch(apps, owl["id"], "hub.gmail", False)
     assert apps.for_owl(owl["id"]).plugins() == []
     assert [p.name for p in apps.for_owl(other["id"]).plugins()] == ["Gmail"]
-    assert len(loads) == 1, "the account's apps are read once a minute, not on every look"
+    assert len(loads) == 3, "fresh discovery checks the broker's current grants for each owl"
 
 
 def test_a_read_runs_in_the_service_with_no_desktop_app(env):
@@ -145,6 +160,7 @@ def test_a_change_waits_for_the_person_and_runs_once_they_allow_it(env):
     assert account.calls == [], "nothing is sent before the person decides"
     (review,) = made.action_reviews.list(task["bot_id"])
     assert review["action"]["observed_context"]["plugin"] == "Gmail"
+    assert review["action"]["observed_context"]["connection_id"] == "ca_work"
     assert review["action"]["observed_context"]["always_ask"] is True
     made.action_reviews.decide(
         task["bot_id"],
@@ -155,22 +171,63 @@ def test_a_change_waits_for_the_person_and_runs_once_they_allow_it(env):
     resumed.run(resumed.background.claim(), resumed.task_token(task["id"]), background=True)
     assert store.task("owner", task["id"])["status"] == "completed"
     assert account.calls == [("gmail", "GMAIL_SEND_EMAIL", {"q": "Γεια"})]
+    assert account.last_connection == "ca_work"
+
+
+def test_pending_owl_approval_cannot_move_to_another_account_with_the_same_label(env):
+    store, account, apps, owl, _, chat, runtime, _ = env
+    task = ask(store, chat)
+    request = say(name=SEND, arguments={"q": "approved only for work"})
+    made = runtime(Client([request]))
+    made.run(store.claim("owner"), made.task_token(task["id"]))
+    (review,) = made.action_reviews.list(owl["id"])
+    made.action_reviews.decide(
+        owl["id"],
+        review["id"],
+        ApprovalDecision(action="allow", expected_revision=review["revision"]),
+    )
+    apps.set_hub_grant(
+        owl["id"],
+        "gmail",
+        OwlHubGrant(connection_id="ca_home", mode="actions", expected_revision=0),
+    )
+    resumed = runtime(Client([request]))
+    resumed.run(resumed.background.claim(), resumed.task_token(task["id"]), background=True)
+    assert account.calls == []
+    assert store.task("owner", task["id"])["status"] == "waiting"
+    reviews = made.action_reviews.list(owl["id"])
+    assert any(
+        r["action"]["observed_context"]["connection_id"] == "ca_home"
+        and r["action"]["observed_context"]["grant_revision"] == 1
+        for r in reviews
+    )
 
 
 def test_a_refusal_says_whether_anything_was_sent(env):
     _, account, apps, owl, _, _, _, _ = env
     more = apps.more_apps
     account.error = hub_apps.HubAppsError("allowance_used")
-    used = more.call("hub.gmail", "GMAIL_FETCH_EMAILS", {})
+
+    def read():
+        return more.call(
+            owl["id"],
+            "hub.gmail",
+            "GMAIL_FETCH_EMAILS",
+            {},
+            connection_id="ca_work",
+            grant_revision=0,
+        )
+
+    used = read()
     assert (used["ok"], used["dispatch_state"]) == (False, "not_dispatched")
     assert "Nothing was sent" in used["error"]
     account.error = hub_apps.HubAppsError("offline")
-    assert more.call("hub.gmail", "GMAIL_FETCH_EMAILS", {})["dispatch_state"] == "unknown"
+    assert read()["dispatch_state"] == "unknown"
     account.error, account.sent = None, False
-    refused = more.call("hub.gmail", "GMAIL_FETCH_EMAILS", {})
+    refused = read()
     assert (refused["ok"], refused["dispatch_state"]) == (False, "not_dispatched")
     calls = len(account.calls)
-    gone = more.call("hub.slack", "SLACK_SEND", {})
+    gone = more.call(owl["id"], "hub.slack", "SLACK_SEND", {})
     assert (gone["ok"], gone["dispatch_state"]) == (False, "not_dispatched")
     assert len(account.calls) == calls, "an app that isn't connected is never called"
 

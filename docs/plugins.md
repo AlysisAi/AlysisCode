@@ -3,7 +3,7 @@
 Desktop release policy (2026-11-05): expose the 18 non-Google integrations and hide all eight Google entries until provider approval. Google descriptors and draft guidance stay in the engine for later use; the desktop excludes their catalog entries and host bindings. Catalog presence does not override provider or account prerequisites.
 
 
-An Alysis plugin is a declarative bundle that contributes one or more skills, custom tools, MCP servers, and hooks through a single `alysis-plugin.toml` file at the plugin root.
+An Alysis Code plugin is a declarative bundle that contributes one or more skills, custom tools, MCP servers, and hooks through a single `alysis-plugin.toml` file at the plugin root.
 
 Plugins are intentionally explicit. They are installed from pinned sources, validated before use, and enabled only after trust is recorded for the relevant user or workspace. Cloning a repository or copying a directory onto disk does not activate a plugin by itself.
 
@@ -18,7 +18,7 @@ schema_version = 1
 id = "acme.demo"
 name = "Demo Plugin"
 version = "1.0.0"
-description = "Example Alysis plugin"
+description = "Example Alysis Code plugin"
 author = "Acme Inc"
 license = "Apache-2.0"
 
@@ -26,7 +26,7 @@ license = "Apache-2.0"
 alysis = ">=0.1"
 ```
 
-This manifest is valid, but it declares no components. Alysis accepts metadata-only plugins and emits a warning until you add at least one skill, tool, MCP server, or hook.
+This manifest is valid, but it declares no components. Alysis Code accepts metadata-only plugins and emits a warning until you add at least one skill, tool, MCP server, or hook.
 
 ## Installing Plugins
 
@@ -44,7 +44,7 @@ Plugins install globally by default. Use `--project` to install into the current
 alysis ext install acme.demo --project
 ```
 
-Before writing anything, Alysis clones the pinned commit into a temporary staging directory, checks out exactly that commit, validates `alysis-plugin.toml`, computes the manifest SHA-256, and shows a trust prompt. The prompt includes the plugin id, name, version, source URL, commit, manifest hash, component counts, requested environment variables, MCP scopes, hook events, network access, filesystem write access, and security contact when present.
+Before writing anything, Alysis Code clones the pinned commit into a temporary staging directory, checks out exactly that commit, validates `alysis-plugin.toml`, computes the manifest SHA-256, and shows a trust prompt. The prompt includes the plugin id, name, version, source URL, commit, manifest hash, component counts, requested environment variables, MCP scopes, hook events, network access, filesystem write access, and security contact when present.
 
 The default prompt answer is no. Pass `--yes` to accept the displayed trust prompt without an interactive confirmation. Pass `--ci`, or set `ALYSIS_CI=1`, only in automation; this accepts trust silently and is never the default. Reinstalling the same plugin id at the same commit with the same manifest hash is a no-op. Reinstalling the same plugin id at a different commit prompts for trust again.
 
@@ -59,9 +59,9 @@ alysis ext uninstall acme.demo
 alysis ext uninstall acme.demo --project
 ```
 
-Uninstall prompts before removing anything unless `--yes` is supplied. Alysis removes tracked components in reverse install order: hooks, MCP servers, custom tools, then skills. It then removes the installed plugin root and deletes the installed record from extension state.
+Uninstall prompts before removing anything unless `--yes` is supplied. Alysis Code removes tracked components in reverse install order: hooks, MCP servers, custom tools, then skills. It then removes the installed plugin root and deletes the installed record from extension state.
 
-Uninstall is best effort for component cleanup. If one component cannot be removed, Alysis continues removing the rest and then reports a partial failure with the individual cleanup errors. The installed state entry is still removed after cleanup attempts complete.
+Uninstall is best effort for component cleanup. If one component cannot be removed, Alysis Code continues removing the rest and then reports a partial failure with the individual cleanup errors. The installed state entry is still removed after cleanup attempts complete.
 
 ## Enabling and Disabling Plugins
 
@@ -80,15 +80,15 @@ Plugin install and removal honor `ALYSIS_CONFIG_DIR` for component files, includ
 skills, unless the caller explicitly supplies `user_config_dir`. An isolated profile must
 not install skills into the operating system's default Alysis profile.
 
-The effective-enabled set is computed at session start. Alysis starts with globally enabled plugins, applies project `disabled[]` removals, then applies project `enabled[]` additions. Because project enables are applied last, a plugin listed in both project arrays ends up enabled. A project disable can turn off a globally enabled plugin for that workspace only.
+The effective-enabled set is computed at session start. Alysis Code starts with globally enabled plugins, applies project `disabled[]` removals, then applies project `enabled[]` additions. Because project enables are applied last, a plugin listed in both project arrays ends up enabled. A project disable can turn off a globally enabled plugin for that workspace only.
 
 ## Workspace Trust
 
-Project overrides are workspace-trusted. If `.alysis/extensions.json` contains `enabled[]` or `disabled[]` entries and the workspace has not been trusted, Alysis prompts before applying those overrides. The prompt shows the workspace root, the SHA-256 of the overrides file, the plugins the project wants to enable, and the plugins it wants to disable.
+Project overrides are workspace-trusted. If `.alysis/extensions.json` contains `enabled[]` or `disabled[]` entries and the workspace has not been trusted, Alysis Code prompts before applying those overrides. The prompt shows the workspace root, the SHA-256 of the overrides file, the plugins the project wants to enable, and the plugins it wants to disable.
 
-Trust is stored per user at the workspace trust state path under the extensions data directory. Entries are keyed by the SHA-256 of the canonical absolute workspace path and include the hash of the overrides file at the time trust was granted. If the overrides file changes later, Alysis prompts again because the project gained or changed plugin power.
+Trust is stored per user at the workspace trust state path under the extensions data directory. Entries are keyed by the SHA-256 of the canonical absolute workspace path and include the hash of the overrides file at the time trust was granted. If the overrides file changes later, Alysis Code prompts again because the project gained or changed plugin power.
 
-In non-interactive sessions, untrusted project overrides are ignored and Alysis logs a one-line warning. Revoke workspace trust by manually editing the workspace trust JSON file.
+In non-interactive sessions, untrusted project overrides are ignored and Alysis Code logs a one-line warning. Revoke workspace trust by manually editing the workspace trust JSON file.
 
 ## Default Activation Behavior
 
@@ -98,7 +98,7 @@ A user-scope install plus trust means enabled (project scope: see above). This a
 
 `ext.search` and `ext.info` entries carry display data for the desktop Marketplace: `categories` (ids such as `code`, `docs-files`, `mail-chat`, `calendar`, `notes-wiki`, `tasks-projects`), `publisher`, `tier` (`alysis` or `verified`), `catalog_source` (`built-in`) and `connects_to`, the endpoint URLs read from the pinned built-in descriptor. `ext.info` also reports `update_available` (the engine ships a newer built-in descriptor than the installed one) and `needs_review` (that newer descriptor grants different access, so the installed plugin stays off until the person reviews and installs the update). Display fields never grant access; activation still checks the installed, pinned descriptor.
 
-At session bootstrap, Alysis discovers skills, custom tools, MCP servers, and hooks normally, resolves the effective-enabled plugin set once, then filters plugin-scoped components whose plugin id is not active. Built-in components and user-authored components without a plugin marker are always retained.
+At session bootstrap, Alysis Code discovers skills, custom tools, MCP servers, and hooks normally, resolves the effective-enabled plugin set once, then filters plugin-scoped components whose plugin id is not active. Built-in components and user-authored components without a plugin marker are always retained.
 
 ## Bundled GitHub integration
 
@@ -154,7 +154,7 @@ overrides ignored, matching ordinary noninteractive runtime bootstrap. Their
 | --- | --- | --- | --- |
 | `schema_version` | `1` | Yes | Manifest schema version. v1 manifests must set this to the integer `1`. |
 | `plugin` | table | Yes | Plugin metadata block. |
-| `compatibility` | table | Yes | Alysis version and platform compatibility block. |
+| `compatibility` | table | Yes | Alysis Code version and platform compatibility block. |
 | `components` | table | No | Component container. Defaults to empty lists for every component type. |
 | `security` | table | No | Security contact and disclosure metadata. |
 
@@ -176,7 +176,7 @@ overrides ignored, matching ordinary noninteractive runtime bootstrap. Their
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `alysis` | `str` | Yes | Alysis version constraint. Must parse as a valid PEP 440 specifier set such as `>=0.1,<0.2`. |
+| `alysis` | `str` | Yes | Alysis Code version constraint. Must parse as a valid PEP 440 specifier set such as `>=0.1,<0.2`. |
 | `platforms` | `list["linux" \| "darwin" \| "windows"]` | No | Supported operating systems. Defaults to `["linux", "darwin", "windows"]`. |
 
 ### `[components]`
@@ -335,9 +335,11 @@ makes a hub call.
   they stay free. An app with nothing to sign in to (`sign_in: false`, a public feed) is added
   at once (`added: true`, no page) and shows as a connection with the id `added-<app>`.
 - Each plan includes a number of app calls a month and of connected apps. Past the included
-  calls, Alpha and Pro pay from the plan's credits (`credits_per_call` in the allowance; the
-  call is refused with `credits_used` once they're used up); Free and Beta stop at
-  `allowance_used`. A call that never reached the app is given back, credits included.
+  calls, Beta, Alpha and Pro pay from the plan's credits (`credits_per_call` in the allowance; the
+  call is refused with `credits_used` once they're used up); Free stops at `allowance_used`. A
+  call that never reached the app is given back, credits included. A refused call's tool result
+  carries `error_code` `hub_<reason>`, which the desktop app reads to offer the next plan; the
+  public plan catalog says each paid plan's app calls (`apps`).
 - A session that asks for them (`session.create` `hub_apps: true`) gets the account's connected
   apps, loaded by the engine (`hub_apps.load_hub_catalogs`); its result says how many loaded,
   which failed, or why none did (`hub_apps`). Failing to load them never fails the session.
@@ -399,7 +401,7 @@ makes a hub call.
 
 ## Validation Rules
 
-Alysis rejects a plugin manifest when any of the following conditions are true:
+Alysis Code rejects a plugin manifest when any of the following conditions are true:
 
 1. The manifest file is larger than 64 KB before parsing.
 2. The TOML document is syntactically invalid.
@@ -414,9 +416,9 @@ A metadata-only plugin with zero components does not fail validation, but it emi
 
 ## Forward Compatibility
 
-`schema_version` is a hard compatibility boundary. Alysis only accepts manifests whose schema version it explicitly understands. A future breaking manifest format will increment `schema_version`, and older Alysis builds will reject that manifest instead of guessing how to interpret it.
+`schema_version` is a hard compatibility boundary. Alysis Code only accepts manifests whose schema version it explicitly understands. A future breaking manifest format will increment `schema_version`, and older Alysis Code builds will reject that manifest instead of guessing how to interpret it.
 
-This means plugin authors should treat schema upgrades as explicit migrations, not silent extensions. If you need to support multiple Alysis generations, publish separate manifests or release lines that target the correct schema version rather than trying to write one manifest that relies on undefined fallback behavior.
+This means plugin authors should treat schema upgrades as explicit migrations, not silent extensions. If you need to support multiple Alysis Code generations, publish separate manifests or release lines that target the correct schema version rather than trying to write one manifest that relies on undefined fallback behavior.
 
 ### Figma read integration
 

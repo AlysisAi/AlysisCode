@@ -210,6 +210,10 @@ def harness(tmp_path, monkeypatch):
         "alysis_code.sandbox_runner.build_shell_runner_from_settings",
         lambda settings, *a, **k: WindowsMxcRunner(settings),
     )
+    monkeypatch.setattr(
+        "alysis_code.background_runner.build_background_shell_runner_from_settings",
+        lambda settings, *a, **k: WindowsMxcRunner(settings),
+    )
     dispatched: list[str] = []
     runners: list[object] = []
     whole: list[bool] = []
@@ -579,8 +583,13 @@ def test_grants_this_sandbox_does_not_offer_are_refused_outright(harness, monkey
     ],
 )
 @pytest.mark.parametrize("mode", ["auto", "fullaccess"])
-def test_launcher_settings_nobody_reviewed_keep_the_person(harness, settings, mode):
+def test_launcher_settings_route_to_the_expected_approver(harness, settings, mode):
     """Networking the launcher turned on was not reviewed for this command."""
+    if mode == "auto" and settings == replace(CLOSED, network="on"):
+        assert harness.run("pytest -q", settings=settings) is None
+        assert harness.dispatched == ["pytest -q"] and len(harness.client.calls) == 1
+        assert not harness.surface.requests
+        return
     assert isinstance(harness.run("pytest -q", mode=mode, settings=settings), ApprovalDeclinedError)
     assert not harness.dispatched
     (card,) = _person_cards(harness.surface)
@@ -1051,7 +1060,11 @@ def test_sandboxed_verification_command_needs_no_person_card(verify_harness, com
     "settings",
     [replace(CLOSED, network="on"), replace(CLOSED, preview_access="local")],
 )
-def test_verification_under_launcher_networking_keeps_the_person(verify_harness, settings):
+def test_verification_routes_network_to_review_and_preview_to_person(verify_harness, settings):
+    if settings.network == "on":
+        assert verify_harness.run("pytest -q", settings=settings) is None
+        assert verify_harness.ran == ["pytest -q"] and not verify_harness.surface.requests
+        return
     assert isinstance(verify_harness.run("pytest -q", settings=settings), ApprovalDeclinedError)
     assert not verify_harness.ran
     (card,) = [r for r in verify_harness.surface.requests if r.kind == "verify_run"]
@@ -1142,6 +1155,26 @@ def test_inherited_network_the_reviewer_refuses_runs_nothing(harness):
     harness.client.answers.append({"decision": "deny"})
     assert harness.run(SEND) is not None
     assert harness.dispatched == ["python tool.py"]
+
+
+@pytest.mark.parametrize("decision", ["deny", "ask_person"])
+@pytest.mark.parametrize(
+    "command", ["Get-Content notes.txt", "if (Test-Path notes.txt) { Get-Content notes.txt }"]
+)
+def test_network_enabled_command_respects_the_review_outcome(harness, decision, command):
+    harness.client.answers.append({"decision": decision})
+    assert harness.run(command, settings=replace(CLOSED, network="on")) is not None
+    assert not harness.dispatched and len(harness.client.calls) == 1
+    assert len(harness.surface.requests) == (1 if decision == "ask_person" else 0)
+
+
+@pytest.mark.parametrize("command", ["git push origin main", "npm publish"])
+def test_network_enabled_remote_change_keeps_person_approval(harness, command):
+    assert isinstance(
+        harness.run(command, settings=replace(CLOSED, network="on")), ApprovalDeclinedError
+    )
+    assert not harness.dispatched and not harness.client.calls
+    assert harness.surface.requests[0].metadata["always_ask_person"]
 
 
 @_ACCESS
@@ -1318,10 +1351,9 @@ def test_what_no_sandbox_makes_acceptable_stays_refused(harness, command, mode):
     [
         HostShellRunner(),
         WindowsNativeRunner(CLOSED),
-        WindowsMxcRunner(replace(CLOSED, network="on")),
         LazyShellRunner(lambda: HostShellRunner()),
     ],
-    ids=["host", "legacy-helper", "launcher-network", "lazy-host"],
+    ids=["host", "legacy-helper", "lazy-host"],
 )
 def test_a_forced_recursive_delete_outside_this_sandbox_stays_refused(harness, runner):
     """The boundary is what makes it a question; without it the refusal stands."""
@@ -1332,6 +1364,12 @@ def test_a_forced_recursive_delete_outside_this_sandbox_stays_refused(harness, r
     assert refused is not None and not harness.dispatched
     assert "Blocked command" in str(refused) or isinstance(refused, ApprovalDeclinedError)
     assert not harness.client.calls
+
+
+def test_network_enabled_recursive_delete_requires_a_review(harness):
+    assert harness.run(CONTAINED_DELETES[0], settings=replace(CLOSED, network="on")) is None
+    assert harness.dispatched == [CONTAINED_DELETES[0]] and len(harness.client.calls) == 1
+    assert not harness.surface.requests
 
 
 def test_a_forced_recursive_delete_with_an_unprobed_helper_stays_refused(harness, monkeypatch):

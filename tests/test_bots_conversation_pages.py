@@ -9,8 +9,8 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from alysis_code.bots.models import BotInput, ConversationPageQuery, TaskInput
-from alysis_code.bots.store import NotFound, Store
+from alysis_code.bots.models import BotInput, ConversationPageQuery, RegenerateInput, TaskInput
+from alysis_code.bots.store import Conflict, NotFound, Store
 
 
 def setup(tmp_path):
@@ -24,6 +24,52 @@ def send(store, chat, text):
     return store.enqueue(
         "alice", chat["id"], TaskInput(message=text, request_id="req_" + uuid4().hex)
     )
+
+
+def test_threads_preserve_the_default_chat_and_isolate_tasks_pages_and_receipts_after_restart(
+    tmp_path,
+):
+    store, bot, default = setup(tmp_path)
+    second = store.create_chat(
+        "alice", bot["id"], "New conversation", thread_request_id="another_chat"
+    )
+    assert second["id"] != default["id"]
+    assert (
+        store.create_chat("alice", bot["id"], "New conversation", thread_request_id="another_chat")[
+            "id"
+        ]
+        == second["id"]
+    )
+    assert store.create_chat("alice", bot["id"], "New conversation")["id"] == default["id"]
+    first = turn(store, default, 1)
+    other = turn(store, second, 2)
+    restored = Store(store.path)
+    assert [c["id"] for c in restored.list_chats("alice", bot["id"])] == [
+        default["id"],
+        second["id"],
+    ]
+    for chat, task in ((default, first), (second, other)):
+        assert [row["id"] for row in page(restored, chat)["tasks"]] == [task["id"]]
+        assert [row["id"] for row in restored.conversation("alice", chat["id"])["tasks"]] == [
+            task["id"]
+        ]
+    seq = page(restored, second)["activity_seq"]
+    restored.mark_chat_read("alice", second["id"], seq)
+    assert page(restored, default)["unread"] and not page(restored, second)["unread"]
+    with pytest.raises(NotFound):
+        restored.mark_chat_read("alice", default["id"], seq)
+    with pytest.raises(NotFound):
+        restored.conversation("another-owner", second["id"])
+    with pytest.raises(Conflict):
+        restored.enqueue(
+            "alice",
+            default["id"],
+            TaskInput(message=other["message"], request_id=other["request_id"]),
+        )
+    regenerated = restored.regenerate(
+        "alice", first["id"], RegenerateInput(request_id="fresh_answer")
+    )
+    assert regenerated["chat_id"] == default["id"]
 
 
 def turn(store, chat, number, *, status="completed"):
@@ -46,6 +92,18 @@ def page(store, chat, **options):
 def poll(store, chat, last, **options):
     newest = last["messages"][-1]["id"] if last["messages"] else None
     return page(store, chat, after=newest, version=last["version"], **options)
+
+
+def test_completed_steps_are_discoverable_after_reopening_the_chat(tmp_path):
+    store, _, chat = setup(tmp_path)
+    turn(store, chat, 0)
+    task = send(store, chat, "比較してください")
+    store.claim("alice")
+    store.event("alice", task["id"], "tool_failed", {"name": "read_file"})
+    store.finish("alice", task["id"], "completed", content="別の資料を使いました。")
+    reopened = Store(store.path)
+    assert [t["has_tool_steps"] for t in page(reopened, chat)["tasks"]] == [False, True]
+    assert page(reopened, chat, limit=1)["tasks"][0]["has_tool_steps"] is True
 
 
 def test_the_latest_page_holds_the_newest_messages_and_their_tasks(tmp_path):

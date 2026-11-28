@@ -75,6 +75,9 @@ class _Call:
     streak: int = 0
     # The guard's step count at this call's last attempt.
     step: int = 0
+    dispatched_change: bool = False
+    saved_result_id: str | None = None
+    recovery_repeats: int = 0
 
 
 class RepeatGuard:
@@ -93,6 +96,17 @@ class RepeatGuard:
     def _key(name: str, arguments: Any) -> str:
         return _digest([name, arguments])
 
+    def remember_change(self, name: str, arguments: Any, result_id: str | None) -> str:
+        """A rich connector return is already evidence of dispatch, even when its image or tail is unavailable."""
+        key = self._key(name, arguments)
+        self.restore_change(key, result_id)
+        return key
+
+    def restore_change(self, key: str, result_id: str | None) -> None:
+        """Restore the argument digest and optional task-owned text pointer from an approval checkpoint."""
+        record = self._calls.setdefault(key, _Call())
+        record.dispatched_change, record.saved_result_id = True, result_id
+
     def before(self, name: str, arguments: Any) -> dict | None:
         """None to run the call, or the refusal to return in its place.
 
@@ -100,6 +114,15 @@ class RepeatGuard:
         """
         key = self._key(name, arguments)
         record = self._calls.get(key)
+        if record is not None and record.dispatched_change:
+            record.recovery_repeats += 1
+            if record.recovery_repeats >= self.limits.stop:
+                raise failures.with_kind(LimitReached(REPEAT_STOPPED), failures.MODEL)
+            return {
+                "error": "This exact app change was already dispatched in this task. Read its earlier result or use a read-only status check. No second change was sent.",
+                "executed": False,
+                **({"stored_result_id": record.saved_result_id} if record.saved_result_id else {}),
+            }
         if record is None or record.outcome is None:
             return None
         back_to_back = self._previous == key

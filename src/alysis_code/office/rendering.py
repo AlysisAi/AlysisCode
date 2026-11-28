@@ -16,7 +16,7 @@ import time
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from alysis_code.documents.__main__ import _check_execution, _path, _render
@@ -77,6 +77,10 @@ def _cancellation():
 
 def _publish_directory(source: Path, destination: Path) -> None:
     """Publish a complete directory atomically without replacing even an empty one."""
+    if os.name == "nt":
+        # On Windows rename always refuses an existing destination.
+        source.rename(destination)
+        return
     libc = ctypes.CDLL(None, use_errno=True)
     if sys.platform == "darwin":
         rename = libc.renamex_np
@@ -99,7 +103,70 @@ def _publish_directory(source: Path, destination: Path) -> None:
         raise OSError(code, os.strerror(code), str(destination))
 
 
-def _convert(
+@contextmanager
+def _converter_process(command, log):
+    if os.name == "nt":
+        from alysis_code._windows_sandbox_job import WindowsSandboxJob
+
+        # This trusted launcher blocks on stdin. The converter and all its children
+        # inherit our kill-on-close job before they can open the document.
+        launcher = (
+            "import subprocess,sys; "
+            "sys.exit(subprocess.call(sys.argv[1:], stdin=subprocess.DEVNULL) "
+            "if sys.stdin.buffer.read(1) == b'1' else 1)"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", launcher, *command],
+            stdin=subprocess.PIPE,
+            stdout=log,
+            stderr=log,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        job = None
+        try:
+            job = WindowsSandboxJob(process)
+            process.stdin.write(b"1")
+            process.stdin.close()
+            yield process
+        finally:
+            try:
+                if job is not None:
+                    try:
+                        job.terminate_and_drain()
+                    finally:
+                        job.close()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                process.stdin.close()
+        return
+
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True
+    )
+    try:
+        yield process
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+
+
+def _convert(executable: Path, source: Path, destination: Path, profile: Path, **options) -> None:
+    # LibreOffice creates deeply nested registry paths. On Windows a long workspace path
+    # can leave an incomplete profile, even when the document and result paths fit.
+    with tempfile.TemporaryDirectory(prefix="ao-") if os.name == "nt" else nullcontext() as temp:
+        _convert_with_profile(
+            executable, source, destination, Path(temp) / "p" if temp else profile, **options
+        )
+
+
+def _convert_with_profile(
     executable: Path,
     source: Path,
     destination: Path,
@@ -109,9 +176,6 @@ def _convert(
     timeout_seconds: float = 90,
     cancel_check: Callable[[], bool] | None = None,
 ) -> None:
-    if os.name != "posix":
-        raise ValueError("Office renderer process containment currently supports macOS and Linux.")
-
     profile.mkdir()
     (profile / "user").mkdir()
     # DisableActiveContent also hides ordinary OOXML charts. Reject programs,
@@ -143,10 +207,11 @@ def _convert(
         str(source),
     ]
     # Log to a file instead of an unbounded PIPE. The entire temporary tree is removed on exit.
-    with _cancellation(), (destination / "converter.log").open("wb") as log:
-        process = subprocess.Popen(
-            command, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True
-        )
+    with (
+        _cancellation(),
+        (destination / "converter.log").open("wb") as log,
+        _converter_process(command, log) as process,
+    ):
         try:
             deadline = time.monotonic() + timeout_seconds
             while process.poll() is None:
@@ -166,14 +231,6 @@ def _convert(
                 )
         except subprocess.TimeoutExpired as exc:
             raise ValueError("Office rendering timed out; no preview was published.") from exc
-        finally:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            if process.poll() is None:
-                process.kill()
-            process.wait()
 
 
 def render(source: Path, preview: Path, root: Path, source_hash: str, **conversion_options) -> dict:

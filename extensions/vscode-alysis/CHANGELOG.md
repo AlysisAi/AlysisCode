@@ -18,6 +18,10 @@
 - Update the development dependency source-map-js to 1.2.2 to address its high-severity source-map
   denial-of-service advisory.
 - Verify packaged installations on the minimum supported VS Code version and current Stable.
+- Starting the Managed Browser or a first task right after opening the sidebar no longer fails with
+  "bridge launch settings changed and cannot be applied while work is active" while the sidebar
+  is still loading providers: the bridge answers those reads first, then restarts with your
+  credentials. Running work and open approvals still block the restart.
 
 Marketplace publication is pending the signed candidate, provider/remote acceptance, and release
 signoff. Development component VSIX files do not contain the production runtime.

@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from .atomic_io import atomic_write_json
 from .branding import (
@@ -135,6 +142,12 @@ _CONFIG_TRANSACTION_STATE = threading.local()
 
 CLOUD_PROFILE_KEY = "alysis"
 
+# Every picture quality an image request can name, from the provider's own choice to its most
+# detailed. A connection may accept fewer (ImageGenerationConfig.qualities).
+IMAGE_QUALITIES: tuple[str, ...] = ("auto", "low", "medium", "high", "xhigh", "max")
+DEFAULT_IMAGE_QUALITY = "medium"
+ImageQuality = Literal[IMAGE_QUALITIES]  # type: ignore[valid-type]
+
 
 class ImageGenerationConfig(BaseModel):
     """Opt-in OpenAI-compatible image generation capability.
@@ -142,22 +155,58 @@ class ImageGenerationConfig(BaseModel):
     Generation is disabled by default because every successful call can incur a
     separate provider charge.  When no image-specific endpoint or credential is
     configured, the active profile endpoint and resolved API key are reused.
+
+    ``quality`` is the person's choice for requests that name no quality; it is applied when the
+    request goes out, never written into the model's instructions, so changing it keeps the
+    chat's prompt cache. ``qualities`` is what the connection declares it accepts (None: any of
+    IMAGE_QUALITIES). ``edit_model`` changes existing pictures; ``model`` does when it is unset.
     """
 
     enabled: bool = False
     model: str = "gpt-image-2.6-flare"
+    edit_model: str | None = None
+    quality: ImageQuality = Field(  # type: ignore[valid-type]
+        default=DEFAULT_IMAGE_QUALITY,
+        description="Picture quality for requests that name none: low, medium, high, xhigh, "
+        "max, or auto to let the provider choose.",
+    )
+    qualities: tuple[str, ...] | None = None
     base_url: str | None = None
+    # Which key goes to base_url: the person's image settings (api_key_env, else
+    # ALYSIS_IMAGE_API_KEY, else the connection's), only the model connection's own key (an image
+    # service of the same account as the connection), or only the saved Alysis account key (the
+    # account's image service, whatever the connection). Never another provider's key.
+    key_from: Literal["settings", "connection", "account"] = "settings"
     api_key_env: str | None = None
     timeout_s: float = Field(default=180.0, gt=0.0, le=900.0)
     max_images_per_call: int = Field(default=4, ge=1, le=4)
     max_image_bytes: int = Field(default=25_000_000, ge=1024, le=100_000_000)
     max_pixels: int = Field(default=16_777_216, ge=1_000_000, le=67_108_864)
 
+    @field_validator("quality", mode="before")
+    @classmethod
+    def normalized_quality(cls, value: Any) -> Any:
+        if value is None:
+            return DEFAULT_IMAGE_QUALITY
+        return str(value).strip().casefold() or DEFAULT_IMAGE_QUALITY
+
     @model_validator(mode="after")
     def validate_provider_settings(self) -> Self:
         self.model = str(self.model or "").strip()
         if not self.model:
             raise ValueError("Image generation model cannot be empty.")
+        self.edit_model = str(self.edit_model or "").strip() or None
+        if self.qualities is not None:
+            declared = tuple(
+                dict.fromkeys(str(item or "").strip().casefold() for item in self.qualities)
+            )
+            if not declared or any(item not in IMAGE_QUALITIES for item in declared):
+                raise ValueError(
+                    "Image generation qualities must name at least one of: "
+                    + ", ".join(IMAGE_QUALITIES)
+                    + "."
+                )
+            self.qualities = declared
         self.api_key_env = str(self.api_key_env or "").strip() or None
         if (
             self.api_key_env
@@ -1906,6 +1955,8 @@ _SETTABLE_KEYS: set[str] = {
     "web_search_timeout_s",
     "image_generation.enabled",
     "image_generation.model",
+    "image_generation.edit_model",
+    "image_generation.quality",
     "image_generation.base_url",
     "image_generation.api_key_env",
     "image_generation.timeout_s",
@@ -3639,6 +3690,24 @@ def set_config_value(
             raise ConfigError("image_generation.model cannot be empty")
         payload = cfg.image_generation.model_dump()
         payload["model"] = normalized
+        cfg.image_generation = ImageGenerationConfig.model_validate(payload)
+        return cfg
+
+    if key == "image_generation.edit_model":
+        # Empty: pictures are changed with image_generation.model.
+        payload = cfg.image_generation.model_dump()
+        payload["edit_model"] = str(value or "").strip() or None
+        cfg.image_generation = ImageGenerationConfig.model_validate(payload)
+        return cfg
+
+    if key == "image_generation.quality":
+        normalized = str(value or "").strip().casefold()
+        if normalized not in IMAGE_QUALITIES:
+            raise ConfigError(
+                "image_generation.quality must be one of: " + ", ".join(IMAGE_QUALITIES)
+            )
+        payload = cfg.image_generation.model_dump()
+        payload["quality"] = normalized
         cfg.image_generation = ImageGenerationConfig.model_validate(payload)
         return cfg
 

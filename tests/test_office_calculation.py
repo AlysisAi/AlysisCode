@@ -33,7 +33,8 @@ def test_unavailable_calculator_preserves_original(tmp_path, monkeypatch):
     assert not (tmp_path / "calculated.xlsx").exists()
 
 
-def test_authoring_does_not_restrict_function_names_to_a_handwritten_list(tmp_path):
+def test_authoring_preserves_functions_and_reports_an_unavailable_calculator(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALYSIS_OFFICE_SOFFICE", str(tmp_path / "missing"))
     spec = {"sheets": [{"name": "Data", "rows": [[1], [4], [7], [{"formula": "=MEDIAN(A1:A3)"}]]}]}
     (tmp_path / "spec.json").write_text(json.dumps(spec))
     result = run(
@@ -47,6 +48,11 @@ def test_authoring_does_not_restrict_function_names_to_a_handwritten_list(tmp_pa
     )
     assert result["content"]["formula_count"] == 1
     assert result["content"]["formula_results"] == "not_calculated"
+    assert result["calculation"]["state"] == "unavailable"
+    with closing(openpyxl.load_workbook(tmp_path / "source.xlsx")) as book:
+        assert book.active["A4"].value == "=MEDIAN(A1:A3)"
+    with closing(openpyxl.load_workbook(tmp_path / "source.xlsx", data_only=True)) as book:
+        assert book.active["A4"].value is None
 
 
 @pytest.fixture
@@ -55,6 +61,197 @@ def real_calculator(monkeypatch):
     if not executable:
         pytest.skip("Set ALYSIS_TEST_OFFICE_SOFFICE to exercise an installed real calculator")
     monkeypatch.setenv("ALYSIS_OFFICE_SOFFICE", executable)
+
+
+def test_create_and_edit_publish_recalculated_bytes_for_readers(tmp_path, real_calculator):
+    from alysis_code.office.operations import run_operation
+
+    spec_path = tmp_path / "spec.json"
+    formula = "=SUM('Mesures'!B2:B3)"
+    spec = {
+        "sheets": [
+            {
+                "name": "Synthèse",
+                "rows": [["Durée totale des interventions", {"formula": formula}]],
+                "header_row": True,
+                "column_widths": [16, 14],
+            },
+            {"name": "Mesures", "rows": [["Lieu", "Minutes"], ["Liège", 22], ["Genève", 13]]},
+        ]
+    }
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    guards = {"read_guard": lambda _: None, "write_guard": lambda _: None}
+    created = run_operation(
+        tmp_path,
+        {
+            "action": "create",
+            "format": "xlsx",
+            "spec": "spec.json",
+            "output": "first.xlsx",
+        },
+        **guards,
+    )
+    spec_path.write_text(
+        json.dumps(
+            {
+                "expected_source_sha256": created["sha256"],
+                "changes": [{"sheet": "Mesures", "cell": "B3", "value": 18}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    edited = run_operation(
+        tmp_path,
+        {
+            "action": "edit",
+            "source": "first.xlsx",
+            "spec": "spec.json",
+            "output": "second.xlsx",
+        },
+        **guards,
+    )
+    for receipt, name, wanted in [(created, "first.xlsx", 35), (edited, "second.xlsx", 40)]:
+        output = tmp_path / name
+        assert receipt["calculation"]["state"] == "passed"
+        assert receipt["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+        with closing(openpyxl.load_workbook(output)) as book:
+            assert book.active["B1"].value == formula
+            assert book.active["A1"].alignment.wrap_text
+        with closing(openpyxl.load_workbook(output, data_only=True)) as book:
+            assert book.active["B1"].value == wanted
+    evidence = edited["details"]["revision_evidence"]
+    assert (
+        evidence["source_sha256"] == created["sha256"]
+        and evidence["output_sha256"] == edited["sha256"]
+    )
+    assert evidence["cell_edits"]["examples"] == [
+        {
+            "sheet": "Mesures",
+            "cell": "B3",
+            "previous": {"type": "n", "value": 13},
+            "current": {"type": "n", "value": 18},
+        }
+    ]
+    assert evidence["formula_displays"]["examples"] == [
+        {
+            "sheet": "Synthèse",
+            "cell": "B1",
+            "previous": {"type": "n", "value": 35},
+            "current": {"type": "n", "value": 40},
+            "numeric_difference": "5",
+        }
+    ]
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_input_check_challenges_authoritative_cell_through_helpers_without_changing_delivery(
+    tmp_path, real_calculator, linked
+):
+    from alysis_code.office.operations import run_operation
+
+    check = {
+        "input": {"sheet": "Contrôles", "cell": "B2", "value": "clos"},
+        "expect": [{"sheet": "Vue", "cell": "A2", "before": 2, "after": 1}],
+    }
+    spec = {
+        "input_check": check,
+        "sheets": [
+            {"name": "Vue", "rows": [["Ouverts"], [{"formula": "=SUM('Contrôles'!C2:C3)"}]]},
+            {
+                "name": "Contrôles",
+                "rows": [
+                    ["ID", "État", "Ouvert"],
+                    ["0018", "ouvert", {"formula": '=IF(B2="ouvert",1,0)'} if linked else 1],
+                    ["0047", "ouvert", {"formula": '=IF(B3="ouvert",1,0)'} if linked else 1],
+                ],
+            },
+        ],
+    }
+    (tmp_path / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+    args = {"action": "create", "format": "xlsx", "spec": "spec.json", "output": "rapport.xlsx"}
+    guards = {"read_guard": lambda _: None, "write_guard": lambda _: None}
+    if not linked:
+        with pytest.raises(ValueError, match="Input check failed"):
+            run_operation(tmp_path, args, **guards)
+        assert not (tmp_path / "rapport.xlsx").exists()
+        return
+    result = run_operation(tmp_path, args, **guards)
+    test = result["calculation"]["input_check"]
+    assert test["state"] == "passed" and test["source_sha256"] == result["sha256"]
+    assert (
+        test["outputs"][0]["previous"]["value"] == 2 and test["outputs"][0]["current"]["value"] == 1
+    )
+    with closing(openpyxl.load_workbook(tmp_path / "rapport.xlsx", data_only=True)) as book:
+        assert book["Contrôles"]["B2"].value == "ouvert" and book["Vue"]["A2"].value == 2
+    assert set(p.name for p in tmp_path.iterdir()) == {"spec.json", "rapport.xlsx"}
+
+
+def test_shared_decision_example_recalculates_visible_choice_and_tie(tmp_path, real_calculator):
+    from alysis_code.bots.owl_documents import guide
+    from alysis_code.office.operations import run_operation
+
+    guards = {"read_guard": lambda _: None, "write_guard": lambda _: None}
+    described = run_operation(tmp_path, {"action": "describe", "format": "xlsx"}, **guards)
+    example = described["guide"]["decision_example"]
+    assert guide("xlsx")["spec"]["decision_example"] == example
+    rows = [["Reorder first"], [], [], ["Part", "Days of stock"]]
+    for row in (2, 3, 4):
+        rows.append(
+            [
+                {"formula": f"=Stock!A{row}"},
+                {"formula": f'=IF(Stock!C{row}>0,Stock!B{row}/Stock!C{row},"")'},
+            ]
+        )
+    spec = {
+        "sheets": [
+            {"name": "Review", "rows": rows, "cells": example["cells"]},
+            {
+                "name": "Stock",
+                "rows": [
+                    ["Part", "On hand", "Daily use"],
+                    ["Valves", 12, 4],
+                    ["Belts", 20, 5],
+                    ["Fuses", 36, 4],
+                ],
+            },
+        ],
+        "input_check": {
+            "input": {"sheet": "Stock", "cell": "B2", "value": 24},
+            "expect": [
+                {"sheet": "Review", "cell": "A2", "before": "Valves", "after": "Belts"},
+                {"sheet": "Review", "cell": "B5", "before": 3, "after": 6},
+            ],
+        },
+    }
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec))
+    created = run_operation(
+        tmp_path,
+        {"action": "create", "format": "xlsx", "spec": "spec.json", "output": "review.xlsx"},
+        **guards,
+    )
+    tie = {
+        "input": {"sheet": "Stock", "cell": "B2", "value": 16},
+        "expect": [
+            {"sheet": "Review", "cell": "A2", "before": "Valves", "after": "Multiple options tied"}
+        ],
+    }
+    spec_path.write_text(json.dumps({"input_check": tie}))
+    inspected = run_operation(
+        tmp_path, {"action": "inspect", "source": "review.xlsx", "spec": "spec.json"}, **guards
+    )
+    for check, expected in (
+        (created["calculation"]["input_check"], "Belts"),
+        (inspected["input_check"], "Multiple options tied"),
+    ):
+        assert check["state"] == "passed" and check["source_sha256"] == created["sha256"]
+        headline = check["outputs"][0]
+        assert (headline["sheet"], headline["cell"]) == ("Review", "A2")
+        assert (headline["previous"]["value"], headline["current"]["value"]) == ("Valves", expected)
+    workbook = tmp_path / "review.xlsx"
+    assert hashlib.sha256(workbook.read_bytes()).hexdigest() == created["sha256"]
+    with closing(openpyxl.load_workbook(workbook, data_only=True)) as book:
+        assert book["Review"]["A2"].value == "Valves" and book["Stock"]["B2"].value == 12
 
 
 def test_real_calculation_replaces_stale_results_preserves_package_and_source(
@@ -210,7 +407,14 @@ def test_real_calculation_never_fetches_external_formula_content(tmp_path, real_
         thread.join(timeout=2)
 
 
-def test_calculation_rejects_converter_shared_string_indexes(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("kind", "cached", "error"),
+    [
+        ("s", "0", "unsupported cache type"),
+        ("n", None, "empty result"),
+    ],
+)
+def test_calculation_rejects_unusable_converter_caches(tmp_path, monkeypatch, kind, cached, error):
     from alysis_code.office import calculation
 
     source = tmp_path / "source.xlsx"
@@ -222,8 +426,8 @@ def test_calculation_rejects_converter_shared_string_indexes(tmp_path, monkeypat
     with zipfile.ZipFile(source) as archive:
         tree = calculation._xml(archive.read("xl/worksheets/sheet1.xml"))
     cell = next(c for c in tree.iter(f"{{{calculation.NS}}}c") if c.get("r") == "B1")
-    cell.set("t", "s")
-    cell.find(f"{{{calculation.NS}}}v").text = "0"
+    cell.set("t", kind)
+    cell.find(f"{{{calculation.NS}}}v").text = cached
 
     def convert(_executable, _input, converted, _profile, **_options):
         calculation._write_parts(
@@ -234,7 +438,7 @@ def test_calculation_rejects_converter_shared_string_indexes(tmp_path, monkeypat
 
     monkeypatch.setattr(calculation, "renderer_path", lambda: tmp_path / "calculator")
     monkeypatch.setattr(calculation, "_convert", convert)
-    with pytest.raises(ValueError, match="unsupported cache type"):
+    with pytest.raises(ValueError, match=error):
         calculate(tmp_path)
     assert source.read_bytes() == original
     assert not (tmp_path / "calculated.xlsx").exists()

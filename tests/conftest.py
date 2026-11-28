@@ -243,6 +243,24 @@ class OAuthFixtureServer:
 
 
 @pytest.fixture(autouse=True)
+def isolate_alysis_config(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+):
+    """Tests never read or change the developer's real Alysis settings and saved keys.
+
+    A developer may point ALYSIS_CONFIG_DIR at their own folder. Signed in to Alysis, every
+    model connection asks the account's picture service what it declares, so a real saved
+    key would reach the live service from a test. Each test gets its own empty folder; a
+    test that needs another one still sets ALYSIS_CONFIG_DIR itself."""
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", os.fspath(tmp_path_factory.mktemp("alysis-config")))
+    from alysis_code.account_images import forget_account_answers
+
+    forget_account_answers()
+    yield
+    forget_account_answers()
+
+
+@pytest.fixture(autouse=True)
 def block_live_ddgs_network(monkeypatch: pytest.MonkeyPatch):
     """Structural guard: the keyless ddgs web-search backend is ready by default,
     so any test that reaches it without stubbing would hit the live DuckDuckGo

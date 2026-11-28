@@ -16,11 +16,14 @@ import tempfile
 import time
 from pathlib import Path
 
+import alysis_code
 from alysis_code.bots.cooperation import PeerRequest, PeerStore
 from alysis_code.bots.models import BotInput, TaskInput
 from alysis_code.bots.runtime import BotRuntime
 from alysis_code.bots.store import Store
 from alysis_code.llm.types import LLMResponse
+
+ENGINE_ROOT = Path(alysis_code.__file__).resolve().parents[1]
 
 CHILD = """
 import sys, time
@@ -101,7 +104,9 @@ def verify(root: Path) -> dict:
             [sys.executable, "-c", CHILD, str(store.path), str(marker)],
             env={
                 "PATH": os.defpath,
-                "PYTHONPATH": os.pathsep.join(sys.path),
+                # The child runs the engine this check imported, ahead of anything else a
+                # caller's import path holds (another source tree with an engine package).
+                "PYTHONPATH": os.pathsep.join([str(ENGINE_ROOT), *sys.path]),
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
             stderr=stderr,

@@ -1,6 +1,8 @@
 import base64
 import io
 import json
+from contextlib import ExitStack
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -13,6 +15,50 @@ from alysis_code.bots.app import Settings, create_app
 from alysis_code.bots.cloud_account import CloudAccessError, desktop_access, discover
 from alysis_code.bots.managed_cloud import AccountApplications, AccountAuthority
 from alysis_code.bots.store import Store
+from alysis_code.hub_apps import HubAppsError
+
+
+def test_managed_app_clients_exchange_only_their_registered_account_and_owl(tmp_path):
+    identity, other = str(uuid4()), str(uuid4())
+    owl = "a" * 32
+    calls = []
+    now = [0]
+
+    def respond(request):
+        assert request.headers["authorization"] == "Bearer slk_registered_fixture"
+        current = request.headers.get("X-Alysis-Owl-Apps")
+        scope = request.headers.get("X-Alysis-Owl-App-Access")
+        calls.append((current, scope))
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": 1,
+                "status": "available",
+                "account_id": identity,
+                "plan": "plan_5",
+                **({"owl_app_access": "oha1.fixture." + scope} if current else {}),
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        authority = AccountAuthority(
+            Store(tmp_path / "accounts.db"),
+            b"k" * 32,
+            clock=lambda: now[0],
+            lookup=lambda key, **opts: discover(key, client=http, **opts),
+        )
+        owner = authority.access("slk_registered_fixture")
+        authority.remember(owner, "slk_registered_fixture")
+        assert authority.hub_client(owner, owl_id=owl)._key == "oha1.fixture.run"
+        assert authority.hub_client(owner, owl_id=owl)._key == "oha1.fixture.run"
+        assert authority.hub_client(owner, owl_id=owl, manage=True)._key == "oha1.fixture.manage"
+        assert calls == [(None, None), (owl, "run"), (owl, "manage")]
+        authority.remember("account:" + other, "slk_registered_fixture")
+        with pytest.raises(HubAppsError):
+            authority.hub_client("account:" + other, owl_id=owl)
+        now[0] = 241
+        assert authority.hub_client(owner, owl_id=owl)._key == "oha1.fixture.run"
+        assert calls.count((owl, "run")) == 3
 
 
 def test_storage_capacity_refreshes_for_autonomous_work_after_plan_downgrade(tmp_path):
@@ -115,7 +161,7 @@ def test_account_http_isolation_upgrade_gate_encrypted_recovery_and_bounded_regi
         registry_store, b"k" * 32, lookup=lambda key: plans[key], clock=lambda: now[0]
     )
 
-    def factory(owner):
+    def factory(owner, credential=None):
         directory = tmp_path / owner.replace(":", "-")
         settings = Settings(
             database=directory / "bots.sqlite3",
@@ -287,3 +333,154 @@ def test_slow_success_does_not_extend_the_existing_entitlement_freshness_window(
     with pytest.raises(CloudAccessError):
         authority.access("slk_slow")
     assert len(calls) == 2
+
+
+def test_hosted_controller_uses_each_accounts_gateway_for_model_choice_and_billing(
+    tmp_path, monkeypatch
+):
+    from alysis_code import alysis_cloud
+    from alysis_code.bots import cloud_models, hosted_azure, managed_cloud
+    from alysis_code.bots.owl_models import ModelUnavailable
+    from alysis_code.llm.openai_responses import OpenAIResponsesClient
+
+    first, second = str(uuid4()), str(uuid4())
+    first_key, second_key, rotated = "slk_first", "slk_second", "slk_rotated"
+    owners = {first_key: first, second_key: second, rotated: first}
+    catalogs = {
+        first_key: ["glm-5.3-flash", "glm-5.3", "gpt-6-luna"],
+        second_key: ["gpt-6-luna"],
+        rotated: ["glm-5.3-flash"],
+    }
+    store = Store(tmp_path / "shared.db")
+    store.close = lambda: None
+    fake_resource = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(hosted_azure, "PostgresStore", lambda *args, **kw: store)
+
+    # A local SQLite worker owns its whole database. Give each test worker its own file,
+    # while the controller shares the account registry as it does in the hosted service.
+    def local_app(config, **options):
+        options.pop("task_store")
+        return create_app(config, **options)
+
+    monkeypatch.setattr(hosted_azure, "create_app", local_app)
+    monkeypatch.setattr(hosted_azure, "AzureBlobStorage", lambda *args, **kw: fake_resource)
+    monkeypatch.setattr(hosted_azure, "AzureComputers", lambda **kw: fake_resource)
+    monkeypatch.setattr(hosted_azure, "CloudDesktopFactory", lambda *args, **kw: None)
+    monkeypatch.setattr(cloud_models, "gateway_models", catalogs.get)
+    real_authority = managed_cloud.AccountAuthority
+    monkeypatch.setattr(
+        managed_cloud,
+        "AccountAuthority",
+        lambda db, secret: real_authority(
+            db, secret, lookup=lambda k: {"status": "available", "account_id": owners[k]}
+        ),
+    )
+    config = hosted_azure.HostedConfig(
+        tmp_path,
+        "fixture",
+        "fixture",
+        "fixture",
+        "fixture",
+        "fixture",
+        "fixture",
+        "fixture",
+        "fixture",
+        None,
+        base64.b64encode(bytes(32)).decode(),
+        managed_cloud=True,
+        cloud_metering="external",
+    )
+    operator = Settings(
+        tmp_path / "config",
+        "t" * 40,
+        "operator-fixture",
+        "https://operator.example.invalid/v1",
+        "glm-5.3-flash",
+        models=("operator-only",),
+        extra_headers={"x-operator-fixture": "private"},
+    )
+
+    with ExitStack() as stack:
+        hosted = hosted_azure.build(operator, config, None, stack)
+        api = stack.enter_context(TestClient(hosted))
+
+        def request(owner, key, method, path, **kwargs):
+            return api.request(
+                method,
+                f"/accounts/{owner}/v1/{path}",
+                headers={"Authorization": f"Bearer {key}"},
+                **kwargs,
+            )
+
+        def listed(owner, key):
+            result = request(owner, key, "GET", "models")
+            assert result.is_success, result.text
+            return result.json()["models"]
+
+        choices = listed(first, first_key)
+        assert [row["id"] for row in choices] == catalogs[first_key]
+        assert (
+            "cloud_account_models"
+            in request(first, first_key, "GET", "status").json()["capabilities"]
+        )
+        assert [row["id"] for row in listed(second, second_key)] == catalogs[second_key]
+        assert (
+            request(
+                second, second_key, "POST", "bots", json={"name": "Other", "model": "glm-5.3"}
+            ).status_code
+            == 409
+        )
+        assert (
+            request(
+                first, first_key, "POST", "bots", json={"name": "Other", "model": "operator-only"}
+            ).status_code
+            == 409
+        )
+
+        owl = request(first, first_key, "POST", "bots", json={"name": "Apollo"}).json()
+        path = "bots/" + owl["id"]
+        assert request(
+            first,
+            first_key,
+            "PUT",
+            path,
+            json={"name": "Apollo", "model": "glm-5.3", "reasoning_effort": "high"},
+        ).is_success
+        runtime = hosted.state.runtime.apps["account:" + first].state.runtime
+        client, _ = runtime.turn_model("next-turn", owl["id"])
+        sent = []
+
+        def transport(request):
+            sent.append(request)
+            return httpx.Response(
+                200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+            )
+
+        client._transport = httpx.MockTransport(transport)
+        client.chat(messages=[{"role": "user", "content": "Hi"}])
+        assert str(sent[0].url).startswith(alysis_cloud.gateway_base_url() + "/")
+        assert sent[0].headers["Authorization"] == "Bearer " + first_key
+        assert "x-operator-fixture" not in sent[0].headers
+        assert json.loads(sent[0].content)["model"] == "glm-5.3"
+        assert json.loads(sent[0].content)["reasoning_effort"] == "high"
+
+        other = request(second, second_key, "POST", "bots", json={"name": "Default"}).json()
+        runtime2 = hosted.state.runtime.apps["account:" + second].state.runtime
+        default, _ = runtime2.turn_model("background-turn", other["id"])
+        assert isinstance(default, OpenAIResponsesClient)
+        assert (default.model, default.api_key) == ("gpt-6-luna", second_key)
+        assert [row["id"] for row in listed(first, rotated)] == catalogs[rotated]
+        with pytest.raises(ModelUnavailable):
+            runtime.turn_model("later-turn", owl["id"])
+        assert request(
+            first, rotated, "PUT", path, json={"name": "Apollo", "model": None}
+        ).is_success
+        assert runtime.turn_model("later-turn", owl["id"])[0].api_key == rotated
+
+    # Autonomous work resumes under the owner's latest key before any desktop reconnects.
+    with ExitStack() as stack:
+        restored = hosted_azure.build(operator, config, None, stack)
+        stack.enter_context(TestClient(restored))
+        resumed = restored.state.runtime.apps["account:" + first].state.runtime
+        client, _ = resumed.turn_model("after-restart", owl["id"])
+        assert (client.model, client.api_key) == ("glm-5.3-flash", rotated)

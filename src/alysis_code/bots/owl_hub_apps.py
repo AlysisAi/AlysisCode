@@ -1,11 +1,8 @@
-"""More apps for owls on this computer (hub plugins, 2026-11-24).
+"""More apps for local and managed Cloud Owls.
 
-Owls in the local service use the apps connected under More apps as Work does: the service loads
-their tools with the signed-in account's own key (``hub_apps.load_hub_catalogs``) and makes each
-call itself, after the owl's approval step for the tool's effect (``bots/runtime.py``). The desktop
-app takes no part, so these apps work whenever the service runs. Each owl uses only those the
-person leaves on for it (``OwlApps``, keyed by ``hub.<app>``); an app connected later is on until
-the person turns it off. Every call counts toward the plan's app calls on Alysis's server.
+The local service uses the signed-in account. The managed service exchanges its
+owner registration for an expiring, single-Owl broker delegation. Both call
+the broker directly after the Owl's normal approval checks.
 """
 
 from __future__ import annotations
@@ -31,6 +28,7 @@ _NOT_SENT = frozenset(
         "credits_used",
         "credits_not_connected",
         "not_connected",
+        "grant_changed",
         "unknown_tool",
         "invalid_request",
         "too_large",
@@ -53,6 +51,8 @@ class HubPlugin:
     name: str
     catalog_id: str
     tools: tuple[HubTool, ...]
+    connection_id: str | None = None
+    grant_revision: int | None = None
 
 
 def _plugin(catalog: dict[str, Any]) -> HubPlugin:
@@ -60,6 +60,8 @@ def _plugin(catalog: dict[str, Any]) -> HubPlugin:
         plugin_id=catalog["plugin_id"],
         name=catalog["name"],
         catalog_id=catalog["catalog_id"],
+        connection_id=catalog.get("connection_id"),
+        grant_revision=catalog.get("grant_revision"),
         tools=tuple(
             HubTool(
                 name=tool["name"],
@@ -78,31 +80,73 @@ class OwlHubApps:
     def __init__(
         self,
         load: Callable[
-            [], tuple[list[dict[str, Any]], dict[str, Any]]
+            ..., tuple[list[dict[str, Any]], dict[str, Any]]
         ] = hub_apps.load_hub_catalogs,
-        client: Callable[[], hub_apps.HubAppsClient] = hub_apps.HubAppsClient.from_saved_account,
+        client: Callable[..., hub_apps.HubAppsClient] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        manage_client: Callable[..., hub_apps.HubAppsClient] | None = None,
     ) -> None:
-        self._load, self._client, self._clock = load, client, clock
+        self._load, self._client, self._clock = (
+            load,
+            client or hub_apps.HubAppsClient.from_saved_account,
+            clock,
+        )
         self._lock = threading.Lock()
-        self._plugins: list[HubPlugin] = []
-        self._at: float | None = None
+        self._manage = manage_client or self._client
+        self._plugins: dict[str, tuple[float, list[HubPlugin]]] = {}
 
-    def plugins(self) -> list[HubPlugin]:
+    def plugins(self, owl_id: str, *, refresh: bool = False) -> list[HubPlugin]:
         """The connected apps with their tools; none while signed out or offline."""
         with self._lock:
-            if self._at is not None and self._clock() - self._at < REFRESH_S:
-                return list(self._plugins)
-        catalogs, _status = self._load()
+            hit = self._plugins.get(owl_id)
+            if hit and not refresh and self._clock() - hit[0] < REFRESH_S:
+                return list(hit[1])
+        try:
+            catalogs, _status = self._load(self._client(owl_id=owl_id, timeout_s=8))
+        except hub_apps.HubAppsError:
+            return []
         plugins = [_plugin(catalog) for catalog in catalogs]
         with self._lock:
-            self._plugins, self._at = plugins, self._clock()
+            if len(self._plugins) >= 128:
+                self._plugins.clear()
+            self._plugins[owl_id] = self._clock(), plugins
         return list(plugins)
 
-    def call(self, plugin_id: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def settings(self, owl_id: str) -> list[dict] | None:
+        try:
+            listing = self._manage(owl_id=owl_id, timeout_s=8).connections(manage=True)
+        except hub_apps.HubAppsError:
+            return None
+        return listing.get("hub_accounts")
+
+    def set_grant(self, owl_id: str, app: str, grant: dict) -> None:
+        self._manage(owl_id=owl_id).set_owl_grant(app, grant)
+        with self._lock:
+            self._plugins.pop(owl_id, None)
+
+    def event_client(self, owl_id: str):
+        return self._client(owl_id=owl_id, timeout_s=8)
+
+    def call(
+        self,
+        owl_id: str,
+        plugin_id: str,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        connection_id: str | None = None,
+        grant_revision: int | None = None,
+    ) -> dict[str, Any]:
         """One call, answered like the desktop app's (``ResultInput``)."""
-        plugin = next((entry for entry in self.plugins() if entry.plugin_id == plugin_id), None)
-        if plugin is None or not any(entry.name == tool for entry in plugin.tools):
+        plugin = next(
+            (entry for entry in self.plugins(owl_id) if entry.plugin_id == plugin_id), None
+        )
+        if (
+            plugin is None
+            or plugin.connection_id != connection_id
+            or plugin.grant_revision != grant_revision
+            or not any(entry.name == tool for entry in plugin.tools)
+        ):
             return {
                 "ok": False,
                 "error": "This app or action isn't connected to the person's Alysis account "
@@ -110,8 +154,17 @@ class OwlHubApps:
                 "dispatch_state": "not_dispatched",
             }
         try:
-            result = self._client().call(plugin.catalog_id, tool, arguments)
+            result = self._client(owl_id=owl_id).call(
+                plugin.catalog_id,
+                tool,
+                arguments,
+                connection_id=connection_id,
+                grant_revision=grant_revision,
+            )
         except hub_apps.HubAppsError as exc:
+            if exc.reason in {"grant_changed", "not_connected"}:
+                with self._lock:
+                    self._plugins.pop(owl_id, None)
             sent = "not_dispatched" if exc.reason in _NOT_SENT else "unknown"
             note = (
                 " Nothing was sent."

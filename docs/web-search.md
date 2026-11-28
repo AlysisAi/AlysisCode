@@ -1,7 +1,7 @@
 # Web Search
 
-Alysis exposes one `web_search` capability to the active model. The model decides whether a
-turn needs web evidence from the tool description and system instructions. Alysis does not use
+Alysis Code exposes one `web_search` capability to the active model. The model decides whether a
+turn needs web evidence from the tool description and system instructions. Alysis Code does not use
 a host-side phrase classifier and does not run a search before the model asks for one.
 
 `web_search_mode` selects the transport:
@@ -17,7 +17,7 @@ value is accepted as a legacy alias for `auto`.
 
 ## Provider Coverage
 
-This table tracks the direct provider presets supported by Alysis. "Provider-hosted" means the
+This table tracks the direct provider presets supported by Alysis Code. "Provider-hosted" means the
 provider executes search on its infrastructure. It does not necessarily mean the selected chat
 model contains its own search engine.
 
@@ -39,7 +39,7 @@ model contains its own search engine.
 | Perplexity | `perplexity_sonar` | Uses the Agent API (`POST /v1/agent`, Responses format) with the `web_search` tool on the `perplexity/sonar` route. Sonar Chat Completions shuts down 2026-09-27; profiles saved against the old base URL are redirected to `/v1/agent` automatically. |
 
 The following direct providers do not currently document a provider-hosted web-search API that
-Alysis can call with the provider key:
+Alysis Code can call with the provider key:
 
 - DeepSeek
 - 01.AI / Yi

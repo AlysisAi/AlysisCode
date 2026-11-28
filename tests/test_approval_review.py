@@ -114,7 +114,8 @@ def test_reviewer_distinguishes_user_authority_from_untrusted_evidence(tmp_path:
     verdict = reviewer.review(_request("python -m pytest -q"), workspace_root=tmp_path)
     assert verdict.outcome == "allow" and verdict.model == "chat-model"
     system, user = client.calls[0]
-    assert system["content"] == REVIEWER_SYSTEM_PROMPT
+    assert system["content"].startswith(REVIEWER_SYSTEM_PROMPT)
+    assert "approve it yourself" in system["content"]
     payload = json.loads(user["content"])
     assert [m["text"] for m in payload["user_instructions"]] == ["run the tests"]
     assert payload["action"]["command"] == "python -m pytest -q"
@@ -347,17 +348,20 @@ def test_host_fallback_read_only_command_obeys_automatic_review(
     surface = _Surface(allow=True)
     tools = _tools(workspace, surface, mode="auto", reviewer=reviewer, store=store)
 
+    (workspace / "web").mkdir()
+    args = {"cmd": "echo fixture", "cwd": "web"}
     if outcome == "allow":
-        tools["shell_run"].run({"cmd": "echo fixture"})
+        tools["shell_run"].run(args)
     else:
         with pytest.raises(ApprovalReviewDeniedError):
-            tools["shell_run"].run({"cmd": "echo fixture"})
+            tools["shell_run"].run(args)
 
     assert recorded_shell_starts == (["echo fixture"] if outcome == "allow" else [])
     assert surface.requests == []
     assert len(client.calls) == 1
     assert "echo fixture" in client.calls[0][1]["content"]
     assert "No sandbox is available" in client.calls[0][1]["content"]
+    assert json.loads(client.calls[0][1]["content"])["action"]["cwd"] == str(workspace / "web")
 
 
 @pytest.mark.parametrize("bound", [False, True])

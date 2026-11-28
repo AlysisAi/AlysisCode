@@ -582,3 +582,77 @@ def test_what_the_library_would_refuse_is_refused_before_a_charged_request(tmp_p
         call(runtime, task, "create_image", {"prompt": CHINESE, "name": "β.png"})
     assert provider.requests == []
     assert [c for c in store.task("owner", task["id"])["usage"] if c["model"] == IMAGE_MODEL] == []
+
+
+# ---------------------------------------------------------------- quality and the account's service
+
+
+def test_owls_use_the_persons_quality_unless_asked_and_the_declared_edit_model(tmp_path, provider):
+    """The account's image service declares its own endpoint, models and qualities; the owl's
+    requests carry the connection's own key there, the person's quality unless the person
+    asked for another, and changes go to the edit model."""
+    images = "https://images.example.invalid/v1"
+    declared = {
+        "enabled": True,
+        "model": "maker-model",
+        "edit_model": "editor-model",
+        "base_url": images,
+        "key_from": "connection",
+        "quality": "low",
+        "qualities": ["low", "medium", "high", "xhigh", "max"],
+    }
+    connection = Settings(
+        database=tmp_path / "service.sqlite3",
+        token="t" * 40,
+        api_key="connection-key",
+        base_url=ENDPOINT,
+        model="text-model",
+        image_generation=declared,
+    )
+    store, bot, task = owl(tmp_path)
+    runtime = runtime_for(store, [ModelConnection("default", "default", connection, default=True)])
+    made = call(runtime, task, "create_image", {"prompt": GREEK, "name": "κουκουβάγια.png"})
+    call(runtime, task, "create_image", {"prompt": CHINESE, "name": "猫头鹰.png", "quality": "max"})
+    call(
+        runtime,
+        task,
+        "edit_image",
+        {"file_id": made["id"], "instructions": "Πιο φωτεινό φόντο"},
+    )
+    first, second, edit = provider.requests
+    assert [str(request.url) for request in provider.requests] == [
+        f"{images}/images/generations",
+        f"{images}/images/generations",
+        f"{images}/images/edits",
+    ]
+    assert {request.headers["authorization"] for request in provider.requests} == {
+        "Bearer connection-key"
+    }
+    assert (sent_json(first)["model"], sent_json(first)["quality"]) == ("maker-model", "low")
+    assert sent_json(second)["quality"] == "max"
+    fields, _picture = sent_form(edit)
+    assert (fields["model"], fields["quality"]) == ("editor-model", "low")
+    # A quality the service does not accept is refused plainly, before any request.
+    narrower = {**declared, "qualities": ["low", "medium"]}
+    store2, _bot2, task2 = owl(tmp_path / "narrower")
+    runtime2 = runtime_for(
+        store2,
+        [
+            ModelConnection(
+                "default",
+                "default",
+                Settings(
+                    database=tmp_path / "service2.sqlite3",
+                    token="t" * 40,
+                    api_key="connection-key",
+                    base_url=ENDPOINT,
+                    model="text-model",
+                    image_generation=narrower,
+                ),
+                default=True,
+            )
+        ],
+    )
+    with pytest.raises(Conflict, match="quality must be one of: low, medium"):
+        call(runtime2, task2, "create_image", {"prompt": GREEK, "name": "β.png", "quality": "max"})
+    assert len(provider.requests) == 3

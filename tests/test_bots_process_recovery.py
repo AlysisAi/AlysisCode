@@ -71,7 +71,14 @@ def until(predicate, timeout=60, *, process=None, stderr_path=None):
     raise AssertionError("The worker did not reach the expected state")
 
 
-def test_killed_peer_is_not_replayed_and_reports_once_after_restart(tmp_path):
+def test_killed_peer_is_not_replayed_and_reports_once_after_restart(tmp_path, monkeypatch):
+    # Another source tree with an engine package of its own sits first on the import path,
+    # as an earlier test in the same worker can leave one: the fixture's child process
+    # still runs the engine under test.
+    other_tree = tmp_path / "other-source-tree"
+    (other_tree / "alysis_code").mkdir(parents=True)
+    (other_tree / "alysis_code" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(other_tree))
     fixture = Path(__file__).resolve().parents[1] / "scripts/qa/bots_peer_recovery.py"
     result = runpy.run_path(str(fixture))["verify"](tmp_path)
     assert result["fixture_provider_calls"] == 2

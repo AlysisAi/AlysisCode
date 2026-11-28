@@ -24,6 +24,7 @@ from ..web_search_adapters import AUTO_WEB_SEARCH_ADAPTER, GEMINI_GROUNDING_ADAP
 from .base import input_token_count_request, scoped_input_token_counter
 from .cache_policy import merge_cache_policy_metadata
 from .cancellable_http import cancellation_aware_httpx_client, provider_httpx_client
+from .error_metadata import apply_provider_error_metadata
 from .http_cancellation import (
     cancellable_httpx_request,
     cancellable_httpx_send,
@@ -49,6 +50,7 @@ from .provider_limits import (
     mark_provider_call_non_retryable,
     run_provider_limited_call,
 )
+from .rate_limit_metadata import provider_error_detail
 from .request_plan import LLMRequestPlan, RequestCachePlan
 from .request_shape import build_request_shape_report
 from .streaming import SSEFrame, iter_sse_frames, parse_sse_json_frame
@@ -1433,8 +1435,14 @@ class _GeminiStreamAccumulator:
     def handle(self, frame: SSEFrame, data: dict[str, Any]) -> None:
         _ = frame
         error_message = _extract_error_message(data)
-        if error_message:
-            raise LLMError(f"Gemini GenerateContent stream error: {error_message}")
+        if data.get("error"):
+            raise apply_provider_error_metadata(
+                LLMError(
+                    f"Gemini GenerateContent stream error: {error_message or 'provider error'}"
+                ),
+                status=None,
+                detail=provider_error_detail(data),
+            )
         self.stream_metadata["chunks"] = int(self.stream_metadata["chunks"]) + 1
         if not data:
             self._record_unknown_chunk(data)
@@ -1662,20 +1670,18 @@ class GeminiGenerateContentClient:
     def _llm_error_from_response(response: httpx.Response) -> LLMError:
         try:
             data = response.json()
-        except Exception:
+        except ValueError:
             body = response.text
             if len(body) > 1000:
                 body = body[:1000] + "...(truncated)"
-            return LLMError(
-                sanitize_error_text_for_output(f"LLM error {response.status_code}: {body}")
-            )
-        error_message = _extract_error_message(data)
-        if error_message:
-            return LLMError(
-                sanitize_error_text_for_output(f"LLM error {response.status_code}: {error_message}")
-            )
-        return LLMError(
-            sanitize_error_text_for_output(f"LLM error {response.status_code}: {data!r}")
+            data = body
+        else:
+            body = _extract_error_message(data) or repr(data)
+        return apply_provider_error_metadata(
+            LLMError(f"LLM error {response.status_code}: {body}"),
+            status=response.status_code,
+            detail=provider_error_detail(data),
+            headers=response.headers,
         )
 
     @scoped_input_token_counter

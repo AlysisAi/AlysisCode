@@ -591,10 +591,13 @@ def mark_provider_call_non_retryable(exc: BaseException) -> None:
 
 
 def _is_provider_call_non_retryable(exc: BaseException) -> bool:
-    code = getattr(exc, "provider_error_code", None)
-    return bool(getattr(exc, PROVIDER_NON_RETRYABLE_ATTR, False)) or (
-        type(code) is str and code in HARD_QUOTA_CODES
-    )
+    for cause in _iter_exception_chain(exc):
+        code = getattr(cause, "provider_error_code", None)
+        if getattr(cause, PROVIDER_NON_RETRYABLE_ATTR, False) or (
+            type(code) is str and code in HARD_QUOTA_CODES
+        ):
+            return True
+    return False
 
 
 PROVIDER_ATTEMPT_COUNT_ATTR = "_provider_attempt_count"

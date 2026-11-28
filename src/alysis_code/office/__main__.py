@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from alysis_code.documents.__main__ import _path
-from alysis_code.office import FORMATS
+from alysis_code.office import FORMATS, office_capability_status
 
 MAX_SPEC = 2 * 1024 * 1024
 MAX_FILE = 50 * 1024 * 1024
@@ -110,6 +110,26 @@ def run(args) -> dict:
     spec_path = _path(root, args.spec) if getattr(args, "spec", None) else None
     spec = _spec(spec_path) if spec_path else None
     format_name = args.format if args.command == "create" else _format(source)
+    input_check = None
+    if format_name == "xlsx" and spec is not None and "input_check" in spec:
+        input_check = spec.pop("input_check")
+        if not isinstance(input_check, dict):
+            raise ValueError("input_check must be an object")
+    if args.command == "inspect" and spec_path and (input_check is None or spec):
+        raise ValueError("An XLSX inspect spec accepts only input_check")
+
+    def check_inputs(path, stage, *, fresh_baseline=False):
+        from .input_checks import verify
+
+        return verify(
+            path,
+            input_check,
+            stage,
+            fresh_baseline=fresh_baseline,
+            execution_deadline=getattr(args, "execution_deadline", None),
+            cancel_check=getattr(args, "cancel_check", None),
+        )
+
     if args.command == "recalculate" and format_name != "xlsx":
         raise ValueError("Recalculation requires an .xlsx workbook.")
     output = _path(root, args.output) if getattr(args, "output", None) else None
@@ -143,6 +163,11 @@ def run(args) -> dict:
                 "source": str(source.relative_to(root)),
                 "source_sha256": source_hash,
                 "content": adapter.inspect(snapshot),
+                **(
+                    {"input_check": check_inputs(snapshot, stage)}
+                    if input_check is not None
+                    else {}
+                ),
             }
         staged_output = stage / ("result." + format_name)
         if args.command == "create":
@@ -152,13 +177,23 @@ def run(args) -> dict:
                 )
             else:
                 details = adapter.create(spec, staged_output, root)
-        elif args.command == "recalculate":
+        elif args.command == "edit":
+            details = adapter.edit(snapshot, spec, staged_output, root)
+        else:
+            details = {}
+
+        calculation = None
+        has_formulas = format_name == "xlsx" and details.get("formula_count", 0) > 0
+        if args.command == "recalculate" or (
+            has_formulas and office_capability_status()["calculation"]["state"] == "configured"
+        ):
             from alysis_code.execution_deadline import deadline_timeout_or_raise
             from alysis_code.office.calculation import recalculate
 
-            details = recalculate(
-                snapshot,
-                staged_output,
+            calculated = stage / "calculated.xlsx"
+            calculation = recalculate(
+                snapshot if args.command == "recalculate" else staged_output,
+                calculated,
                 root,
                 timeout_seconds=deadline_timeout_or_raise(
                     getattr(args, "execution_deadline", None),
@@ -168,16 +203,54 @@ def run(args) -> dict:
                 ),
                 cancel_check=getattr(args, "cancel_check", None),
             )
-        else:
-            details = adapter.edit(snapshot, spec, staged_output, root)
+            staged_output = calculated
+            if args.command == "recalculate":
+                details = calculation
+        elif has_formulas:
+            calculation = {
+                "state": "unavailable",
+                "formula_count": details["formula_count"],
+                "guidance": (
+                    "The workbook retains its formulas. Its results may appear blank in previews "
+                    "until recalculated. Keep the formulas editable and disclose this limitation."
+                ),
+            }
         produced = _read(staged_output, MAX_FILE)
         _package(produced)
         inspected = adapter.inspect(staged_output)
-        if args.command == "recalculate":
+        if input_check is not None:
+            if not has_formulas:
+                raise ValueError("An input check requires a workbook with a formula result")
+            tested = check_inputs(
+                staged_output, stage, fresh_baseline=calculation["state"] == "passed"
+            )
+            if tested["state"] == "failed":
+                raise ValueError(
+                    "Input check failed; the candidate was not published. Check how the authoritative input feeds the reported formulas. "
+                    + json.dumps(tested, ensure_ascii=False)
+                )
+            calculation["input_check"] = tested
+        elif has_formulas:
+            calculation["input_check"] = {
+                "state": "not_checked",
+                "detail": "Recalculation checks current results. To verify an editable report, try one authoritative input change with input_check.",
+            }
+        if format_name == "xlsx" and args.command == "edit":
+            evidence = details["revision_evidence"]
+            evidence["output_sha256"] = inspected["source_sha256"]
+            if calculation and calculation["state"] == "passed":
+                evidence["formula_displays"] = adapter.formula_changes(
+                    snapshot, staged_output, calculation
+                )
+            else:
+                evidence["formula_displays"] = {
+                    "state": calculation["state"] if calculation else "no_formulas"
+                }
+        if calculation and calculation["state"] != "unavailable":
             inspected.update(
                 formula_results="recalculated",
                 cached_values="recalculated_this_operation",
-                needs_recalculation=details["state"] != "passed",
+                needs_recalculation=calculation["state"] != "passed",
             )
         if (
             source is not None
@@ -186,7 +259,12 @@ def run(args) -> dict:
             raise ValueError("Source changed during the operation; output was not published.")
         _path(root, str(output))
         output.parent.mkdir(parents=True, exist_ok=True)
-        os.link(staged_output, output)  # exclusive, atomic; no silent replacement
+        # Both publish an already complete file atomically and fail if the name was taken.
+        # Restricted Windows processes can rename files even when hard links are denied.
+        if os.name == "nt":
+            os.rename(staged_output, output)
+        else:
+            os.link(staged_output, output)
         return {
             "status": {"create": "created", "edit": "edited", "recalculate": "recalculated"}[
                 args.command
@@ -197,7 +275,7 @@ def run(args) -> dict:
             "source_sha256": source_hash,
             "details": {key: value for key, value in details.items() if key not in inspected},
             "content": inspected,
-            **({"calculation": details} if args.command == "recalculate" else {}),
+            **({"calculation": calculation} if calculation else {}),
             "preview": {"state": "not_rendered", "visual_review": "not_performed"},
             "next": "Render and inspect all page previews when a renderer is configured.",
         }
@@ -222,6 +300,8 @@ def main() -> int:
         item.add_argument("--source", required=True)
         if command == "edit":
             item.add_argument("--spec", required=True)
+        elif command == "inspect":
+            item.add_argument("--spec", help="Optional XLSX input_check specification.")
         if command in {"edit", "recalculate"}:
             item.add_argument("--output", required=True)
         if command == "render":

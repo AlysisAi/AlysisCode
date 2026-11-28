@@ -52,10 +52,13 @@ class ComputeCreationRefused(ComputeError):
         self.code = code
 
     def receipt(self):
+        """The step's result: nothing ran, the provider's own words, and the state its computer
+        is in as data (computer_readiness.py), so the owl can say it plainly and carry on."""
+        from .computer_readiness import for_refusal, start_receipt
+
         return {
-            "error": str(self),
+            **start_receipt(for_refusal(self.code), str(self)),
             "code": self.code,
-            "computer_created": False,
             "retryable": False,
         }
 

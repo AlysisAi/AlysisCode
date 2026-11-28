@@ -1326,12 +1326,18 @@ def project_avatar(
 @app.command("apps")
 def apps(
     action: str = typer.Argument(
-        "catalog", help="catalog, connections, connect <app> or disconnect <connection>."
+        "catalog",
+        help="catalog, connections, connect <app>, select <connection> or disconnect <connection>.",
     ),
     target: str | None = typer.Argument(
         None, help="The app to connect, or the connection to remove."
     ),
     query: str = typer.Option("", "--query", help="Find apps by name."),
+    language: str = typer.Option(
+        "",
+        "--language",
+        help="With connect: the language of the page after signing in (en, de, el, es, fr, zh-CN).",
+    ),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """More apps for Work, Code and owls: list them, connect one, or remove a connection.
@@ -1356,11 +1362,12 @@ def apps(
         ("catalog", False),
         ("connections", False),
         ("connect", True),
+        ("select", True),
         ("disconnect", True),
     }:
         fail(
             "invalid_request",
-            "Use: alysis apps [catalog | connections | connect <app> | disconnect <connection>]",
+            "Use: alysis apps [catalog | connections | connect <app> | select <connection> | disconnect <connection>]",
         )
         return
     try:
@@ -1369,8 +1376,12 @@ def apps(
             result = client.catalog(query.strip())
         elif action == "connections":
             result = client.connections()
+            # Both the broker and this client must support identity-bound dispatch.
+            result["can_select_account"] = result.get("account_selection") == 1
+        elif action == "select":
+            result = client.select(target)
         elif action == "connect":
-            result = client.connect(target)
+            result = client.connect(target, language=language.strip() or None)
         else:
             result = {"removed": client.disconnect(target)}
     except hub_apps.HubAppsError as exc:
@@ -1393,9 +1404,12 @@ def apps(
     elif action == "connections":
         for connection in result.get("connections") or []:
             console.print(
-                f"{connection.get('app')}  {connection.get('status')}  {connection.get('id')}",
+                f"{connection.get('app')}  {connection.get('status')}  {connection.get('id')}  "
+                f"{connection.get('label') or ''}{' (selected)' if connection.get('selected') else ''}",
                 markup=False,
             )
+    elif action == "select":
+        console.print(f"Selected {result['selected']}.", markup=False)
     elif action == "connect" and result.get("added") is True:
         # An app that needs no sign-in is ready as soon as it's added.
         console.print("Added. It's ready to use.")

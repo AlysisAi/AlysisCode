@@ -6,6 +6,11 @@ Turns run inline (``background_turns=False``) so ordering is deterministic.
 
 from __future__ import annotations
 
+import contextlib
+import threading
+
+import pytest
+
 from alysis_code.cli_impl.tui import run_tui
 from alysis_code.cli_impl.tui.state import TuiState
 from alysis_code.cli_impl.tui.surface import TuiSurface
@@ -638,6 +643,43 @@ def _bracketed_paste(text: str) -> str:
     return f"\x1b[200~{text}\x1b[201~"
 
 
+# The live TUI tests type into a running TUI from a feeder thread and wait for each state the
+# keys lead to. A wait returns as soon as its state appears; this bound only limits a failure,
+# because the TUI parses synthetic key streams on its own thread, slowly on a busy runner.
+FEED_STATE_TIMEOUT = 30.0
+
+
+def _start_feeder(feed, pipe, errors: list) -> threading.Thread:
+    """Run ``feed`` on its own thread; when it fails, close the input so the TUI ends.
+
+    Closing the input ends the TUI whatever has focus (the paste editor, a modal, a prompt with
+    text in it), where a typed Ctrl-D does not, so a failed feeder is reported instead of
+    leaving the TUI waiting for keys that never come.
+    """
+
+    def run() -> None:
+        try:
+            feed()
+        except BaseException as exc:  # noqa: BLE001 - reported by the test once the TUI ends
+            errors.append(f"feeder raised {exc!r}")
+            pipe.close()
+
+    feeder = threading.Thread(target=run, daemon=True)
+    feeder.start()
+    return feeder
+
+
+@contextlib.contextmanager
+def _feeder_failure_reported(errors: list):
+    """Report what made a feeder end the TUI, not the end of input it used to end it."""
+    try:
+        yield
+    except EOFError:
+        if errors:
+            pytest.fail("; ".join(errors))
+        raise
+
+
 def _run_headless_paste_submission(monkeypatch, keys: str):
     from prompt_toolkit.application import Application as PromptToolkitApplication
     from prompt_toolkit.input import create_pipe_input
@@ -794,8 +836,65 @@ def test_delete_at_paste_token_edge_removes_token_and_orphan(monkeypatch):
     assert captured["payloads_before_submit"] == {}
 
 
+@pytest.mark.parametrize("focus", ["prompt with text", "paste editor"])
+def test_a_failed_feeder_ends_the_live_tui_whatever_has_focus(monkeypatch, focus):
+    """A feeder that fails is reported at once, never left with the TUI waiting for keys."""
+    import time
+
+    from prompt_toolkit.application import Application as PromptToolkitApplication
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from alysis_code.cli_impl.tui import app as app_module
+
+    captured = {}
+    feeder_errors = []
+
+    def capture_application(*args, **kwargs):
+        application = PromptToolkitApplication(*args, **kwargs)
+        captured["application"] = application
+        captured["input_buffer"] = application.layout.current_buffer
+        return application
+
+    def focus_reached():
+        application = captured.get("application")
+        if application is None:
+            return False
+        if focus == "paste editor":
+            return application.layout.current_buffer is not captured["input_buffer"]
+        return captured["input_buffer"].text == "Γεια σου, 世界"
+
+    monkeypatch.setattr(app_module, "Application", capture_application)
+    with create_pipe_input() as pipe:
+
+        def feed():
+            # Text in the prompt, or the paste editor open: a typed Ctrl-D ends neither.
+            if focus == "paste editor":
+                pipe.send_text(_bracketed_paste("\n".join(["Γεια σου", "世界"] * 5)) + "\x1bp")
+            else:
+                pipe.send_text("Γεια σου, 世界")
+            deadline = time.monotonic() + FEED_STATE_TIMEOUT
+            while not focus_reached():
+                assert time.monotonic() < deadline, f"{focus} was never reached"
+                time.sleep(0.01)
+            raise AssertionError(f"synthetic feeder failure with the {focus} focused")
+
+        feeder = _start_feeder(feed, pipe, feeder_errors)
+        with pytest.raises(pytest.fail.Exception, match="synthetic feeder failure"):
+            with _feeder_failure_reported(feeder_errors):
+                app_module.run_tui(
+                    TuiState(model_name="test-model"),
+                    owl_color=False,
+                    input=pipe,
+                    output=DummyOutput(),
+                    background_turns=False,
+                )
+        feeder.join(timeout=FEED_STATE_TIMEOUT)
+
+    assert not feeder.is_alive()
+
+
 def test_paste_editor_updates_payload_and_token_line_count(monkeypatch):
-    import threading
     import time
 
     from prompt_toolkit.application import Application as PromptToolkitApplication
@@ -825,7 +924,7 @@ def test_paste_editor_updates_payload_and_token_line_count(monkeypatch):
             return 0
 
     def wait_for(predicate, message):
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + FEED_STATE_TIMEOUT
         while time.monotonic() < deadline:
             if predicate():
                 return True
@@ -846,7 +945,7 @@ def test_paste_editor_updates_payload_and_token_line_count(monkeypatch):
                 ),
                 "paste editor did not open",
             ):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             editor_buffer = captured["application"].layout.current_buffer
             assert editor_buffer.text == payload
@@ -858,21 +957,21 @@ def test_paste_editor_updates_payload_and_token_line_count(monkeypatch):
                 ),
                 "paste editor did not close after save",
             ):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             captured["token_after_save"] = captured["input_buffer"].text
             pipe.send_text("\r/exit\r")
 
-        feeder = threading.Thread(target=feed, daemon=True)
-        feeder.start()
-        _result, transcript = app_module.run_tui(
-            TuiState(model_name="test-model"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-            session_builder=RecordingSession,
-            background_turns=False,
-        )
+        feeder = _start_feeder(feed, pipe, feeder_errors)
+        with _feeder_failure_reported(feeder_errors):
+            _result, transcript = app_module.run_tui(
+                TuiState(model_name="test-model"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+                session_builder=RecordingSession,
+                background_turns=False,
+            )
         feeder.join(timeout=3)
 
     assert not feeder.is_alive()
@@ -883,7 +982,6 @@ def test_paste_editor_updates_payload_and_token_line_count(monkeypatch):
 
 
 def _run_paste_editor_with_plain_selection(monkeypatch, edit_keys: str):
-    import threading
     import time
 
     from prompt_toolkit.application import Application as PromptToolkitApplication
@@ -913,7 +1011,7 @@ def _run_paste_editor_with_plain_selection(monkeypatch, edit_keys: str):
             return 0
 
     def wait_for(predicate, message):
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + FEED_STATE_TIMEOUT
         while time.monotonic() < deadline:
             if predicate():
                 return True
@@ -934,7 +1032,7 @@ def _run_paste_editor_with_plain_selection(monkeypatch, edit_keys: str):
                 ),
                 "paste editor did not open",
             ):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             editor_buffer = captured["application"].layout.current_buffer
             editor_buffer.text = "abcd"
@@ -952,20 +1050,20 @@ def _run_paste_editor_with_plain_selection(monkeypatch, edit_keys: str):
                 ),
                 "paste editor did not close after save",
             ):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             pipe.send_text("\r/exit\r")
 
-        feeder = threading.Thread(target=feed, daemon=True)
-        feeder.start()
-        app_module.run_tui(
-            TuiState(model_name="test-model"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-            session_builder=RecordingSession,
-            background_turns=False,
-        )
+        feeder = _start_feeder(feed, pipe, feeder_errors)
+        with _feeder_failure_reported(feeder_errors):
+            app_module.run_tui(
+                TuiState(model_name="test-model"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+                session_builder=RecordingSession,
+                background_turns=False,
+            )
         feeder.join(timeout=3)
 
     assert not feeder.is_alive()
@@ -982,7 +1080,6 @@ def test_editor_plain_selection_printable_key_replaces_selected_span(monkeypatch
 
 
 def test_live_paste_hint_tracks_tokens_on_welcome_delete_and_submit(monkeypatch):
-    import threading
     import time
 
     from prompt_toolkit.application import Application as PromptToolkitApplication
@@ -1013,7 +1110,7 @@ def test_live_paste_hint_tracks_tokens_on_welcome_delete_and_submit(monkeypatch)
             return 0
 
     def wait_for(predicate, message):
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + FEED_STATE_TIMEOUT
         while time.monotonic() < deadline:
             if predicate():
                 return True
@@ -1041,7 +1138,7 @@ def test_live_paste_hint_tracks_tokens_on_welcome_delete_and_submit(monkeypatch)
                 ),
                 "first paste token did not appear",
             ):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             captured["one"] = status_snapshot()
 
@@ -1050,7 +1147,7 @@ def test_live_paste_hint_tracks_tokens_on_welcome_delete_and_submit(monkeypatch)
                 lambda: captured["input_buffer"].text.endswith("[pasted #2 +9 lines]"),
                 "second paste token did not appear",
             ):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             captured["two"] = status_snapshot()
 
@@ -1059,27 +1156,27 @@ def test_live_paste_hint_tracks_tokens_on_welcome_delete_and_submit(monkeypatch)
                 lambda: captured["input_buffer"].text == "",
                 "paste tokens were not deleted",
             ):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             captured["deleted"] = status_snapshot()
 
             pipe.send_text(_bracketed_paste(first) + "\r")
             if not wait_for(lambda: delivered == [first], "paste payload was not submitted"):
-                pipe.send_text("\x04")
+                pipe.close()
                 return
             captured["submitted"] = status_snapshot()
             pipe.send_text("/exit\r")
 
-        feeder = threading.Thread(target=feed, daemon=True)
-        feeder.start()
-        app_module.run_tui(
-            TuiState(model_name="test-model"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-            session_builder=RecordingSession,
-            background_turns=False,
-        )
+        feeder = _start_feeder(feed, pipe, feeder_errors)
+        with _feeder_failure_reported(feeder_errors):
+            app_module.run_tui(
+                TuiState(model_name="test-model"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+                session_builder=RecordingSession,
+                background_turns=False,
+            )
         feeder.join(timeout=3)
 
     assert not feeder.is_alive()
@@ -1091,7 +1188,6 @@ def test_live_paste_hint_tracks_tokens_on_welcome_delete_and_submit(monkeypatch)
 
 
 def _run_alt_p_away_from_paste_tokens(monkeypatch, payloads):
-    import threading
     import time
 
     from prompt_toolkit.application import Application as PromptToolkitApplication
@@ -1106,16 +1202,16 @@ def _run_alt_p_away_from_paste_tokens(monkeypatch, payloads):
     def capture_application(*args, **kwargs):
         application = PromptToolkitApplication(*args, **kwargs)
         # Pipe input delivers each escape sequence atomically. Keep both parser
-        # delays short so cancelling the editor does not spend 1.5 seconds of
-        # the two-second assertion deadline waiting for hypothetical more keys.
+        # delays short so cancelling the editor does not wait 1.5 seconds for
+        # hypothetical more keys.
         application.ttimeoutlen = 0.05
         application.timeoutlen = 0.05
         captured["application"] = application
         captured["input_buffer"] = application.layout.current_buffer
         return application
 
-    def wait_for(predicate, message, timeout=2):
-        deadline = time.monotonic() + timeout
+    def wait_for(predicate, message):
+        deadline = time.monotonic() + FEED_STATE_TIMEOUT
         while time.monotonic() < deadline:
             if predicate():
                 return True
@@ -1137,9 +1233,8 @@ def _run_alt_p_away_from_paste_tokens(monkeypatch, payloads):
                         is not captured.get("input_buffer")
                     ),
                     "single-token alt+p did not open the editor",
-                    timeout=5,
                 ):
-                    pipe.send_text("\x04")
+                    pipe.close()
                     return
                 captured["editor_text"] = captured["application"].layout.current_buffer.text
                 pipe.send_text("\x1b")
@@ -1150,14 +1245,14 @@ def _run_alt_p_away_from_paste_tokens(monkeypatch, payloads):
                     ),
                     "paste editor did not close",
                 ):
-                    pipe.send_text("\x04")
+                    pipe.close()
                     return
             else:
                 if not wait_for(
                     lambda: captured.get("application") is not None,
                     "application was never constructed",
                 ):
-                    pipe.send_text("\x04")
+                    pipe.close()
                     return
                 time.sleep(0.1)
                 captured["editor_open"] = captured[
@@ -1178,10 +1273,10 @@ def _run_alt_p_away_from_paste_tokens(monkeypatch, payloads):
                     )
             captured["input_buffer"].text = ""
             pipe.send_text("/exit\r")
-            # Failsafe: if the app is still running shortly after /exit, force
-            # an exit so a regression shows up as a failed assertion with
+            # Failsafe: if the app is still running after /exit, force an exit
+            # so a regression shows up as a failed assertion with
             # feeder_errors context, never as an infinite hang.
-            deadline = time.monotonic() + 2.0
+            deadline = time.monotonic() + FEED_STATE_TIMEOUT
             while time.monotonic() < deadline:
                 application = captured.get("application")
                 if application is not None and not application.is_running:
@@ -1193,16 +1288,16 @@ def _run_alt_p_away_from_paste_tokens(monkeypatch, payloads):
                 try:
                     application.loop.call_soon_threadsafe(application.exit)
                 except Exception:
-                    pipe.send_text("\x04")
+                    pipe.close()
 
-        feeder = threading.Thread(target=feed, daemon=True)
-        feeder.start()
-        app_module.run_tui(
-            TuiState(model_name="test-model"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-        )
+        feeder = _start_feeder(feed, pipe, feeder_errors)
+        with _feeder_failure_reported(feeder_errors):
+            app_module.run_tui(
+                TuiState(model_name="test-model"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+            )
         feeder.join(timeout=3)
 
     assert not feeder.is_alive()
@@ -1700,7 +1795,6 @@ def test_mouse_capture_window_preserves_raw_screen_coordinates():
 
 
 def test_transcript_selection_drag_autoscrolls_at_top_edge(monkeypatch):
-    import threading
     import time
 
     from prompt_toolkit.application import Application as PromptToolkitApplication
@@ -1729,7 +1823,7 @@ def test_transcript_selection_drag_autoscrolls_at_top_edge(monkeypatch):
             return 0
 
     def wait_for(predicate, message):
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + FEED_STATE_TIMEOUT
         while time.monotonic() < deadline:
             if predicate():
                 return True
@@ -1795,16 +1889,16 @@ def test_transcript_selection_drag_autoscrolls_at_top_edge(monkeypatch):
             pipe.send_text(f"\x1b[<0;{x + 1};{top + 1}m")
             stop_app()
 
-        feeder = threading.Thread(target=feed, daemon=True)
-        feeder.start()
-        app_module.run_tui(
-            TuiState(model_name="test-model"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-            session_builder=LongReplySession,
-            background_turns=False,
-        )
+        feeder = _start_feeder(feed, pipe, feeder_errors)
+        with _feeder_failure_reported(feeder_errors):
+            app_module.run_tui(
+                TuiState(model_name="test-model"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+                session_builder=LongReplySession,
+                background_turns=False,
+            )
         feeder.join(timeout=4)
 
     assert not feeder.is_alive()
@@ -1812,7 +1906,6 @@ def test_transcript_selection_drag_autoscrolls_at_top_edge(monkeypatch):
 
 
 def test_editor_selection_drag_autoscrolls_at_bottom_edge(monkeypatch):
-    import threading
     import time
 
     from prompt_toolkit.application import Application as PromptToolkitApplication
@@ -1832,7 +1925,7 @@ def test_editor_selection_drag_autoscrolls_at_bottom_edge(monkeypatch):
         return application
 
     def wait_for(predicate, message):
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + FEED_STATE_TIMEOUT
         while time.monotonic() < deadline:
             if predicate():
                 return True
@@ -1890,14 +1983,14 @@ def test_editor_selection_drag_autoscrolls_at_bottom_edge(monkeypatch):
             pipe.send_text(f"\x1b[<0;{x + 1};{bottom + 1}m")
             stop_app()
 
-        feeder = threading.Thread(target=feed, daemon=True)
-        feeder.start()
-        app_module.run_tui(
-            TuiState(model_name="test-model"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-        )
+        feeder = _start_feeder(feed, pipe, feeder_errors)
+        with _feeder_failure_reported(feeder_errors):
+            app_module.run_tui(
+                TuiState(model_name="test-model"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+            )
         feeder.join(timeout=4)
 
     assert not feeder.is_alive()

@@ -331,7 +331,12 @@ class BotContextSummary:
         At the start of a turn, charged to it: what the idle owl did not summarise yet
         (prepare_idle). Once that is written, this finds nothing left and makes no call.
         """
-        if task["calls"] or not task["config"]["memory_enabled"] or not self.summarises(limits):
+        if (
+            task["calls"]
+            or not task["config"]["memory_enabled"]
+            or not self.summarises(limits)
+            or self.store.separate_thread(task["chat_id"])
+        ):
             return
         plan = self._plan(task, client, limits)
         if plan is None:
@@ -747,7 +752,8 @@ class WarmUp:
     def _anchor(db, bot_id) -> dict | None:
         for row in db.execute(
             "SELECT id,chat_id,request_id,config FROM tasks WHERE bot_id=? "
-            f"AND chat_id NOT IN ({Store.ROOM_CHATS}) ORDER BY created_at DESC,id DESC LIMIT ?",
+            f"AND chat_id NOT IN ({Store.ROOM_CHATS}) AND chat_id NOT IN (SELECT chat_id FROM owl_chat_threads) "
+            "ORDER BY created_at DESC,id DESC LIMIT ?",
             (bot_id, _ANCHOR_CANDIDATES),
         ):
             task = {**dict(row), "config": json.loads(row["config"] or "{}")}

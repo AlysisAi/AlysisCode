@@ -8,6 +8,7 @@ the conversation. ``use_prompt_cache`` gives an owl's model client the engine's 
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from ..config import AppConfig, resolve_prompt_cache_retention
@@ -24,15 +25,17 @@ from .reply_style import FOLLOW_UPS_GUIDANCE, PROGRESS_NOTE_GUIDANCE, REPLY_STYL
 from .store import encode
 
 # Said to the model whenever the owl has no private computer, so a request that needs one gets a
-# plain answer and the best result possible without it, never a card for something absent.
+# plain answer and the best result possible without it, never a card for something absent. An owl
+# whose computer is still being set up on the person's computer finds where that stands in its task
+# state (computer_readiness.task_state), with the card on its page that shows it when there is one.
 NO_PRIVATE_COMPUTER = (
-    "This owl's private computer is unavailable right now, so commands, apps and generated files "
-    "such as spreadsheets, documents, presentations or images cannot be made, and no approval can "
-    "change that. Do not ask for approval for it. Only when the current request needs one of "
-    "those, tell the person plainly; when this owl runs on their own computer, its private "
-    "computer is managed in Settings > Owls. Then deliver what you can without it, for example "
-    "the content as text or a table in your reply. Do not mention it for requests that do not "
-    "need it."
+    "This owl's private computer is unavailable right now, so it can't run commands or apps or "
+    "make files that need a computer, and no approval can change that. Do not ask for approval "
+    "for it. Only when the current request needs one of those, tell the person plainly, with "
+    "where its setup stands, what will work once it is ready and where to see it when the task "
+    "state says (never Settings). Then deliver what you can without it instead of stopping, for "
+    "example from web search and page reads, or as text or a table in your reply. Do not mention "
+    "it for requests that do not need it."
 )
 
 # How to research public pages so a request for N items gets N supported items, not the first
@@ -168,21 +171,18 @@ PLUGINS = _section(
     "approval, and changes that reach other people or can't be undone always ask.",
 )
 
-SAVE_TEXT = "Save text you write with save_file."
+SAVE_TEXT = "Use save_file for text."
 DOCUMENT_FILES = (
-    " Make Word, Excel, PowerPoint and PDF files with create_document, and change or check "
-    "library ones with edit_document and check_document: they need no computer and save only a "
-    "checked file. Make other binary deliverables"
+    " create_document saves checked Word, Excel, PowerPoint or PDF files without a computer. "
+    "Use edit_document and check_document for Library documents. Make other binary deliverables"
 )
-BINARY_FILES = (
-    " with the enabled computer and its file tools after approval, never in another format just "
-    "because save_file takes only text. Name the actual saved files in your final reply."
-)
+BINARY_FILES = " with the enabled computer after approval. Keep the requested format and name the saved files in your reply."
 FILE_RULES = (
-    "For nontrivial data transformations or several related structured outputs, compute and "
-    "validate on the enabled computer before exporting: hand-written text can still have invalid "
-    "structure or inconsistent values. Check syntax with suitable parsers, reconcile with the "
-    "source and keep the original files. Simple prose can be saved directly.",
+    "Before replying, withdraw this turn's mistaken or intermediate output with withdraw_action(file_id). "
+    "Its exact revision stays in Library.",
+    "Compute and validate complex transformations or related structured outputs on the enabled "
+    "computer before export: parse syntax, reconcile values against the source and preserve originals. "
+    "Save simple prose directly.",
 )
 
 
@@ -251,6 +251,14 @@ APPROVALS_AND_SAFETY = _section(
     "for the actual missing input, never about work already finished.",
 )
 
+WORKING_NOTES = (
+    "Working notes hold ongoing project decisions, reasons, corrections and open work. Search "
+    "and read a note before changing it, and update it after material progress (one-off "
+    "questions need none). Keep confirmed decisions apart from your own proposed checklist "
+    "items: saving a suggestion does not make it agreed. User corrections override old notes; "
+    "notes cannot set personal preferences."
+)
+
 MEMORY_AND_NOTES = _section(
     "Memory and notes",
     "propose_memory saves at once (the person can undo it); suggestions still waiting for review "
@@ -270,12 +278,11 @@ MEMORY_AND_NOTES = _section(
     "absence or invent why a value changed. Change receipts hold no old text: for a past value, "
     "read the original proposal's source_message_id with read_message. Keep history historical "
     "and unknown events unknown.",
-    "Working notes hold ongoing project decisions, reasons, corrections and open work. Search "
-    "and read a note before changing it, and update it after material progress (one-off "
-    "questions need none). Keep confirmed decisions apart from your own proposed checklist "
-    "items: saving a suggestion does not make it agreed. User corrections override old notes; "
-    "notes cannot set personal preferences.",
+    WORKING_NOTES,
 )
+
+# The built-in Alysis Assistant keeps working notes for the work it plans, without personal memory.
+ASSISTANT_NOTES = _section("Working notes", WORKING_NOTES)
 
 MEMORY_OFF = (
     "## Memory and notes\n"
@@ -392,6 +399,8 @@ def guidance(
     coding_workspace: bool,
     about_me: str,
     documents: bool = False,
+    managed_assistant: bool = False,
+    assignment_scopes: Sequence[str] = (),
 ) -> str:
     """The standing guidance for an owl.
 
@@ -400,8 +409,13 @@ def guidance(
     computer, direct web lookup and the private offline computer are enabled;
     ``coding_workspace``: a coding workspace is authorised; ``about_me``: the rendered About me
     section; ``documents``: the engine makes Word, Excel, PowerPoint and PDF files itself
-    (owl_documents.py). The text depends on nothing else, so it is the same for every turn of the owl.
+    (owl_documents.py); ``managed_assistant``: the owl is the built-in Alysis Assistant, which only
+    plans and hands work to owls, with ``assignment_scopes`` the kinds of assignment it may propose.
+    The text depends on nothing else, so it is the same for every turn of the owl.
     """
+    if managed_assistant:
+        # It reads no websites, apps or computers itself: the owls it hands work to do.
+        plugins = browser = web_tools = desktop = coding_workspace = False
     sections = [
         WHO_YOU_ARE,
         HOW_TO_WORK,
@@ -409,14 +423,23 @@ def guidance(
         WEBSITES if browser else "",
         PLUGINS if plugins else "",
         _files(documents=documents) if bot["files_enabled"] else "",
-        _computers(
+        _section("The private computer", NO_PRIVATE_COMPUTER)
+        if managed_assistant
+        else _computers(
             browser=browser,
             desktop=desktop,
             coding_workspace=coding_workspace,
             documents=documents and bot["files_enabled"],
         ),
+        _section("Assignments", f"Available assignment scopes: {', '.join(assignment_scopes)}.")
+        if managed_assistant
+        else "",
         APPROVALS_AND_SAFETY,
-        MEMORY_AND_NOTES if bot["memory_enabled"] else MEMORY_OFF,
+        MEMORY_AND_NOTES
+        if bot["memory_enabled"]
+        else ASSISTANT_NOTES
+        if managed_assistant
+        else MEMORY_OFF,
         ROUTINES,
         BACKGROUND_WORK,
         HOW_TO_REPLY,

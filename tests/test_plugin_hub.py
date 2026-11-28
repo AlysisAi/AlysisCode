@@ -186,6 +186,29 @@ def _opener(routes: dict[str, Any], seen: list[Any]):
     return open_
 
 
+def test_scoped_client_keeps_identity_and_revision_on_discovery_and_dispatch():
+    owl = "a" * 32
+    prefix = f"/owls/{owl}/connections/ca_work"
+    routes = {
+        f"{prefix}/tools": (
+            200,
+            {"schema_version": 1, "connection_id": "ca_work", "grant_revision": 2},
+        ),
+        f"{prefix}/call": (200, {"schema_version": 1, "sent": True, "text": "synthetic"}),
+    }
+    seen = []
+    client = hub_apps.HubAppsClient(
+        "slk_fixture", url="https://example.test/apps", owl_id=owl, opener=_opener(routes, seen)
+    )
+    assert client.tools("notes", connection_id="ca_work")["grant_revision"] == 2
+    assert client.call("notes", "NOTES_READ", {}, connection_id="ca_work", grant_revision=2).sent
+    assert seen[0].full_url.endswith(prefix + "/tools?app=notes")
+    assert json.loads(seen[-1].data)["grant_revision"] == 2
+    routes[f"{prefix}/tools"][1]["connection_id"] = "ca_home"
+    with pytest.raises(hub_apps.HubAppsError, match="connected"):
+        client.tools("notes", connection_id="ca_work")
+
+
 def test_the_client_sends_the_accounts_key_and_reads_refusal_reasons():
     seen: list[Any] = []
     routes = {
@@ -206,31 +229,54 @@ def test_the_client_sends_the_accounts_key_and_reads_refusal_reasons():
     assert unknown.value.reason == "unavailable", "an answer without schema_version is unreadable"
 
 
+def test_connecting_asks_for_the_page_after_signing_in_in_the_apps_language_only():
+    seen: list[Any] = []
+    link = (200, {"schema_version": 1, "url": "https://connect.example/ln_1", "expires_at": None})
+    client = hub_apps.HubAppsClient(
+        "slk_fixture", url="https://api.example.test/apps", opener=_opener({"/connect": link}, seen)
+    )
+    for language in ("el", "zh-CN", "en-US", "", None):
+        assert client.connect("gmail", language=language)["url"] == "https://connect.example/ln_1"
+    bodies = [json.loads(request.data) for request in seen]
+    assert bodies == [
+        {"app": "gmail", "language": "el"},
+        {"app": "gmail", "language": "zh-CN"},
+        {"app": "gmail"},
+        {"app": "gmail"},
+        {"app": "gmail"},
+    ]
+
+
 class _FakeClient:
     _key = "slk_fake"
+    owl_id = None
 
     def __init__(self, connections, listings):
         self._connections = connections
         self._listings = listings
         self.tool_reads: list[str] = []
+        self.bindings = []
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
     def connections(self):
         return {
             "schema_version": 1,
             "connections": self._connections,
+            "account_selection": 1,
             "allowance": {"calls_used": 3},
         }
 
-    def tools(self, app, timeout_s=None):
+    def tools(self, app, connection_id=None, timeout_s=None):
         self.tool_reads.append(app)
+        self.bindings.append(connection_id)
         listing = self._listings[app]
         if isinstance(listing, Exception):
             raise listing
         return listing
 
-    def call(self, app, tool, arguments, request_id=None):
+    def call(self, app, tool, arguments, request_id=None, connection_id=None):
         self.calls.append((app, tool, arguments))
+        self.last_connection = connection_id
         return hub_apps.HubCallResult(
             is_error=False, text=json.dumps({"ok": "Γεια"}, ensure_ascii=False), sent=True
         )
@@ -259,9 +305,16 @@ def test_only_connected_apps_load_and_one_bad_action_leaves_out_only_that_action
     hub_apps._tools_cache.clear()
     client = _FakeClient(
         [
-            {"app": "mail", "status": "active"},
+            {"app": "mail", "id": "ca_work", "label": "Work", "status": "active", "selected": True},
+            {
+                "app": "mail",
+                "id": "ca_home",
+                "label": "Personal",
+                "status": "active",
+                "selected": False,
+            },
             {"app": "crm", "status": "needs_sign_in"},
-            {"app": "desk", "status": "active"},
+            {"app": "desk", "id": "ca_desk", "status": "active", "selected": True},
         ],
         {"mail": _listing("mail", tested=True), "desk": hub_apps.HubAppsError("offline")},
     )
@@ -270,9 +323,15 @@ def test_only_connected_apps_load_and_one_bad_action_leaves_out_only_that_action
         ("hub.mail", ["MAIL_READ"])
     ]
     assert catalogs[0]["tools"][0]["effect"] == "read"
+    assert catalogs[0]["connection_id"] == "ca_work" and "Work" in catalogs[0]["name"]
     assert status == {"loaded": 1, "failed": ["desk"], "allowance": {"calls_used": 3}}
     hub_apps.load_hub_catalogs(client)
     assert client.tool_reads.count("mail") == 1, "an app's tools are kept for ten minutes"
+    client._connections[0]["selected"] = False
+    client._connections[1]["selected"] = True
+    switched, _ = hub_apps.load_hub_catalogs(client)
+    assert switched[0]["connection_id"] == "ca_home" and "Personal" in switched[0]["name"]
+    assert "ca_home" in client.bindings
 
 
 def test_a_signed_out_engine_loads_no_apps_and_says_why(monkeypatch, tmp_path):
@@ -326,6 +385,15 @@ def test_a_tested_apps_read_runs_without_asking(tmp_path: Path, client):
     assert client.calls == [("mail", "MAIL_FETCH_MESSAGES", {"query": "Αθήνα"})]
     assert surface.requests == []
     assert "MCP_UNTRUSTED_TEXT" in result["text"] and "Γεια" in result["text"]
+
+
+def test_work_executes_using_the_account_bound_during_discovery(tmp_path: Path, client):
+    catalog = {**_catalog(tested=True), "connection_id": "ca_work", "name": "Mail · Work"}
+    tools = _tools(tmp_path, catalog, mode="review", surface=_Surface(allow=False))
+    read = tools["mcp__hub_mail__fetch_messages"]
+    assert "Mail · Work" in read.description
+    read.run({"query": "synthetic"})
+    assert client.last_connection == "ca_work"
 
 
 def test_an_untested_apps_read_follows_full_access(tmp_path: Path, client):
@@ -466,8 +534,8 @@ def test_the_apps_command_adds_an_app_that_needs_no_sign_in_without_opening_a_br
     from alysis_code.cli import app as alysis_app
 
     class _Client:
-        def connect(self, app):
-            assert app == "hackernews"
+        def connect(self, app, *, language=None):
+            assert (app, language) == ("hackernews", None)
             return {"schema_version": 1, "added": True}
 
     opened: list[str] = []
@@ -481,3 +549,33 @@ def test_the_apps_command_adds_an_app_that_needs_no_sign_in_without_opening_a_br
     assert opened == [], "nothing to sign in to"
     as_json = CliRunner().invoke(alysis_app, ["apps", "connect", "hackernews", "--json"])
     assert json.loads(as_json.output) == {"ok": True, "added": True}
+
+
+def test_the_apps_command_passes_the_language_on_and_opens_the_sign_in_page(monkeypatch):
+    from typer.testing import CliRunner
+
+    from alysis_code import host_browser
+    from alysis_code.cli import app as alysis_app
+
+    asked: list[Any] = []
+
+    class _Client:
+        def connect(self, app, *, language=None):
+            asked.append((app, language))
+            return {"schema_version": 1, "url": "https://connect.example/ln_1", "expires_at": None}
+
+    opened: list[str] = []
+    monkeypatch.setattr(
+        hub_apps.HubAppsClient, "from_saved_account", classmethod(lambda cls: _Client())
+    )
+    monkeypatch.setattr(host_browser, "open_url", opened.append)
+    result = CliRunner().invoke(alysis_app, ["apps", "connect", "gmail", "--language=el", "--json"])
+    assert json.loads(result.output) == {
+        "ok": True,
+        "url": "https://connect.example/ln_1",
+        "expires_at": None,
+    }
+    human = CliRunner().invoke(alysis_app, ["apps", "connect", "gmail"])
+    assert human.exit_code == 0, human.output
+    assert asked == [("gmail", "el"), ("gmail", None)]
+    assert opened == ["https://connect.example/ln_1"], "only the person's own run opens a browser"

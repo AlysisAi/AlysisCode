@@ -1,6 +1,6 @@
 # Quickstart
 
-This guide gets Alysis installed, configured, and running against a local workspace.
+This guide gets Alysis Code installed, configured, and running against a local workspace.
 
 ## Install
 
@@ -56,7 +56,7 @@ Provider login and clipboard adapters use the environment where Alysis runs.
 ### Existing pipx users and manual installation
 
 Python 3.11 or newer is required for manual installation. If pipx already manages
-Alysis, use `pipx upgrade alysis-code` or `alysis update`. The installers
+Alysis Code, use `pipx upgrade alysis-code` or `alysis update`. The installers
 report conflicting executables instead of overwriting a different installation.
 
 On native Windows with Python installed:
@@ -110,7 +110,7 @@ You can instead configure your own provider in setup; an Alysis account is optio
 
 ## First Run
 
-Start Alysis from the project you want to inspect or edit:
+Start Alysis Code from the project you want to inspect or edit:
 
 ```bash
 cd /path/to/project
@@ -122,7 +122,7 @@ every way to reach a model:
 
 - **Alysis Code account** signs in through the browser and needs no API key.
 - **AI subscriptions**, such as ChatGPT, sign in through the browser with your
-  plan. The adapter owns provider sign-in; Alysis keeps its native agent
+  plan. The adapter owns provider sign-in; Alysis Code keeps its native agent
   loop, tools, and TUI. After sign-in, choose the model and reasoning effort in
   `/config`.
 - **API-key providers** ask for the key, then the default model.
@@ -168,16 +168,16 @@ supports ChatGPT subscription sign-in. Connect and select it directly with:
 alysis auth login openai-codex
 ```
 
-Complete sign-in in the browser. Alysis stores refreshable credentials in its encrypted
+Complete sign-in in the browser. Alysis Code stores refreshable credentials in its encrypted
 provider vault and keeps tokens out of `config.json`. Choose the account model
 and its supported reasoning effort together in `/config → Default Model`. Inside
 the TUI, `/login` presents both the Alysis Code account and AI subscription choices.
 
 When the selected subscription is disconnected, `alysis` still opens the
 native TUI. Its landing page shows one model-access prompt: use `/login` to choose
-Alysis or an AI subscription, or `/config` for API-key setup. Account
+Alysis Code or an AI subscription, or `/config` for API-key setup. Account
 management is also available under `/config → Model Access`. Model prompts stay blocked until
-the connection succeeds. Alysis then returns to the TUI and opens Default
+the connection succeeds. Alysis Code then returns to the TUI and opens Default
 Model for the paired model/reasoning selection. One-shot `alysis run` calls
 fail fast while the subscription is unavailable.
 
@@ -234,7 +234,7 @@ Useful chat commands:
 - `/persona architect`: plan and design, with Markdown-only writes
 - `/config`: open the inline configuration menu, including router model and limits
 
-The same Alysis slash-command and tool surface remains available with a
+The same Alysis Code slash-command and tool surface remains available with a
 subscription-backed profile. `/model` cannot change a subscription model by
 itself; use `/config → Default Model` so model and reasoning effort remain a
 compatible persisted pair.
@@ -242,14 +242,14 @@ compatible persisted pair.
 ## Workspace Binding
 
 `alysis run` and `alysis chat` bind a workspace before the session starts. The requested path is
-the current directory or `--path`. Inside a Git repository, Alysis binds to the repository root
+the current directory or `--path`. Inside a Git repository, Alysis Code binds to the repository root
 and keeps the starting subdirectory as the focus directory.
 
 Missing paths require `--create-path`. Broad paths such as `~` require an explicit override, and `/`
 is blocked as a workspace root.
 
 In chat, relative file/search/shell paths default to the active workdir. You can move within the
-bound workspace with natural-language requests, `/cd`, or tool calls. Alysis does not rebind to a
+bound workspace with natural-language requests, `/cd`, or tool calls. Alysis Code does not rebind to a
 different workspace mid-session.
 
 ## Sandbox Setup
@@ -316,7 +316,7 @@ alysis tool list --path .
 
 ## Updates
 
-Alysis checks for newer releases in the background during interactive terminal launches,
+Alysis Code checks for newer releases in the background during interactive terminal launches,
 at most once per configured interval, then shows cached notices in home/status surfaces.
 Piped and managed invocations do not start automatic update checks. It never installs updates
 silently. When a newer
@@ -341,7 +341,7 @@ command, and asks before running it. Source or editable installs are left manual
 ## Next Steps
 
 - [Credentials](credentials.md): API key precedence and persisted credentials.
-- [AI subscription connections](account-runtimes.md): use provider sign-in with Alysis's native agent and paired `/config` model/effort selection.
+- [AI subscription connections](account-runtimes.md): use provider sign-in with Alysis Code's native agent and paired `/config` model/effort selection.
 - [Permissions](../README.md#permissions--personas): readonly, review, auto, and fullaccess.
 - [MCP](mcp.md): connect external MCP servers.
 - [Skills](skills.md): install and use reusable instruction bundles.

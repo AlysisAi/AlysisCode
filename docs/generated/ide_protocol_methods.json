@@ -45,6 +45,7 @@
       "id": "read_only_no_params",
       "methods": [
         "session.list",
+        "assistant.observation.models",
         "config.get",
         "config.schema",
         "profile.list",
@@ -103,6 +104,10 @@
     }
   ],
   "methods": {
+    "assistant.observation.infer": {
+      "required_params": ["route", "phase", "activity"],
+      "optional_params": ["language", "imageBase64"]
+    },
     "session.outputArtifacts": {
       "required_params": [
         "session_id",

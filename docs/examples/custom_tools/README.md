@@ -1,6 +1,6 @@
 # Custom Tool Examples
 
-This directory contains examples for Alysis custom tools. Files here are
+This directory contains examples for Alysis Code custom tools. Files here are
 documentation aids; they are not discovered from this directory at runtime.
 
 ## Files

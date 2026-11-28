@@ -311,15 +311,20 @@ export function requestTimeoutForMethod(method: string): number {
   if (LONG_REQUEST_METHODS.has(method)) {
     return LONG_REQUEST_TIMEOUT_MS;
   }
-  const segment = method.slice(method.lastIndexOf(".") + 1);
-  if (
-    SHORT_REQUEST_METHODS.has(method) ||
-    method.startsWith("config.") ||
-    SHORT_REQUEST_METHOD_SEGMENTS.includes(segment)
-  ) {
+  if (answersFromLocalState(method)) {
     return SHORT_REQUEST_TIMEOUT_MS;
   }
   return REQUEST_TIMEOUT_MS;
+}
+
+/** Read- and config-shaped calls the CLI answers from its local state, without model-backed work. */
+function answersFromLocalState(method: string): boolean {
+  const segment = method.slice(method.lastIndexOf(".") + 1);
+  return (
+    SHORT_REQUEST_METHODS.has(method) ||
+    method.startsWith("config.") ||
+    SHORT_REQUEST_METHOD_SEGMENTS.includes(segment)
+  );
 }
 
 export interface BridgeProcess extends EventEmitter {
@@ -401,6 +406,8 @@ interface PendingRequest {
   resolve: (value: Record<string, unknown>) => void;
   reject: (reason: Error) => void;
   timeout: NodeJS.Timeout;
+  /** Settles once the request is answered, fails or times out. */
+  settled: Promise<void>;
 }
 
 export class ProtocolClientError extends Error {
@@ -555,6 +562,7 @@ export class AlysisBridgeClient extends EventEmitter {
     ) {
       return { restarted: false, profile: current };
     }
+    await this.letLocalReadsFinish();
     if (!this.canRestartSafely()) {
       throw new ProtocolClientError(
         "bridge_profile_restart_blocked",
@@ -567,6 +575,22 @@ export class AlysisBridgeClient extends EventEmitter {
       restarted: true,
       profile: this.liveProfileSatisfying(requested, requiredProfile, requestedLaunch.credentialFingerprint)
     };
+  }
+
+  /**
+   * A restart with new launch settings must not cut off a request in flight. Reads the CLI answers
+   * from local state (the sidebar's provider catalog and profile list, a status check) are short,
+   * so let them be answered first: a background read never makes a restart refuse. Work, an open
+   * approval, or any other request in flight still blocks the restart.
+   */
+  private async letLocalReadsFinish(): Promise<void> {
+    while (this.activeJobIds.size === 0 && this.pendingApprovalIds.size === 0) {
+      const inFlight = [...this.pending.values()];
+      if (inFlight.length === 0 || !inFlight.every((request) => answersFromLocalState(request.method))) {
+        return;
+      }
+      await Promise.all(inFlight.map((request) => request.settled));
+    }
   }
 
   /**
@@ -779,7 +803,19 @@ export class AlysisBridgeClient extends EventEmitter {
       );
     }
 
-    return new Promise((resolve, reject) => {
+    let settle: () => void = () => undefined;
+    const settled = new Promise<void>((done) => {
+      settle = done;
+    });
+    return new Promise((resolveRequest, rejectRequest) => {
+      const resolve = (value: Record<string, unknown>) => {
+        settle();
+        resolveRequest(value);
+      };
+      const reject = (reason: Error) => {
+        settle();
+        rejectRequest(reason);
+      };
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(
@@ -789,7 +825,7 @@ export class AlysisBridgeClient extends EventEmitter {
           )
         );
       }, timeoutMs);
-      this.pending.set(id, { method, resolve, reject, timeout });
+      this.pending.set(id, { method, resolve, reject, timeout, settled });
       try {
         child.stdin.write(payload, (error?: Error | null) => {
           if (!error) {

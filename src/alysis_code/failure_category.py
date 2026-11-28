@@ -4,6 +4,7 @@ import re
 from enum import StrEnum
 from typing import Any
 
+from .llm.rate_limit_metadata import BILLING_ERROR_CODE
 from .run_outcome import AGENT_FAILURE_EXIT_CODE, INFRASTRUCTURE_FAILURE_EXIT_CODE
 
 
@@ -117,7 +118,17 @@ def parse_failure_category(category: FailureCategory | str | None) -> FailureCat
         return None
 
 
+def is_provider_billing_error(error: Any) -> bool:
+    return any(
+        getattr(exc, "provider_error_code", None) in (BILLING_ERROR_CODE, "insufficient_quota")
+        or _extract_status_code(exc) == 402
+        for exc in _iter_exception_chain(error)
+    )
+
+
 def is_provider_throttling_error(error: Any) -> bool:
+    if is_provider_billing_error(error):
+        return False
     status_code = _extract_status_code_from_chain(error)
     if status_code == 429:
         return True
@@ -143,6 +154,8 @@ def is_provider_unavailable_error(error: Any) -> bool:
 def provider_unavailable_retry_reason(error: Any) -> str | None:
     import httpx
 
+    if is_provider_billing_error(error):
+        return None
     status_code = _extract_status_code_from_chain(error)
     if status_code in _PROVIDER_PERMANENT_4XX_STATUS_CODES:
         return None
@@ -220,6 +233,8 @@ def classify_failure_category(error: Any) -> FailureCategory:
     outage or for an agent implementation failure. Errors carrying no provider signal
     fall through to :attr:`FailureCategory.IMPLEMENTATION_FAILED`.
     """
+    if is_provider_billing_error(error):
+        return FailureCategory.PROVIDER_ERROR
     if is_provider_throttling_error(error):
         return FailureCategory.PROVIDER_THROTTLED
     if is_infra_unavailable_error(error):

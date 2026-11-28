@@ -676,12 +676,83 @@ def test_posix_image_publication_sends_only_bytes_and_relative_target(protected,
     )
     assert result == {"created": True}
     assert calls == [
+        # The output folder is reached through the same writer before the picture is paid for.
+        ("fs_mkdir", {"path": "project", "parents": True, "exist_ok": True}),
         (
             "image_create_bytes",
             {
                 "path": "project/image.png",
                 "payload": base64.b64encode(b"synthetic normalized image bytes").decode("ascii"),
             },
-        )
+        ),
     ]
     assert not (root / "project/image.png").exists()
+
+
+def test_a_writer_that_cant_save_stops_the_picture_before_it_is_paid_for(protected, monkeypatch):
+    from alysis_code.agent import tools_assembly
+    from alysis_code.agent.errors import AgentRuntimeError
+    from alysis_code.config import AppConfig
+
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "strict")
+    root, _areas, build = protected
+    asked = []
+
+    class Worker:
+        def run_write(self, name, args, **kwargs):
+            raise RuntimeError("Contained read worker failed; no host fallback was used")
+
+    class Posix:
+        name = "posix"
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    monkeypatch.setattr(tools_assembly.ContainedReadTools, "for_settings", lambda *args: Worker())
+    monkeypatch.setattr(tools_assembly, "os", Posix())
+    monkeypatch.setattr(tools_assembly, "generate_images", lambda **kwargs: asked.append(kwargs))
+    cfg = AppConfig(image_generation={"enabled": True, "model": "image-test"})
+    with pytest.raises(AgentRuntimeError, match="Nothing was made or charged"):
+        build(cfg=cfg)["image_generate"].run({"prompt": "synthetic", "output_path": "image.png"})
+    assert asked == []
+
+
+def test_a_picture_that_cant_be_saved_says_it_was_charged(protected, monkeypatch):
+    from alysis_code.agent import tools_assembly
+    from alysis_code.agent.errors import AgentRuntimeError
+    from alysis_code.config import AppConfig
+    from alysis_code.tools.image_generation import ImageGenerationError
+
+    monkeypatch.setenv("ALYSIS_SHELL_SANDBOX_MODE", "strict")
+    root, _areas, build = protected
+
+    class Worker:
+        def run_write(self, name, args, **kwargs):
+            if name == "image_create_bytes":
+                raise RuntimeError("disk full")
+            return {"created": False}
+
+    class Posix:
+        name = "posix"
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    def generate(**kwargs):
+        try:
+            kwargs["publish"](root / "project/image.png", b"synthetic image bytes")
+        except ImageGenerationError:
+            raise
+        return {"created": True}
+
+    monkeypatch.setattr(tools_assembly.ContainedReadTools, "for_settings", lambda *args: Worker())
+    monkeypatch.setattr(tools_assembly, "os", Posix())
+    monkeypatch.setattr(tools_assembly, "generate_images", generate)
+    cfg = AppConfig(image_generation={"enabled": True, "model": "image-test"})
+    with pytest.raises(
+        AgentRuntimeError, match="made, and charged, but couldn't be saved"
+    ) as raised:
+        build(cfg=cfg)["image_generate"].run(
+            {"prompt": "synthetic", "output_path": "project/image.png"}
+        )
+    assert "project/image.png" in str(raised.value) and "disk full" in str(raised.value)

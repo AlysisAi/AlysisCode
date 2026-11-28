@@ -91,7 +91,10 @@ def test_document_tools_and_the_page_view_are_explained_where_they_apply():
         return text.split(f"## {title}\n", 1)[1].split("\n## ", 1)[0]
 
     made_here = render(desktop=True, browser=True, documents=True)
-    assert "create_document" in section(made_here, "Files")
+    files = section(made_here, "Files")
+    assert "create_document" in files
+    assert "this turn's mistaken or intermediate output with withdraw_action(file_id)" in files
+    assert "Its exact revision stays in Library." in files
     assert "Make other binary deliverables with the enabled computer" in made_here
     assert "a generated binary file that create_document can't make" in section(
         made_here, "The private computer"
@@ -100,7 +103,9 @@ def test_document_tools_and_the_page_view_are_explained_where_they_apply():
     assert "create_document" not in computer_only
     assert "Make binary deliverables with the enabled computer" in computer_only
     # Without files the tools aren't offered, so the guidance never names them.
-    assert "create_document" not in render(desktop=True, documents=True, files=False)
+    without_files = render(desktop=True, documents=True, files=False)
+    assert "create_document" not in without_files
+    assert "withdraw_action(file_id)" not in without_files
     websites = section(made_here, "Websites")
     assert "[ref=eN]" in websites and "observe again" in websites
     assert "each action uses up its reference" not in made_here

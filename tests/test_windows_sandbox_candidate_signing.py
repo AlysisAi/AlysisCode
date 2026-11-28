@@ -99,25 +99,26 @@ def test_candidate_workflow_respects_repository_signing_boundary():
     # YAML 1.1 represents GitHub's "on" key as True.
     assert native[True]["push"]["tags"] == ["v-sandbox-*"]
     assert "!v-sandbox-*" in release[True]["push"]["tags"]
-    if (root / "internal/sync-boundary.json").is_file():
-        # Private imports retain qualification, but public-only signing actions
-        # cannot be loaded under the private repository's action allowlist.
-        assert set(native["jobs"]) == {
-            "native-build",
-            "engine-tests",
-            "installed-qualification",
-            "mxc-candidate-build",
-        }
-        assert native["permissions"] == {"contents": "read"}
-        for private_job in native["jobs"].values():
-            assert "environment" not in private_job
-            assert "permissions" not in private_job
-        return
-    job = native["jobs"]["sign-mxc-candidate"]
+    # Both repositories retain the same workflow. Only its public-repository
+    # release-tag job can acquire a signing identity.
+    jobs = dict(native["jobs"])
+    job = jobs.pop("sign-mxc-candidate")
+    assert set(jobs) == {
+        "native-build",
+        "engine-tests",
+        "installed-qualification",
+        "mxc-candidate-build",
+    }
+    assert native["permissions"] == {"contents": "read"}
+    for qualification in jobs.values():
+        assert "environment" not in qualification
+        assert "permissions" not in qualification
+    assert job["if"] == (
+        "github.repository == 'AlysisAi/AlysisCode' && startsWith(github.ref, 'refs/tags/v-sandbox-')"
+    )
     assert job["environment"] == "managed-cli-native-signing"
     assert set(job["needs"]) == {"installed-qualification", "mxc-candidate-build"}
     assert job["permissions"] == {"contents": "read", "id-token": "write"}
-    assert "AlysisAi/AlysisCode" in job["if"]
     steps = job["steps"]
     assert any("validate_github_environment_policy.py" in step.get("run", "") for step in steps)
     assert any("verify_windows_runtime.ps1" in step.get("run", "") for step in steps)

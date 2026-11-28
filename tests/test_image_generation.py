@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import builtins
 import io
+import json
 from pathlib import Path
 
 import httpx
@@ -375,3 +376,265 @@ def test_image_generation_configuration_is_opt_in_and_validated() -> None:
         set_config_value(cfg, "image_generation.max_pixels", "67108865")
     with pytest.raises(ConfigError):
         set_config_value(cfg, "image_generation.base_url", "https://user:secret@example.test/v1")
+
+
+def _answering(seen: list[httpx.Request], raw: bytes):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(raw).decode()}]})
+
+    return httpx.MockTransport(handler)
+
+
+def test_a_compressed_answer_is_read_once_and_limited_after_decoding(tmp_path: Path) -> None:
+    """A service may gzip a large answer (the Alysis account's picture service does)."""
+    import gzip
+
+    picture = base64.b64encode(_png_bytes()).decode()
+    answer = json.dumps({"data": [{"b64_json": picture}]}).encode()
+
+    def compressed(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json", "Content-Encoding": "gzip"},
+            content=gzip.compress(answer),
+        )
+
+    result = generate_images(
+        root=tmp_path,
+        cfg=_enabled_config(),
+        fallback_api_key="sk-test",
+        prompt="A lighthouse",
+        output_path="compressed.png",
+        transport=httpx.MockTransport(compressed),
+    )
+    with Image.open(tmp_path / "compressed.png") as made:
+        assert made.size == (7, 5)
+    assert result["images"]
+    # The byte limit counts the decoded answer, so a small gzip cannot expand past it.
+    bomb = gzip.compress(b'{"data": [{"b64_json": "' + b"A" * 3_000_000 + b'"}]}')
+    with pytest.raises(ImageGenerationError, match="exceeds the configured byte limit"):
+        generate_images(
+            root=tmp_path,
+            cfg=_enabled_config(max_image_bytes=1024),
+            fallback_api_key="sk-test",
+            prompt="A lighthouse",
+            output_path="bomb.png",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, headers={"Content-Encoding": "gzip"}, content=bomb
+                )
+            ),
+        )
+
+
+def _sent(request: httpx.Request) -> dict[str, str]:
+    """The fields of a JSON (generation) or multipart (edit) request."""
+    if request.headers["content-type"].startswith("application/json"):
+        return json.loads(request.content)
+    fields: dict[str, str] = {}
+    for part in request.content.split(
+        b"--" + request.headers["content-type"].split("=")[1].encode()
+    ):
+        head, _, body = part.partition(b"\r\n\r\n")
+        if b'name="' in head and b"filename=" not in head:
+            name = head.split(b'name="')[1].split(b'"')[0].decode()
+            fields[name] = body.rstrip(b"\r\n").decode()
+    return fields
+
+
+@pytest.mark.parametrize(
+    ("setting", "named", "sent"),
+    [
+        ("medium", None, "medium"),  # the person's setting when the request names none
+        ("low", None, "low"),
+        ("medium", "max", "max"),  # a quality the person asked for in the chat
+        ("high", "xhigh", "xhigh"),
+        ("medium", "auto", None),  # auto lets the provider choose: nothing is sent
+    ],
+)
+def test_the_request_goes_out_with_the_named_quality_or_the_persons_setting(
+    tmp_path, setting, named, sent
+) -> None:
+    seen: list[httpx.Request] = []
+    result = generate_images(
+        root=tmp_path,
+        cfg=_enabled_config(quality=setting),
+        fallback_api_key="test-key",
+        prompt="Ένα ήσυχο λιμάνι την αυγή, χωρίς κείμενο.",
+        output_path="harbour.png",
+        quality=named,
+        transport=_answering(seen, _png_bytes()),
+    )
+    assert _sent(seen[0]).get("quality") == sent
+    assert result["quality"] == (sent or "auto")
+
+
+def test_a_quality_the_connection_does_not_accept_is_refused_before_any_request(tmp_path) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(ImageGenerationError, match="quality must be one of: low, medium, high"):
+        generate_images(
+            root=tmp_path,
+            cfg=_enabled_config(qualities=["low", "medium", "high"]),
+            fallback_api_key="test-key",
+            prompt="一张安静的海港照片",
+            output_path="harbour.png",
+            quality="max",
+            transport=_answering(seen, _png_bytes()),
+        )
+    assert seen == []
+
+
+def test_a_setting_the_connection_does_not_accept_leaves_the_choice_to_the_provider(
+    tmp_path,
+) -> None:
+    seen: list[httpx.Request] = []
+    generate_images(
+        root=tmp_path,
+        cfg=_enabled_config(quality="max", qualities=["auto", "low", "high"]),
+        fallback_api_key="test-key",
+        prompt="A quiet harbour at dawn",
+        output_path="harbour.png",
+        transport=_answering(seen, _png_bytes()),
+    )
+    assert "quality" not in _sent(seen[0])
+
+
+def test_edits_go_to_the_declared_edit_model_and_new_pictures_to_the_model(tmp_path) -> None:
+    seen: list[httpx.Request] = []
+    cfg = _enabled_config(model="maker-model", edit_model="editor-model")
+    made = generate_images(
+        root=tmp_path,
+        cfg=cfg,
+        fallback_api_key="test-key",
+        prompt="A red bicycle",
+        output_path="new.png",
+        transport=_answering(seen, _png_bytes()),
+    )
+    changed = generate_images(
+        root=tmp_path,
+        cfg=cfg,
+        fallback_api_key="test-key",
+        prompt="Make the bicycle blue",
+        output_path="changed.png",
+        source_image=_png_bytes(),
+        transport=_answering(seen, _png_bytes()),
+    )
+    assert [request.url.path for request in seen] == [
+        "/v1/images/generations",
+        "/v1/images/edits",
+    ]
+    assert _sent(seen[0])["model"] == "maker-model" and made["model"] == "maker-model"
+    assert _sent(seen[1])["model"] == "editor-model" and changed["model"] == "editor-model"
+    assert _sent(seen[1])["quality"] == "medium"
+
+    # Without an edit model, the model changes pictures too.
+    generate_images(
+        root=tmp_path,
+        cfg=_enabled_config(model="maker-model"),
+        fallback_api_key="test-key",
+        prompt="Make it green",
+        output_path="green.png",
+        source_image=_png_bytes(),
+        transport=_answering(seen, _png_bytes()),
+    )
+    assert _sent(seen[2])["model"] == "maker-model"
+
+
+def test_an_image_service_of_the_same_account_gets_only_the_connections_own_key(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ALYSIS_IMAGE_API_KEY", "sk-another-providers-key")
+    monkeypatch.setenv("IMAGE_PROVIDER_KEY", "sk-configured-key")
+    seen: list[httpx.Request] = []
+    cfg = _enabled_config(key_from="connection", api_key_env="IMAGE_PROVIDER_KEY")
+    # An owl's request: the connection's key, never the other keys around.
+    generate_images(
+        root=tmp_path,
+        cfg=cfg,
+        fallback_api_key=None,
+        prompt="A lighthouse",
+        output_path="owl.png",
+        connection=ImageEndpoint(base_url="https://gateway.example.test/v1", api_key="slk_owner"),
+        transport=_answering(seen, _png_bytes()),
+    )
+    # A chat's request: its own key.
+    generate_images(
+        root=tmp_path,
+        cfg=cfg,
+        fallback_api_key="slk_chat",
+        prompt="A lighthouse",
+        output_path="chat.png",
+        transport=_answering(seen, _png_bytes()),
+    )
+    assert [request.headers["authorization"] for request in seen] == [
+        "Bearer slk_owner",
+        "Bearer slk_chat",
+    ]
+    assert all(request.url.host == "images.example.test" for request in seen)
+    with pytest.raises(ImageGenerationError, match="No image API key"):
+        generate_images(
+            root=tmp_path,
+            cfg=cfg,
+            fallback_api_key=None,
+            prompt="A lighthouse",
+            output_path="none.png",
+            transport=_answering(seen, _png_bytes()),
+        )
+
+
+def test_the_accounts_image_service_gets_only_the_saved_account_key(tmp_path, monkeypatch) -> None:
+    from alysis_code import alysis_cloud
+    from alysis_code.config import save_persisted_profile_key
+
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ALYSIS_IMAGE_API_KEY", "sk-another-providers-key")
+    monkeypatch.setenv("IMAGE_PROVIDER_KEY", "sk-configured-key")
+    seen: list[httpx.Request] = []
+    cfg = _enabled_config(key_from="account", api_key_env="IMAGE_PROVIDER_KEY")
+    with pytest.raises(ImageGenerationError, match="No image API key"):
+        generate_images(
+            root=tmp_path,
+            cfg=cfg,
+            fallback_api_key="sk-the-chats-own-provider",
+            prompt="A lighthouse",
+            output_path="signed-out.png",
+            transport=_answering(seen, _png_bytes()),
+        )
+    assert seen == []
+    save_persisted_profile_key(alysis_cloud.PROFILE_KEY, "slk_account")
+    generate_images(
+        root=tmp_path,
+        cfg=cfg,
+        fallback_api_key="sk-the-chats-own-provider",
+        prompt="A lighthouse",
+        output_path="account.png",
+        connection=ImageEndpoint(base_url="https://models.example.test/v1", api_key="sk-owl"),
+        transport=_answering(seen, _png_bytes()),
+    )
+    assert [request.headers["authorization"] for request in seen] == ["Bearer slk_account"]
+    assert seen[0].url.host == "images.example.test"
+
+
+def test_picture_quality_settings_are_validated() -> None:
+    cfg = AppConfig()
+    assert cfg.image_generation.quality == "medium"
+    for quality in ("low", "medium", "high", "xhigh", "max", "auto", " MAX "):
+        cfg = set_config_value(cfg, "image_generation.quality", quality)
+        assert cfg.image_generation.quality == quality.strip().casefold()
+    with pytest.raises(ConfigError, match="image_generation.quality must be one of"):
+        set_config_value(cfg, "image_generation.quality", "ultra")
+    cfg = set_config_value(cfg, "image_generation.edit_model", "editor-model")
+    assert cfg.image_generation.edit_model == "editor-model"
+    cfg = set_config_value(cfg, "image_generation.edit_model", "")
+    assert cfg.image_generation.edit_model is None
+    with pytest.raises(ValueError):
+        AppConfig(image_generation={"qualities": []})
+    with pytest.raises(ValueError):
+        AppConfig(image_generation={"qualities": ["low", "ultra"]})
+    assert AppConfig(
+        image_generation={"qualities": ["Low", "low", "max"]}
+    ).image_generation.qualities == (
+        "low",
+        "max",
+    )

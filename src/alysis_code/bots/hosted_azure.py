@@ -160,7 +160,7 @@ def build(settings, hosted, credential, resources):
         )
         resources.callback(streams.close)
 
-    def account_app(config, *, allowed=None):
+    def account_app(config, *, allowed=None, model_key=None, more_apps=None):
         account_billing = (
             billing.account(config.owner, shared)
             if billing and config.owner.startswith("account:")
@@ -192,6 +192,8 @@ def build(settings, hosted, credential, resources):
             task_store=shared,
             cloud_computers=factory,
             work_authorizer=allowed,
+            account_model_key=model_key,
+            more_apps=more_apps,
         )
         app.state.account_token = config.token
         return app
@@ -205,7 +207,12 @@ def build(settings, hosted, credential, resources):
 
     authority = AccountAuthority(shared, browser_key)
 
-    def create_account(owner):
+    def create_account(owner, credential):
+        from functools import partial
+
+        from .cloud_models import account_settings
+        from .owl_hub_apps import OwlHubApps
+
         if billing:
             billing.account(owner, shared).status()
         config = replace(
@@ -216,10 +223,22 @@ def build(settings, hosted, credential, resources):
             coding_token=None,
             managed_workspaces=False,
         )
-        return account_app(config, allowed=lambda: authority.allowed(owner))
+        return account_app(
+            account_settings(config, credential),
+            allowed=lambda: authority.allowed(owner),
+            model_key=lambda: authority.credential(owner),
+            more_apps=OwlHubApps(
+                client=partial(authority.hub_client, owner),
+                manage_client=partial(authority.hub_client, owner, manage=True),
+            ),
+        )
 
     return AccountApplications(
-        operator, authority, create_account, max_accounts=hosted.max_accounts
+        operator,
+        authority,
+        create_account,
+        max_accounts=hosted.max_accounts,
+        reader_origin=os.environ.get("ALYSIS_OWLS_PUBLIC_READER_ORIGIN"),
     ).application()
 
 
